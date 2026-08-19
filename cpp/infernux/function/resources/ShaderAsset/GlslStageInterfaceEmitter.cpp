@@ -2,6 +2,7 @@
 
 #include <sstream>
 #include <string_view>
+#include <vector>
 
 namespace infernux
 {
@@ -39,6 +40,23 @@ std::string VariableName(std::string_view varying)
 {
     return "_inx_v_" + std::string(varying);
 }
+
+std::string_view DefaultGlslLiteral(std::string_view glslType)
+{
+    if (glslType == "float")
+        return "0.0";
+    if (glslType == "vec2")
+        return "vec2(0.0)";
+    if (glslType == "vec3")
+        return "vec3(0.0)";
+    if (glslType == "vec4")
+        return "vec4(0.0)";
+    if (glslType == "int")
+        return "0";
+    if (glslType == "mat4")
+        return "mat4(1.0)";
+    return "0.0";
+}
 } // namespace
 
 std::string GlslStageInterfaceEmitter::EmitVertexDeclarations(const ShaderProgramInterfaceArtifact &artifact,
@@ -73,6 +91,47 @@ std::string GlslStageInterfaceEmitter::EmitFragmentDeclarations(const ShaderProg
         source << "    " << varying.glslType << " " << varying.name << ";\n";
     source << "};\n"
               "FragmentInput fragmentInput;\n";
+    return source.str();
+}
+
+std::string GlslStageInterfaceEmitter::EmitStandaloneVertexOutputPreview(const ShaderDescriptor &vertex)
+{
+    std::ostringstream source;
+    source << "\n// Standalone preview of linked vertex outputs\n";
+    source << "struct VertexOutput {\n";
+    for (const auto &varying : vertex.outputs) {
+        const auto type = GlslType(varying.type);
+        if (!type.empty())
+            source << "    " << type << " " << varying.name << ";\n";
+    }
+    source << "};\n";
+    return source.str();
+}
+
+std::string GlslStageInterfaceEmitter::EmitStandaloneFragmentInputPreview(const ShaderDescriptor &fragment)
+{
+    std::ostringstream source;
+    source << "\n// Standalone preview of linked fragment inputs\n";
+    source << "struct FragmentInput {\n";
+    std::vector<std::string_view> members;
+    for (const auto &varying : fragment.inputs) {
+        const auto type = GlslType(varying.type);
+        if (type.empty())
+            continue;
+        source << "    " << type << " " << varying.name << ";\n";
+        members.push_back(type);
+    }
+    source << "};\nFragmentInput fragmentInput";
+    if (!members.empty()) {
+        source << " = FragmentInput(";
+        for (size_t index = 0; index < members.size(); ++index) {
+            if (index > 0)
+                source << ", ";
+            source << DefaultGlslLiteral(members[index]);
+        }
+        source << ")";
+    }
+    source << ";\n";
     return source.str();
 }
 

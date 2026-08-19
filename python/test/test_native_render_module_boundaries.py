@@ -1006,6 +1006,44 @@ def test_player_init_skips_full_asset_refresh_when_runtime_catalog_exists() -> N
     assert player_guard < catalog_install < refresh
 
 
+def test_player_init_pumps_events_around_shader_and_pipeline_work() -> None:
+    source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
+    body = _function_body(source, "void Infernux::InitRenderer")
+    assert "PumpStartupEvents" in body
+    assert body.index("PumpStartupEvents") < body.index("LoadAndRegisterShaders")
+    assert body.index("PreparePipeline") < body.rindex("PumpStartupEvents")
+
+
+def test_player_window_is_revealed_before_vulkan_device_init() -> None:
+    source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    body = _function_body(source, "void InxRenderer::Init")
+    assert "RevealStartupWindow" in body
+    assert body.index("m_view->Init") < body.index("RevealStartupWindow")
+    assert body.index("RevealStartupWindow") < body.index("m_vkCore->Init")
+    assert "_INFERNUX_PLAYER_MODE" in body
+
+
+def test_player_window_skips_startup_maximize() -> None:
+    source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    body = _function_body(source, "void InxView::SDLInit")
+    assert "SDL_WINDOW_HIDDEN" in body
+    assert "SDL_MaximizeWindow" in body
+    assert "_INFERNUX_PLAYER_MODE" in body
+    assert body.index("_INFERNUX_PLAYER_MODE") < body.index("SDL_MaximizeWindow")
+
+
+def test_prepare_pipeline_pumps_between_engine_shader_compiles() -> None:
+    source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    body = _function_body(source, "void InxRenderer::PreparePipeline")
+    assert "PumpStartupEvents" in body
+    assert body.count("pumpStartup()") >= 6
+    assert body.index("CompileParticleSortProgram") < body.index(
+        "CompileParticleRibbonRenderProgram"
+    )
+
+
 def test_native_pack_writers_release_the_gil_during_compression() -> None:
     """Background Player packing must not freeze editor Python/UI ticks."""
 

@@ -260,6 +260,41 @@ void main() {
     assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());
     RequireCompiles(compiler, standalonePassSource, "StandalonePass.frag");
 
+    const std::string linkedSurfaceStandalone = R"(
+#version 450
+ShaderInfo {
+        Name "Tests/RuntimeStandaloneSurface"
+    ShadingModel "Unlit"
+    Inputs {
+        Smooth Float crestFactor
+        Smooth Float normalizedHeight
+    }
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    s.albedo = vec3(fragmentInput.crestFactor, fragmentInput.normalizedHeight, 0.0);
+}
+)";
+    RequireCompiles(compiler, linkedSurfaceStandalone, "RuntimeStandaloneSurface.frag");
+
+    const std::string linkedVertexStandalone = R"(
+#version 450
+ShaderInfo {
+        Name "Tests/RuntimeStandaloneVertex"
+    Outputs {
+        Smooth Float crestFactor
+        Smooth Float normalizedHeight
+    }
+}
+VertexOutput vertex(inout VertexInput v) {
+    VertexOutput result;
+    result.crestFactor = v.position.y;
+    result.normalizedHeight = v.position.y;
+    return result;
+}
+)";
+    RequireCompiles(compiler, linkedVertexStandalone, "RuntimeStandaloneVertex.vert");
+
     for (const auto &entry : std::filesystem::recursive_directory_iterator(INFERNUX_TEST_SHADER_ROOT)) {
         if (!entry.is_regular_file() || entry.path().string().find("_templates") != std::string::npos)
             continue;

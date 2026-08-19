@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import threading
 
 import pytest
+
+from Infernux.engine.player_package_native import read_entry, write_pack_isolated
 
 
 def _native_inxpack():
@@ -28,12 +31,31 @@ def test_inxpack_compression_profile_roundtrip_and_determinism(tmp_path):
     development_manifest = native._inxpack_write(files, str(development_path))
     development_again_manifest = native._inxpack_write(files, str(development_again_path))
     release_manifest = native._inxpack_write(files, str(release_path), profile="release")
-    explicit_manifest = native._inxpack_write(files, str(tmp_path / "explicit.inxrt"), compression_level=12)
+    explicit_manifest = native._inxpack_write(files, str(tmp_path / "explicit.inxrt"), compression_level=6)
 
     assert development_path.read_bytes() == development_again_path.read_bytes()
     assert development_manifest["archive_sha256"] == development_again_manifest["archive_sha256"]
     assert release_manifest["archive_sha256"] == explicit_manifest["archive_sha256"]
     assert native._inxpack_read_entry(str(release_path), "Runtime/payload.bin") == source.read_bytes()
+
+
+def test_isolated_inxpack_worker_roundtrip(tmp_path):
+    source = tmp_path / "isolated-source.bin"
+    source.write_bytes(b"isolated-player-content" * 4096)
+    destination = tmp_path / "isolated.inxpkg"
+    polls: list[int] = []
+
+    manifest = write_pack_isolated(
+        [("Library/isolated-source.bin", source)],
+        destination,
+        profile="development",
+        cancel_event=threading.Event(),
+        on_wait=lambda: polls.append(1),
+    )
+
+    assert polls
+    assert manifest["file_count"] == 1
+    assert read_entry(destination, "Library/isolated-source.bin") == source.read_bytes()
 
 
 @pytest.mark.parametrize("compression_level", [-1, 0, 23])

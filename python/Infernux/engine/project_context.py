@@ -52,6 +52,17 @@ def get_project_root() -> Optional[str]:
     return _project_root
 
 
+@contextmanager
+def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
+    """Bind ``get_project_root()`` for one compile or cook interval."""
+    previous = get_project_root()
+    set_project_root(path)
+    try:
+        yield get_project_root()
+    finally:
+        set_project_root(previous)
+
+
 def get_assets_root() -> Optional[str]:
     """Return the project's Assets directory when available."""
     if not _project_root:

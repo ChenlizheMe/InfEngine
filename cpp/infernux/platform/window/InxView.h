@@ -97,6 +97,10 @@ class InxView
     int GetUserEvent();
     void Show();
     void Hide();
+
+    /// Pump the OS queue during long startup work so a visible window stays
+    /// responsive. Returns false if the user requested close/quit.
+    [[nodiscard]] bool PumpStartupEvents();
     void SetWindowIcon(const std::string &iconPath);
     void SetWindowFullscreen(bool fullscreen);
     void SetWindowTitle(const std::string &title);
@@ -222,6 +226,8 @@ class InxView
     /// Timestamp of the last frame start — used to compute the remaining
     /// frame budget so the sleep duration adapts to actual render time.
     std::chrono::steady_clock::time_point m_lastFrameStart = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point m_lastStartupPump{};
+    bool m_hasStartupPumped = false;
 
     mutable std::mutex m_syntheticInputMutex;
     std::deque<SyntheticInputEvent> m_syntheticInputEvents;

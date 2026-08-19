@@ -224,6 +224,115 @@ class ParticleArtifactRegistry:
             return cls._current_unlocked(path, guid)
 
     @classmethod
+    def iter_project_sources(cls, project_root: str) -> list[tuple[str, str]]:
+        """Return ``(source_path, guid)`` for every particle authoring source."""
+        root = resolved_path(project_root)
+        if not root:
+            return []
+        assets_root = os.path.join(root, "Assets")
+        if not os.path.isdir(assets_root):
+            return []
+        sources: list[tuple[str, str]] = []
+        for root, directories, filenames in os.walk(assets_root):
+            directories[:] = [
+                name for name in directories if not name.startswith(".")
+            ]
+            for filename in filenames:
+                lower = filename.casefold()
+                if not (
+                    lower.endswith(".particlegraph") or lower.endswith(".particle.py")
+                ):
+                    continue
+                source_path = resolved_path(os.path.join(root, filename))
+                sources.append((source_path, cls._resolve_source_guid(source_path)))
+        return sources
+
+    @classmethod
+    def source_needs_compile(cls, source_path: str, *, guid: str = "") -> bool:
+        """Return True when the Library artifact is missing or stale."""
+        owner = cls._resolve_source_guid(source_path, guid)
+        try:
+            source = Path(source_path).read_text(encoding="utf-8")
+            if source_path.casefold().endswith(".particle.py"):
+                current = cls._text_source_hash(source)
+                stable_id = (
+                    ParticleScriptCompiler()
+                    .parse(source, source_name=source_path)
+                    .stable_id
+                )
+            else:
+                graph = ParticleGraphAsset.from_json(source)
+                current = cls._graph_source_hash(graph)
+                stable_id = graph.stable_id
+        except (
+            OSError,
+            UnicodeDecodeError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return True
+        artifact_path = cls._existing_artifact_path(
+            guid=owner, source_path=source_path, stable_id=stable_id
+        ) or cls._artifact_path(owner or stable_id)
+        if not artifact_path or not os.path.isfile(artifact_path):
+            return True
+        try:
+            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+            embedded = str((payload or {}).get("source_hash") or "")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return True
+        return embedded.casefold() != current.casefold()
+
+    @classmethod
+    def ensure_source_compiled(
+        cls, source_path: str, *, guid: str = ""
+    ) -> ParticleArtifact | None:
+        """Compile one source when its Library artifact is missing or stale."""
+        if not cls.source_needs_compile(source_path, guid=guid):
+            return cls.get(source_path, guid=guid)
+        return cls.compile_path(source_path, guid=guid)
+
+    @classmethod
+    def ensure_project_compiled(
+        cls,
+        project_root: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> dict[str, list[str]]:
+        """Fill missing or stale particle artifacts for every project source.
+
+        Editor startup logs compile failures so the session can continue.
+        Player cook raises so a missing product cannot ship.
+        """
+        from Infernux.engine.project_context import using_project_root
+        from Infernux.debug import Debug
+
+        compiled: list[str] = []
+        skipped: list[str] = []
+        failed: list[str] = []
+        root = resolved_path(project_root)
+        if not root:
+            return {"compiled": compiled, "skipped": skipped, "failed": failed}
+        with using_project_root(root):
+            for source_path, guid in cls.iter_project_sources(root):
+                try:
+                    if not cls.source_needs_compile(source_path, guid=guid):
+                        skipped.append(source_path)
+                        continue
+                    cls.compile_path(source_path, guid=guid)
+                    compiled.append(source_path)
+                except Exception as exc:
+                    failed.append(source_path)
+                    message = (
+                        f"Particle artifact compile failed: {source_path}: {exc}"
+                    )
+                    if raise_on_error:
+                        raise ParticleArtifactError(message) from exc
+                    Debug.log_error(message)
+        return {"compiled": compiled, "skipped": skipped, "failed": failed}
+
+    @classmethod
     def load_runtime_reference(
         cls, path: str = "", *, guid: str = ""
     ) -> ParticleArtifact | None:

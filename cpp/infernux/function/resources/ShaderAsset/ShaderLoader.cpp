@@ -40,13 +40,9 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         INXLOG_ERROR("ShaderLoader: empty file '", filePath, "'");
         return nullptr;
     }
-    // Ensure null-terminated
-    if (content.back() != '\0')
-        content.push_back('\0');
 
-    // Player shader payloads use the opaque .inxshader suffix.  The imported
-    // metadata remains the authority for stage identity in both Editor and
-    // Player; the authoring extension is only a fallback for loose files.
+    // Runtime shader metadata remains authoritative; the source extension is
+    // a fallback for loose Editor files and packed Player GLSL alike.
     std::filesystem::path fsPath = ToFsPath(filePath);
     std::string ext = FromFsPath(fsPath.extension());
 
@@ -68,10 +64,16 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         else if (ext == ".frag")
             shaderType = "fragment";
     }
+
     if (shaderType != "vertex" && shaderType != "fragment") {
         INXLOG_ERROR("ShaderLoader: shader stage metadata is invalid for '", filePath, "'");
         return nullptr;
     }
+
+    // Ensure null-terminated for the GLSL compiler.
+    if (content.back() != '\0')
+        content.push_back('\0');
+
     const std::string compilePath = InxShaderLoader::StageQualifiedVirtualPath(filePath, shaderType);
 
     // Use InxShaderLoader to compile (it manages glslang, preprocessing, etc.)

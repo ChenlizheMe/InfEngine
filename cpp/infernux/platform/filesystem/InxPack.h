@@ -28,7 +28,9 @@ enum class CompressionProfile : uint8_t
 };
 
 inline constexpr int kDevelopmentCompressionLevel = 3;
-inline constexpr int kReleaseCompressionLevel = 12;
+// Player builds are frequent editor operations. Level 6 retains most of
+// Zstandard's size win without turning finalization into an offline encode.
+inline constexpr int kReleaseCompressionLevel = 6;
 inline constexpr int kMinimumCompressionLevel = 1;
 inline constexpr int kMaximumCompressionLevel = 22;
 

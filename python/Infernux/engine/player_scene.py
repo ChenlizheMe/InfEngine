@@ -61,7 +61,7 @@ class PlayerSceneService:
             raise RuntimeError("PlayerSceneService catalog cannot change after scene loading")
         self._runtime_catalog = runtime_catalog
 
-    def load_initial(self, path: str) -> bool:
+    def load_initial(self, path: str, *, on_tick=None) -> bool:
         """Synchronously load the first Player scene before activation."""
         target = self._validated_scene_path(path)
         if target is None:
@@ -69,7 +69,7 @@ class PlayerSceneService:
             return False
         self._last_error = ""
         transaction = self._new_transaction(target)
-        if not transaction.run_to_completion(raise_on_failure=False):
+        if not transaction.run_to_completion(raise_on_failure=False, on_tick=on_tick):
             self._last_error = transaction.error or "scene transaction failed"
             Debug.log_error(
                 f"Player scene load failed for '{target}': {self._last_error}"

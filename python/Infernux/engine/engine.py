@@ -126,6 +126,8 @@ class Engine():
             _safe_path(project_path),
             _safe_path(resources_path),
         )
+        if _PLAYER_MODE:
+            self.pump_events()
         self._apply_startup_present_mode()
         set_project_root(project_path)
 
@@ -144,6 +146,8 @@ class Engine():
         
         # Load project materials (default material from project's .mat file)
         self._load_project_materials(project_path)
+        if _PLAYER_MODE:
+            self.pump_events()
         
         # Initialize AssetManager singleton (GUID ↔ path resolution for refs)
         from Infernux.core.assets import AssetManager
@@ -977,6 +981,13 @@ class Engine():
         if manager is None:
             return
         manager.prepare_startup(on_progress=on_progress)
+
+    def pump_events(self) -> bool:
+        """Keep the OS queue alive while startup or a long load is blocking."""
+        if not self._engine:
+            return True
+        result = self._engine.pump_events()
+        return True if result is None else bool(result)
 
     def show(self):
         self._engine.show()

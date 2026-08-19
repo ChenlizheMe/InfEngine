@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -738,6 +739,31 @@ void InxView::Show()
     }
 }
 
+bool InxView::PumpStartupEvents()
+{
+    if (m_closeRequested)
+        return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_hasStartupPumped && now - m_lastStartupPump < std::chrono::milliseconds(50))
+        return true;
+    m_hasStartupPumped = true;
+    m_lastStartupPump = now;
+
+    if (!m_window)
+        return true;
+
+    SDL_PumpEvents();
+
+    SDL_Event event{};
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_QUIT, SDL_EVENT_QUIT) > 0)
+        m_closeRequested = true;
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                          SDL_EVENT_WINDOW_CLOSE_REQUESTED) > 0)
+        m_closeRequested = true;
+    return !m_closeRequested;
+}
+
 void InxView::Hide()
 {
     if (m_window) {
@@ -845,7 +871,10 @@ void InxView::SDLInit()
     }
     INXLOG_DEBUG("Window created successfully.");
 
-    SDL_MaximizeWindow(m_window);
+    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+    if (!playerMode)
+        SDL_MaximizeWindow(m_window);
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)

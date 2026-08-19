@@ -1490,8 +1490,16 @@ PYBIND11_MODULE(_Infernux, m)
             "Heavy scene loads run here, sandwiched by SDL_PumpEvents to prevent\n"
             "Windows from flagging the application as Not Responding.")
         .def(
-            "pump_events", [](Infernux & /*self*/) { SDL_PumpEvents(); },
-            "Pump the OS message queue to prevent Windows Not Responding during long operations")
+            "pump_events",
+            [](Infernux &self) -> bool {
+                auto *r = self.GetRenderer();
+                if (!r) {
+                    SDL_PumpEvents();
+                    return true;
+                }
+                return r->PumpStartupEvents();
+            },
+            "Pump the OS message queue so a visible window stays responsive during long operations")
         .def("queue_synthetic_key_input", &Infernux::QueueSyntheticKeyInput, py::arg("scancode"),
              py::arg("pressed"), py::arg("repeat") = false,
              "Queue a synthetic key event for the next graphical input frame")

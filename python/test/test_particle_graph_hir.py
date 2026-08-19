@@ -2892,6 +2892,8 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     assert output.shader == "Particle Unlit"
     assert {item.name for item in output.shader_properties} == {
         "baseColor",
+        "glow",
+        "rainbow",
         "texSampler",
     }
     assert output.soft_particles is False
@@ -5583,6 +5585,79 @@ def test_particle_graph_rebuilds_deterministically_after_library_cleanup(
     assert rebuilt.kernel_ir == first.kernel_ir
     assert rebuilt.gpu_glsl == first.gpu_glsl
     assert rebuilt.gpu_spirv == first.gpu_spirv
+
+
+def test_ensure_project_compiled_rebuilds_missing_library_artifacts(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    assets = tmp_path / "Assets" / "VFX"
+    assets.mkdir(parents=True)
+    path = assets / "Portal.particlegraph"
+    guid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    Path(str(path) + ".meta").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "guid": {"type": "string", "value": guid},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ParticleGraphAsset(stable_id="portal-ensure", name="Portal").save(str(path))
+    artifact_path = (
+        tmp_path / "Library" / "Artifacts" / "Particle" / f"{guid}.inxparticle"
+    )
+    assert artifact_path.is_file()
+    artifact_path.unlink()
+    ParticleArtifactRegistry.clear()
+
+    summary = ParticleArtifactRegistry.ensure_project_compiled(str(tmp_path))
+
+    compiled = {Path(item).resolve() for item in summary["compiled"]}
+    assert path.resolve() in compiled
+    assert artifact_path.is_file()
+    assert not summary["failed"]
+
+
+def test_ensure_project_compiled_raises_when_source_is_invalid(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    assets = tmp_path / "Assets" / "VFX"
+    assets.mkdir(parents=True)
+    path = assets / "Broken.particlegraph"
+    path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(ParticleArtifactError, match="Particle artifact compile failed"):
+        ParticleArtifactRegistry.ensure_project_compiled(
+            str(tmp_path),
+            raise_on_error=True,
+        )
+
+
+def test_source_needs_compile_when_library_artifact_is_stale(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Stale.particlegraph"
+    path.parent.mkdir(parents=True)
+    ParticleGraphAsset(stable_id="stale-graph", name="Before").save(str(path))
+    assert not ParticleArtifactRegistry.source_needs_compile(str(path))
+
+    path.write_text(
+        ParticleGraphAsset(stable_id="stale-graph", name="After").canonical_json(),
+        encoding="utf-8",
+    )
+
+    assert ParticleArtifactRegistry.source_needs_compile(str(path))
+    rebuilt = ParticleArtifactRegistry.ensure_source_compiled(str(path))
+    assert rebuilt is not None
+    assert not ParticleArtifactRegistry.source_needs_compile(str(path))
 
 
 def test_particle_graph_latest_request_wins_out_of_order_compilation(

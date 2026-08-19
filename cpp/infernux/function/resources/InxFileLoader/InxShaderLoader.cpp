@@ -157,7 +157,7 @@ std::unordered_map<std::string, std::string> InxShaderLoader::s_templateCache;
 std::unordered_map<std::string, ShaderDescriptor> InxShaderLoader::s_shadingModelCache;
 thread_local std::unordered_map<std::string, InxShaderLoader::CompiledVariantSet>
     InxShaderLoader::s_compiledVariantCache;
-std::string InxShaderLoader::s_lastCompileError;
+thread_local std::string InxShaderLoader::s_lastCompileError;
 std::atomic_bool InxShaderLoader::s_bindlessTextureABIEnabled{false};
 
 const std::string &InxShaderLoader::GetLastCompileError() noexcept
@@ -462,7 +462,7 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     // Apply surface defaults when the structured declaration does not
     // explicitly override an individual render state.
     // ----------------------------------------------------------------
-    if (desc.surfaceOptions.surfaceType == "transparent") {
+    if (EqualsInsensitive(desc.surfaceOptions.surfaceType, "transparent")) {
         if (desc.renderQueue < 0)
             desc.renderQueue = 3000;
         if (desc.surfaceOptions.blendMode == "off")
@@ -749,9 +749,8 @@ std::string InxShaderLoader::StageQualifiedVirtualPath(const std::string &filePa
     if (FromFsPath(path.extension()) == expectedExtension)
         return filePath;
 
-    // Append instead of replacing so diagnostics still expose the opaque
-    // artifact identity (foo.inxshader.vert) and relative imports keep the
-    // exact same parent directory as the real payload.
+    // Append instead of replacing so diagnostics retain the virtual source
+    // identity and relative imports keep the same parent directory.
     return filePath + expectedExtension;
 }
 
@@ -1174,41 +1173,58 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 
     // Standalone passes declare their stage interfaces in ShaderInfo. Linked
     // material programs use the stage linker path above instead.
+    // Surface/vertex() stages already occupy locations 0-5 with engine
+    // varyings. Runtime import validates those files before pair linking, so
+    // ShaderInfo Inputs/Outputs must not reuse those locations.
+    const bool explicitVertexInterface =
+        linkedInterface == nullptr && hasMainFunc && (!desc.inputs.empty() || !desc.outputs.empty());
+    const bool injectedUnifiedFragmentVaryings =
+        !fullscreenDomain && desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc);
+    const bool injectedUnifiedVertexBuiltins =
+        !fullscreenDomain && desc.isVertexShader && !explicitVertexInterface;
     if (!userHasLayoutDecls && linkedInterface == nullptr && (!desc.inputs.empty() || !desc.outputs.empty())) {
-        const auto glslType = [](std::string_view type) -> std::string_view {
-            if (type == "Float")
-                return "float";
-            if (type == "Float2")
-                return "vec2";
-            if (type == "Float3")
-                return "vec3";
-            if (type == "Float4" || type == "Color")
-                return "vec4";
-            if (type == "Int")
-                return "int";
-            if (type == "Mat4")
-                return "mat4";
-            return {};
-        };
-        const auto qualifier = [](std::string_view interpolation) -> std::string_view {
-            if (interpolation == "Flat")
-                return "flat ";
-            if (interpolation == "NoPerspective")
-                return "noperspective ";
-            if (interpolation == "Centroid")
-                return "centroid ";
-            return {};
-        };
-        result << "\n// Auto-generated standalone stage interface\n";
-        for (size_t index = 0; index < desc.inputs.size(); ++index) {
-            const auto &input = desc.inputs[index];
-            result << "layout(location = " << index << ") " << qualifier(input.interpolation) << "in "
-                   << glslType(input.type) << " " << input.name << ";\n";
-        }
-        for (size_t index = 0; index < desc.outputs.size(); ++index) {
-            const auto &output = desc.outputs[index];
-            result << "layout(location = " << index << ") " << qualifier(output.interpolation) << "out "
-                   << glslType(output.type) << " " << output.name << ";\n";
+        if (injectedUnifiedFragmentVaryings) {
+            if (!desc.inputs.empty())
+                result << GlslStageInterfaceEmitter::EmitStandaloneFragmentInputPreview(desc);
+        } else if (injectedUnifiedVertexBuiltins) {
+            if (!desc.outputs.empty())
+                result << GlslStageInterfaceEmitter::EmitStandaloneVertexOutputPreview(desc);
+        } else {
+            const auto glslType = [](std::string_view type) -> std::string_view {
+                if (type == "Float")
+                    return "float";
+                if (type == "Float2")
+                    return "vec2";
+                if (type == "Float3")
+                    return "vec3";
+                if (type == "Float4" || type == "Color")
+                    return "vec4";
+                if (type == "Int")
+                    return "int";
+                if (type == "Mat4")
+                    return "mat4";
+                return {};
+            };
+            const auto qualifier = [](std::string_view interpolation) -> std::string_view {
+                if (interpolation == "Flat")
+                    return "flat ";
+                if (interpolation == "NoPerspective")
+                    return "noperspective ";
+                if (interpolation == "Centroid")
+                    return "centroid ";
+                return {};
+            };
+            result << "\n// Auto-generated standalone stage interface\n";
+            for (size_t index = 0; index < desc.inputs.size(); ++index) {
+                const auto &input = desc.inputs[index];
+                result << "layout(location = " << index << ") " << qualifier(input.interpolation) << "in "
+                       << glslType(input.type) << " " << input.name << ";\n";
+            }
+            for (size_t index = 0; index < desc.outputs.size(); ++index) {
+                const auto &output = desc.outputs[index];
+                result << "layout(location = " << index << ") " << qualifier(output.interpolation) << "out "
+                       << glslType(output.type) << " " << output.name << ";\n";
+            }
         }
     }
 
@@ -1778,13 +1794,16 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     // ---- Shadow + GBuffer variant compilation for surface fragment shaders ----
     if (type == "fragment") {
         if (sourceDescriptor.hasSurfaceFunc && !sourceDescriptor.hasMainFunc) {
-            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow");
+            if (sourceDescriptor.surfaceOptions.castShadows)
+                CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow");
 
             // ParticleSprite programs are forward-domain outputs. Their
             // lighting contract intentionally depends on particle varyings and
             // particle shadow helpers that a mesh GBuffer stage does not own.
             if (!DescriptorHasCapability(sourceDescriptor, "ParticleSprite") &&
-                !sourceDescriptor.shadingModel.empty() && sourceDescriptor.shadingModel != "custom") {
+                !EqualsInsensitive(sourceDescriptor.surfaceOptions.surfaceType, "transparent") &&
+                !sourceDescriptor.shadingModel.empty() &&
+                !EqualsInsensitive(sourceDescriptor.shadingModel, "custom")) {
                 CompileVariant(content, filePath, ShaderCompileTarget::GBuffer, "GBuffer");
             }
         }

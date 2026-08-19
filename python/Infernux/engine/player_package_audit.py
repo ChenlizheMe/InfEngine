@@ -260,6 +260,17 @@ def _is_builtin_runtime_shader_entry(relative_archive: str, entry_name: str) -> 
     )
 
 
+def _is_project_runtime_shader_entry(relative_archive: str, entry_name: str) -> bool:
+    """Allow packed project GLSL consumed by the runtime shader linker."""
+
+    normalized = entry_name.replace("\\", "/")
+    return (
+        relative_archive.endswith("/Content.inxpkg")
+        and normalized.casefold().startswith("library/artifacts/blob/")
+        and Path(normalized).suffix.casefold() in RUNTIME_BUILTIN_SHADER_SUFFIXES
+    )
+
+
 def _has_player_host_identity(executable_path: Path) -> bool:
     """Validate the executable's native image structure without string scans."""
 
@@ -416,8 +427,10 @@ def _archive_entry_records(
 
         if entry_suffix == ".meta":
             meta_files.append(entry_relative)
-        if entry_suffix in AUTHOR_SOURCE_SUFFIXES and not _is_builtin_runtime_shader_entry(
-            relative_archive, entry_name
+        if (
+            entry_suffix in AUTHOR_SOURCE_SUFFIXES
+            and not _is_builtin_runtime_shader_entry(relative_archive, entry_name)
+            and not _is_project_runtime_shader_entry(relative_archive, entry_name)
         ):
             author_sources.append(entry_relative)
         if entry_suffix in NATIVE_SUFFIXES:

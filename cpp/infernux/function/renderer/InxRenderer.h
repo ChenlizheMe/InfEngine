@@ -316,6 +316,12 @@ class InxRenderer
     [[nodiscard]] size_t GetPendingSyntheticInputCount() const;
     void ShowWindow();
     void HideWindow();
+    /// Player-only: apply chrome from the environment and show the window as
+    /// soon as the SDL window exists, before Vulkan device and pipeline work.
+    void RevealStartupWindow();
+    /// Keep Windows from marking a visible startup window as Not Responding.
+    /// Returns false if the user requested close/quit.
+    [[nodiscard]] bool PumpStartupEvents();
     [[nodiscard]] bool IsWindowMinimized() const;
     void SetWindowIcon(const std::string &iconPath);
     void SetWindowFullscreen(bool fullscreen);

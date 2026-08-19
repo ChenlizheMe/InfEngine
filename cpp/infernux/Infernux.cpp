@@ -52,6 +52,7 @@
 #include <imgui_internal.h>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <platform/filesystem/DocumentStore.h>
 #include <system_error>
 #include <unordered_map>
@@ -2646,6 +2647,8 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     }
 
     m_renderer->Init(width, height, m_metadata);
+    if (!m_renderer->PumpStartupEvents())
+        throw std::runtime_error("Startup cancelled");
 
     // Wire SceneManager to renderer so Play()/Stop() directly bypass idle
     // sleep without relying on the Python callback chain timing.
@@ -2725,12 +2728,18 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             if (hasRuntimeCatalog)
                 registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog);
         }
+        if (!m_renderer->PumpStartupEvents())
+            throw std::runtime_error("Startup cancelled");
 
         RegisterPhysicMaterialAssetCallback();
 
         // ── Load and register shaders via AssetRegistry ─────────────
         LoadAndRegisterShaders(defaultShaderPath, false);
+        if (!m_renderer->PumpStartupEvents())
+            throw std::runtime_error("Startup cancelled");
         LoadAndRegisterShaders(assetsPath, true);
+        if (!m_renderer->PumpStartupEvents())
+            throw std::runtime_error("Startup cancelled");
 
         // ── Register unified asset event callbacks ──────────────────
         auto &graph = AssetDependencyGraph::Instance();
@@ -2849,6 +2858,8 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
     INXLOG_DEBUG("Prepare pipeline.");
     m_renderer->PreparePipeline();
+    if (!m_renderer->PumpStartupEvents())
+        throw std::runtime_error("Startup cancelled");
 
     // Set ImGui ini file path to user's Documents folder for per-project
     // layout persistence (keeps project directory clean / not in VCS).
@@ -3236,8 +3247,8 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
         if (guid.empty())
             return;
 
-        // Imported metadata is authoritative in the Player because cooked
-        // shader payloads deliberately use the opaque .inxshader suffix.
+        // Imported metadata is authoritative in both Editor and Player; the
+        // source extension remains a fallback for loose GLSL files.
         std::string shaderId;
         const auto meta = adb->GetMetaByGuid(guid);
         if (meta && meta->HasKey("shader_id")) {
@@ -3312,6 +3323,8 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
 
         // Register all variants with the renderer
         RegisterShaderToRenderer(*shaderAsset);
+        if (m_renderer && !m_renderer->PumpStartupEvents())
+            throw std::runtime_error("Startup cancelled");
 
         INXLOG_DEBUG("Loaded shader '", shaderId, "' (", stageExt, ") from ", filePath);
 
@@ -3331,15 +3344,11 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
                 processPath(entry.path());
         }
 
-        // A cooked Player does not retain project shader sources under
-        // Assets. InstallRuntimeAssetCatalog maps them to Library artifacts,
-        // so enumerate the database rather than assuming authoring paths are
-        // physically present. The key set above keeps Editor scans cheap and
-        // prevents duplicate publication of built-in stages.
+        // A Player does not retain project shaders under Assets. Its runtime
+        // catalog maps packed GLSL to Library artifacts, so enumerate the
+        // database rather than assuming authoring paths are physically
+        // present. The key set above also prevents duplicate publication.
         for (const auto &assetPath : adb->GetAllAssetPaths()) {
-            // Cooked project shaders use opaque *.inxshader artifact paths.
-            // Their catalog metadata retains the logical Shader type, while
-            // extension inference classifies the physical artifact as text.
             const auto metadata = adb->GetMetaByPath(assetPath);
             const ResourceType resourceType =
                 metadata ? metadata->GetResourceType() : adb->GetResourceTypeForPath(assetPath);
@@ -3387,8 +3396,8 @@ bool Infernux::EnsureShaderLoaded(const std::string &shaderId, const std::string
     INXLOG_DEBUG("Infernux::EnsureShaderLoaded: found shader at '", shaderPath, "', loading...");
 
     // This path is runtime publication, not an editor hot-reload operation.
-    // Loading through AssetRegistry keeps stage identity in imported metadata,
-    // including opaque Player artifacts whose physical suffix is .inxshader.
+    // Loading through AssetRegistry keeps stage identity in imported metadata
+    // for both loose Editor shaders and packed Player GLSL.
     auto &registry = AssetRegistry::Instance();
     const std::string guid = adb->GetGuidFromPath(shaderPath);
     if (guid.empty()) {

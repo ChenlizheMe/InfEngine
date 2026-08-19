@@ -8,12 +8,13 @@ namespace infernux
 /**
  * @brief IAssetLoader implementation for shader assets (.vert, .frag).
  *
- * Compiles GLSL source → SPIR-V and produces a ShaderAsset instance
- * containing explicit semantic pass variants keyed by ShaderCompileTarget.
+ * Loads authored GLSL and compiles it into a runtime ShaderAsset.
  *
  * Key design points:
- *   - Load() reads the shader source, compiles all variants via InxShaderLoader,
- *     and returns a shared_ptr<ShaderAsset>.
+ *   - Load() prefers a cooked INXSHADER blob and only compiles GLSL when the
+ *     payload is still authoring source.
+ *   - Compiled or cooked assets contain explicit semantic pass variants keyed
+ *     by ShaderCompileTarget.
  *   - Reload() recompiles and replaces the ShaderAsset data in-place.
  *   - ScanDependencies() returns {} — shaders have no outgoing asset deps.
  */

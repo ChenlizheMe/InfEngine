@@ -37,7 +37,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 6
-_TOTAL_STEPS = 14
+_TOTAL_STEPS = 15
 
 
 def _iter_project_material_paths(project_path: str):
@@ -154,6 +154,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Refreshing project resources\u2026")
         if self.engine:
             self.engine.prepare_startup_refresh()
+        self._report_progress("Compiling particle artifacts\u2026")
+        self._ensure_particle_artifacts()
 
         self._start_mcp_http_server()
 
@@ -183,6 +185,29 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._progress_step += 1
         _signal_progress(self._progress_step, _TOTAL_STEPS, message)
 
+
+    def _ensure_particle_artifacts(self) -> None:
+        """Compile missing or stale particle Library products before the first frame."""
+        try:
+            from Infernux.particle.artifact import ParticleArtifactRegistry
+
+            summary = ParticleArtifactRegistry.ensure_project_compiled(
+                self.project_path,
+                raise_on_error=False,
+            )
+        except Exception as exc:
+            Debug.log_warning(f"Particle artifact startup compile skipped: {exc}")
+            return
+        compiled = summary.get("compiled") or []
+        failed = summary.get("failed") or []
+        if compiled:
+            Debug.log_internal(
+                f"Particle artifacts compiled on startup: {len(compiled)}"
+            )
+        if failed:
+            Debug.log_error(
+                f"Particle artifacts failed on startup: {len(failed)}"
+            )
 
     def _ensure_project_requirements(self):
         from Infernux.engine.project_requirements import ensure_project_requirements

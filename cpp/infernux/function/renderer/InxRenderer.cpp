@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <core/config/MathConstants.h>
 #include <core/threading/JobSystem.h>
 #include <cstring>
@@ -521,6 +522,13 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
     INXLOG_DEBUG("Init View.");
     m_view->Init(width, height);
 
+    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+    if (playerMode)
+        RevealStartupWindow();
+    else if (!PumpStartupEvents())
+        throw std::runtime_error("Startup cancelled");
+
     uint32_t extCount = 0;
     auto ext = m_view->GetVkExtensions(&extCount);
     if (!ext) {
@@ -535,36 +543,51 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
     if (!m_vkCore->Init(m_appMetadata, m_rendererMetadata, extCount, const_cast<const char **>(ext))) {
         throw std::runtime_error("Failed to initialize Vulkan instance");
     }
+    if (!PumpStartupEvents())
+        throw std::runtime_error("Startup cancelled");
 
     m_view->CreateSurface(&m_vkCore->m_instance, &m_vkCore->m_surface);
+    if (!PumpStartupEvents())
+        throw std::runtime_error("Startup cancelled");
 
     INXLOG_DEBUG("Prepare surface.");
     if (!m_vkCore->PrepareSurface()) {
         throw std::runtime_error("Failed to initialize Vulkan device or swapchain");
     }
+    if (!PumpStartupEvents())
+        throw std::runtime_error("Startup cancelled");
 }
 
 void InxRenderer::PreparePipeline()
 {
+    auto pumpStartup = [this]() {
+        if (!PumpStartupEvents())
+            throw std::runtime_error("Startup cancelled");
+    };
+
     if (m_vkCore) {
         m_vkCore->PreparePipeline();
+        pumpStartup();
         m_scenePickingService->Initialize(m_vkCore.get());
 
         INXLOG_DEBUG("Init GUI.");
         m_gui = std::make_unique<InxGUI>(m_vkCore.get());
         m_gui->Init(m_view->m_window);
+        pumpStartup();
 
         // Initialize scene render target with default size
         m_sceneRenderTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
         m_sceneRenderTarget->SetMsaaSampleCount(m_vkCore->GetMaterialPipelineManager().GetSampleCount());
         m_sceneRenderTarget->Initialize(800, 600);
         ++m_sceneRenderTargetGeneration;
+        pumpStartup();
 
         // Set initial scene render target size for aspect ratio calculation
         m_vkCore->SetSceneRenderTargetSize(800, 600);
 
         // Initialize default scene with gizmos
         InitializeDefaultScene();
+        pumpStartup();
         m_particleGpuSystemManager = std::make_unique<particle::ParticleGpuSystemManager>();
         auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
                                                                const std::string &bindingName) {
@@ -625,24 +648,31 @@ void InxRenderer::PreparePipeline()
         const auto particleSortProgram = CompileParticleSortProgram();
         if (!particleSortProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle sorting kernels");
+        pumpStartup();
         const auto particleCullProgram = CompileParticleCullProgram();
         if (!particleCullProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle view-culling kernels");
+        pumpStartup();
         const auto particleBoundsProgram = CompileParticleBoundsProgram();
         if (!particleBoundsProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle bounds kernels");
+        pumpStartup();
         const auto particleMigrationProgram = CompileParticleMigrationProgram();
         if (!particleMigrationProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
+        pumpStartup();
         const auto particleSpawnProgram = CompileParticleSpawnProgram();
         if (!particleSpawnProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle graph spawn kernels");
+        pumpStartup();
         const auto particleRibbonTopologyProgram = CompileParticleRibbonTopologyProgram();
         if (!particleRibbonTopologyProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle Ribbon topology kernels");
+        pumpStartup();
         const auto particleRibbonRenderProgram = CompileParticleRibbonRenderProgram();
         if (!particleRibbonRenderProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle Ribbon render shaders");
+        pumpStartup();
         const auto particleSkinnedMeshResolver =
             [](const ObjectHandle &handle) -> std::optional<particle::GpuParticleSkinnedMeshSnapshot> {
             Scene *scene = SceneManager::Instance().GetActiveScene();
@@ -677,6 +707,7 @@ void InxRenderer::PreparePipeline()
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         }
+        pumpStartup();
 
         // Initialize RenderGraph pipeline (scene rendering in pre-render pass)
         if (!m_sceneRenderGraph) {
@@ -691,6 +722,7 @@ void InxRenderer::PreparePipeline()
                 m_sceneRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
             }
         }
+        pumpStartup();
 
         m_vkCore->SetFrameComputeExecutor([this](VkCommandBuffer cmdBuf) {
             if (!m_particleGpuSystemManager)
@@ -2486,6 +2518,31 @@ size_t InxRenderer::GetPendingSyntheticInputCount() const
 void InxRenderer::ShowWindow()
 {
     m_view->Show();
+}
+
+void InxRenderer::RevealStartupWindow()
+{
+    if (const char *title = std::getenv("_INFERNUX_PLAYER_WINDOW_TITLE")) {
+        if (title[0] != '\0')
+            SetWindowTitle(title);
+    }
+    if (const char *icon = std::getenv("_INFERNUX_PLAYER_WINDOW_ICON")) {
+        if (icon[0] != '\0')
+            SetWindowIcon(icon);
+    }
+    const char *fullscreenFlag = std::getenv("_INFERNUX_PLAYER_FULLSCREEN");
+    const bool fullscreen = fullscreenFlag != nullptr && fullscreenFlag[0] == '1' && fullscreenFlag[1] == '\0';
+    if (fullscreen)
+        SetWindowFullscreen(true);
+    else
+        SetWindowMaximized(false);
+    ShowWindow();
+    (void)PumpStartupEvents();
+}
+
+bool InxRenderer::PumpStartupEvents()
+{
+    return !m_view || m_view->PumpStartupEvents();
 }
 
 void InxRenderer::HideWindow()

@@ -10,7 +10,6 @@
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
-#include <optional>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -138,14 +137,14 @@ class InxShaderLoader
 
     /// Return a virtual source path whose extension carries the explicit shader
     /// stage while preserving the real file's parent directory for imports.
-    /// Packaged Player shaders deliberately use the opaque .inxshader suffix,
-    /// so authored stage semantics must not be inferred from that suffix.
+    /// This is also useful for virtual sources while preserving their parent
+    /// directory for relative imports.
     [[nodiscard]] static std::string StageQualifiedVirtualPath(const std::string &filePath,
                                                                const std::string &shaderType);
 
     /// Last shader compile error message (empty on success).
     /// Set by Load() when glslang parse/link fails; read by Infernux::ReloadShaderRuntime.
-    static std::string s_lastCompileError;
+    static thread_local std::string s_lastCompileError;
     [[nodiscard]] static const std::string &GetLastCompileError() noexcept;
 
     using CompiledVariantSet = std::unordered_map<ShaderCompileTarget, std::vector<char>>;
@@ -161,7 +160,6 @@ class InxShaderLoader
 
     glslang::SpvOptions m_options{};
     TBuiltInResource m_builtInResources{};
-
     void InitGLSLBuiltResources();
     EShLanguage GetShaderType(const std::string &typeStr);
 

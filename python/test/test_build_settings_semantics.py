@@ -534,6 +534,10 @@ def test_build_preparation_flushes_writes_before_publishing_asset_index(
         classmethod(lambda cls: events.append("flush_writes")),
     )
     monkeypatch.setattr(
+        "Infernux.engine.ui.build_settings_panel.get_project_root",
+        lambda: str(tmp_path),
+    )
+    monkeypatch.setattr(
         BuildSettingsPanel,
         "services",
         property(lambda _self: SimpleNamespace(asset_database=_Database())),

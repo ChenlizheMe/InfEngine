@@ -8,8 +8,9 @@ Replaces :class:`EditorBootstrap` with a stripped-down path that:
   4. Enables the game camera
   5. Registers the fullscreen PlayerGUI (with optional splash sequence)
   6. Loads the first scene from BuildSettings.json (or a Supervisor-approved Debug validation scene)
-  7. Leaves the scene loaded but not playing — Play starts only after the
-     window is visible and PlayerGUI confirms loading (and splash) are done
+  7. Leaves the scene loaded but not playing — the window is already
+     visible during load. Play starts only after PlayerGUI confirms
+     loading (and splash) are done
 
 No undo, no selection, no hierarchy, no inspector, no docking layout.
 """
@@ -69,6 +70,9 @@ class PlayerBootstrap:
         window_width: int = 1920,
         window_height: int = 1080,
         splash_items: Optional[List[Dict]] = None,
+        game_name: str = "",
+        window_icon: str = "",
+        window_resizable: bool = True,
     ):
         self.project_path = project_path
         self.engine_log_level = engine_log_level
@@ -76,6 +80,9 @@ class PlayerBootstrap:
         self.window_width = window_width
         self.window_height = window_height
         self.splash_items = splash_items or []
+        self.game_name = game_name
+        self.window_icon = window_icon
+        self.window_resizable = window_resizable
         self.engine: Optional[Engine] = None
         self.runtime_session = None
         self._player_gui: Optional[PlayerGUI] = None
@@ -89,16 +96,20 @@ class PlayerBootstrap:
         self._force_player_mode()
         self._load_runtime_contract()
         self._init_engine()
+        self._pump_startup_events()
         self._create_managers()
+        self._pump_startup_events()
         self._setup_game_camera()
         self._register_player_gui()
+        self._pump_startup_events()
         self._load_initial_scene()
-        # Do not activate Play here. The window is still hidden, so starting
-        # the session would let Awake/Start/Update run before the player can
-        # see anything. PlayerGUI starts Play after the window is shown and
-        # loading (plus any splash) has finished.
+        # Do not activate Play here. The window is already visible during
+        # native/Python load, but starting the session would let
+        # Awake/Start/Update run before splash/loading cover finishes.
+        # PlayerGUI starts Play after that cover is done.
         if self.engine is not None:
             self.engine.prepare_startup_refresh()
+        self._pump_startup_events()
 
     @staticmethod
     def _force_player_mode() -> None:
@@ -361,9 +372,22 @@ class PlayerBootstrap:
                 "Player startup created the editor ResourcesManager/file watcher"
             )
 
+        # Publish window chrome before native Init() so the Player can show
+        # immediately after the SDL surface exists, without a maximized
+        # windowed flash or a later fullscreen switch.
+        if self.display_mode == "fullscreen_borderless":
+            os.environ["_INFERNUX_PLAYER_FULLSCREEN"] = "1"
+        else:
+            os.environ.pop("_INFERNUX_PLAYER_FULLSCREEN", None)
+        title = self.game_name or os.path.basename(resolved_path(self.project_path))
+        if title:
+            os.environ["_INFERNUX_PLAYER_WINDOW_TITLE"] = title
+        if self.window_icon:
+            os.environ["_INFERNUX_PLAYER_WINDOW_ICON"] = self.window_icon
+
         # For windowed mode, use the requested size;
-        # for fullscreen borderless, start at a default size — the
-        # caller will switch to fullscreen after bootstrap.
+        # for fullscreen borderless, start at a default size — native
+        # Init() applies borderless fullscreen from the environment.
         if self.display_mode == "windowed":
             w, h = self.window_width, self.window_height
         else:
@@ -372,6 +396,7 @@ class PlayerBootstrap:
         self.engine.init_renderer(
             width=w, height=h, project_path=self.project_path
         )
+        self._pump_startup_events()
 
         # Explicitly tell C++ we are in player mode — no scene view rendering.
         # The C++ default is m_sceneViewVisible=true; without this call the
@@ -383,8 +408,16 @@ class PlayerBootstrap:
         self.engine.set_gui_player_mode(True)
 
         self.engine.set_gui_font(_resources.engine_font_path, 18)
+        self._pump_startup_events()
 
-
+    def _pump_startup_events(self) -> None:
+        """Keep a visible Player window marked responsive during bootstrap."""
+        engine = self.engine
+        if engine is None:
+            return
+        pump = getattr(engine, "pump_events", None)
+        if callable(pump) and pump() is False:
+            raise RuntimeError("Player startup cancelled")
 
     def _create_managers(self):
         if self.engine is None or self._runtime_manifest is None:

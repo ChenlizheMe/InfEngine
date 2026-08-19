@@ -425,12 +425,16 @@ class SceneDocumentTransaction:
         self._state = SceneDocumentTransactionState.CANCELLED
         return True
 
-    def run_to_completion(self, *, raise_on_failure: bool = True) -> bool:
+    def run_to_completion(
+        self, *, raise_on_failure: bool = True, on_tick: Optional[Callable[[], None]] = None
+    ) -> bool:
         """Run all phases synchronously on the owner thread."""
         self._require_owner_thread()
         if self._state is SceneDocumentTransactionState.CREATED:
             self.start()
         while not self.poll():
+            if on_tick is not None:
+                on_tick()
             if self._state is SceneDocumentTransactionState.READING:
                 time.sleep(0.001)
         if raise_on_failure and self._state is SceneDocumentTransactionState.FAILED:

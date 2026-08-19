@@ -263,3 +263,42 @@ def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
     bootstrap._load_initial_scene()
 
     assert loaded == [str(cooked)]
+
+
+def test_run_player_reveals_window_without_startup_sleep():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1].joinpath(
+        "Infernux", "engine", "__init__.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def run_player")
+    body = source[start : source.index("\n__all__ =", start)]
+    assert "time.sleep" not in body
+    assert "_INFERNUX_PLAYER_FULLSCREEN" in body
+    assert "_INFERNUX_PLAYER_WINDOW_TITLE" in body
+    assert body.index("_INFERNUX_PLAYER_FULLSCREEN") < body.index("bootstrap.run()")
+    assert "_signal_engine_loaded" in body
+
+
+def test_player_init_engine_publishes_window_chrome_before_native_renderer():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1].joinpath(
+        "Infernux", "engine", "player_bootstrap.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def _init_engine")
+    body = source[start : source.index("\n    def ", start + 1)]
+    assert body.index("_INFERNUX_PLAYER_FULLSCREEN") < body.index("init_renderer")
+    assert body.index("_INFERNUX_PLAYER_WINDOW_TITLE") < body.index("init_renderer")
+
+
+def test_scene_transaction_invokes_on_tick_while_waiting():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1].joinpath(
+        "Infernux", "engine", "runtime_scene_transaction.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("def run_to_completion")
+    body = source[start : start + 500]
+    assert "on_tick" in body
+    assert "on_tick is not None" in body

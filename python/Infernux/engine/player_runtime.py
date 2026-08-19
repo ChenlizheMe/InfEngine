@@ -137,7 +137,15 @@ class PlayerRuntimeSession:
         if self._runtime_manifest is None or self._runtime_catalog is None:
             Debug.log_error("Player scene load rejected: runtime contract is not configured")
             return False
-        return bool(self._scene_service.load_initial(path))
+        return bool(self._scene_service.load_initial(path, on_tick=self._pump_startup_events))
+
+    def _pump_startup_events(self) -> None:
+        native = self._native_engine
+        if native is None:
+            return
+        pump = getattr(native, "pump_events", None)
+        if callable(pump) and pump() is False:
+            raise RuntimeError("Player startup cancelled")
 
     def activate(self) -> bool:
         """Start the loaded scene without creating an editor play snapshot."""

@@ -226,12 +226,11 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
     Opens the project's first scene from BuildSettings.json, applies the
     display mode from BuildManifest.json (fullscreen borderless or windowed
-    with a custom resolution), shows the window (a black loading cover is
-    allowed), then starts Play only after that load — and any splash — has
-    finished.
+    with a custom resolution), reveals the window as soon as the native
+    surface exists (a black loading cover is allowed), and starts Play only
+    after that load — and any splash — has finished.
     """
     import json
-    import time
     from Infernux.application import Application
     from .player_bootstrap import PlayerBootstrap
 
@@ -270,6 +269,22 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         splash_items = manifest.get("splash_items", [])
         build_icon_path = manifest.get("icon_path", "")
         game_name = manifest.get("game_name", "")
+        title = game_name or os.path.basename(resolved_path(project_path))
+        window_icon = (
+            os.path.join(project_path, build_icon_path)
+            if isinstance(build_icon_path, str) and build_icon_path
+            else _resources.icon_path
+        )
+
+        # Native Init() shows the Player window as soon as the SDL surface
+        # exists. Publish chrome first so that reveal is fullscreen / titled
+        # instead of a maximized editor-style flash.
+        if display_mode == "fullscreen_borderless":
+            os.environ["_INFERNUX_PLAYER_FULLSCREEN"] = "1"
+        else:
+            os.environ.pop("_INFERNUX_PLAYER_FULLSCREEN", None)
+        os.environ["_INFERNUX_PLAYER_WINDOW_TITLE"] = title
+        os.environ["_INFERNUX_PLAYER_WINDOW_ICON"] = window_icon
 
         bootstrap = PlayerBootstrap(
             project_path, engine_log_level,
@@ -277,30 +292,21 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             window_width=window_width,
             window_height=window_height,
             splash_items=splash_items,
+            game_name=game_name,
+            window_icon=window_icon,
+            window_resizable=window_resizable,
         )
         bootstrap.run()
 
-        # Set window title to game name (from manifest or folder name)
-        title = game_name or os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(title)
-
         if display_mode == "fullscreen_borderless":
             bootstrap.engine.set_fullscreen(True)
         else:
-            # Windowed mode: don't maximize, respect the specified size
             bootstrap.engine.set_maximized(False)
             bootstrap.engine.set_resizable(window_resizable)
-
-        window_icon = (
-            os.path.join(project_path, build_icon_path)
-            if isinstance(build_icon_path, str) and build_icon_path
-            else _resources.icon_path
-        )
         bootstrap.engine.set_window_icon(window_icon)
 
         _signal_engine_loaded()
-        time.sleep(0.3)
-
         bootstrap.engine.show()
         bootstrap.engine.run()
         exit_code = Application._requested_exit_code()

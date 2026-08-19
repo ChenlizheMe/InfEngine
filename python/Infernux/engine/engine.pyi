@@ -56,6 +56,9 @@ class Engine:
     def prepare_startup_refresh(self, on_progress: Any = ...) -> None:
         """Finish the startup resource refresh before the window is shown."""
         ...
+    def pump_events(self) -> bool:
+        """Pump the OS queue so a visible window stays responsive during load."""
+        ...
     def show(self) -> None:
         """Show the engine window."""
         ...

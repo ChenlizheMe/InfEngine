@@ -48,7 +48,13 @@ from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
-from Infernux.engine.player_package_native import read_entry, read_manifest, write_pack
+from Infernux.engine.player_package_native import (
+    read_entry,
+    read_manifest,
+    using_test_backend,
+    write_pack,
+    write_pack_isolated,
+)
 from Infernux.engine.path_utils import (
     is_path_within,
     path_fingerprint,
@@ -673,10 +679,18 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._organize_player_layout(final_dir)
 
         _p("Packing Player bootstrap", 0.98035)
-        self._pack_player_bootstrap_archive(final_dir)
+        self._pack_player_bootstrap_archive(
+            final_dir,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
 
         _p("Packing core runtime data", 0.9805)
-        self._pack_core_runtime_archive(final_dir)
+        self._pack_core_runtime_archive(
+            final_dir,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
 
         _p("Packing optional parallel runtime data", 0.9807)
         self._pack_parallel_runtime_archive(final_dir)
@@ -1979,6 +1993,25 @@ finally:
                     if key.endswith(candidate)
                 )
 
+    def _ensure_selected_particle_artifacts(self, selected: dict[str, dict]) -> None:
+        """Compile any selected ParticleGraph whose Library product is missing."""
+        from Infernux.engine.project_context import using_project_root
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+
+        with using_project_root(self.project_path):
+            for guid, entry in selected.items():
+                if logical_asset_type(entry) != "particlegraph":
+                    continue
+                source_path = self._library_source_entry_path(entry)
+                try:
+                    ParticleArtifactRegistry.ensure_source_compiled(
+                        source_path, guid=str(guid)
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Library particle artifact compile failed: {source_path}: {exc}"
+                    ) from exc
+
     def _particle_library_artifacts(self) -> dict[str, dict]:
         index_path = os.path.join(
             self.project_path, "Library", "Artifacts", "Particle", self._PARTICLE_RUNTIME_INDEX_FILENAME
@@ -2007,6 +2040,7 @@ finally:
             raise RuntimeError(f"Library artifact selection failed: {exc}") from exc
 
         by_guid = {str(entry["guid"]): entry for entry in entries}
+        self._ensure_selected_particle_artifacts(selected)
         particle_index = self._particle_library_artifacts()
         copied: set[str] = set()
         for guid in sorted(selected):
@@ -2136,9 +2170,11 @@ finally:
             else:
                 continue
 
-            artifact_suffix = (
-                ".inxshader" if suffix in {".vert", ".frag"} else suffix
-            )
+            # Project shaders remain GLSL runtime inputs. They are packed in
+            # Content.inxpkg rather than shipped as loose authoring files, so
+            # Player uses the exact same dynamic linker as the Editor and can
+            # form shader combinations that did not exist at build time.
+            artifact_suffix = suffix
             runtime_path = (
                 f"Library/Artifacts/{artifact_directory}/{guid}{artifact_suffix}"
             )
@@ -3135,7 +3171,13 @@ finally:
         if modules_root:
             self._strip_authoring_from_module_root(modules_root)
 
-    def _pack_core_runtime_archive(self, final_dir: str) -> None:
+    def _pack_core_runtime_archive(
+        self,
+        final_dir: str,
+        *,
+        on_progress: Optional[Callable[[str, float], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Write the always-required runtime payload as Runtime.inxrt."""
 
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
@@ -3230,10 +3272,13 @@ finally:
                     source_bytes += os.path.getsize(source_path)
         if not files:
             raise RuntimeError("Runtime.inxrt contains no native runtime payload")
-        native_manifest = write_pack(
+        native_manifest = self._write_finalize_pack(
             files,
             archive_path,
-            profile=self._player_inxpack_profile(),
+            message="Packing core runtime data",
+            fraction=0.9805,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
         )
         for source_path in deferred_sources:
             try:
@@ -3252,7 +3297,13 @@ finally:
             f"({ratio:.1%} of {source_bytes / (1024 * 1024):.1f} MB)"
         )
 
-    def _pack_player_bootstrap_archive(self, final_dir: str) -> None:
+    def _pack_player_bootstrap_archive(
+        self,
+        final_dir: str,
+        *,
+        on_progress: Optional[Callable[[str, float], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Pack the pre-extraction CPython/PlayerHost startup closure.
 
         The visible package root is deliberately reduced to ``<Game>.exe``
@@ -3319,10 +3370,13 @@ finally:
                 )
             logical = source.relative_to(Path(final_dir)).as_posix()
             sources.append((logical, str(source)))
-        native_manifest = write_pack(
+        native_manifest = self._write_finalize_pack(
             sources,
             archive_path,
-            profile=self._player_inxpack_profile(),
+            message="Packing Player bootstrap",
+            fraction=0.98035,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
         )
         for name, source in required.items():
             if "/" not in name:
@@ -3391,6 +3445,37 @@ finally:
         if on_progress:
             on_progress(message, fraction)
 
+    def _write_finalize_pack(
+        self,
+        files: list[tuple[str, str]],
+        destination: str,
+        *,
+        message: str,
+        fraction: float,
+        on_progress: Optional[Callable[[str, float], None]],
+        cancel_event: Optional[threading.Event],
+    ) -> dict[str, object]:
+        """Write one Finalize container without monopolizing Editor Python."""
+
+        if using_test_backend():
+            return write_pack(
+                files,
+                destination,
+                profile=self._player_inxpack_profile(),
+            )
+        return write_pack_isolated(
+            files,
+            destination,
+            profile=self._player_inxpack_profile(),
+            cancel_event=cancel_event,
+            on_wait=lambda: self._report_content_pack_progress(
+                on_progress,
+                cancel_event,
+                message,
+                fraction,
+            ),
+        )
+
     def _pack_content_archive(
         self,
         final_dir: str,
@@ -3410,8 +3495,13 @@ finally:
         source_bytes = 0
         forbidden_plaintext: list[str] = []
         forbidden_direct_payloads: list[str] = []
+        catalog_payloads: dict[str, bytes] = {}
         processed = 0
         last_report = 0.0
+        # This cache belongs to exactly one Content.inxpkg generation.  Clear
+        # it before walking the staging tree so a failed/retried build cannot
+        # reuse payloads from an older package.
+        self._packed_content_catalog_payloads = {}
 
         for root, dirs, filenames in os.walk(data_root):
             for directory in dirs:
@@ -3440,7 +3530,24 @@ finally:
                 suffix = os.path.splitext(filename)[1].lower()
                 if suffix == ".meta":
                     continue
-                if suffix in {
+                packed_runtime_shader = (
+                    suffix
+                    in {
+                        ".glsl",
+                        ".vert",
+                        ".frag",
+                        ".comp",
+                        ".geom",
+                        ".tesc",
+                        ".tese",
+                        ".hlsl",
+                        ".shader",
+                    }
+                    and portable_relative.casefold().startswith(
+                        "library/artifacts/blob/"
+                    )
+                )
+                if not packed_runtime_shader and suffix in {
                     ".py", ".pyi", ".pyx", ".lua", ".cpp", ".c", ".cc",
                     ".h", ".hpp", ".glsl", ".vert", ".frag", ".comp", ".geom",
                     ".tesc", ".tese", ".hlsl", ".shader",
@@ -3450,6 +3557,9 @@ finally:
                 if payload_kind_for(logical_type) in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
                     forbidden_direct_payloads.append(relative)
                 self._rewrite_player_document_paths(path, suffix)
+                if self._runtime_catalog_payload_required(portable_relative):
+                    with open(path, "rb") as source:
+                        catalog_payloads[portable_relative] = source.read()
                 files.append((relative, path))
                 source_bytes += os.path.getsize(path)
                 processed += 1
@@ -3485,11 +3595,33 @@ finally:
             "Compressing project content",
             0.9829,
         )
-        native_manifest = write_pack(
+        native_manifest = self._write_finalize_pack(
             files,
             archive_path,
-            profile=self._player_inxpack_profile(),
+            message="Compressing project content",
+            fraction=0.9829,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
         )
+        manifest_entries = {
+            str(entry["path"]).replace("\\", "/"): entry
+            for entry in native_manifest.get("files", [])
+        }
+        verified_payloads: dict[str, tuple[str, bytes]] = {}
+        for entry_path, payload in catalog_payloads.items():
+            manifest_entry = manifest_entries.get(entry_path)
+            if manifest_entry is None:
+                raise RuntimeError(
+                    f"Packed content manifest omitted catalog payload: {entry_path}"
+                )
+            expected_sha256 = str(manifest_entry["sha256"])
+            actual_sha256 = hashlib.sha256(payload).hexdigest()
+            if actual_sha256.casefold() != expected_sha256.casefold():
+                raise RuntimeError(
+                    f"Packed content catalog payload changed while packing: {entry_path}"
+                )
+            verified_payloads[entry_path] = (expected_sha256, payload)
+        self._packed_content_catalog_payloads = verified_payloads
         self._report_content_pack_progress(
             on_progress,
             cancel_event,
@@ -3610,29 +3742,27 @@ finally:
                         "bytes": entry["raw_bytes"],
                         "sha256": entry["sha256"],
                     }
-                    cooked_json_document = (
-                        entry_path.casefold().startswith(
-                            "library/artifacts/document/"
-                        )
-                        and Path(entry_path).suffix.casefold()
-                        in RUNTIME_JSON_DOCUMENT_SUFFIXES
-                    )
-                    if (
-                        payload_kind == "serialized_runtime_document"
-                        or cooked_json_document
-                        or (
-                            logical_type == "runtime_metadata"
-                            and entry_path.casefold().endswith(".json")
-                        )
-                    ):
+                    if self._runtime_catalog_payload_required(entry_path):
                         # Payload is optional catalog input used only for
                         # dependency discovery. Cooked document artifacts are
                         # JSON too; binary artifacts, bytecode, shaders and
                         # NumPy payloads remain unopened.
-                        package_entry["payload"] = read_entry(
-                            package_path,
-                            entry_path,
-                        )
+                        cached_payload = None
+                        if os.path.basename(package_path) == self._CONTENT_ARCHIVE_FILENAME:
+                            cached_payload = getattr(
+                                self, "_packed_content_catalog_payloads", {}
+                            ).get(entry_path)
+                        if (
+                            cached_payload is not None
+                            and str(cached_payload[0]).casefold()
+                            == str(entry["sha256"]).casefold()
+                        ):
+                            package_entry["payload"] = cached_payload[1]
+                        else:
+                            package_entry["payload"] = read_entry(
+                                package_path,
+                                entry_path,
+                            )
                     binding = getattr(
                         self, "_runtime_asset_identity_bindings", {}
                     ).get(entry_path)
@@ -3698,6 +3828,27 @@ finally:
         _write_json_atomic(
             os.path.join(data_root, self._PLAYER_MANIFEST_FILENAME),
             player_manifest,
+        )
+        self._packed_content_catalog_payloads = {}
+
+    @staticmethod
+    def _runtime_catalog_payload_required(entry_path: str) -> bool:
+        """Return whether dependency discovery needs this entry's JSON bytes."""
+
+        normalized = str(entry_path).replace("\\", "/")
+        logical_type = logical_type_for_path(normalized)
+        payload_kind = payload_kind_for(logical_type)
+        cooked_json_document = (
+            normalized.casefold().startswith("library/artifacts/document/")
+            and Path(normalized).suffix.casefold() in RUNTIME_JSON_DOCUMENT_SUFFIXES
+        )
+        return (
+            payload_kind == "serialized_runtime_document"
+            or cooked_json_document
+            or (
+                logical_type == "runtime_metadata"
+                and normalized.casefold().endswith(".json")
+            )
         )
 
     def _residual_direct_runtime_assets(

@@ -478,6 +478,17 @@ void WriteZeros(std::ostream &output, uint64_t count)
     }
 }
 
+void WriteZerosHashed(std::ostream &output, uint64_t count, Sha256 &digest)
+{
+    std::array<uint8_t, 4096> zeros{};
+    while (count != 0) {
+        const auto amount = static_cast<size_t>(std::min<uint64_t>(count, zeros.size()));
+        WriteExact(output, zeros.data(), amount);
+        digest.Update(zeros.data(), amount);
+        count -= amount;
+    }
+}
+
 bool IsAllowedRoot(const std::string &path, const std::vector<std::string> &allowedRoots)
 {
     if (allowedRoots.empty())
@@ -681,6 +692,7 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
     // stay wide all the way through the exclusive reservation and publish.
     const auto temporaryOutputPath = MakeUniqueTemporaryPath(destinationPath);
     TemporaryOutputGuard temporaryGuard(temporaryOutputPath);
+    Sha256 payloadDigest;
     {
         std::ofstream output(temporaryOutputPath, std::ios::binary | std::ios::trunc);
         if (!output)
@@ -713,9 +725,10 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
             manifest.storedBytes += entry.storedBytes;
 
             WriteExact(output, stored.data(), stored.size());
+            payloadDigest.Update(stored.data(), stored.size());
             cursor = AlignUp(cursor + stored.size(), kAlignment);
             const uint64_t written = entry.offset + stored.size();
-            WriteZeros(output, cursor - written);
+            WriteZerosHashed(output, cursor - written, payloadDigest);
         }
         manifest.payloadBytes = cursor;
         output.flush();
@@ -762,7 +775,7 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
             throw std::runtime_error("InxPack failed to write its table of contents: " + FromFsPath(destination));
     }
 
-    const auto payloadHash = HashFileRange(temporaryOutputPath, payloadOffset, manifest.payloadBytes);
+    const auto payloadHash = payloadDigest.Final();
     HeaderDisk header = MakeHeader(manifest, tocOffset, tocBytes, payloadOffset, stringBytes, tocHash, payloadHash,
                                    HashBytes(nullptr, 0));
     {

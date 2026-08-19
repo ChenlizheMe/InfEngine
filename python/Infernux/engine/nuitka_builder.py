@@ -958,6 +958,7 @@ class NuitkaBuilder:
             "engine/_build_splash.py",
             "engine/build_cancellation.py",
             "engine/game_builder.py",
+            "engine/player_package_audit.py",
             "engine/player_package_native.py",
             "engine/prebuilt_runtime.py",
         }
@@ -1878,7 +1879,7 @@ print(json.dumps({{
                 finally:
                     shutil.rmtree(temporary, ignore_errors=True)
 
-        Debug.log_warning(
+        Debug.log_internal(
             f"Packaged {module_name} Runtime Module unavailable; "
             "building it from the local build environment"
         )

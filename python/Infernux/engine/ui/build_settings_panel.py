@@ -1148,6 +1148,18 @@ class BuildSettingsPanel(FloatingEditorPanel):
         if database is None:
             raise RuntimeError("The editor asset database is unavailable")
         database.refresh()
+        project_root = get_project_root()
+        if not project_root:
+            raise RuntimeError("No project root found")
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+
+        try:
+            ParticleArtifactRegistry.ensure_project_compiled(
+                project_root,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Particle artifact compile failed: {exc}") from exc
         database.flush_derived_index()
         index_path = str(getattr(database, "asset_index_path", "") or "")
         if not index_path or not os.path.isfile(index_path):
@@ -1234,6 +1246,16 @@ class BuildSettingsPanel(FloatingEditorPanel):
         project_root = get_project_root()
         if not project_root:
             raise RuntimeError("No project root found")
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+
+        try:
+            ParticleArtifactRegistry.ensure_project_compiled(
+                project_root,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Particle artifact compile failed: {exc}") from exc
+        database.flush_derived_index()
         # Snapshot now. A later document transaction can invalidate
         # AssetIndex.json before the worker starts; the frozen entries are
         # the published catalog, not the live file.

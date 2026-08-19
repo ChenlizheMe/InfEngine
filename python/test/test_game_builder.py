@@ -2292,7 +2292,7 @@ def test_full_build_cook_rejects_an_empty_runtime_asset_selection(tmp_path):
     data_dir = tmp_path / "dist" / "Data"
     data_dir.mkdir(parents=True)
 
-    with pytest.raises(RuntimeError, match="BuildSettings scene is absent"):
+    with pytest.raises(RuntimeError, match="selected no runtime assets"):
         builder._copy_cooked_assets(str(data_dir))
 
 
@@ -2308,12 +2308,12 @@ def test_player_cook_uses_asset_index_snapshot_after_live_index_invalidation(tmp
     assert (data_dir / "Assets" / "Main.scene").is_file()
 
 
-def test_player_stages_project_shader_as_opaque_runtime_payload(tmp_path):
+def test_player_stages_project_shader_as_packed_runtime_glsl(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     shader = project / "Assets" / "Shaders" / "Surface.frag"
     shader.parent.mkdir(parents=True, exist_ok=True)
-    shader.write_text("ShaderInfo { Name = \"Test/Surface\"; Type = Fragment; }\n", encoding="utf-8")
+    shader.write_text('ShaderInfo { Name "Test/Surface" Type Fragment }\n', encoding="utf-8")
     entry = _asset_index_entry(project, shader, "shader-guid", "", "Shader")
     entry["metadata"]["metadata"]["type"] = {"value": "fragment"}
     builder._cooked_asset_entries = {"shader-guid": entry}
@@ -2328,13 +2328,39 @@ def test_player_stages_project_shader_as_opaque_runtime_payload(tmp_path):
         / "Library"
         / "Artifacts"
         / "Blob"
-        / "shader-guid.inxshader"
+        / "shader-guid.frag"
     )
     assert artifact.read_bytes() == shader.read_bytes()
-    assert not (artifact.parent / "shader-guid.frag").exists()
     assert builder._runtime_artifact_bindings[
-        "Library/Artifacts/Blob/shader-guid.inxshader"
+        "Library/Artifacts/Blob/shader-guid.frag"
     ]["source_path"] == "Assets/Shaders/Surface.frag"
+
+
+def test_content_archive_keeps_only_catalog_staged_project_glsl(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    data = tmp_path / "dist" / "TestGame_Data"
+    runtime_shader = data / "Library" / "Artifacts" / "Blob" / "shader-guid.frag"
+    runtime_shader.parent.mkdir(parents=True)
+    runtime_shader.write_text(
+        'ShaderInfo { Name "Test/Surface" Type Fragment }\n',
+        encoding="utf-8",
+    )
+
+    builder._pack_content_archive(str(tmp_path / "dist"))
+
+    archive = data / builder._CONTENT_ARCHIVE_FILENAME
+    names = {entry["path"] for entry in read_manifest(archive)["files"]}
+    assert "Library/Artifacts/Blob/shader-guid.frag" in names
+
+
+def test_content_archive_rejects_project_glsl_outside_runtime_catalog_area(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    shader = tmp_path / "dist" / "TestGame_Data" / "Assets" / "Shaders" / "Loose.frag"
+    shader.parent.mkdir(parents=True)
+    shader.write_text("#version 450\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="authoring/source files"):
+        builder._pack_content_archive(str(tmp_path / "dist"))
 
 
 def test_game_data_replaces_current_texture_source_with_library_artifact(tmp_path):
@@ -2453,13 +2479,47 @@ def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
     assert not (shipped / "unreachable.inxparticle").exists()
 
 
-def test_game_data_requires_reachable_particle_artifact(tmp_path):
+def test_game_data_compiles_missing_particle_artifact(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     _reference_particle_graph(project, "missing")
     (project / "Library" / "Artifacts" / "Particle").mkdir(parents=True, exist_ok=True)
+    guid = hashlib.md5(b"missing").hexdigest()
 
-    with pytest.raises(RuntimeError, match="Library artifact selection failed"):
+    builder._copy_game_data(str(tmp_path / "dist"))
+
+    shipped = (
+        tmp_path
+        / "dist"
+        / "Data"
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / f"{guid}.inxparticle"
+    )
+    assert shipped.is_file()
+    payload = json.loads(shipped.read_text(encoding="utf-8"))
+    assert payload["$schema"] == "infernux.particle_artifact"
+    assert payload["source_hash"]
+
+
+def test_game_data_fails_when_particle_source_cannot_compile(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    graph_path = _reference_particle_graph(project, "broken")
+    graph_path.write_text("{not-json", encoding="utf-8")
+    guid = hashlib.md5(b"broken").hexdigest()
+    scene_path = project / "Assets" / "Main.scene"
+    _write_asset_index(
+        project,
+        [
+            _asset_index_entry(project, scene_path, "scene-guid", "", "Scene"),
+            _asset_index_entry(project, graph_path, guid, "", "ParticleGraph"),
+        ],
+    )
+    (project / "Library" / "Artifacts" / "Particle").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(RuntimeError, match="Library particle artifact compile failed"):
         builder._copy_game_data(str(tmp_path / "dist"))
 
 
@@ -3818,7 +3878,7 @@ def test_payload_manifest_rejects_indexed_asset_outside_build_scene_closure(tmp_
         builder._write_payload_manifest(str(final_dir))
 
 
-def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path):
+def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkeypatch):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     sources = _write_scene_material_audio_reachability_fixture(
         builder,
@@ -3857,6 +3917,11 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path):
         data_root / builder._RUNTIME_ARCHIVE_FILENAME,
     )
     builder._pack_content_archive(str(final_dir))
+
+    def reject_reopen(_package_path, entry_path):
+        raise AssertionError(f"current-build catalog payload reopened from package: {entry_path}")
+
+    monkeypatch.setattr(game_builder_module, "read_entry", reject_reopen)
     builder._write_payload_manifest(str(final_dir))
 
     content_names = {

@@ -144,8 +144,10 @@ def test_player_runtime_load_scene_success_does_not_initialize_runtime_state(
         def bind_runtime_catalog(self, _catalog):
             return None
 
-        def load_initial(self, path):
+        def load_initial(self, path, *, on_tick=None):
             assert path == str(scene_path)
+            if on_tick is not None:
+                on_tick()
             self.active_scene_path = path
             return True
 
@@ -185,7 +187,7 @@ def test_player_runtime_load_scene_failure_keeps_previous_scene_state(
         def bind_runtime_catalog(self, _catalog):
             return None
 
-        def load_initial(self, _path):
+        def load_initial(self, _path, *, on_tick=None):
             return False
 
         def process_pending_load(self):

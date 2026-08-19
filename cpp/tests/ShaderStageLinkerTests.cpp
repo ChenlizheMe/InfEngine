@@ -291,20 +291,6 @@ void surface(out SurfaceData s)
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::BaseColor) != nullptr);
     assert(completeArtifact.key.revision != runtimeArtifact.key.revision);
 
-    // Player source payloads intentionally hide authored extensions. The
-    // explicit vertex/fragment roles of this API must remain authoritative.
-    const auto opaqueArtifactCompilation = compiler.CompileLinkedProgramArtifact(
-        waveVertex, "Library/Artifacts/Blob/wave.inxshader", oceanFragment, "Library/Artifacts/Blob/ocean.inxshader");
-    if (!opaqueArtifactCompilation.IsValid()) {
-        for (const auto &error : opaqueArtifactCompilation.errors)
-            std::cerr << error << '\n';
-    }
-    assert(opaqueArtifactCompilation.IsValid());
-    assert(opaqueArtifactCompilation.CreateRuntimeArtifact().IsValid());
-    assert(infernux::InxShaderLoader::StageQualifiedVirtualPath("wave.inxshader", "vertex") == "wave.inxshader.vert");
-    assert(infernux::InxShaderLoader::StageQualifiedVirtualPath("ocean.inxshader", "fragment") ==
-           "ocean.inxshader.frag");
-
     const auto shadowCompilation =
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
