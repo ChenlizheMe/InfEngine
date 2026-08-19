@@ -454,16 +454,17 @@ target_link_libraries(InfernuxVulkanBackend PUBLIC
 )
 
 find_package(ZLIB QUIET)
-if (TARGET zlibstatic)
+
+if(TARGET ZLIB::zlib)
+    set(INFERNUX_ZLIB_TARGET ZLIB::zlib)
+elseif(TARGET ZLIB::ZLIB)
+    set(INFERNUX_ZLIB_TARGET ZLIB::ZLIB)
+elseif(TARGET zlibstatic)
     set(INFERNUX_ZLIB_TARGET zlibstatic)
     set(INFERNUX_ZLIB_INCLUDE_DIRS
         ${CMAKE_SOURCE_DIR}/external/assimp/contrib/zlib
         ${CMAKE_BINARY_DIR}/external/assimp/contrib/zlib
     )
-elseif(TARGET ZLIB::ZLIB)
-    set(INFERNUX_ZLIB_TARGET ZLIB::ZLIB)
-elseif(TARGET ZLIB::zlib)
-    set(INFERNUX_ZLIB_TARGET ZLIB::zlib)
 else()
     message(FATAL_ERROR "Infernux requires a zlib target for document transaction journals")
 endif()
