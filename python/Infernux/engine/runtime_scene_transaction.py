@@ -465,7 +465,15 @@ class SceneDocumentTransaction:
                         time.perf_counter() - phase_started
                     ) * 1000.0
                 phase_started = time.perf_counter()
-                self._commit_token.finalize()
+                from Infernux.components.particle_system import ParticleSystem
+
+                ParticleSystem._begin_native_publication_batch()
+                try:
+                    self._commit_token.finalize()
+                    ParticleSystem._end_native_publication_batch(commit=True)
+                except Exception:
+                    ParticleSystem._end_native_publication_batch(commit=False)
+                    raise
                 self._phase_timings_ms["finalize"] = (
                     time.perf_counter() - phase_started
                 ) * 1000.0

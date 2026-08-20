@@ -17,6 +17,10 @@ class AssetManager:
         """Initialize the asset manager with the engine instance."""
         ...
     @classmethod
+    def refresh_pending(cls) -> bool:
+        """Return whether the native asset catalog is refreshing."""
+        ...
+    @classmethod
     def load(cls, path: str, asset_type: Optional[Type] = ...) -> Optional[Any]:
         """Load an asset from a file path."""
         ...

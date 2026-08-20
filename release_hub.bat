@@ -3,11 +3,11 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 rem Maintainer release commands:
-rem   release_hub.bat 0.2.9                 Build every package and publish a new release.
-rem   release_hub.bat 0.2.9 --force         Rebuild and replace an existing release.
-rem   release_hub.bat 0.2.9 --overwrite     Alias for --force.
-rem   release_hub.bat 0.2.9 --build-only    Build every package without uploading.
-rem   release_hub.bat 0.2.9 --upload-only   Upload an already completed local build.
+rem   release_hub.bat 0.3.4                 Build every package and publish a new release.
+rem   release_hub.bat 0.3.4 --force         Rebuild and replace an existing release.
+rem   release_hub.bat 0.3.4 --overwrite     Alias for --force.
+rem   release_hub.bat 0.3.4 --build-only    Build every package without uploading.
+rem   release_hub.bat 0.3.4 --upload-only   Upload an already completed local build.
 
 set "VERSION=%~1"
 if not defined VERSION set /p "VERSION=Infernux version (for example 0.2.2): "

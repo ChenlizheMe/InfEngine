@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.3.7-orange.svg" alt="Version 0.3.7" />
+  <img src="https://img.shields.io/badge/version-0.3.4-orange.svg" alt="Version 0.3.4" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
@@ -36,11 +36,11 @@ Infernux 是一个从零构建的开源游戏引擎。它使用 C++ 维护渲染
 
 这里的 Python 不是附加在封闭编辑器上的脚本语言，而是引擎的一等生产界面。这让常规游戏逻辑更容易编写和检查，也让项目可以原生接入 Python 生态中的 AI、视觉、仿真和数据工具。
 
-Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶段。`0.3.7` 是一次完整的引擎版本更新；不过项目仍很年轻，现阶段会主动接受必要的破坏性数据格式与 API 更新。
+Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶段。`0.3.4` 是一次完整的引擎版本更新；不过项目仍很年轻，现阶段会主动接受必要的破坏性数据格式与 API 更新。
 
-## 0.3.7
+## 0.3.4
 
-`0.3.7` 是一次覆盖面很广的引擎更新，并不只是 MCP 或 VFX 更新：场景文档、序列化、资产、渲染、粒子、物理、编辑器交互、运行时执行、自动化和游戏分发都围绕更严格的数据所有权与运行时边界进行了重构。
+`0.3.4` 是一次覆盖面很广的引擎更新，并不只是 MCP 或 VFX 更新：场景文档、序列化、资产、渲染、粒子、物理、编辑器交互、运行时执行、自动化和游戏分发都围绕更严格的数据所有权与运行时边界进行了重构。
 
 这一版的主要变化包括：
 
@@ -189,7 +189,7 @@ cmake --build --preset packaging-installer
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.7},
+  version = {0.3.4},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

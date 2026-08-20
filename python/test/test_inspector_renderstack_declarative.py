@@ -473,6 +473,40 @@ def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch
     assert context.submitted == ["culling"]
 
 
+def test_initial_graph_build_waits_for_asset_refresh_commit(monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    stack = RenderStack()
+    build_calls = []
+    monkeypatch.setattr(
+        AssetManager,
+        "refresh_pending",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(stack, "build_graph", lambda: build_calls.append(True))
+
+    class Context:
+        def __init__(self):
+            self.submitted = []
+
+        def setup_camera_properties(self, _camera):
+            pass
+
+        def cull(self, _camera):
+            return "startup-culling"
+
+        def submit_culling(self, culling):
+            self.submitted.append(culling)
+
+    context = Context()
+    stack.render(context, object())
+
+    assert build_calls == []
+    assert stack._graph_desc is None
+    assert stack._build_failed is False
+    assert context.submitted == ["startup-culling"]
+
+
 def test_declarative_lists_scope_nested_widget_ids_by_control_key(monkeypatch):
     rendered_scopes = []
 

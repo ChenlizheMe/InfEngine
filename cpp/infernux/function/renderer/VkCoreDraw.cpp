@@ -1398,14 +1398,20 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const std::shared_ptr<InxMaterial> *matOwner = entry.materialOwner;
         InxMaterial *matRaw = matOwner->get();
         ResolvedMaterialPass resolved = resolveCachedMaterialPass(*matOwner);
-        if (!resolved.IsValid() && errorMaterial) {
+        // SkyboxPass owns synthetic cube geometry whose vertices are meaningful
+        // only to a skybox shader (translation-free view and far-plane depth).
+        // Drawing that cube with Error/DefaultLit exposes its interior as a
+        // giant box around the camera. Semantic sky draws therefore fail
+        // closed until their own pipeline is ready; ordinary scene geometry
+        // keeps the visible error/default fallback behavior.
+        if (!resolved.IsValid() && !skyboxPass && errorMaterial) {
             resolved = resolveCachedMaterialPass(errorMaterial);
             if (resolved.IsValid()) {
                 matOwner = &errorMaterial;
                 matRaw = errorMaterial.get();
             }
         }
-        if (!resolved.IsValid() && defaultMaterial) {
+        if (!resolved.IsValid() && !skyboxPass && defaultMaterial) {
             resolved = resolveCachedMaterialPass(defaultMaterial);
             if (resolved.IsValid()) {
                 matOwner = &defaultMaterial;

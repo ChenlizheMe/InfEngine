@@ -175,6 +175,22 @@ class AssetManager:
         cls._registry = cls._resolve_registry()
 
     @classmethod
+    def refresh_pending(cls) -> bool:
+        """Return whether the native catalog is scanning or committing.
+
+        Published query snapshots remain readable during refresh, but asset
+        mutation APIs are intentionally unavailable until the atomic commit
+        completes. Runtime product builders use this as a readiness gate.
+        """
+        database = cls._asset_database
+        if database is None:
+            return False
+        try:
+            return bool(database.refresh_pending)
+        except (AttributeError, RuntimeError):
+            return False
+
+    @classmethod
     def load(cls, path: str, asset_type: Optional[Type] = None) -> Optional[Any]:
         """Load an asset by file path.
 

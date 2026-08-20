@@ -502,6 +502,32 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     return program;
 }
 
+std::string ResolveGpuParticleOutputPrograms(InxRenderer &renderer,
+                                              std::vector<particle::GpuParticleEmitterProgram> &programs)
+{
+    for (auto &program : programs) {
+        for (auto &output : program.outputs) {
+            if (!output.material)
+                continue;
+            output.shaderProgram = renderer.ResolveShaderProgramArtifact(output.material);
+            if (output.shaderProgram && output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
+                return "particle output '" + output.stableId +
+                       "' shader is incompatible with the particle Surface domain";
+            }
+            const auto &state = output.material->GetRenderState();
+            output.fallbackMaterial = {
+                state.renderQueue,
+                state.blendEnable,
+                state.depthTestEnable,
+                state.depthWriteEnable,
+                state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
+                    state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            };
+        }
+    }
+    return {};
+}
+
 particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &value)
 {
     const py::buffer_info info = value.request();
@@ -2409,30 +2435,9 @@ PYBIND11_MODULE(_Infernux, m)
                         throw std::invalid_argument("GPU particle program batch must contain dictionaries");
                     programs.push_back(DecodeGpuParticleProgram(py::reinterpret_borrow<py::dict>(item)));
                 }
-                for (auto &program : programs) {
-                    for (auto &output : program.outputs) {
-                        if (!output.material)
-                            continue;
-                        // Particle Output assets expose a shader, while the
-                        // transient material is only the native property/state
-                        // carrier. Resolve it before renderer creation so the
-                        // ShaderInfo render defaults cannot lag one publish.
-                        output.shaderProgram = renderer->ResolveShaderProgramArtifact(output.material);
-                        if (output.shaderProgram && output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
-                            return "particle output '" + output.stableId +
-                                   "' shader is incompatible with the particle Surface domain";
-                        }
-                        const auto &state = output.material->GetRenderState();
-                        output.fallbackMaterial = {
-                            state.renderQueue,
-                            state.blendEnable,
-                            state.depthTestEnable,
-                            state.depthWriteEnable,
-                            state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                                state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                        };
-                    }
-                }
+                if (const std::string resolveError = ResolveGpuParticleOutputPrograms(*renderer, programs);
+                    !resolveError.empty())
+                    return resolveError;
                 std::string error;
                 particle::GpuParticleGraphProgram graphProgram;
                 graphProgram.graphInstanceId = graphInstanceId;
@@ -2445,6 +2450,48 @@ PYBIND11_MODULE(_Infernux, m)
             py::arg("graph_instance_id"), py::arg("programs"),
             py::arg("remove_ids") = std::vector<uint64_t>{},
             "Internal control-plane publication for one saved ParticleGraph revision")
+        .def(
+            "_replace_gpu_particle_graphs",
+            [](Infernux &self, const py::sequence &encodedGraphs) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    return std::string("GPU particle runtime requires graphical renderer initialization");
+
+                std::vector<particle::GpuParticleGraphProgram> graphPrograms;
+                graphPrograms.reserve(encodedGraphs.size());
+                for (const py::handle graphValue : encodedGraphs) {
+                    if (!py::isinstance<py::dict>(graphValue))
+                        throw std::invalid_argument("GPU particle graph batch must contain dictionaries");
+                    const py::dict graph = py::reinterpret_borrow<py::dict>(graphValue);
+                    for (const char *field : {"graph_instance_id", "programs", "remove_ids"}) {
+                        if (!graph.contains(field))
+                            throw std::invalid_argument(std::string("GPU particle graph batch is missing ") + field);
+                    }
+                    particle::GpuParticleGraphProgram graphProgram;
+                    graphProgram.graphInstanceId = py::cast<uint64_t>(graph["graph_instance_id"]);
+                    const py::sequence encodedPrograms = py::cast<py::sequence>(graph["programs"]);
+                    graphProgram.emitters.reserve(encodedPrograms.size());
+                    for (const py::handle item : encodedPrograms) {
+                        if (!py::isinstance<py::dict>(item))
+                            throw std::invalid_argument("GPU particle program batch must contain dictionaries");
+                        graphProgram.emitters.push_back(
+                            DecodeGpuParticleProgram(py::reinterpret_borrow<py::dict>(item)));
+                    }
+                    if (const std::string resolveError =
+                            ResolveGpuParticleOutputPrograms(*renderer, graphProgram.emitters);
+                        !resolveError.empty())
+                        return resolveError;
+                    graphProgram.removeEmitterIds = py::cast<std::vector<uint64_t>>(graph["remove_ids"]);
+                    graphPrograms.push_back(std::move(graphProgram));
+                }
+                std::string error;
+                if (!manager->ApplyGraphs(graphPrograms, &error))
+                    return error.empty() ? std::string("failed to publish GPU particle graph batch") : error;
+                return std::string{};
+            },
+            py::arg("graphs"),
+            "Internal atomic publication for several saved ParticleGraph instances")
         .def(
             "_update_gpu_particle_parameters",
             [](Infernux &self, uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords) {

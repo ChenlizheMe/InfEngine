@@ -1128,6 +1128,12 @@ void main() { }
         {infernux::particle::GpuParticleRibbonShaderSources::Scan(), "ParticleRibbonScan.comp"},
         {infernux::particle::GpuParticleRibbonShaderSources::Scatter(), "ParticleRibbonScatter.comp"},
     }};
+    const auto particleRibbonReset = infernux::particle::GpuParticleRibbonShaderSources::Reset();
+    assert(particleRibbonReset.find("if (simulation_allowed == 0u) return") == std::string_view::npos);
+    assert(particleRibbonReset.find("simulation_allowed != 0u ? inx_live_count() : 0u") !=
+           std::string_view::npos);
+    assert(particleRibbonReset.find("ribbon_instance_count = live_count > 1u ? 1u : 0u") !=
+           std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("ribbon_data") != std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("& 0xffff") == std::string_view::npos);
     for (const auto &[source, name] : particleRibbonTopologyShaders) {

@@ -311,3 +311,20 @@ def ensure_standard_post_process_points(graph: "RenderGraph") -> None:
         graph.injection_point(BEFORE_POST_PROCESS_POINT, resources=resources)
     if not graph.has_injection_point(AFTER_POST_PROCESS_POINT):
         graph.injection_point(AFTER_POST_PROCESS_POINT, resources=resources)
+
+
+def ensure_standard_screen_ui_tail(graph: "RenderGraph") -> None:
+    """Append the mandatory display-space Screen UI tail when absent.
+
+    A custom pipeline may finish outside the ``pass_result`` context that
+    described its terminal buffers. Re-enter the latest published result so
+    ``after_screen_ui`` effects inherit the same color/depth/normal/motion
+    handles as effects declared explicitly by a built-in pipeline.
+    """
+    result = graph.current_pass_result or graph.latest_pass_result
+    resources = result_resources(result)
+    if result is None:
+        graph.screen_ui_overlay_section(resources=resources)
+        return
+    with graph.pass_result(result):
+        graph.screen_ui_overlay_section(resources=resources)

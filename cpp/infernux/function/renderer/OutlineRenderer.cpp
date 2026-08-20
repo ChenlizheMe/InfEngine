@@ -152,12 +152,20 @@ bool OutlineRenderer::Initialize(InxVkCoreModular *core, SceneRenderTarget *scen
     m_core = core;
     m_sceneRenderTarget = sceneTarget;
 
-    // Check if outline shaders are loaded
-    if (!m_core->HasShader("Outline Mask", "vertex") || !m_core->HasShader("Outline Mask", "fragment") ||
-        !m_core->HasShader("Outline Composite", "vertex") || !m_core->HasShader("Outline Composite", "fragment")) {
-        INXLOG_WARN("OutlineRenderer::Initialize: outline shaders not loaded yet");
+    // Editor support shaders are lazy assets. Resolve them through the same
+    // catalog path as materials/fullscreen effects instead of polling the raw
+    // module cache forever when startup has deliberately skipped eager scans.
+    if (!m_core->EnsureShaderAvailable("Outline Mask", "vertex") ||
+        !m_core->EnsureShaderAvailable("Outline Mask", "fragment") ||
+        !m_core->EnsureShaderAvailable("Outline Composite", "vertex") ||
+        !m_core->EnsureShaderAvailable("Outline Composite", "fragment")) {
+        if (!m_missingShadersReported) {
+            INXLOG_WARN("OutlineRenderer::Initialize: outline shaders are unavailable");
+            m_missingShadersReported = true;
+        }
         return false;
     }
+    m_missingShadersReported = false;
 
     CreateOutlineDescriptorResources();
     CreateOutlinePipelineLayouts();

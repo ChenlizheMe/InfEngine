@@ -89,14 +89,15 @@ def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        particle_system_module,
-        "decode_particle_runtime_metadata",
-        lambda _hir: SimpleNamespace(parameters=(), emitters=()),
-    )
-    monkeypatch.setattr(
-        particle_system_module.ParticleKernelProgram,
-        "from_dict",
-        staticmethod(lambda _value: SimpleNamespace(emitters=())),
+        particle_system_module.ParticleArtifactRegistry,
+        "decode_runtime_artifact",
+        staticmethod(
+            lambda _artifact: (
+                SimpleNamespace(parameters=(), emitters=()),
+                SimpleNamespace(emitters=()),
+                (),
+            )
+        ),
     )
     assert component._load_particle_graph_artifact(
         ParticleGraphRef(path_hint=str(source))
@@ -156,14 +157,15 @@ def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
         ),
     )
     monkeypatch.setattr(
-        particle_system_module,
-        "decode_particle_runtime_metadata",
-        lambda _hir: SimpleNamespace(parameters=(), emitters=()),
-    )
-    monkeypatch.setattr(
-        particle_system_module.ParticleKernelProgram,
-        "from_dict",
-        staticmethod(lambda _value: SimpleNamespace(emitters=())),
+        particle_system_module.ParticleArtifactRegistry,
+        "decode_runtime_artifact",
+        staticmethod(
+            lambda _artifact: (
+                SimpleNamespace(parameters=(), emitters=()),
+                SimpleNamespace(emitters=()),
+                (),
+            )
+        ),
     )
     component = ParticleSystem()
 
@@ -426,6 +428,10 @@ class _GpuParticleNative:
         self.program_batches.append((programs, removed, graph_instance_id))
         return ""
 
+    def _replace_gpu_particle_graphs(self, graphs):
+        self.program_batches.append(("graphs", graphs))
+        return ""
+
     def _begin_gpu_particle_batch(self, graph_instance_id, items):
         self.frames.append((graph_instance_id, items))
         return self.accept_batches
@@ -531,6 +537,40 @@ class _GpuParticleNative:
                 }
             ],
         }
+
+
+def test_particle_scene_publication_batches_graph_rebuilds_once():
+    native = _GpuParticleNative()
+
+    class _PublicationProbe:
+        def __init__(self):
+            self.playback_publications = 0
+
+        def _publish_native_playback_states(self):
+            self.playback_publications += 1
+
+    first = _PublicationProbe()
+    second = _PublicationProbe()
+    ParticleSystem._begin_native_publication_batch()
+    ParticleSystem._native_publication_batch.extend(
+        [
+            (native, first, 11, [{"id": 101}], []),
+            (native, second, 12, [{"id": 102}], [99]),
+        ]
+    )
+    ParticleSystem._end_native_publication_batch(commit=True)
+
+    assert native.program_batches == [
+        (
+            "graphs",
+            [
+                {"graph_instance_id": 11, "programs": [{"id": 101}], "remove_ids": []},
+                {"graph_instance_id": 12, "programs": [{"id": 102}], "remove_ids": [99]},
+            ],
+        )
+    ]
+    assert first.playback_publications == 1
+    assert second.playback_publications == 1
 
 
 def test_particle_system_exposes_graph_defined_event_schema_without_external_routes(

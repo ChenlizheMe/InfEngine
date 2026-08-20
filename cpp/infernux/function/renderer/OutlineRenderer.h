@@ -277,6 +277,7 @@ class OutlineRenderer
     glm::vec4 m_outlineColor{1.0f, 0.5f, 0.0f, 1.0f}; // Bright orange
     float m_outlinePixelWidth = 3.0f;
     bool m_resourcesReady = false;
+    bool m_missingShadersReported = false;
 };
 
 } // namespace infernux

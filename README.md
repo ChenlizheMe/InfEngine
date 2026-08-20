@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.3.7-orange.svg" alt="Version 0.3.7" />
+  <img src="https://img.shields.io/badge/version-0.3.4-orange.svg" alt="Version 0.3.4" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
@@ -36,11 +36,11 @@ Infernux is an open-source game engine built around a native C++ runtime and a p
 
 The project is intentionally not a sealed editor with a scripting attachment. Python is a first-class engine surface, which makes ordinary game code approachable and gives projects direct access to the wider Python ecosystem, including AI, vision, simulation, and data tooling.
 
-Infernux is currently Windows-first and under active development. Version `0.3.7` is a complete engine update, but the project still deliberately accepts breaking data-format and API changes while the architecture is young.
+Infernux is currently Windows-first and under active development. Version `0.3.4` is a complete engine update, but the project still deliberately accepts breaking data-format and API changes while the architecture is young.
 
-## 0.3.7
+## 0.3.4
 
-Version `0.3.7` is a broad engine update, not only an MCP or VFX release. Scene documents, serialization, assets, rendering, particles, physics, editor interaction, runtime execution, automation, and game distribution were reworked around stricter ownership and more predictable runtime boundaries.
+Version `0.3.4` is a broad engine update, not only an MCP or VFX release. Scene documents, serialization, assets, rendering, particles, physics, editor interaction, runtime execution, automation, and game distribution were reworked around stricter ownership and more predictable runtime boundaries.
 
 Highlights include:
 
@@ -189,7 +189,7 @@ The first command builds the portable Hub bundle. The second builds the Windows 
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.7},
+  version = {0.3.4},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

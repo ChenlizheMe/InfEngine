@@ -39,6 +39,7 @@ from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
     ensure_standard_post_process_points,
+    ensure_standard_screen_ui_tail,
 )
 from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.resource_bus import ResourceBus
@@ -552,9 +553,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 self.pipeline.define_topology(g)
             finally:
                 self.pipeline._defining_graph = None
-            # Keep the inspector probe consistent with build(): post-process
-            # injection points are guaranteed to exist even when Screen UI is off.
+            # Keep the Inspector probe consistent with build(): custom
+            # pipelines also expose the mandatory display-space Screen UI tail.
             ensure_standard_post_process_points(g)
+            ensure_standard_screen_ui_tail(g)
         except Exception as exc:
             diagnostic = (
                 f"Pipeline topology is invalid: {type(exc).__name__}: {exc}. "
@@ -584,6 +586,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 finally:
                     fallback._defining_graph = None
                 ensure_standard_post_process_points(g)
+                ensure_standard_screen_ui_tail(g)
                 return g
             except Exception as fallback_exc:
                 Debug.log_error(
@@ -733,12 +736,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         # here triggers the callback so mounted effects are properly inserted.
         ensure_standard_post_process_points(graph)
 
-        # Built-in display encode: the swapchain and editor viewport are UNORM
-        # surfaces without hardware sRGB, so every pipeline must end with an
-        # explicit linear → sRGB encode. Pipelines with a ScreenUI section
-        # already inserted it before the overlay pass; this is the fallback
-        # for pipelines without one (idempotent).
-        graph.display_encode_section()
+        # Screen UI is a mandatory RenderStack output contract. Finalize it
+        # while the EffectStage callback is active so custom pipelines receive
+        # display encoding, overlay rendering, after_screen_ui effects, and the
+        # terminal source-scoped semantic buffers as one atomic tail.
+        ensure_standard_screen_ui_tail(graph)
 
         # Validate: no injection point before first pass
         graph.validate_no_ip_before_first_pass()
@@ -786,6 +788,19 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if self._graph_desc is None and not self._build_failed:
             context.setup_camera_properties(camera)
             culling = context.cull(camera)
+
+            # Initial project refresh publishes its catalog in an atomic
+            # owner-thread commit. Pipeline construction may load materials or
+            # compile effect products, and those paths are allowed to reimport
+            # assets. Defer the first graph until that mutation boundary is
+            # available instead of treating startup readiness as a broken
+            # pipeline and permanently selecting the fallback graph.
+            from Infernux.core.assets import AssetManager
+
+            if AssetManager.refresh_pending():
+                context.submit_culling(culling)
+                return
+
             previous_graph = self._last_valid_graph_desc
             try:
                 self._graph_desc = self.build_graph()

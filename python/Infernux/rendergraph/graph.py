@@ -719,6 +719,13 @@ class RenderGraph:
     def pass_results(self):
         return dict(self._pass_results)
 
+    @property
+    def latest_pass_result(self):
+        """Return the most recently published source-scoped result."""
+        if not self._pass_results:
+            return None
+        return next(reversed(self._pass_results.values()))
+
     def get_pass_result(self, source: str):
         return self._pass_results.get(str(source or "").strip())
 
@@ -1166,9 +1173,9 @@ class RenderGraph:
             _ScreenUI_Overlay         (draw_screen_ui list="overlay")
             after_screen_ui           (effect stage, display space)
 
-        Custom pipelines can call this at the desired topology position.
-        This method is **explicit opt-in**: if a pipeline does not call
-        ``screen_ui_section()``, no ScreenUI section is added automatically.
+        Custom pipelines can call this at the desired topology position. The
+        low-level helper is explicit, while RenderStack finalization appends
+        the display-space Screen UI tail when a custom pipeline omits it.
 
         Override behavior: each element is only inserted when missing, so
         users may pre-declare one or more reserved names and let this method

@@ -619,9 +619,13 @@ void InxVkCoreModular::InitializeMaterialSystem()
             m_materialPipelineManager.GetOrCreateRenderDataWithReflection(defaultMaterial, *vertCode, *fragCode,
                                                                           ShaderProgramKey{{vertId, fragId}, 0});
         } else {
-            INXLOG_ERROR("InitializeMaterialSystem: SPIR-V shader codes not found for default material "
+            // Headless/bootstrap users can prepare the renderer before a
+            // project shader catalog exists.  This is not a failed material:
+            // the normal material publication path reflects DefaultLit as
+            // soon as Standard|Lit enters the shader cache.
+            INXLOG_DEBUG("InitializeMaterialSystem: default material shader SPIR-V not yet in cache "
                          "(vert='",
-                         vertId, "', frag='", fragId, "'). Reflection path requires shader code cache.");
+                         vertId, "', frag='", fragId, "'), deferring reflection until first use");
         }
     }
 

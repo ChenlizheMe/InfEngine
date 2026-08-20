@@ -9,6 +9,7 @@
 #include "Infernux.h"
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -53,6 +54,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <string_view>
 #include <platform/filesystem/DocumentStore.h>
 #include <system_error>
 #include <unordered_map>
@@ -2982,6 +2984,62 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
         LoadAndRegisterShaders(assetsPath, true);
+
+        // The material core immediately reflects DefaultLit during
+        // PreparePipeline(). The tiny "default" bootstrap pair is only a
+        // presentation fallback and cannot provide Standard|Lit's material
+        // ABI, so publish the canonical pair before material initialization in
+        // both Editor and Player.
+        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2>
+            defaultMaterialShaderStages{{
+                {"Standard", "vertex"},
+                {"Lit", "fragment"},
+            }};
+        for (const auto &[shaderId, shaderType] : defaultMaterialShaderStages) {
+            if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
+                INXLOG_ERROR("Default material shader is unavailable: '", shaderId, "' (", shaderType, ")");
+            }
+        }
+
+        // The procedural sky is renderer-owned: no authored material GUID
+        // creates a dependency edge that can prewarm it for a Player. Its two
+        // Standalone main() stages are compiled independently, so publish both
+        // before the material system creates the builtin sky material.
+        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2>
+            proceduralSkyShaderStages{{
+                {"Skybox Procedural", "vertex"},
+                {"Skybox Procedural", "fragment"},
+            }};
+        for (const auto &[shaderId, shaderType] : proceduralSkyShaderStages) {
+            if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
+                INXLOG_ERROR("Required procedural sky shader is unavailable: '", shaderId, "' (", shaderType, ")");
+            }
+        }
+        if (!playerMode) {
+            // Editor overlays are present from the first Scene frame. Keep the
+            // rest of the shader catalog lazy, but publish this small mandatory
+            // set before their built-in materials can create fallback pipelines.
+            // A late publication cannot repair a cached fallback descriptor
+            // generation without an explicit material invalidation.
+            static constexpr std::array<std::pair<std::string_view, std::string_view>, 10>
+                editorOverlayShaderStages{{
+                    {"Gizmo", "vertex"},
+                    {"Gizmo", "fragment"},
+                    {"Grid", "vertex"},
+                    {"Grid", "fragment"},
+                    {"Gizmo Icon", "vertex"},
+                    {"Gizmo Icon", "fragment"},
+                    {"Outline Mask", "vertex"},
+                    {"Outline Mask", "fragment"},
+                    {"Outline Composite", "vertex"},
+                    {"Outline Composite", "fragment"},
+                }};
+            for (const auto &[shaderId, shaderType] : editorOverlayShaderStages) {
+                if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
+                    INXLOG_ERROR("Editor overlay shader is unavailable: '", shaderId, "' (", shaderType, ")");
+                }
+            }
+        }
         startupPhase("startup_shaders", phaseBegin);
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");

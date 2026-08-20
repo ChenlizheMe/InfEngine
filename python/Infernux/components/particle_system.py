@@ -164,6 +164,46 @@ class ParticleSystem(InxComponent):
     _display_name_key = "component.particle_system"
     _PREROLL_STEP_SECONDS = 1.0 / 60.0
     _MAX_PREROLL_STEPS = 4096
+    _native_publication_batch_depth = 0
+    _native_publication_batch = []
+
+    @classmethod
+    def _begin_native_publication_batch(cls) -> None:
+        if cls._native_publication_batch_depth == 0:
+            cls._native_publication_batch = []
+        cls._native_publication_batch_depth += 1
+
+    @classmethod
+    def _end_native_publication_batch(cls, *, commit: bool) -> None:
+        if cls._native_publication_batch_depth <= 0:
+            return
+        cls._native_publication_batch_depth -= 1
+        if cls._native_publication_batch_depth:
+            return
+        pending = cls._native_publication_batch
+        cls._native_publication_batch = []
+        if not commit or not pending:
+            return
+
+        native = pending[0][0]
+        if any(item[0] is not native for item in pending):
+            raise RuntimeError("particle scene publication crossed native engine instances")
+        if not hasattr(native, "_replace_gpu_particle_graphs"):
+            raise RuntimeError("native GPU particle graph batching is unavailable")
+        error = native._replace_gpu_particle_graphs(
+            [
+                {
+                    "graph_instance_id": graph_instance_id,
+                    "programs": programs,
+                    "remove_ids": removed,
+                }
+                for _native, _component, graph_instance_id, programs, removed in pending
+            ]
+        )
+        if error:
+            raise RuntimeError(error)
+        for _native, component, _graph_instance_id, _programs, _removed in pending:
+            component._publish_native_playback_states()
 
     # Scene icon: particle burst billboard at the system origin, so an emitter
     # stays selectable even when it is not currently emitting anything.
@@ -1916,19 +1956,25 @@ class ParticleSystem(InxComponent):
         runtime_event_types = self._build_runtime_event_schema(
             artifact.hir, kernel
         )
-        error = native._replace_gpu_particle_graph(
-            self._batch_id,
-            programs,
-            removed,
-        )
-        if error:
-            raise RuntimeError(error)
+        publication_deferred = type(self)._native_publication_batch_depth > 0
+        if publication_deferred:
+            type(self)._native_publication_batch.append(
+                (native, self, self._batch_id, programs, removed)
+            )
+        else:
+            error = native._replace_gpu_particle_graph(
+                self._batch_id,
+                programs,
+                removed,
+            )
+            if error:
+                raise RuntimeError(error)
         self._gpu_controllers = controllers
         self._gpu_emitter_ids = emitter_ids
         self._gpu_emitter_indices = emitter_indices
         self._particle_event_types = runtime_event_types
-        for emitter_index, controller in zip(emitter_indices, controllers):
-            self._set_gpu_emitter_playing(emitter_index, controller.is_playing)
+        if not publication_deferred:
+            self._publish_native_playback_states()
         live_stable_ids = {str(emitter.stable_id) for emitter in metadata.emitters}
         self._prewarm_pending_emitters.intersection_update(live_stable_ids)
         self._pending_seek_seconds = {
@@ -1943,6 +1989,13 @@ class ParticleSystem(InxComponent):
                 self._set_emitter_prewarm_pending(
                     index, controller.is_playing, metadata=metadata
                 )
+
+    def _publish_native_playback_states(self) -> None:
+        for emitter_index, controller in zip(
+            getattr(self, "_gpu_emitter_indices", ()),
+            getattr(self, "_gpu_controllers", ()),
+        ):
+            self._set_gpu_emitter_playing(emitter_index, controller.is_playing)
 
     @staticmethod
     def _build_runtime_event_schema(hir: dict, kernel) -> tuple[dict, ...]:
@@ -3100,7 +3153,12 @@ class ParticleSystem(InxComponent):
             and native is not None
             and hasattr(native, "_replace_gpu_particle_graph")
         ):
-            native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids)
+            if type(self)._native_publication_batch_depth > 0:
+                type(self)._native_publication_batch.append(
+                    (native, self, self._batch_id, [], emitter_ids)
+                )
+            else:
+                native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids)
         self._gpu_emitter_ids = []
         self._gpu_emitter_indices = []
         self._gpu_controllers = []

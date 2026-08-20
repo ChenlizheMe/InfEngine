@@ -334,6 +334,11 @@ class ParticleGpuSystemManager
     /// remains untouched when any runtime, renderer, or RenderGraph
     /// compilation step fails.
     [[nodiscard]] bool ApplyGraph(const GpuParticleGraphProgram &program, std::string *error = nullptr);
+    /// Compile and publish several independent graph instances as one
+    /// transaction. Scene activation uses this path so N ParticleSystem
+    /// components do not rebuild the shared GPU graph N times.
+    [[nodiscard]] bool ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs,
+                                   std::string *error = nullptr);
     /// Update graph-instance parameters in place. No shader, pipeline, or
     /// particle-state resource is rebuilt.
     [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords,

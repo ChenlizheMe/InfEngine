@@ -12,7 +12,7 @@ from Infernux.engine.path_utils import is_path_within, relative_path, resolved_p
 from Infernux.mcp.threading import MainThreadCommandQueue
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
-MCP_SERVER_VERSION = "0.2.9"
+MCP_SERVER_VERSION = "0.3.4"
 
 _TOOL_METADATA: dict[str, dict[str, Any]] = {}
 _KNOWLEDGE_TOKENS: dict[str, dict[str, Any]] = {}

@@ -35,6 +35,37 @@ class _SingleCameraPipeline(RenderPipeline):
         graph.set_output("color")
 
 
+class _BufferedSingleCameraPipeline(RenderPipeline):
+    name = "Buffered Single Camera Contract"
+
+    def define_topology(self, graph):
+        from Infernux.rendergraph.graph import Format
+
+        color = graph.create_texture("color", camera_target=True)
+        depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+        normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT)
+        motion = graph.create_texture("motion", format=Format.RG16_SFLOAT)
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color(color)
+            render_pass.write_depth(depth)
+            render_pass.draw_renderers()
+        result = graph.publish_pass_result(
+            "opaque",
+            {
+                "color": color,
+                "depth": depth,
+                "normal": normal,
+                "motion": motion,
+            },
+        )
+        with graph.pass_result(result):
+            graph.injection_point(
+                "after_opaque",
+                resources={"color", "depth", "normal", "motion"},
+            )
+        graph.set_output(color)
+
+
 class _SingleCameraContext:
     def __init__(self):
         self.calls = []
@@ -82,6 +113,53 @@ def test_render_pipeline_camera_filter_does_not_touch_rejected_context():
     _RejectedPipeline().render(context, object())
 
     assert context.calls == []
+
+
+def test_render_stack_forces_after_screen_ui_for_custom_pipeline():
+    stack = RenderStack()
+    stack._pipeline = _BufferedSingleCameraPipeline()
+    stack._pipeline._render_stack = stack
+    stack.effect_slots = [
+        EffectSlot(
+            stage_id="after_screen_ui",
+            effect=RenderEffectRef(
+                RenderEffect(
+                    RenderEffectAsset(
+                        feature_type="infernux.post.motion_blur",
+                        parameters={
+                            "intensity": 0.5,
+                            "max_blur_pixels": 8.0,
+                            "depth_rejection": 1.0,
+                        },
+                    )
+                )
+            ),
+        )
+    ]
+    stack.invalidate_graph()
+
+    probe = stack._build_full_topology_probe()
+    sequence = list(probe.topology_sequence)
+    stage = next(
+        value
+        for value in probe.effect_stages
+        if value.stable_id == "after_screen_ui"
+    )
+
+    assert {"color", "depth", "normal", "motion"} <= set(stage.contract.inputs)
+    assert sequence.index(("pass", "_DisplayEncode")) < sequence.index(
+        ("pass", "_ScreenUI_Overlay")
+    )
+    assert sequence.index(("pass", "_ScreenUI_Overlay")) < sequence.index(
+        ("effect_stage", "after_screen_ui")
+    )
+
+    description = stack.build_graph()
+    pass_names = [render_pass.name for render_pass in description.passes]
+    assert "_DisplayEncode" in pass_names
+    assert "_ScreenUI_Overlay" in pass_names
+    assert any(name.endswith("MotionBlur_Apply") for name in pass_names)
+    assert stack.effect_compile_errors == ()
 
 
 def test_render_effect_has_material_like_typed_parameter_api():

@@ -1984,63 +1984,83 @@ void ParticleGpuSystemManager::Shutdown() noexcept
 
 bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program, std::string *error)
 {
+    return ApplyGraphs(std::vector<GpuParticleGraphProgram>{program}, error);
+}
+
+bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error)
+{
     if (error)
         error->clear();
     if (!m_impl || !m_impl->context || !m_impl->drawRegistry) {
         SetError(error, "GPU particle manager is not initialized");
         return false;
     }
-    if (program.graphInstanceId == 0) {
-        SetError(error, "GPU particle graph publication requires a valid graph instance id");
-        return false;
-    }
-    if (program.emitters.empty() && program.removeEmitterIds.empty()) {
-        SetError(error, "GPU particle update batch cannot be empty");
+    if (programs.empty()) {
+        SetError(error, "GPU particle graph publication batch cannot be empty");
         return false;
     }
 
     Impl::EmitterMap candidates = m_impl->emitters;
     std::unordered_set<uint64_t> batchIds;
-    batchIds.reserve(program.emitters.size() + program.removeEmitterIds.size());
-    for (const uint64_t id : program.removeEmitterIds) {
-        if (id == 0 || !batchIds.insert(id).second) {
-            SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
+    std::unordered_set<uint64_t> graphInstanceIds;
+    std::size_t operationCount = 0;
+    for (const auto &program : programs)
+        operationCount += program.emitters.size() + program.removeEmitterIds.size();
+    batchIds.reserve(operationCount);
+    graphInstanceIds.reserve(programs.size());
+
+    for (const auto &program : programs) {
+        if (program.graphInstanceId == 0 || !graphInstanceIds.insert(program.graphInstanceId).second) {
+            SetError(error, "GPU particle publication batch contains an invalid or duplicate graph instance id");
             return false;
         }
-        const auto existing = m_impl->emitters.find(id);
-        if (existing != m_impl->emitters.end() && existing->second->graphInstanceId != program.graphInstanceId) {
-            SetError(error, "GPU particle graph cannot remove another graph's emitter");
+        if (program.emitters.empty() && program.removeEmitterIds.empty()) {
+            SetError(error, "GPU particle update batch cannot be empty");
             return false;
         }
-        candidates.erase(id);
+        for (const uint64_t id : program.removeEmitterIds) {
+            if (id == 0 || !batchIds.insert(id).second) {
+                SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
+                return false;
+            }
+            const auto existing = m_impl->emitters.find(id);
+            if (existing != m_impl->emitters.end() && existing->second->graphInstanceId != program.graphInstanceId) {
+                SetError(error, "GPU particle graph cannot remove another graph's emitter");
+                return false;
+            }
+            candidates.erase(id);
+        }
+        for (const auto &emitterProgram : program.emitters) {
+            if (emitterProgram.graphInstanceId != program.graphInstanceId) {
+                SetError(error, "GPU particle update batch mixes multiple graph instances");
+                return false;
+            }
+            if (!batchIds.insert(emitterProgram.id).second) {
+                SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
+                return false;
+            }
+            const auto previous = m_impl->emitters.find(emitterProgram.id);
+            if (previous != m_impl->emitters.end() && previous->second->graphInstanceId != program.graphInstanceId) {
+                SetError(error, "GPU particle emitter id is already owned by another graph");
+                return false;
+            }
+            if (!m_impl->PreflightEmitterProgram(
+                    emitterProgram,
+                    previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error))
+                return false;
+        }
     }
-    for (const auto &emitterProgram : program.emitters) {
-        if (emitterProgram.graphInstanceId != program.graphInstanceId) {
-            SetError(error, "GPU particle update batch mixes multiple graph instances");
-            return false;
-        }
-        if (!batchIds.insert(emitterProgram.id).second) {
-            SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
-            return false;
-        }
-        const auto previous = m_impl->emitters.find(emitterProgram.id);
-        if (previous != m_impl->emitters.end() && previous->second->graphInstanceId != program.graphInstanceId) {
-            SetError(error, "GPU particle emitter id is already owned by another graph");
-            return false;
-        }
-        if (!m_impl->PreflightEmitterProgram(
+
+    for (const auto &program : programs) {
+        for (const auto &emitterProgram : program.emitters) {
+            const auto previous = m_impl->emitters.find(emitterProgram.id);
+            auto emitter = m_impl->CreateEmitter(
                 emitterProgram,
-                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error))
-            return false;
-    }
-    for (const auto &emitterProgram : program.emitters) {
-        const auto previous = m_impl->emitters.find(emitterProgram.id);
-        auto emitter = m_impl->CreateEmitter(
-            emitterProgram, previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{},
-            error);
-        if (!emitter)
-            return false;
-        candidates[emitterProgram.id] = std::move(emitter);
+                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error);
+            if (!emitter)
+                return false;
+            candidates[emitterProgram.id] = std::move(emitter);
+        }
     }
 
     auto candidateGraph = m_impl->BuildGraph(candidates, error);
@@ -2053,8 +2073,10 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
 
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
-    m_impl->FailDiagnostics(program.graphInstanceId,
-                            "GPU particle graph changed before diagnostic recording completed");
+    for (const auto &program : programs) {
+        m_impl->FailDiagnostics(program.graphInstanceId,
+                                "GPU particle graph changed before diagnostic recording completed");
+    }
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters = std::move(candidates);
     m_impl->requiresCollisionScene =

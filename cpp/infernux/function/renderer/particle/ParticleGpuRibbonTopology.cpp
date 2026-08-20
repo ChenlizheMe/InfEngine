@@ -92,13 +92,15 @@ std::string_view GpuParticleRibbonShaderSources::Reset() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
-    if (simulation_allowed == 0u) return;
-    uint live_count = inx_live_count();
+    // Reset is also the draw-safety barrier. A newly created or paused
+    // emitter must publish zero indirect arguments instead of leaving the
+    // buffers with stale or uninitialized GPU contents.
+    uint live_count = simulation_allowed != 0u ? inx_live_count() : 0u;
     dispatch_group_count_x = (live_count + 255u) / 256u;
     dispatch_group_count_y = 1u;
     dispatch_group_count_z = 1u;
     ribbon_vertex_count = live_count > 1u ? (live_count - 1u) * 6u : 0u;
-    ribbon_instance_count = 1u;
+    ribbon_instance_count = live_count > 1u ? 1u : 0u;
     ribbon_first_vertex = 0u;
     ribbon_first_instance = 0u;
 }
