@@ -33,9 +33,15 @@ Parameter serialization:
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, ClassVar, Dict, List, Mapping, Set, TYPE_CHECKING
 
-from Infernux.renderstack._pipeline_common import COLOR_TEXTURE
+from Infernux.renderstack._pipeline_common import (
+    COLOR_TEXTURE,
+    DEPTH_TEXTURE,
+    MOTION_TEXTURE,
+    NORMAL_TEXTURE,
+)
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
 from Infernux.debug import Debug
@@ -44,6 +50,13 @@ if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
     from Infernux.rendergraph.graph import Format
     from Infernux.renderstack.resource_bus import ResourceBus
+
+
+class EffectColorComposition(str, Enum):
+    """How an effect contributes its output to the current image set."""
+
+    REPLACE = "replace"
+    ALPHA_OVER = "alpha_over"
 
 
 class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
@@ -77,10 +90,14 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
     # ---- Optional editor menu path ----
     menu_path: ClassVar[str] = ""
 
+    # Route isolation and composition are separate RenderStack concerns. A
+    # fullscreen effect replaces the color flowing through its own stage.
+    color_composition: ClassVar[EffectColorComposition] = EffectColorComposition.REPLACE
+
     # ---- Reserved attrs for the mixin ----
     _reserved_attrs_ = frozenset({
         "name", "injection_point", "default_order", "menu_path",
-        "requires", "modifies", "creates", "enabled",
+        "requires", "modifies", "creates", "enabled", "color_composition",
     })
 
     # ---- Class-level serialized field metadata ----
@@ -93,7 +110,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
     def __init__(self, enabled: bool = True) -> None:
         super().__init__(enabled=enabled)
         # Prime instance storage for serialized fields
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.fields import get_serialized_fields
         for field_name, meta in get_serialized_fields(self.__class__).items():
             if not hasattr(self, f"_sf_{field_name}"):
                 try:
@@ -180,6 +197,42 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
         bus.set(COLOR_TEXTURE, color_out)
         return True
 
+    def bind_buffers(
+        self,
+        render_pass,
+        bus: "ResourceBus",
+        *,
+        extra_bindings: Mapping[str, object] | None = None,
+    ) -> None:
+        """Bind named buffers supplied by the current explicit PassResult.
+
+        Shader binding names remain stable, but their resources are selected
+        from the current source-scoped result rather than global camera state.
+        """
+        semantic_bindings = (
+            ("_InxPassColor", COLOR_TEXTURE),
+            ("_InxPassDepth", DEPTH_TEXTURE),
+            ("_InxPassNormal", NORMAL_TEXTURE),
+            ("_InxPassMotion", MOTION_TEXTURE),
+        )
+        required = set(getattr(self, "requires", ())) | set(getattr(self, "modifies", ()))
+        selected = tuple(
+            (shader_name, semantic)
+            for shader_name, semantic in semantic_bindings
+            if semantic in required
+        )
+        missing = [semantic for _, semantic in selected if bus.get(semantic) is None]
+        if missing:
+            raise RuntimeError(
+                "effect requires unavailable buffers from its PassResult: "
+                + ", ".join(missing)
+            )
+        render_pass.set_textures(
+            {shader_name: bus.get(semantic) for shader_name, semantic in selected}
+        )
+        if extra_bindings:
+            render_pass.set_textures(extra_bindings)
+
     # ==================================================================
     # Core interface — subclasses implement these
     # ==================================================================
@@ -233,7 +286,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
 
     def get_params_dict(self) -> Dict[str, Any]:
         """Export the current parameters as a JSON-serializable dict."""
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.fields import get_serialized_fields
         from enum import Enum
 
         params: Dict[str, Any] = {}
@@ -247,7 +300,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
 
     def set_params_dict(self, params: Dict[str, Any]) -> None:
         """Restore parameters from a dict."""
-        from Infernux.components.serialized_field import get_serialized_fields, FieldType
+        from Infernux.components.fields import get_serialized_fields, FieldType
 
         fields = get_serialized_fields(self.__class__)
         if type(params) is not dict:

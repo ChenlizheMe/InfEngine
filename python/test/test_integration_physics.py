@@ -642,6 +642,7 @@ class TestContinuousCollisionDetection:
         [
             (CollisionDetectionMode.Discrete, True),
             (CollisionDetectionMode.Continuous, False),
+            (CollisionDetectionMode.ContinuousDynamic, False),
         ],
     )
     def test_fast_sphere_against_thin_static_wall(self, scene, mode, should_cross_wall):
@@ -674,7 +675,8 @@ class TestContinuousCollisionDetection:
         "mode,should_cross",
         [
             (CollisionDetectionMode.Discrete, True),
-            (CollisionDetectionMode.Continuous, False),
+            (CollisionDetectionMode.Continuous, True),
+            (CollisionDetectionMode.ContinuousDynamic, False),
         ],
     )
     def test_fast_dynamic_spheres_respect_collision_mode(self, scene, mode, should_cross):

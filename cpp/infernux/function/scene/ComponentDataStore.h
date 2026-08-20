@@ -2,8 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -17,6 +19,12 @@ namespace infernux
 class ComponentDataStore
 {
   public:
+    using SchemaTransactionId = uint64_t;
+    using PreparedClassId = uint32_t;
+    using SchemaCommitMap = std::unordered_map<PreparedClassId, uint32_t>;
+
+    static constexpr PreparedClassId InvalidPreparedClassId = UINT32_MAX;
+
     struct SlotHandle
     {
         uint32_t index = UINT32_MAX;
@@ -38,6 +46,12 @@ class ComponentDataStore
         Vec4,    // vec4f   → 4 × float
     };
 
+    struct FieldMigration
+    {
+        uint32_t sourceFieldId = UINT32_MAX;
+        uint32_t destinationFieldId = UINT32_MAX;
+    };
+
     static ComponentDataStore &Instance();
 
     // ── class / field registration ──
@@ -46,6 +60,63 @@ class ComponentDataStore
     uint32_t RegisterField(uint32_t classId, const std::string &fieldName, DataType type);
     uint32_t GetClassId(const std::string &className) const;
     uint32_t GetFieldId(uint32_t classId, const std::string &fieldName) const;
+    [[nodiscard]] size_t GetPublishedClassCount() const noexcept;
+
+    // -- transactional schema publication --
+
+    SchemaTransactionId BeginSchemaTransaction();
+    PreparedClassId PrepareClass(SchemaTransactionId transactionId, const std::string &className);
+    uint32_t PrepareField(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                          const std::string &fieldName, DataType type);
+    [[nodiscard]] bool HasPreparedClass(SchemaTransactionId transactionId, PreparedClassId preparedClassId) const;
+    [[nodiscard]] PreparedClassId FindPreparedClass(SchemaTransactionId transactionId,
+                                                    const std::string &className) const;
+    [[nodiscard]] uint32_t GetPreparedFieldId(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                                              const std::string &fieldName) const;
+    bool DiscardPreparedClass(SchemaTransactionId transactionId, PreparedClassId preparedClassId);
+
+    void ReservePreparedClass(SchemaTransactionId transactionId, PreparedClassId preparedClassId, size_t capacity);
+    SlotHandle AllocatePreparedSlot(SchemaTransactionId transactionId, PreparedClassId preparedClassId);
+    void ReleasePreparedSlot(SchemaTransactionId transactionId, PreparedClassId preparedClassId, SlotHandle handle);
+    [[nodiscard]] bool IsPreparedSlotAlive(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                                           SlotHandle handle) const;
+
+    SlotHandle MigrateSlotToPrepared(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                                     uint32_t sourceClassId, SlotHandle sourceHandle,
+                                     const FieldMigration *fieldMigrations, size_t migrationCount);
+
+    double GetPreparedFloat(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                            SlotHandle handle) const;
+    void SetPreparedFloat(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                          SlotHandle handle, double value);
+    int64_t GetPreparedInt(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                           SlotHandle handle) const;
+    void SetPreparedInt(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                        SlotHandle handle, int64_t value);
+    bool GetPreparedBool(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle) const;
+    void SetPreparedBool(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, bool value);
+    void GetPreparedVec2(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, float out[2]) const;
+    void SetPreparedVec2(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, const float in[2]);
+    void GetPreparedVec3(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, float out[3]) const;
+    void SetPreparedVec3(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, const float in[3]);
+    void GetPreparedVec4(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, float out[4]) const;
+    void SetPreparedVec4(SchemaTransactionId transactionId, PreparedClassId preparedClassId, uint32_t fieldId,
+                         SlotHandle handle, const float in[4]);
+
+    SchemaCommitMap SealSchemaTransaction(SchemaTransactionId transactionId);
+    [[nodiscard]] uint32_t GetPreparedFinalClassId(SchemaTransactionId transactionId,
+                                                   PreparedClassId preparedClassId) const;
+    SchemaCommitMap CommitSchemaTransaction(SchemaTransactionId transactionId);
+    bool FinalizeSchemaTransaction(SchemaTransactionId transactionId);
+    bool RollbackSchemaTransaction(SchemaTransactionId transactionId) noexcept;
+    [[nodiscard]] bool IsSchemaTransactionActive(SchemaTransactionId transactionId) const noexcept;
 
     // ── slot lifecycle ──
 
@@ -139,6 +210,22 @@ class ComponentDataStore
 
     struct ClassStorage
     {
+        ClassStorage() = default;
+        ClassStorage(const ClassStorage &) = delete;
+        ClassStorage &operator=(const ClassStorage &) = delete;
+
+        ClassStorage(ClassStorage &&other) noexcept
+        {
+            Swap(other);
+        }
+
+        ClassStorage &operator=(ClassStorage &&other) noexcept
+        {
+            if (this != &other)
+                Swap(other);
+            return *this;
+        }
+
         std::vector<FieldStorage> fields;
         std::unordered_map<std::string, uint32_t> fieldNameToId;
         std::vector<uint8_t> alive;
@@ -148,12 +235,55 @@ class ComponentDataStore
         size_t capacity = 0;
         size_t slotCount = 0;
         size_t aliveCount = 0;
+        bool retired = false;
 
         void GrowTo(size_t newCapacity);
+        void ReleaseStorage() noexcept;
+
+      private:
+        void Swap(ClassStorage &other) noexcept
+        {
+            fields.swap(other.fields);
+            fieldNameToId.swap(other.fieldNameToId);
+            alive.swap(other.alive);
+            generations.swap(other.generations);
+            nextFree.swap(other.nextFree);
+            std::swap(freeHead, other.freeHead);
+            std::swap(capacity, other.capacity);
+            std::swap(slotCount, other.slotCount);
+            std::swap(aliveCount, other.aliveCount);
+            std::swap(retired, other.retired);
+        }
+    };
+
+    struct PreparedClass
+    {
+        std::string name;
+        ClassStorage storage;
+        bool active = true;
+    };
+
+    struct SchemaTransaction
+    {
+        SchemaTransactionId id = 0;
+        bool sealed = false;
+        bool committed = false;
+        size_t classCountBeforeCommit = 0;
+        size_t committedClassCount = 0;
+        std::vector<PreparedClass> classes;
+        std::unordered_map<std::string, PreparedClassId> classNameToId;
+        SchemaCommitMap commitMap;
+        std::unordered_map<std::string, uint32_t> publishedNameMap;
+        std::vector<uint32_t> retiredClassIds;
+        std::vector<uint32_t> committedClassIds;
+        std::vector<uint32_t> freeClassIdsBeforeCommit;
     };
 
     std::vector<ClassStorage> m_classes;
     std::unordered_map<std::string, uint32_t> m_classNameToId;
+    std::optional<SchemaTransaction> m_schemaTransaction;
+    SchemaTransactionId m_nextSchemaTransactionId = 1;
+    std::vector<uint32_t> m_freeClassIds;
 
     ClassStorage &RequireClass(uint32_t classId);
     const ClassStorage &RequireClass(uint32_t classId) const;
@@ -161,6 +291,23 @@ class ComponentDataStore
     const FieldStorage &RequireField(uint32_t classId, uint32_t fieldId, DataType expectedType) const;
     static void RequireAlive(const ClassStorage &storage, SlotHandle handle);
     static void RequireAllAlive(const ClassStorage &storage, const SlotHandle *handles, size_t count);
+    static SlotHandle AllocateSlotInStorage(ClassStorage &storage);
+    static void ReleaseSlotInStorage(ClassStorage &storage, SlotHandle handle);
+    static bool IsAliveInStorage(const ClassStorage &storage, SlotHandle handle) noexcept;
+    static std::string LayoutIdentity(const std::string &className);
+    void MarkSupersededLayouts(SchemaTransaction &transaction, const std::string &className);
+    void ReclaimRetiredClass(uint32_t classId) noexcept;
+
+    SchemaTransaction &RequireSchemaTransaction(SchemaTransactionId transactionId);
+    const SchemaTransaction &RequireSchemaTransaction(SchemaTransactionId transactionId) const;
+    PreparedClass &RequirePreparedClass(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                                        bool requireMutable = false);
+    const PreparedClass &RequirePreparedClass(SchemaTransactionId transactionId, PreparedClassId preparedClassId) const;
+    FieldStorage &RequirePreparedField(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                                       uint32_t fieldId, DataType expectedType, bool requireMutable = false);
+    const FieldStorage &RequirePreparedField(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
+                                             uint32_t fieldId, DataType expectedType) const;
+    void RequireNoSchemaTransaction(const char *operation) const;
 };
 
 } // namespace infernux

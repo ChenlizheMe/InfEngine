@@ -351,11 +351,12 @@ class RenderPassBuilder:
             sort_mode: Sorting strategy — "front_to_back", "back_to_front",
                        or "none".
             pass_tag: Filter draw calls by shader pass tag (empty = no filter).
-            override_material: Force all objects to use this material name
+            override_material: Force accepted objects to use a built-in material
+                key or a project material GUID.
                                (empty = per-object material).
             material_pass: Linked material program used by this pass. Supported
             values are ``forward``, ``forward_plus``, ``gbuffer``, ``depth``,
-                           ``picking``, and ``motion``.
+                           ``picking``, ``motion``, ``normal``, and ``base_color``.
             material_filter: Select all materials, only Deferred-compatible
                              materials, or only models that declare
                              ``Unsupported [Deferred]``.
@@ -368,6 +369,8 @@ class RenderPassBuilder:
             "depth",
             "picking",
             "motion",
+            "normal",
+            "base_color",
         }:
             raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
@@ -419,8 +422,9 @@ class RenderPassBuilder:
     ) -> "RenderPassBuilder":
         """Configure this pass to draw screen-space UI.
 
-        The UI commands are accumulated via InxScreenUIRenderer during BuildFrame
-        and rendered here inside the scene render graph.
+        The runtime submission service accumulates UI commands through
+        InxScreenUIRenderer at camera submission, then this pass renders the
+        immutable command snapshot inside the scene render graph.
 
         Args:
             list: ``"camera"`` (before post-process, affected by post-processing)
@@ -603,6 +607,10 @@ class RenderGraph:
         self._effect_stage_active_resolver = None
         self._name_scopes: List[str] = []
         self._effect_resource_scopes: List[Dict[str, TextureHandle]] = []
+        self._pass_result_scopes: List[object] = []
+        self._geometry_buffer_requirements = frozenset()
+        self._pass_results: Dict[str, object] = {}
+        self._pass_result_revision = 0
 
     @property
     def name(self) -> str:
@@ -644,6 +652,85 @@ class RenderGraph:
     def effect_stages(self) -> list:
         """Pipeline-declared user attachment stages in topology order."""
         return list(self._effect_stages_list)
+
+    def set_geometry_buffer_requirements(self, requirements) -> None:
+        """Set semantic geometry buffers demanded by this graph revision."""
+        normalized = {str(value or "").strip().lower() for value in requirements}
+        normalized.discard("")
+        self._geometry_buffer_requirements = frozenset(normalized)
+
+    def require_geometry_buffers(self, requirements) -> None:
+        self.set_geometry_buffer_requirements(
+            set(self._geometry_buffer_requirements) | set(requirements)
+        )
+
+    @property
+    def geometry_buffer_requirements(self):
+        return self._geometry_buffer_requirements
+
+    def needs_geometry_buffer(self, semantic: str) -> bool:
+        return str(semantic or "").strip().lower() in self._geometry_buffer_requirements
+
+    def publish_pass_result(self, source: str, buffers, *, materialize=None):
+        """Publish the named buffers available after one stage or pass."""
+        from Infernux.renderstack.pass_result import PassResult
+
+        source_name = str(source or "").strip()
+        if not source_name:
+            raise ValueError("pass result source cannot be empty")
+        if source_name in self._pass_results:
+            raise ValueError(
+                f"pass result source {source_name!r} is already published"
+            )
+        for semantic, texture in dict(buffers).items():
+            if texture is not None and not isinstance(texture, TextureHandle):
+                raise TypeError(
+                    f"pass buffer {semantic!r} must be a TextureHandle"
+                )
+        self._pass_result_revision += 1
+        result = PassResult(
+            source=source_name,
+            revision=self._pass_result_revision,
+            buffers=buffers,
+            _materialize=materialize,
+        )
+        self._pass_results[source_name] = result
+        return result
+
+    def derive_pass_result(self, source: str, parent, overrides):
+        """Create a result after a pass writes one or more named buffers."""
+        from Infernux.renderstack.pass_result import PassResult
+
+        if not isinstance(parent, PassResult):
+            raise TypeError("derive_pass_result() requires a PassResult parent")
+        merged = dict(parent.snapshot)
+        merged.update(dict(overrides))
+        return self.publish_pass_result(
+            source,
+            merged,
+            materialize=parent._materialize,
+        )
+
+    def write_buffer(self, source: str, parent, name: str, texture):
+        """Derive one result revision after writing a named virtual texture."""
+        return self.derive_pass_result(source, parent, {name: texture})
+
+    @property
+    def pass_results(self):
+        return dict(self._pass_results)
+
+    @property
+    def latest_pass_result(self):
+        """Return the most recently published source-scoped result."""
+        if not self._pass_results:
+            return None
+        return next(reversed(self._pass_results.values()))
+
+    def get_pass_result(self, source: str):
+        return self._pass_results.get(str(source or "").strip())
+
+    # Transitional aliases are intentionally absent. This is a breaking API
+    # revision: source-scoped PassResult replaces global geometry/scene maps.
 
     # ---- Resource creation ----
 
@@ -697,6 +784,37 @@ class RenderGraph:
         if not self._effect_resource_scopes:
             return {}
         return dict(self._effect_resource_scopes[-1])
+
+    @contextmanager
+    def pass_result(self, result):
+        """Make one source-scoped result current while declaring stages.
+
+        Effect compilation uses this explicit source instead of resolving
+        process-global color/depth aliases. The callback may replace the top
+        result with a derived revision after writing named buffers.
+        """
+        from Infernux.renderstack.pass_result import PassResult
+
+        if not isinstance(result, PassResult):
+            raise TypeError("pass_result() requires a PassResult")
+        self._pass_result_scopes.append(result)
+        try:
+            yield self
+        finally:
+            self._pass_result_scopes.pop()
+
+    @property
+    def current_pass_result(self):
+        return self._pass_result_scopes[-1] if self._pass_result_scopes else None
+
+    def replace_current_pass_result(self, result) -> None:
+        from Infernux.renderstack.pass_result import PassResult
+
+        if not self._pass_result_scopes:
+            raise RuntimeError("no active pass-result scope")
+        if not isinstance(result, PassResult):
+            raise TypeError("current pass result must be a PassResult")
+        self._pass_result_scopes[-1] = result
 
     def resolve_effect_route_policy(self, stages):
         """Resolve mounted route effects without coupling the graph to a scene."""
@@ -1001,46 +1119,29 @@ class RenderGraph:
         """Pipeline-author shorthand for :meth:`effect_stage`."""
         return self.effect_stage(stable_id, **kwargs)
 
-    # ---- Convenience: ScreenUI + post-process section ----
+    # ---- Convenience: Camera UI + post-process + Screen UI sections ----
 
-    def screen_ui_section(self, *, resources: "set | None" = None) -> None:
-        """Insert the standard ScreenUI + post-process injection points.
-
-        This is a convenience shortcut that emits::
-
-            _ScreenUI_Camera          (draw_screen_ui list="camera")
-            before_post_process       (injection point)
-            after_post_process        (injection point)
-            _ScreenUI_Overlay         (draw_screen_ui list="overlay")
-            after_screen_ui           (effect stage)
-
-        Custom pipelines can call this at the desired topology position.
-        This method is **explicit opt-in**: if a pipeline does not call
-        ``screen_ui_section()``, no ScreenUI section is added automatically.
-
-        Override behavior: each element is only inserted when missing, so
-        users may pre-declare one or more reserved names and let this method
-        fill the rest without duplication.
-
-        Args:
-            resources: Resource set advertised to injection points.
-                       Defaults to ``{"color"}``.
-        """
+    def camera_ui_section(self, *, resources: "set | None" = None) -> None:
+        """Draw Camera UI and expose the composite immediately afterwards."""
         res = resources or {"color"}
-
         if not self.has_pass("_ScreenUI_Camera"):
             with self.add_pass("_ScreenUI_Camera") as p:
                 p.write_color("color")
                 p.draw_screen_ui(list="camera")
 
-        if not self.has_injection_point("before_post_process"):
-            self.injection_point("before_post_process", resources=res)
-        if not self.has_injection_point("after_post_process"):
-            self.injection_point("after_post_process", resources=res)
+        if not self.has_effect_stage("after_camera_ui"):
+            self.effects(
+                "after_camera_ui",
+                scope="composite",
+                display_name="After Camera UI",
+                inputs=res,
+                outputs={"color"},
+                capabilities={"fullscreen"},
+            )
 
-        # Display encode sits between scene post-processing and the overlay
-        # UI: scene color is linear, while ScreenUI colors are authored in
-        # display (sRGB) space and must not be re-encoded.
+    def screen_ui_overlay_section(self, *, resources: "set | None" = None) -> None:
+        """Encode the scene for display, draw Screen UI, then expose it."""
+        res = resources or {"color"}
         self.display_encode_section()
 
         if not self.has_pass("_ScreenUI_Overlay"):
@@ -1055,8 +1156,54 @@ class RenderGraph:
                 display_name="After Screen UI",
                 inputs=res,
                 outputs={"color"},
-                capabilities={"fullscreen"},
+                capabilities={"fullscreen", "display_space"},
             )
+
+    def screen_ui_section(self, *, resources: "set | None" = None) -> None:
+        """Insert the canonical Camera UI, post-process and Screen UI tail.
+
+        This is a convenience shortcut that emits::
+
+            _ScreenUI_Camera          (draw_screen_ui list="camera")
+            after_camera_ui           (effect stage)
+            before_post_process       (legacy injection point)
+            final                     (effect stage)
+            after_post_process        (legacy injection point)
+            _DisplayEncode            (linear to display encoding)
+            _ScreenUI_Overlay         (draw_screen_ui list="overlay")
+            after_screen_ui           (effect stage, display space)
+
+        Custom pipelines can call this at the desired topology position. The
+        low-level helper is explicit, while RenderStack finalization appends
+        the display-space Screen UI tail when a custom pipeline omits it.
+
+        Override behavior: each element is only inserted when missing, so
+        users may pre-declare one or more reserved names and let this method
+        fill the rest without duplication.
+
+        Args:
+            resources: Resource set advertised to injection points.
+                       Defaults to ``{"color"}``.
+        """
+        res = resources or {"color"}
+
+        self.camera_ui_section(resources=res)
+
+        if not self.has_injection_point("before_post_process"):
+            self.injection_point("before_post_process", resources=res)
+        if not self.has_effect_stage("final"):
+            self.effects(
+                "final",
+                scope="composite",
+                display_name="Final Post Processing",
+                inputs=res,
+                outputs={"color"},
+                capabilities={"fullscreen", "hdr_to_display"},
+            )
+        if not self.has_injection_point("after_post_process"):
+            self.injection_point("after_post_process", resources=res)
+
+        self.screen_ui_overlay_section(resources=res)
 
     def display_encode_section(self) -> None:
         """Insert the built-in linear → sRGB display-encode passes.
@@ -1076,6 +1223,10 @@ class RenderGraph:
         with self.add_pass("_DisplayEncode") as p:
             p.set_texture("_SourceTex", "color")
             p.write_color("_display_encode")
+            # The native per-camera render context overwrites these values at
+            # draw time without rebuilding the graph.
+            p.set_param("dithering", 0.0)
+            p.set_param("stopNaNs", 0.0)
             p.fullscreen_quad("Display Encode")
         with self.add_pass("_DisplayEncode_Commit") as p:
             p.set_texture("_SourceTex", "_display_encode")
@@ -1288,6 +1439,19 @@ class RenderGraph:
                 ):
                     raise ValueError(
                         f"Motion pass '{p._name}' requires one RG16_SFLOAT color output, "
+                        "one readable depth texture, and no depth write"
+                    )
+            elif p._material_pass == "normal":
+                colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
+                depth_reads = [texture_map[name] for name in p._reads if texture_map[name].is_depth]
+                if (
+                    len(colors) != 1
+                    or colors[0].format != Format.RGBA16_SFLOAT
+                    or len(depth_reads) != 1
+                    or p._write_depth is not None
+                ):
+                    raise ValueError(
+                        f"Normal pass '{p._name}' requires one RGBA16_SFLOAT color output, "
                         "one readable depth texture, and no depth write"
                     )
             elif not p._write_colors:
@@ -1556,6 +1720,8 @@ class RenderGraph:
             "shadow": MaterialPassType.SHADOW,
             "picking": MaterialPassType.PICKING,
             "motion": MaterialPassType.MOTION,
+            "normal": MaterialPassType.NORMAL,
+            "base_color": MaterialPassType.BASE_COLOR,
         }
         _material_filter_map = {
             "all": GraphMaterialFilter.ALL,

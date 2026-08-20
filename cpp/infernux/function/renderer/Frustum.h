@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
@@ -145,6 +146,13 @@ struct BoundingSphere
 class Frustum
 {
   public:
+    enum class AABBRelation : uint8_t
+    {
+        Outside,
+        Intersecting,
+        Inside
+    };
+
     enum PlaneIndex
     {
         Left = 0,
@@ -253,6 +261,33 @@ class Frustum
             }
         }
         return true;
+    }
+
+    /// @brief Classify an AABB against the frustum.
+    ///
+    /// Unlike IntersectsAABB(), this also identifies boxes that are completely
+    /// inside. Render systems can use that result to accept a coarse group and
+    /// avoid repeating the same plane tests for every member.
+    [[nodiscard]] AABBRelation ClassifyAABB(const AABB &aabb, bool ignoreNearPlane = false) const
+    {
+        bool fullyInside = true;
+        for (int index = 0; index < PlaneIndex::Count; ++index) {
+            if (ignoreNearPlane && index == Near)
+                continue;
+            const Plane &plane = m_planes[index];
+            const glm::vec3 positive((plane.normal.x >= 0.0f) ? aabb.max.x : aabb.min.x,
+                                     (plane.normal.y >= 0.0f) ? aabb.max.y : aabb.min.y,
+                                     (plane.normal.z >= 0.0f) ? aabb.max.z : aabb.min.z);
+            if (plane.DistanceToPoint(positive) < 0.0f)
+                return AABBRelation::Outside;
+
+            const glm::vec3 negative((plane.normal.x >= 0.0f) ? aabb.min.x : aabb.max.x,
+                                     (plane.normal.y >= 0.0f) ? aabb.min.y : aabb.max.y,
+                                     (plane.normal.z >= 0.0f) ? aabb.min.z : aabb.max.z);
+            if (plane.DistanceToPoint(negative) < 0.0f)
+                fullyInside = false;
+        }
+        return fullyInside ? AABBRelation::Inside : AABBRelation::Intersecting;
     }
 
     /// @brief Get a specific plane

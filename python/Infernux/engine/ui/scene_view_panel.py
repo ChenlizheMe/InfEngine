@@ -143,45 +143,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     WINDOW_TYPE_ID = "scene_view"
     WINDOW_DISPLAY_NAME = "Scene"
 
-    # Runtime-only cache/interaction fields must not be restored from disk.
-    _AUTO_STATE_SKIP_KEYS = EditorPanel._AUTO_STATE_SKIP_KEYS | {
-        "_last_frame_time",
-        "_delta_time",
-        "_last_scene_width",
-        "_last_scene_height",
-        "_was_left_down",
-        "_was_right_down",
-        "_was_middle_down",
-        "_last_mouse_x",
-        "_last_mouse_y",
-        "_is_camera_dragging",
-        "_camera_capture_active",
-        "_camera_capture_restore_pos",
-        "_hover_pick_cache_pos",
-        "_hover_pick_cache_result",
-        "_is_gizmo_dragging",
-        "_gizmo_drag_axis",
-        "_gizmo_drag_axis_dir",
-        "_gizmo_drag_start_t",
-        "_gizmo_drag_plane_axes",
-        "_gizmo_drag_plane_u",
-        "_gizmo_drag_plane_v",
-        "_gizmo_drag_plane_start_uv",
-        "_gizmo_drag_start_pos",
-        "_gizmo_drag_start_euler",
-        "_gizmo_drag_start_rotation",
-        "_gizmo_drag_start_scale",
-        "_gizmo_drag_start_screen",
-        "_gizmo_drag_obj_id",
-        "_gizmo_drag_items",
-        "_gizmo_drag_rigidbody",
-        "_gizmo_drag_rigidbodies",
-        "_gizmo_drag_restore_dynamic",
-        "_gizmo_snap_active",
-        "_was_focused",
-        "_pending_scene_pick",
-    }
-
     # Key codes imported from shared imgui_keys module
     KEY_W = _keys.KEY_W
     KEY_A = _keys.KEY_A
@@ -190,12 +151,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     KEY_Q = _keys.KEY_Q
     KEY_E = _keys.KEY_E
     KEY_R = _keys.KEY_R
-    KEY_C = _keys.KEY_C
-    KEY_V = _keys.KEY_V
-    KEY_X = _keys.KEY_X
-    KEY_DELETE = _keys.KEY_DELETE
-    KEY_LEFT_CTRL = _keys.KEY_LEFT_CTRL
-    KEY_RIGHT_CTRL = _keys.KEY_RIGHT_CTRL
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
     KEY_RIGHT_SHIFT = _keys.KEY_RIGHT_SHIFT
     
@@ -205,11 +160,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._play_mode_manager = None
         self._last_frame_time = 0.0
         self._on_object_picked = None
-        self._on_box_select = None  # callback(primary_obj_or_None) after box-select
-        self._copy_selected_callback = None
-        self._paste_clipboard_callback = None
-        self._has_clipboard_data_callback = None
-        self._delete_selected_callback = None
         
         # Scene render target size tracking
         self._last_scene_width = 0
@@ -246,6 +196,9 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._gizmo_drag_start_screen = (0.0, 0.0) # screen pos at grab (rotate)
         self._gizmo_drag_obj_id = 0        # object being dragged
         self._gizmo_drag_items = {}        # object_id -> start transform snapshot for multi-edit
+        self._gizmo_drag_selection_snapshot = None
+        self._gizmo_drag_edit_key = ""
+        self._gizmo_drag_cancel_token = ""
         self._gizmo_drag_rigidbody = None  # Rigidbody temporarily driven by the gizmo
         self._gizmo_drag_rigidbodies = []   # [(Rigidbody, restore_dynamic), ...]
         self._gizmo_drag_restore_dynamic = False
@@ -310,6 +263,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._particle_preview_resize_start_y = 0.0
         self._particle_preview_resize_start_height = 0.0
         self._particle_preview_last_tick = 0.0
+        self._particle_preview_selection_service = None
     
     def set_engine(self, engine):
         """Set the engine reference for camera control."""
@@ -337,20 +291,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         """Set callback for scene object picking (receives object ID or 0)."""
         self._on_object_picked = callback
 
-    def set_on_box_select(self, callback):
-        """Set callback after box-select completes (receives primary obj or None)."""
-        self._on_box_select = callback
-
-    def set_object_clipboard_handlers(self, copy_selected, paste_clipboard, has_clipboard_data=None):
-        """Set hierarchy-compatible object clipboard callbacks for Scene View focus."""
-        self._copy_selected_callback = copy_selected
-        self._paste_clipboard_callback = paste_clipboard
-        self._has_clipboard_data_callback = has_clipboard_data
-
-    def set_object_delete_handler(self, delete_selected):
-        """Use the hierarchy's structural delete transaction in Scene View."""
-        self._delete_selected_callback = delete_selected
-
     # ------------------------------------------------------------------
     # EditorPanel hooks
     # ------------------------------------------------------------------
@@ -360,15 +300,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def _window_flags(self) -> int:
         return Theme.WINDOW_FLAGS_VIEWPORT | Theme.WINDOW_FLAGS_NO_SCROLL
-
-    def _window_title_suffix(self) -> str:
-        try:
-            from Infernux.engine.scene_manager import SceneFileManager
-
-            manager = SceneFileManager.instance()
-            return " *" if manager is not None and manager.is_dirty else ""
-        except Exception:
-            return ""
 
     def save_state(self) -> dict:
         # Scene view keeps many runtime-only camera/gizmo/render caches.
@@ -395,9 +326,12 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._particle_preview_last_tick = 0.0
         self._hover_pick_cache_pos = (-1.0, -1.0)
         self._hover_pick_cache_result = 0
-        from .event_bus import EditorEvent
+        from Infernux.engine.interaction import SelectionService
 
-        self.events.subscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        self._particle_preview_selection_service = SelectionService.instance()
+        self._particle_preview_selection_service.add_listener(
+            self._on_particle_preview_selection_changed
+        )
         if self._play_mode_manager is not None:
             self._play_mode_manager.add_state_change_listener(
                 self._on_particle_preview_play_mode_changed
@@ -406,9 +340,11 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def on_disable(self):
         """Panel closed — shrink render target to save GPU memory."""
-        from .event_bus import EditorEvent
-
-        self.events.unsubscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        self._interrupt_gizmo_drag(commit=True)
+        selection = getattr(self, "_particle_preview_selection_service", None)
+        if selection is not None:
+            selection.remove_listener(self._on_particle_preview_selection_changed)
+        self._particle_preview_selection_service = None
         if self._play_mode_manager is not None:
             self._play_mode_manager.remove_state_change_listener(
                 self._on_particle_preview_play_mode_changed
@@ -425,6 +361,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def _on_not_visible(self, ctx):
         """Window collapsed/tabbed out — mark invisible for C++ side."""
+        self._interrupt_gizmo_drag(commit=True)
         self._particle_preview_resize_drag = False
         if self._engine:
             self._engine.set_scene_view_visible(False)
@@ -463,7 +400,9 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
                 native.request_full_speed_frame()
 
         # Track focus to auto-exit UI Mode
-        focused = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
+        focused = ClosablePanel.get_active_view_id() == self.window_id
+        if not focused:
+            self._interrupt_gizmo_drag(commit=True)
         if not focused and self._camera_capture_active:
             self._is_camera_dragging = False
             self._end_camera_capture(restore_cursor=False)
@@ -517,8 +456,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
             vp = capture_viewport_info(ctx)
             is_scene_hovered = vp.is_hovered
-            self._handle_object_clipboard_shortcuts(ctx, is_scene_hovered)
-
             overlay_hovered = self._render_overlays_and_shortcuts(
                 ctx,
                 vp,
@@ -541,41 +478,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             ctx.set_cursor_pos_x(cursor_start_x + 8)
             ctx.set_cursor_pos_y(cursor_start_y + 8)
             ctx.label(t("scene_view.loading"))
-
-    def _handle_object_clipboard_shortcuts(self, ctx: InxGUIContext, is_scene_hovered: bool):
-        if ctx.want_text_input():
-            return
-
-        panel_active = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
-        if not (panel_active or is_scene_hovered):
-            return
-
-        if ctx.is_key_pressed(self.KEY_DELETE):
-            if self._delete_selected_callback:
-                self._delete_selected_callback()
-            return
-
-        ctrl = ctx.is_key_down(self.KEY_LEFT_CTRL) or ctx.is_key_down(self.KEY_RIGHT_CTRL)
-        if not ctrl:
-            return
-
-        try:
-            if ctx.is_key_pressed(self.KEY_C):
-                if self._copy_selected_callback:
-                    self._copy_selected_callback(False)
-                return
-            if ctx.is_key_pressed(self.KEY_X):
-                if self._copy_selected_callback:
-                    self._copy_selected_callback(True)
-                return
-            if ctx.is_key_pressed(self.KEY_V):
-                has_clipboard = True
-                if self._has_clipboard_data_callback:
-                    has_clipboard = bool(self._has_clipboard_data_callback())
-                if has_clipboard and self._paste_clipboard_callback:
-                    self._paste_clipboard_callback()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
 
     # ------------------------------------------------------------------
     # Orientation Gizmo  (Unity-style axis widget)

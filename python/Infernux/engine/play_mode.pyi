@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 from dataclasses import dataclass
+from types import CodeType
 
 
 class PlayModeState(Enum):
@@ -19,6 +20,62 @@ class PlayModeEvent:
     old_state: PlayModeState
     new_state: PlayModeState
     timestamp: float
+
+
+@dataclass(frozen=True)
+class ScriptReloadOutcome:
+    """Result of applying one validated script revision to live components."""
+
+    success: bool
+    had_live_targets: bool
+    reloaded_count: int
+    error: str
+
+
+@dataclass(frozen=True)
+class ScriptReloadBatchInput:
+    file_path: str
+    script_guid: str = ...
+    source: bytes | str | None = ...
+    code: CodeType | None = ...
+    retire_script_paths: tuple[str, ...] = ...
+
+
+@dataclass(frozen=True)
+class ScriptReloadBatchMember:
+    file_path: str
+    script_guid: str
+    had_live_targets: bool
+    target_count: int
+
+
+@dataclass
+class ScriptReloadBatch:
+    transaction: object
+    members: tuple[ScriptReloadBatchMember, ...]
+    had_live_targets: bool
+    committed: bool
+    rolled_back: bool
+    def commit(self) -> dict[type, tuple[str, ...]]: ...
+    def rollback(self) -> None: ...
+    def finalize(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class EditComponentReloadMember:
+    object_id: int
+    old_component: object
+    new_component: object
+    component_index: int
+
+
+class ScriptDeleteBatch:
+    members: tuple[EditComponentReloadMember, ...]
+    had_live_targets: bool
+    committed: bool
+    rolled_back: bool
+    def commit(self) -> int: ...
+    def rollback(self) -> None: ...
 
 
 class PlayModeManager:
@@ -64,6 +121,10 @@ class PlayModeManager:
     def total_play_time(self) -> float:
         """Total elapsed time since entering play mode."""
         ...
+    @property
+    def step_sequence(self) -> int:
+        """Number of completed paused Step commands in this Play session."""
+        ...
 
     def enter_play_mode(self) -> bool:
         """Enter play mode. Returns True on success."""
@@ -98,9 +159,45 @@ class PlayModeManager:
     def get_runtime_hidden_object_ids(self) -> set[int]: ...
     def add_runtime_hidden_listener(self, callback: Callable[[], None]) -> None: ...
     def remove_runtime_hidden_listener(self, callback: Callable[[], None]) -> None: ...
-    def reload_components_from_script(self, file_path: str) -> None:
-        """Hot-reload components defined in the given script file."""
+    def reload_components_from_script(
+        self,
+        file_path: str,
+        *,
+        source: bytes | str | None = ...,
+        code: CodeType | None = ...,
+    ) -> int: ...
+    def reload_components_from_script_result(
+        self,
+        file_path: str,
+        *,
+        source: bytes | str | None = ...,
+        code: CodeType | None = ...,
+    ) -> ScriptReloadOutcome:
+        """Hot-reload components and report whether the candidate was applied."""
         ...
+    def prepare_script_reload_batch(
+        self,
+        revisions: Iterable[ScriptReloadBatchInput],
+    ) -> ScriptReloadBatch: ...
+    def commit_script_reload_batch(
+        self,
+        batch: ScriptReloadBatch,
+    ) -> ScriptReloadOutcome: ...
+    def rollback_script_reload_batch(self, batch: ScriptReloadBatch) -> None: ...
+    def finalize_script_reload_batch(self, batch: ScriptReloadBatch) -> None: ...
+    def prepare_edit_script_reload_batch(
+        self,
+        revisions: Iterable[ScriptReloadBatchInput],
+    ) -> ScriptReloadBatch: ...
+    def commit_edit_script_reload_batch(self, batch: ScriptReloadBatch) -> int: ...
+    def rollback_edit_script_reload_batch(self, batch: ScriptReloadBatch) -> None: ...
+    def prepare_script_delete_batch(
+        self,
+        script_guid: str,
+        file_path: str,
+    ) -> ScriptDeleteBatch: ...
+    def commit_script_delete_batch(self, batch: ScriptDeleteBatch) -> int: ...
+    def rollback_script_delete_batch(self, batch: ScriptDeleteBatch) -> None: ...
     def mark_components_missing_for_script(self, script_guid: str, file_path: str) -> int:
         """Replace instances of a deleted script with preserving placeholders."""
         ...

@@ -37,9 +37,7 @@ class BloomEffect(FullScreenEffect):
     intensity: float
     scatter: float
     clamp: float
-    tint_r: float
-    tint_g: float
-    tint_b: float
+    tint: list[float]
     max_iterations: int
 
     def get_shader_list(self) -> List[str]: ...

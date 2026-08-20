@@ -249,6 +249,7 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
     rhi::BufferDesc upload;
     upload.usage = rhi::BufferUsageFlags::Storage;
     upload.memory = rhi::BufferMemory::Upload;
+    upload.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
     upload.byteSize = std::max<size_t>(desc.copyRanges.size(), 1) * sizeof(GpuParticleMigrationRange);
     m_copyRanges = device.CreateBuffer(upload);
     upload.byteSize = desc.defaultStateWords.size() * sizeof(uint32_t);

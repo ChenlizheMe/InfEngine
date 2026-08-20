@@ -11,6 +11,7 @@ from Infernux.components.ref_wrappers import (
     _resolve_component_on_game_object,
     _infer_component_type_on_game_object,
 )
+from Infernux.components import ref_wrappers
 from Infernux.lib import GameObject
 
 
@@ -69,6 +70,24 @@ class TestGameObjectRef:
         ref = GameObjectRef()
         assert ref.name is None
         assert ref.transform is None
+
+    def test_resolves_object_from_runtime_persistent_scene(self, monkeypatch):
+        target = type("PersistentObject", (), {"id": 42, "handle": None})()
+
+        class _Scene:
+            def __init__(self, found=None):
+                self.found = found
+
+            def find_by_id(self, object_id):
+                return self.found if object_id == 42 else None
+
+        monkeypatch.setattr(
+            ref_wrappers,
+            "_iter_reference_scenes",
+            lambda: (_Scene(), _Scene(target)),
+        )
+
+        assert GameObjectRef(persistent_id=42).resolve() is target
 
 
 class TestGameObjectAlias:
@@ -201,6 +220,29 @@ class TestComponentRef:
     def test_getattr_returns_none_when_unresolved(self):
         ref = ComponentRef(go_id=1, component_type="Missing")
         assert ref.some_method is None
+
+    def test_resolves_component_from_runtime_persistent_scene(self, monkeypatch):
+        go = _FakeGameObject(77)
+        component = _FakePythonComponent(go, "UIImage")
+
+        class _Scene:
+            def __init__(self, found=None):
+                self.found = found
+
+            def find_by_id(self, object_id):
+                return self.found if object_id == 77 else None
+
+        monkeypatch.setattr(
+            ref_wrappers,
+            "_iter_reference_scenes",
+            lambda: (_Scene(), _Scene(go)),
+        )
+        old_instances = InxComponent._active_instances
+        InxComponent._active_instances = {77: [component]}
+        try:
+            assert ComponentRef(go_id=77, component_type="UIImage").resolve() is component
+        finally:
+            InxComponent._active_instances = old_instances
 
 
 class _FakeGameObject:

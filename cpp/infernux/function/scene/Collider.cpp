@@ -13,6 +13,7 @@
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <InxLog.h>
+#include <core/config/EngineConfig.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 
@@ -323,10 +324,15 @@ void Collider::SetPhysicMaterialGuid(const std::string &guid)
         ClearPhysicMaterial();
         return;
     }
-    auto material = AssetRegistry::Instance().LoadAsset<PhysicMaterial>(guid, ResourceType::PhysicMaterial);
-    if (!material)
-        throw std::invalid_argument("PhysicMaterial GUID cannot be resolved: " + guid);
-    SetPhysicMaterial(std::move(material));
+    auto &graph = AssetDependencyGraph::Instance();
+    const std::string oldGuid = m_physicMaterial.GetGuid();
+    if (!oldGuid.empty() && oldGuid != guid)
+        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
+    m_physicMaterial.SetGuid(guid);
+    AssetRegistry::Instance().Resolve(m_physicMaterial, ResourceType::PhysicMaterial);
+    graph.AddRuntimeDependency(GetInstanceGuid(), guid);
+    ApplyMaterialToBody(this);
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 void Collider::ClearPhysicMaterial()
@@ -337,25 +343,29 @@ void Collider::ClearPhysicMaterial()
 void Collider::OnPhysicMaterialAssetEvent(AssetEvent event)
 {
     if (event == AssetEvent::Deleted) {
-        ClearPhysicMaterial();
+        m_physicMaterial.Invalidate();
+        ApplyMaterialToBody(this);
+        PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
         return;
     }
-    if (event == AssetEvent::Modified)
+    if (event == AssetEvent::Modified) {
+        m_physicMaterial.MarkStale();
+        AssetRegistry::Instance().Resolve(m_physicMaterial, ResourceType::PhysicMaterial);
         ApplyMaterialToBody(this);
-    if (event == AssetEvent::Modified)
         PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
+    }
 }
 
 float Collider::GetFriction() const
 {
     const auto material = m_physicMaterial.Get();
-    return material ? material->GetFriction() : 0.4f;
+    return material ? material->GetFriction() : EngineConfig::Get().defaultColliderFriction;
 }
 
 float Collider::GetBounciness() const
 {
     const auto material = m_physicMaterial.Get();
-    return material ? material->GetBounciness() : 0.0f;
+    return material ? material->GetBounciness() : EngineConfig::Get().defaultColliderBounciness;
 }
 
 PhysicsMaterialCombine Collider::GetFrictionCombine() const
@@ -406,9 +416,10 @@ void Collider::RegisterBody()
     if (!go)
         return;
 
-    // Skip physics body creation for objects in non-active scenes
-    // (e.g. prefab template cache) to avoid phantom colliders.
-    if (go->GetScene() != SceneManager::Instance().GetActiveScene())
+    // Skip physics body creation for non-runtime scenes (for example prefab
+    // template caches). DontDestroyOnLoad owns a dedicated runtime Scene and
+    // must remain physically resident across active-scene replacement.
+    if (!SceneManager::Instance().IsRuntimeScene(go->GetScene()))
         return;
 
     if (actor.bodyId != 0xFFFFFFFF) {
@@ -633,10 +644,14 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         RebuildShape();
     }
 
-    // Dynamic pose changes are handled by Rigidbody using the same dirty actor
-    // queue. Scale still reaches this point so dynamic shapes can be rebuilt.
-    if (rb && rb->IsEnabled() && !rb->IsKinematic())
+    // Rigidbody owns the pose contract for both dynamic and kinematic bodies.
+    // In particular, a direct Transform write must also update interpolation
+    // history; otherwise an old presentation sample can overwrite it before
+    // the next fixed step.
+    if (rb && rb->IsEnabled()) {
+        rb->SyncExternalMovesToPhysics(fixedDeltaTime);
         return;
+    }
 
     glm::quat rot = tf->GetWorldRotation();
     glm::vec3 pos = tf->GetPosition();
@@ -651,15 +666,8 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
 
         PhysicsWorld &physicsWorld = PhysicsWorld::Instance();
         const bool hasRigidbodies = PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0;
-        bool isKinematicBody = (rb != nullptr && rb->IsEnabled() && rb->IsKinematic());
         bool movedWithVelocity = false;
-        if (isKinematicBody && fixedDeltaTime > 0.0f) {
-            // Cap the drive speed: a transform write that jumps far (scripted
-            // teleport) must land the body immediately, not launch it across
-            // the scene at delta/dt.
-            physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime,
-                                           PhysicsWorld::kMaxTransformDriveSpeed);
-        } else if (!rb && fixedDeltaTime > 0.0f && hasRigidbodies) {
+        if (fixedDeltaTime > 0.0f && hasRigidbodies) {
             // Collider-only body moved while the simulation is stepping
             // (gizmo drag / scripted move). A static teleport only produces
             // positional depenetration — overlapped dynamic bodies would be
@@ -667,7 +675,7 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
             // kinematically instead so contacts carry real momentum.
             physicsWorld.MoveStaticBodyWithVelocity(actor.bodyId, pos, rot, fixedDeltaTime);
             movedWithVelocity = true;
-        } else if (staticPoseBatch && !rb) {
+        } else if (staticPoseBatch) {
             staticPoseBatch->push_back({actor.bodyId, pos, rot});
         } else {
             physicsWorld.SetBodyPosition(actor.bodyId, pos, rot);
@@ -676,8 +684,7 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         // After teleporting a static body, wake nearby dynamic bodies. The
         // velocity path is exempt: the body is temporarily kinematic and Jolt
         // wakes everything it touches during the step.
-        bool isStaticBody = (rb == nullptr || !rb->IsEnabled());
-        if (isStaticBody && !movedWithVelocity && hasRigidbodies) {
+        if (!movedWithVelocity && hasRigidbodies) {
             physicsWorld.WakeBodiesTouchingStatic(actor.bodyId);
         }
     }
@@ -705,19 +712,14 @@ bool Collider::DeserializeDocument(const nlohmann::json &j)
         const auto &center = j.at("center");
         staged.center = glm::vec3(center[0].get<float>(), center[1].get<float>(), center[2].get<float>());
         const std::string materialGuid = j.at("physic_material_guid").get<std::string>();
-        std::shared_ptr<PhysicMaterial> stagedMaterial;
-        if (!materialGuid.empty()) {
-            stagedMaterial =
-                AssetRegistry::Instance().LoadAsset<PhysicMaterial>(materialGuid, ResourceType::PhysicMaterial);
-            if (!stagedMaterial)
-                throw std::invalid_argument("physic_material_guid cannot be resolved: " + materialGuid);
-        }
-
         if (!Component::DeserializeDocument(j))
             return false;
         staged.deserialized = true;
         DataMut() = staged;
-        SetPhysicMaterial(std::move(stagedMaterial));
+        if (materialGuid.empty())
+            ClearPhysicMaterial();
+        else
+            SetPhysicMaterialGuid(materialGuid);
         // NOTE: RebuildShape() is called by derived classes after their own
         // fields are deserialized (so both base + derived changes are applied
         // in a single shape rebuild).
@@ -736,7 +738,10 @@ void Collider::CloneBaseColliderData(Collider &target) const
     auto &dst = target.DataMut();
     dst.isTrigger = src.isTrigger;
     dst.center = src.center;
-    target.SetPhysicMaterial(m_physicMaterial.Get());
+    if (m_physicMaterial.HasGuid())
+        target.SetPhysicMaterialGuid(m_physicMaterial.GetGuid());
+    else
+        target.SetPhysicMaterial(m_physicMaterial.Get());
 }
 
 } // namespace infernux

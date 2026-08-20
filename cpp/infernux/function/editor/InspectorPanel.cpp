@@ -1,8 +1,11 @@
+#include <core/log/InxLog.h>
 #include <function/editor/InspectorPanel.h>
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/gui/InxGUISemantics.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -12,7 +15,100 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <unordered_map>
+#include <utility>
+
+namespace
+{
+template <typename Callback> class InspectorScopeExit final
+{
+  public:
+    explicit InspectorScopeExit(Callback callback) : m_callback(std::move(callback))
+    {
+    }
+    InspectorScopeExit(const InspectorScopeExit &) = delete;
+    InspectorScopeExit &operator=(const InspectorScopeExit &) = delete;
+    ~InspectorScopeExit()
+    {
+        m_callback();
+    }
+
+  private:
+    Callback m_callback;
+};
+
+template <typename Callback> InspectorScopeExit<Callback> MakeInspectorScopeExit(Callback callback)
+{
+    return InspectorScopeExit<Callback>(std::move(callback));
+}
+
+static std::string MakeComponentAddCommandArgument(const std::string &typeName, bool isNative,
+                                                   const std::string &scriptPath, uint64_t targetComponentId = 0,
+                                                   bool insertAfter = false, bool insertAtStart = false)
+{
+    return nlohmann::json{{"type_name", typeName},       {"is_native", isNative},
+                          {"script_path", scriptPath},   {"target_component_id", targetComponentId},
+                          {"insert_after", insertAfter}, {"insert_at_start", insertAtStart}}
+        .dump();
+}
+
+static std::string MakeComponentEnabledCommandArgument(const std::vector<uint64_t> &objectIds,
+                                                       const std::vector<uint64_t> &componentIds, bool enabled,
+                                                       bool isNative)
+{
+    nlohmann::json targets = nlohmann::json::array();
+    const size_t count = (std::min)(objectIds.size(), componentIds.size());
+    for (size_t index = 0; index < count; ++index)
+        targets.push_back({{"object_id", objectIds[index]}, {"component_id", componentIds[index]}});
+    return nlohmann::json{{"targets", std::move(targets)}, {"enabled", enabled}, {"is_native", isNative}}.dump();
+}
+
+static std::string MakeComponentEnabledCommandArgument(uint64_t objectId, uint64_t componentId, bool enabled,
+                                                       bool isNative)
+{
+    return MakeComponentEnabledCommandArgument(std::vector<uint64_t>{objectId}, std::vector<uint64_t>{componentId},
+                                               enabled, isNative);
+}
+
+static std::string MakeObjectPropertyCommandArgument(uint64_t objectId, const char *property,
+                                                     const nlohmann::json &value)
+{
+    return nlohmann::json{{"object_id", objectId}, {"property", property}, {"value", value}}.dump();
+}
+
+static nlohmann::json MakeTransformValue(float px, float py, float pz, float rx, float ry, float rz, float sx, float sy,
+                                         float sz)
+{
+    return nlohmann::json{{"position", {px, py, pz}}, {"rotation", {rx, ry, rz}}, {"scale", {sx, sy, sz}}};
+}
+
+static uint32_t CaptureInspectorEditLifecycle(bool changed)
+{
+    uint32_t flags = changed ? infernux::InxGUIContext::EditChanged : 0u;
+    if (ImGui::IsItemActive())
+        flags |= infernux::InxGUIContext::EditActive;
+    if (ImGui::IsItemActivated())
+        flags |= infernux::InxGUIContext::EditActivated;
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        flags |= infernux::InxGUIContext::EditDeactivatedAfterEdit;
+    if (ImGui::IsItemDeactivated())
+        flags |= infernux::InxGUIContext::EditDeactivated;
+    return flags;
+}
+
+static std::string MakeComponentReorderCommandArgument(const std::vector<uint64_t> &objectIds,
+                                                       const std::vector<uint64_t> &draggedComponentIds,
+                                                       const std::vector<uint64_t> &targetComponentIds,
+                                                       bool insertAfter)
+{
+    return nlohmann::json{{"object_ids", objectIds},
+                          {"dragged_component_ids", draggedComponentIds},
+                          {"target_component_ids", targetComponentIds},
+                          {"insert_after", insertAfter}}
+        .dump();
+}
+} // namespace
 
 namespace infernux
 {
@@ -27,6 +123,17 @@ static constexpr float DRAG_SPEED_FINE = 0.01f;
 
 InspectorPanel::InspectorPanel() : EditorPanel("Inspector", "inspector")
 {
+}
+
+bool InspectorPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument,
+                                          const std::string &source) const
+{
+    return executeCommand && executeCommand(commandId, source, argument);
+}
+
+bool InspectorPanel::CanExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
+{
+    return canExecuteCommand && canExecuteCommand(commandId, argument);
 }
 
 // ============================================================================
@@ -76,20 +183,26 @@ void InspectorPanel::InvalidateObjectCaches()
     m_cachedObjInfoId = 0;
     m_cachedComponentListObjId = 0;
     m_cachedComponents.clear();
-    m_cachedValueGeneration = 0;
-    m_cachedValueRefreshTime = 0.0f;
+    m_cachedObjectTargetRevision = 0;
+    m_cachedObjectValueRevision = 0;
+    m_cachedComponentTargetRevision = 0;
+    m_cachedComponentSchemaRevision = 0;
+    m_cachedTransformObjId = 0;
+    m_cachedTransformValueRevision = 0;
+    m_cachedTransformData = {};
+    m_transformGestureIds = {};
 
     m_cachedMultiComponentsValid = false;
     m_cachedMultiComponentIds.clear();
     m_cachedMultiCommonComponents.clear();
-    m_cachedMultiComponentValueGeneration = 0;
-    m_cachedMultiComponentRefreshTime = 0.0f;
+    m_cachedMultiComponentTargetRevision = 0;
+    m_cachedMultiComponentSchemaRevision = 0;
 
     m_cachedMultiTransformValid = false;
     m_cachedMultiTransformIds.clear();
     m_cachedMultiTransformSnapshot = {};
-    m_cachedMultiTransformValueGeneration = 0;
-    m_cachedMultiTransformRefreshTime = 0.0f;
+    m_cachedMultiTransformTargetRevision = 0;
+    m_cachedMultiTransformValueRevision = 0;
 }
 
 // ============================================================================
@@ -117,7 +230,7 @@ void InspectorPanel::ClearSelectedObject()
 
 void InspectorPanel::SetSelectedFile(const std::string &filePath, const std::string &category)
 {
-    if (filePath != m_selectedFile) {
+    if (AssetPathKey(filePath) != AssetPathKey(m_selectedFile)) {
         m_selectedFile = filePath;
         InvalidateObjectCaches();
     }
@@ -142,7 +255,7 @@ void InspectorPanel::ClearSelectedFile()
 
 void InspectorPanel::SetDetailFile(const std::string &filePath, const std::string &category)
 {
-    if (filePath != m_selectedFile) {
+    if (AssetPathKey(filePath) != AssetPathKey(m_selectedFile)) {
         m_selectedFile = filePath;
     }
     if (!filePath.empty()) {
@@ -153,6 +266,32 @@ void InspectorPanel::SetDetailFile(const std::string &filePath, const std::strin
         m_assetCategory.clear();
         m_mode = InspectorMode::Object;
     }
+}
+
+void InspectorPanel::SetSelectedComponentIds(const std::vector<uint64_t> &componentIds)
+{
+    m_selectedComponentIds.clear();
+    for (const uint64_t componentId : componentIds) {
+        if (componentId != 0)
+            m_selectedComponentIds.insert(componentId);
+    }
+}
+
+void InspectorPanel::ClearSelectedComponents()
+{
+    m_selectedComponentIds.clear();
+}
+
+bool InspectorPanel::IsComponentSelected(uint64_t componentId) const
+{
+    return componentId != 0 && m_selectedComponentIds.find(componentId) != m_selectedComponentIds.end();
+}
+
+bool InspectorPanel::AreComponentsSelected(const std::vector<uint64_t> &componentIds) const
+{
+    return !componentIds.empty() && std::all_of(componentIds.begin(), componentIds.end(), [this](uint64_t componentId) {
+        return IsComponentSelected(componentId);
+    });
 }
 
 // ============================================================================
@@ -171,6 +310,24 @@ void InspectorPanel::VisiblePreRender(InxGUIContext * /*ctx*/)
 
 void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
 {
+    try {
+        if (getRevisionSnapshot) {
+            m_frameRevisions = getRevisionSnapshot();
+        } else {
+            const uint64_t generation = getValueGeneration ? getValueGeneration() : 0;
+            m_frameRevisions = {generation, generation, generation, generation};
+        }
+        m_revisionSnapshotErrorReported = false;
+    } catch (const std::exception &error) {
+        // Keep the preceding immutable packet.  A transient Python retirement
+        // race must not abort DrawFrame or force lifecycle getters on stale
+        // components; the next visible frame retries the journal projection.
+        if (!m_revisionSnapshotErrorReported) {
+            INXLOG_ERROR("Inspector revision snapshot failed; retaining the previous packet: ", error.what());
+            m_revisionSnapshotErrorReported = true;
+        }
+    }
+
     float totalHeight = ImGui::GetContentRegionAvail().y;
 
     bool hasDetailContent = !m_selectedFile.empty();
@@ -209,48 +366,42 @@ void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
 
 void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
 {
-    if (undoBeginFrame)
-        undoBeginFrame();
+    {
+        bool childVisible = ImGui::BeginChild("PropertiesModule", ImVec2(0, height), ImGuiChildFlags_Borders,
+                                              ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        auto childGuard = MakeInspectorScopeExit([] { ImGui::EndChild(); });
+        if (childVisible) {
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_FRAME_PAD);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_ITEM_SPC);
+            auto styleGuard = MakeInspectorScopeExit([] { ImGui::PopStyleVar(2); });
 
-    bool childVisible = ImGui::BeginChild("PropertiesModule", ImVec2(0, height), ImGuiChildFlags_Borders,
-                                          ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    if (childVisible) {
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_FRAME_PAD);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_ITEM_SPC);
-
-        bool multi = isMultiSelection && isMultiSelection();
-        if (multi) {
-            auto ids = getSelectedIds ? getSelectedIds() : std::vector<uint64_t>{};
-            if (ids.size() > 1) {
-                RenderMultiEdit(ctx, ids);
+            bool multi = isMultiSelection && isMultiSelection();
+            if (multi) {
+                auto ids = getSelectedIds ? getSelectedIds() : std::vector<uint64_t>{};
+                if (ids.size() > 1) {
+                    RenderMultiEdit(ctx, ids);
+                } else {
+                    ImGui::TextUnformatted(Tr("inspector.no_objects_selected").c_str());
+                }
             } else {
-                ImGui::TextUnformatted(Tr("inspector.no_objects_selected").c_str());
-            }
-        } else {
-            if (m_selectedObjectId != 0) {
-                RenderSingleObject(ctx, m_selectedObjectId);
-            } else {
-                ImGui::TextUnformatted(Tr("inspector.no_object_selected").c_str());
+                if (m_selectedObjectId != 0) {
+                    RenderSingleObject(ctx, m_selectedObjectId);
+                } else {
+                    ImGui::TextUnformatted(Tr("inspector.no_object_selected").c_str());
+                }
             }
         }
-
-        ImGui::PopStyleVar(2);
     }
-    ImGui::EndChild();
-
-    bool anyActive = ImGui::IsAnyItemActive();
-    if (undoEndFrame)
-        undoEndFrame(anyActive);
 
     // Drag-drop target for scripts on the whole PropertiesModule
     if (m_selectedObjectId != 0 && ImGui::BeginDragDropTarget()) {
         const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("SCRIPT_FILE");
-        if (payload && handleScriptDrop) {
+        if (payload) {
             std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
             // Remove trailing null if present
             if (!path.empty() && path.back() == '\0')
                 path.pop_back();
-            handleScriptDrop(path);
+            ExecuteEditorCommand("component.add", MakeComponentAddCommandArgument("", false, path), "drag_drop");
         }
         ImGui::EndDragDropTarget();
     }
@@ -262,24 +413,26 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
 
 void InspectorPanel::RenderRawDataModule(InxGUIContext *ctx, float height)
 {
-    bool childVisible = ImGui::BeginChild("RawDataModule", ImVec2(0, height), ImGuiChildFlags_Borders,
-                                          ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    if (childVisible) {
-        if (!m_selectedFile.empty() && m_mode == InspectorMode::Asset) {
-            if (renderAssetInspector)
-                renderAssetInspector(ctx, m_selectedFile, m_assetCategory);
-            else
-                ImGui::TextUnformatted("(Asset inspector not available)");
-        } else if (!m_selectedFile.empty()) {
-            if (renderFilePreview)
-                renderFilePreview(ctx, m_selectedFile);
-            else
-                ImGui::TextUnformatted(m_selectedFile.c_str());
-        } else {
-            ImGui::TextUnformatted(Tr("inspector.no_selection").c_str());
+    {
+        bool childVisible = ImGui::BeginChild("RawDataModule", ImVec2(0, height), ImGuiChildFlags_Borders,
+                                              ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        auto childGuard = MakeInspectorScopeExit([] { ImGui::EndChild(); });
+        if (childVisible) {
+            if (!m_selectedFile.empty() && m_mode == InspectorMode::Asset) {
+                if (renderAssetInspector)
+                    renderAssetInspector(ctx, m_selectedFile, m_assetCategory);
+                else
+                    ImGui::TextUnformatted("(Asset inspector not available)");
+            } else if (!m_selectedFile.empty()) {
+                if (renderFilePreview)
+                    renderFilePreview(ctx, m_selectedFile);
+                else
+                    ImGui::TextUnformatted(m_selectedFile.c_str());
+            } else {
+                ImGui::TextUnformatted(Tr("inspector.no_selection").c_str());
+            }
         }
     }
-    ImGui::EndChild();
 }
 
 // ============================================================================
@@ -328,10 +481,11 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     using clock = std::chrono::high_resolution_clock;
 #endif
 
-    uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool objectChanged = (m_cachedObjInfoId != objId) || (m_cachedComponentListObjId != objId);
-    bool refreshSnapshots = objectChanged || (valueGeneration != m_cachedValueGeneration) ||
-                            ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
+    const bool refreshObject = objectChanged || m_cachedObjectTargetRevision != m_frameRevisions.target ||
+                               m_cachedObjectValueRevision != m_frameRevisions.value;
+    const bool refreshComponents = objectChanged || m_cachedComponentTargetRevision != m_frameRevisions.target ||
+                                   m_cachedComponentSchemaRevision != m_frameRevisions.schema;
 
     if (objectChanged) {
         m_cachedComponentBodyHeights.clear();
@@ -343,7 +497,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     auto t0 = clock::now();
 #endif
 
-    if (refreshSnapshots) {
+    if (refreshObject) {
         if (getObjectInfo)
             m_cachedObjInfo = getObjectInfo(objId);
         else
@@ -353,6 +507,8 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             m_cachedPrefabInfo = getPrefabInfo(objId);
         else
             m_cachedPrefabInfo = {};
+        m_cachedObjectTargetRevision = m_frameRevisions.target;
+        m_cachedObjectValueRevision = m_frameRevisions.value;
     }
 
 #if INFERNUX_FRAME_PROFILE
@@ -366,6 +522,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     bool isPrefabTransformReadonly = pinfo.isTransformReadonly;
 
     ImGui::PushID(static_cast<int>(objId));
+    auto objectIdGuard = MakeInspectorScopeExit([] { ImGui::PopID(); });
 
     // Prefab header bar (if applicable)
     if (!info.prefabGuid.empty()) {
@@ -379,6 +536,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     RenderObjectHeader(ctx, objId, info);
 
     // Tag & Layer
+    ImGui::Dummy(ImVec2(0.0f, 3.0f));
     RenderTagLayerRow(ctx, objId, info);
 
     ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP));
@@ -394,14 +552,28 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     if (!info.hideTransform) {
         if (m_cachedTransformIconId == 0 && getComponentIconId)
             m_cachedTransformIconId = getComponentIconId("Transform", false);
-        auto [headerOpen, _unused] = RenderComponentHeader(
+        const auto header = RenderComponentHeader(
             ctx, "Transform", "transform", m_cachedTransformIconId,
             /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
-            /*defaultOpen=*/true, "inspector.object." + std::to_string(objId) + ".component.transform");
+            /*defaultOpen=*/true, "inspector.object." + std::to_string(objId) + ".component.transform", "transform_ctx",
+            IsComponentSelected(info.transformComponentId), {objId}, {info.transformComponentId}, false);
 
-        if (headerOpen) {
+        if (header.selectionRequested && info.transformComponentId != 0 && onComponentSelectionChanged)
+            onComponentSelectionChanged({objId}, {info.transformComponentId}, true);
+
+        if (ctx->BeginPopup("transform_ctx")) {
+            if (renderComponentContextMenu)
+                renderComponentContextMenu(ctx, objId, "Transform", info.transformComponentId, true);
+            ctx->EndPopup();
+        }
+
+        if (header.open) {
             if (isPrefabTransformReadonly)
                 ImGui::BeginDisabled();
+            auto transformDisabledGuard = MakeInspectorScopeExit([isPrefabTransformReadonly] {
+                if (isPrefabTransformReadonly)
+                    ImGui::EndDisabled();
+            });
             if (m_cachedTransformBodyHeight > 0.0f && ctx &&
                 !ctx->IsVirtualizedRegionVisible(m_cachedTransformBodyHeight)) {
                 ImGui::Dummy(ImVec2(0.0f, m_cachedTransformBodyHeight));
@@ -412,8 +584,6 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
                 if (bodyHeight > 0.0f)
                     m_cachedTransformBodyHeight = bodyHeight;
             }
-            if (isPrefabTransformReadonly)
-                ImGui::EndDisabled();
         }
     }
 
@@ -425,20 +595,24 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     // --- Prefab instance: disable everything below Transform ---
     if (isPrefabReadonly)
         ImGui::BeginDisabled();
+    auto prefabDisabledGuard = MakeInspectorScopeExit([isPrefabReadonly] {
+        if (isPrefabReadonly)
+            ImGui::EndDisabled();
+    });
 
     // ── Sub-timing: getComponentList ─────────────────────────────────
 #if INFERNUX_FRAME_PROFILE
     auto t4 = clock::now();
 #endif
 
-    if (refreshSnapshots) {
+    if (refreshComponents) {
         if (getComponentList)
             m_cachedComponents = getComponentList(objId);
         else
             m_cachedComponents.clear();
         m_cachedComponentListObjId = objId;
-        m_cachedValueGeneration = valueGeneration;
-        m_cachedValueRefreshTime = m_frameTimeNow;
+        m_cachedComponentTargetRevision = m_frameRevisions.target;
+        m_cachedComponentSchemaRevision = m_frameRevisions.schema;
     }
 
     const auto &components = m_cachedComponents;
@@ -456,37 +630,43 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     // Render each component
     for (const auto &comp : components) {
         ImGui::PushID(static_cast<int>(comp.componentId));
+        auto componentIdGuard = MakeInspectorScopeExit([] { ImGui::PopID(); });
 
         const char *scriptSuffix = comp.isBroken ? " (Missing Script)" : " (Script)";
         const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
-        auto [headerOpen, newEnabled] = RenderComponentHeader(
+        const auto header = RenderComponentHeader(
             ctx, componentLabel, "comp_" + std::to_string(comp.componentId), comp.iconId,
             /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
-            comp.isScript ? "py_comp_ctx" : "comp_ctx");
+            comp.isScript ? "py_comp_ctx" : "comp_ctx", IsComponentSelected(comp.componentId), {objId},
+            {comp.componentId});
+
+        if (header.selectionRequested && onComponentSelectionChanged)
+            onComponentSelectionChanged({objId}, {comp.componentId}, comp.isNative);
 
         // Right-click context menu — only call Python when popup is open
         bool componentRemoved = false;
         {
             const char *ctxPopupId = comp.isScript ? "py_comp_ctx" : "comp_ctx";
-            if (ImGui::BeginPopup(ctxPopupId)) {
+            if (ctx->BeginPopup(ctxPopupId)) {
                 if (renderComponentContextMenu) {
                     componentRemoved =
                         renderComponentContextMenu(ctx, objId, comp.typeName, comp.componentId, comp.isNative);
                 }
-                ImGui::EndPopup();
+                ctx->EndPopup();
             }
         }
 
         if (!componentRemoved) {
             // Enabled toggle
-            if (newEnabled != comp.enabled && setComponentEnabled) {
-                setComponentEnabled(objId, comp.componentId, newEnabled, comp.isNative);
-            }
+            if (header.enabled != comp.enabled)
+                ExecuteEditorCommand(
+                    "component.set_enabled",
+                    MakeComponentEnabledCommandArgument(objId, comp.componentId, header.enabled, comp.isNative));
 
             // Component body
-            if (headerOpen) {
+            if (header.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
@@ -506,8 +686,6 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
                 }
             }
         }
-
-        ImGui::PopID();
     }
 
     // Add Component button + popup
@@ -535,11 +713,6 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     auto t9 = clock::now();
     m_subMaterials += std::chrono::duration<double, std::milli>(t9 - t8).count();
 #endif
-
-    if (isPrefabReadonly)
-        ImGui::EndDisabled();
-
-    ImGui::PopID();
 }
 
 // ============================================================================
@@ -549,17 +722,16 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 const std::vector<InspectorPanel::CommonComponent> &
 InspectorPanel::GetCommonComponentsForMultiSelection(const std::vector<uint64_t> &ids)
 {
-    const uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool refreshSnapshots = !m_cachedMultiComponentsValid || (m_cachedMultiComponentIds != ids) ||
-                                  (valueGeneration != m_cachedMultiComponentValueGeneration) ||
-                                  ((m_frameTimeNow - m_cachedMultiComponentRefreshTime) >= VALUE_CACHE_TTL);
+                                  m_cachedMultiComponentTargetRevision != m_frameRevisions.target ||
+                                  m_cachedMultiComponentSchemaRevision != m_frameRevisions.schema;
     if (!refreshSnapshots)
         return m_cachedMultiCommonComponents;
 
     m_cachedMultiComponentsValid = true;
     m_cachedMultiComponentIds = ids;
-    m_cachedMultiComponentValueGeneration = valueGeneration;
-    m_cachedMultiComponentRefreshTime = m_frameTimeNow;
+    m_cachedMultiComponentTargetRevision = m_frameRevisions.target;
+    m_cachedMultiComponentSchemaRevision = m_frameRevisions.schema;
     m_cachedMultiCommonComponents.clear();
 
     if (!getComponentList || ids.empty())
@@ -621,21 +793,29 @@ InspectorPanel::GetCommonComponentsForMultiSelection(const std::vector<uint64_t>
 const InspectorPanel::MultiTransformSnapshot &
 InspectorPanel::GetMultiTransformSnapshot(const std::vector<uint64_t> &ids)
 {
-    const uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool refreshSnapshot = !m_cachedMultiTransformValid || (m_cachedMultiTransformIds != ids) ||
-                                 (valueGeneration != m_cachedMultiTransformValueGeneration) ||
-                                 ((m_frameTimeNow - m_cachedMultiTransformRefreshTime) >= VALUE_CACHE_TTL);
+                                 m_cachedMultiTransformTargetRevision != m_frameRevisions.target ||
+                                 m_cachedMultiTransformValueRevision != m_frameRevisions.value;
     if (!refreshSnapshot)
         return m_cachedMultiTransformSnapshot;
 
     m_cachedMultiTransformValid = true;
     m_cachedMultiTransformIds = ids;
-    m_cachedMultiTransformValueGeneration = valueGeneration;
-    m_cachedMultiTransformRefreshTime = m_frameTimeNow;
+    m_cachedMultiTransformTargetRevision = m_frameRevisions.target;
+    m_cachedMultiTransformValueRevision = m_frameRevisions.value;
     m_cachedMultiTransformSnapshot = {};
 
     if (!getTransformData || ids.empty())
         return m_cachedMultiTransformSnapshot;
+
+    if (getObjectInfo) {
+        m_cachedMultiTransformSnapshot.componentIds.reserve(ids.size());
+        for (const uint64_t objectId : ids) {
+            const uint64_t componentId = getObjectInfo(objectId).transformComponentId;
+            if (componentId != 0)
+                m_cachedMultiTransformSnapshot.componentIds.push_back(componentId);
+        }
+    }
 
     TransformData first = getTransformData(ids[0]);
     m_cachedMultiTransformSnapshot.first = first;
@@ -675,14 +855,28 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
         // Transform header
         uint64_t transformIcon = getComponentIconId ? getComponentIconId("Transform", false) : 0;
-        auto [headerOpen, _unused] = RenderComponentHeader(ctx, "Transform", "multi_transform", transformIcon,
-                                                           /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
-                                                           /*defaultOpen=*/true);
+        const auto &transformSnapshot = GetMultiTransformSnapshot(ids);
+        const auto &transformComponentIds = transformSnapshot.componentIds;
+        const auto transformHeader = RenderComponentHeader(
+            ctx, "Transform", "multi_transform", transformIcon,
+            /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"", /*defaultOpen=*/true, "", "multi_transform_ctx",
+            transformComponentIds.size() == ids.size() && AreComponentsSelected(transformComponentIds), ids,
+            transformComponentIds, false);
+
+        if (transformHeader.selectionRequested && transformComponentIds.size() == ids.size() &&
+            onComponentSelectionChanged)
+            onComponentSelectionChanged(ids, transformComponentIds, true);
+
+        if (ctx->BeginPopup("multi_transform_ctx")) {
+            if (renderComponentContextMenu && transformComponentIds.size() == ids.size())
+                renderComponentContextMenu(ctx, ids.front(), "Transform", transformComponentIds.front(), true);
+            ctx->EndPopup();
+        }
 
 #if INFERNUX_FRAME_PROFILE
         auto transformStart = clock::now();
 #endif
-        if (headerOpen)
+        if (transformHeader.open)
             RenderMultiTransform(ctx, ids);
 #if INFERNUX_FRAME_PROFILE
         auto transformEnd = clock::now();
@@ -709,18 +903,31 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
                 comp.iconId ? comp.iconId : (getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : 0);
 
             const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
-            auto [compOpen, newEnabled] =
-                RenderComponentHeader(ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId,
-                                      true, comp.enabled, comp.isScript ? " (Script)" : "", true);
+            const auto componentHeader = RenderComponentHeader(
+                ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId, true, comp.enabled,
+                comp.isScript ? " (Script)" : "", true, "", comp.isScript ? "multi_py_comp_ctx" : "multi_comp_ctx",
+                AreComponentsSelected(entry.componentIds), ids, entry.componentIds);
 
-            if (newEnabled != comp.enabled && setComponentEnabled) {
-                for (size_t objectIndex = 0; objectIndex < ids.size() && objectIndex < entry.componentIds.size();
-                     ++objectIndex)
-                    setComponentEnabled(ids[objectIndex], entry.componentIds[objectIndex], newEnabled, comp.isNative);
+            if (componentHeader.selectionRequested && onComponentSelectionChanged)
+                onComponentSelectionChanged(ids, entry.componentIds, comp.isNative);
+
+            bool componentRemoved = false;
+            const char *contextPopupId = comp.isScript ? "multi_py_comp_ctx" : "multi_comp_ctx";
+            if (ctx->BeginPopup(contextPopupId)) {
+                if (renderComponentContextMenu)
+                    componentRemoved = renderComponentContextMenu(ctx, ids.front(), comp.typeName,
+                                                                  entry.componentIds.front(), comp.isNative);
+                ctx->EndPopup();
+            }
+
+            if (!componentRemoved && componentHeader.enabled != comp.enabled) {
+                ExecuteEditorCommand("component.set_enabled",
+                                     MakeComponentEnabledCommandArgument(ids, entry.componentIds,
+                                                                         componentHeader.enabled, comp.isNative));
                 m_cachedMultiComponentsValid = false;
             }
 
-            if (compOpen) {
+            if (!componentRemoved && componentHeader.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
@@ -763,9 +970,10 @@ void InspectorPanel::RenderObjectHeader(InxGUIContext *ctx, uint64_t objId, cons
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_active", "Active", true,
                                 "inspector.object." + std::to_string(objId) + ".active");
-    if (newActive != active && setObjectProperty) {
+    if (newActive != active &&
+        ExecuteEditorCommand("scene.set_object_property", MakeObjectPropertyCommandArgument(objId, "active", newActive),
+                             "pointer")) {
         m_cachedObjInfo.active = newActive;
-        setObjectProperty(objId, "active", newActive ? "true" : "false");
     }
 
     ImGui::SameLine(0, 6);
@@ -780,9 +988,10 @@ void InspectorPanel::RenderObjectHeader(InxGUIContext *ctx, uint64_t objId, cons
         ctx->RecordSemanticItem("inspector_name", "Name", true, "inspector.object." + std::to_string(objId) + ".name");
     if (nameChanged) {
         std::string newName(nameBuf);
-        if (newName != info.name && setObjectProperty) {
+        if (newName != info.name &&
+            ExecuteEditorCommand("scene.set_object_property", MakeObjectPropertyCommandArgument(objId, "name", newName),
+                                 "inline_edit")) {
             m_cachedObjInfo.name = newName;
-            setObjectProperty(objId, "name", newName);
         }
     }
 }
@@ -822,10 +1031,14 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     RefreshTagLayerCache();
 
-    float availW = ImGui::GetContentRegionAvail().x;
-    float halfW = availW * 0.5f - 4.0f;
+    const float rowStartX = ImGui::GetCursorPosX();
+    const float availW = ImGui::GetContentRegionAvail().x;
+    constexpr float outerInset = 3.0f;
+    constexpr float columnGap = 10.0f;
+    const float columnW = (std::max)(40.0f, (availW - outerInset * 2.0f - columnGap) * 0.5f);
 
     // --- Tag (left column) ---
+    ImGui::SetCursorPosX(rowStartX + outerInset);
     ImGui::TextUnformatted(Tr("inspector.tag").c_str());
     ImGui::SameLine(0, 4.0f);
 
@@ -837,7 +1050,9 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
         }
     }
 
-    int newTagIdx = ctx->SearchableCombo("Inspector.Tag", tagIdx, m_cachedTagItems, halfW - 30, 8,
+    const float tagLabelW = ImGui::CalcTextSize(Tr("inspector.tag").c_str()).x;
+    const float tagComboW = (std::max)(40.0f, columnW - tagLabelW - 4.0f);
+    int newTagIdx = ctx->SearchableCombo("Inspector.Tag", tagIdx, m_cachedTagItems, tagComboW, 8,
                                          Tr("igui.search_hint").c_str(), Tr("igui.no_results").c_str());
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_tag", Tr("inspector.tag"), true,
@@ -845,20 +1060,21 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     if (newTagIdx != tagIdx) {
         if (newTagIdx == static_cast<int>(m_cachedTags.size())) {
             // "Add Tag..." selected
-            if (openWindow)
-                openWindow("tag_layer_settings");
+            ExecuteEditorCommand("window.open", "tag_layer_settings", "pointer");
         } else if (newTagIdx >= 0 && newTagIdx < static_cast<int>(m_cachedTags.size())) {
-            m_cachedObjInfo.tag = m_cachedTags[newTagIdx];
-            if (setObjectProperty)
-                setObjectProperty(objId, "tag", m_cachedTags[newTagIdx]);
+            const std::string &newTag = m_cachedTags[newTagIdx];
+            if (ExecuteEditorCommand("scene.set_object_property",
+                                     MakeObjectPropertyCommandArgument(objId, "tag", newTag), "pointer"))
+                m_cachedObjInfo.tag = newTag;
         }
     }
 
     // --- Layer (right column) ---
-    ImGui::SameLine(halfW + 8);
+    ImGui::SameLine(rowStartX + outerInset + columnW + columnGap);
     ImGui::TextUnformatted(Tr("inspector.layer").c_str());
     ImGui::SameLine(0, 4.0f);
-    float layerComboW = ImGui::GetContentRegionAvail().x;
+    const float layerLabelW = ImGui::CalcTextSize(Tr("inspector.layer").c_str()).x;
+    const float layerComboW = (std::max)(40.0f, columnW - layerLabelW - 4.0f);
 
     int newLayer = ctx->SearchableCombo("Inspector.Layer", info.layer, m_cachedLayerItems, layerComboW, 8,
                                         Tr("igui.search_hint").c_str(), Tr("igui.no_results").c_str());
@@ -868,11 +1084,10 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     if (newLayer != info.layer) {
         if (newLayer == static_cast<int>(m_cachedLayerItems.size()) - 1) {
             // "Add Layer..." selected
-            if (openWindow)
-                openWindow("tag_layer_settings");
-        } else if (setObjectProperty) {
+            ExecuteEditorCommand("window.open", "tag_layer_settings", "pointer");
+        } else if (ExecuteEditorCommand("scene.set_object_property",
+                                        MakeObjectPropertyCommandArgument(objId, "layer", newLayer), "pointer")) {
             m_cachedObjInfo.layer = newLayer;
-            setObjectProperty(objId, "layer", std::to_string(newLayer));
         }
     }
 }
@@ -881,12 +1096,38 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
 // Transform rendering
 // ============================================================================
 
+std::string InspectorPanel::UpdateTransformGesture(size_t rowIndex, uint32_t lifecycleFlags)
+{
+    if (rowIndex >= m_transformGestureIds.size())
+        return {};
+    auto &gestureId = m_transformGestureIds[rowIndex];
+    const bool activated = (lifecycleFlags & InxGUIContext::EditActivated) != 0u;
+    const bool changed = (lifecycleFlags & InxGUIContext::EditChanged) != 0u;
+    if (activated || (changed && gestureId.empty())) {
+        gestureId = "inspector.transform:" + std::to_string(++m_transformGestureSerial);
+    }
+    return gestureId;
+}
+
+void InspectorPanel::FinishTransformGesture(size_t rowIndex, uint32_t lifecycleFlags)
+{
+    if (rowIndex >= m_transformGestureIds.size())
+        return;
+    if ((lifecycleFlags & InxGUIContext::EditDeactivated) != 0u)
+        m_transformGestureIds[rowIndex].clear();
+}
+
 void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId)
 {
     if (!getTransformData)
         return;
 
-    TransformData td = getTransformData(objId);
+    if (m_cachedTransformObjId != objId || m_cachedTransformValueRevision != m_frameRevisions.value) {
+        m_cachedTransformData = getTransformData(objId);
+        m_cachedTransformObjId = objId;
+        m_cachedTransformValueRevision = m_frameRevisions.value;
+    }
+    TransformData td = m_cachedTransformData;
     float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH;
 
     // Vector3Control modifies the array in-place
@@ -902,41 +1143,50 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId)
     const std::string scaleSemanticId = captureSemantics ? transformBase + "scale" : std::string{};
 
     ctx->Vector3Control(Tr("Position"), pos, DRAG_SPEED_DEFAULT, labelW, positionSemanticId);
+    const uint32_t positionLifecycle = ctx->GetLastEditLifecycleFlags();
+    const std::string positionGesture = UpdateTransformGesture(0, positionLifecycle);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_transform", Tr("Position"), true, positionSemanticId);
     ctx->Vector3Control(Tr("Rotation"), rot, DRAG_SPEED_DEFAULT, labelW, rotationSemanticId);
+    const uint32_t rotationLifecycle = ctx->GetLastEditLifecycleFlags();
+    const std::string rotationGesture = UpdateTransformGesture(1, rotationLifecycle);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_transform", Tr("Rotation"), true, rotationSemanticId);
     ctx->Vector3Control(Tr("Scale"), scl, DRAG_SPEED_FINE, labelW, scaleSemanticId);
+    const uint32_t scaleLifecycle = ctx->GetLastEditLifecycleFlags();
+    const std::string scaleGesture = UpdateTransformGesture(2, scaleLifecycle);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_transform", Tr("Scale"), true, scaleSemanticId);
 
-    if (setTransformData) {
-        bool changed = false;
-        changed |= std::abs(pos[0] - td.px) > 1e-6f;
-        changed |= std::abs(pos[1] - td.py) > 1e-6f;
-        changed |= std::abs(pos[2] - td.pz) > 1e-6f;
-        changed |= std::abs(rot[0] - td.rx) > 1e-6f;
-        changed |= std::abs(rot[1] - td.ry) > 1e-6f;
-        changed |= std::abs(rot[2] - td.rz) > 1e-6f;
-        changed |= std::abs(scl[0] - td.sx) > 1e-6f;
-        changed |= std::abs(scl[1] - td.sy) > 1e-6f;
-        changed |= std::abs(scl[2] - td.sz) > 1e-6f;
+    bool changed = false;
+    changed |= std::abs(pos[0] - td.px) > 1e-6f;
+    changed |= std::abs(pos[1] - td.py) > 1e-6f;
+    changed |= std::abs(pos[2] - td.pz) > 1e-6f;
+    changed |= std::abs(rot[0] - td.rx) > 1e-6f;
+    changed |= std::abs(rot[1] - td.ry) > 1e-6f;
+    changed |= std::abs(rot[2] - td.rz) > 1e-6f;
+    changed |= std::abs(scl[0] - td.sx) > 1e-6f;
+    changed |= std::abs(scl[1] - td.sy) > 1e-6f;
+    changed |= std::abs(scl[2] - td.sz) > 1e-6f;
 
-        if (changed) {
-            TransformData newTd;
-            newTd.px = pos[0];
-            newTd.py = pos[1];
-            newTd.pz = pos[2];
-            newTd.rx = rot[0];
-            newTd.ry = rot[1];
-            newTd.rz = rot[2];
-            newTd.sx = scl[0];
-            newTd.sy = scl[1];
-            newTd.sz = scl[2];
-            setTransformData(objId, newTd);
-        }
+    if (changed) {
+        const bool positionChanged =
+            std::abs(pos[0] - td.px) > 1e-6f || std::abs(pos[1] - td.py) > 1e-6f || std::abs(pos[2] - td.pz) > 1e-6f;
+        const bool rotationChanged =
+            std::abs(rot[0] - td.rx) > 1e-6f || std::abs(rot[1] - td.ry) > 1e-6f || std::abs(rot[2] - td.rz) > 1e-6f;
+        const std::string &gestureId = positionChanged   ? positionGesture
+                                       : rotationChanged ? rotationGesture
+                                                         : scaleGesture;
+        const nlohmann::json payload{
+            {"object_ids", {objId}},
+            {"transforms",
+             {MakeTransformValue(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], scl[0], scl[1], scl[2])}},
+            {"gesture_id", gestureId}};
+        ExecuteEditorCommand("scene.set_transforms", payload.dump(), "pointer");
     }
+    FinishTransformGesture(0, positionLifecycle);
+    FinishTransformGesture(1, rotationLifecycle);
+    FinishTransformGesture(2, scaleLifecycle);
 }
 
 void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids)
@@ -955,6 +1205,7 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
     float rot[3] = {first.rx, first.ry, first.rz};
     float scl[3] = {first.sx, first.sy, first.sz};
     bool axisChanged[9] = {};
+    uint32_t rowLifecycle[3] = {};
 
     auto renderRow = [&](const std::string &label, const char *rowId, float *values, const float *originalValues,
                          const bool *rowMixed, int baseIndex, float speed) {
@@ -978,6 +1229,7 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                 auto &buffer = mixedBuffers[bufferKey];
                 const bool submitted = ImGui::InputTextWithHint("##mixed", "--", buffer.data(), buffer.size(),
                                                                 ImGuiInputTextFlags_EnterReturnsTrue);
+                rowLifecycle[baseIndex / 3] |= CaptureInspectorEditLifecycle(submitted);
                 const bool committed = submitted || ImGui::IsItemDeactivatedAfterEdit();
                 if (committed) {
                     char *end = nullptr;
@@ -991,7 +1243,9 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                     buffer.fill('\0');
                 }
             } else {
-                ImGui::DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
+                const bool edited =
+                    ImGui::DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
+                rowLifecycle[baseIndex / 3] |= CaptureInspectorEditLifecycle(edited);
                 axisChanged[baseIndex + axisIndex] = std::abs(values[axisIndex] - originalValues[axisIndex]) > 1e-6f;
             }
             ImGui::PopID();
@@ -1007,15 +1261,23 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
     renderRow(Tr("Rotation"), "rotation", rot, originalRot, mixed + 3, 3, DRAG_SPEED_DEFAULT);
     renderRow(Tr("Scale"), "scale", scl, originalScale, mixed + 6, 6, DRAG_SPEED_FINE);
 
-    if (!setTransformData)
-        return;
+    const std::array<std::string, 3> gestureIds = {
+        UpdateTransformGesture(0, rowLifecycle[0]),
+        UpdateTransformGesture(1, rowLifecycle[1]),
+        UpdateTransformGesture(2, rowLifecycle[2]),
+    };
 
     bool anyAxisChanged = false;
     for (bool changed : axisChanged)
         anyAxisChanged |= changed;
-    if (!anyAxisChanged)
+    if (!anyAxisChanged) {
+        FinishTransformGesture(0, rowLifecycle[0]);
+        FinishTransformGesture(1, rowLifecycle[1]);
+        FinishTransformGesture(2, rowLifecycle[2]);
         return;
+    }
 
+    nlohmann::json transforms = nlohmann::json::array();
     for (uint64_t id : ids) {
         TransformData td = getTransformData(id);
         if (axisChanged[0])
@@ -1036,9 +1298,19 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
             td.sy = scl[1];
         if (axisChanged[8])
             td.sz = scl[2];
-        setTransformData(id, td);
+        transforms.push_back(MakeTransformValue(td.px, td.py, td.pz, td.rx, td.ry, td.rz, td.sx, td.sy, td.sz));
     }
-    m_cachedMultiTransformValid = false;
+    size_t changedRow = 0;
+    while (changedRow < 2 && !axisChanged[changedRow * 3] && !axisChanged[changedRow * 3 + 1] &&
+           !axisChanged[changedRow * 3 + 2])
+        ++changedRow;
+    const nlohmann::json payload{
+        {"object_ids", ids}, {"transforms", std::move(transforms)}, {"gesture_id", gestureIds[changedRow]}};
+    if (ExecuteEditorCommand("scene.set_transforms", payload.dump(), "pointer"))
+        m_cachedMultiTransformValid = false;
+    FinishTransformGesture(0, rowLifecycle[0]);
+    FinishTransformGesture(1, rowLifecycle[1]);
+    FinishTransformGesture(2, rowLifecycle[2]);
 }
 
 // ============================================================================
@@ -1068,8 +1340,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
     EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
     const std::string selectLabel = Tr("inspector.prefab_select");
     if (ImGui::Button(selectLabel.c_str())) {
-        if (prefabAction)
-            prefabAction(objId, "select");
+        ExecuteEditorCommand("prefab.select_asset", std::to_string(objId));
     }
     if (captureSemantics)
         ctx->RecordSemanticItem("prefab_action", selectLabel, true, semanticBase + ".select");
@@ -1079,8 +1350,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
     EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
     const std::string openLabel = Tr("inspector.prefab_open");
     if (ImGui::Button(openLabel.c_str())) {
-        if (prefabAction)
-            prefabAction(objId, "open");
+        ExecuteEditorCommand("prefab.open", std::to_string(objId));
     }
     if (captureSemantics)
         ctx->RecordSemanticItem("prefab_action", openLabel, true, semanticBase + ".open");
@@ -1101,8 +1371,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
         EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
         const std::string applyLabel = Tr("inspector.prefab_apply");
         if (ImGui::Button(applyLabel.c_str())) {
-            if (prefabAction)
-                prefabAction(objId, "apply");
+            ExecuteEditorCommand("prefab.apply", std::to_string(objId));
         }
         if (captureSemantics)
             ctx->RecordSemanticItem("prefab_action", applyLabel, true, semanticBase + ".apply");
@@ -1112,8 +1381,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
         EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
         const std::string revertLabel = Tr("inspector.prefab_revert");
         if (ImGui::Button(revertLabel.c_str())) {
-            if (prefabAction)
-                prefabAction(objId, "revert");
+            ExecuteEditorCommand("prefab.revert", std::to_string(objId));
         }
         if (captureSemantics)
             ctx->RecordSemanticItem("prefab_action", revertLabel, true, semanticBase + ".revert");
@@ -1135,11 +1403,11 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
 // Component header (icon + checkbox + collapsing header)
 // ============================================================================
 
-std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
-                                                            const std::string &headerId, uint64_t iconId,
-                                                            bool showEnabled, bool isEnabled, const std::string &suffix,
-                                                            bool defaultOpen, const std::string &semanticId,
-                                                            const std::string &contextPopupId)
+InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
+    InxGUIContext *ctx, const std::string &typeName, const std::string &headerId, uint64_t iconId, bool showEnabled,
+    bool isEnabled, const std::string &suffix, bool defaultOpen, const std::string &semanticId,
+    const std::string &contextPopupId, bool selected, const std::vector<uint64_t> &dragObjectIds,
+    const std::vector<uint64_t> &dragComponentIds, bool allowComponentReorder)
 {
     bool newEnabled = isEnabled;
 
@@ -1157,9 +1425,12 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     displayName += suffix;
 
     // Styling
-    ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::INSPECTOR_HEADER_PRIMARY);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
+    ImGui::PushStyleColor(ImGuiCol_Header,
+                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED : EditorTheme::INSPECTOR_HEADER_PRIMARY);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
+                                                           : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
+                                                          : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE);
@@ -1177,22 +1448,111 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
         ImGui::GetWindowDrawList()->PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(clipMaxX, 1e7f), true);
     }
     bool headerOpen = ImGui::CollapsingHeader(headerKey.c_str());
+    const bool headerLeftClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    const bool headerRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
     ImGui::GetWindowDrawList()->PopClipRect();
+    // CollapsingHeader owns layout for the row.  The controls below are an
+    // overlay and must restore this cursor before component contents render.
+    const float contentCursorY = ImGui::GetCursorPosY();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     const std::string semanticBase =
         captureSemantics ? (semanticId.empty() ? "inspector.component." + headerId : semanticId) : std::string{};
     if (ctx && captureSemantics)
-        ctx->RecordSemanticItem("component_header", displayName, true, semanticBase);
+        ctx->RecordSemanticItem("component_header", displayName, true, semanticBase, selected);
 
     const ImVec2 headerMin = ImGui::GetItemRectMin();
     const ImVec2 headerMax = ImGui::GetItemRectMax();
+
+    constexpr const char *componentDragType = "INFERNUX_COMPONENT_ORDER";
+    const bool hasInsertionTarget =
+        !dragObjectIds.empty() && dragObjectIds.size() == dragComponentIds.size() &&
+        std::none_of(dragObjectIds.begin(), dragObjectIds.end(), [](uint64_t value) { return value == 0; }) &&
+        std::none_of(dragComponentIds.begin(), dragComponentIds.end(), [](uint64_t value) { return value == 0; });
+    const bool canDrag = allowComponentReorder && hasInsertionTarget;
+    uint64_t targetComponentId = 0;
+    if (hasInsertionTarget) {
+        const auto selectedIt = std::find(dragObjectIds.begin(), dragObjectIds.end(), m_selectedObjectId);
+        if (selectedIt != dragObjectIds.end())
+            targetComponentId = dragComponentIds[static_cast<size_t>(selectedIt - dragObjectIds.begin())];
+        else if (dragComponentIds.size() == 1)
+            targetComponentId = dragComponentIds.front();
+    }
+    if (canDrag) {
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoDisableHover)) {
+            std::vector<uint64_t> payload;
+            payload.reserve(1 + dragObjectIds.size() * 2);
+            payload.push_back(static_cast<uint64_t>(dragObjectIds.size()));
+            payload.insert(payload.end(), dragObjectIds.begin(), dragObjectIds.end());
+            payload.insert(payload.end(), dragComponentIds.begin(), dragComponentIds.end());
+            ImGui::SetDragDropPayload(componentDragType, payload.data(), payload.size() * sizeof(uint64_t));
+            ImGui::TextUnformatted(displayName.c_str());
+            ImGui::EndDragDropSource();
+        }
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        if (canDrag) {
+            if (const ImGuiPayload *payload =
+                    ImGui::AcceptDragDropPayload(componentDragType, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+                if (payload->DataSize >= static_cast<int>(sizeof(uint64_t))) {
+                    const auto *values = static_cast<const uint64_t *>(payload->Data);
+                    const size_t count = static_cast<size_t>(values[0]);
+                    const size_t expectedBytes = (1 + count * 2) * sizeof(uint64_t);
+                    if (count == dragObjectIds.size() && payload->DataSize == static_cast<int>(expectedBytes)) {
+                        const std::vector<uint64_t> draggedObjectIds(values + 1, values + 1 + count);
+                        const std::vector<uint64_t> draggedComponentIds(values + 1 + count, values + 1 + count * 2);
+                        const bool sameObjects = draggedObjectIds == dragObjectIds;
+                        const bool selfDrop = draggedComponentIds == dragComponentIds;
+                        if (sameObjects && !selfDrop) {
+                            const bool insertAfter = ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
+                            const float lineY = insertAfter ? headerMax.y : headerMin.y;
+                            ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
+                                                                ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                            if (payload->IsDelivery())
+                                ExecuteEditorCommand("component.reorder",
+                                                     MakeComponentReorderCommandArgument(dragObjectIds,
+                                                                                         draggedComponentIds,
+                                                                                         dragComponentIds, insertAfter),
+                                                     "drag_drop");
+                        }
+                    }
+                }
+            }
+        }
+        if (targetComponentId != 0) {
+            if (const ImGuiPayload *payload =
+                    ImGui::AcceptDragDropPayload("SCRIPT_FILE", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+                const bool insertAfter =
+                    !allowComponentReorder || ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
+                const float lineY = insertAfter ? headerMax.y : headerMin.y;
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
+                                                    ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                if (payload->IsDelivery()) {
+                    std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
+                    if (!path.empty() && path.back() == '\0')
+                        path.pop_back();
+                    const uint64_t commandTargetId = allowComponentReorder ? targetComponentId : 0;
+                    const bool insertAtStart = !allowComponentReorder;
+                    if (!ExecuteEditorCommand("component.add",
+                                              MakeComponentAddCommandArgument("", false, path, commandTargetId,
+                                                                              insertAfter, insertAtStart),
+                                              "drag_drop"))
+                        INXLOG_ERROR("Inspector rejected script component drop for '", path, "' at component ",
+                                     targetComponentId);
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
     float headerMinY = headerMin.y;
     float headerMaxY = headerMax.y;
     float headerHeight = (std::max)(0.0f, headerMaxY - headerMinY);
 
-    // Overlay: icon + checkbox + label on the same row
-    float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT;
-    ImGui::SameLine(indent, 0);
+    // Overlay: icon + checkbox + label on the same row. The header rectangle
+    // already contains ImGui's scrolling transform, so keep every overlay item
+    // in that same screen-space coordinate system.
+    const float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT;
+    const float overlayX = ImGui::GetWindowPos().x + indent;
+    ImGui::SetCursorScreenPos(ImVec2(overlayX, headerMin.y));
 
     if (iconId != 0) {
         float iconSize = EditorTheme::COMPONENT_ICON_SIZE;
@@ -1214,34 +1574,38 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
         ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
     }
 
+    bool enabledClicked = false;
     if (showEnabled) {
-        // Compact enabled box: center against the header bar height. The shared
-        // CheckboxInspector centers against ambient frame/text metrics, which
-        // sits high inside these taller collapsing-header rows.
-        const float rowY = ImGui::GetCursorPosY();
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
-        ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
-        const float boxH = ImGui::GetFrameHeight();
-        if (boxH < headerHeight)
-            ImGui::SetCursorPosY(rowY + (headerHeight - boxH) * 0.5f);
-        ImGui::Checkbox("##hdr_en", &newEnabled);
-        ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
-        ImGui::PopStyleVar();
+        const float checkboxRowHeight = (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX, ImGui::GetTextLineHeight());
+        ImGui::SetCursorScreenPos(
+            ImVec2(ImGui::GetCursorScreenPos().x, headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f));
+        ctx->CheckboxInspector("##hdr_en", &newEnabled);
+        enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         if (ctx && captureSemantics)
             ctx->RecordSemanticItem("component_enabled", displayName, true, semanticBase + ".enabled");
         ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
+        // Center the component name on the checkbox's center line so the text
+        // always lines up with the square regardless of header-row height.
+        const ImVec2 cbMin = ImGui::GetItemRectMin();
+        const ImVec2 cbMax = ImGui::GetItemRectMax();
+        const float labelH = ImGui::GetTextLineHeight();
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, (cbMin.y + cbMax.y) * 0.5f - labelH * 0.5f));
+        ImGui::TextUnformatted(displayName.c_str());
+    } else {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(displayName.c_str());
     }
 
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(displayName.c_str());
-
+    bool optionsClicked = false;
     if (!contextPopupId.empty()) {
         constexpr float optionsWidth = 24.0f;
         ImGui::SameLine();
         const float rightEdge = ImGui::GetWindowContentRegionMax().x;
         ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), rightEdge - optionsWidth));
-        if (ImGui::SmallButton("...##component_options"))
+        if (ImGui::SmallButton("...##component_options")) {
+            optionsClicked = true;
             ImGui::OpenPopup(contextPopupId.c_str());
+        }
         const std::string optionsLabel = Tr("inspector.component_options");
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             ImGui::SetTooltip("%s", optionsLabel.c_str());
@@ -1251,12 +1615,24 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
             ImGui::OpenPopup(contextPopupId.c_str());
     }
 
+    // The icon, label, enabled checkbox and options button are intentionally
+    // drawn over the collapsing header.  Treat the complete visible row as
+    // the component selection target; otherwise clicks over non-interactive
+    // overlay text miss the header and selection appears to require a second
+    // click.  Child controls still keep their own action semantics below.
+    const bool headerRowClicked =
+        ImGui::IsMouseHoveringRect(headerMin, headerMax, false) &&
+        (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right));
+
+    ImGui::SetCursorPosY(contentCursorY);
+
     // Cleanup
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(3);
 
-    return {headerOpen, newEnabled};
+    return {headerOpen, newEnabled,
+            (headerLeftClicked || headerRightClicked || headerRowClicked || optionsClicked) && !enabledClicked};
 }
 
 // ============================================================================
@@ -1288,6 +1664,7 @@ void InspectorPanel::RenderAddComponentButton(InxGUIContext *ctx)
         if (getAddComponentEntries)
             m_addCompEntries = getAddComponentEntries();
         m_addCompNeedsFocus = true;
+        m_addCompCloseRequested = false;
         ImGui::OpenPopup("##add_component_popup");
     }
     ImGui::PopStyleVar();
@@ -1296,13 +1673,19 @@ void InspectorPanel::RenderAddComponentButton(InxGUIContext *ctx)
 void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 {
     // Unity-style component browser: generous bleed, full-width search and
-    // tall rows with a clear hover band.
+    // tall rows with a clear hover band (shared popup chrome below).
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowSizeConstraints(ImVec2(em * 18.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.7f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.4f, em * 0.4f));
 
-    if (ImGui::BeginPopup("##add_component_popup")) {
+    const bool popupVisible = ctx->BeginPopup("##add_component_popup");
+    if (popupVisible) {
+        if (!m_addCompPopupOpen) {
+            m_addCompPopupOpen = true;
+            BeginTransientInteraction("add_component_popup", "popup", 200, [this]() {
+                m_addCompCloseRequested = true;
+                return true;
+            });
+        }
         const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
         if (ctx && captureSemantics)
             ctx->RecordSemanticWindow("add_component_popup", "Add Component", "inspector.add_component.popup");
@@ -1320,13 +1703,16 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
         if (searchFocused)
             m_addCompNeedsFocus = false;
         const bool focusFirst = searchFocused && ImGui::IsKeyPressed(ImGuiKey_DownArrow);
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+        if (m_addCompCloseRequested) {
             ImGui::CloseCurrentPopup();
+            m_addCompCloseRequested = false;
+            m_addCompPopupOpen = false;
+        }
 
         ImGui::Separator();
 
-        // Scrollable region
-        if (ImGui::BeginChild("##comp_list", ImVec2(0, 350), ImGuiChildFlags_None)) {
+        // Scrollable region (transparent bg inside popup via BeginChild)
+        if (ctx->BeginChild("##comp_list", 0, 350, false, 0)) {
             std::string searchLower(m_addCompSearch);
             std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -1384,13 +1770,16 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
                         ctx->RecordSemanticItem("component_option", entry->displayName, true,
                                                 "inspector.add_component.option." + std::to_string(uid));
                     if (selected || activateFromKeyboard) {
-                        if (addComponent) {
-                            addComponent(entry->displayName, entry->isNative, entry->scriptPath);
+                        if (ExecuteEditorCommand("component.add",
+                                                 MakeComponentAddCommandArgument(entry->displayName, entry->isNative,
+                                                                                 entry->scriptPath))) {
                             // The selection stays unchanged, so the normal selection-driven
                             // invalidation path does not run after adding a component.
                             InvalidateObjectCaches();
                         }
                         ImGui::CloseCurrentPopup();
+                        m_addCompPopupOpen = false;
+                        EndTransientInteraction("add_component_popup");
                         handledKeyboardSelection = true;
                     }
                 }
@@ -1401,11 +1790,13 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
                 ImGui::TextUnformatted(Tr("inspector.no_components_found").c_str());
             }
         }
-        ImGui::EndChild();
-        ImGui::EndPopup();
+        ctx->EndChild();
+        ctx->EndPopup();
+    } else if (m_addCompPopupOpen) {
+        m_addCompPopupOpen = false;
+        m_addCompCloseRequested = false;
+        EndTransientInteraction("add_component_popup");
     }
-
-    ImGui::PopStyleVar(2);
 }
 
 } // namespace infernux

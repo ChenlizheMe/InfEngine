@@ -14,8 +14,8 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Callable, List
-from Infernux.debug import Debug
+from typing import Any, Callable
+from Infernux.engine.runtime_dispatch import ReloadableCallbackRegistry
 
 
 class UIEvent:
@@ -26,39 +26,35 @@ class UIEvent:
     that carry data, use :class:`UIEvent1`.
     """
 
-    __slots__ = ("_listeners",)
+    __slots__ = ("_registry",)
 
     def __init__(self):
-        self._listeners: List[Callable[[], Any]] = []
+        self._registry = ReloadableCallbackRegistry()
 
     def add_listener(self, callback: Callable[[], Any]) -> None:
         """Register *callback* to be called on :meth:`invoke`."""
-        if callback not in self._listeners:
-            self._listeners.append(callback)
+        self._registry.add_listener(callback)
 
     def remove_listener(self, callback: Callable[[], Any]) -> None:
         """Unregister *callback*."""
-        try:
-            self._listeners.remove(callback)
-        except ValueError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        self._registry.remove_listener(callback)
 
     def remove_all_listeners(self) -> None:
         """Clear every registered listener."""
-        self._listeners.clear()
+        self._registry.remove_all_listeners()
 
     def invoke(self) -> None:
         """Fire all listeners (order of registration)."""
-        for cb in self._listeners:
-            cb()
+        # Keep the historic UIEvent contract: listener exceptions propagate to
+        # the caller instead of becoming an ignored diagnostic result.
+        self._registry.invoke(propagate_exceptions=True)
 
     @property
     def listener_count(self) -> int:
-        return len(self._listeners)
+        return self._registry.listener_count
 
     def __repr__(self):
-        return f"UIEvent(listeners={len(self._listeners)})"
+        return f"UIEvent(listeners={self.listener_count})"
 
 
 class UIEvent1:
@@ -71,32 +67,26 @@ class UIEvent1:
         on_value_changed.invoke(42)
     """
 
-    __slots__ = ("_listeners",)
+    __slots__ = ("_registry",)
 
     def __init__(self):
-        self._listeners: List[Callable[[Any], Any]] = []
+        self._registry = ReloadableCallbackRegistry()
 
     def add_listener(self, callback: Callable[[Any], Any]) -> None:
-        if callback not in self._listeners:
-            self._listeners.append(callback)
+        self._registry.add_listener(callback)
 
     def remove_listener(self, callback: Callable[[Any], Any]) -> None:
-        try:
-            self._listeners.remove(callback)
-        except ValueError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        self._registry.remove_listener(callback)
 
     def remove_all_listeners(self) -> None:
-        self._listeners.clear()
+        self._registry.remove_all_listeners()
 
     def invoke(self, arg: Any) -> None:
-        for cb in self._listeners:
-            cb(arg)
+        self._registry.invoke(arg, propagate_exceptions=True)
 
     @property
     def listener_count(self) -> int:
-        return len(self._listeners)
+        return self._registry.listener_count
 
     def __repr__(self):
-        return f"UIEvent1(listeners={len(self._listeners)})"
+        return f"UIEvent1(listeners={self.listener_count})"

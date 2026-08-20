@@ -23,10 +23,11 @@ Light::~Light()
 
 void Light::OnEnable()
 {
-    // Only register with the global light list if this object belongs to
-    // the active scene.  Prefab template cache objects must not leak here.
+    // Only runtime-resident scenes contribute to the global light list.
+    // Prefab/template utility scenes must not leak here, while objects moved
+    // to the DontDestroyOnLoad scene must be able to re-enable normally.
     if (auto *go = GetGameObject())
-        if (go->GetScene() != SceneManager::Instance().GetActiveScene())
+        if (!SceneManager::Instance().IsRuntimeScene(go->GetScene()))
             return;
     SceneManager::Instance().RegisterLight(this);
 }

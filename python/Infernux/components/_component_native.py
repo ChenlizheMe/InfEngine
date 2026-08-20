@@ -120,6 +120,8 @@ class ComponentNativeMixin:
                 elif self not in lst:
                     lst.append(self)
                 self._registered_go_id = go_id
+                from ._component_lifecycle import notify_runtime_component_added
+                notify_runtime_component_added(self)
         else:
             self._game_object_ref = None
 
@@ -137,14 +139,19 @@ class ComponentNativeMixin:
             if not lst:
                 _registry.pop(old_id, None)
         self._registered_go_id = None
+        from ._component_lifecycle import notify_runtime_component_removed
+        notify_runtime_component_removed(self)
 
     def _bind_native_component(self, cpp_component, game_object=None):
         """Bind this Python instance to its native lifecycle authority."""
         self._cpp_component = cpp_component
         self._native_handle = getattr(cpp_component, "handle", None) if cpp_component is not None else None
         self._native_scene = getattr(game_object, "scene", None) if game_object is not None else None
+        self._capture_bound_structure_version()
         self._native_game_object_handle = getattr(game_object, "handle", None) if game_object is not None else None
         self._native_generation += 1
+        if cpp_component is not None:
+            self._is_destroyed = False
         if game_object is not None:
             self._set_game_object(game_object)
 
@@ -164,6 +171,10 @@ class ComponentNativeMixin:
             except Exception as exc:
                 from Infernux.debug import Debug
                 Debug.log_warning(f"[InxComponent] Failed to read enabled during bind: {exc}")
+            # A coroutine may have started before the native proxy existed, or
+            # this may be a rebind to a new proxy. Do not let the cached Python
+            # publication state suppress the first authoritative update.
+            self._sync_native_coroutine_scheduler_state(force=True)
 
     def _sync_native_state(
         self,
@@ -192,8 +203,10 @@ class ComponentNativeMixin:
         """Invalidate native references after scene rebuild/destruction."""
         self._release_component_data_slot()
         self._cpp_component = None
+        self.__dict__.pop("_native_coroutine_scheduler_state", None)
         self._native_handle = None
         self._native_scene = None
+        self._bound_structure_version = None
         self._native_game_object_handle = None
         self._enabled = False
         self._awake_called = False
@@ -208,8 +221,60 @@ class ComponentNativeMixin:
         scheduler = getattr(self, '_coroutine_scheduler', None)
         if scheduler is not None:
             scheduler.stop_all()
+            self._sync_native_coroutine_scheduler_state()
             self._coroutine_scheduler = None
         self._invalidate_native_binding()
+
+    def _tracks_scene_structure_binding(self) -> bool:
+        """Inspector builtin wrappers may need a Play-rebuild rebind.
+
+        ``Scene.structure_version`` also advances for ordinary mutations
+        (activate, instantiate, reparent).  That is an Inspector hint, not
+        proof that a cached Rigidbody/Light wrapper is dead.
+        """
+        return bool(getattr(self, "_is_builtin_component_wrapper", False))
+
+    def _capture_bound_structure_version(self) -> None:
+        if not self._tracks_scene_structure_binding():
+            self._bound_structure_version = None
+            return
+        try:
+            scene = getattr(self, "_native_scene", None)
+            self._bound_structure_version = (
+                int(getattr(scene, "structure_version")) if scene is not None else None
+            )
+        except (TypeError, ValueError, AttributeError, RuntimeError):
+            self._bound_structure_version = None
+
+    def _native_binding_scene_revision(self):
+        scene = getattr(self, "_native_scene", None)
+        if scene is None:
+            return None
+        try:
+            return int(getattr(scene, "structure_version"))
+        except (TypeError, ValueError, AttributeError, RuntimeError):
+            return None
+
+    def _is_native_binding_stale(self) -> bool:
+        """Return True when this wrapper outlived a scene-graph replacement.
+
+        Play Mode rebuilds preserve authored component IDs.  The wrapper cache
+        therefore cannot use identity alone: a pointer that still looks live
+        may belong to the destroyed pre-rebuild Light/Camera/….
+        """
+        if bool(getattr(self, "_is_destroyed", False)):
+            return True
+        if getattr(self, "_cpp_component", None) is None:
+            return True
+        if not self._tracks_scene_structure_binding():
+            return False
+        bound = getattr(self, "_bound_structure_version", None)
+        if bound is None:
+            return False
+        current = self._native_binding_scene_revision()
+        if current is None:
+            return False
+        return int(bound) != current
 
     def _get_bound_native_component(self):
         """Return the native component if still alive, otherwise invalidate it."""
@@ -227,6 +292,8 @@ class ComponentNativeMixin:
                 self._invalidate_native_binding()
                 return None
             self._cpp_component = resolved
+            if self._tracks_scene_structure_binding():
+                self._capture_bound_structure_version()
             return resolved
         try:
             comp_id = int(cpp_component.component_id)

@@ -16,6 +16,12 @@ namespace infernux
 
 namespace
 {
+bool IsTriggerEvent(ContactEventType type)
+{
+    return type == ContactEventType::TriggerEnter || type == ContactEventType::TriggerStay ||
+           type == ContactEventType::TriggerExit;
+}
+
 Collider *ResolveContactCollider(const JPH::Body &body, const JPH::SubShapeID &subShapeId)
 {
     auto *fallback = reinterpret_cast<Collider *>(body.GetUserData());
@@ -102,6 +108,20 @@ InxContactListener::ContactPairKey InxContactListener::MakePairKey(const Contact
     if (swapSides)
         return {event.bodyIdB, event.subShapeIdB, event.bodyIdA, event.subShapeIdA};
     return {event.bodyIdA, event.subShapeIdA, event.bodyIdB, event.subShapeIdB};
+}
+
+void InxContactListener::SetEventInterestMask(uint8_t mask)
+{
+    constexpr uint8_t pairTrackingMask =
+        CollisionEnterInterest | CollisionExitInterest | TriggerEnterInterest | TriggerExitInterest;
+    if ((m_eventInterestMask & pairTrackingMask) != (mask & pairTrackingMask))
+        m_contactPairs.clear();
+    m_eventInterestMask = mask;
+}
+
+bool InxContactListener::Wants(ContactEventType type) const
+{
+    return (m_eventInterestMask & ContactEventInterestBit(type)) != 0;
 }
 
 void InxContactListener::PreStep()
@@ -198,7 +218,9 @@ void InxContactListener::OnContactAdded(const JPH::Body &inBody1, const JPH::Bod
     ioSettings.mIsSensor = isSensor;
     ApplyContactMaterial(inBody1, inBody2, inManifold, ioSettings);
     ContactEventType type = isSensor ? ContactEventType::TriggerEnter : ContactEventType::CollisionEnter;
-    PushEvent(type, inBody1, inBody2, &inManifold);
+    const ContactEventType exitType = isSensor ? ContactEventType::TriggerExit : ContactEventType::CollisionExit;
+    if (Wants(type) || Wants(exitType))
+        PushEvent(type, inBody1, inBody2, &inManifold);
 }
 
 void InxContactListener::OnContactPersisted(const JPH::Body &inBody1, const JPH::Body &inBody2,
@@ -208,11 +230,17 @@ void InxContactListener::OnContactPersisted(const JPH::Body &inBody1, const JPH:
     ioSettings.mIsSensor = isSensor;
     ApplyContactMaterial(inBody1, inBody2, inManifold, ioSettings);
     ContactEventType type = isSensor ? ContactEventType::TriggerStay : ContactEventType::CollisionStay;
-    PushEvent(type, inBody1, inBody2, &inManifold);
+    if (Wants(type))
+        PushEvent(type, inBody1, inBody2, &inManifold);
 }
 
 void InxContactListener::OnContactRemoved(const JPH::SubShapeIDPair &inSubShapePair)
 {
+    constexpr uint8_t removalInterest =
+        CollisionEnterInterest | CollisionExitInterest | TriggerEnterInterest | TriggerExitInterest;
+    if ((m_eventInterestMask & removalInterest) == 0)
+        return;
+
     // On removal we don't have full Body references — extract IDs from the pair.
     ContactEvent evt;
     // SubShapeIDPair stores BodyIDs for both bodies.
@@ -251,7 +279,8 @@ void InxContactListener::ResolveEvents(JPH::BodyInterface &bodyInterface)
             } else {
                 // Genuine new contact.
                 m_contactPairs[key] = {true, false, raw};
-                m_events.push_back(raw);
+                if (Wants(raw.type))
+                    m_events.push_back(raw);
             }
             break;
         }
@@ -263,7 +292,8 @@ void InxContactListener::ResolveEvents(JPH::BodyInterface &bodyInterface)
                 it->second.touchedThisStep = true;
                 it->second.lastEvent = raw;
             }
-            m_events.push_back(raw);
+            if (Wants(raw.type))
+                m_events.push_back(raw);
             break;
         }
 
@@ -292,8 +322,13 @@ void InxContactListener::ResolveEvents(JPH::BodyInterface &bodyInterface)
                         it->second.sleeping = true;
                 } else {
                     // Real separation or body removed from broadphase.
+                    ContactEvent exitEvent = raw;
+                    auto tracked = m_contactPairs.find(key);
+                    if (tracked != m_contactPairs.end() && IsTriggerEvent(tracked->second.lastEvent.type))
+                        exitEvent.type = ContactEventType::TriggerExit;
                     m_contactPairs.erase(key);
-                    m_events.push_back(raw);
+                    if (Wants(exitEvent.type))
+                        m_events.push_back(exitEvent);
                 }
                 break;
             }
@@ -328,8 +363,10 @@ void InxContactListener::ResolveEvents(JPH::BodyInterface &bodyInterface)
 
         if (aWokeUp || bWokeUp || aRemoved || bRemoved) {
             ContactEvent exitEvt = state.lastEvent;
-            exitEvt.type = ContactEventType::CollisionExit;
-            m_events.push_back(exitEvt);
+            exitEvt.type =
+                IsTriggerEvent(state.lastEvent.type) ? ContactEventType::TriggerExit : ContactEventType::CollisionExit;
+            if (Wants(exitEvt.type))
+                m_events.push_back(exitEvt);
             expiredPairs.push_back(key);
         }
     }

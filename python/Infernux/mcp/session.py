@@ -221,16 +221,18 @@ def read_project_script(relative_path: str) -> dict[str, Any]:
         return {"path": _relative_to_project(session, target), "content": f.read()}
 
 
-def write_project_script(relative_path: str, content: str) -> dict[str, Any]:
+def prepare_project_script_write(relative_path: str, content: str) -> dict[str, Any]:
+    """Validate one developer-authored script without mutating the project."""
     session = require_mode("developer_assist")
     target = _script_path(session, relative_path)
     lint = validate_script(content, filename=target)
     if not lint["passed"]:
         raise McpPolicyError("public_api_lint rejected the project script.")
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8", newline="\n") as f:
-        f.write(str(content))
-    return {"path": _relative_to_project(session, target), "lint": lint}
+    return {
+        "absolute_path": target,
+        "path": _relative_to_project(session, target),
+        "lint": lint,
+    }
 
 
 def read_release_wheel_source(wheel_path: str, member: str) -> dict[str, Any]:

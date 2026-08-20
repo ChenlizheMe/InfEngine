@@ -16,6 +16,7 @@
 #include "vk/DescriptorBindTrace.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
+#include "vk/RhiVulkanTypes.h"
 #include <core/types/ColorSpace.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -151,12 +152,20 @@ bool OutlineRenderer::Initialize(InxVkCoreModular *core, SceneRenderTarget *scen
     m_core = core;
     m_sceneRenderTarget = sceneTarget;
 
-    // Check if outline shaders are loaded
-    if (!m_core->HasShader("Outline Mask", "vertex") || !m_core->HasShader("Outline Mask", "fragment") ||
-        !m_core->HasShader("Outline Composite", "vertex") || !m_core->HasShader("Outline Composite", "fragment")) {
-        INXLOG_WARN("OutlineRenderer::Initialize: outline shaders not loaded yet");
+    // Editor support shaders are lazy assets. Resolve them through the same
+    // catalog path as materials/fullscreen effects instead of polling the raw
+    // module cache forever when startup has deliberately skipped eager scans.
+    if (!m_core->EnsureShaderAvailable("Outline Mask", "vertex") ||
+        !m_core->EnsureShaderAvailable("Outline Mask", "fragment") ||
+        !m_core->EnsureShaderAvailable("Outline Composite", "vertex") ||
+        !m_core->EnsureShaderAvailable("Outline Composite", "fragment")) {
+        if (!m_missingShadersReported) {
+            INXLOG_WARN("OutlineRenderer::Initialize: outline shaders are unavailable");
+            m_missingShadersReported = true;
+        }
         return false;
     }
+    m_missingShadersReported = false;
 
     CreateOutlineDescriptorResources();
     CreateOutlinePipelineLayouts();
@@ -236,6 +245,11 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     m_outlineCompositeDescSet = VK_NULL_HANDLE;
     m_outlineMaskRenderPass = VK_NULL_HANDLE;
     m_outlineCompositeRenderPass = VK_NULL_HANDLE;
+    m_outlineCompositeSamples = VK_SAMPLE_COUNT_1_BIT;
+    m_outlineMaskUsesDynamicRendering = false;
+    m_outlineCompositeUsesDynamicRendering = false;
+    m_outlineMaskRenderingSignature = {};
+    m_outlineCompositeRenderingSignature = {};
     m_resourcesReady = false;
 }
 
@@ -243,11 +257,21 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
 // Rendering
 // ============================================================================
 
-bool OutlineRenderer::EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass)
+bool OutlineRenderer::EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass,
+                                           VkSampleCountFlagBits compositeSamples,
+                                           const rhi::GraphicsRenderingSignature &maskSignature,
+                                           const rhi::GraphicsRenderingSignature &compositeSignature)
 {
-    if (!m_resourcesReady || maskRenderPass == VK_NULL_HANDLE || compositeRenderPass == VK_NULL_HANDLE)
+    const bool maskUsesDynamic = maskRenderPass == VK_NULL_HANDLE && maskSignature.IsValid();
+    const bool compositeUsesDynamic = compositeRenderPass == VK_NULL_HANDLE && compositeSignature.IsValid();
+    if (!m_resourcesReady || (!maskUsesDynamic && maskRenderPass == VK_NULL_HANDLE) ||
+        (!compositeUsesDynamic && compositeRenderPass == VK_NULL_HANDLE) || compositeSamples == 0)
         return false;
     if (m_outlineMaskRenderPass == maskRenderPass && m_outlineCompositeRenderPass == compositeRenderPass &&
+        m_outlineCompositeSamples == compositeSamples && m_outlineMaskUsesDynamicRendering == maskUsesDynamic &&
+        m_outlineCompositeUsesDynamicRendering == compositeUsesDynamic &&
+        (!maskUsesDynamic || m_outlineMaskRenderingSignature == maskSignature) &&
+        (!compositeUsesDynamic || m_outlineCompositeRenderingSignature == compositeSignature) &&
         m_outlineMaskPipeline != VK_NULL_HANDLE && m_outlineCompositePipeline != VK_NULL_HANDLE) {
         return true;
     }
@@ -255,6 +279,13 @@ bool OutlineRenderer::EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRender
     DestroyOutlinePipelines();
     m_outlineMaskRenderPass = maskRenderPass;
     m_outlineCompositeRenderPass = compositeRenderPass;
+    m_outlineCompositeSamples = compositeSamples;
+    m_outlineMaskUsesDynamicRendering = maskUsesDynamic;
+    m_outlineCompositeUsesDynamicRendering = compositeUsesDynamic;
+    m_outlineMaskRenderingSignature = maskSignature;
+    m_outlineCompositeRenderingSignature = compositeSignature;
+    if (m_outlineCompositeUsesDynamicRendering)
+        m_outlineCompositeSamples = rhi::ToVkSampleCount(compositeSignature.samples);
     return CreateOutlinePipelines();
 }
 
@@ -336,7 +367,8 @@ void OutlineRenderer::CreateOutlinePipelineLayouts()
 
 bool OutlineRenderer::CreateOutlinePipelines()
 {
-    if (!m_core || m_outlineMaskRenderPass == VK_NULL_HANDLE || m_outlineCompositeRenderPass == VK_NULL_HANDLE ||
+    if (!m_core || ((!m_outlineMaskUsesDynamicRendering && m_outlineMaskRenderPass == VK_NULL_HANDLE) ||
+                   (!m_outlineCompositeUsesDynamicRendering && m_outlineCompositeRenderPass == VK_NULL_HANDLE)) ||
         m_outlineMaskPipelineLayout == VK_NULL_HANDLE || m_outlineCompositePipelineLayout == VK_NULL_HANDLE) {
         return false;
     }
@@ -372,7 +404,7 @@ bool OutlineRenderer::CreateOutlinePipelines()
         DynamicViewportState viewportState;
         VkPipelineRasterizationStateCreateInfo raster = MakeRasterizationState(VK_CULL_MODE_NONE);
         VkPipelineDepthStencilStateCreateInfo depthStencil = MakeDepthStencilState(VK_FALSE, VK_FALSE);
-        VkPipelineMultisampleStateCreateInfo multisampling = MakeMultisampleState(VK_SAMPLE_COUNT_1_BIT);
+        VkPipelineMultisampleStateCreateInfo multisampling = MakeMultisampleState(m_outlineCompositeSamples);
         VkPipelineColorBlendAttachmentState colorBlendAttach = MakeAlphaBlendAttachment();
         VkPipelineColorBlendStateCreateInfo colorBlend = MakeColorBlendState(colorBlendAttach);
 
@@ -389,7 +421,16 @@ bool OutlineRenderer::CreateOutlinePipelines()
         pipelineInfo.pColorBlendState = &colorBlend;
         pipelineInfo.pDynamicState = &viewportState.dynamicState;
         pipelineInfo.layout = m_outlineCompositePipelineLayout;
-        pipelineInfo.renderPass = m_outlineCompositeRenderPass;
+        std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> colorFormats{};
+        VkPipelineRenderingCreateInfo renderingInfo{};
+        if (m_outlineCompositeUsesDynamicRendering) {
+            if (!rhi::BuildVkPipelineRenderingInfo(m_outlineCompositeRenderingSignature, colorFormats, renderingInfo))
+                return false;
+            pipelineInfo.pNext = &renderingInfo;
+            pipelineInfo.renderPass = VK_NULL_HANDLE;
+        } else {
+            pipelineInfo.renderPass = m_outlineCompositeRenderPass;
+        }
         pipelineInfo.subpass = 0;
 
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_outlineCompositePipeline) !=
@@ -670,7 +711,16 @@ VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreate
     pipelineInfo.pColorBlendState = &colorBlend;
     pipelineInfo.pDynamicState = &viewportState.dynamicState;
     pipelineInfo.layout = layout;
-    pipelineInfo.renderPass = m_outlineMaskRenderPass;
+    std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> colorFormats{};
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    if (m_outlineMaskUsesDynamicRendering) {
+        if (!rhi::BuildVkPipelineRenderingInfo(m_outlineMaskRenderingSignature, colorFormats, renderingInfo))
+            return VK_NULL_HANDLE;
+        pipelineInfo.pNext = &renderingInfo;
+        pipelineInfo.renderPass = VK_NULL_HANDLE;
+    } else {
+        pipelineInfo.renderPass = m_outlineMaskRenderPass;
+    }
     pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;

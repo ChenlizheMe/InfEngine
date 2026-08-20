@@ -230,6 +230,50 @@ def test_supervisor_handoff_persists_mode_transition_without_running_editor(tmp_
     assert [entry["state"] for entry in history] == ["started", "completed"]
 
 
+def test_supervisor_switch_mode_is_explicit_and_records_a_secret_free_audit(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "ExplicitSwitchPilot"
+    supervisor = SupervisorSession(str(project), mode="developer_assist")
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
+
+    result = supervisor.switch_mode(
+        "global_validation",
+        reason="Run the human-equivalent validation pass.",
+        restart_editor=False,
+    )
+
+    assert result["mode"] == "global_validation"
+    assert result["handoff"]["checkpoint"] == "session-start"
+    assert result["handoff"]["phase"] == "verified"
+    assert result["last_handoff"]["handoff_id"] == result["handoff"]["handoff_id"]
+    assert "lease" not in json.dumps(result["handoff"]).lower()
+    assert supervisor.handoff_history()[-1]["state"] == "completed"
+
+
+def test_supervisor_switch_mode_is_idempotent_when_policy_already_matches(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "IdempotentSwitchPilot"
+    supervisor = SupervisorSession(str(project), mode="global_validation")
+    supervisor.prepare_project()
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
+
+    result = supervisor.switch_mode("global_validation", reason="Confirm validation mode.")
+
+    assert result["handoff"]["phase"] == "noop"
+    assert result["handoff"]["result"]["no_change"] is True
+    assert result["launch"] is None
+    assert result["mode"] == "global_validation"
+
+
+def test_supervisor_shutdown_quiescence_rejects_a_live_endpoint(tmp_path, monkeypatch):
+    supervisor = SupervisorSession(str(tmp_path / "LiveEndpointPilot"))
+    ticks = iter((0.0, 0.0, 0.2))
+    monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(supervisor_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda _pid: False)
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: True)
+
+    assert supervisor._wait_for_clean_editor_shutdown(7331, timeout_seconds=0.1) is False
+
+
 def test_supervisor_handoff_requires_a_current_managed_checkpoint(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "ManagedHandoffPilot"
     supervisor = SupervisorSession(str(project), mode="developer_assist")
@@ -324,6 +368,38 @@ def test_supervisor_resume_ignores_stale_persisted_pid(tmp_path, monkeypatch):
     assert resumed.status()["editor_pid"] == 0
     assert resumed.status()["editor_process_owner"] == "none"
     assert resumed.status()["mcp_ready"] is False
+
+
+def test_supervisor_resume_observes_matching_manual_editor_after_stale_pid(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "ManualValidationPilot"
+    original = SupervisorSession(str(project), session_id="manual-validation-session")
+    original.prepare_project()
+    state_path = project / ".infernux" / "mcp_sessions" / "manual-validation-session" / "supervisor-session.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({"editor_pid": 9999, "editor_running": True, "mcp_ready": True})
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    lock_path = project / "ProjectSettings" / ".infernux-engine-lock.json"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps({"pid": 4242, "project_path": str(project)}), encoding="utf-8")
+
+    monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda pid: int(pid) == 4242)
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: True)
+    monkeypatch.setattr(
+        SupervisorSession,
+        "_read_mcp_session_status",
+        lambda self, **_: {
+            "project_root": str(project),
+            "session_id": "manual-validation-session",
+            "mode": self.mode,
+            "build_profile": self.build_profile,
+        },
+    )
+
+    resumed = SupervisorSession.resume(str(project), "manual-validation-session", verify_mcp=False)
+
+    assert resumed.status()["editor_running"] is True
+    assert resumed.status()["editor_pid"] == 4242
+    assert resumed.status()["mcp_ready"] is True
 
 
 def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(tmp_path, monkeypatch):
@@ -492,7 +568,37 @@ def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scen
     return executable
 
 
+def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_build=True):
+    output = tmp_path / "SingleEntryPlayerBuild"
+    data = output / "Pilot_Data"
+    data.mkdir(parents=True)
+    executable = output / "Pilot.exe"
+    executable.write_bytes(b"single-entry-player")
+    control = "token_authenticated" if debug_build else "disabled"
+    (data / "BuildManifest.json").write_text(json.dumps({
+        "game_name": "Pilot",
+        "debug_build": debug_build,
+        "scenes": [],
+        "build_output": {
+            "tool": "Infernux",
+            "project_identity": supervisor_module.path_fingerprint(str(project_root)),
+        },
+        "runtime_contract": {"runtime_policy": {"player_control": control}},
+    }), encoding="utf-8")
+    (data / "Player.inxmanifest").write_text(json.dumps({
+        "audit": {"passed": True},
+        "product": {
+            "layout": "single_executable_native_packages",
+            "single_entry_point": True,
+            "entry_points": ["Pilot.exe"],
+        },
+    }), encoding="utf-8")
+    return executable
+
+
 def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeypatch):
+    local_state = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_state))
     project = tmp_path / "Desktop" / "PlayerPilot"
     supervisor = SupervisorSession(str(project), session_id="player-launch")
     supervisor.prepare_project()
@@ -530,8 +636,43 @@ def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeyp
     )
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
     assert supervisor.player_runtime_log_path == str(
-        expected_runtime.parent.parent / "Logs" / "player.log"
+        local_state / "Infernux" / "Players" / "Pilot" / "Logs" / "player.log"
     )
+    supervisor._close_player_log()
+
+
+def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "SingleEntryPilot"
+    supervisor = SupervisorSession(str(project), session_id="single-entry-player-launch")
+    supervisor.prepare_project()
+    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    captured = {}
+
+    class _PlayerProcess:
+        pid = 8449
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _popen(argv, **kwargs):
+        captured.update({"argv": argv, **kwargs})
+        with open(kwargs["env"]["_INFERNUX_READY_FILE"], "w", encoding="utf-8") as stream:
+            stream.write("ENGINE_LOADED\n")
+        return _PlayerProcess()
+
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
+
+    status = supervisor.launch_player(str(executable), timeout_seconds=1.0)
+
+    expected_data = executable.parent / "Pilot_Data"
+    assert status["player_running"] is True
+    assert status["player_ready"] is True
+    assert captured["argv"] == [str(executable)]
+    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(executable.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_data)
+    assert captured["env"]["_INFERNUX_PLAYER_MODULE_ROOT"] == str(expected_data / "RuntimeModules")
     supervisor._close_player_log()
 
 

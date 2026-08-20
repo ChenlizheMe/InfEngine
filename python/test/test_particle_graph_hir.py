@@ -498,6 +498,67 @@ def test_exec_bound_get_attribute_samples_before_later_attribute_writes():
     assert capture_store < lifetime_store < sampled_read
 
 
+def test_exec_bound_get_attribute_allocates_capture_without_value_reuse():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "sample-position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "seek",
+                "particle.motion.target_position",
+                properties={
+                    "target": [0.0, 4.4, 0.0],
+                    "speed": 0.48,
+                    "responsiveness": 0.18,
+                    "arrival_radius": 1.4,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-sample",
+                "root.update",
+                "out",
+                "sample-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "sample-seek",
+                "sample-position",
+                "out",
+                "seek",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    capture_id = particle_attribute_capture_id("update", "sample-position")
+    emitter = program.emitters[0]
+
+    assert any(attribute.stable_id == capture_id for attribute in emitter.attributes)
+    assert [operation.opcode for operation in _operations(emitter.update)] == [
+        "attribute.capture",
+        "motion.target_position",
+    ]
+    kernel = ParticleKernelLowerer().lower(program)
+    capture_store = next(
+        instruction
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == capture_id
+    )
+    assert capture_store is not None
+
+
 def test_unbound_get_attribute_reads_live_at_its_consumer():
     update = GraphDocument(
         "particle.update",
@@ -1584,6 +1645,42 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
     assert load.result_type == TypeRef(ValueType.VEC3)
     assert load.immediate_dict() == {"parameter": "wind"}
     assert kernel.to_dict() == type(kernel).from_dict(kernel.to_dict()).to_dict()
+
+
+def test_color_parameter_hdr_is_runtime_metadata_not_behavior():
+    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+    from Infernux.particle.artifact import _program_to_dict
+
+    parameter = ParticleParameter(
+        "tint",
+        "Tint",
+        TypeRef(ValueType.COLOR),
+        [1.0, 1.0, 1.0, 1.0],
+    )
+    hdr_parameter = replace(parameter, attributes=(GRAPH_PARAMETER_HDR_ATTRIBUTE,))
+    asset = ParticleGraphAsset(
+        parameters=(parameter,),
+        emitters=(ParticleEmitterAsset(),),
+    )
+    program = ParticleGraphCompiler().compile(asset)
+    hdr_program = ParticleGraphCompiler().compile(
+        replace(asset, parameters=(hdr_parameter,))
+    )
+    metadata = decode_particle_runtime_metadata(program)
+    hdr_metadata = decode_particle_runtime_metadata(hdr_program)
+    encoded = _program_to_dict(hdr_program)
+
+    assert program.parameters[0].hdr is False
+    assert hdr_program.parameters[0].hdr is True
+    assert program.behavior_hash == hdr_program.behavior_hash
+    assert metadata.parameters[0].hdr is False
+    assert hdr_metadata.parameters[0].hdr is True
+    assert encoded["parameters"][0]["hdr"] is True
+    assert decode_particle_runtime_metadata(encoded).parameters[0].hdr is True
+
+    legacy = copy.deepcopy(encoded)
+    del legacy["parameters"][0]["hdr"]
+    assert decode_particle_runtime_metadata(legacy).parameters[0].hdr is False
 
 
 def test_writable_graph_parameter_lowers_to_one_typed_shared_store():
@@ -2795,8 +2892,9 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     assert output.shader == "Particle Unlit"
     assert {item.name for item in output.shader_properties} == {
         "baseColor",
+        "glow",
+        "rainbow",
         "texSampler",
-        "softness",
     }
     assert output.soft_particles is False
     assert output.cast_shadows is False
@@ -3099,6 +3197,248 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
         "store_attribute",
     }
     assert {"builtin.color", "builtin.size"} <= set(kernel.update.written_attributes)
+
+
+def test_transform_position_to_set_position_inserts_position_space_conversion():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "get-position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "to-world",
+                "common.space.transform_position",
+                properties={"target_space": "world"},
+            ),
+            GraphNodeRecord("set-position", "particle.attribute.position"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "set-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("get-transform", "get-position", "value", "to-world", "input"),
+            GraphLinkRecord("transform-set", "to-world", "value", "set-position", "value"),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    conversion = next(
+        instruction
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "convert_space"
+        and instruction.immediate_dict().get("to") == "simulation"
+    )
+    assert conversion.immediate_dict() == {
+        "from": "world",
+        "to": "simulation",
+        "semantic": "position",
+    }
+    assert conversion.result_type == TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    assert "builtin.position" in kernel.update.written_attributes
+
+
+def test_transform_direction_treats_untyped_vector_as_emitter_local():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "local-velocity",
+                "common.vector.compose3",
+                properties={"x": 0.0, "y": 0.0, "z": 1.25},
+            ),
+            GraphNodeRecord(
+                "to-simulation",
+                "common.space.transform_direction",
+                properties={"target_space": "simulation"},
+            ),
+            GraphNodeRecord("set-velocity", "particle.attribute.velocity"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.init",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "compose-transform",
+                "local-velocity",
+                "value",
+                "to-simulation",
+                "input",
+            ),
+            GraphLinkRecord(
+                "transform-set",
+                "to-simulation",
+                "value",
+                "set-velocity",
+                "value",
+            ),
+        ),
+    )
+
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init),))
+        )
+    ).emitters[0]
+    conversions = [
+        instruction.immediate_dict()
+        for instruction in kernel.init.instructions
+        if instruction.opcode == "convert_space"
+        and instruction.immediate_dict().get("semantic") == "direction"
+    ]
+    assert {
+        "from": "none",
+        "to": "emitter_local",
+        "semantic": "direction",
+    } in conversions
+    assert {
+        "from": "emitter_local",
+        "to": "simulation",
+        "semantic": "direction",
+    } in conversions
+    assert "builtin.velocity" in kernel.init.written_attributes
+
+
+def test_unused_broken_value_graph_does_not_drop_chained_attribute_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-velocity", "particle.attribute.velocity"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord("orphan-size", "particle.attribute.size"),
+            GraphNodeRecord("length", "common.vector.length"),
+            GraphNodeRecord(
+                "speed",
+                "common.constant.vec3",
+                properties={"value": [0.0, 2.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "size",
+                "common.constant.f32",
+                properties={"value": 3.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-velocity",
+                "root.update",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "exec-size",
+                "set-velocity",
+                "out",
+                "set-size",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("bind-velocity", "speed", "value", "set-velocity", "value"),
+            GraphLinkRecord("bind-size", "size", "value", "set-size", "value"),
+            GraphLinkRecord(
+                "orphan-value",
+                "length",
+                "result",
+                "orphan-size",
+                "value",
+            ),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    hir = program.emitters[0]
+    opcodes = [operation.opcode for operation in _operations(hir.update)]
+    assert opcodes.count("attribute.modify_size") == 1
+    assert "attribute.modify_velocity" in opcodes
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    assert {"builtin.velocity", "builtin.size"} <= set(kernel.update.written_attributes)
+
+
+def test_set_velocity_then_set_size_keeps_both_attribute_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-velocity", "particle.attribute.velocity"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord(
+                "speed",
+                "common.constant.vec3",
+                properties={"value": [0.0, 2.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "size",
+                "common.constant.f32",
+                properties={"value": 3.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-velocity",
+                "root.update",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "exec-size",
+                "set-velocity",
+                "out",
+                "set-size",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("bind-velocity", "speed", "value", "set-velocity", "value"),
+            GraphLinkRecord("bind-size", "size", "value", "set-size", "value"),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    hir = program.emitters[0]
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    opcodes = [operation.opcode for operation in _operations(hir.update)]
+    velocity_index = opcodes.index("attribute.modify_velocity")
+    size_index = opcodes.index("attribute.modify_size")
+    assert velocity_index < size_index
+    stored = [
+        instruction.immediate_dict()["attribute"]
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "store_attribute"
+    ]
+    assert stored.index("builtin.velocity") < stored.index("builtin.size")
+    assert {"builtin.velocity", "builtin.size"} <= set(kernel.update.written_attributes)
+    literals = [
+        instruction.immediate_dict().get("value")
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "constant"
+    ]
+    assert [0.0, 2.0, 0.0] in literals
+    assert 3.5 in literals
 
 
 def test_particle_behavior_hash_ignores_graph_identity_layout_and_record_order():
@@ -5047,6 +5387,32 @@ def test_particle_runtime_index_loads_aot_without_authoring_source(tmp_path, mon
     assert restored.artifact_path == compiled.artifact_path
 
 
+def test_particle_force_recompile_replaces_registered_artifact(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine import project_context
+
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    source_path = tmp_path / "Assets" / "ForceRecovery.particlegraph"
+    source_path.parent.mkdir()
+    ParticleGraphAsset(stable_id="force-recovery").save(str(source_path))
+    current = ParticleArtifactRegistry.get(str(source_path))
+    assert current is not None
+
+    stale = replace(current, gpu_glsl={"emitters": []}, gpu_spirv={})
+    source_key = ParticleArtifactRegistry._source_key(str(source_path))
+    with ParticleArtifactRegistry._lock:
+        ParticleArtifactRegistry._register_unlocked(stale, source_key, source_key)
+
+    rebuilt = ParticleArtifactRegistry.compile_path(
+        str(source_path), force_recompile=True
+    )
+
+    assert rebuilt is not stale
+    assert rebuilt.gpu_glsl["$schema"] == "infernux.particle_gpu_glsl"
+    assert ParticleArtifactRegistry.get(str(source_path)) is rebuilt
+
+
 def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monkeypatch):
     from Infernux.engine import project_context
 
@@ -5108,6 +5474,58 @@ def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monk
     assert restored.behavior_hash == persisted.behavior_hash
 
 
+def test_particle_artifacts_are_indexed_by_asset_guid(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    portal_guid = "a" * 32
+    trail_guid = "b" * 32
+    ParticleArtifactRegistry.save_graph_asset(
+        ParticleGraphAsset(stable_id="shared-graph", name="portal"),
+        str(assets / "Portal.particlegraph"),
+        guid=portal_guid,
+    )
+    ParticleArtifactRegistry.save_graph_asset(
+        ParticleGraphAsset(stable_id="shared-graph", name="trail"),
+        str(assets / "Trail.particlegraph"),
+        guid=trail_guid,
+    )
+
+    artifact_root = tmp_path / "Library" / "Artifacts" / "Particle"
+    assert (artifact_root / f"{portal_guid}.inxparticle").is_file()
+    assert (artifact_root / f"{trail_guid}.inxparticle").is_file()
+    index = json.loads((artifact_root / "RuntimeIndex.json").read_text(encoding="utf-8"))
+    assert {entry["guid"] for entry in index["entries"]} == {portal_guid, trail_guid}
+
+
+def test_particle_artifact_uses_meta_guid_when_compile_omits_guid(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "MetaOwned.particlegraph"
+    path.parent.mkdir()
+    guid = "c" * 32
+    Path(str(path) + ".meta").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "guid": {"type": "string", "value": guid},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ParticleGraphAsset(stable_id="meta-owned").save(str(path))
+
+    assert (
+        tmp_path / "Library" / "Artifacts" / "Particle" / f"{guid}.inxparticle"
+    ).is_file()
+
+
 def test_particle_graph_artifact_hash_ignores_json_formatting(tmp_path, monkeypatch):
     from Infernux.engine import project_context
     from Infernux.particle import artifact as artifact_module
@@ -5167,6 +5585,79 @@ def test_particle_graph_rebuilds_deterministically_after_library_cleanup(
     assert rebuilt.kernel_ir == first.kernel_ir
     assert rebuilt.gpu_glsl == first.gpu_glsl
     assert rebuilt.gpu_spirv == first.gpu_spirv
+
+
+def test_ensure_project_compiled_rebuilds_missing_library_artifacts(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    assets = tmp_path / "Assets" / "VFX"
+    assets.mkdir(parents=True)
+    path = assets / "Portal.particlegraph"
+    guid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    Path(str(path) + ".meta").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "guid": {"type": "string", "value": guid},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ParticleGraphAsset(stable_id="portal-ensure", name="Portal").save(str(path))
+    artifact_path = (
+        tmp_path / "Library" / "Artifacts" / "Particle" / f"{guid}.inxparticle"
+    )
+    assert artifact_path.is_file()
+    artifact_path.unlink()
+    ParticleArtifactRegistry.clear()
+
+    summary = ParticleArtifactRegistry.ensure_project_compiled(str(tmp_path))
+
+    compiled = {Path(item).resolve() for item in summary["compiled"]}
+    assert path.resolve() in compiled
+    assert artifact_path.is_file()
+    assert not summary["failed"]
+
+
+def test_ensure_project_compiled_raises_when_source_is_invalid(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    assets = tmp_path / "Assets" / "VFX"
+    assets.mkdir(parents=True)
+    path = assets / "Broken.particlegraph"
+    path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(ParticleArtifactError, match="Particle artifact compile failed"):
+        ParticleArtifactRegistry.ensure_project_compiled(
+            str(tmp_path),
+            raise_on_error=True,
+        )
+
+
+def test_source_needs_compile_when_library_artifact_is_stale(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Stale.particlegraph"
+    path.parent.mkdir(parents=True)
+    ParticleGraphAsset(stable_id="stale-graph", name="Before").save(str(path))
+    assert not ParticleArtifactRegistry.source_needs_compile(str(path))
+
+    path.write_text(
+        ParticleGraphAsset(stable_id="stale-graph", name="After").canonical_json(),
+        encoding="utf-8",
+    )
+
+    assert ParticleArtifactRegistry.source_needs_compile(str(path))
+    rebuilt = ParticleArtifactRegistry.ensure_source_compiled(str(path))
+    assert rebuilt is not None
+    assert not ParticleArtifactRegistry.source_needs_compile(str(path))
 
 
 def test_particle_graph_latest_request_wins_out_of_order_compilation(

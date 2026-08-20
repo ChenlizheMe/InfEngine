@@ -46,17 +46,11 @@ glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 glm::vec3 Transform::GetWorldPosition() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
         return store.GetCachedWorldPosition(m_ecsHandle.index);
     }
 
-    Transform *parentTransform = GetParentTransformSafe();
-    if (!parentTransform) {
-        return GetLocalPosition();
-    }
-
-    glm::mat4 parentWorld = parentTransform->GetWorldMatrix();
-    return glm::vec3(parentWorld * glm::vec4(GetLocalPosition(), 1.0f));
+    return glm::vec3(GetWorldMatrix()[3]);
 }
 
 void Transform::SetWorldPosition(const glm::vec3 &worldPos)
@@ -78,6 +72,42 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
     InvalidateWorldMatrix(false);
 }
 
+void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::quat &worldRot, bool applyRotation)
+{
+    auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
+        store.SetCachedWorldPoseFromPhysics(m_ecsHandle.index, worldPos, glm::normalize(worldRot), applyRotation);
+        return;
+    }
+
+    Transform *parentTransform = GetParentTransformSafe();
+    if (!parentTransform) {
+        store.SetLocalPosition(m_ecsHandle, worldPos);
+    } else {
+        const glm::mat4 invParentWorld = glm::inverse(parentTransform->GetWorldMatrix());
+        store.SetLocalPosition(m_ecsHandle, glm::vec3(invParentWorld * glm::vec4(worldPos, 1.0f)));
+    }
+
+    if (applyRotation) {
+        const glm::quat safeWorldRot = glm::normalize(worldRot);
+        const glm::quat localRot =
+            parentTransform ? glm::inverse(parentTransform->GetWorldRotation()) * safeWorldRot : safeWorldRot;
+        store.SetLocalRotation(m_ecsHandle, localRot);
+        store.SetLocalEulerAngles(m_ecsHandle,
+                                  ExtractEulerAnglesNear(localRot, store.GetLocalEulerAngles(m_ecsHandle)));
+        if (store.GetHasCachedWorldEulerAngles(m_ecsHandle)) {
+            store.SetCachedWorldEulerAngles(
+                m_ecsHandle, ExtractEulerAnglesNear(safeWorldRot, store.GetCachedWorldEulerAngles(m_ecsHandle)));
+        } else {
+            store.SetCachedWorldEulerAngles(m_ecsHandle, ExtractEulerAngles(safeWorldRot));
+            store.SetHasCachedWorldEulerAngles(m_ecsHandle, true);
+        }
+    }
+
+    store.SetDirty(m_ecsHandle, true);
+    store.InvalidateSubtree(this, applyRotation, this);
+}
+
 // ============================================================================
 // World Matrix
 // ============================================================================
@@ -85,6 +115,9 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
 const glm::mat4 &Transform::GetWorldMatrix() const
 {
     auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
+        return store.ComposeFrameCacheWorldMatrix(m_ecsHandle, this);
+    }
     if (!store.GetWorldMatrixDirty(m_ecsHandle)) {
         return store.GetCachedWorldMatrix(m_ecsHandle);
     }
@@ -117,7 +150,7 @@ void Transform::InvalidateWorldMatrix(bool clearWorldEulerExact) const
 glm::quat Transform::GetWorldRotation() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
         return store.GetCachedWorldRotation(m_ecsHandle.index);
     }
 
@@ -218,7 +251,8 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
 }
 
 // ============================================================================
-// World-space Scale (approximate lossyScale)
+// World-space Scale (lossyScale). Particles use GetWorldMatrix() instead of
+// this vector: direction conversion must not inherit authoring scale.
 // ============================================================================
 
 glm::vec3 Transform::GetWorldScale() const

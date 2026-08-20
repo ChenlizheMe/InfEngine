@@ -16,6 +16,7 @@
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <glm/glm.hpp>
@@ -100,6 +101,16 @@ InxVkCoreModular::~InxVkCoreModular()
     // still alive, then destroy both previewers in the controlled order below.
     m_resourceManager.DrainAsyncGraphicsSubmissions();
 
+    // Draw-list metadata owns stable mesh-buffer leases. Release those leases
+    // before clearing the residency maps and before the Vulkan allocator dies.
+    ReleaseActiveDrawLists();
+
+    // Pass-resolution entries retain immutable ShaderProgram publications.
+    // Drop those external owners before MaterialPipelineManager shuts down its
+    // program cache; otherwise their Vulkan layouts/modules can outlive the
+    // device and be destroyed by member teardown with an invalid VkDevice.
+    ReleaseMaterialPassResolutionCache();
+
     // Flush all deferred deletions before tearing down subsystems
     m_deletionQueue.FlushAll();
 
@@ -145,7 +156,8 @@ InxVkCoreModular::~InxVkCoreModular()
     m_perObjectBuffers.clear();
     m_sharedMeshBuffers.clear();
     m_pendingSharedMeshBuffers.clear();
-    m_pendingTextureCpuLoads.clear();
+    m_pendingTextureAssetLoads.clear();
+    m_pendingTextureStagingLoads.clear();
     m_pendingTextureGpuUploads.clear();
 
     // Preview renderers are texture/material publication consumers. Destroy
@@ -153,6 +165,13 @@ InxVkCoreModular::~InxVkCoreModular()
     // device through a preview-owned descriptor or asynchronous readback.
     m_gpuMeshPreview.reset();
     m_gpuMaterialPreview.reset();
+    // ShaderProgram keeps the table layout as a device-global ABI object. Drop
+    // that reference before destroying the table's VkDescriptorSetLayout.
+    ShaderProgram::SetBindlessTextureEnabled(false);
+    ShaderProgram::SetBindlessTextureDescSetLayout(VK_NULL_HANDLE);
+    InxShaderLoader::SetBindlessTextureABIEnabled(false);
+    m_backend.Device().GetRhiDevice().ClearBindlessTextureTable();
+    m_bindlessTextureTable.DestroyAfterDeviceIdle();
     m_textureCache.Clear();
     m_shaderCache.Clear();
 
@@ -244,7 +263,7 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_ERROR("Failed to initialize Vulkan submission executor");
         return false;
     }
-    m_backend.Device().GetRhiDevice().GetDescriptorManager().UseSubmissionSerials(
+    m_backend.Device().GetRhiDevice().UseSubmissionSerials(
         [this] { return m_backend.Queues().GetLastReservedCompletionEpoch(); });
 
     // Now that device is ready, initialize resource manager
@@ -252,6 +271,53 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_ERROR("Failed to initialize resource manager");
         return false;
     }
+
+    // Shader assets are imported as soon as InxRenderer::Init returns, before
+    // PreparePipeline runs. Finalize the material texture ABI here, using the
+    // actual table allocation result rather than physical-device capability.
+    // This makes the first shader compilation bounded when table creation or
+    // descriptor allocation fails, even on an otherwise capable device.
+    m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
+    if (auto fallbackSlot = m_textureCache.Find("white")) {
+        const auto fallback = fallbackSlot->Acquire();
+        if (fallback &&
+            m_bindlessTextureTable.Initialize(
+                GetDevice(), rhiDevice.GetDescriptorManager(), rhiDevice.GetCapabilityState(),
+                rhiDevice.GetCapabilities().limits, rhiDevice.Resolve(fallback->GetView()),
+                rhiDevice.Resolve(fallback->GetSampler()), std::static_pointer_cast<const void>(fallback))) {
+            const auto stats = m_bindlessTextureTable.GetStats();
+            INXLOG_INFO("Bindless texture table initialized: capacity=", stats.capacity);
+        } else {
+            INXLOG_WARN("Bindless texture table unavailable; using bounded material descriptors");
+        }
+    } else {
+        INXLOG_WARN("Bindless texture table unavailable: default white texture publication is missing");
+    }
+
+    const bool bindlessTextureABI = vk::VulkanBindlessTextureTable::CanUseShaderABI(rhiDevice.GetCapabilityState(),
+                                                                                    m_bindlessTextureTable.IsReady());
+    if (bindlessTextureABI &&
+        !rhiDevice.ConfigureBindlessTextureTable(
+            m_bindlessTextureTable.GetLayout(), m_bindlessTextureTable.GetSet(),
+            [this, &rhiDevice](const std::shared_ptr<const rhi::TextureGpuView> &view) {
+                if (!view)
+                    return rhi::ResourceIndex{};
+                return m_bindlessTextureTable.PublishTextureView(view, rhiDevice.Resolve(view->GetView()),
+                                                                 rhiDevice.Resolve(view->GetSampler()));
+            },
+            [this](const rhi::ResourceIndex *resources, size_t count, rhi::SubmissionSerial serial) {
+                m_bindlessTextureTable.MarkSetUsed(serial);
+                for (size_t index = 0; index < count; ++index)
+                    (void)m_bindlessTextureTable.MarkUsed(resources[index], serial);
+            })) {
+        INXLOG_ERROR("Bindless texture table could not publish its RHI binding; using bounded material descriptors");
+    }
+    const bool bindlessRhiReady = rhiDevice.GetBindlessTextureTableBinding().IsValid();
+    ShaderProgram::SetBindlessTextureDescSetLayout(
+        bindlessRhiReady ? rhiDevice.Resolve(rhiDevice.GetBindlessTextureTableBinding().layout) : VK_NULL_HANDLE);
+    ShaderProgram::SetBindlessTextureEnabled(bindlessTextureABI && bindlessRhiReady);
+    InxShaderLoader::SetBindlessTextureABIEnabled(bindlessTextureABI && bindlessRhiReady);
 
     // Initialize the async-transfer context. On GPUs without a dedicated
     // transfer queue this aliases to the graphics queue and behaves like
@@ -339,9 +405,6 @@ bool InxVkCoreModular::PrepareSurface()
 
 void InxVkCoreModular::PreparePipeline()
 {
-    // Create default white texture
-    m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
-
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
     m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
     INXLOG_INFO("Created default flat normal texture: _default_normal");
@@ -380,6 +443,20 @@ void InxVkCoreModular::CreateDefaultWhiteTexture(std::string name)
 void InxVkCoreModular::LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type)
 {
     m_shaderCache.LoadShader(name, spirvCode, type, m_pipelineManager);
+}
+
+bool InxVkCoreModular::EnsureShaderAvailable(const std::string &name, const std::string &type)
+{
+    if (HasShader(name, type))
+        return true;
+    if (!m_shaderAssetResolver || !m_shaderAssetResolver(name, type))
+        return false;
+    return HasShader(name, type);
+}
+
+uint64_t InxVkCoreModular::GetShaderCodeFingerprint(const std::string &name, const std::string &type) const
+{
+    return m_shaderCache.GetCodeFingerprint(name, type);
 }
 
 bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
@@ -519,9 +596,13 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
     }
 #endif
 
-    INXLOG_INFO("Invalidating texture cache for GUID: ", textureGuid);
-
-    m_pendingTextureCpuLoads.erase(textureGuid);
+    m_pendingTextureAssetLoads.erase(textureGuid);
+    for (auto pending = m_pendingTextureStagingLoads.begin(); pending != m_pendingTextureStagingLoads.end();) {
+        if (!pending->second || pending->second->GetGuid() == textureGuid)
+            pending = m_pendingTextureStagingLoads.erase(pending);
+        else
+            ++pending;
+    }
     for (auto pending = m_pendingTextureGpuUploads.begin(); pending != m_pendingTextureGpuUploads.end();) {
         if (pending->second.guid != textureGuid) {
             ++pending;
@@ -537,20 +618,19 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
     }
 
     const uint64_t runtimeVersion = AssetRegistry::Instance().GetAssetVersion(textureGuid);
-    if (runtimeVersion == 0) {
-        INXLOG_WARN("Texture revision request has no published runtime version for GUID: ", textureGuid);
-        return;
-    }
-
+    const uint64_t requestedRevision =
+        runtimeVersion == 0 || runtimeVersion == std::numeric_limits<uint64_t>::max() ? 0 : runtimeVersion + 1;
     // Preserve every resident variant as last-known-good. The stable slot tells
     // particle consumers to resolve the requested revision, while material
     // descriptors immediately enter their existing pending-refresh path.
-    const size_t requestedSlots = m_textureCache.RequestAssetRevision(textureGuid, runtimeVersion);
+    const size_t requestedSlots =
+        requestedRevision == 0 ? 0 : m_textureCache.RequestAssetRevision(textureGuid, requestedRevision);
     const uint32_t refreshedMaterials =
         m_materialPipelineManagerInitialized ? m_materialPipelineManager.RefreshMaterialsUsingTexture(textureGuid) : 0;
 
-    INXLOG_INFO("Texture revision requested for GUID: ", textureGuid, " revision=", runtimeVersion,
-                " slots=", requestedSlots, " materials=", refreshedMaterials);
+    // INXLOG_INFO("Texture revision requested for GUID: ", textureGuid,
+    //             " revision=", requestedRevision == 0 ? std::string("pending") : std::to_string(requestedRevision),
+    //             " slots=", requestedSlots, " materials=", refreshedMaterials);
 }
 
 void InxVkCoreModular::RemoveMaterialPipeline(const std::string &materialName)
@@ -589,18 +669,23 @@ void InxVkCoreModular::SetFrameComputeExecutor(std::function<void(VkCommandBuffe
     m_frameComputeExecutor = std::move(executor);
 }
 
+void InxVkCoreModular::SetFrameComputeWorkPredicate(std::function<bool()> predicate)
+{
+    m_frameComputeWorkPredicate = std::move(predicate);
+}
+
 void InxVkCoreModular::SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
                                                      std::function<bool(VkCommandBuffer)> exportPhase,
-                                                     std::function<bool()> ready, std::function<uint64_t()> generation)
+                                                     std::function<bool()> ready, std::function<uint64_t()> generation,
+                                                     std::function<bool()> partitionedReady)
 {
     m_frameAsyncSimulationExecutor = std::move(simulation);
     m_frameAsyncExportExecutor = std::move(exportPhase);
     m_frameAsyncComputeReady = std::move(ready);
+    m_framePartitionedComputeReady = partitionedReady ? std::move(partitionedReady) : m_frameAsyncComputeReady;
     m_frameAsyncComputeGeneration = std::move(generation);
     m_frameAsyncComputePrimed = false;
     m_frameAsyncComputePrimedGeneration = 0;
-    m_frameAsyncPreviousExportTimeline = VK_NULL_HANDLE;
-    m_frameAsyncPreviousExportTimelineValue = 0;
 }
 
 void InxVkCoreModular::SetGuiRenderCallback(std::function<void(vk::RenderContext &ctx)> callback)
@@ -642,6 +727,10 @@ void InxVkCoreModular::RecreateSwapchain()
     // and swapchain generation untouched.
     const bool recreated =
         m_backend.Presentation().Recreate(m_backend.Device(), m_backend.Queues(), width, height, [this]() {
+            // The old render-graph generation is about to retire. Release pass
+            // publications at the commit boundary while their device and
+            // material manager are still valid.
+            ReleaseMaterialPassResolutionCache();
             DestroyGuiRenderGraphs();
             m_depthImage.reset();
         });
@@ -659,6 +748,12 @@ void InxVkCoreModular::RecreateSwapchain()
 
     // Recreate depth resources
     CreateDepthResources();
+}
+
+void InxVkCoreModular::ReleaseMaterialPassResolutionCache() noexcept
+{
+    m_materialPassResolutionCache.clear();
+    m_materialPassResolutionCacheGeneration = 0;
 }
 
 void InxVkCoreModular::SetPresentMode(int mode)
@@ -717,6 +812,7 @@ bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
         backbuffer = builder.WriteColor(backbuffer, 0);
         builder.SetRenderArea(extent.width, extent.height);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        builder.UseDynamicRendering();
 
         return [this, extent](vk::RenderContext &ctx) {
             VkViewport viewport{};
@@ -872,7 +968,9 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
 void InxVkCoreModular::WaitForCurrentFrame()
 {
     const uint32_t frameSlot = GetCurrentFrameSlot();
-    if (m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot)) {
+    if (m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot, [this, frameSlot](uint32_t elapsedMilliseconds) {
+            m_submissionExecutor.LogFrameWaitDiagnostics(frameSlot, elapsedMilliseconds);
+        })) {
         m_submissionExecutor.CompleteFrame(frameSlot);
         (void)m_backend.Queues().CompleteFrameSlot(frameSlot);
     }
@@ -887,7 +985,9 @@ void InxVkCoreModular::CollectRetiredGpuResources()
     m_resourceManager.PollAsyncGraphicsSubmissions();
     m_resourceManager.PollImageReadbacks();
     const auto completedEpoch = m_backend.Queues().GetCompletedCompletionEpoch();
+    (void)m_bindlessTextureTable.Collect(completedEpoch);
     (void)m_backend.Device().GetRhiDevice().CollectDescriptorRetirements(completedEpoch);
+    (void)m_backend.Device().GetRhiDevice().CollectResourceRetirements(completedEpoch);
     (void)m_deletionQueue.Collect(completedEpoch);
     if ((m_ensureFrameCounter & 63u) == 0u)
         CollectUnusedShadowMaterialBindings();
@@ -900,6 +1000,14 @@ void InxVkCoreModular::CollectRetiredGpuResources()
 void InxVkCoreModular::FlushRetiredGpuResources()
 {
     m_deletionQueue.FlushAll();
+    // Graph/runtime destructors Release() buffers and descriptor sets onto
+    // serial-gated RHI queues. After vkDeviceWaitIdle those serials are
+    // complete; collect them now so the next Play generation cannot reuse
+    // handle slots or descriptor sets that still own the previous objects.
+    const auto completed = (std::numeric_limits<rhi::SubmissionSerial>::max)();
+    (void)m_bindlessTextureTable.Collect(completed);
+    (void)m_backend.Device().GetRhiDevice().CollectDescriptorRetirements(completed);
+    (void)m_backend.Device().GetRhiDevice().CollectResourceRetirements(completed);
 }
 
 void InxVkCoreModular::RetireGpuResource(std::function<void()> deleter)

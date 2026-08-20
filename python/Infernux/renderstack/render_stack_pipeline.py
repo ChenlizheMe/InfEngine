@@ -24,10 +24,10 @@ from Infernux.renderstack.render_pipeline import RenderPipeline
 from Infernux.renderstack.resource_bus import ResourceBus
 
 
-def _scene_cache_key(scene) -> str:
+def _scene_cache_key(scene) -> tuple[int, str]:
     if scene is None:
-        return ""
-    return str(getattr(scene, "name", ""))
+        return (0, "")
+    return (id(scene), str(getattr(scene, "name", "")))
 
 
 class RenderStackPipeline(RenderPipeline):
@@ -49,7 +49,7 @@ class RenderStackPipeline(RenderPipeline):
         # Cache for _find_render_stack to avoid O(N) scene scan every frame.
         self._cached_stack = None
         self._cached_stack_version: int = -1
-        self._cached_stack_scene_key: str = ""
+        self._cached_stack_scene_key: tuple[int, str] = (0, "")
 
     def render(self, context, camera) -> None:
         """Render one engine-owned camera view."""
@@ -75,21 +75,26 @@ class RenderStackPipeline(RenderPipeline):
         """
         from Infernux.renderstack.render_stack import RenderStack
 
-        # Fast path: class-level singleton
-        inst = RenderStack.instance()
-        if inst is not None:
-            return inst
-
         scene = context.scene
         if scene is None:
             return None
+
+        # The render context owns scene authority.  A process-global cached
+        # component may still be alive while a retained old world is being
+        # retired, but it must never drive another scene's graph.
+        inst = RenderStack.instance(scene)
+        if inst is not None:
+            return inst
 
         # Fast path: use cached scan result if structure hasn't changed
         scene_key = _scene_cache_key(scene)
         ver = scene.structure_version
         if scene_key == self._cached_stack_scene_key and ver == self._cached_stack_version:
             cached = self._cached_stack
-            if cached is not None and not RenderStack._is_effectively_active(cached):
+            if cached is not None and not RenderStack._is_effectively_active(
+                cached,
+                scene=scene,
+            ):
                 self._cached_stack = None
                 return None
             if cached is not None:
@@ -102,7 +107,10 @@ class RenderStackPipeline(RenderPipeline):
             if not obj.is_active_in_hierarchy():
                 continue
             for comp in obj.get_py_components():
-                if isinstance(comp, RenderStack) and RenderStack._is_effectively_active(comp):
+                if isinstance(comp, RenderStack) and RenderStack._is_effectively_active(
+                    comp,
+                    scene=scene,
+                ):
                     found = comp
                     break
             if found is not None:

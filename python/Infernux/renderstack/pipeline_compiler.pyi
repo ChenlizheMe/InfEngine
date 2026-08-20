@@ -2,5 +2,5 @@ from Infernux.rendergraph.graph import RenderGraph
 from Infernux.renderstack.pipeline_dsl import PipelineDefinition
 
 def compile_pipeline_definition(
-    definition: PipelineDefinition, graph: RenderGraph
+    definition: PipelineDefinition, graph: RenderGraph, *, pipeline=...
 ) -> None: ...

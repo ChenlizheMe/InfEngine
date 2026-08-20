@@ -7,7 +7,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <system_error>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -23,6 +25,26 @@ namespace infernux
 {
 namespace
 {
+
+uint64_t HashFileContents(const std::filesystem::path &path)
+{
+    std::ifstream file(path, std::ios::in | std::ios::binary);
+    if (!file.is_open())
+        throw std::runtime_error("cannot open file for state capture");
+    uint64_t hash = 1469598103934665603ull;
+    char buffer[64 * 1024];
+    while (file) {
+        file.read(buffer, sizeof(buffer));
+        const auto count = file.gcount();
+        for (std::streamsize index = 0; index < count; ++index) {
+            hash ^= static_cast<unsigned char>(buffer[index]);
+            hash *= 1099511628211ull;
+        }
+    }
+    if (!file.eof())
+        throw std::runtime_error("failed while reading file for state capture");
+    return hash;
+}
 
 std::filesystem::path MakeTemporaryPath(const std::filesystem::path &target)
 {
@@ -157,6 +179,42 @@ bool PublishBackup(const std::filesystem::path &target, std::string &error)
 
 } // namespace
 
+AtomicFileState CaptureAtomicFileState(const std::string &path)
+{
+    const std::filesystem::path target = ToFsPath(path);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(target, error);
+    if (error)
+        throw std::runtime_error("failed to inspect '" + path + "': " + error.message());
+    if (!exists)
+        return {};
+    if (!std::filesystem::is_regular_file(target, error) || error)
+        throw std::runtime_error("document target is not a regular file: '" + path + "'");
+    const uintmax_t size = std::filesystem::file_size(target, error);
+    if (error || size > std::numeric_limits<uint64_t>::max())
+        throw std::runtime_error("failed to inspect file size for '" + path + "'");
+    const auto modified = std::filesystem::last_write_time(target, error);
+    if (error)
+        throw std::runtime_error("failed to inspect modification time for '" + path + "'");
+    AtomicFileState state;
+    state.exists = true;
+    state.size = static_cast<uint64_t>(size);
+    state.modifiedNs = static_cast<int64_t>(modified.time_since_epoch().count());
+    state.contentHash = HashFileContents(target);
+    return state;
+}
+
+bool IsTransientReplaceError(const std::error_code &error)
+{
+#ifdef _WIN32
+    return error.value() == ERROR_ACCESS_DENIED || error.value() == ERROR_SHARING_VIOLATION ||
+           error.value() == ERROR_LOCK_VIOLATION;
+#else
+    (void)error;
+    return false;
+#endif
+}
+
 bool WriteTextFileAtomically(const std::string &path, std::string_view content, std::string &error,
                              AtomicWriteOptions options)
 {
@@ -190,12 +248,41 @@ bool WriteTextFileAtomically(const std::string &path, std::string_view content, 
             return false;
         }
 
+        if (options.expectedState.has_value()) {
+            const AtomicFileState current = CaptureAtomicFileState(path);
+            if (!(current == *options.expectedState)) {
+                std::error_code ignored;
+                std::filesystem::remove(temporary, ignored);
+                error = "target changed outside the editor before atomic replace";
+                return false;
+            }
+        }
+
         std::error_code replaceError;
-        if (!ReplaceFile(temporary, target, replaceError)) {
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
-            error = replaceError.message();
-            return false;
+        constexpr unsigned kReplaceAttempts = 8;
+        for (unsigned attempt = 0; attempt < kReplaceAttempts; ++attempt) {
+            if (ReplaceFile(temporary, target, replaceError))
+                break;
+            if (!IsTransientReplaceError(replaceError) || attempt + 1 == kReplaceAttempts) {
+                std::error_code ignored;
+                std::filesystem::remove(temporary, ignored);
+                error = replaceError.message();
+                return false;
+            }
+
+            // Editors, indexers, and virus scanners can briefly open the
+            // destination without FILE_SHARE_DELETE. Keep the retry on the IO
+            // worker and preserve CAS authority across the wait.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2u << attempt));
+            if (options.expectedState.has_value()) {
+                const AtomicFileState current = CaptureAtomicFileState(path);
+                if (!(current == *options.expectedState)) {
+                    std::error_code ignored;
+                    std::filesystem::remove(temporary, ignored);
+                    error = "target changed outside the editor before atomic replace";
+                    return false;
+                }
+            }
         }
         std::error_code directoryFlushError;
         if (!FlushParentDirectory(target, directoryFlushError)) {

@@ -1,14 +1,17 @@
 #include <function/resources/InxTexture/TextureArtifact.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <cassert>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
 namespace
 {
-template <typename Callback> void RequireInvalid(Callback callback)
+template <typename Callback> void RequireInvalid(const char *label, Callback callback)
 {
     bool rejected = false;
     try {
@@ -16,7 +19,8 @@ template <typename Callback> void RequireInvalid(Callback callback)
     } catch (const std::invalid_argument &) {
         rejected = true;
     }
-    assert(rejected);
+    if (!rejected)
+        throw std::runtime_error(std::string("expected invalid texture artifact: ") + label);
 }
 
 uint64_t Fnv1a64(const std::string &bytes)
@@ -89,7 +93,26 @@ int main()
     assert(restored->mipLevels[2].byteSize == 4);
     assert(restored->bytes == source.bytes);
 
-    RequireInvalid(
+    const std::filesystem::path descriptionPath =
+        std::filesystem::temp_directory_path() / "infernux_texture_artifact_description_test.inxtex";
+    {
+        std::ofstream output(descriptionPath, std::ios::binary | std::ios::trunc);
+        assert(output.is_open());
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        assert(output.good());
+    }
+    const auto description =
+        infernux::TextureArtifact::ReadDescription(infernux::FromFsPath(descriptionPath), SourceHash);
+    assert(description.IsValid());
+    assert(description.dimension == infernux::TextureDimension::Texture2D);
+    assert(description.semantic == infernux::TextureSemantic::Color);
+    assert(description.format == infernux::TextureFormat::Rgba8Srgb);
+    assert(description.mipLevels.size() == 3);
+    assert(description.mipLevels[1].byteOffset == 32);
+    assert(description.payloadBytes == source.bytes.size());
+    std::filesystem::remove(descriptionPath);
+
+    RequireInvalid("legacy version",
         [&] { (void)infernux::TextureArtifact::Deserialize(MakeVersion1Artifact(source, SourceHash), SourceHash); });
 
     infernux::TextureCpuData volume;
@@ -112,23 +135,27 @@ int main()
     assert(restoredVolume->mipLevels[1].depth == 2);
     assert(restoredVolume->valueMin[0] == -1.0f);
 
-    RequireInvalid([&] { (void)infernux::TextureArtifact::Deserialize(bytes, "different-source"); });
+    RequireInvalid("source hash mismatch",
+                   [&] { (void)infernux::TextureArtifact::Deserialize(bytes, "different-source"); });
 
     std::string corrupted = bytes;
     corrupted[corrupted.size() / 2] ^= 0x5a;
-    RequireInvalid([&] { (void)infernux::TextureArtifact::Deserialize(corrupted, SourceHash); });
-    RequireInvalid(
+    RequireInvalid("checksum mismatch",
+                   [&] { (void)infernux::TextureArtifact::Deserialize(corrupted, SourceHash); });
+    RequireInvalid("truncated checksum",
         [&] { (void)infernux::TextureArtifact::Deserialize(bytes.substr(0, bytes.size() - 1), SourceHash); });
 
     std::string trailing = bytes.substr(0, bytes.size() - sizeof(uint64_t));
     trailing.push_back('\0');
     AppendU64(trailing, Fnv1a64(trailing));
-    RequireInvalid([&] { (void)infernux::TextureArtifact::Deserialize(trailing, SourceHash); });
+    RequireInvalid("trailing payload",
+                   [&] { (void)infernux::TextureArtifact::Deserialize(trailing, SourceHash); });
 
     auto invalidChain = source;
     invalidChain.mipLevels[1].width = 3;
-    RequireInvalid([&] { (void)infernux::TextureArtifact::Serialize(invalidChain, SourceHash); });
-    RequireInvalid([&] { (void)infernux::TextureArtifact::Serialize(source, {}); });
+    RequireInvalid("invalid mip chain",
+                   [&] { (void)infernux::TextureArtifact::Serialize(invalidChain, SourceHash); });
+    RequireInvalid("missing source hash", [&] { (void)infernux::TextureArtifact::Serialize(source, {}); });
 
     std::cout << "Texture artifact tests passed\n";
     return 0;

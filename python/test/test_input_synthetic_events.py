@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from Infernux.lib import (
     InputManager,
     InxGUIRenderable,
@@ -9,6 +11,15 @@ from Infernux.lib import (
     request_gui_semantic_snapshot,
     set_gui_semantic_capture_enabled,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_semantic_capture_between_tests():
+    # Native semantic capture is process-global. Keep this module from
+    # leaking a continuous-capture session into later MCP input tests.
+    set_gui_semantic_capture_enabled(False)
+    yield
+    set_gui_semantic_capture_enabled(False)
 
 
 def test_synthetic_events_follow_the_graphical_input_path(engine):

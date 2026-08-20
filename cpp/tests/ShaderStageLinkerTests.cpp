@@ -4,6 +4,7 @@
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
+#include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
@@ -169,7 +170,8 @@ void surface(out SurfaceData s)
     for (const auto target : {infernux::ShaderCompileTarget::Forward, infernux::ShaderCompileTarget::ForwardPlus,
                               infernux::ShaderCompileTarget::GBuffer, infernux::ShaderCompileTarget::Shadow,
                               infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking,
-                              infernux::ShaderCompileTarget::Motion}) {
+                              infernux::ShaderCompileTarget::Motion, infernux::ShaderCompileTarget::Normal,
+                              infernux::ShaderCompileTarget::BaseColor}) {
         const auto *requirement = passPlan.Find(target);
         assert(requirement != nullptr);
         assert(requirement->enabled);
@@ -273,11 +275,11 @@ void surface(out SurfaceData s)
             std::cerr << error << '\n';
     }
     assert(completeCompilation.IsValid());
-    assert(completeCompilation.compiledVariants.size() == 7);
+    assert(completeCompilation.compiledVariants.size() == 9);
     assert(completeCompilation.pendingTargets.empty());
     const auto completeArtifact = completeCompilation.CreateRuntimeArtifact();
     assert(completeArtifact.IsValid());
-    assert(completeArtifact.variants.size() == 7);
+    assert(completeArtifact.variants.size() == 9);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
@@ -285,7 +287,10 @@ void surface(out SurfaceData s)
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Depth) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Picking) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Motion) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Normal) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::BaseColor) != nullptr);
     assert(completeArtifact.key.revision != runtimeArtifact.key.revision);
+
     const auto shadowCompilation =
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
@@ -337,6 +342,19 @@ void surface(out SurfaceData s)
            std::string::npos);
     assert(motionCompilation->generatedFragmentSource.find("outMotion = _inx_MotionVector;") != std::string::npos);
 
+    const auto baseColorCompilation =
+        std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::BaseColor; });
+    assert(baseColorCompilation != completeCompilation.compiledVariants.end());
+    assert(baseColorCompilation->generatedFragmentSource.find("#define INX_BASE_COLOR_PASS 1") != std::string::npos);
+    assert(baseColorCompilation->generatedFragmentSource.find("layout(location = 0) out vec4 outBaseColor;") !=
+           std::string::npos);
+    assert(baseColorCompilation->generatedFragmentSource.find("outBaseColor = vec4(s.albedo, s.alpha);") !=
+           std::string::npos);
+    assert(baseColorCompilation->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") !=
+           std::string::npos);
+    assert(baseColorCompilation->generatedFragmentSource.find("void shading(") == std::string::npos);
+
     auto reorderedArtifact = completeArtifact;
     std::reverse(reorderedArtifact.variants.begin(), reorderedArtifact.variants.end());
     assert(infernux::ComputeShaderProgramArtifactRevision(reorderedArtifact) == completeArtifact.key.revision);
@@ -380,6 +398,32 @@ this_is_not_valid_glsl
     const auto supportedDepthProgram = compiler.CompileLinkedProgram(
         waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag", infernux::ShaderCompileTarget::Depth);
     assert(supportedDepthProgram.IsValid());
+
+    const std::string passBuffersFragment = R"(
+ShaderInfo
+{
+    Name "Tests/PassBuffers"
+    ShadingModel "Unlit"
+    Capabilities [PassBuffers]
+}
+void surface(out SurfaceData surface)
+{
+    surface = InitSurfaceData();
+    surface.albedo = texture(_InxPassColor, vec2(0.5)).rgb;
+    surface.alpha = texture(_InxPassDepth, vec2(0.5)).r;
+}
+)";
+    const auto passBuffersProgram = compiler.CompileLinkedProgram(
+        waveVertex, "WaveDeform.vert", passBuffersFragment, "PassBuffers.frag", infernux::ShaderCompileTarget::Forward);
+    assert(passBuffersProgram.IsValid());
+    assert(passBuffersProgram.generatedFragmentSource.find("uniform sampler2D _InxPassColor;") != std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("uniform sampler2D _InxPassDepth;") != std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("uniform sampler2D _InxPassNormal;") != std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("uniform sampler2D _InxPassMotion;") != std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("_InxSceneColor") == std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("_InxSceneDepth") == std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("_InxSceneNormal") == std::string::npos);
+    assert(passBuffersProgram.generatedFragmentSource.find("_InxSceneMotion") == std::string::npos);
 
     const std::string transparentFragment = R"(
 ShaderInfo
@@ -589,12 +633,12 @@ void surface(out SurfaceData surface)
     assert(defaultParticleArtifact.key.stages.fragmentShaderId == "Particle Unlit");
     assert(defaultParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(defaultParticleCompilation.compiledVariants.size() == 3);
-    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
+    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") ==
            std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
                "vec4 texColor = sampleAlbedoAlpha(texSampler);") != std::string::npos);
-    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("getParticleLocalUV()") !=
-           std::string::npos);
+    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
+               "s.alpha = texColor.a * material.baseColor.a;") != std::string::npos);
 
     const auto sixWaySmokeCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
@@ -613,14 +657,91 @@ void surface(out SurfaceData surface)
     assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
 
+    // Lit declares the bindless capability in its source, but the loader must
+    // still honor the active device contract. A device without descriptor
+    // indexing receives the original bounded sampler ABI and must not emit
+    // the bindless set or the texture-index UBO.
+    infernux::InxShaderLoader::SetBindlessTextureABIEnabled(false);
+    const auto boundedLitCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+                                              ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    if (!boundedLitCompilation.IsValid()) {
+        for (const auto &error : boundedLitCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(boundedLitCompilation.IsValid());
+    assert(!boundedLitCompilation.CreateRuntimeArtifact().usesBindlessTextureABI);
+    const auto boundedForward =
+        std::find_if(boundedLitCompilation.compiledVariants.begin(), boundedLitCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Forward; });
+    assert(boundedForward != boundedLitCompilation.compiledVariants.end());
+    assert(boundedForward->generatedFragmentSource.find("layout(set = 3, binding = 0)") == std::string::npos);
+    assert(boundedForward->generatedFragmentSource.find("layout(std140, set = 0, binding = 15)") == std::string::npos);
+    assert(boundedForward->generatedFragmentSource.find("binding = 2) uniform sampler2D texSampler;") !=
+           std::string::npos);
+    assert(boundedForward->generatedFragmentSource.find("sampleAlbedoAlpha(uint textureIndex)") == std::string::npos);
+    infernux::ShaderReflection boundedReflection;
+    assert(boundedReflection.Reflect(boundedForward->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
+    assert(std::none_of(boundedReflection.GetSampledImages().begin(), boundedReflection.GetSampledImages().end(),
+                        [](const auto &image) { return image.set == 3 && image.binding == 0; }));
+    assert(std::any_of(
+        boundedReflection.GetSampledImages().begin(), boundedReflection.GetSampledImages().end(),
+        [](const auto &image) { return image.name == "texSampler" && image.set == 0 && image.binding == 2; }));
+    assert(std::none_of(boundedReflection.GetUniformBuffers().begin(), boundedReflection.GetUniformBuffers().end(),
+                        [](const auto &buffer) { return buffer.set == 0 && buffer.binding == 15; }));
+
+    const std::string bindlessCutoutFragment = R"(
+ShaderInfo {
+    Name "Tests/BindlessCutout"
+    Capabilities [BindlessTextures]
+    ShadingModel Unlit
+    AlphaClip on
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+    }
+}
+void surface(out SurfaceData surface) {
+    surface = InitSurfaceData();
+    vec4 sampled = sampleAlbedoAlpha(texSampler);
+    surface.albedo = sampled.rgb * material.baseColor.rgb;
+    surface.alpha = sampled.a * material.baseColor.a;
+}
+)";
+    const auto boundedCutoutCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+                                              bindlessCutoutFragment, "BindlessCutout.frag");
+    assert(boundedCutoutCompilation.IsValid());
+    const auto boundedCutoutShadow =
+        std::find_if(boundedCutoutCompilation.compiledVariants.begin(), boundedCutoutCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
+    assert(boundedCutoutShadow != boundedCutoutCompilation.compiledVariants.end());
+    assert(!boundedCutoutShadow->usesBindlessTextureABI);
+    assert(boundedCutoutShadow->generatedFragmentSource.find("set = 2, binding = 0") != std::string::npos);
+    assert(boundedCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") == std::string::npos);
+
+    // The same source must compile to the bindless ABI when the device
+    // advertises the complete descriptor-indexing contract.
+    infernux::InxShaderLoader::SetBindlessTextureABIEnabled(true);
     const auto builtinLitParticleCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
         ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    if (!builtinLitParticleCompilation.IsValid()) {
+        for (const auto &error : builtinLitParticleCompilation.errors)
+            std::cerr << error << '\n';
+    }
     assert(builtinLitParticleCompilation.IsValid());
     const auto builtinLitParticleArtifact = builtinLitParticleCompilation.CreateRuntimeArtifact();
     assert(builtinLitParticleArtifact.IsValid());
     assert(builtinLitParticleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    assert(builtinLitParticleArtifact.usesBindlessTextureABI);
     assert(builtinLitParticleArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+    const auto &builtinLitParticleForward = builtinLitParticleCompilation.compiledVariants.front();
+    assert(builtinLitParticleForward.generatedFragmentSource.find("set = 2, binding = 2") != std::string::npos);
+    assert(builtinLitParticleForward.generatedFragmentSource.find("set = 3, binding = 0") != std::string::npos);
+    assert(builtinLitParticleForward.generatedFragmentSource.find(
+               "layout(std140, set = 2, binding = 2) uniform InxMaterialTextureIndices") != std::string::npos);
+    assert(builtinLitParticleForward.generatedFragmentSource.find("uniform sampler2D texSampler") == std::string::npos);
 
     const auto builtinLitCompilation =
         compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
@@ -632,6 +753,7 @@ void surface(out SurfaceData surface)
     assert(builtinLitCompilation.IsValid());
     const auto builtinLitArtifact = builtinLitCompilation.CreateRuntimeArtifact();
     assert(builtinLitArtifact.IsValid());
+    assert(builtinLitArtifact.usesBindlessTextureABI);
     assert(builtinLitArtifact.key.stages.vertexShaderId == "Standard");
     assert(builtinLitArtifact.key.stages.fragmentShaderId == "Lit");
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
@@ -650,6 +772,17 @@ void surface(out SurfaceData surface)
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::GBuffer; });
     assert(builtinGBuffer != builtinLitCompilation.compiledVariants.end());
     assert(builtinForward->generatedFragmentSource.find("void shading(") != std::string::npos);
+    assert(builtinForward->generatedFragmentSource.find("layout(set = 3, binding = 0) uniform sampler2D") !=
+           std::string::npos);
+    assert(builtinForward->generatedFragmentSource.find("nonuniformEXT") != std::string::npos);
+    assert(builtinForward->generatedFragmentSource.find("layout(std140, set = 0, binding = 15)") != std::string::npos);
+    assert(builtinForward->generatedFragmentSource.find("sampleAlbedoAlpha(uint textureIndex)") != std::string::npos);
+    infernux::ShaderReflection bindlessReflection;
+    assert(bindlessReflection.Reflect(builtinForward->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
+    assert(std::any_of(bindlessReflection.GetSampledImages().begin(), bindlessReflection.GetSampledImages().end(),
+                       [](const auto &image) { return image.set == 3 && image.binding == 0; }));
+    assert(std::any_of(bindlessReflection.GetUniformBuffers().begin(), bindlessReflection.GetUniformBuffers().end(),
+                       [](const auto &buffer) { return buffer.set == 0 && buffer.binding == 15; }));
     assert(builtinForwardPlus->generatedFragmentSource.find("void shading(") != std::string::npos);
     assert(builtinForward->generatedFragmentSource.find("evaluateForward") == std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("evaluateForward") == std::string::npos);
@@ -666,6 +799,35 @@ void surface(out SurfaceData surface)
     assert(builtinForwardPlus->generatedVertexSource.find("_inx_ObjectLayerMask =") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("light.metadata.y & _inx_ObjectLayerMask") !=
            std::string::npos);
+
+    const auto bindlessCutoutCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+                                              bindlessCutoutFragment, "BindlessCutout.frag");
+    if (!bindlessCutoutCompilation.IsValid()) {
+        for (const auto &error : bindlessCutoutCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(bindlessCutoutCompilation.IsValid());
+    const auto bindlessCutoutArtifact = bindlessCutoutCompilation.CreateRuntimeArtifact();
+    assert(bindlessCutoutArtifact.usesBindlessTextureABI);
+    const auto bindlessCutoutShadow = std::find_if(
+        bindlessCutoutCompilation.compiledVariants.begin(), bindlessCutoutCompilation.compiledVariants.end(),
+        [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
+    assert(bindlessCutoutShadow != bindlessCutoutCompilation.compiledVariants.end());
+    assert(bindlessCutoutShadow->usesBindlessTextureABI);
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") != std::string::npos);
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 2, binding = 15") != std::string::npos);
+    assert(bindlessCutoutShadow->generatedFragmentSource.find(
+               "inxSampleBindlessTexture(_InxMaterialTextureIndices.texSampler, uv).a") != std::string::npos);
+    infernux::ShaderReflection bindlessShadowReflection;
+    assert(bindlessShadowReflection.Reflect(bindlessCutoutShadow->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
+    assert(std::any_of(bindlessShadowReflection.GetSampledImages().begin(),
+                       bindlessShadowReflection.GetSampledImages().end(),
+                       [](const auto &image) { return image.set == 3 && image.binding == 0; }));
+    assert(std::any_of(bindlessShadowReflection.GetUniformBuffers().begin(),
+                       bindlessShadowReflection.GetUniformBuffers().end(),
+                       [](const auto &buffer) { return buffer.set == 2 && buffer.binding == 15; }));
+    infernux::InxShaderLoader::SetBindlessTextureABIEnabled(false);
 
     const auto builtinToonCompilation =
         compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
@@ -741,6 +903,9 @@ void surface(out SurfaceData surface)
         compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(unconsumedOutputsProgram.IsValid());
     assert(unconsumedOutputsProgram.interfaceArtifact.varyings.empty());
+    assert(unconsumedOutputsProgram.generatedFragmentSource.find(
+               "#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz") != std::string::npos);
+    assert(unconsumedOutputsProgram.generatedFragmentSource.find("uniform LightingUBO") != std::string::npos);
     assert(unconsumedOutputsProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
            std::string::npos);
 
@@ -899,8 +1064,9 @@ void main() { }
     }};
     const auto particleSortGenerate = infernux::particle::GpuParticleSortShaderSources::Generate();
     assert(particleSortGenerate.find("inx_particle_sort_key(view_position.z") != std::string_view::npos);
-    assert(particleSortGenerate.find("instances[particle_index].ribbon_data.w") != std::string_view::npos);
-    assert(particleSortGenerate.find("return uvec2(depth_key, particle_id)") != std::string_view::npos);
+    assert(particleSortGenerate.find("visibility[particle_index].position_radius.xyz") != std::string_view::npos &&
+           particleSortGenerate.find("ribbon_data.w") == std::string_view::npos);
+    assert(particleSortGenerate.find("(depth_key & 0xffffff00u) | (particle_id & 0xffu)") != std::string_view::npos);
     assert(particleSortGenerate.find("-view_position.z") == std::string_view::npos);
     for (const auto &[source, name] : particleSortShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
@@ -915,8 +1081,14 @@ void main() { }
         {infernux::particle::GpuParticleCullShaderSources::Cull(), "ParticleCull.comp"},
         {infernux::particle::GpuParticleCullShaderSources::Finalize(), "ParticleCullFinalize.comp"},
     }};
-    assert(infernux::particle::GpuParticleCullShaderSources::Cull().find("visible_segments") == std::string_view::npos);
-    assert(infernux::particle::GpuParticleCullShaderSources::Cull().find("ribbon_segments") != std::string_view::npos);
+    const auto particleCullSource = infernux::particle::GpuParticleCullShaderSources::Cull();
+    assert(particleCullSource.find("visible_segments") == std::string_view::npos);
+    assert(particleCullSource.find("ribbon_segments") != std::string_view::npos);
+    assert(particleCullSource.find("ParticleVisibilityInstance") != std::string_view::npos);
+    assert(particleCullSource.find("ParticleVisibilityInstance instance = visibility[particle_index]") !=
+           std::string_view::npos);
+    assert(particleCullSource.find("instance.position_radius.xyz") != std::string_view::npos);
+    assert(particleCullSource.find("ribbon_instances[first_index]") != std::string_view::npos);
     for (const auto &[source, name] : particleCullShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
         assert(spirv.size() >= 5 * sizeof(uint32_t));
@@ -956,6 +1128,12 @@ void main() { }
         {infernux::particle::GpuParticleRibbonShaderSources::Scan(), "ParticleRibbonScan.comp"},
         {infernux::particle::GpuParticleRibbonShaderSources::Scatter(), "ParticleRibbonScatter.comp"},
     }};
+    const auto particleRibbonReset = infernux::particle::GpuParticleRibbonShaderSources::Reset();
+    assert(particleRibbonReset.find("if (simulation_allowed == 0u) return") == std::string_view::npos);
+    assert(particleRibbonReset.find("simulation_allowed != 0u ? inx_live_count() : 0u") !=
+           std::string_view::npos);
+    assert(particleRibbonReset.find("ribbon_instance_count = live_count > 1u ? 1u : 0u") !=
+           std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("ribbon_data") != std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("& 0xffff") == std::string_view::npos);
     for (const auto &[source, name] : particleRibbonTopologyShaders) {

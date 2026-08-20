@@ -11,9 +11,45 @@ from typing import Any, Optional, Tuple
 
 from Infernux.renderstack.render_effect_asset import (
     RenderEffectAsset,
+    RenderEffectGroupAsset,
     dump_render_effect_document,
     parse_render_effect_document,
 )
+
+
+class EditableRenderEffectGroup:
+    """Mutable document wrapper used by the shared asset editing service."""
+
+    def __init__(self, source: RenderEffectGroupAsset, *, file_path: str = "", guid: str = "") -> None:
+        if not isinstance(source, RenderEffectGroupAsset):
+            raise TypeError("EditableRenderEffectGroup requires a group source")
+        self._source = source
+        self.file_path = str(file_path or "")
+        self.guid = str(guid or "")
+
+    @property
+    def entries(self):
+        return self._source.entries
+
+    def to_asset(self) -> RenderEffectGroupAsset:
+        return self._source
+
+    def serialize_document(self) -> dict[str, Any]:
+        return self._source.to_dict()
+
+    def deserialize_document(self, document) -> bool:
+        try:
+            source = (
+                document
+                if isinstance(document, RenderEffectGroupAsset)
+                else parse_render_effect_document(document)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(source, RenderEffectGroupAsset):
+            return False
+        self._source = source
+        return True
 
 
 class RenderEffect:
@@ -105,6 +141,10 @@ class RenderEffect:
 
     def to_dict(self) -> dict[str, Any]:
         return self.to_asset().to_dict()
+
+    def serialize_document(self) -> dict[str, Any]:
+        """Return the canonical editable-resource document."""
+        return self.to_dict()
 
     def deserialize_document(self, document) -> bool:
         """Apply a strict source document to this shared live instance."""
@@ -297,6 +337,7 @@ class RenderEffect:
         AssetManager.set_render_effect_save_snapshot(
             self._file_path,
             dump_render_effect_document(self.to_asset()),
+            edit_revision=self._revision,
         )
         AssetManager.schedule_asset_save(
             "render_effect",
@@ -305,10 +346,19 @@ class RenderEffect:
             debounce_sec=self._AUTOSAVE_MIN_INTERVAL,
         )
 
-    def _on_save_submitted(self) -> None:
-        self._last_save_time = time.monotonic()
-        self._save_pending = False
-        self._pending_saves.discard(self)
+    def _on_save_completed(self, status: str) -> None:
+        if status == "succeeded":
+            self._last_save_time = time.monotonic()
+            self._save_pending = False
+            self._pending_saves.discard(self)
+            return
+
+        # Keep the latest in-memory generation pending. A failed or externally
+        # superseded write must never turn a live effect into a false clean
+        # state or strand it without another debounced persistence attempt.
+        self._save_pending = True
+        self._pending_saves.add(self)
+        self._schedule_save()
 
     @staticmethod
     def _validate_name(name: str) -> str:

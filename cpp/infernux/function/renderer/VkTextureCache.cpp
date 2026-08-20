@@ -10,6 +10,7 @@
 
 #include <function/resources/InxTexture/TextureDecoder.h>
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -76,7 +77,9 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
             throw std::overflow_error("GPU texture residency byte counter overflow");
         if (existing != m_textures.end()) {
             slot = existing->second.slot;
-            auto previous = slot->Publish(publication);
+            std::shared_ptr<const rhi::TextureGpuView> previous;
+            if (!slot->TryPublish(publication, &previous))
+                return slot;
             if (!previous)
                 throw std::logic_error("GPU texture slot rejected a valid publication");
             RetirePublicationLocked(std::move(previous), existing->second.residentBytes);
@@ -86,12 +89,14 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
             existing->second.runtimeVersion = runtimeVersion;
         } else {
             slot = std::make_shared<rhi::TextureGpuViewSlot>(key);
-            if (slot->Publish(publication))
-                throw std::logic_error("new GPU texture slot unexpectedly replaced a publication");
+            std::shared_ptr<const rhi::TextureGpuView> previous;
+            if (!slot->TryPublish(publication, &previous) || previous)
+                throw std::logic_error("new GPU texture slot rejected its initial publication");
             m_textures.emplace(key, Entry{slot, residentBytes, lastUsedFrame, permanentlyPinned, std::move(assetGuid),
                                           runtimeVersion});
         }
         m_residentBytes += residentBytes;
+        m_latestFrame = (std::max)(m_latestFrame, lastUsedFrame);
     }
     (void)TrimToBudget();
     return slot;
@@ -106,10 +111,12 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::FindAsset(const std::st
     auto entry = m_textures.find(key);
     if (entry == m_textures.end())
         return {};
-    if (entry->second.assetGuid != assetGuid || entry->second.runtimeVersion != runtimeVersion) {
+    if (entry->second.assetGuid != assetGuid || entry->second.runtimeVersion != runtimeVersion || !entry->second.slot ||
+        entry->second.slot->NeedsRefresh()) {
         return {};
     }
     entry->second.lastUsedFrame = frame;
+    m_latestFrame = (std::max)(m_latestFrame, frame);
     return entry->second.slot;
 }
 
@@ -120,7 +127,14 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Find(const std::string 
     if (it == m_textures.end() || !it->second.slot || !it->second.slot->Acquire())
         return {};
     it->second.lastUsedFrame = frame;
+    m_latestFrame = (std::max)(m_latestFrame, frame);
     return it->second.slot;
+}
+
+void VkTextureCache::AdvanceFrame(uint64_t frame)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_latestFrame = (std::max)(m_latestFrame, frame);
 }
 
 size_t VkTextureCache::RequestAssetRevision(const std::string &assetGuid, uint64_t runtimeVersion)
@@ -191,7 +205,8 @@ size_t VkTextureCache::TrimToBudget()
     while (m_residentBytes > m_budgetBytes) {
         auto candidate = m_textures.end();
         for (auto entry = m_textures.begin(); entry != m_textures.end(); ++entry) {
-            if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1)
+            if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1 ||
+                (m_latestFrame != 0 && entry->second.lastUsedFrame >= m_latestFrame))
                 continue;
             if (candidate == m_textures.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
                 candidate = entry;
@@ -254,7 +269,8 @@ GpuEvictionCandidate VkTextureCache::PeekOldestEvictable() const
     std::lock_guard<std::mutex> lock(m_mutex);
     auto candidate = m_textures.end();
     for (auto entry = m_textures.begin(); entry != m_textures.end(); ++entry) {
-        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1)
+        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1 ||
+            (m_latestFrame != 0 && entry->second.lastUsedFrame >= m_latestFrame))
             continue;
         if (candidate == m_textures.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
             candidate = entry;
@@ -269,7 +285,8 @@ uint64_t VkTextureCache::EvictOldest()
     std::lock_guard<std::mutex> lock(m_mutex);
     auto candidate = m_textures.end();
     for (auto entry = m_textures.begin(); entry != m_textures.end(); ++entry) {
-        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1)
+        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1 ||
+            (m_latestFrame != 0 && entry->second.lastUsedFrame >= m_latestFrame))
             continue;
         if (candidate == m_textures.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
             candidate = entry;

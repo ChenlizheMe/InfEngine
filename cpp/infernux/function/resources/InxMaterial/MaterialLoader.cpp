@@ -17,27 +17,23 @@ namespace infernux
 namespace
 {
 
-ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, const char *stage, AssetDatabase *database)
+bool IsBuiltinTextureToken(const std::string &value)
+{
+    return value == "white" || value == "black" || value == "normal";
+}
+
+ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, AssetDatabase *database)
 {
     if (!database)
         return reference;
 
-    std::string resolvedPath;
-    if (!reference.guid.empty())
-        resolvedPath = database->GetPathFromGuid(reference.guid);
-    if (resolvedPath.empty() && !reference.pathHint.empty()) {
-        const std::string hintGuid = database->GetGuidFromPath(reference.pathHint);
-        std::error_code error;
-        const bool hintExists = !hintGuid.empty() || std::filesystem::exists(ToFsPath(reference.pathHint), error);
-        if (hintExists && (reference.guid.empty() || hintGuid.empty() || hintGuid == reference.guid))
-            resolvedPath = reference.pathHint;
-    }
-    if (resolvedPath.empty() && !reference.shaderId.empty())
-        resolvedPath = database->FindShaderPathById(reference.shaderId, stage);
+    // GUID is the only durable identity. pathHint is refreshed from the GUID
+    // for display, but is never used to recover identity or locate an asset.
+    // A GUID-less shader_id denotes a symbolic built-in shader program and
+    // deliberately contributes no AssetDatabase dependency edge.
+    const std::string resolvedPath = reference.guid.empty() ? std::string{} : database->GetPathFromGuid(reference.guid);
 
     if (!resolvedPath.empty()) {
-        if (reference.guid.empty())
-            reference.guid = database->GetGuidFromPath(resolvedPath);
         reference.pathHint = resolvedPath;
 
         // Canonicalize legacy shader ids (pre "Title Case" migration spellings
@@ -61,8 +57,8 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, const
 
 void EnrichShaderReferences(InxMaterial &material, AssetDatabase *database)
 {
-    material.SetVertShaderReference(EnrichShaderReference(material.GetVertShaderReference(), "vertex", database));
-    material.SetFragShaderReference(EnrichShaderReference(material.GetFragShaderReference(), "fragment", database));
+    material.SetVertShaderReference(EnrichShaderReference(material.GetVertShaderReference(), database));
+    material.SetFragShaderReference(EnrichShaderReference(material.GetFragShaderReference(), database));
 }
 
 } // namespace
@@ -184,28 +180,19 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
         if (prop.type != MaterialPropertyType::Texture2D)
             continue;
         const auto *val = std::get_if<std::string>(&prop.value);
-        if (val && !val->empty())
+        if (val && !val->empty() && !IsBuiltinTextureToken(*val))
             deps.insert(*val);
     }
 
-    // Shader GUIDs are authoritative. Path hints and shader IDs recover current
-    // assets while the database is being rebuilt.
-    if (adb) {
-        auto addShaderDep = [&](const ShaderAssetReference &reference, const char *stage) {
-            std::string depGuid = reference.guid;
-            if (depGuid.empty() && !reference.pathHint.empty())
-                depGuid = adb->GetGuidFromPath(reference.pathHint);
-            if (depGuid.empty() && !reference.shaderId.empty()) {
-                const std::string path = adb->FindShaderPathById(reference.shaderId, stage);
-                if (!path.empty())
-                    depGuid = adb->GetGuidFromPath(path);
-            }
-            if (!depGuid.empty())
-                deps.insert(depGuid);
-        };
-        addShaderDep(tmp.GetVertShaderReference(), "vertex");
-        addShaderDep(tmp.GetFragShaderReference(), "fragment");
-    }
+    // Asset dependencies are GUID-only. shader_id may identify a symbolic
+    // built-in program, while path_hint is never an identity fallback.
+    (void)adb;
+    const auto addShaderDep = [&](const ShaderAssetReference &reference) {
+        if (!reference.guid.empty())
+            deps.insert(reference.guid);
+    };
+    addShaderDep(tmp.GetVertShaderReference());
+    addShaderDep(tmp.GetFragShaderReference());
 
     return deps;
 }
@@ -246,27 +233,19 @@ void MaterialLoader::RegisterDependencies(const std::string &materialGuid, const
         if (prop.type != MaterialPropertyType::Texture2D)
             continue;
         const auto *val = std::get_if<std::string>(&prop.value);
-        if (val && !val->empty())
+        if (val && !val->empty() && !IsBuiltinTextureToken(*val))
             dependencies.insert(*val);
     }
 
-    // Shader GUIDs (shader files have .meta with GUID)
-    if (adb) {
-        auto addShaderDep = [&](const ShaderAssetReference &reference, const char *stage) {
-            std::string depGuid = reference.guid;
-            if (depGuid.empty() && !reference.pathHint.empty())
-                depGuid = adb->GetGuidFromPath(reference.pathHint);
-            if (depGuid.empty() && !reference.shaderId.empty()) {
-                const std::string path = adb->FindShaderPathById(reference.shaderId, stage);
-                if (!path.empty())
-                    depGuid = adb->GetGuidFromPath(path);
-            }
-            if (!depGuid.empty())
-                dependencies.insert(std::move(depGuid));
-        };
-        addShaderDep(mat.GetVertShaderReference(), "vertex");
-        addShaderDep(mat.GetFragShaderReference(), "fragment");
-    }
+    // Shader asset edges are GUID-only. Do not infer them from path_hint or
+    // shader_id; symbolic built-in programs are not AssetDatabase assets.
+    (void)adb;
+    const auto addShaderDep = [&](const ShaderAssetReference &reference) {
+        if (!reference.guid.empty())
+            dependencies.insert(reference.guid);
+    };
+    addShaderDep(mat.GetVertShaderReference());
+    addShaderDep(mat.GetFragShaderReference());
     AssetDependencyGraph::Instance().SetAssetDependencies(materialGuid, dependencies);
 }
 

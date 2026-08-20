@@ -37,6 +37,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <unordered_set>
 
 namespace infernux
@@ -44,6 +45,24 @@ namespace infernux
 
 namespace
 {
+
+constexpr uint64_t kShadowHashOffset = 1469598103934665603ull;
+constexpr uint64_t kShadowHashPrime = 1099511628211ull;
+
+void HashShadowBytes(uint64_t &hash, const void *data, size_t size)
+{
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    for (size_t index = 0; index < size; ++index) {
+        hash ^= bytes[index];
+        hash *= kShadowHashPrime;
+    }
+}
+
+template <typename T> void HashShadowValue(uint64_t &hash, const T &value)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    HashShadowBytes(hash, &value, sizeof(T));
+}
 
 lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const std::vector<DrawCall> &drawCalls)
 {
@@ -485,6 +504,29 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                 return false;
             }
         }
+        const bool rgbaGeometryMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
+                                              (command->shaderTarget == ShaderCompileTarget::Normal ||
+                                               command->shaderTarget == ShaderCompileTarget::BaseColor);
+        if (rgbaGeometryMaterialPass) {
+            const auto color =
+                pass.writeColors.size() == 1 ? textures.find(pass.writeColors.front().second) : textures.end();
+            const bool hasReadableDepth =
+                std::any_of(pass.readTextures.begin(), pass.readTextures.end(), [&](const std::string &textureName) {
+                    const auto texture = textures.find(textureName);
+                    const bool sampled =
+                        std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
+                                    [&](const auto &binding) { return binding.second == textureName; });
+                    return texture != textures.end() && texture->second->isDepth && !sampled;
+                });
+            if (color == textures.end() || pass.writeColors.front().first != 0 ||
+                color->second->format != rhi::PixelFormat::RGBA16SFloat || !hasReadableDepth ||
+                !pass.writeDepth.empty()) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: ", ShaderCompileTargetName(command->shaderTarget),
+                             " pass '", pass.name,
+                             "' requires one RGBA16SFloat color[0], one readable depth attachment, and no depth write");
+                return false;
+            }
+        }
 
         std::unordered_set<int> colorSlots;
         uint32_t attachmentSamples = 0;
@@ -520,6 +562,13 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                 return false;
             }
         }
+        for (int slot = 0; slot < static_cast<int>(colorSlots.size()); ++slot) {
+            if (colorSlots.find(slot) == colorSlots.end()) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' must use contiguous color slots starting at zero");
+                return false;
+            }
+        }
 
         if (!pass.writeDepth.empty()) {
             auto texIt = textures.find(pass.writeDepth);
@@ -540,6 +589,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             }
         }
 
+        uint32_t readOnlyDepthAttachmentCount = 0;
         if (command && command->type != GraphCommandType::FullscreenQuad) {
             for (const auto &textureName : pass.readTextures) {
                 const bool sampledInput =
@@ -550,12 +600,18 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                 auto texIt = textures.find(textureName);
                 if (texIt == textures.end() || !texIt->second->isDepth)
                     continue;
+                ++readOnlyDepthAttachmentCount;
                 if (!acceptAttachmentSamples(*texIt->second)) {
                     INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                                  "' uses color and depth attachments with different sample counts");
                     return false;
                 }
             }
+        }
+        if (readOnlyDepthAttachmentCount > 1 || (readOnlyDepthAttachmentCount != 0 && !pass.writeDepth.empty())) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                         "' must declare exactly one depth attachment as either read-only or writable");
+            return false;
         }
 
         if (!pass.resolveColor.empty()) {
@@ -822,6 +878,47 @@ void SceneRenderGraph::InvalidateTemporalHistory()
         history.readIndex = 0;
     }
     m_renderView.history = {};
+}
+
+uint64_t SceneRenderGraph::CurrentParticleDrawRegistryRevision() const noexcept
+{
+    return m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;
+}
+
+void SceneRenderGraph::InvalidateParticleViews()
+{
+    const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
+        if (!culler)
+            return;
+        if (m_vkCore) {
+            m_vkCore->GetRetirementQueue().Retire([culler = std::move(culler)]() mutable { culler.reset(); });
+            return;
+        }
+        culler.reset();
+    };
+    const auto retireSorter = [this](std::shared_ptr<particle::ParticleGpuSorter> sorter) {
+        if (!sorter)
+            return;
+        if (m_vkCore) {
+            m_vkCore->GetRetirementQueue().Retire([sorter = std::move(sorter)]() mutable { sorter.reset(); });
+            return;
+        }
+        sorter.reset();
+    };
+    for (auto &[id, culler] : m_particleCullers) {
+        (void)id;
+        retireCuller(std::move(culler));
+    }
+    m_particleCullers.clear();
+    for (auto &[id, sorter] : m_particleSorters) {
+        (void)id;
+        retireSorter(std::move(sorter));
+    }
+    m_particleSorters.clear();
+    m_pendingParticleViewDiagnostics.clear();
+    m_particleDrawRegistryRevision = 0;
+    m_needsRebuild = true;
+    m_graphBuilt = false;
 }
 
 bool SceneRenderGraph::UsesTemporalHistory() const
@@ -1186,6 +1283,12 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     camera.previousViewProj =
         previousViewProj ? *previousViewProj : (m_cameraHistoryValid ? m_previousViewProj : proj * view);
     camera.inverseViewProj = glm::inverse(proj * view);
+    const float nearClip = m_cachedCamera ? std::max(m_cachedCamera->GetNearClip(), 1.0e-5f) : 0.01f;
+    const float farClip = m_cachedCamera ? std::max(m_cachedCamera->GetFarClip(), nearClip + 1.0e-4f) : 5000.0f;
+    const float farOverNear = farClip / nearClip;
+    camera.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
+    camera.zBufferParams =
+        glm::vec4(1.0f - farOverNear, farOverNear, (1.0f - farOverNear) / farClip, farOverNear / farClip);
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
@@ -1281,6 +1384,21 @@ void SceneRenderGraph::SetOutlineRenderer(OutlineRenderer *renderer)
     m_needsRebuild = true;
 }
 
+MaterialPassPipelineDescriptor SceneRenderGraph::GetEditorOverlayMaterialPass() const
+{
+    auto descriptor =
+        m_vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
+    if (!m_renderGraph || !m_renderGraph->SupportsDynamicRendering() || !m_sceneTarget)
+        return descriptor;
+
+    descriptor.colorFormats = {rhi::FromVkFormat(m_sceneTarget->GetColorFormat())};
+    descriptor.depthFormat = rhi::FromVkFormat(m_sceneTarget->GetDepthFormat());
+    descriptor.samples = rhi::FromVkSampleCount(m_sceneTarget->GetMsaaSampleCount());
+    descriptor.depthReadOnly = descriptor.depthFormat != rhi::PixelFormat::Undefined;
+    descriptor.renderingMode = MaterialPassRenderingMode::DynamicRendering;
+    return descriptor;
+}
+
 void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
     if (!m_vkCore || !m_sceneTarget) {
@@ -1353,6 +1471,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     const uint32_t graphFrameSamples = normalizedDesc.msaaSamples > 0
                                            ? static_cast<uint32_t>(normalizedDesc.msaaSamples)
                                            : static_cast<uint32_t>(callbackSamples);
+    const bool dynamicGeometryAvailable = m_renderGraph && m_renderGraph->SupportsDynamicRendering();
 
     for (const auto &passDesc : normalizedDesc.passes) {
         const GraphCommandDesc *command = PrimaryCommand(passDesc);
@@ -1429,6 +1548,21 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 }
             }
             materialPass.samples = ToRhiSampleCount(static_cast<int>(passSamples));
+            materialPass.depthReadOnly =
+                passDesc.writeDepth.empty() && materialPass.depthFormat != rhi::PixelFormat::Undefined;
+            const bool dynamicGeometryTarget = command->shaderTarget == ShaderCompileTarget::Forward ||
+                                               command->shaderTarget == ShaderCompileTarget::ForwardPlus ||
+                                               command->shaderTarget == ShaderCompileTarget::GBuffer ||
+                                               command->shaderTarget == ShaderCompileTarget::Motion ||
+                                               command->shaderTarget == ShaderCompileTarget::Normal ||
+                                               command->shaderTarget == ShaderCompileTarget::BaseColor ||
+                                               command->shaderTarget == ShaderCompileTarget::Picking ||
+                                               command->shaderTarget == ShaderCompileTarget::Shadow;
+            if (dynamicGeometryAvailable && dynamicGeometryTarget &&
+                (commandType == GraphCommandType::DrawRenderers ||
+                 commandType == GraphCommandType::DrawShadowCasters)) {
+                materialPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
+            }
             m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
 
@@ -1443,7 +1577,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, skyboxQueue,
-                                          skyboxQueue);
+                                          skyboxQueue, "", "", "__infernux_internal_skybox");
                 break;
             }
             case GraphCommandType::DrawShadowCasters:
@@ -1478,9 +1612,11 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static constexpr int COMP_GIZMO_QUEUE_MIN = 10000;
     static constexpr int COMP_GIZMO_QUEUE_MAX = 20000;
     static const std::string kComponentGizmosPassName = "_ComponentGizmos";
-    m_pythonCallbacks[kComponentGizmosPassName] = [this, vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+    const auto editorOverlayPass = GetEditorOverlayMaterialPass();
+    m_pythonCallbacks[kComponentGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
+                                                                                    uint32_t h) {
         vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, COMP_GIZMO_QUEUE_MIN,
-                                  COMP_GIZMO_QUEUE_MAX);
+                                  COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
     };
 
     // ========================================================================
@@ -1493,9 +1629,10 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static constexpr int GIZMO_QUEUE_MIN = 20001;
     static constexpr int GIZMO_QUEUE_MAX = 25000;
     static const std::string kEditorGizmosPassName = "_EditorGizmos";
-    m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+    m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
+                                                                                 uint32_t h) {
         vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, GIZMO_QUEUE_MIN,
-                                  GIZMO_QUEUE_MAX);
+                                  GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
     };
 
     // ========================================================================
@@ -1506,9 +1643,10 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static constexpr int TOOLS_QUEUE_MIN = 25001;
     static constexpr int TOOLS_QUEUE_MAX = 30000;
     static const std::string kEditorToolsPassName = "_EditorTools";
-    m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+    m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
+                                                                                uint32_t h) {
         vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, TOOLS_QUEUE_MIN,
-                                  TOOLS_QUEUE_MAX, "preserve");
+                                  TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
     };
 
     // Store description for BuildRenderGraph()'s topology traversal. Exact
@@ -1676,10 +1814,13 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
 
     if (m_graphBuilt && m_outlinePassesEnabled) {
-        const bool outlineReady =
-            m_outlineRenderer &&
-            m_outlineRenderer->EnsureGraphPipelines(m_renderGraph->GetPassRenderPass("__EditorOutlineMask"),
-                                                    m_renderGraph->GetPassRenderPass("__EditorOutlineComposite"));
+        const auto maskContract = m_renderGraph->GetPassRenderingContract("__EditorOutlineMask");
+        const auto compositeContract = m_renderGraph->GetPassRenderingContract("__EditorOutlineComposite");
+        const bool outlineReady = m_outlineRenderer && m_outlineRenderer->EnsureGraphPipelines(
+                                                           m_renderGraph->GetPassRenderPass("__EditorOutlineMask"),
+                                                           m_renderGraph->GetPassRenderPass("__EditorOutlineComposite"),
+                                                           m_sceneTarget->GetMsaaSampleCount(),
+                                                           maskContract.attachments, compositeContract.attachments);
         if (outlineReady) {
             m_outlinePipelineFailureReported = false;
         } else if (!m_outlinePipelineFailureReported) {
@@ -1881,6 +2022,8 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
     if (!m_graphBuilt)
         return false;
 
+    RefreshShadowAtlasUpdateState();
+
     BindTemporalHistoryResources();
 
     if (m_hasCameraClearOverride && !m_mainClearPassName.empty()) {
@@ -1908,6 +2051,90 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
         }
     }
     return true;
+}
+
+uint64_t SceneRenderGraph::ComputeShadowContentSignature(bool &hasDynamicCaster) const
+{
+    hasDynamicCaster = false;
+    uint64_t hash = kShadowHashOffset;
+    HashShadowValue(hash, m_cachedSubmissionSignature);
+    HashShadowValue(hash, m_cachedObjectBufferRevision);
+    if (m_vkCore) {
+        const uint64_t materialGeneration = m_vkCore->GetMaterialPipelineManager().GetPublicationGeneration();
+        HashShadowValue(hash, materialGeneration);
+    }
+
+    const auto &shadowFrame = m_cameraLightCollector.GetShadowFrame();
+    HashShadowValue(hash, shadowFrame.atlasSize);
+    const uint64_t viewCount = shadowFrame.views.size();
+    const uint64_t assignmentCount = shadowFrame.assignments.size();
+    HashShadowValue(hash, viewCount);
+    HashShadowValue(hash, assignmentCount);
+    for (const auto &view : shadowFrame.views) {
+        HashShadowValue(hash, view.lightId);
+        HashShadowValue(hash, view.type);
+        HashShadowValue(hash, view.subView);
+        HashShadowValue(hash, view.viewProjection);
+        HashShadowValue(hash, view.atlas);
+        HashShadowValue(hash, view.nearPlane);
+        HashShadowValue(hash, view.farPlane);
+        HashShadowValue(hash, view.worldUnitsPerTexel);
+        HashShadowValue(hash, view.filterRadiusTexels);
+        HashShadowValue(hash, view.splitNear);
+        HashShadowValue(hash, view.splitFar);
+        HashShadowValue(hash, view.lightVector);
+        HashShadowValue(hash, view.lightVectorIsPosition);
+        HashShadowValue(hash, view.depthBiasTexels);
+        HashShadowValue(hash, view.normalBiasTexels);
+        HashShadowValue(hash, view.viewRight);
+        HashShadowValue(hash, view.viewUp);
+        HashShadowValue(hash, view.cullingMask);
+    }
+    for (const auto &assignment : shadowFrame.assignments) {
+        HashShadowValue(hash, assignment.lightId);
+        HashShadowValue(hash, assignment.firstView);
+        HashShadowValue(hash, assignment.viewCount);
+    }
+
+    // Transform revisions cover ordinary moving renderers. GPU skinning and
+    // shadow-casting particles mutate device buffers without necessarily
+    // changing that revision, so those paths deliberately remain dynamic.
+    for (const DrawCall &drawCall : m_cachedShadowRenderers.DrawCalls()) {
+        if (drawCall.skinBoneMatrices != nullptr) {
+            hasDynamicCaster = true;
+            break;
+        }
+    }
+    if (!hasDynamicCaster && m_particleDrawRegistry) {
+        const auto particles = m_particleDrawRegistry->SnapshotShared(std::numeric_limits<int32_t>::min(),
+                                                                      std::numeric_limits<int32_t>::max());
+        if (particles) {
+            hasDynamicCaster = std::any_of(particles->begin(), particles->end(), [](const auto &entry) {
+                return entry.semantics.castShadows && entry.renderer && entry.renderer->CanCastShadows();
+            });
+        }
+    }
+    return hash == 0 ? 1 : hash;
+}
+
+void SceneRenderGraph::RefreshShadowAtlasUpdateState()
+{
+    if (!m_hasShadowCasterPass || m_cameraLightCollector.GetShadowFrame().views.empty()) {
+        m_pendingShadowContentSignature = 0;
+        m_shadowAtlasUpdateRequired = false;
+        return;
+    }
+    bool hasDynamicCaster = false;
+    m_pendingShadowContentSignature = ComputeShadowContentSignature(hasDynamicCaster);
+    m_shadowAtlasUpdateRequired =
+        hasDynamicCaster || !m_shadowAtlasValid || m_pendingShadowContentSignature != m_committedShadowContentSignature;
+}
+
+void SceneRenderGraph::CommitShadowAtlasUpdate()
+{
+    m_committedShadowContentSignature = m_pendingShadowContentSignature;
+    m_shadowAtlasValid = true;
+    m_shadowAtlasUpdateRequired = false;
 }
 
 bool SceneRenderGraph::CompleteSubmissionExecution(VkCommandBuffer commandBuffer)
@@ -2008,6 +2235,26 @@ std::string SceneRenderGraph::GetDebugString() const
         result += "Passes (" + std::to_string(m_pythonGraphDesc.passes.size()) + "):\n";
         for (const auto &pass : m_pythonGraphDesc.passes) {
             result += "  " + pass.name + "\n";
+        }
+        if (m_vkCore) {
+            std::vector<std::string> fullscreenShaders;
+            for (const auto &pass : m_pythonGraphDesc.passes) {
+                for (const auto &command : pass.commands) {
+                    if (command.type == GraphCommandType::FullscreenQuad && !command.shaderName.empty() &&
+                        std::find(fullscreenShaders.begin(), fullscreenShaders.end(), command.shaderName) ==
+                            fullscreenShaders.end()) {
+                        fullscreenShaders.push_back(command.shaderName);
+                    }
+                }
+            }
+            if (!fullscreenShaders.empty()) {
+                std::sort(fullscreenShaders.begin(), fullscreenShaders.end());
+                result += "Fullscreen shader fingerprints (resident SPIR-V):\n";
+                for (const auto &shader : fullscreenShaders) {
+                    result += "  " + shader + "=" +
+                              std::to_string(m_vkCore->GetShaderCodeFingerprint(shader, "fragment")) + "\n";
+                }
+            }
         }
         if (!m_parameterBlocks.empty()) {
             result += "Parameter blocks (authored defaults, before native runtime overrides) (" +
@@ -2232,13 +2479,16 @@ void SceneRenderGraph::CommitTemporalHistory()
     }
 }
 
-void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor)
+void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor,
+                                                   bool dithering, bool stopNaNs)
 {
     m_hasCameraClearOverride = true;
     m_cameraClearFlags = clearFlags;
     // Authored camera background color is sRGB; the scene color target is
     // linear (encoded for display by the display encode pass).
     m_cameraBgColor = inx::color::SrgbToLinear(bgColor);
+    m_cameraDithering = dithering;
+    m_cameraStopNaNs = stopNaNs;
 
     if (m_prevClearStateValid && m_prevCameraClearFlags != clearFlags) {
         m_needsRebuild = true;
@@ -2307,6 +2557,8 @@ vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk:
             builder.SkipCallbackWhenRendererListsEmpty();
         }
         builder.SetRenderArea(width, height);
+        if (m_renderGraph->SupportsDynamicRendering())
+            builder.UseDynamicRendering();
 
         return [callback, width, height, rendererListHandle, vkCore](vk::RenderContext &ctx) {
             if (rendererListHandle.IsValid()) {
@@ -2348,6 +2600,8 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
         builder.ReadRendererList(rendererList);
         builder.SetDepthTest(false);
         builder.SetRenderArea(width, height);
+        if (m_renderGraph->SupportsDynamicRendering())
+            builder.UseDynamicRendering();
 
         return [this, rendererList](vk::RenderContext &context) {
             if (!m_outlineRenderer)
@@ -2369,6 +2623,8 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
                                composited = builder.WriteColor(displayTarget, 0);
                                builder.SetDepthTest(false);
                                builder.SetRenderArea(width, height);
+                               if (m_renderGraph->SupportsDynamicRendering())
+                                   builder.UseDynamicRendering();
                                return [this](vk::RenderContext &context) {
                                    if (m_outlineRenderer)
                                        m_outlineRenderer->RecordCompositeDraw(context.GetCommandBuffer());
@@ -2418,15 +2674,6 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
         }
     }
 
-    const vk::ResourceHandle outlinedDisplay = AppendEditorOutline(displayTarget);
-    if (outlinedDisplay.IsValid() && outlinedDisplay != displayTarget) {
-        displayTarget = outlinedDisplay;
-        if (m_importedResolveTarget.IsValid() && displayTarget.id == m_importedResolveTarget.id)
-            m_importedResolveTarget = displayTarget;
-        else if (m_importedColorTarget.IsValid() && displayTarget.id == m_importedColorTarget.id)
-            m_importedColorTarget = displayTarget;
-    }
-
     if (!graphOutput.IsValid())
         graphOutput = displayTarget;
 
@@ -2468,6 +2715,10 @@ void SceneRenderGraph::BuildRenderGraph()
         });
     }
     m_renderGraph->Reset();
+    m_committedShadowContentSignature = 0;
+    m_pendingShadowContentSignature = 0;
+    m_shadowAtlasValid = false;
+    m_shadowAtlasUpdateRequired = true;
     InvalidateTemporalHistory();
     m_renderView.color = {};
     m_renderView.depth = {};
@@ -2484,7 +2735,14 @@ void SceneRenderGraph::BuildRenderGraph()
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.ParticleSet());
     currentViewFrame.shadowBinding = {};
 
-    m_vkCore->GetMaterialPipelineManager().InvalidateAllMaterialPipelines();
+    // Graph topology and material pipeline compatibility are independent.
+    // Effect-stack edits commonly rebuild transient graph resources while the
+    // attachment formats and sample count remain unchanged. Material pass
+    // descriptors already key their cache by compile target, formats, samples
+    // and render state; invalidating every material here discarded valid GPU
+    // pipelines and made a runtime effect/pipeline switch compile the whole
+    // scene again. True compatibility changes (currently MSAA publication)
+    // are handled transactionally by MaterialPipelineManager itself.
 
     m_graphBuilt = false;
     m_shadowMapInputHandle = {};
@@ -2514,7 +2772,7 @@ void SceneRenderGraph::BuildRenderGraph()
         auto existing = m_particleCullers.find(entry.id);
         if (existing != m_particleCullers.end() && existing->second && existing->second->Capacity() == entry.capacity &&
             existing->second->VertexCount() == entry.renderer->VertexCount() &&
-            existing->second->InstanceBuffer() == entry.instances &&
+            existing->second->VisibilityBuffer() == entry.visibility &&
             existing->second->SourceIndirectBuffer() == entry.indirectArguments &&
             existing->second->SourceIndexBuffer() == entry.renderIndices &&
             existing->second->BoundsBuffer() == entry.bounds &&
@@ -2527,7 +2785,8 @@ void SceneRenderGraph::BuildRenderGraph()
         particle::GpuParticleCullerDesc desc;
         desc.capacity = entry.capacity;
         desc.vertexCount = entry.renderer->VertexCount();
-        desc.instances = entry.instances;
+        desc.visibility = entry.visibility;
+        desc.ribbonInstances = entry.instances;
         desc.sourceIndirectArguments = entry.indirectArguments;
         desc.sourceIndices = entry.renderIndices;
         desc.bounds = entry.bounds;
@@ -2573,7 +2832,7 @@ void SceneRenderGraph::BuildRenderGraph()
         activeSorters.insert(entry.id);
         auto existing = m_particleSorters.find(entry.id);
         if (existing != m_particleSorters.end() && existing->second && existing->second->Capacity() == entry.capacity &&
-            existing->second->InstanceBuffer() == entry.instances &&
+            existing->second->VisibilityBuffer() == entry.visibility &&
             existing->second->IndirectBuffer() == culler->DrawIndirectBuffer() &&
             existing->second->SourceIndexBuffer() == culler->VisibleIndexBuffer() &&
             existing->second->DispatchBuffer() == culler->SortDispatchBuffer()) {
@@ -2583,7 +2842,7 @@ void SceneRenderGraph::BuildRenderGraph()
         auto sorter = std::make_shared<particle::ParticleGpuSorter>();
         particle::GpuParticleSorterDesc desc;
         desc.capacity = entry.capacity;
-        desc.instances = entry.instances;
+        desc.visibility = entry.visibility;
         desc.indirectArguments = culler->DrawIndirectBuffer();
         desc.sourceIndices = culler->VisibleIndexBuffer();
         desc.dispatchArguments = culler->SortDispatchBuffer();
@@ -2659,6 +2918,7 @@ void SceneRenderGraph::BuildRenderGraph()
         struct ParticleGraphResources
         {
             vk::ResourceHandle instances;
+            vk::ResourceHandle visibility;
             vk::ResourceHandle sourceIndirectArguments;
             vk::ResourceHandle sourceRenderIndices;
             vk::ResourceHandle bounds;
@@ -2689,6 +2949,9 @@ void SceneRenderGraph::BuildRenderGraph()
                 resources.instances = builder.ImportBuffer(prefix + "/Instances", entry.instances,
                                                            static_cast<uint64_t>(entry.capacity) *
                                                                particle::ParticleGpuRuntime::RenderInstanceStride);
+                resources.visibility = builder.ImportBuffer(prefix + "/Visibility", entry.visibility,
+                                                            static_cast<uint64_t>(entry.capacity) *
+                                                                particle::ParticleGpuRuntime::VisibilityInstanceStride);
                 resources.sourceIndirectArguments =
                     builder.ImportBuffer(prefix + "/SourceIndirect", entry.indirectArguments, 16);
                 resources.sourceRenderIndices =
@@ -2709,6 +2972,9 @@ void SceneRenderGraph::BuildRenderGraph()
                 m_renderGraph->SetResourceInitialState(resources.instances, rhi::TextureLayout::Undefined,
                                                        rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
                                                        rhi::QueueRole::Compute);
+                m_renderGraph->SetResourceInitialState(resources.visibility, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderRead, rhi::PipelineStage::ComputeShader,
+                                                       rhi::QueueRole::Compute);
                 m_renderGraph->SetResourceInitialState(resources.sourceIndirectArguments, rhi::TextureLayout::Undefined,
                                                        rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
                                                        rhi::QueueRole::Compute);
@@ -2724,10 +2990,15 @@ void SceneRenderGraph::BuildRenderGraph()
                 const auto visibleIndexLastStage = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                        ? rhi::PipelineStage::VertexShader
                                                        : rhi::PipelineStage::ComputeShader;
+                const auto visibleIndexLastQueue = entry.semantics.sortMode == particle::ParticleSortMode::None
+                                                       ? rhi::QueueRole::Graphics
+                                                       : rhi::QueueRole::Compute;
                 m_renderGraph->SetResourceInitialState(resources.renderIndices, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::ShaderRead, visibleIndexLastStage);
+                                                       rhi::Access::ShaderRead, visibleIndexLastStage,
+                                                       visibleIndexLastQueue);
                 m_renderGraph->SetResourceInitialState(resources.indirectArguments, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::IndirectRead, rhi::PipelineStage::DrawIndirect);
+                                                       rhi::Access::IndirectRead, rhi::PipelineStage::DrawIndirect,
+                                                       rhi::QueueRole::Graphics);
                 const auto sortDispatchLastAccess = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                         ? rhi::Access::ShaderWrite
                                                         : rhi::Access::IndirectRead;
@@ -2735,7 +3006,8 @@ void SceneRenderGraph::BuildRenderGraph()
                                                        ? rhi::PipelineStage::ComputeShader
                                                        : rhi::PipelineStage::DrawIndirect;
                 m_renderGraph->SetResourceInitialState(resources.sortDispatchArguments, rhi::TextureLayout::Undefined,
-                                                       sortDispatchLastAccess, sortDispatchLastStage);
+                                                       sortDispatchLastAccess, sortDispatchLastStage,
+                                                       rhi::QueueRole::Compute);
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
                 builder.ReadStorageBuffer(resources.bounds);
                 resources.simulationControl =
@@ -2744,10 +3016,11 @@ void SceneRenderGraph::BuildRenderGraph()
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
                 return [this, culler](vk::RenderContext &ctx) {
                     culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                    ctx.RecordComputeDispatch(1, 1, 1, culler->Capacity(), false);
                 };
             });
             m_renderGraph->AddComputePass(prefix + "/Cull", [&, culler](vk::PassBuilder &builder) {
-                builder.ReadStorageBuffer(resources.instances);
+                builder.ReadStorageBuffer(resources.visibility);
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
                 builder.ReadStorageBuffer(resources.sourceRenderIndices);
                 builder.ReadIndirectBuffer(resources.sortDispatchArguments);
@@ -2756,17 +3029,21 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
                 return [this, culler](vk::RenderContext &ctx) {
                     culler->RecordCull(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                    ctx.RecordComputeDispatch(0, 0, 0, culler->Capacity(), true);
                 };
             });
             m_renderGraph->AddComputePass(prefix + "/Finalize", [&, culler](vk::PassBuilder &builder) {
                 resources.indirectArguments =
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
-                return [culler](vk::RenderContext &ctx) { culler->RecordFinalize(ctx.GetComputeCommandEncoder()); };
+                return [culler](vk::RenderContext &ctx) {
+                    culler->RecordFinalize(ctx.GetComputeCommandEncoder());
+                    ctx.RecordComputeDispatch(1, 1, 1, culler->Capacity(), false);
+                };
             });
-            if (resources.instances.IsValid() && resources.bounds.IsValid() && resources.simulationControl.IsValid() &&
-                resources.renderIndices.IsValid() && resources.indirectArguments.IsValid() &&
-                resources.sortDispatchArguments.IsValid()) {
+            if (resources.instances.IsValid() && resources.visibility.IsValid() && resources.bounds.IsValid() &&
+                resources.simulationControl.IsValid() && resources.renderIndices.IsValid() &&
+                resources.indirectArguments.IsValid() && resources.sortDispatchArguments.IsValid()) {
                 particleGraphResources.emplace(entry.id, resources);
             }
         }
@@ -2792,7 +3069,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     m_renderGraph->SetResourceInitialState(resources.indices[0], rhi::TextureLayout::Undefined,
                                                            rhi::Access::ShaderRead, rhi::PipelineStage::VertexShader);
 
-                    builder.ReadStorageBuffer(resources.instances);
+                    builder.ReadStorageBuffer(resources.visibility);
                     builder.ReadStorageBuffer(resources.indirectArguments);
                     builder.ReadStorageBuffer(resources.renderIndices);
                     // Finalize publishes the current visible count and this
@@ -2806,6 +3083,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::array<float, 16> view{};
                         std::memcpy(view.data(), &m_cachedView[0][0], sizeof(m_cachedView));
                         sorter->RecordSmall(ctx.GetComputeCommandEncoder(), view, mode);
+                        ctx.RecordComputeDispatch(1, 1, 1, sorter->Capacity(), false);
                     };
                 });
                 resources.renderIndices = resources.indices[0];
@@ -2814,7 +3092,8 @@ void SceneRenderGraph::BuildRenderGraph()
             }
             m_renderGraph->AddComputePass(prefix + "/Generate", [&, sorter, entry, prefix](vk::PassBuilder &builder) {
                 const uint64_t elementBytes = static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t);
-                const uint64_t keyBytes = elementBytes * 2u;
+                const uint64_t keyBytes =
+                    static_cast<uint64_t>(entry.capacity) * particle::ParticleGpuSorter::PackedKeyStride;
                 const uint64_t blockBytes =
                     static_cast<uint64_t>(sorter->BlockCount()) * particle::ParticleGpuSorter::Radix * sizeof(uint32_t);
                 resources.keys = {
@@ -2847,7 +3126,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 m_renderGraph->SetResourceInitialState(resources.globalOffsets, rhi::TextureLayout::Undefined,
                                                        rhi::Access::ShaderRead, rhi::PipelineStage::ComputeShader);
 
-                builder.ReadStorageBuffer(resources.instances);
+                builder.ReadStorageBuffer(resources.visibility);
                 builder.ReadStorageBuffer(resources.indirectArguments);
                 builder.ReadStorageBuffer(resources.renderIndices);
                 builder.ReadIndirectBuffer(resources.sortDispatchArguments);
@@ -2859,6 +3138,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     std::array<float, 16> view{};
                     std::memcpy(view.data(), &m_cachedView[0][0], sizeof(m_cachedView));
                     sorter->RecordGenerate(ctx.GetComputeCommandEncoder(), view, mode);
+                    ctx.RecordComputeDispatch(0, 0, 0, sorter->Capacity(), true);
                 };
             });
             for (uint32_t passIndex = 0; passIndex < particle::ParticleGpuSorter::PassCount; ++passIndex) {
@@ -2873,6 +3153,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         resources.histogram = builder.WriteStorageBuffer(resources.histogram);
                         return [sorter, passIndex](vk::RenderContext &ctx) {
                             sorter->RecordHistogram(ctx.GetComputeCommandEncoder(), passIndex);
+                            ctx.RecordComputeDispatch(0, 0, 0, sorter->Capacity(), true);
                         };
                     });
                 m_renderGraph->AddComputePass(radixPrefix + "/Scan", [&, sorter, passIndex](vk::PassBuilder &builder) {
@@ -2882,6 +3163,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     resources.globalOffsets = builder.WriteStorageBuffer(resources.globalOffsets);
                     return [sorter, passIndex](vk::RenderContext &ctx) {
                         sorter->RecordScan(ctx.GetComputeCommandEncoder(), passIndex);
+                        ctx.RecordComputeDispatch(1, 1, 1, sorter->BlockCount(), false);
                     };
                 });
                 m_renderGraph->AddComputePass(
@@ -2896,6 +3178,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         resources.indices[output] = builder.WriteStorageBuffer(resources.indices[output]);
                         return [sorter, passIndex](vk::RenderContext &ctx) {
                             sorter->RecordScatter(ctx.GetComputeCommandEncoder(), passIndex);
+                            ctx.RecordComputeDispatch(0, 0, 0, sorter->Capacity(), true);
                         };
                     });
             }
@@ -3023,6 +3306,30 @@ void SceneRenderGraph::BuildRenderGraph()
                 }
             }
         }
+
+        // Fullscreen lighting shaders consume the camera-local shadow map
+        // through the per-view descriptor set rather than their explicit
+        // set-0 texture list. Discover that graph resource up front so those
+        // passes still participate in dependency and layout tracking.
+        std::string perViewShadowTextureName;
+        for (const auto &candidatePass : sortedPasses) {
+            const GraphCommandDesc *candidateCommand = PrimaryCommand(candidatePass);
+            if (!candidateCommand)
+                continue;
+            const auto shadowBinding =
+                std::find_if(candidateCommand->inputBindings.begin(), candidateCommand->inputBindings.end(),
+                             [](const auto &binding) { return binding.first == "shadowMap"; });
+            if (shadowBinding != candidateCommand->inputBindings.end()) {
+                perViewShadowTextureName = shadowBinding->second;
+                break;
+            }
+        }
+        bool fullscreenShadowDependencyDeclared = false;
+        // Camera clear settings remain active across frames. Consumption is
+        // local to this graph build so only the first color-clearing pass is
+        // overridden without disabling later per-frame color updates.
+        bool cameraClearOverridePending = m_hasCameraClearOverride;
+        m_mainClearPassName.clear();
 
         for (const auto &passDesc : sortedPasses) {
             const GraphCommandDesc *command = PrimaryCommand(passDesc);
@@ -3197,6 +3504,7 @@ void SceneRenderGraph::BuildRenderGraph()
             // color texture dependencies between passes.
             std::vector<vk::ResourceHandle> colorReadHandles;
             bool readsDepth = false;
+            vk::ResourceHandle declaredReadOnlyDepth;
             for (const auto &readTex : passDesc.readTextures) {
                 auto texIt = texDescMap.find(readTex);
                 if (texIt != texDescMap.end()) {
@@ -3204,7 +3512,12 @@ void SceneRenderGraph::BuildRenderGraph()
                         const bool sampledInput =
                             std::any_of(commandInputBindings.begin(), commandInputBindings.end(),
                                         [&readTex](const auto &binding) { return binding.second == readTex; });
-                        readsDepth |= !sampledInput;
+                        if (!sampledInput) {
+                            readsDepth = true;
+                            const auto depthIt = customRTHandles.find(readTex);
+                            if (depthIt != customRTHandles.end())
+                                declaredReadOnlyDepth = depthIt->second;
+                        }
                     } else if (!texIt->second->isBackbuffer) {
                         // Non-depth, non-backbuffer read: look up custom RT handle
                         auto rtIt = customRTHandles.find(readTex);
@@ -3255,7 +3568,7 @@ void SceneRenderGraph::BuildRenderGraph()
             float clearDepthVal = passDesc.clearDepthValue;
 
             // Apply camera-driven clear overrides to the first pass that clears color.
-            if (m_hasCameraClearOverride && passDesc.clearColor) {
+            if (cameraClearOverridePending && passDesc.clearColor) {
                 switch (m_cameraClearFlags) {
                 case CameraClearFlags::Skybox:
                     clearColor = true;
@@ -3287,12 +3600,12 @@ void SceneRenderGraph::BuildRenderGraph()
                 // rebuilding the graph.
                 m_mainClearPassName = passDesc.name;
                 // Only override the first eligible pass
-                m_hasCameraClearOverride = false;
+                cameraClearOverridePending = false;
             }
 
             // Capture depth state for the lambda (by value — sharedDepth
             // is updated between iterations so we capture the CURRENT value)
-            vk::ResourceHandle depthForThisPass = sharedDepth;
+            vk::ResourceHandle depthForThisPass = declaredReadOnlyDepth.IsValid() ? declaredReadOnlyDepth : sharedDepth;
             bool needsCreateDepth = writesDepth && !sharedDepth.IsValid();
             bool passReadsDepth = readsDepth && !writesDepth;
             vk::ResourceHandle particleSceneDepth;
@@ -3464,10 +3777,17 @@ void SceneRenderGraph::BuildRenderGraph()
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
                 int32_t historyValidParameterIndex = -1;
+                int32_t cameraDitheringParameterIndex = -1;
+                int32_t cameraStopNaNsParameterIndex = -1;
                 for (const auto &[name, value] : command->pushConstants) {
                     if (packedPushConstantSize / sizeof(float) < 32) {
+                        const auto parameterIndex = static_cast<int32_t>(packedPushConstantSize / sizeof(float));
                         if (name == "_InfernuxHistoryValid")
-                            historyValidParameterIndex = static_cast<int32_t>(packedPushConstantSize / sizeof(float));
+                            historyValidParameterIndex = parameterIndex;
+                        if (shaderName == "Display Encode" && name == "dithering")
+                            cameraDitheringParameterIndex = parameterIndex;
+                        if (shaderName == "Display Encode" && name == "stopNaNs")
+                            cameraStopNaNsParameterIndex = parameterIndex;
                         packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value;
                         packedPushConstantSize += sizeof(float);
                     } else {
@@ -3584,6 +3904,13 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
+                const bool useDynamicFullscreen = m_renderGraph->SupportsDynamicRendering();
+                vk::ResourceHandle fullscreenShadowInput;
+                if (!fullscreenShadowDependencyDeclared && !perViewShadowTextureName.empty()) {
+                    const auto shadow = customRTHandles.find(perViewShadowTextureName);
+                    if (shadow != customRTHandles.end())
+                        fullscreenShadowInput = shadow->second;
+                }
                 m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion](vk::PassBuilder &builder) {
                     // Declare read dependencies for DAG edges + barriers
                     for (const auto &input : fsReadInputs) {
@@ -3593,15 +3920,22 @@ void SceneRenderGraph::BuildRenderGraph()
                             builder.Read(input.handle);
                         }
                     }
+                    if (fullscreenShadowInput.IsValid() &&
+                        std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
+                                     [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
+                        builder.ReadSampledDepth(fullscreenShadowInput);
+                    }
                     // Declare color output
                     fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
+                    if (useDynamicFullscreen)
+                        builder.UseDynamicRendering();
 
                     return [=, cachedRenderTarget = rhi::RenderTargetLayoutHandle{}](vk::RenderContext &ctx) mutable {
-                        if (!cachedRenderTarget.IsValid()) {
+                        if (!useDynamicFullscreen && !cachedRenderTarget.IsValid()) {
                             cachedRenderTarget = renderGraphPtr->GetPassRenderTargetLayout(passDesc.name);
                         }
-                        if (!cachedRenderTarget.IsValid())
+                        if (!useDynamicFullscreen && !cachedRenderTarget.IsValid())
                             return;
 
                         // Resolve input texture views using a stack path for the common case.
@@ -3631,6 +3965,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
                         key.inputTextureCount = inputCount;
+                        key.useDynamicRendering = useDynamicFullscreen;
 
                         const auto &entry = fsRenderer->EnsurePipeline(key);
                         if (!entry.pipeline.IsValid())
@@ -3661,11 +3996,24 @@ void SceneRenderGraph::BuildRenderGraph()
                             drawPushConstants.values[historyValidParameterIndex] =
                                 history != m_temporalHistories.end() && history->second.valid ? 1.0f : 0.0f;
                         }
+                        if (cameraDitheringParameterIndex >= 0 && static_cast<uint32_t>(cameraDitheringParameterIndex) <
+                                                                      drawPushConstantSize / sizeof(float)) {
+                            drawPushConstants.values[cameraDitheringParameterIndex] = m_cameraDithering ? 1.0f : 0.0f;
+                        }
+                        if (cameraStopNaNsParameterIndex >= 0 && static_cast<uint32_t>(cameraStopNaNsParameterIndex) <
+                                                                     drawPushConstantSize / sizeof(float)) {
+                            drawPushConstants.values[cameraStopNaNsParameterIndex] = m_cameraStopNaNs ? 1.0f : 0.0f;
+                        }
 
                         fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),
                                          drawPushConstants, drawPushConstantSize);
                     };
                 });
+                if (fullscreenShadowInput.IsValid()) {
+                    m_shadowMapInputHandle = fullscreenShadowInput;
+                    m_shadowMapInputIsDepth = true;
+                    fullscreenShadowDependencyDeclared = true;
+                }
                 publishResourceVersion(fsWrittenVersion);
 
                 if (writesBackbuffer) {
@@ -3680,6 +4028,21 @@ void SceneRenderGraph::BuildRenderGraph()
             const bool usesShadowRendererList = command && command->type == GraphCommandType::DrawShadowCasters;
             const bool usesVisibleRendererList = command && (command->type == GraphCommandType::DrawRenderers ||
                                                              command->type == GraphCommandType::DrawSkybox);
+            const bool usesDynamicScreenUI = command && command->type == GraphCommandType::DrawScreenUI &&
+                                             m_screenUIRenderer && m_screenUIRenderer->UsesDynamicRendering() &&
+                                             m_renderGraph->SupportsDynamicRendering();
+            const auto geometryPassIt = m_pythonMaterialPasses.find(passDesc.name);
+            const bool usesDynamicGeometry =
+                geometryPassIt != m_pythonMaterialPasses.end() && geometryPassIt->second.UsesDynamicRendering();
+            const bool usesDynamicShadow = usesShadowRendererList && m_renderGraph->SupportsDynamicRendering() &&
+                                           geometryPassIt != m_pythonMaterialPasses.end() &&
+                                           geometryPassIt->second.UsesDynamicRendering();
+            VkFormat shadowDepthFormat = VK_FORMAT_D32_SFLOAT;
+            if (usesShadowRendererList && !passDesc.writeDepth.empty()) {
+                const auto shadowDepthIt = texDescMap.find(passDesc.writeDepth);
+                if (shadowDepthIt != texDescMap.end())
+                    shadowDepthFormat = rhi::ToVkFormat(shadowDepthIt->second->format);
+            }
             const int shadowQueueMin = command ? command->queueMin : 0;
             const int shadowQueueMax = command ? command->queueMax : 2999;
             const int shadowLightIndex = command ? command->lightIndex : 0;
@@ -3786,7 +4149,9 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 if (rendererListHandle.IsValid()) {
                     builder.ReadRendererList(rendererListHandle);
-                    builder.SkipCallbackWhenRendererListsEmpty(particlePackets.empty());
+                    // A shadow pass with no casters must still clear a
+                    // previously populated persistent atlas.
+                    builder.SkipCallbackWhenRendererListsEmpty(!usesShadowRendererList && particlePackets.empty());
                 }
 
                 // ----- Determine pass dimensions -----
@@ -3837,11 +4202,8 @@ void SceneRenderGraph::BuildRenderGraph()
                     } else if (isShadowPass) {
                         // Fallback: create inline
                         auto depthTexIt = texDescMap.find(passDesc.writeDepth);
-                        VkFormat shadowDepthFmt = depthTexIt != texDescMap.end()
-                                                      ? rhi::ToVkFormat(depthTexIt->second->format)
-                                                      : VK_FORMAT_D32_SFLOAT;
-                        depth = builder.CreateDepthStencil(passDesc.writeDepth, passWidth, passHeight, shadowDepthFmt,
-                                                           VK_SAMPLE_COUNT_1_BIT);
+                        depth = builder.CreateDepthStencil(passDesc.writeDepth, passWidth, passHeight,
+                                                           shadowDepthFormat, VK_SAMPLE_COUNT_1_BIT);
                         writtenDepthVersion = builder.WriteDepth(depth);
                         depth = writtenDepthVersion;
                     }
@@ -3913,12 +4275,14 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 // ----- Render area -----
                 builder.SetRenderArea(passWidth, passHeight);
+                if (usesDynamicScreenUI || usesDynamicGeometry || usesDynamicShadow)
+                    builder.UseDynamicRendering();
 
                 // ----- Clear values -----
                 if (clearColor) {
                     builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
                 }
-                if (clearDepth) {
+                if (clearDepth && !isShadowPass) {
                     builder.SetClearDepth(clearDepthVal, 0);
                 }
 
@@ -3930,9 +4294,9 @@ void SceneRenderGraph::BuildRenderGraph()
                 }
 
                 return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
-                        usesShadowRendererList, localVkCore, particlePackets, particlePass, particleSceneDepth,
-                        particleSceneDepthIsDepth, shadowQueueMin, shadowQueueMax, shadowLightIndex,
-                        passName = passDesc.name](vk::RenderContext &ctx) {
+                        usesShadowRendererList, usesDynamicShadow, shadowDepthFormat, localVkCore, particlePackets,
+                        particlePass, particleSceneDepth, particleSceneDepthIsDepth, shadowQueueMin, shadowQueueMax,
+                        shadowLightIndex, passName = passDesc.name](vk::RenderContext &ctx) {
                     if (rendererListHandle.IsValid()) {
                         const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
                         if (usesShadowRendererList) {
@@ -3944,11 +4308,25 @@ void SceneRenderGraph::BuildRenderGraph()
                         }
                     }
                     if (isShadowPass) {
+                        if (!m_shadowAtlasUpdateRequired)
+                            return;
+                        VkClearAttachment clearAttachment{};
+                        clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                        clearAttachment.clearValue.depthStencil = {1.0f, 0};
+                        VkClearRect clearRect{};
+                        clearRect.rect.offset = {0, 0};
+                        clearRect.rect.extent = {passWidth, passHeight};
+                        clearRect.baseArrayLayer = 0;
+                        clearRect.layerCount = 1;
+                        vkCmdClearAttachments(ctx.GetCommandBuffer(), 1, &clearAttachment, 1, &clearRect);
+                        const VkRenderPass compatibleRenderPass =
+                            usesDynamicShadow ? VK_NULL_HANDLE : m_renderGraph->GetPassRenderPass(passName);
                         const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         localVkCore->DrawShadowCasters(
                             ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
                             m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(), shadowLightIndex,
+                            compatibleRenderPass, shadowDepthFormat,
                             [&](uint32_t, const lighting::ShadowView &activeShadowView) {
                                 particle::GpuParticleViewConstants shadowView;
                                 std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
@@ -3975,8 +4353,10 @@ void SceneRenderGraph::BuildRenderGraph()
                                         packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,
                                                                     ctx.GetBufferHandle(packet.indirectArguments),
                                                                     shadowView, packet.drawRenderIndices);
+                                    ctx.RecordParticleDraw(true);
                                 }
                             });
+                        CommitShadowAtlasUpdate();
                         return;
                     }
                     if (callback)
@@ -4014,6 +4394,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 ctx.GetBufferHandle(packet.indirectArguments), packetView, packet.drawRenderIndices,
                                 packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
                                 particleSceneDepthIsDepth, particlePerView);
+                            ctx.RecordParticleDraw(true);
                         }
                     }
                 };
@@ -4044,12 +4425,18 @@ void SceneRenderGraph::BuildRenderGraph()
         }
 
         // ====================================================================
-        // Auto-append system passes: component gizmos, editor gizmos,
-        // and editor tools — all draw into the backbuffer with depth testing.
+        // Editor overlays are a Scene-view concern only.  A standalone Player
+        // must export the exact user pipeline result: adding editor-only
+        // queues to a Game graph creates extra color-target versions after
+        // post processing and can invalidate the MSAA/display output chain.
         // ====================================================================
-        m_importedColorTarget = AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
-        m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
-        m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+        if (m_renderView.kind == rhi::RenderViewKind::Scene) {
+            m_importedColorTarget =
+                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
+            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+        }
     }
 
     // Set output for proper resource tracking and dead-pass culling.

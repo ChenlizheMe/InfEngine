@@ -13,6 +13,7 @@ methods, and panel/manager references live on the bootstrap instance.
 import logging
 import os
 import pathlib
+from dataclasses import dataclass
 from typing import Optional
 
 from Infernux.lib import TagLayerManager
@@ -27,6 +28,10 @@ from Infernux.engine.ui import (
     WindowManager,
     TagLayerSettingsPanel,
     BuildSettingsPanel,
+    PreferencesPanel,
+    HistoryPanel,
+    PhysicsLayerMatrixPanel,
+    EnvironmentSettingsPanel,
     UIEditorPanel,
     AnimClip2DEditorPanel,
     AnimFSMEditorPanel,
@@ -34,13 +39,122 @@ from Infernux.engine.ui import (
     ParticleGraphEditorPanel,
     EditorPanel,
     EditorServices,
-    EditorEventBus,
-    EditorEvent,
     PanelRegistry,
     editor_panel,
 )
 from Infernux.engine.ui import panel_state as _panel_state
 from Infernux.engine._bootstrap_trace import bootstrap_checkpoint
+
+
+@dataclass(frozen=True, slots=True)
+class NativeBuiltinWindowType:
+    """One native singleton governed by the formal editor window manifest."""
+
+    type_id: str
+    display_name: str
+    title_key: str
+    factory_name: str
+    menu_path: str = "Window"
+    user_closable: bool = True
+
+
+NATIVE_BUILTIN_WINDOW_TYPES = (
+    NativeBuiltinWindowType(
+        "toolbar",
+        "Toolbar",
+        "panel.toolbar",
+        "_create_native_toolbar",
+        menu_path="",
+        user_closable=False,
+    ),
+    NativeBuiltinWindowType(
+        "hierarchy",
+        "Hierarchy",
+        "panel.hierarchy",
+        "_create_native_hierarchy",
+    ),
+    NativeBuiltinWindowType(
+        "inspector",
+        "Inspector",
+        "panel.inspector",
+        "_create_native_inspector",
+    ),
+    NativeBuiltinWindowType(
+        "project",
+        "Project",
+        "panel.project",
+        "_create_native_project_panel",
+    ),
+    NativeBuiltinWindowType(
+        "console",
+        "Console",
+        "panel.console",
+        "_create_native_console",
+    ),
+)
+
+PERMANENT_EDITOR_WINDOW_TYPE_IDS = frozenset(
+    spec.type_id for spec in NATIVE_BUILTIN_WINDOW_TYPES if not spec.user_closable
+)
+
+BUILTIN_EDITOR_WINDOW_TYPE_IDS = frozenset(
+    {
+        *(spec.type_id for spec in NATIVE_BUILTIN_WINDOW_TYPES),
+        "scene_view",
+        "game_view",
+        "ui_editor",
+    }
+)
+
+PERMANENT_EDITOR_SURFACE_TYPE_IDS = frozenset({"menu_bar", "status_bar"})
+
+
+def _native_builtin_type(spec: NativeBuiltinWindowType):
+    from Infernux.lib import (
+        ConsolePanel,
+        HierarchyPanel,
+        InspectorPanel,
+        ProjectPanel,
+        ToolbarPanel,
+    )
+
+    return {
+        "toolbar": ToolbarPanel,
+        "hierarchy": HierarchyPanel,
+        "inspector": InspectorPanel,
+        "project": ProjectPanel,
+        "console": ConsolePanel,
+    }[spec.type_id]
+
+
+def register_native_builtin_window_types(bootstrap, window_manager) -> None:
+    """Register every native singleton from one authoritative manifest."""
+    for spec in NATIVE_BUILTIN_WINDOW_TYPES:
+        factory = getattr(bootstrap, spec.factory_name)
+        window_manager.register_window_type(
+            type_id=spec.type_id,
+            window_class=_native_builtin_type(spec),
+            display_name=spec.display_name,
+            factory=factory,
+            singleton=True,
+            title_key=spec.title_key,
+            menu_path=spec.menu_path,
+        )
+
+
+def enforce_native_builtin_window_policy(type_id: str, instance: object) -> None:
+    """Apply manifest policy that cannot be represented by WindowInfo yet."""
+    spec = next(
+        (item for item in NATIVE_BUILTIN_WINDOW_TYPES if item.type_id == type_id),
+        None,
+    )
+    if spec is None:
+        raise KeyError(f"unknown native builtin window type: {type_id}")
+    if spec.user_closable:
+        return
+    if not hasattr(instance, "on_request_close"):
+        raise TypeError(f"permanent editor window has no close-intent bridge: {type_id}")
+    instance.on_request_close = lambda: False
 
 
 class BootstrapPanelsMixin:
@@ -57,60 +171,139 @@ class BootstrapPanelsMixin:
         engine = self.engine
         project_path = self.project_path
 
-        from Infernux.lib import InspectorPanel as NativeInspectorPanel
-
-        wm.register_window_type(
-            type_id="inspector",
-            window_class=NativeInspectorPanel,
-            display_name="Inspector",
-            factory=self._create_native_inspector,
-            singleton=True,
-            title_key="panel.inspector",
+        from Infernux.engine.interaction import SelectionDomain
+        from Infernux.engine.ui.core_panel_interactions import (
+            console_panel_interaction,
+            hierarchy_panel_interaction,
+            inspector_panel_interaction,
+            project_panel_interaction,
+            scene_view_panel_interaction,
+            passive_editor_surface_interaction,
+            toolbar_panel_interaction,
+            ui_editor_panel_interaction,
         )
 
-        from Infernux.lib import ProjectPanel as NativeProjectPanel
+        panel_interactions = self.interaction_core.panels
+        scene_commands = self.interaction_core.scene_objects
+        from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
 
-        wm.register_window_type(
-            type_id="project",
-            window_class=NativeProjectPanel,
-            display_name="Project",
-            factory=self._create_native_project_panel,
-            singleton=True,
-            title_key="panel.project",
+        panel_interactions.register_type(
+            "hierarchy",
+            hierarchy_panel_interaction(
+                scene_commands,
+                creation_service=HierarchyCreationService.instance(),
+                tree_views=self.interaction_core.tree_views,
+            ),
+            replace=True,
         )
-
-        from Infernux.lib import ConsolePanel as NativeConsolePanel
-
-        wm.register_window_type(
-            type_id="console",
-            window_class=NativeConsolePanel,
-            display_name="Console",
-            factory=self._create_native_console,
-            singleton=True,
-            title_key="panel.console",
+        panel_interactions.register_type(
+            "project",
+            project_panel_interaction(
+                self.interaction_core.project_asset_interactions,
+                self.interaction_core.navigation,
+                self.interaction_core.tree_views,
+                self.interaction_core.directory_navigation,
+            ),
+            replace=True,
         )
+        panel_interactions.register_type(
+            "inspector",
+            inspector_panel_interaction(
+                lambda: getattr(self, "_inspector_component_actions", None)
+            ),
+            replace=True,
+        )
+        panel_interactions.register_type(
+            "scene_view",
+            scene_view_panel_interaction(scene_commands),
+            replace=True,
+        )
+        panel_interactions.register_type(
+            "ui_editor",
+            ui_editor_panel_interaction(
+                scene_commands,
+                creation_service=HierarchyCreationService.instance(),
+            ),
+            replace=True,
+        )
+        panel_interactions.register_type(
+            "console",
+            console_panel_interaction(self.interaction_core.view_commands),
+            replace=True,
+        )
+        panel_interactions.register_type(
+            "toolbar",
+            toolbar_panel_interaction(),
+            replace=True,
+        )
+        for type_id in sorted(PERMANENT_EDITOR_SURFACE_TYPE_IDS):
+            panel_interactions.register_type(
+                type_id,
+                passive_editor_surface_interaction(),
+                replace=True,
+            )
 
-        # Override factories for panels that need runtime dependencies.
-        # Panels with no-arg constructors use the default factory (cls()).
+        register_native_builtin_window_types(self, wm)
+
+        # Panels with runtime dependencies provide factories in one explicit
+        # application step; the static registry remains immutable.
         _factories = {
             "scene_view":         lambda: SceneViewPanel(engine=engine),
             "game_view":          lambda: GameViewPanel(engine=engine),
-            "project":            lambda: self._create_native_project_panel(),
-            "toolbar":            lambda: self._create_native_toolbar(engine),
             "console":            lambda: self._create_native_console(),
-            "hierarchy":          lambda: self._create_native_hierarchy(),
             "tag_layer_settings": lambda: self._create_tag_layer_panel(),
+            "physics_settings":   lambda: self._create_physics_settings_panel(),
         }
-        for reg in PanelRegistry.get_registrations():
-            if reg.type_id in _factories:
-                reg.factory = _factories[reg.type_id]
-
-        PanelRegistry.apply_all(wm)
+        PanelRegistry.apply_all(
+            wm,
+            self.interaction_core.panels,
+            factory_overrides=_factories,
+        )
+        panel_interactions.require_types(
+            BUILTIN_EDITOR_WINDOW_TYPE_IDS | PERMANENT_EDITOR_SURFACE_TYPE_IDS
+        )
 
     def _create_tag_layer_panel(self):
         panel = TagLayerSettingsPanel()
         panel.set_project_path(self.project_path)
         return panel
+
+    def _create_physics_settings_panel(self):
+        panel = PhysicsLayerMatrixPanel()
+        panel.set_project_path(self.project_path)
+        return panel
+
+    def _wire_native_transient_interactions(self, panel, panel_id: str) -> None:
+        """Project native temporary UI state into Interaction Core.
+
+        Native panels own the concrete cancellation operation, while the
+        global service owns ordering, focus context, and Escape routing.
+        """
+        owner_id = str(panel_id or "").strip()
+        if not owner_id:
+            raise ValueError("native transient panel requires a panel_id")
+        service = self.interaction_core.transient_interactions
+        prefix = f"native:{owner_id}:"
+
+        def _begin(local_token, kind, priority):
+            local = str(local_token or "").strip()
+            if not local:
+                return
+            service.begin(
+                owner_id,
+                lambda _panel=panel, _local=local: _panel.cancel_transient(_local),
+                kind=str(kind or "native_interaction"),
+                priority=int(priority),
+                token_id=prefix + local,
+            )
+
+        def _end(local_token):
+            local = str(local_token or "").strip()
+            if local:
+                service.end(prefix + local)
+
+        panel.on_transient_begin = _begin
+        panel.on_transient_end = _end
 
     def _create_native_inspector(self):
         """Create a fresh C++ InspectorPanel with all callbacks wired."""
@@ -138,16 +331,103 @@ class BootstrapPanelsMixin:
         """Create a fresh C++ ConsolePanel for WindowManager re-open."""
         from Infernux.lib import ConsolePanel as NativeConsolePanel
         panel = NativeConsolePanel()
+        self._wire_console_command_callbacks(panel)
         panel.on_request_focus = lambda: self.window_manager.open_window("console")
-        _project_path = self.project_path
-        def _on_dbl(source_file, source_line):
-            if not source_file:
-                return
-            from Infernux.engine.ui import project_utils
-            project_utils.open_file_with_system(
-                source_file, project_root=_project_path)
-        panel.on_double_click_entry = _on_dbl
+        panel.on_selection_changed = self._on_console_selection_changed
+        panel.on_panel_focused = self.window_manager.native_panel_focus_callback(
+            "console",
+            view_id="console",
+            source_instance=panel,
+        )
+        self._wire_native_transient_interactions(panel, "console")
         return panel
+
+    def _wire_console_command_callbacks(self, panel):
+        from Infernux.engine.interaction import CommandSource
+
+        commands = self.interaction_core.commands
+
+        def _source(value):
+            try:
+                return CommandSource(value)
+            except ValueError:
+                return CommandSource.POINTER
+
+        def _payload(command_id, argument):
+            value = str(argument or "")
+            if command_id == "console.open_source":
+                source_path, separator, source_line = value.rpartition("\t")
+                if not separator or not source_path:
+                    return {}
+                try:
+                    line = max(int(source_line or 0), 0)
+                except ValueError:
+                    return {}
+                return {"source_path": source_path, "source_line": line}
+            if command_id == "console.set_option":
+                option, separator, enabled = value.rpartition("\t")
+                if not separator or enabled not in {"0", "1"}:
+                    return {}
+                return {"option": option, "enabled": enabled == "1"}
+            if command_id == "console.set_search":
+                old_value, separator, new_value = value.partition("\n")
+                if not separator:
+                    return {}
+                return {"old_value": old_value, "new_value": new_value}
+            if command_id == "console.set_detail_height":
+                old_value, separator, new_value = value.partition("\t")
+                if not separator:
+                    return {}
+                return {"old_value": old_value, "new_value": new_value}
+            return {}
+
+        panel.execute_command = lambda command_id, source, argument: (
+            commands.execute(
+                command_id,
+                source=_source(source),
+                payload=_payload(command_id, argument),
+            ).accepted
+        )
+        panel.can_execute_command = lambda command_id, argument: (
+            commands.can_execute(
+                command_id,
+                commands.context(
+                    CommandSource.POINTER,
+                    _payload(command_id, argument),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _on_console_selection_changed(uid, record_history):
+        from Infernux.engine.interaction import (
+            SelectionDomain,
+            SelectionService,
+            SelectionTarget,
+        )
+
+        selection = SelectionService.instance()
+        entry_uid = int(uid or 0)
+        if entry_uid > 0:
+            selection.select(
+                SelectionTarget.diagnostic_entry(
+                    "console",
+                    str(entry_uid),
+                    sub_kind="log",
+                ),
+                owner_id="console",
+                reason="console_select_entry",
+                record_history=bool(record_history),
+            )
+            return
+        if (
+            selection.snapshot.domain is SelectionDomain.DIAGNOSTIC_ENTRY
+            and selection.snapshot.owner_id == "console"
+        ):
+            selection.clear(
+                reason="console_clear_selection",
+                record_history=bool(record_history),
+            )
 
     def _create_native_hierarchy(self):
         """Create a fresh C++ HierarchyPanel with all callbacks wired."""
@@ -159,60 +439,78 @@ class BootstrapPanelsMixin:
         self.hierarchy = old
         return hp
 
-    def _create_native_toolbar(self, engine):
+    def _create_native_toolbar(self):
         """Create a fresh C++ ToolbarPanel with all callbacks wired."""
         from Infernux.lib import ToolbarPanel as NativeToolbarPanel
         from Infernux.engine.i18n import t as _t
         tb = NativeToolbarPanel()
         tb.translate = _t
-        self._wire_toolbar_callbacks_on(tb, engine)
+        self._wire_toolbar_callbacks_on(tb, self.engine)
         return tb
 
     def _create_panels(self):
         engine = self.engine
         wm = self.window_manager
 
-        # Menu bar (native C++ panel)
-        from Infernux.lib import MenuBarPanel as NativeMenuBarPanel
+        # A native adapter samples physical key edges; Interaction Core owns
+        # routing and command semantics. The menu bar is presentation only.
+        from Infernux.lib import (
+            EditorShortcutInput as NativeEditorShortcutInput,
+            MenuBarPanel as NativeMenuBarPanel,
+        )
         from Infernux.engine.i18n import t as _t
+        self.shortcut_input = NativeEditorShortcutInput()
         self.menu_bar = NativeMenuBarPanel()
         self.menu_bar.translate = _t
         self._wire_menu_bar_callbacks(wm)
+        self.interaction_core.panels.bind_view(
+            "menu_bar",
+            "menu_bar",
+            self.menu_bar,
+        )
+        engine.register_gui("editor_shortcut_input", self.shortcut_input, priority=-100)
         engine.register_gui("menu_bar", self.menu_bar)
 
         # Toolbar (native C++ panel)
         from Infernux.lib import ToolbarPanel as NativeToolbarPanel, PlayState
         self.toolbar = NativeToolbarPanel()
+        wm.register_existing_window("toolbar", self.toolbar, "toolbar")
+        enforce_native_builtin_window_policy("toolbar", self.toolbar)
         self.toolbar.translate = _t
         self._wire_toolbar_callbacks(engine)
-        engine.register_gui("toolbar", self.toolbar)
-        wm.register_existing_window("toolbar", self.toolbar, "toolbar")
 
         ts = _panel_state.get("toolbar")
         if ts:
             cam_settings = ts.get("camera_settings")
             if cam_settings:
+                # Migrate legacy rotation sensitivity stored against the old
+                # 0.05 default. The current UI maps 0.15 (deg/px) to 100%, so
+                # legacy values < 0.1 get normalized relative to the new base.
+                try:
+                    legacy = float(cam_settings.get("rotation_speed", 0.15))
+                    if legacy < 0.1:
+                        cam_settings = dict(cam_settings)
+                        cam_settings["rotation_speed"] = legacy / 0.05 * 0.15
+                except (TypeError, ValueError):
+                    pass
                 self.toolbar.set_camera_settings(cam_settings)
 
         # Hierarchy (native C++ panel)
         from Infernux.lib import HierarchyPanel as NativeHierarchyPanel
         self.hierarchy = NativeHierarchyPanel()
         self._wire_hierarchy_callbacks()
-        engine.register_gui("hierarchy", self.hierarchy)
         wm.register_existing_window("hierarchy", self.hierarchy, "hierarchy")
 
         # Inspector (native C++ panel)
         from Infernux.lib import InspectorPanel as NativeInspectorPanel
         self.inspector_panel = NativeInspectorPanel()
         self._wire_inspector_callbacks()
-        engine.register_gui("inspector", self.inspector_panel)
         wm.register_existing_window("inspector", self.inspector_panel, "inspector")
 
         # Project (native C++ panel)
         from Infernux.lib import ProjectPanel as NativeProjectPanel
         self.project_panel = NativeProjectPanel()
         self._wire_project_callbacks()
-        engine.register_gui("project", self.project_panel)
         wm.register_existing_window("project", self.project_panel, "project")
 
         ps = _panel_state.get("project")
@@ -225,11 +523,18 @@ class BootstrapPanelsMixin:
         from Infernux.lib import ConsolePanel as NativeConsolePanel
         from Infernux.debug import DebugConsole
         self.console = NativeConsolePanel()
+        self._wire_console_command_callbacks(self.console)
         # Bridge Python Debug.log() → C++ ConsolePanel
         DebugConsole.instance().set_native_console(self.console)
-        engine.register_gui("console", self.console)
-        wm.register_existing_window("console", self.console, "console")
         self.console.on_request_focus = lambda: wm.open_window("console")
+        self.console.on_selection_changed = self._on_console_selection_changed
+        self.console.on_panel_focused = wm.native_panel_focus_callback(
+            "console",
+            view_id="console",
+            source_instance=self.console,
+        )
+        self._wire_native_transient_interactions(self.console, "console")
+        wm.register_existing_window("console", self.console, "console")
 
         cs = _panel_state.get("console")
         if cs:
@@ -258,21 +563,25 @@ class BootstrapPanelsMixin:
 
             self.console.on_error_pause = _on_console_error_pause
 
-        # Wire console double-click → open source file
-        _console_project_path = self.project_path
-        def _on_console_double_click(source_file, source_line):
-            if not source_file:
-                return
-            from Infernux.engine.ui import project_utils
-            project_utils.open_file_with_system(
-                source_file, project_root=_console_project_path)
-        self.console.on_double_click_entry = _on_console_double_click
-
         # Status bar (native C++ panel)
         from Infernux.lib import StatusBarPanel as NativeStatusBarPanel
         self.status_bar = NativeStatusBarPanel()
         self.status_bar.set_console_panel(self.console)
+        from Infernux.engine.interaction import CommandSource
+
+        self.status_bar.execute_command = lambda command_id, source, argument: (
+            self.interaction_core.commands.execute(
+                command_id,
+                source=CommandSource(source),
+                payload={"uid": argument},
+            ).accepted
+        )
         self._wire_status_bar_listener()
+        self.interaction_core.panels.bind_view(
+            "status_bar",
+            "status_bar",
+            self.status_bar,
+        )
         engine.register_gui("status_bar", self.status_bar)
 
         # Scene view
@@ -280,32 +589,65 @@ class BootstrapPanelsMixin:
         self.scene_view.set_window_manager(wm)
         if engine._play_mode_manager is not None:
             self.scene_view.set_play_mode_manager(engine._play_mode_manager)
-        delete_selected = getattr(self, "_delete_selected_objects", None)
-        if delete_selected is not None:
-            self.scene_view.set_object_delete_handler(delete_selected)
-        engine.register_gui("scene_view", self.scene_view)
         wm.register_existing_window("scene_view", self.scene_view, "scene_view")
 
         # Game view
         self.game_view = GameViewPanel(engine=engine)
         self.game_view.set_window_manager(wm)
-        engine.register_gui("game_view", self.game_view)
         wm.register_existing_window("game_view", self.game_view, "game_view")
 
         # UI Editor
         self.ui_editor = UIEditorPanel()
         self.ui_editor.set_window_manager(wm)
-        self.ui_editor.set_hierarchy_panel(self.hierarchy)
         self.ui_editor.set_engine(engine)
-        engine.register_gui("ui_editor", self.ui_editor)
         wm.register_existing_window("ui_editor", self.ui_editor, "ui_editor")
 
         # During startup restore, suppress state-changed callbacks so we don't
         # overwrite persisted panel payloads with default/empty panel data.
         self._suspend_persist_state = True
+        from Infernux.engine.interaction import DocumentRegistry
+
+        try:
+            DocumentRegistry.instance().queue_session_restore(
+                _panel_state.get("document_session")
+            )
+        except (TypeError, ValueError) as exc:
+            # Session snapshots are private editor state, not user assets.
+            # Destructive schema changes discard them instead of retaining a
+            # compatibility parser that could resurrect invalid documents.
+            from Infernux.debug import Debug
+
+            Debug.log_internal(f"Discarded incompatible document session: {exc}")
+            _panel_state.delete("document_session")
         ws = _panel_state.get("window_manager")
         if ws:
             wm.load_state(ws)
+        else:
+            # Initial dock presentation is requested through WindowManager so
+            # native ImGui focus and FocusService share one authority.
+            wm.focus_window("scene_view")
+
+        documents = DocumentRegistry.instance()
+        # Window restoration reconciles pending document Views against the
+        # persisted open/closed topology. Commit that one-time pruning now so
+        # an abnormal shutdown cannot resurrect a draft the user had already
+        # closed or discarded. Normal layout changes still avoid recapturing
+        # large authoring snapshots.
+        reconciled_session = documents.capture_session_state()
+        if reconciled_session["documents"]:
+            _panel_state.put("document_session", reconciled_session)
+        else:
+            _panel_state.delete("document_session")
+        _panel_state.prune_document_view_states(
+            is_document_backed=lambda view_id: wm.is_document_backed_view(
+                view_id,
+                wm.window_type_id(view_id),
+            ),
+            has_restorable_document=lambda view_id: (
+                documents.document_for_view(view_id) is not None
+                or documents.has_pending_session_document(view_id)
+            ),
+        )
 
         # Restore individual panel states for every tracked window id
         seen_restore: set[str] = set()
@@ -316,7 +658,14 @@ class BootstrapPanelsMixin:
             inst = wm._window_instances.get(wid) or wm._default_instances.get(wid)
             if inst is None:
                 continue
-            if hasattr(inst, "load_state") and callable(inst.load_state):
+            restore_view_state = getattr(
+                inst,
+                "_load_persisted_view_state_once",
+                None,
+            )
+            if callable(restore_view_state):
+                restore_view_state()
+            elif hasattr(inst, "load_state") and callable(inst.load_state):
                 data = _panel_state.get(f"panel:{wid}")
                 if data:
                     try:

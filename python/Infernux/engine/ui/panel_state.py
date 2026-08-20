@@ -44,6 +44,49 @@ def delete(panel_id: str) -> None:
         _state.pop(panel_id, None)
 
 
+def keys(prefix: str = "") -> tuple[str, ...]:
+    """Return a stable snapshot of persisted state keys."""
+    requested_prefix = str(prefix or "")
+    with _lock:
+        values = tuple(str(key) for key in _state)
+    if not requested_prefix:
+        return values
+    return tuple(key for key in values if key.startswith(requested_prefix))
+
+
+def prune_document_view_states(
+    *,
+    is_document_backed,
+    has_restorable_document,
+) -> tuple[str, ...]:
+    """Remove panel payloads that have no authoritative document snapshot.
+
+    Document-backed panels may persist presentation state, but their authoring
+    content belongs exclusively to ``DocumentRegistry``. Keeping a private
+    panel payload after its document was discarded could otherwise resurrect
+    an unsaved draft during the next Editor startup.
+    """
+    if not callable(is_document_backed) or not callable(has_restorable_document):
+        raise TypeError("document panel pruning requires callable predicates")
+    with _lock:
+        candidates = tuple(str(key) for key in _state if str(key).startswith("panel:"))
+    removable: list[tuple[str, str]] = []
+    for key in candidates:
+        view_id = key[len("panel:") :]
+        if not view_id or not bool(is_document_backed(view_id)):
+            continue
+        if bool(has_restorable_document(view_id)):
+            continue
+        removable.append((key, view_id))
+    with _lock:
+        removed = tuple(
+            view_id
+            for key, view_id in removable
+            if _state.pop(key, None) is not None
+        )
+    return removed
+
+
 def save() -> None:
     """Write the current state to disk."""
     if not _state_path:

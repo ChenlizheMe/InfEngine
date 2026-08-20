@@ -2,16 +2,22 @@
 
 #include <function/editor/EditorPanel.h>
 #include <function/editor/EditorTheme.h>
+#include <function/editor/interaction/EditorCollectionModel.h>
+#include <function/editor/interaction/EditorSearchModel.h>
 #include <function/renderer/InxRenderer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -39,9 +45,14 @@ class ProjectPanel : public EditorPanel
     void SetRenderer(InxRenderer *renderer);
     void SetAssetDatabase(AssetDatabase *adb);
     void SetIconsDirectory(const std::string &dir);
+    void RequestSearchFocus()
+    {
+        m_focusSearchNextFrame = true;
+    }
 
-    void ClearSelection();
-    void SetSelectedFile(const std::string &path);
+    void ClearSelection(bool notify = true);
+    void SetSelectedFile(const std::string &path, bool notify = true);
+    void SetSelectedFiles(const std::vector<std::string> &paths, const std::string &primary = "", bool notify = true);
 
     void InvalidateMaterialThumbnail(const std::string &filePath);
     void InvalidateTextureThumbnail(const std::string &filePath);
@@ -49,8 +60,7 @@ class ProjectPanel : public EditorPanel
     /// Invalidate the directory cache so listing refreshes next frame.
     void InvalidateDirCache();
 
-    /// Accept files dropped from the OS (e.g. Windows Explorer).
-    /// Copies each file/directory into the current directory.
+    /// Publish files dropped from the OS as one global asset import command.
     void ReceiveDroppedFiles(const std::vector<std::string> &paths);
 
     /// State persistence
@@ -58,90 +68,33 @@ class ProjectPanel : public EditorPanel
     {
         return m_currentPath;
     }
-    void SetCurrentPath(const std::string &path);
+    bool CanNavigateToPath(const std::string &path) const;
+    bool SetCurrentPath(const std::string &path);
+    [[nodiscard]] std::vector<std::string> GetFolderExpandedPaths() const;
+    void SetFolderExpandedPaths(const std::vector<std::string> &paths);
+    [[nodiscard]] std::vector<std::string> GetModelExpandedPaths() const;
+    void SetModelExpandedPaths(const std::vector<std::string> &paths);
 
-    // ── Focus callback ──────────────────────────────────────────────
+    // Presentation adapters. Domain mutations are owned by the global
+    // ProjectAssetInteractionService and reach this view only as projections.
+    bool BeginRenameSelectedAsset(const std::string &path = "");
+    bool HasSelectedAssets() const;
+    bool CanRenameSelectedAsset(const std::string &path = "") const;
+    std::vector<std::string> GetOSClipboardFiles() const;
 
-    std::function<void(bool)> onProjectPanelFocused;
+    // Unified command presentation callbacks.
+    /// Draw the popup body from a frozen
+    /// (logicalTargetPath, revealPath, currentPath) snapshot.
+    std::function<void(InxGUIContext *, const std::string &, const std::string &, const std::string &)>
+        renderContextMenu;
 
     // ── Notification callbacks ───────────────────────────────────────
 
-    /// Called when file selection changes (receives single path or empty).
-    std::function<void(const std::string &)> onFileSelected;
-    /// Called when empty area is clicked.
-    std::function<void()> onEmptyAreaClicked;
+    /// User-authored Project selection intent. SelectionService owns the
+    /// authoritative snapshot and projects it back through SetSelectedFiles().
+    std::function<void(const std::vector<std::string> &, const std::string &)> onSelectionChanged;
     /// Called when current_path changes between frames.
     std::function<void()> onStateChanged;
-
-    // ── File operation callbacks (delegated to Python) ───────────────
-
-    /// Create folder: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createFolder;
-    /// Create script: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createScript;
-    /// Create shader: (currentPath, name, type) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &, const std::string &)>
-        createShader;
-    /// Create material: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createMaterial;
-    /// Create physics material: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createPhysicMaterial;
-    /// Create scene: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createScene;
-    /// Create animation clip: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip;
-    /// Create 3D animation clip: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip3D;
-    /// Create animation state machine: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimFsm;
-    /// Create Particle Graph: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createParticleGraph;
-    /// Create Render Effect: (currentPath, name, featureType) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &, const std::string &)>
-        createRenderEffect;
-    /// Create Render Effect Group: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createRenderEffectGroup;
-    /// Create transform timeline: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimTimeline;
-    /// Create timeline state machine: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createTimelineFsm;
-    /// Create prefab from hierarchy gameobject: (objId, currentPath)
-    std::function<void(uint64_t, const std::string &)> createPrefabFromHierarchy;
-
-    /// Delete items: (paths) — shows confirmation dialog
-    std::function<void(const std::vector<std::string> &)> deleteItems;
-
-    /// Rename: (oldPath, newName) → newPath or empty on failure
-    std::function<std::string(const std::string &, const std::string &)> doRename;
-    /// Get unique name: (currentPath, baseName, extension) → uniqueName
-    std::function<std::string(const std::string &, const std::string &, const std::string &)> getUniqueName;
-
-    /// Move item to directory: (itemPath, destDir) → newPath or empty
-    std::function<std::string(const std::string &, const std::string &)> moveItemToDirectory;
-    /// Copy item to exact path as a distinct asset: (itemPath, destinationPath) → newPath or empty
-    std::function<std::string(const std::string &, const std::string &)> copyItemToPath;
-
-    /// Open file: (filePath)
-    std::function<void(const std::string &)> openFile;
-    /// Open scene: (filePath)
-    std::function<void(const std::string &)> openScene;
-    /// Open prefab mode: (filePath)
-    std::function<void(const std::string &)> openPrefabMode;
-    /// Open animation clip: (filePath)
-    std::function<void(const std::string &)> openAnimClip;
-    /// Open animation state machine: (filePath)
-    std::function<void(const std::string &)> openAnimFsm;
-    /// Open Particle Graph: (filePath)
-    std::function<void(const std::string &)> openParticleGraph;
-    /// Open transform timeline: (filePath)
-    std::function<void(const std::string &)> openAnimTimeline;
-    /// Open timeline state machine: (filePath)
-    std::function<void(const std::string &)> openTimelineFsm;
-    /// Reveal in file explorer: (path)
-    std::function<void(const std::string &)> revealInExplorer;
-
-    /// Validate Python script for drag-drop: (filePath) → true if component
-    std::function<bool(const std::string &)> validateScriptComponent;
 
     /// Get GUID from path (delegates to AssetDatabase if callback not set)
     std::function<std::string(const std::string &)> getGuidFromPath;
@@ -150,9 +103,6 @@ class ProjectPanel : public EditorPanel
 
     /// Invalidate asset inspector cache
     std::function<void(const std::string &)> invalidateAssetInspector;
-
-    /// True when object selection in Hierarchy is empty. Project clipboard shortcuts yield to Hierarchy when false.
-    std::function<bool()> isHierarchySelectionEmpty;
 
     // ── Translation ──────────────────────────────────────────────────
 
@@ -186,6 +136,7 @@ class ProjectPanel : public EditorPanel
         Type type = File;
         std::string name;
         std::string path;
+        std::string selectionKey;
         std::string ext;
         std::string parentPath; // for sub-assets
         uint64_t mtimeNs = 0;
@@ -200,6 +151,25 @@ class ProjectPanel : public EditorPanel
         std::string sortKey;
     };
 
+    struct SearchAsyncCompletion
+    {
+        uint64_t requestSerial = 0;
+        EditorSearchToken token;
+        uint64_t indexGeneration = UINT64_MAX;
+        std::string indexRoot;
+        std::shared_ptr<const std::vector<SearchIndexEntry>> index;
+        std::vector<FileItem> results;
+        std::string error;
+        bool cancelled = false;
+    };
+
+    struct SearchAsyncState
+    {
+        std::atomic<uint64_t> desiredSerial{0};
+        std::mutex mutex;
+        std::unique_ptr<SearchAsyncCompletion> completion;
+    };
+
     // ── Directory snapshot cache ─────────────────────────────────────
     struct DirSnapshot
     {
@@ -209,6 +179,10 @@ class ProjectPanel : public EditorPanel
         std::vector<FileItem> dirs;
         std::vector<FileItem> files;
         std::vector<FileItem> items; // dirs + files
+        // Stable model candidates.  GetProjectItems uses this instead of
+        // rescanning every visible item when the model expansion projection
+        // has not changed.
+        std::vector<std::string> modelPaths;
     };
 
     struct DirTreeMeta
@@ -268,6 +242,43 @@ class ProjectPanel : public EditorPanel
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_textureMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_modelMtimeCache;
+
+    struct TexturePreviewSizeCacheEntry
+    {
+        uint64_t textureId = 0;
+        int width = 0;
+        int height = 0;
+    };
+    // GetTexturePreviewSize takes the renderer preview mutex and canonicalizes
+    // the key. Keep the stable-frame dimensions keyed by the live texture id;
+    // a new id naturally invalidates the entry after a preview rebuild.
+    std::unordered_map<std::string, TexturePreviewSizeCacheEntry> m_texturePreviewSizes;
+
+    struct TexturePreviewContract
+    {
+        uint64_t catalogGeneration = 0;
+        uint64_t contentStamp = 0;
+        bool nearest = false;
+        bool srgb = false;
+        int maxSize = 2048;
+        std::string textureFormat = "auto";
+        std::string textureType = "default";
+    };
+    std::unordered_map<std::string, TexturePreviewContract> m_texturePreviewContracts;
+
+    struct PreviewRequestCacheEntry
+    {
+        uint64_t fingerprint = 0;
+        uint64_t textureId = 0;
+        uint64_t lastRequestFrame = 0;
+    };
+    std::unordered_map<std::string, PreviewRequestCacheEntry> m_texturePreviewRequests;
+    // Material preview queries are more expensive than the read-only texture
+    // lookup. Keep the last published id beside the source fingerprint so a
+    // stable Project frame does not re-enter the preview state machine.
+    std::unordered_map<std::string, PreviewRequestCacheEntry> m_materialPreviewResults;
+    std::unordered_map<std::string, PreviewRequestCacheEntry> m_modelPreviewRequests;
+    uint64_t m_previewFrameSerial = 0;
     // FileManager must not enqueue a whole directory's previews in one frame.
     // These are scheduling budgets, not display limits: ready thumbnails remain visible.
     int m_texturePreviewRequestsThisFrame = 0;
@@ -333,6 +344,7 @@ class ProjectPanel : public EditorPanel
     /// When true, bare project root is not a valid browse target ([..] stops at subfolders).
     bool m_navHasSubfolders = false;
     bool m_canNavigateUp = false;
+    std::string m_currentPathKey;
     double m_subPreIcons = 0.0;
     double m_subPrePreview = 0.0;
     double m_subPreOther = 0.0;
@@ -346,27 +358,51 @@ class ProjectPanel : public EditorPanel
     double m_subGridTail = 0.0;
     std::string m_lastNotifiedPath;
 
+    // Lightweight counters are intentionally exposed through
+    // ConsumeSubTimings().  They make cache invalidation testable without
+    // requiring an editor or a GPU build.
+    uint64_t m_dirSnapshotBuilds = 0;
+    uint64_t m_folderTreeRebuilds = 0;
+    uint64_t m_projectItemsRebuilds = 0;
+    uint64_t m_previewScheduleAttempts = 0;
+    uint64_t m_folderRowsSubmitted = 0;
+    uint64_t m_folderRowsVisible = 0;
+    uint64_t m_gridItemsSubmitted = 0;
+    uint64_t m_gridItemsVisible = 0;
+
     // Breadcrumb
     std::string m_breadcrumbPath;
     std::string m_breadcrumbText;
 
     // Project-wide search (Unity-style box on the Path bar)
     char m_searchBuf[256] = {};
-    std::string m_lastSearchQuery;
-    uint64_t m_lastSearchGeneration = UINT64_MAX;
+    EditorSearchModel m_search;
+    bool m_focusSearchNextFrame = false;
+    EditorSearchToken m_searchResultToken;
+    EditorSearchToken m_searchDesiredToken;
     uint64_t m_searchIndexGeneration = UINT64_MAX;
     std::string m_searchIndexRoot;
-    std::vector<SearchIndexEntry> m_searchIndex;
+    std::shared_ptr<const std::vector<SearchIndexEntry>> m_searchIndex;
     std::vector<FileItem> m_searchResults;
+    std::shared_ptr<SearchAsyncState> m_searchAsyncState = std::make_shared<SearchAsyncState>();
+    uint64_t m_searchRequestSerial = 0;
+    bool m_searchJobInFlight = false;
+    bool m_searchBusy = false;
     static constexpr size_t kMaxSearchResults = 200;
 
     // Selection
     std::string m_selectedFile;
     std::vector<std::string> m_selectedFiles;
-    std::unordered_set<std::string> m_selectedSet; // for O(1) lookup
+    std::unordered_set<std::string> m_selectedSet; // normalized asset/subresource identity keys for O(1) lookup
+
+    // Frozen when a right-click opens the popup. Menu rendering and command
+    // execution never read a later selection/current-path mutation.
+    std::string m_contextTargetPath;
+    std::string m_contextRevealPath;
+    std::string m_contextCurrentPath;
 
     void NotifySelectionChanged();
-    void NotifyEmptyAreaClicked();
+    void PublishSelectionIntent(const std::vector<std::string> &paths, const std::string &primary) const;
     std::vector<std::string> GetSelectedPaths() const;
 
     // Double-click detection
@@ -388,15 +424,48 @@ class ProjectPanel : public EditorPanel
     // Model expand/collapse only needs augmented sub-asset rows rebuilt — not a full dir rescan.
     bool m_pendingAugmentedCacheInvalidation = false;
 
-    // Clipboard
-    std::vector<std::string> m_clipboardPaths;
-    bool m_clipboardIsCut = false;
+    // Stable tree expansion projections. User toggles are submitted through
+    // TreeViewStateService; these models only drive native rendering.
+    EditorTreeProjectionModel<std::string> m_folderTreeProjection;
+    EditorTreeProjectionModel<std::string> m_modelTreeProjection;
 
-    // ── Focus tracking ───────────────────────────────────────────────
-    bool m_wasFocused = false;
+    // Folder rows are flattened only when the directory snapshot or expansion
+    // projection changes. Rendering then submits just the rows intersecting
+    // the child window's clipper range instead of recursively visiting every
+    // expanded directory on every GUI frame.
+    struct FolderTreeRow
+    {
+        std::string path;
+        std::string name;
+        std::string imguiId;
+        std::string pathKey;
+        std::string semanticId;
+        int depth = 0;
+        bool hasSubdirs = false;
+        bool isRoot = false;
+        bool expanded = false;
+    };
+    std::vector<FolderTreeRow> m_folderTreeRows;
+    uint64_t m_directoryRevision = 1;
+    uint64_t m_folderTreeRowsDirectoryRevision = 0;
+    uint64_t m_folderTreeRowsProjectionRevision = UINT64_MAX;
+    uint64_t m_folderTreeAppliedProjectionRevision = UINT64_MAX;
 
-    // Model expansion
-    std::unordered_set<std::string> m_expandedModels;
+    enum class ProjectItemsCacheSource : uint8_t
+    {
+        None,
+        Snapshot,
+        Augmented,
+    };
+
+    // Current-directory projection cache stores only stable identity and
+    // revisions. Container values are reacquired on every access so an
+    // unordered_map insertion/rehash cannot invalidate a retained pointer.
+    std::string m_projectItemsCachePath;
+    uint64_t m_projectItemsCacheDirectoryRevision = 0;
+    uint64_t m_projectItemsCacheProjectionRevision = UINT64_MAX;
+    uint64_t m_projectItemsCacheSnapshotMtime = 0;
+    ProjectItemsCacheSource m_projectItemsCacheSource = ProjectItemsCacheSource::None;
 
     // Visible items for shift-range select
     std::vector<FileItem> *m_visibleItems = nullptr;
@@ -413,11 +482,13 @@ class ProjectPanel : public EditorPanel
 
     // ── Rendering helpers ────────────────────────────────────────────
     void RenderBreadcrumb(InxGUIContext *ctx);
-    void RebuildSearchIndex(uint64_t generation);
+    void ResetAsyncSearch();
+    void PollSearchCompletion();
+    void ScheduleSearch(const EditorSearchToken &token, uint64_t generation, const std::string &folderRoot);
     void UpdateSearchResults();
     void RenderSearchResults(InxGUIContext *ctx);
+    void RebuildFolderTreeRows();
     void RenderFolderTree(InxGUIContext *ctx);
-    void RenderFolderTreeRecursive(InxGUIContext *ctx, const std::string &path, DirSnapshot *snapshot = nullptr);
     void RenderFileGrid(InxGUIContext *ctx);
     void RenderContextMenu(InxGUIContext *ctx);
     void RenderDragDropSource(InxGUIContext *ctx, const FileItem &item);
@@ -429,8 +500,8 @@ class ProjectPanel : public EditorPanel
 
     // ── Click & keyboard handling ────────────────────────────────────
     void HandleItemClick(const FileItem &item, InxGUIContext *ctx);
-    void HandleKeyboardShortcuts(InxGUIContext *ctx);
     void HandleExternalFileDrops();
+    bool ImportExternalAssetBatch(const std::vector<std::string> &paths, const std::string &source);
 
     [[nodiscard]] bool IsCtrl(InxGUIContext *ctx) const;
     [[nodiscard]] bool IsShift(InxGUIContext *ctx) const;
@@ -439,17 +510,12 @@ class ProjectPanel : public EditorPanel
     void BeginRename(const std::string &path);
     void CommitRename();
     void CancelRename();
-    void CreateAndRename(const std::string &baseName, const std::string &extension,
-                         std::function<std::pair<bool, std::string>(const std::string &)> createFn);
     /// Immediately clear directory caches. Prefer InvalidateDirCache() which defers
     /// until the next OnRenderContent so mid-frame item pointers stay valid.
     void ClearDirCachesNow();
 
-    // ── Clipboard helpers ────────────────────────────────────────────
-    void ClipboardCopy(const std::vector<std::string> &paths);
-    void ClipboardCut(const std::vector<std::string> &paths);
-    void ClipboardPaste();
-    bool HasClipboardItems() const;
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "",
+                              const std::string &source = "context_menu") const;
 
     // ── Move helpers ─────────────────────────────────────────────────
     std::vector<std::string> GetDragMoveSources(const std::string &draggedPath) const;
@@ -465,6 +531,8 @@ class ProjectPanel : public EditorPanel
     void ClampNavigationPath();
     void UpdateNavigationCache();
     void AssignCurrentPath(const std::string &path);
+    bool RequestDirectoryNavigation(const std::string &path, const std::string &source = "pointer") const;
+    bool RequestAssetLocation(const std::string &path, const std::string &source = "pointer") const;
     /// True when [..] may move to the parent folder (blocked at project-root subfolders).
     bool CanNavigateUpFromCurrent() const;
     static uint64_t GetMtimeNs(const std::string &path);

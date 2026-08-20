@@ -13,6 +13,8 @@ Identification strategy:
 """
 
 import copy
+from dataclasses import dataclass
+import json
 import os
 from typing import Dict, List, Optional
 
@@ -33,6 +35,12 @@ class Override:
 
     def __repr__(self):
         return f"Override({self.node_path!r}, {self.key!r})"
+
+
+@dataclass(frozen=True, slots=True)
+class _PrefabApplyState:
+    prefab_document: dict
+    instance_documents: tuple[tuple[int, dict], ...]
 
 
 # ─── Core diff ────────────────────────────────────────────────────────────
@@ -140,6 +148,164 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
     return True
 
 
+def build_prefab_apply_command(instance_obj, prefab_path: str,
+                               asset_database=None):
+    """Build the single reversible command for one Prefab Apply operation."""
+    instance_root = resolve_prefab_instance_root(instance_obj) or instance_obj
+    if instance_root is None or not prefab_path:
+        raise ValueError("Prefab Apply requires a linked instance and asset path")
+    from Infernux.engine.undo import PrefabApplyOverridesCommand
+
+    prefab_guid = getattr(instance_root, "prefab_guid", "") or ""
+
+    def capture_state():
+        return _capture_prefab_apply_state(instance_root, prefab_path, prefab_guid)
+
+    return PrefabApplyOverridesCommand(
+        capture_state,
+        lambda: apply_overrides_to_prefab(
+            instance_root,
+            prefab_path,
+            asset_database,
+        ),
+        lambda state: _restore_prefab_apply_state(
+            state,
+            instance_root,
+            prefab_path,
+            asset_database,
+        ),
+    )
+
+
+def _capture_prefab_apply_state(instance_root, prefab_path: str,
+                                prefab_guid: str) -> _PrefabApplyState:
+    from Infernux.engine.prefab_manager import _read_prefab_document
+
+    prefab_document = copy.deepcopy(_read_prefab_document(prefab_path))
+    scene = getattr(instance_root, "scene", None)
+    documents: list[tuple[int, dict]] = []
+    if scene is not None and prefab_guid:
+        for obj in scene.get_all_objects():
+            if (getattr(obj, "prefab_guid", "") or "") != prefab_guid:
+                continue
+            if not bool(getattr(obj, "prefab_root", False)):
+                continue
+            document = _serialize_obj(obj)
+            if document is None:
+                raise RuntimeError(
+                    f"Failed to capture prefab instance '{getattr(obj, 'name', '')}'"
+                )
+            documents.append((int(obj.id), copy.deepcopy(document)))
+    return _PrefabApplyState(prefab_document, tuple(documents))
+
+
+def _write_prefab_apply_document(prefab_path: str, document: dict,
+                                 asset_database=None) -> None:
+    from Infernux.engine.prefab_manager import (
+        _invalidate_prefab_template_cache,
+        _validate_prefab_document,
+    )
+
+    payload = copy.deepcopy(document)
+    _validate_prefab_document(payload, prefab_path)
+    from Infernux.core.document_store import write_document_text
+
+    write_document_text(
+        prefab_path,
+        json.dumps(payload, indent=2, ensure_ascii=False),
+    )
+    guid = ""
+    if asset_database is not None:
+        from Infernux.core.assets import AssetManager
+
+        mutation = AssetManager.import_asset(prefab_path, database=asset_database)
+        if not mutation:
+            raise RuntimeError(
+                getattr(mutation, "error", "Prefab asset reimport failed")
+            )
+        guid = str(getattr(mutation, "guid", "") or "")
+    _invalidate_prefab_template_cache(prefab_path, guid)
+
+
+def _restore_prefab_instance_documents(instance_root, documents,
+                                       asset_database=None) -> None:
+    if not documents:
+        return
+    scene = getattr(instance_root, "scene", None)
+    if scene is None:
+        raise RuntimeError("Prefab instance scene is unavailable")
+    from Infernux.engine.component_restore import (
+        commit_prepared_game_object_document,
+        preflight_game_object_python_components,
+    )
+
+    prepared = []
+    try:
+        for object_id, document in documents:
+            obj = scene.find_by_id(int(object_id))
+            if obj is None:
+                raise RuntimeError(f"Prefab instance root {object_id} is unavailable")
+            plan = preflight_game_object_python_components(
+                copy.deepcopy(document),
+                asset_database,
+                preserve_document_ids=True,
+                reference_scene=scene,
+            )
+            prepared.append((obj, document, plan))
+        for obj, document, plan in prepared:
+            if not commit_prepared_game_object_document(
+                obj,
+                copy.deepcopy(document),
+                plan,
+                preserve_document_ids=True,
+            ):
+                raise RuntimeError("Prefab ObjectGraph restore failed")
+    except Exception:
+        for _obj, _document, plan in prepared:
+            try:
+                plan.discard()
+            except Exception:
+                pass
+        raise
+
+
+def _restore_prefab_apply_state(state: _PrefabApplyState, instance_root,
+                                prefab_path: str, asset_database=None) -> None:
+    if not isinstance(state, _PrefabApplyState):
+        raise TypeError("Prefab Apply restore state is invalid")
+    current = _capture_prefab_apply_state(
+        instance_root,
+        prefab_path,
+        getattr(instance_root, "prefab_guid", "") or "",
+    )
+    try:
+        _write_prefab_apply_document(
+            prefab_path,
+            state.prefab_document,
+            asset_database,
+        )
+        _restore_prefab_instance_documents(
+            instance_root,
+            state.instance_documents,
+            asset_database,
+        )
+    except Exception:
+        try:
+            _write_prefab_apply_document(
+                prefab_path,
+                current.prefab_document,
+                asset_database,
+            )
+            _restore_prefab_instance_documents(
+                instance_root,
+                current.instance_documents,
+                asset_database,
+            )
+        except Exception as rollback_exc:
+            Debug.log_error(f"Prefab Apply rollback failed: {rollback_exc}")
+        raise
+
+
 def revert_overrides(instance_obj, prefab_path: str,
                      asset_database=None) -> bool:
     """Reset the instance hierarchy to match the source .prefab file.
@@ -171,35 +337,27 @@ def revert_overrides(instance_obj, prefab_path: str,
     return True
 
 
-def revert_overrides_with_undo(instance_obj, prefab_path: str,
-                               asset_database=None) -> bool:
-    """Revert a linked instance as one structural Undo command."""
+def build_prefab_revert_command(instance_obj, prefab_path: str,
+                                asset_database=None):
+    """Build the single reversible command for one Prefab Revert operation."""
     instance_obj = resolve_prefab_instance_root(instance_obj) or instance_obj
+    if instance_obj is None or not prefab_path:
+        raise ValueError("Prefab Revert requires a linked instance and asset path")
     reverted_document = _build_reverted_prefab_document(instance_obj, prefab_path)
     if reverted_document is None:
-        Debug.log_error("Failed to load prefab for revert.")
-        return False
-    try:
-        from Infernux.engine.component_restore import (
-            serialize_game_object_document_authoritatively,
-        )
-        before_document = serialize_game_object_document_authoritatively(instance_obj)
-        from Infernux.engine.undo import PrefabRevertCommand, UndoManager
-        manager = UndoManager.instance()
-        if manager is None:
-            return revert_overrides(instance_obj, prefab_path, asset_database)
-        if not manager.execute(PrefabRevertCommand(
-            instance_obj.id,
-            before_document,
-            reverted_document,
-            asset_database,
-        )):
-            return False
-    except Exception as exc:
-        Debug.log_error(f"Failed to record prefab revert: {exc}")
-        return False
-    Debug.log_internal("Reverted prefab instance to source.")
-    return True
+        raise RuntimeError("Failed to load prefab for revert")
+    from Infernux.engine.component_restore import (
+        serialize_game_object_document_authoritatively,
+    )
+    from Infernux.engine.undo import PrefabRevertCommand
+
+    before_document = serialize_game_object_document_authoritatively(instance_obj)
+    return PrefabRevertCommand(
+        instance_obj.id,
+        before_document,
+        reverted_document,
+        asset_database,
+    )
 
 
 def _build_reverted_prefab_document(instance_obj, prefab_path: str):

@@ -1,6 +1,7 @@
 from typing import Optional
 
 from Infernux.lib import (
+    DocumentFileState,
     DocumentWriteCancelled,
     DocumentWriteOptions,
     DocumentWriteSuperseded,
@@ -18,7 +19,9 @@ class DocumentStore:
     def flush(cls, path: Optional[str] = ...) -> None: ...
 
 
-def write_document_text(path: str, content: str, *, create_backup: bool = ...) -> int: ...
+def capture_document_file_state(path: str) -> DocumentFileState: ...
+def write_document_text(path: str, content: str, *, create_backup: bool = ..., expected_file_state: DocumentFileState | None = ..., commit_chain_token: str = ..., chain_id: str = ...) -> int: ...
+def submit_document_text(path: str, content: str, *, create_backup: bool = ..., expected_file_state: DocumentFileState | None = ..., commit_chain_token: str = ..., chain_id: str = ...) -> DocumentWriteTicket: ...
 
 
 __all__: list[str]

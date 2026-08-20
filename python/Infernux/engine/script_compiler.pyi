@@ -41,6 +41,10 @@ class ScriptCompiler:
         """
         ...
 
+    def check_source(self, file_path: str, source: bytes | str) -> List[ScriptError]:
+        """Validate the supplied source snapshot without rereading the file."""
+        ...
+
     def check_and_report(self, file_path: str) -> bool:
         """Check a script and log any errors to the console.
 

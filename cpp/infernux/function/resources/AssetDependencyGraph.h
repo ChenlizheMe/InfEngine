@@ -80,7 +80,9 @@ class AssetDependencyGraph
     void RemoveRuntimeDependency(const std::string &objectGuid, const std::string &assetGuid);
     void ClearRuntimeDependenciesOf(const std::string &objectGuid);
 
-    /// Remove an asset from both immutable asset edges and runtime usage.
+    /// Remove dependencies owned by an asset while retaining references to it.
+    /// Incoming edges represent serialized missing references and must survive
+    /// deletion so a later reimport/Undo can notify and reconnect dependents.
     void RemoveAsset(const std::string &guid);
 
     [[nodiscard]] std::unordered_set<std::string> GetDependencies(const std::string &guid) const;
@@ -106,7 +108,6 @@ class AssetDependencyGraph
     static void RemoveEdge(AssetDependencySnapshot &snapshot, const std::string &userGuid,
                            const std::string &dependencyGuid);
     static void ClearEdgesOf(AssetDependencySnapshot &snapshot, const std::string &userGuid);
-    static void RemoveNode(AssetDependencySnapshot &snapshot, const std::string &guid);
     static void RebuildStatistics(AssetDependencySnapshot &snapshot);
 
     std::shared_ptr<const AssetDependencySnapshot> m_assetSnapshot;

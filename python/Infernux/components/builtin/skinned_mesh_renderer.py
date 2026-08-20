@@ -11,7 +11,7 @@ from typing import List
 
 from Infernux.components.builtin.mesh_renderer import MeshRenderer
 from Infernux.components.builtin_component import CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 
 
 class SkinnedMeshRenderer(MeshRenderer):

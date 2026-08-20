@@ -3,24 +3,48 @@ import keyword
 import os
 import sys
 from contextlib import contextmanager
-from typing import Iterator, Optional, Callable, Any
+from typing import Callable, Iterator, Optional
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
 
 _project_root: Optional[str] = None
+_runtime_asset_resolver: Optional[Callable[[str], Optional[str]]] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
-_panel_dirty_flags: dict[str, bool] = {}
-_panel_titles: dict[str, str] = {}
-_panel_save_handlers: dict[str, Callable[[], Any]] = {}
-_panel_save_pending_handlers: dict[str, Callable[[], bool]] = {}
-_panel_discard_handlers: dict[str, Callable[[], Any]] = {}
-
 
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
-    global _project_root
+    global _project_root, _runtime_asset_resolver
     _project_root = resolved_path(path) if path else None
+    _runtime_asset_resolver = None
+
+
+def set_runtime_asset_resolver(
+    resolver: Optional[Callable[[str], Optional[str]]],
+) -> None:
+    """Install the immutable packaged-asset resolver for the active Player."""
+    global _runtime_asset_resolver
+    if resolver is not None and not callable(resolver):
+        raise TypeError("runtime asset resolver must be callable")
+    _runtime_asset_resolver = resolver
+
+
+def resolve_asset_path(path: str) -> Optional[str]:
+    """Resolve one project asset in Editor or from the cooked Player catalog."""
+    raw = os.fspath(path)
+    if not raw:
+        return None
+    if _runtime_asset_resolver is not None:
+        return _runtime_asset_resolver(raw)
+    if not _project_root:
+        return None
+    candidate = resolved_path(
+        raw if os.path.isabs(raw) else os.path.join(_project_root, raw)
+    )
+    assets_root = resolved_path(os.path.join(_project_root, "Assets"))
+    if not is_path_within(candidate, assets_root, allow_root=False):
+        return None
+    return candidate if os.path.isfile(candidate) else None
 
 
 def get_project_root() -> Optional[str]:
@@ -28,102 +52,15 @@ def get_project_root() -> Optional[str]:
     return _project_root
 
 
-def set_panel_dirty(
-    panel_id: str,
-    is_dirty: bool,
-    *,
-    title: str = "",
-    save_handler: Optional[Callable[[], Any]] = None,
-    save_pending_handler: Optional[Callable[[], bool]] = None,
-    discard_handler: Optional[Callable[[], Any]] = None,
-) -> None:
-    """Set or clear project-scoped dirty state for an editor panel.
-
-    Optional *title* and *save_handler* metadata is stored for unified
-    close/exit confirmation flows.
-    """
-    pid = (panel_id or "").strip()
-    if not pid:
-        return
-    ttl = (title or "").strip()
-    if ttl:
-        _panel_titles[pid] = ttl
-    if save_handler is not None:
-        _panel_save_handlers[pid] = save_handler
-    if save_pending_handler is not None:
-        _panel_save_pending_handlers[pid] = save_pending_handler
-    if discard_handler is not None:
-        _panel_discard_handlers[pid] = discard_handler
-    if is_dirty:
-        _panel_dirty_flags[pid] = True
-    else:
-        _panel_dirty_flags.pop(pid, None)
-
-
-def is_panel_dirty(panel_id: str) -> bool:
-    """Return whether a panel is currently marked dirty."""
-    pid = (panel_id or "").strip()
-    if not pid:
-        return False
-    return bool(_panel_dirty_flags.get(pid, False))
-
-
-def any_panel_dirty() -> bool:
-    """Return whether any editor panel currently has unsaved changes."""
-    return any(_panel_dirty_flags.values())
-
-
-def get_dirty_panels() -> list[str]:
-    """Return IDs of all panels currently marked dirty."""
-    return [pid for pid, dirty in _panel_dirty_flags.items() if dirty]
-
-
-def set_panel_save_handler(panel_id: str, save_handler: Optional[Callable[[], Any]]) -> None:
-    """Set or clear the save callback used by unified dirty confirmation."""
-    pid = (panel_id or "").strip()
-    if not pid:
-        return
-    if save_handler is None:
-        _panel_save_handlers.pop(pid, None)
-    else:
-        _panel_save_handlers[pid] = save_handler
-
-
-def set_panel_title(panel_id: str, title: str) -> None:
-    """Set display title for a panel in unified dirty confirmation dialogs."""
-    pid = (panel_id or "").strip()
-    ttl = (title or "").strip()
-    if not pid or not ttl:
-        return
-    _panel_titles[pid] = ttl
-
-
-def clear_panel_tracking(panel_id: str) -> None:
-    """Remove all dirty tracking metadata for a panel."""
-    pid = (panel_id or "").strip()
-    if not pid:
-        return
-    _panel_dirty_flags.pop(pid, None)
-    _panel_titles.pop(pid, None)
-    _panel_save_handlers.pop(pid, None)
-    _panel_save_pending_handlers.pop(pid, None)
-    _panel_discard_handlers.pop(pid, None)
-
-
-def get_dirty_panel_entries() -> list[dict]:
-    """Return dirty panels with metadata for unified close/exit pipelines."""
-    entries: list[dict] = []
-    for pid, dirty in _panel_dirty_flags.items():
-        if not dirty:
-            continue
-        entries.append({
-            "panel_id": pid,
-            "title": _panel_titles.get(pid, pid),
-            "save_handler": _panel_save_handlers.get(pid),
-            "save_pending_handler": _panel_save_pending_handlers.get(pid),
-            "discard_handler": _panel_discard_handlers.get(pid),
-        })
-    return entries
+@contextmanager
+def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
+    """Bind ``get_project_root()`` for one compile or cook interval."""
+    previous = get_project_root()
+    set_project_root(path)
+    try:
+        yield get_project_root()
+    finally:
+        set_project_root(previous)
 
 
 def get_assets_root() -> Optional[str]:

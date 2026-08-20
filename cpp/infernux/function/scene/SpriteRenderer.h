@@ -12,12 +12,20 @@ namespace infernux
  *
  * Inherits MeshRenderer for rendering pipeline compatibility (CollectRenderables
  * iterates MeshRenderers).  Auto-sets a Quad inline mesh on construction.
- * Sprite-specific properties (sprite GUID, frame index, color, flip) are
+ * Sprite-specific properties (sprite GUID, stable frame ID, color, flip) are
  * serialized alongside the MeshRenderer payload so scene files are self-contained.
  */
 class SpriteRenderer : public MeshRenderer
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.allowMultiple = false;
+        constraints.exclusiveGroups = {"renderer-owner"};
+        return constraints;
+    }
+
     SpriteRenderer();
 
     [[nodiscard]] const char *GetTypeName() const override
@@ -38,13 +46,10 @@ class SpriteRenderer : public MeshRenderer
         return m_spriteGuid;
     }
 
-    void SetFrameIndex(int index)
+    void SetFrameId(const std::string &frameId);
+    [[nodiscard]] const std::string &GetFrameId() const
     {
-        m_frameIndex = (index < 0) ? 0 : index;
-    }
-    [[nodiscard]] int GetFrameIndex() const
-    {
-        return m_frameIndex;
+        return m_frameId;
     }
 
     void SetColor(const glm::vec4 &color)
@@ -91,7 +96,7 @@ class SpriteRenderer : public MeshRenderer
 
   private:
     std::string m_spriteGuid;
-    int m_frameIndex = 0;
+    std::string m_frameId;
     glm::vec4 m_color{1.0f, 1.0f, 1.0f, 1.0f};
     bool m_flipX = false;
     bool m_flipY = false;

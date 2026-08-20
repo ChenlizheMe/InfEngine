@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, ClassVar, Dict, List, Mapping, Set, TYPE_CHECKING
 
 from Infernux.renderstack.render_pass import RenderPass
@@ -9,12 +10,17 @@ if TYPE_CHECKING:
     from Infernux.renderstack.resource_bus import ResourceBus
 
 
+class EffectColorComposition(str, Enum):
+    REPLACE: EffectColorComposition
+    ALPHA_OVER: EffectColorComposition
+
 class FullScreenEffect(RenderPass):
     """Base class for fullscreen post-processing effects."""
 
     requires: ClassVar[Set[str]]
     modifies: ClassVar[Set[str]]
     menu_path: ClassVar[str]
+    color_composition: ClassVar[EffectColorComposition]
     _serialized_fields_: ClassVar[Dict[str, Any]]
 
     def __init__(self, enabled: bool = ...) -> None: ...
@@ -58,4 +64,11 @@ class FullScreenEffect(RenderPass):
     ) -> bool:
         """Apply a one-pass fullscreen effect that rewrites the scene color."""
         ...
+    def bind_buffers(
+        self,
+        render_pass: Any,
+        bus: ResourceBus,
+        *,
+        extra_bindings: Mapping[str, object] | None = ...,
+    ) -> None: ...
     def __repr__(self) -> str: ...

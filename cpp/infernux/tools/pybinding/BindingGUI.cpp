@@ -10,6 +10,7 @@
 #include "gui/InxResourcePreviewer.h"
 #include <function/editor/ConsolePanel.h>
 #include <function/editor/EditorPanel.h>
+#include <function/editor/EditorShortcutInput.h>
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/editor/HierarchyPanel.h>
@@ -239,10 +240,17 @@ void RegisterGUIBindings(py::module_ &m)
     m.def(
         "request_gui_semantic_snapshot", []() { return InxGUISemantics::RequestSnapshot(); },
         "Request one semantic UI snapshot from the next rendered Editor frame.");
+    m.def("get_gui_focused_window_id", &InxGUISemantics::GetFocusedWindowId,
+          "Return the focused ImGui window identity without enabling semantic capture.");
+    m.def("was_gui_window_content_presented", &InxGUISemantics::WasWindowContentPresented, py::arg("window_id"),
+          "Return whether a root editor window was presented in the last completed ImGui frame.");
+    m.def("get_gui_window_presented_dock_peer", &InxGUISemantics::PresentedDockPeerForWindow, py::arg("window_id"),
+          "Return the selected window in the same dock node during the last completed ImGui frame.");
     m.def(
         "get_gui_semantic_snapshot",
         []() {
             const InxGUISemanticSnapshot snapshot = InxGUISemantics::GetSnapshot();
+            const InxGUISemanticCaptureState capture = InxGUISemantics::GetCaptureState();
             py::dict result;
             result["capture_enabled"] = snapshot.captureEnabled;
             result["frame"] = snapshot.frame;
@@ -251,8 +259,28 @@ void RegisterGUIBindings(py::module_ &m)
             result["input_sequence"] = snapshot.inputSequence;
             result["mouse"] = py::make_tuple(snapshot.mouseX, snapshot.mouseY);
             result["wants_text_input"] = snapshot.wantsTextInput;
+            py::dict dragDrop;
+            dragDrop["active"] = snapshot.dragDropActive;
+            dragDrop["preview"] = snapshot.dragDropPreview;
+            dragDrop["delivery"] = snapshot.dragDropDelivery;
+            dragDrop["payload_type"] = snapshot.dragDropPayloadType;
+            dragDrop["source_id"] = snapshot.dragDropSourceId;
+            dragDrop["accept_id"] = snapshot.dragDropAcceptId;
+            result["drag_drop"] = std::move(dragDrop);
             result["focused_window"] = snapshot.focusedWindow;
             result["focused_window_id"] = snapshot.focusedWindowId;
+            py::dict captureState;
+            captureState["continuous"] = capture.continuous;
+            captureState["active"] = capture.active;
+            captureState["requested_sequence"] = capture.requestedSequence;
+            captureState["completed_sequence"] = capture.completedSequence;
+            captureState["pending_input_sequence"] = capture.pendingInputSequence;
+            captureState["working_request_sequence"] = capture.workingRequestSequence;
+            captureState["begin_frame_count"] = capture.beginFrameCount;
+            captureState["end_frame_count"] = capture.endFrameCount;
+            captureState["abort_frame_count"] = capture.abortFrameCount;
+            captureState["publish_count"] = capture.publishCount;
+            result["capture_state"] = std::move(captureState);
             py::list targets;
             for (const auto &target : snapshot.targets) {
                 py::dict item;
@@ -540,6 +568,15 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("search_hint") = "Filter...", py::arg("empty_text") = "No results",
              "Render the shared keyboard-navigable searchable dropdown")
         .def(
+            "selectable_list_clipped",
+            [](InxGUIContext &ctx, const py::object &items) {
+                const auto count = static_cast<size_t>(py::len(items));
+                return ctx.SelectableListClipped(count, [&items](size_t index) {
+                    return py::cast<std::string>(items.attr("__getitem__")(index));
+                });
+            },
+            py::arg("items"), "Render only visible rows from a large selectable string sequence")
+        .def(
             "list_box",
             [](InxGUIContext &ctx, const std::string &label, int currentItem, const std::vector<std::string> &items,
                int heightInItems) {
@@ -657,6 +694,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def("set_next_window_focus", &InxGUIContext::SetNextWindowFocus)
         .def("set_window_focus", &InxGUIContext::SetWindowFocus, "Focus the current window immediately")
         .def("begin_window", &InxGUIContext::BeginWindow)
+        .def("is_current_window_content_presented", &InxGUIContext::IsCurrentWindowContentPresented,
+             "Return whether the current floating window or selected dock tab is actually presented")
         // begin_window_closable returns tuple (is_visible, is_open) for closable windows
         .def(
             "begin_window_closable",
@@ -680,6 +719,7 @@ void RegisterGUIBindings(py::module_ &m)
              "Return whether a measured vertical region intersects the current window clip rectangle.")
         .def("set_cursor_pos_x", &InxGUIContext::SetCursorPosX)
         .def("set_cursor_pos_y", &InxGUIContext::SetCursorPosY)
+        .def("set_cursor_screen_pos", &InxGUIContext::SetCursorScreenPos, py::arg("x"), py::arg("y"))
         .def("get_window_pos_x", &InxGUIContext::GetWindowPosX)
         .def("get_window_pos_y", &InxGUIContext::GetWindowPosY)
         .def("get_window_width", &InxGUIContext::GetWindowWidth)
@@ -691,6 +731,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def("invisible_button", &InxGUIContext::InvisibleButton)
         .def("is_item_active", &InxGUIContext::IsItemActive)
         .def("is_any_item_active", &InxGUIContext::IsAnyItemActive)
+        .def("is_pointer_activation_blocked_by_popup", &InxGUIContext::IsPointerActivationBlockedByPopup,
+             "Return whether a popup owns pointer activation for this complete GUI frame")
         .def("is_item_hovered", &InxGUIContext::IsItemHovered)
         .def("is_item_focused", &InxGUIContext::IsItemFocused)
         .def("set_keyboard_focus_here", &InxGUIContext::SetKeyboardFocusHere, py::arg("offset") = 0,
@@ -970,9 +1012,10 @@ void RegisterGUIBindings(py::module_ &m)
                     pickerTextureId, previewTextureId, previewUnavailableLabel, defaultOpen, readOnly);
                 return py::make_tuple(
                     interaction.vertexFlags, interaction.vertexPickerOpen, interaction.vertexPayload,
-                    interaction.vertexListPopupOpen, interaction.fragmentFlags, interaction.fragmentPickerOpen,
-                    interaction.fragmentPayload, interaction.fragmentListPopupOpen,
-                    EncodePropertyChanges(interaction.surfaceChanges));
+                     interaction.vertexListPopupOpen, interaction.fragmentFlags, interaction.fragmentPickerOpen,
+                     interaction.fragmentPayload, interaction.fragmentListPopupOpen,
+                     EncodePropertyChanges(interaction.surfaceChanges), interaction.activeSurfaceIndex,
+                     interaction.deactivatedSurfaceIndex);
             },
             py::arg("shader_section_label"), py::arg("vertex_label"), py::arg("vertex_display"),
             py::arg("fragment_label"), py::arg("fragment_display"), py::arg("shader_label_width"),
@@ -983,7 +1026,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("render_object_field_chrome", &InxGUIContext::RenderObjectFieldChrome, py::arg("field_id"),
              py::arg("display_text"), py::arg("type_hint"), py::arg("selected") = false,
              py::arg("clickable") = true, py::arg("has_picker") = false, py::arg("picker_texture_id") = 0,
-             py::arg("semantic_id") = "",
+             py::arg("semantic_id") = "", py::arg("fixed_width") = 0.0f,
              "Render steady-state object-reference chrome in one native call; returns interaction flags.")
         .def(
             "render_mesh_renderer_inspector_fields",
@@ -1035,8 +1078,27 @@ void RegisterGUIBindings(py::module_ &m)
     // EditorPanel — C++ base class for native panels
     py::class_<EditorPanel, InxGUIRenderable, std::shared_ptr<EditorPanel>>(m, "EditorPanel", py::dynamic_attr())
         .def("is_open", &EditorPanel::IsOpen, "Check if the panel is open")
+        .def("is_content_visible", &EditorPanel::IsContentVisible,
+             "Check if the panel content is visible in its current dock tab")
+        .def("was_content_visible", &EditorPanel::WasContentVisible,
+             "Check if the panel content was visible during its preceding frame")
+        .def("is_content_hovered", &EditorPanel::IsContentHovered,
+             "Check if the presented panel content owns the current pointer target")
         .def("set_open", &EditorPanel::SetOpen, py::arg("open"), "Set whether the panel is open")
-        .def("get_window_id", &EditorPanel::GetWindowId, "Get the stable window ID");
+        .def("get_window_id", &EditorPanel::GetWindowId, "Get the stable window ID")
+        .def("republish_panel_focus", &EditorPanel::RepublishPanelFocus, "Republish the last native focus observation")
+        .def("cancel_transient", &EditorPanel::CancelTransientInteraction, py::arg("token"),
+             "Cancel a native temporary interaction through Editor Interaction Core")
+        .def_property(
+            "on_panel_focused", [](EditorPanel &self) { return self.onPanelFocused; },
+            [](EditorPanel &self, std::function<void(bool, bool)> callback) {
+                self.SetPanelFocusedCallback(std::move(callback));
+            })
+        .def_readwrite("on_request_close", &EditorPanel::onRequestClose)
+        .def_readwrite("on_transient_begin", &EditorPanel::onTransientBegin)
+        .def_readwrite("on_transient_end", &EditorPanel::onTransientEnd)
+        .def_readwrite("execute_command", &EditorPanel::executeCommand)
+        .def_readwrite("can_execute_command", &EditorPanel::canExecuteCommand);
 
     // ConsolePanel — C++ native console that replaces the Python ConsolePanel
     py::class_<ConsolePanel, EditorPanel, std::shared_ptr<ConsolePanel>>(m, "ConsolePanel")
@@ -1045,13 +1107,63 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("stack_trace") = "", py::arg("source_file") = "", py::arg("source_line") = 0,
              "Log a message originating from Python Debug.log()")
         .def("clear", &ConsolePanel::Clear, "Clear all log entries")
+        .def("remove_entries_from_source", &ConsolePanel::RemoveEntriesFromSource, py::arg("source_file"),
+             "Remove Console entries owned by one source file")
         .def("get_info_count", &ConsolePanel::GetInfoCount, "Get count of info messages")
         .def("get_warning_count", &ConsolePanel::GetWarningCount, "Get count of warning messages")
         .def("get_error_count", &ConsolePanel::GetErrorCount, "Get count of error messages")
         .def("select_latest_entry", &ConsolePanel::SelectLatestEntry, "Select last visible entry and focus window")
-        .def("_select_entry", &ConsolePanel::SelectEntry, py::arg("uid"))
+        .def("select_entry", &ConsolePanel::SelectEntry, py::arg("uid"))
+        .def("set_selection_snapshot", &ConsolePanel::SetSelectionSnapshot, py::arg("uid"))
         .def_property_readonly("_selected_uid", &ConsolePanel::GetSelectedUid)
         .def_property_readonly("_revision", &ConsolePanel::GetRevision)
+        .def(
+            "_get_visible_log_snapshot",
+            [](ConsolePanel &self, size_t limit) {
+                py::list result;
+                for (const auto &entry : self.GetVisibleLogSnapshot(limit)) {
+                    const char *level = "INFO";
+                    switch (entry.level) {
+                    case LogLevel::LOG_DEBUG:
+                        level = "DEBUG";
+                        break;
+                    case LogLevel::LOG_WARN:
+                        level = "WARN";
+                        break;
+                    case LogLevel::LOG_ERROR:
+                        level = "ERROR";
+                        break;
+                    case LogLevel::LOG_FATAL:
+                        level = "FATAL";
+                        break;
+                    default:
+                        break;
+                    }
+                    py::dict item;
+                    item["time"] = entry.timestamp;
+                    item["level"] = level;
+                    item["message"] = entry.message;
+                    item["source_file"] = entry.sourceFile;
+                    item["source_line"] = entry.sourceLine;
+                    item["stack_trace"] = entry.stackTrace;
+                    item["uid"] = entry.uid;
+                    item["latest_uid"] = entry.latestUid;
+                    item["count"] = entry.count;
+                    result.append(std::move(item));
+                }
+                return result;
+            },
+            py::arg("limit"), "Read the bounded, currently visible native Console entries")
+        .def("has_selected_entry", &ConsolePanel::HasSelectedEntry)
+        .def("copy_selected_entry", &ConsolePanel::CopySelectedEntry)
+        .def("has_view_option", &ConsolePanel::HasViewOption, py::arg("option"))
+        .def("get_view_option", &ConsolePanel::GetViewOption, py::arg("option"))
+        .def("set_view_option", &ConsolePanel::SetViewOption, py::arg("option"), py::arg("enabled"))
+        .def("get_search_query", &ConsolePanel::GetSearchQuery)
+        .def("set_search_query", &ConsolePanel::SetSearchQuery, py::arg("query"))
+        .def("request_search_focus", &ConsolePanel::RequestSearchFocus)
+        .def("get_detail_height", &ConsolePanel::GetDetailHeight)
+        .def("set_detail_height", &ConsolePanel::SetDetailHeight, py::arg("height"))
         .def("_get_status_snapshot",
              [](ConsolePanel &self) {
                  std::string message;
@@ -1070,9 +1182,9 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("clear_on_play", &ConsolePanel::clearOnPlay)
         .def_readwrite("error_pause", &ConsolePanel::errorPause)
         .def_readwrite("auto_scroll", &ConsolePanel::autoScroll)
-        .def_readwrite("on_double_click_entry", &ConsolePanel::onDoubleClickEntry)
         .def_readwrite("on_error_pause", &ConsolePanel::onErrorPause)
-        .def_readwrite("on_request_focus", &ConsolePanel::onRequestFocus);
+        .def_readwrite("on_request_focus", &ConsolePanel::onRequestFocus)
+        .def_readwrite("on_selection_changed", &ConsolePanel::onSelectionChanged);
 
     // ── PlayState enum ─────────────────────────────────────────────────
     py::enum_<PlayState>(m, "PlayState")
@@ -1096,18 +1208,15 @@ void RegisterGUIBindings(py::module_ &m)
             [](StatusBarPanel &self, std::shared_ptr<ConsolePanel> panel) { self.SetConsolePanel(panel.get()); },
             py::arg("console"), py::keep_alive<1, 2>(), "Wire to ConsolePanel for click-to-select-latest")
         .def("set_engine_status", &StatusBarPanel::SetEngineStatus, py::arg("text"), py::arg("progress"),
-             py::arg("kind") = "activity", "Update engine-status indicator");
+             py::arg("kind") = "activity", "Update engine-status indicator")
+        .def_readwrite("execute_command", &StatusBarPanel::executeCommand);
 
     // ── ToolbarPanel ───────────────────────────────────────────────────
     py::class_<ToolbarPanel, EditorPanel, std::shared_ptr<ToolbarPanel>>(m, "ToolbarPanel")
         .def(py::init<>())
-        .def_readwrite("on_play", &ToolbarPanel::onPlay)
-        .def_readwrite("on_pause", &ToolbarPanel::onPause)
-        .def_readwrite("on_step", &ToolbarPanel::onStep)
         .def_readwrite("get_play_state", &ToolbarPanel::getPlayState)
         .def_readwrite("get_play_time_str", &ToolbarPanel::getPlayTimeStr)
         .def_readwrite("is_show_grid", &ToolbarPanel::isShowGrid)
-        .def_readwrite("set_show_grid", &ToolbarPanel::setShowGrid)
         .def_readwrite("translate", &ToolbarPanel::translate)
         .def(
             "get_camera_settings",
@@ -1132,7 +1241,7 @@ void RegisterGUIBindings(py::module_ &m)
                 s.orthographic = d.contains("orthographic") ? d["orthographic"].cast<bool>() : false;
                 s.fov = d.contains("fov") ? d["fov"].cast<float>() : 60.0f;
                 s.orthographicSize = d.contains("orthographic_size") ? d["orthographic_size"].cast<float>() : 5.0f;
-                s.rotationSpeed = d.contains("rotation_speed") ? d["rotation_speed"].cast<float>() : 0.05f;
+                s.rotationSpeed = d.contains("rotation_speed") ? d["rotation_speed"].cast<float>() : 0.15f;
                 s.panSpeed = d.contains("pan_speed") ? d["pan_speed"].cast<float>() : 1.0f;
                 s.zoomSpeed = d.contains("zoom_speed") ? d["zoom_speed"].cast<float>() : 1.0f;
                 s.moveSpeed = d.contains("move_speed") ? d["move_speed"].cast<float>() : 5.0f;
@@ -1150,7 +1259,7 @@ void RegisterGUIBindings(py::module_ &m)
                     s.orthographic = d.contains("orthographic") ? d["orthographic"].cast<bool>() : false;
                     s.fov = d.contains("fov") ? d["fov"].cast<float>() : 60.0f;
                     s.orthographicSize = d.contains("orthographic_size") ? d["orthographic_size"].cast<float>() : 5.0f;
-                    s.rotationSpeed = d.contains("rotation_speed") ? d["rotation_speed"].cast<float>() : 0.05f;
+                    s.rotationSpeed = d.contains("rotation_speed") ? d["rotation_speed"].cast<float>() : 0.15f;
                     s.panSpeed = d.contains("pan_speed") ? d["pan_speed"].cast<float>() : 1.0f;
                     s.zoomSpeed = d.contains("zoom_speed") ? d["zoom_speed"].cast<float>() : 1.0f;
                     s.moveSpeed = d.contains("move_speed") ? d["move_speed"].cast<float>() : 5.0f;
@@ -1176,37 +1285,59 @@ void RegisterGUIBindings(py::module_ &m)
                     fn(d);
                 };
             },
-            "Set a Python callback that receives camera settings dict");
+            "Set a Python callback that receives camera settings dict")
+        .def_property(
+            "begin_camera_edit", [](const ToolbarPanel &self) -> py::object { return py::none(); },
+            [](ToolbarPanel &self, py::function fn) {
+                self.beginCameraEdit = [fn](const std::string &key, const ToolbarPanel::CameraSettings &s) {
+                    py::gil_scoped_acquire acquire;
+                    py::dict d;
+                    d["orthographic"] = s.orthographic;
+                    d["fov"] = s.fov;
+                    d["orthographic_size"] = s.orthographicSize;
+                    d["rotation_speed"] = s.rotationSpeed;
+                    d["pan_speed"] = s.panSpeed;
+                    d["zoom_speed"] = s.zoomSpeed;
+                    d["move_speed"] = s.moveSpeed;
+                    d["move_speed_boost"] = s.moveSpeedBoost;
+                    fn(key, d);
+                };
+            },
+            "Set the camera continuous-edit begin callback")
+        .def_property(
+            "end_camera_edit", [](const ToolbarPanel &self) -> py::object { return py::none(); },
+            [](ToolbarPanel &self, py::function fn) {
+                self.endCameraEdit = [fn](const std::string &key, const ToolbarPanel::CameraSettings &s) {
+                    py::gil_scoped_acquire acquire;
+                    py::dict d;
+                    d["orthographic"] = s.orthographic;
+                    d["fov"] = s.fov;
+                    d["orthographic_size"] = s.orthographicSize;
+                    d["rotation_speed"] = s.rotationSpeed;
+                    d["pan_speed"] = s.panSpeed;
+                    d["zoom_speed"] = s.zoomSpeed;
+                    d["move_speed"] = s.moveSpeed;
+                    d["move_speed_boost"] = s.moveSpeedBoost;
+                    fn(key, d);
+                };
+            },
+            "Set the camera continuous-edit end callback");
 
     // ── MenuBarPanel ───────────────────────────────────────────────────
     py::class_<MenuBarPanel, InxGUIRenderable, std::shared_ptr<MenuBarPanel>>(m, "MenuBarPanel")
         .def(py::init<>())
         .def("invalidate_window_type_cache", &MenuBarPanel::InvalidateWindowTypeCache)
-        .def_readwrite("on_save", &MenuBarPanel::onSave)
-        .def_readwrite("on_save_as", &MenuBarPanel::onSaveAs)
-        .def_readwrite("on_save_focused", &MenuBarPanel::onSaveFocused)
-        .def_readwrite("on_save_focused_as", &MenuBarPanel::onSaveFocusedAs)
-        .def_readwrite("on_new_scene", &MenuBarPanel::onNewScene)
+        .def_readwrite("execute_command", &MenuBarPanel::executeCommand)
+        .def_readwrite("can_execute_command", &MenuBarPanel::canExecuteCommand)
+        .def_readwrite("is_command_checked", &MenuBarPanel::isCommandChecked)
         .def_readwrite("on_request_close", &MenuBarPanel::onRequestClose)
-        .def_readwrite("on_undo", &MenuBarPanel::onUndo)
-        .def_readwrite("on_redo", &MenuBarPanel::onRedo)
-        .def_readwrite("can_undo", &MenuBarPanel::canUndo)
-        .def_readwrite("can_redo", &MenuBarPanel::canRedo)
         .def_readwrite("get_registered_types", &MenuBarPanel::getRegisteredTypes)
-        .def_readwrite("get_open_windows", &MenuBarPanel::getOpenWindows)
-        .def_readwrite("open_window", &MenuBarPanel::openWindow)
-        .def_readwrite("close_window", &MenuBarPanel::closeWindow)
-        .def_readwrite("reset_layout", &MenuBarPanel::resetLayout)
         .def_readwrite("is_close_requested", &MenuBarPanel::isCloseRequested)
-        .def_readwrite("toggle_build_settings", &MenuBarPanel::toggleBuildSettings)
-        .def_readwrite("toggle_preferences", &MenuBarPanel::togglePreferences)
-        .def_readwrite("toggle_physics_layer_matrix", &MenuBarPanel::togglePhysicsLayerMatrix)
-        .def_readwrite("toggle_environment_settings", &MenuBarPanel::toggleEnvironmentSettings)
-        .def_readwrite("is_build_settings_open", &MenuBarPanel::isBuildSettingsOpen)
-        .def_readwrite("is_preferences_open", &MenuBarPanel::isPreferencesOpen)
-        .def_readwrite("is_physics_layer_matrix_open", &MenuBarPanel::isPhysicsLayerMatrixOpen)
-        .def_readwrite("is_environment_settings_open", &MenuBarPanel::isEnvironmentSettingsOpen)
         .def_readwrite("translate", &MenuBarPanel::translate);
+
+    py::class_<EditorShortcutInput, InxGUIRenderable, std::shared_ptr<EditorShortcutInput>>(m, "EditorShortcutInput")
+        .def(py::init<>())
+        .def_readwrite("route_shortcut", &EditorShortcutInput::routeShortcut);
 
     // ── HierarchyPanel ─────────────────────────────────────────────────
     py::class_<HierarchyPanel, EditorPanel, std::shared_ptr<HierarchyPanel>>(m, "HierarchyPanel")
@@ -1216,16 +1347,20 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_ui_mode", &HierarchyPanel::GetUiMode)
         .def_property("ui_mode", &HierarchyPanel::GetUiMode, &HierarchyPanel::SetUiMode)
         .def("clear_search", &HierarchyPanel::ClearSearch)
+        .def("request_search_focus", &HierarchyPanel::RequestSearchFocus)
         .def("clear_selection_and_notify", &HierarchyPanel::ClearSelectionAndNotify)
         .def("set_selected_object_by_id", &HierarchyPanel::SetSelectedObjectById, py::arg("id"),
              py::arg("clear_search") = false)
         .def("set_selection_snapshot", &HierarchyPanel::SetSelectionSnapshot, py::arg("ids"), py::arg("primary"))
+        .def("get_expanded_object_ids", &HierarchyPanel::GetExpandedObjectIds)
+        .def("set_expanded_object_ids", &HierarchyPanel::SetExpandedObjectIds, py::arg("ids"))
         .def("set_runtime_hidden_ids", &HierarchyPanel::SetRuntimeHiddenIds, py::arg("ids"))
         .def("set_scene_header_snapshot", &HierarchyPanel::SetSceneHeaderSnapshot, py::arg("scene_display_name"),
              py::arg("prefab_mode"), py::arg("prefab_display_name"))
         .def("expand_to_object", &HierarchyPanel::ExpandToObject, py::arg("obj_id"))
         .def("set_pending_expand_id", &HierarchyPanel::SetPendingExpandId, py::arg("obj_id"))
         .def("invalidate_scene_structure_cache", &HierarchyPanel::InvalidateSceneStructureCache)
+        .def("begin_rename_object", &HierarchyPanel::BeginRenameObject, py::arg("obj_id"))
         // Selection callbacks
         .def_readwrite("is_selected", &HierarchyPanel::isSelected)
         .def_readwrite("select_id", &HierarchyPanel::selectId)
@@ -1237,15 +1372,6 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("selection_count", &HierarchyPanel::selectionCount)
         .def_readwrite("is_selection_empty", &HierarchyPanel::isSelectionEmpty)
         .def_readwrite("set_ordered_ids", &HierarchyPanel::setOrderedIds)
-        // Notification callbacks
-        .def_readwrite("on_selection_changed", &HierarchyPanel::onSelectionChanged)
-        .def_readwrite("on_double_click_focus", &HierarchyPanel::onDoubleClickFocus)
-        .def_readwrite("on_selection_changed_ui_editor", &HierarchyPanel::onSelectionChangedUiEditor)
-        // Undo callbacks
-        .def_readwrite("undo_record_create", &HierarchyPanel::undoRecordCreate)
-        .def_readwrite("undo_record_delete", &HierarchyPanel::undoRecordDelete)
-        .def_readwrite("undo_record_rename", &HierarchyPanel::undoRecordRename)
-        .def_readwrite("undo_record_move", &HierarchyPanel::undoRecordMove)
         // Scene info callbacks
         .def_readwrite("get_scene_display_name", &HierarchyPanel::getSceneDisplayName)
         .def_readwrite("is_prefab_mode", &HierarchyPanel::isPrefabMode)
@@ -1258,31 +1384,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("parent_has_canvas_ancestor", &HierarchyPanel::parentHasCanvasAncestor)
         .def_readwrite("has_canvas_descendant", &HierarchyPanel::hasCanvasDescendant)
         .def_readwrite("get_canvas_root_ids", &HierarchyPanel::getCanvasRootIds)
-        // Context-menu action callbacks
-        .def_readwrite("create_primitive", &HierarchyPanel::createPrimitive)
-        .def_readwrite("create_light", &HierarchyPanel::createLight)
-        .def_readwrite("create_empty", &HierarchyPanel::createEmpty)
-        .def_readwrite("create_empty_parent", &HierarchyPanel::createEmptyParent)
-        .def("add_create_entry", &HierarchyPanel::AddCreateEntry, py::arg("category"), py::arg("locale_key"),
-             py::arg("callback"), "Register a data-driven entry for the Hierarchy context menu")
-        .def("clear_create_entries", &HierarchyPanel::ClearCreateEntries, "Remove all data-driven create-menu entries")
-        .def_readwrite("save_as_prefab", &HierarchyPanel::saveAsPrefab)
-        .def_readwrite("prefab_select_asset", &HierarchyPanel::prefabSelectAsset)
-        .def_readwrite("prefab_open_asset", &HierarchyPanel::prefabOpenAsset)
-        .def_readwrite("prefab_apply_overrides", &HierarchyPanel::prefabApplyOverrides)
-        .def_readwrite("prefab_revert_overrides", &HierarchyPanel::prefabRevertOverrides)
-        .def_readwrite("prefab_unpack", &HierarchyPanel::prefabUnpack)
-        // Hierarchy panel focus callback
-        .def_readwrite("on_hierarchy_panel_focused", &HierarchyPanel::onHierarchyPanelFocused)
-        // Clipboard callbacks
-        .def_readwrite("copy_selected", &HierarchyPanel::copySelected)
-        .def_readwrite("paste_clipboard", &HierarchyPanel::pasteClipboard)
-        .def_readwrite("has_clipboard_data", &HierarchyPanel::hasClipboardData)
-        // External drop callbacks
-        .def_readwrite("instantiate_prefab", &HierarchyPanel::instantiatePrefab)
-        .def_readwrite("create_model_object", &HierarchyPanel::createModelObject)
-        // Delete
-        .def_readwrite("delete_selected_objects", &HierarchyPanel::deleteSelectedObjects)
+        // Unified commands
+        .def_readwrite("render_context_menu", &HierarchyPanel::renderContextMenu)
         // Translation
         .def_readwrite("translate", &HierarchyPanel::translate)
         // Warning
@@ -1302,57 +1405,34 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("engine"))
         .def("set_icons_directory", &ProjectPanel::SetIconsDirectory, py::arg("dir"))
-        .def("clear_selection", &ProjectPanel::ClearSelection)
-        .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"))
+        .def("request_search_focus", &ProjectPanel::RequestSearchFocus)
+        .def("clear_selection", &ProjectPanel::ClearSelection, py::arg("notify") = true)
+        .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"), py::arg("notify") = true)
+        .def("set_selected_files", &ProjectPanel::SetSelectedFiles, py::arg("paths"), py::arg("primary") = "",
+             py::arg("notify") = true)
         .def("invalidate_material_thumbnail", &ProjectPanel::InvalidateMaterialThumbnail, py::arg("file_path"))
         .def("invalidate_texture_thumbnail", &ProjectPanel::InvalidateTextureThumbnail, py::arg("file_path"))
         .def("invalidate_dir_cache", &ProjectPanel::InvalidateDirCache)
         .def("receive_dropped_files", &ProjectPanel::ReceiveDroppedFiles, py::arg("paths"))
         .def("get_current_path", &ProjectPanel::GetCurrentPath)
+        .def("can_navigate_to_path", &ProjectPanel::CanNavigateToPath, py::arg("path"))
         .def("set_current_path", &ProjectPanel::SetCurrentPath, py::arg("path"))
-        // Project panel focus callback
-        .def_readwrite("on_project_panel_focused", &ProjectPanel::onProjectPanelFocused)
+        .def("get_folder_expanded_paths", &ProjectPanel::GetFolderExpandedPaths)
+        .def("set_folder_expanded_paths", &ProjectPanel::SetFolderExpandedPaths, py::arg("paths"))
+        .def("get_model_expanded_paths", &ProjectPanel::GetModelExpandedPaths)
+        .def("set_model_expanded_paths", &ProjectPanel::SetModelExpandedPaths, py::arg("paths"))
+        .def("begin_rename_selected_asset", &ProjectPanel::BeginRenameSelectedAsset, py::arg("path") = "")
+        .def("has_selected_assets", &ProjectPanel::HasSelectedAssets)
+        .def("can_rename_selected_asset", &ProjectPanel::CanRenameSelectedAsset, py::arg("path") = "")
+        .def("get_os_clipboard_files", &ProjectPanel::GetOSClipboardFiles)
+        .def_readwrite("render_context_menu", &ProjectPanel::renderContextMenu)
         // Notification callbacks
-        .def_readwrite("on_file_selected", &ProjectPanel::onFileSelected)
-        .def_readwrite("on_empty_area_clicked", &ProjectPanel::onEmptyAreaClicked)
+        .def_readwrite("on_selection_changed", &ProjectPanel::onSelectionChanged)
         .def_readwrite("on_state_changed", &ProjectPanel::onStateChanged)
-        // File operation callbacks
-        .def_readwrite("create_folder", &ProjectPanel::createFolder)
-        .def_readwrite("create_script", &ProjectPanel::createScript)
-        .def_readwrite("create_shader", &ProjectPanel::createShader)
-        .def_readwrite("create_material", &ProjectPanel::createMaterial)
-        .def_readwrite("create_physic_material", &ProjectPanel::createPhysicMaterial)
-        .def_readwrite("create_scene", &ProjectPanel::createScene)
-        .def_readwrite("create_animclip", &ProjectPanel::createAnimClip)
-        .def_readwrite("create_animclip3d", &ProjectPanel::createAnimClip3D)
-        .def_readwrite("create_animfsm", &ProjectPanel::createAnimFsm)
-        .def_readwrite("create_particlegraph", &ProjectPanel::createParticleGraph)
-        .def_readwrite("create_render_effect", &ProjectPanel::createRenderEffect)
-        .def_readwrite("create_render_effect_group", &ProjectPanel::createRenderEffectGroup)
-        .def_readwrite("create_animtimeline", &ProjectPanel::createAnimTimeline)
-        .def_readwrite("create_timelinefsm", &ProjectPanel::createTimelineFsm)
-        .def_readwrite("create_prefab_from_hierarchy", &ProjectPanel::createPrefabFromHierarchy)
-        .def_readwrite("delete_items", &ProjectPanel::deleteItems)
-        .def_readwrite("do_rename", &ProjectPanel::doRename)
-        .def_readwrite("get_unique_name", &ProjectPanel::getUniqueName)
-        .def_readwrite("move_item_to_directory", &ProjectPanel::moveItemToDirectory)
-        .def_readwrite("copy_item_to_path", &ProjectPanel::copyItemToPath)
-        // Open/Reveal callbacks
-        .def_readwrite("open_file", &ProjectPanel::openFile)
-        .def_readwrite("open_scene", &ProjectPanel::openScene)
-        .def_readwrite("open_prefab_mode", &ProjectPanel::openPrefabMode)
-        .def_readwrite("open_anim_clip", &ProjectPanel::openAnimClip)
-        .def_readwrite("open_anim_fsm", &ProjectPanel::openAnimFsm)
-        .def_readwrite("open_particle_graph", &ProjectPanel::openParticleGraph)
-        .def_readwrite("open_anim_timeline", &ProjectPanel::openAnimTimeline)
-        .def_readwrite("open_timeline_fsm", &ProjectPanel::openTimelineFsm)
-        .def_readwrite("reveal_in_explorer", &ProjectPanel::revealInExplorer)
-        // Validation / GUID callbacks
-        .def_readwrite("validate_script_component", &ProjectPanel::validateScriptComponent)
+        // GUID callbacks
         .def_readwrite("get_guid_from_path", &ProjectPanel::getGuidFromPath)
         .def_readwrite("get_path_from_guid", &ProjectPanel::getPathFromGuid)
         .def_readwrite("invalidate_asset_inspector", &ProjectPanel::invalidateAssetInspector)
-        .def_readwrite("is_hierarchy_selection_empty", &ProjectPanel::isHierarchySelectionEmpty)
         // Translation
         .def_readwrite("translate", &ProjectPanel::translate);
 
@@ -1376,7 +1456,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("tag", &InspectorPanel::ObjectInfo::tag)
         .def_readwrite("layer", &InspectorPanel::ObjectInfo::layer)
         .def_readwrite("prefab_guid", &InspectorPanel::ObjectInfo::prefabGuid)
-        .def_readwrite("hide_transform", &InspectorPanel::ObjectInfo::hideTransform);
+        .def_readwrite("hide_transform", &InspectorPanel::ObjectInfo::hideTransform)
+        .def_readwrite("transform_component_id", &InspectorPanel::ObjectInfo::transformComponentId);
 
     py::class_<InspectorPanel::TransformData>(m, "InspectorTransformData")
         .def(py::init<>())
@@ -1389,6 +1470,13 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("sx", &InspectorPanel::TransformData::sx)
         .def_readwrite("sy", &InspectorPanel::TransformData::sy)
         .def_readwrite("sz", &InspectorPanel::TransformData::sz);
+
+    py::class_<InspectorPanel::RevisionSnapshot>(m, "InspectorRevisionSnapshot")
+        .def(py::init<>())
+        .def_readwrite("target", &InspectorPanel::RevisionSnapshot::target)
+        .def_readwrite("schema", &InspectorPanel::RevisionSnapshot::schema)
+        .def_readwrite("value", &InspectorPanel::RevisionSnapshot::value)
+        .def_readwrite("preview", &InspectorPanel::RevisionSnapshot::preview);
 
     py::class_<InspectorPanel::AddComponentEntry>(m, "InspectorAddComponentEntry")
         .def(py::init<>())
@@ -1413,16 +1501,17 @@ void RegisterGUIBindings(py::module_ &m)
         .def("clear_selected_file", &InspectorPanel::ClearSelectedFile)
         .def("get_selected_file", &InspectorPanel::GetSelectedFile)
         .def("set_detail_file", &InspectorPanel::SetDetailFile, py::arg("file_path"), py::arg("category"))
+        .def("set_selected_component_ids", &InspectorPanel::SetSelectedComponentIds, py::arg("component_ids"))
+        .def("clear_selected_components", &InspectorPanel::ClearSelectedComponents)
         // Selection callbacks
         .def_readwrite("is_multi_selection", &InspectorPanel::isMultiSelection)
         .def_readwrite("get_selected_ids", &InspectorPanel::getSelectedIds)
         .def_readwrite("get_value_generation", &InspectorPanel::getValueGeneration)
+        .def_readwrite("get_revision_snapshot", &InspectorPanel::getRevisionSnapshot)
         // Object info callbacks
         .def_readwrite("get_object_info", &InspectorPanel::getObjectInfo)
-        .def_readwrite("set_object_property", &InspectorPanel::setObjectProperty)
         // Transform callbacks
         .def_readwrite("get_transform_data", &InspectorPanel::getTransformData)
-        .def_readwrite("set_transform_data", &InspectorPanel::setTransformData)
         // Component enumeration
         .def_readwrite("get_component_list", &InspectorPanel::getComponentList)
         .def_readwrite("get_component_icon_id", &InspectorPanel::getComponentIconId)
@@ -1430,13 +1519,10 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("render_component_body", &InspectorPanel::renderComponentBody)
         .def_readwrite("render_multi_component_body", &InspectorPanel::renderMultiComponentBody)
         .def_readwrite("consume_component_body_profile", &InspectorPanel::consumeComponentBodyProfile)
+        .def_readwrite("on_component_selection_changed", &InspectorPanel::onComponentSelectionChanged)
         .def_readwrite("render_component_context_menu", &InspectorPanel::renderComponentContextMenu)
-        .def_readwrite("set_component_enabled", &InspectorPanel::setComponentEnabled)
         // Add Component
         .def_readwrite("get_add_component_entries", &InspectorPanel::getAddComponentEntries)
-        .def_readwrite("add_component", &InspectorPanel::addComponent)
-        // Remove Component
-        .def_readwrite("remove_component", &InspectorPanel::removeComponent)
         // Asset / File preview
         .def_readwrite("render_asset_inspector", &InspectorPanel::renderAssetInspector)
         .def_readwrite("render_file_preview", &InspectorPanel::renderFilePreview)
@@ -1444,20 +1530,11 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("render_material_sections", &InspectorPanel::renderMaterialSections)
         // Prefab
         .def_readwrite("get_prefab_info", &InspectorPanel::getPrefabInfo)
-        .def_readwrite("prefab_action", &InspectorPanel::prefabAction)
-        // Undo
-        .def_readwrite("undo_begin_frame", &InspectorPanel::undoBeginFrame)
-        .def_readwrite("undo_end_frame", &InspectorPanel::undoEndFrame)
-        .def_readwrite("undo_invalidate_all", &InspectorPanel::undoInvalidateAll)
         // Tag & Layer
         .def_readwrite("get_all_tags", &InspectorPanel::getAllTags)
         .def_readwrite("get_all_layers", &InspectorPanel::getAllLayers)
         // Translation
-        .def_readwrite("translate", &InspectorPanel::translate)
-        // Script drop
-        .def_readwrite("handle_script_drop", &InspectorPanel::handleScriptDrop)
-        // Window manager
-        .def_readwrite("open_window", &InspectorPanel::openWindow);
+        .def_readwrite("translate", &InspectorPanel::translate);
 }
 
 } // namespace infernux

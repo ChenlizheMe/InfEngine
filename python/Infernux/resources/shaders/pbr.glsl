@@ -195,7 +195,8 @@ float calculateSpotFalloff(vec3 lightDir, vec3 spotDir, float innerAngleCos, flo
 vec3 evaluatePBRLight(vec3 N, vec3 V, vec3 L, vec3 lightRadiance,
                       vec3 albedo, float metallic,
                       float roughness, float perceptualRoughness,
-                      vec3 F0, float f90, vec3 energyCompensation) {
+                      vec3 F0, float f90, vec3 energyCompensation,
+                      float specularHighlights) {
     vec3  halfVec = V + L;
     float halfLen2 = dot(halfVec, halfVec);
     vec3  H     = (halfLen2 > 1e-8) ? halfVec * inversesqrt(halfLen2) : N;
@@ -216,7 +217,7 @@ vec3 evaluatePBRLight(vec3 N, vec3 V, vec3 L, vec3 lightRadiance,
     // Pre-computed in caller from EnvBRDFApprox:
     //   specularFGD = F0·envBrdf.x + envBrdf.y
     //   energyCompensation = 1 + F0 · (1/specularFGD − 1)
-    specular *= energyCompensation;
+    specular *= energyCompensation * clamp(specularHighlights, 0.0, 1.0);
 
     // ---- Diffuse: Disney/Burley (energy-conserving, roughness-aware) ----
     float diffuseTerm = DisneyDiffuse(NdotV, NdotL, LdotV, perceptualRoughness);

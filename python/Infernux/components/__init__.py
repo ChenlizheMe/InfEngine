@@ -29,6 +29,7 @@ from .builtin import (
     BoxCollider,
     SphereCollider,
     CapsuleCollider,
+    CylinderCollider,
     MeshCollider,
     Rigidbody,
     RigidbodyConstraints,
@@ -41,7 +42,7 @@ from .builtin import (
 from Infernux.lib import Transform, Component
 from .serializable_object import SerializableObject
 from .value_codec import ValueCodecDescriptor, ValueCodecRegistry, VALUE_CODECS
-from .serialized_field import (
+from .fields import (
     serialized_field,
     int_field,
     list_field,
@@ -61,6 +62,7 @@ from .serialized_field import (
     InfoText,
     DragSpeed,
     RequiredComponent,
+    FormerlySerializedAs,
     Multiline,
     ReadOnly,
     HideInInspector,
@@ -68,6 +70,11 @@ from .serialized_field import (
     HDR,
     Color,
 )
+
+# ``Infernux.Space`` is the native transform-space enum. Keep the Inspector
+# layout marker available explicitly as ``components.Space``, while exporting
+# an unambiguous name from wildcard imports used by generated game scripts.
+InspectorSpace = Space
 from .ref_wrappers import GameObjectRef, MaterialRef, ComponentRef, PrefabRef
 from .script_loader import (
     load_component_from_file,
@@ -102,6 +109,7 @@ from .skeletal_animator import SkeletalAnimator
 from .timeline_action import TimelineAction
 from .particle_system import ParticleBoundsMode, ParticleOffscreenPolicy, ParticleSystem
 from .runtime_acceptance_runner import RuntimeAcceptanceRunner
+from ._component_lifecycle import RuntimeExecutionScheduler
 
 __all__ = [
     "InxComponent",
@@ -115,6 +123,7 @@ __all__ = [
     "BoxCollider",
     "SphereCollider",
     "CapsuleCollider",
+    "CylinderCollider",
     "MeshCollider",
     "Rigidbody",
     "RigidbodyConstraints",
@@ -131,11 +140,12 @@ __all__ = [
     "Range",
     "Tooltip",
     "Header",
-    "Space",
+    "InspectorSpace",
     "Group",
     "InfoText",
     "DragSpeed",
     "RequiredComponent",
+    "FormerlySerializedAs",
     "Multiline",
     "ReadOnly",
     "HideInInspector",
@@ -187,4 +197,5 @@ __all__ = [
     "SkeletalAnimator",
     "TimelineAction",
     "RuntimeAcceptanceRunner",
+    "RuntimeExecutionScheduler",
 ]

@@ -377,6 +377,20 @@ static uint32_t CDS_RegisterField(uint32_t classId, const std::string &name, int
     return ComponentDataStore::Instance().RegisterField(classId, name, CDS_ParseDataType(typeCode));
 }
 
+static py::object CDS_OptionalPreparedClass(ComponentDataStore::PreparedClassId preparedClassId)
+{
+    if (preparedClassId == ComponentDataStore::InvalidPreparedClassId)
+        return py::none();
+    return py::cast(preparedClassId);
+}
+
+static py::object CDS_OptionalPublishedClass(uint32_t classId)
+{
+    if (classId == UINT32_MAX)
+        return py::none();
+    return py::cast(classId);
+}
+
 static ComponentDataStore::SlotHandle CDS_ParseHandle(py::handle value)
 {
     if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
@@ -406,6 +420,133 @@ static bool CDS_IsAlive(uint32_t classId, py::handle handle)
 static void CDS_ReserveClass(uint32_t classId, size_t capacity)
 {
     ComponentDataStore::Instance().ReserveClass(classId, capacity);
+}
+
+static py::tuple CDS_SchemaAllocSlot(ComponentDataStore::SchemaTransactionId transactionId,
+                                     ComponentDataStore::PreparedClassId preparedClassId)
+{
+    const auto handle = ComponentDataStore::Instance().AllocatePreparedSlot(transactionId, preparedClassId);
+    return py::make_tuple(handle.index, handle.generation);
+}
+
+static py::object CDS_SchemaGet(ComponentDataStore::SchemaTransactionId transactionId,
+                                ComponentDataStore::PreparedClassId preparedClassId, uint32_t fieldId, py::handle slot,
+                                int typeCode)
+{
+    auto &store = ComponentDataStore::Instance();
+    const auto type = CDS_ParseDataType(typeCode);
+    const auto handle = CDS_ParseHandle(slot);
+    switch (type) {
+    case ComponentDataStore::DataType::Float64:
+        return py::cast(store.GetPreparedFloat(transactionId, preparedClassId, fieldId, handle));
+    case ComponentDataStore::DataType::Int64:
+        return py::cast(store.GetPreparedInt(transactionId, preparedClassId, fieldId, handle));
+    case ComponentDataStore::DataType::Bool:
+        return py::cast(store.GetPreparedBool(transactionId, preparedClassId, fieldId, handle));
+    case ComponentDataStore::DataType::Vec2: {
+        float value[2];
+        store.GetPreparedVec2(transactionId, preparedClassId, fieldId, handle, value);
+        return py::make_tuple(value[0], value[1]);
+    }
+    case ComponentDataStore::DataType::Vec3: {
+        float value[3];
+        store.GetPreparedVec3(transactionId, preparedClassId, fieldId, handle, value);
+        return py::make_tuple(value[0], value[1], value[2]);
+    }
+    case ComponentDataStore::DataType::Vec4: {
+        float value[4];
+        store.GetPreparedVec4(transactionId, preparedClassId, fieldId, handle, value);
+        return py::make_tuple(value[0], value[1], value[2], value[3]);
+    }
+    }
+    throw py::value_error("Invalid ComponentDataStore type code");
+}
+
+static void CDS_SchemaSet(ComponentDataStore::SchemaTransactionId transactionId,
+                          ComponentDataStore::PreparedClassId preparedClassId, uint32_t fieldId, py::handle slot,
+                          int typeCode, py::object value)
+{
+    auto &store = ComponentDataStore::Instance();
+    const auto type = CDS_ParseDataType(typeCode);
+    const auto handle = CDS_ParseHandle(slot);
+    switch (type) {
+    case ComponentDataStore::DataType::Float64:
+        store.SetPreparedFloat(transactionId, preparedClassId, fieldId, handle, value.cast<double>());
+        return;
+    case ComponentDataStore::DataType::Int64:
+        store.SetPreparedInt(transactionId, preparedClassId, fieldId, handle, value.cast<int64_t>());
+        return;
+    case ComponentDataStore::DataType::Bool:
+        store.SetPreparedBool(transactionId, preparedClassId, fieldId, handle, value.cast<bool>());
+        return;
+    case ComponentDataStore::DataType::Vec2: {
+        float data[2];
+        if (py::hasattr(value, "x")) {
+            data[0] = value.attr("x").cast<float>();
+            data[1] = value.attr("y").cast<float>();
+        } else {
+            const auto sequence = value.cast<py::sequence>();
+            if (sequence.size() != 2)
+                throw py::value_error("CDS Vec2 value must contain two elements");
+            data[0] = sequence[0].cast<float>();
+            data[1] = sequence[1].cast<float>();
+        }
+        store.SetPreparedVec2(transactionId, preparedClassId, fieldId, handle, data);
+        return;
+    }
+    case ComponentDataStore::DataType::Vec3: {
+        float data[3];
+        if (py::hasattr(value, "x")) {
+            data[0] = value.attr("x").cast<float>();
+            data[1] = value.attr("y").cast<float>();
+            data[2] = value.attr("z").cast<float>();
+        } else {
+            const auto sequence = value.cast<py::sequence>();
+            if (sequence.size() != 3)
+                throw py::value_error("CDS Vec3 value must contain three elements");
+            data[0] = sequence[0].cast<float>();
+            data[1] = sequence[1].cast<float>();
+            data[2] = sequence[2].cast<float>();
+        }
+        store.SetPreparedVec3(transactionId, preparedClassId, fieldId, handle, data);
+        return;
+    }
+    case ComponentDataStore::DataType::Vec4: {
+        float data[4];
+        if (py::hasattr(value, "x")) {
+            data[0] = value.attr("x").cast<float>();
+            data[1] = value.attr("y").cast<float>();
+            data[2] = value.attr("z").cast<float>();
+            data[3] = value.attr("w").cast<float>();
+        } else {
+            const auto sequence = value.cast<py::sequence>();
+            if (sequence.size() != 4)
+                throw py::value_error("CDS Vec4 value must contain four elements");
+            data[0] = sequence[0].cast<float>();
+            data[1] = sequence[1].cast<float>();
+            data[2] = sequence[2].cast<float>();
+            data[3] = sequence[3].cast<float>();
+        }
+        store.SetPreparedVec4(transactionId, preparedClassId, fieldId, handle, data);
+        return;
+    }
+    }
+    throw py::value_error("Invalid ComponentDataStore type code");
+}
+
+static py::tuple CDS_SchemaMigrateSlot(ComponentDataStore::SchemaTransactionId transactionId,
+                                       ComponentDataStore::PreparedClassId preparedClassId, uint32_t sourceClassId,
+                                       py::handle sourceSlot,
+                                       const std::vector<std::pair<uint32_t, uint32_t>> &fieldMap)
+{
+    std::vector<ComponentDataStore::FieldMigration> migrations;
+    migrations.reserve(fieldMap.size());
+    for (const auto &[sourceFieldId, destinationFieldId] : fieldMap)
+        migrations.push_back({sourceFieldId, destinationFieldId});
+    const auto handle = ComponentDataStore::Instance().MigrateSlotToPrepared(transactionId, preparedClassId,
+                                                                             sourceClassId, CDS_ParseHandle(sourceSlot),
+                                                                             migrations.data(), migrations.size());
+    return py::make_tuple(handle.index, handle.generation);
 }
 
 static std::vector<ComponentDataStore::SlotHandle>
@@ -667,6 +808,116 @@ void RegisterBatchBindings(py::module_ &m)
     // ── ComponentDataStore ──
     m.def("_cds_register_class", &CDS_RegisterClass, py::arg("name"));
     m.def("_cds_register_field", &CDS_RegisterField, py::arg("class_id"), py::arg("name"), py::arg("type_code"));
+
+    m.def("_cds_schema_begin", [] { return ComponentDataStore::Instance().BeginSchemaTransaction(); });
+    m.def(
+        "_cds_schema_prepare_class",
+        [](ComponentDataStore::SchemaTransactionId transactionId, const std::string &name) {
+            return ComponentDataStore::Instance().PrepareClass(transactionId, name);
+        },
+        py::arg("transaction_id"), py::arg("name"));
+    m.def(
+        "_cds_schema_prepare_field",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId,
+           const std::string &name, int typeCode) {
+            return ComponentDataStore::Instance().PrepareField(transactionId, preparedClassId, name,
+                                                               CDS_ParseDataType(typeCode));
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"), py::arg("name"), py::arg("type_code"));
+    m.def(
+        "_cds_schema_has_class",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId) {
+            return ComponentDataStore::Instance().HasPreparedClass(transactionId, preparedClassId);
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"));
+    m.def(
+        "_cds_schema_find_class",
+        [](ComponentDataStore::SchemaTransactionId transactionId, const std::string &name) {
+            return CDS_OptionalPreparedClass(ComponentDataStore::Instance().FindPreparedClass(transactionId, name));
+        },
+        py::arg("transaction_id"), py::arg("name"));
+    m.def(
+        "_cds_schema_get_field_id",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId,
+           const std::string &name) {
+            const uint32_t fieldId =
+                ComponentDataStore::Instance().GetPreparedFieldId(transactionId, preparedClassId, name);
+            return CDS_OptionalPublishedClass(fieldId);
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"), py::arg("name"));
+    m.def(
+        "_cds_schema_discard_class",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId) {
+            return ComponentDataStore::Instance().DiscardPreparedClass(transactionId, preparedClassId);
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"));
+    m.def(
+        "_cds_schema_reserve",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId,
+           size_t capacity) {
+            ComponentDataStore::Instance().ReservePreparedClass(transactionId, preparedClassId, capacity);
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"), py::arg("capacity"));
+    m.def("_cds_schema_alloc", &CDS_SchemaAllocSlot, py::arg("transaction_id"), py::arg("candidate_id"));
+    m.def(
+        "_cds_schema_free",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId,
+           py::handle slot) {
+            ComponentDataStore::Instance().ReleasePreparedSlot(transactionId, preparedClassId, CDS_ParseHandle(slot));
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"), py::arg("slot"));
+    m.def(
+        "_cds_schema_is_alive",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId,
+           py::handle slot) {
+            return ComponentDataStore::Instance().IsPreparedSlotAlive(transactionId, preparedClassId,
+                                                                      CDS_ParseHandle(slot));
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"), py::arg("slot"));
+    m.def("_cds_schema_get", &CDS_SchemaGet, py::arg("transaction_id"), py::arg("candidate_id"), py::arg("field_id"),
+          py::arg("slot"), py::arg("type_code"));
+    m.def("_cds_schema_set", &CDS_SchemaSet, py::arg("transaction_id"), py::arg("candidate_id"), py::arg("field_id"),
+          py::arg("slot"), py::arg("type_code"), py::arg("value"));
+    m.def("_cds_schema_migrate_slot", &CDS_SchemaMigrateSlot, py::arg("transaction_id"), py::arg("candidate_id"),
+          py::arg("source_class_id"), py::arg("source_slot"), py::arg("field_map"));
+    m.def(
+        "_cds_schema_seal",
+        [](ComponentDataStore::SchemaTransactionId transactionId) {
+            return ComponentDataStore::Instance().SealSchemaTransaction(transactionId);
+        },
+        py::arg("transaction_id"));
+    m.def(
+        "_cds_schema_final_class_id",
+        [](ComponentDataStore::SchemaTransactionId transactionId, ComponentDataStore::PreparedClassId preparedClassId) {
+            return CDS_OptionalPublishedClass(
+                ComponentDataStore::Instance().GetPreparedFinalClassId(transactionId, preparedClassId));
+        },
+        py::arg("transaction_id"), py::arg("candidate_id"));
+    m.def(
+        "_cds_schema_commit",
+        [](ComponentDataStore::SchemaTransactionId transactionId) {
+            return ComponentDataStore::Instance().CommitSchemaTransaction(transactionId);
+        },
+        py::arg("transaction_id"));
+    m.def(
+        "_cds_schema_finalize",
+        [](ComponentDataStore::SchemaTransactionId transactionId) {
+            return ComponentDataStore::Instance().FinalizeSchemaTransaction(transactionId);
+        },
+        py::arg("transaction_id"));
+    m.def(
+        "_cds_schema_rollback",
+        [](ComponentDataStore::SchemaTransactionId transactionId) {
+            return ComponentDataStore::Instance().RollbackSchemaTransaction(transactionId);
+        },
+        py::arg("transaction_id"));
+    m.def(
+        "_cds_schema_active",
+        [](ComponentDataStore::SchemaTransactionId transactionId) {
+            return ComponentDataStore::Instance().IsSchemaTransactionActive(transactionId);
+        },
+        py::arg("transaction_id"));
+
     m.def("_cds_alloc", &CDS_AllocSlot, py::arg("class_id"));
     m.def("_cds_free", &CDS_FreeSlot, py::arg("class_id"), py::arg("slot"));
     m.def("_cds_is_alive", &CDS_IsAlive, py::arg("class_id"), py::arg("slot"));

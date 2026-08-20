@@ -12,6 +12,7 @@ void main() {
     SurfaceData s = InitSurfaceData();
     s.normalWS = normalize(v_Normal);
 ${SURFACE_CALL}
+    s.normalWS = ResolveSurfaceNormal(s.normalWS, v_Normal);
     // Unity-style double-sided normal fix: when the fragment is a back-face,
     // negate the world-space normal so lighting evaluates correctly regardless
     // of which face the camera sees.  This applies to both flat normals and

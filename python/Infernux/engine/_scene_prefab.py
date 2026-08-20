@@ -26,6 +26,7 @@ from Infernux.debug import Debug
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.path_utils import resolved_path, safe_path as _safe_path
 from .scene_manager import (
+    DEFAULT_SCENE_NAME,
     PREFAB_MODE_SCENE_NAME,
     PREFAB_RESTORE_SCENE_NAME,
     _empty_scene_document,
@@ -55,7 +56,7 @@ class ScenePrefabMixin:
             _read_prefab_document,
             _strip_prefab_runtime_fields,
         )
-        from Infernux.engine.ui.selection_manager import SelectionManager
+        from Infernux.engine.interaction import SelectionService
 
         active_scene = SceneManager.instance().get_active_scene()
         if active_scene is None:
@@ -82,7 +83,7 @@ class ScenePrefabMixin:
 
         self._previous_scene_document = active_scene.serialize_document()
         self._previous_scene_path = self._current_scene_path
-        self._previous_scene_dirty = self._dirty
+        self._previous_scene_document_id = self._scene_document_id
         self.prefab_envelope = prefab_data
 
         # Clear the RenderStack singleton before the swap — matches the
@@ -138,28 +139,62 @@ class ScenePrefabMixin:
 
         roots = _get_scene_root_objects(new_scene)
         if roots:
-            SelectionManager.instance().select(roots[0].id)
+            SelectionService.instance().select_scene_object(
+                roots[0].id,
+                owner_id="hierarchy",
+                reason="enter_prefab_mode",
+                record_history=False,
+            )
 
         self.is_prefab_mode = True
         self.prefab_mode_path = resolved_path(prefab_path)
         self._current_scene_path = prefab_path
-        self._dirty = False
+        self._replace_scene_document(
+            kind="prefab",
+            resource_path=self.prefab_mode_path,
+            title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
+            dirty=False,
+            preserve_previous=True,
+        )
         if not preserve_undo_history:
-            self._reset_undo_history(scene_is_dirty=False)
+            self._reset_undo_history()
 
         if self._on_scene_changed:
             self._on_scene_changed()
         return True
 
-    def open_prefab_mode_with_undo(self, prefab_path: str) -> bool:
-        from Infernux.engine.undo import UndoManager, PrefabModeCommand
-        mgr = UndoManager.instance()
-        if mgr and mgr.enabled and not mgr.is_executing:
-            mgr.execute(PrefabModeCommand(prefab_path, enter_mode=True))
-            return True
-        return bool(self.open_prefab_mode(prefab_path))
-
     def exit_prefab_mode(self):
+        """Resolve the Prefab document, then schedule its deferred exit."""
+        return self._request_prefab_exit()
+
+    def _request_prefab_exit(
+        self,
+        on_complete: Optional[Callable[[], None]] = None,
+        *,
+        preserve_undo_history: bool = False,
+    ) -> bool:
+        """Route every Prefab replacement through the shared close transaction."""
+        if not self.is_prefab_mode:
+            return False
+
+        from Infernux.engine.ui.dirty_panel_confirmation import (
+            DirtyPanelConfirmationCoordinator,
+        )
+
+        return DirtyPanelConfirmationCoordinator.instance().request_document_replace(
+            self.document_id,
+            on_complete=lambda: self._schedule_prefab_exit(
+                on_complete,
+                preserve_undo_history=preserve_undo_history,
+            ),
+        )
+
+    def _schedule_prefab_exit(
+        self,
+        on_complete: Optional[Callable[[], None]] = None,
+        *,
+        preserve_undo_history: bool = False,
+    ) -> bool:
         """Schedule exit from Prefab Mode on a later frame.
 
         Uses ``DeferredTaskRunner`` instead of ``poll_deferred_load`` so the
@@ -170,7 +205,7 @@ class ScenePrefabMixin:
         if not self.is_prefab_mode:
             return False
         if self._deferred_exit_prefab:
-            return True
+            return False
 
         from Infernux.engine.deferred_task import DeferredTaskRunner
 
@@ -180,27 +215,41 @@ class ScenePrefabMixin:
             return False
 
         self._deferred_exit_prefab = True
-        runner.submit(
+        self._post_prefab_exit_callback = on_complete
+        submitted = runner.submit(
             "Exit Prefab Mode",
-            [("Exiting Prefab Mode...", 0.6, self._run_deferred_exit_prefab_task)],
+            [
+                (
+                    "Exiting Prefab Mode...",
+                    0.6,
+                    lambda: self._run_deferred_exit_prefab_task(
+                        preserve_undo_history=preserve_undo_history,
+                    ),
+                )
+            ],
         )
-        return True
+        if not submitted:
+            self._deferred_exit_prefab = False
+            self._post_prefab_exit_callback = None
+        return bool(submitted)
 
-    def exit_prefab_mode_with_undo(self) -> bool:
-        if not self.is_prefab_mode:
-            return False
-        from Infernux.engine.undo import UndoManager, PrefabModeCommand
-        mgr = UndoManager.instance()
-        prefab_path = self.prefab_mode_path or ""
-        if mgr and mgr.enabled and not mgr.is_executing:
-            mgr.execute(PrefabModeCommand(prefab_path, enter_mode=False))
-            return True
-        return bool(self._do_exit_prefab_mode())
-
-    def _run_deferred_exit_prefab_task(self):
+    def _run_deferred_exit_prefab_task(
+        self,
+        *,
+        preserve_undo_history: bool = False,
+    ):
         """DeferredTaskRunner step wrapper for prefab-mode exit."""
         self._deferred_exit_prefab = False
-        return self._do_exit_prefab_mode()
+        callback = self._post_prefab_exit_callback
+        self._post_prefab_exit_callback = None
+        succeeded = bool(
+            self._do_exit_prefab_mode(
+                preserve_undo_history=preserve_undo_history,
+            )
+        )
+        if succeeded and callable(callback):
+            callback()
+        return succeeded
 
     def _do_exit_prefab_mode(self, preserve_undo_history: bool = False):
         """Internal: perform the actual Prefab Mode exit (called by poll_deferred_load)."""
@@ -210,12 +259,8 @@ class ScenePrefabMixin:
         from Infernux.lib import SceneManager
         from Infernux.engine.component_restore import deserialize_scene_document_transactionally
 
-        # Always save the prefab on exit
-        if self.prefab_mode_path:
-            self._save_prefab()
-
-        # Always resolve the prefab GUID so instances can be refreshed,
-        # regardless of whether the save happened now or earlier via Ctrl+S.
+        # Resolve the prefab GUID so instances are refreshed from whichever
+        # on-disk state the user explicitly chose (Save or Discard).
         saved_prefab_guid = None
         if self.prefab_mode_path and self._asset_database:
             try:
@@ -278,16 +323,36 @@ class ScenePrefabMixin:
                 self._asset_database
             )
 
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        prefab_document_id = self._scene_document_id
+        previous_document_id = self._previous_scene_document_id
         self.is_prefab_mode = False
         self.prefab_mode_path = None
         self._current_scene_path = self._previous_scene_path
-        self._dirty = self._previous_scene_dirty
+        if previous_document_id and registry.get(previous_document_id) is not None:
+            self._scene_document_id = previous_document_id
+        else:
+            self._replace_scene_document(
+                kind="scene",
+                resource_path=self._current_scene_path or "",
+                title=(
+                    os.path.splitext(os.path.basename(self._current_scene_path))[0]
+                    if self._current_scene_path
+                    else DEFAULT_SCENE_NAME
+                ),
+                dirty=False,
+            )
         self.prefab_envelope = {}
         self._previous_scene_document = None
-        self._previous_scene_dirty = False
+        self._previous_scene_document_id = ""
         self._previous_scene_path = None
+        prefab_document = registry.get(prefab_document_id)
+        if prefab_document is not None and not prefab_document.view_ids:
+            registry.unregister(prefab_document_id)
         if not preserve_undo_history:
-            self._reset_undo_history(scene_is_dirty=self._dirty)
+            self._reset_undo_history()
 
         if self._on_scene_changed:
             self._on_scene_changed()

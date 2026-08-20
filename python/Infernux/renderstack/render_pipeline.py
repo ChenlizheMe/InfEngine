@@ -29,6 +29,20 @@ from typing import Any, Dict, TYPE_CHECKING
 
 from Infernux.lib import RenderPipelineCallback
 from Infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
+from Infernux.renderstack.geometry_buffers import (
+    GeometryBufferProviderContext,
+    GeometryBufferTopologyError,
+    GeometryStagePhase,
+    BASE_COLOR,
+    DEPTH,
+    MOTION,
+    NORMAL,
+    geometry_buffer,
+    provider_specs,
+    requirement_closure,
+    topological_provider_order,
+)
+from Infernux.renderstack.pass_result import BufferHandle, PassResult
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -118,7 +132,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         super().__init__()
         self._render_stack = None
         # Initialize serialized fields with defaults
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.fields import get_serialized_fields
         for field_name, meta in get_serialized_fields(self.__class__).items():
             # If descriptor already provides the default via __get__, skip.
             # But we need to ensure instance storage is primed.
@@ -129,6 +143,155 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
                 except Exception as e:
                     from Infernux.debug import Debug
                     Debug.log_warning(f"RenderPipeline: failed to set default for '{field_name}': {e}")
+
+    def require_buffer(self, semantic: str) -> BufferHandle:
+        """Declare one semantic required from the unified geometry stage."""
+        handle = BufferHandle(semantic)
+        graph = getattr(self, "_defining_graph", None)
+        if graph is None:
+            raise RuntimeError("require_buffer() is only valid while defining a pipeline")
+        specs = provider_specs(type(self))
+        requirements = requirement_closure(
+            set(graph.geometry_buffer_requirements) | {handle.name},
+            specs,
+        )
+        graph.set_geometry_buffer_requirements(requirements)
+        return handle
+
+    def sample_buffer(
+        self,
+        result: PassResult,
+        semantic: str | BufferHandle,
+    ):
+        """Sample a semantic from one explicit pass/stage result."""
+        if not isinstance(result, PassResult):
+            raise TypeError("sample_buffer() requires a PassResult source")
+        return result.sample(semantic)
+
+    def publish_result(self, source: str, buffers) -> PassResult:
+        """Publish the initial named-buffer result of a stage or pass."""
+        graph = getattr(self, "_defining_graph", None)
+        if graph is None:
+            raise RuntimeError("publish_result() is only valid while defining a pipeline")
+        return graph.publish_pass_result(source, buffers)
+
+    def write_buffer(
+        self,
+        result: PassResult,
+        semantic: str | BufferHandle,
+        texture,
+        *,
+        source: str,
+    ) -> PassResult:
+        """Publish a new result revision after a pass writes one buffer.
+
+        The parent remains valid, so later code may deliberately sample either
+        the pre-pass or post-pass resource set.
+        """
+        graph = getattr(self, "_defining_graph", None)
+        if graph is None:
+            raise RuntimeError("write_buffer() is only valid while defining a pipeline")
+        if not isinstance(result, PassResult):
+            raise TypeError("write_buffer() requires a PassResult parent")
+        name = semantic.name if isinstance(semantic, BufferHandle) else semantic
+        return graph.write_buffer(source, result, name, texture)
+
+    @geometry_buffer(BASE_COLOR, phase=GeometryStagePhase.OPAQUE, dependencies={DEPTH})
+    def _provide_builtin_base_color(self, context: GeometryBufferProviderContext):
+        from Infernux.renderstack._pipeline_common import add_base_color_buffer_pass
+
+        return add_base_color_buffer_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH),
+            queue_range=context.queue_range,
+            msaa_samples=context.msaa_samples,
+        )
+
+    @geometry_buffer(NORMAL, phase=GeometryStagePhase.OPAQUE, dependencies={DEPTH})
+    def _provide_builtin_normal(self, context: GeometryBufferProviderContext):
+        from Infernux.renderstack._pipeline_common import add_normal_buffer_pass
+
+        return add_normal_buffer_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH),
+            queue_range=context.queue_range,
+            msaa_samples=context.msaa_samples,
+        )
+
+    @geometry_buffer(MOTION, phase=GeometryStagePhase.OPAQUE, dependencies={DEPTH})
+    def _provide_builtin_motion(self, context: GeometryBufferProviderContext):
+        from Infernux.renderstack._pipeline_common import add_motion_vector_pass
+
+        return add_motion_vector_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH),
+            queue_range=context.queue_range,
+            clear=context.clear,
+            sort_mode=context.sort_mode,
+            msaa_samples=context.msaa_samples,
+        )
+
+    def geometry_stage(
+        self,
+        graph,
+        source: str,
+        *,
+        phase: GeometryStagePhase | str = GeometryStagePhase.OPAQUE,
+        buffers,
+        queue_range,
+        msaa_samples: int = 1,
+        sort_mode: str = "front_to_back",
+        clear: bool = False,
+    ) -> PassResult:
+        """Publish one geometry result and lazily materialize requested buffers."""
+
+        normalized_phase = GeometryStagePhase(phase)
+        specs = provider_specs(type(self))
+        requirements = requirement_closure(graph.geometry_buffer_requirements, specs)
+        graph.set_geometry_buffer_requirements(requirements)
+        result: PassResult | None = None
+
+        def materialize(_result: PassResult, semantic: str):
+            context = GeometryBufferProviderContext(
+                self,
+                graph,
+                source=source,
+                phase=normalized_phase,
+                seed=_result.snapshot,
+                queue_range=queue_range,
+                msaa_samples=msaa_samples,
+                sort_mode=sort_mode,
+                clear=clear,
+            )
+            order = topological_provider_order(
+                {semantic},
+                available=context._buffers,
+                phase=normalized_phase,
+                providers=specs,
+                source=source,
+            )
+            for spec in order:
+                value = getattr(self, spec.method_name)(context)
+                if value is None:
+                    raise GeometryBufferTopologyError(
+                        f"geometry buffer provider {spec.method_name!r} returned no "
+                        f"resource for {spec.semantic!r} in source {source!r}"
+                    )
+                context.publish(spec.semantic, value)
+                _result._publish_materialized(spec.semantic, value)
+            return _result.sample(semantic)
+
+        result = graph.publish_pass_result(
+            source,
+            buffers,
+            materialize=materialize,
+        )
+        for semantic in sorted(requirements):
+            result.sample(semantic)
+        return result
 
     # ==================================================================
     # Standalone render entry point (without RenderStack)
@@ -212,16 +375,18 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         Args:
             graph: The ``RenderGraph`` builder to populate.
         """
-        from Infernux.renderstack.pipeline_compiler import (
-            compile_pipeline_definition,
-        )
+        from Infernux.renderstack.pipeline_compiler import compile_pipeline_definition
         from Infernux.renderstack.pipeline_dsl import PipelineBuilder
 
-        builder = PipelineBuilder()
-        self.define(builder)
-        definition = builder.build()
-        self._declarative_definition = definition
-        compile_pipeline_definition(definition, graph)
+        self._defining_graph = graph
+        try:
+            builder = PipelineBuilder()
+            self.define(builder)
+            definition = builder.build()
+            self._declarative_definition = definition
+            compile_pipeline_definition(definition, graph, pipeline=self)
+        finally:
+            self._defining_graph = None
 
     def define(self, pipeline) -> None:
         """Declare a low-nesting pipeline topology.

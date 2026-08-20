@@ -48,7 +48,7 @@ class AudioClip:
         """Load an audio clip from a supported audio file.
 
         Args:
-            file_path: Path to a .wav file.
+            file_path: Path to a WAV, OGG/Vorbis, MP3, or FLAC file.
 
         Returns:
             An AudioClip instance, or None if loading failed.

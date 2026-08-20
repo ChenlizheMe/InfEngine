@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -38,24 +39,17 @@ class GpuRetirementQueue
     GpuRetirementQueue(const GpuRetirementQueue &) = delete;
     GpuRetirementQueue &operator=(const GpuRetirementQueue &) = delete;
     GpuRetirementQueue(GpuRetirementQueue &&other) noexcept
-        : m_entries(std::move(other.m_entries)), m_ready(std::move(other.m_ready)),
-          m_serialSource(std::move(other.m_serialSource)), m_collectCalls(std::exchange(other.m_collectCalls, 0)),
-          m_pushed(std::exchange(other.m_pushed, 0)), m_retired(std::exchange(other.m_retired, 0)),
-          m_highWatermark(std::exchange(other.m_highWatermark, 0))
     {
+        std::lock_guard lock(other.m_mutex);
+        MoveFromLocked(other);
     }
 
     GpuRetirementQueue &operator=(GpuRetirementQueue &&other) noexcept
     {
         if (this != &other) {
             FlushAll();
-            m_entries = std::move(other.m_entries);
-            m_ready = std::move(other.m_ready);
-            m_serialSource = std::move(other.m_serialSource);
-            m_collectCalls = std::exchange(other.m_collectCalls, 0);
-            m_pushed = std::exchange(other.m_pushed, 0);
-            m_retired = std::exchange(other.m_retired, 0);
-            m_highWatermark = std::exchange(other.m_highWatermark, 0);
+            std::scoped_lock lock(m_mutex, other.m_mutex);
+            MoveFromLocked(other);
         }
         return *this;
     }
@@ -64,25 +58,33 @@ class GpuRetirementQueue
     {
         if (!serialSource)
             throw std::invalid_argument("GPU retirement requires a submission serial source");
+        std::lock_guard lock(m_mutex);
         m_serialSource = std::move(serialSource);
     }
 
     [[nodiscard]] bool HasSerialSource() const noexcept
     {
+        std::lock_guard lock(m_mutex);
         return static_cast<bool>(m_serialSource);
     }
 
     void Retire(std::function<void()> deleter)
     {
-        if (!m_serialSource)
+        SerialSource source;
+        {
+            std::lock_guard lock(m_mutex);
+            source = m_serialSource;
+        }
+        if (!source)
             throw std::logic_error("GPU retirement queue is not bound to a submission serial source");
-        RetireAfter(m_serialSource(), std::move(deleter));
+        RetireAfter(source(), std::move(deleter));
     }
 
     void RetireAfter(rhi::SubmissionSerial retirementSerial, std::function<void()> deleter)
     {
         if (!deleter)
             return;
+        std::lock_guard lock(m_mutex);
         m_entries.push_back({retirementSerial, std::move(deleter)});
         ++m_pushed;
         if (m_entries.size() > m_highWatermark)
@@ -91,53 +93,59 @@ class GpuRetirementQueue
 
     size_t Collect(rhi::SubmissionSerial completedSerial)
     {
-        ++m_collectCalls;
-        m_ready.clear();
-        size_t writeIndex = 0;
-        for (size_t index = 0; index < m_entries.size(); ++index) {
-            if (m_entries[index].retirementSerial <= completedSerial) {
-                m_ready.push_back(std::move(m_entries[index].deleter));
-            } else {
-                if (writeIndex != index)
-                    m_entries[writeIndex] = std::move(m_entries[index]);
-                ++writeIndex;
+        std::vector<std::function<void()>> ready;
+        {
+            std::lock_guard lock(m_mutex);
+            ++m_collectCalls;
+            size_t writeIndex = 0;
+            for (size_t index = 0; index < m_entries.size(); ++index) {
+                if (m_entries[index].retirementSerial <= completedSerial) {
+                    ready.push_back(std::move(m_entries[index].deleter));
+                } else {
+                    if (writeIndex != index)
+                        m_entries[writeIndex] = std::move(m_entries[index]);
+                    ++writeIndex;
+                }
             }
+            m_entries.resize(writeIndex);
+            m_retired += ready.size();
         }
-        m_entries.resize(writeIndex);
 
-        const size_t retiredNow = m_ready.size();
-        for (auto &deleter : m_ready) {
+        const size_t retiredNow = ready.size();
+        for (auto &deleter : ready)
             deleter();
-            ++m_retired;
-        }
-        m_ready.clear();
         return retiredNow;
     }
 
     /// The owner must drain the relevant devices/queues before using this.
     void FlushAll()
     {
-        while (!m_entries.empty()) {
-            m_ready.clear();
-            m_ready.reserve(m_entries.size());
-            for (auto &entry : m_entries)
-                m_ready.push_back(std::move(entry.deleter));
-            m_entries.clear();
-            for (auto &deleter : m_ready) {
-                deleter();
-                ++m_retired;
+        for (;;) {
+            std::vector<std::function<void()>> ready;
+            {
+                std::lock_guard lock(m_mutex);
+                if (m_entries.empty())
+                    break;
+                ready.reserve(m_entries.size());
+                for (auto &entry : m_entries)
+                    ready.push_back(std::move(entry.deleter));
+                m_entries.clear();
+                m_retired += ready.size();
             }
+            for (auto &deleter : ready)
+                deleter();
         }
-        m_ready.clear();
     }
 
     [[nodiscard]] size_t PendingCount() const noexcept
     {
+        std::lock_guard lock(m_mutex);
         return m_entries.size();
     }
 
     [[nodiscard]] Stats GetStats() const noexcept
     {
+        std::lock_guard lock(m_mutex);
         return {m_collectCalls, m_pushed, m_retired, m_entries.size(), m_highWatermark};
     }
 
@@ -148,8 +156,18 @@ class GpuRetirementQueue
         std::function<void()> deleter;
     };
 
+    void MoveFromLocked(GpuRetirementQueue &other) noexcept
+    {
+        m_entries = std::move(other.m_entries);
+        m_serialSource = std::move(other.m_serialSource);
+        m_collectCalls = std::exchange(other.m_collectCalls, 0);
+        m_pushed = std::exchange(other.m_pushed, 0);
+        m_retired = std::exchange(other.m_retired, 0);
+        m_highWatermark = std::exchange(other.m_highWatermark, 0);
+    }
+
+    mutable std::mutex m_mutex;
     std::vector<Entry> m_entries;
-    std::vector<std::function<void()>> m_ready;
     SerialSource m_serialSource;
     uint64_t m_collectCalls = 0;
     uint64_t m_pushed = 0;

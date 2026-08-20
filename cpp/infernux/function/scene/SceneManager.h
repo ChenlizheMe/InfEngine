@@ -124,6 +124,12 @@ class SceneManager
     /// @brief Call every frame
     void Update(float deltaTime);
 
+    /// Consume the one-frame timing boundary published by a scene replacement.
+    /// The first frame of a newly committed scene receives zero delta so asset
+    /// preparation and graph construction time cannot leak into gameplay,
+    /// animation, particles, or the fixed-step accumulator.
+    [[nodiscard]] float ConsumeFrameDeltaTime(float deltaTime) noexcept;
+
     /// Flush deferred body creation and dirty static Collider poses before a
     /// scene query. Static-only scenes otherwise defer this work because they
     /// have no dynamics or contacts to simulate.
@@ -146,6 +152,14 @@ class SceneManager
     /// explicitly is only needed for same-frame queries after transform edits.
     void SyncTransforms();
 
+    /// Publish the Transform writes collected during the current frame to
+    /// physics. Called once after TransformECSStore::EndFrameCache().
+    void PublishAuthoredTransformsToPhysics();
+
+    /// Invalidate render-view caches after a batch of physics-owned Transform
+    /// poses is committed. This intentionally does not dirty colliders.
+    void PublishPhysicsTransformsToRenderer() noexcept;
+
     [[nodiscard]] const FrameProfile &GetLastFrameProfile() const
     {
         return m_lastFrameProfile;
@@ -166,25 +180,46 @@ class SceneManager
         return static_cast<size_t>(m_lastFrameProfile.interpolationCandidates);
     }
 
+    /// Monotonic Transform storage revision used by snapshot consumers.
+    /// Reading it is O(1) and does not resolve or copy any Transform data.
+    [[nodiscard]] uint64_t GetGlobalTransformSerial() const;
+    /// Render-facing revision. Unlike the ECS-global serial, this excludes
+    /// editor-camera and detached-object mutations that cannot affect a scene
+    /// publication.
+    [[nodiscard]] uint64_t GetRenderTransformRevision() const noexcept
+    {
+        return m_renderTransformRevision;
+    }
+
     // ========================================================================
     // DontDestroyOnLoad
     // ========================================================================
 
-    /// @brief Mark a root GameObject so it survives scene switches.
+    /// @brief Mark a GameObject hierarchy so it survives runtime scene loads.
     ///
-    /// The object stays inside its current scene during normal operation;
-    /// `UnloadScene` and `SetActiveScene` migrate persistent roots out of the
-    /// dying scene into `m_persistentObjects`, then attach them to the new
-    /// active scene. `Stop()` drops them — DontDestroyOnLoad survives scene
-    /// switches but does NOT survive a play-session boundary.
+    /// Child requests are promoted to their root. The root is transferred at
+    /// the next lifecycle safe point to a dedicated runtime Scene, preserving
+    /// object/component identity without replaying lifecycle callbacks.
+    /// Calls in Edit Mode are ignored; this is runtime state, never authored
+    /// project data.
     /// Unity: Object.DontDestroyOnLoad(gameObject)
     void DontDestroyOnLoad(GameObject *gameObject);
 
-    /// @brief Get all persistent (DontDestroyOnLoad) roots currently parked
-    /// outside any scene (between Unload and the next SetActiveScene).
-    [[nodiscard]] const std::vector<std::unique_ptr<GameObject>> &GetPersistentObjects() const
+    /// Flush queued promotions before an in-place active Scene document swap.
+    /// The persistent Scene remains outside the transaction and therefore is
+    /// not replaced by Scene::DeserializeDocument.
+    void PrepareActiveSceneReplacement();
+
+    [[nodiscard]] Scene *GetRuntimePersistentScene() const noexcept
     {
-        return m_persistentObjects;
+        return m_runtimePersistentScene.get();
+    }
+
+    [[nodiscard]] GameObject *FindRuntimeObjectByID(uint64_t id) const;
+
+    [[nodiscard]] bool IsRuntimeScene(const Scene *scene) const noexcept
+    {
+        return scene && (scene == m_activeScene || scene == m_runtimePersistentScene.get());
     }
 
     // ========================================================================
@@ -221,8 +256,8 @@ class SceneManager
     /// @brief Exit play mode.
     ///
     /// Flips `m_isPlaying`/`m_isPaused` to false, fires the play-state-changed
-    /// callback, and clears `m_persistentObjects` (DontDestroyOnLoad does NOT
-    /// outlive a play session). Scene snapshot restore is the responsibility
+    /// callback, and destroys the runtime persistent Scene
+    /// (DontDestroyOnLoad does NOT outlive a play session). Scene snapshot restore is the responsibility
     /// of the Python `PlayModeManager.exit_play_mode` flow — Stop() itself
     /// does not deserialize anything.
     void Stop();
@@ -305,6 +340,46 @@ class SceneManager
 
     using SceneCallback = std::function<void(Scene *)>;
 
+    using RuntimeLifecycleBeginCallback = std::function<void()>;
+    using RuntimeLifecyclePhaseCallback = std::function<void(float)>;
+    using RuntimeLifecycleEndCallback = std::function<void()>;
+
+    /// Native frame boundaries that sit between the Python lifecycle phases.
+    /// These are observations of the existing production flow; emitting a
+    /// barrier must never perform a second transform/physics/render operation.
+    enum class RuntimeFrameBarrier
+    {
+        TransformToPhysics,
+        PhysicsSimulation,
+        PhysicsToTransform,
+        TransformResolve,
+        FinalTransformResolve,
+        AnimationTimeline,
+        RenderExtraction,
+        RenderGraph,
+        SnapshotPublication,
+        PendingDestroy,
+    };
+    using RuntimeFrameBarrierCallback = std::function<void(RuntimeFrameBarrier)>;
+
+    /// Install the shared Python lifecycle bridge used by Editor and Player.
+    /// The bridge is called at the real simulation phase boundaries. A single
+    /// begin/end pair surrounds one native frame; fixed callbacks may occur
+    /// zero or more times between them.
+    void SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback beginFrame,
+                                      RuntimeLifecyclePhaseCallback fixedUpdate, RuntimeLifecyclePhaseCallback update,
+                                      RuntimeLifecyclePhaseCallback lateUpdate,
+                                      RuntimeLifecyclePhaseCallback editorUpdate, RuntimeLifecycleEndCallback endFrame);
+    void SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback);
+    void SetRuntimeLifecycleWorkAvailable(bool available) noexcept;
+    void EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const;
+    void ClearRuntimeLifecycleCallbacks();
+
+    [[nodiscard]] bool HasRuntimeLifecycleCallbacks() const noexcept
+    {
+        return m_runtimeLifecycleSchedulerEnabled;
+    }
+
     void OnSceneLoaded(SceneCallback callback)
     {
         m_onSceneLoaded = callback;
@@ -323,6 +398,11 @@ class SceneManager
 
     /// Pre-allocate MeshRenderer registry storage for bulk creation.
     void ReserveRendererCapacity(size_t count);
+
+    /// Coalesce renderer-registry invalidation while a public bulk operation
+    /// creates or updates many otherwise ordinary GameObjects.
+    void BeginRendererRegistryTransaction();
+    void EndRendererRegistryTransaction();
 
     /// Register a MeshRenderer so rendering can iterate it directly.
     void RegisterMeshRenderer(MeshRenderer *renderer);
@@ -391,9 +471,16 @@ class SceneManager
     /// Apply presentation interpolation for the latest dense active-body set.
     void ApplyInterpolatedRigidbodies(float alpha);
 
-    /// Detach persistent (DontDestroyOnLoad) root objects from a scene
-    /// into m_persistentObjects, keeping them alive across scene switches.
-    void ExtractPersistentObjects(Scene *scene);
+    /// Execute the one authoritative fixed-script/physics bundle. Both normal
+    /// play and paused single-step use this path so transform synchronization,
+    /// Jolt stepping and lifecycle callbacks cannot run twice in one step.
+    void RunFixedSimulationStep(bool useRuntimeScheduler);
+
+    Scene *EnsureRuntimePersistentScene();
+    void FlushPersistentPromotions();
+    void ClearRuntimePersistentScene();
+    void RestorePersistentComponentRegistries();
+    void UpdateRuntimeScenePlayingState(bool playing);
 
     std::vector<std::unique_ptr<Scene>> m_scenes;
     Scene *m_activeScene = nullptr;
@@ -403,15 +490,19 @@ class SceneManager
     Camera *m_editorCameraComponent = nullptr;
     EditorCameraController m_editorCamera;
 
-    // Persistent objects (DontDestroyOnLoad)
-    std::vector<std::unique_ptr<GameObject>> m_persistentObjects;
+    // Unity-style runtime-only DontDestroyOnLoad Scene. It is deliberately
+    // excluded from m_scenes and from authored Scene serialization.
+    std::unique_ptr<Scene> m_runtimePersistentScene;
+    std::vector<uint64_t> m_pendingPersistentRootIds;
+    std::unordered_set<uint64_t> m_pendingPersistentRootIdSet;
 
     // Fixed-update timing
     float m_fixedTimeStep = 1.0f / 50.0f; // 50 Hz default (Unity default)
     float m_fixedTimeAccumulator = 0.0f;
-    float m_maxFixedDeltaTime = 0.1f; // cap to avoid spiral-of-death
+    float m_maxFixedDeltaTime = 1.0f / 3.0f; // Unity Maximum Allowed Timestep default
     float m_timeScale = 1.0f;
     float m_lastScaledDeltaTime = 0.0f;
+    bool m_resetDeltaTimeOnNextFrame = true;
     double m_fixedTime = 0.0;
     double m_fixedUnscaledTime = 0.0;
 
@@ -425,11 +516,25 @@ class SceneManager
     /// Called from Play()/Stop() so the renderer can bypass idle sleep.
     std::function<void(bool)> m_onPlayStateChanged;
 
+    RuntimeLifecycleBeginCallback m_runtimeLifecycleBegin;
+    RuntimeLifecyclePhaseCallback m_runtimeLifecycleFixedUpdate;
+    RuntimeLifecyclePhaseCallback m_runtimeLifecycleUpdate;
+    RuntimeLifecyclePhaseCallback m_runtimeLifecycleLateUpdate;
+    RuntimeLifecyclePhaseCallback m_runtimeLifecycleEditorUpdate;
+    RuntimeLifecycleEndCallback m_runtimeLifecycleEnd;
+    RuntimeFrameBarrierCallback m_runtimeFrameBarrier;
+    bool m_runtimeLifecycleSchedulerEnabled = false;
+    bool m_runtimeLifecycleWorkAvailable = false;
+    bool m_runtimeLifecycleFrameOpen = false;
+    uint64_t m_renderTransformRevision = 1;
+
     // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.
     std::vector<MeshRenderer *> m_activeMeshRenderers;
     std::unordered_set<MeshRenderer *> m_activeMeshRendererSet; // O(1) duplicate check
     uint64_t m_meshRendererVersion = 0;
+    uint32_t m_rendererRegistryTransactionDepth = 0;
+    bool m_rendererRegistryTransactionDirty = false;
 
     // Light component registry — populated by Light OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + GetComponent<Light>() in CollectLights/ComputeShadowVP.

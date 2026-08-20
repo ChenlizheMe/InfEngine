@@ -7,7 +7,6 @@
 #include <imgui.h>
 
 #include <functional>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -23,7 +22,7 @@ struct WindowTypeInfo
     bool singleton = true;
 };
 
-/// C++ native menu bar — Project / dynamic menus / Window + keyboard shortcuts.
+/// C++ native menu bar — Project / dynamic menus / Window.
 /// Not dockable (inherits InxGUIRenderable directly).
 ///
 /// Menus between Project and Window are built dynamically from panel
@@ -44,39 +43,17 @@ class MenuBarPanel : public InxGUIRenderable
 
     // ── Callbacks set from Python ────────────────────────────────────
 
-    // Scene file operations
-    std::function<void()> onSave;
-    std::function<void()> onSaveAs;
-    std::function<void()> onSaveFocused;
-    std::function<void()> onSaveFocusedAs;
-    std::function<void()> onNewScene;
+    // Unified editor command entry points.
+    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
+    std::function<bool(const std::string &, const std::string &)> isCommandChecked;
     std::function<void()> onRequestClose;
-
-    // Undo
-    std::function<void()> onUndo;
-    std::function<void()> onRedo;
-    std::function<bool()> canUndo;
-    std::function<bool()> canRedo;
 
     // Window management
     std::function<std::vector<WindowTypeInfo>()> getRegisteredTypes;
-    std::function<std::map<std::string, bool>()> getOpenWindows;
-    std::function<void(const std::string &)> openWindow;
-    std::function<void(const std::string &)> closeWindow;
-    std::function<void()> resetLayout;
 
     // Close request check (C++ engine)
     std::function<bool()> isCloseRequested;
-
-    // Toggle floating sub-panels — rendered from Python
-    std::function<void()> toggleBuildSettings;
-    std::function<void()> togglePreferences;
-    std::function<void()> togglePhysicsLayerMatrix;
-    std::function<void()> toggleEnvironmentSettings;
-    std::function<bool()> isBuildSettingsOpen;
-    std::function<bool()> isPreferencesOpen;
-    std::function<bool()> isPhysicsLayerMatrixOpen;
-    std::function<bool()> isEnvironmentSettingsOpen;
 
     // i18n
     std::function<std::string(const std::string &)> translate;
@@ -85,8 +62,8 @@ class MenuBarPanel : public InxGUIRenderable
     void OnRender(InxGUIContext *ctx) override;
 
   private:
-    void HandleShortcuts(InxGUIContext *ctx);
     void RenderProjectMenu(InxGUIContext *ctx);
+    void RenderEditMenu(InxGUIContext *ctx);
     void RenderSceneMenu(InxGUIContext *ctx);
     void RenderDynamicMenus(InxGUIContext *ctx);
     void RefreshWindowTypeCache();
@@ -99,18 +76,11 @@ class MenuBarPanel : public InxGUIRenderable
                          const std::vector<WindowTypeInfo> &types);
 
     std::string T(const std::string &key) const;
+    bool ExecuteCommand(const std::string &commandId, const std::string &source,
+                        const std::string &argument = "") const;
+    bool CanExecuteCommand(const std::string &commandId, const std::string &argument = "") const;
+    bool IsCommandChecked(const std::string &commandId, const std::string &argument = "") const;
 
-    // ImGuiKey constants
-    static constexpr int KEY_S = 564;
-    static constexpr int KEY_N = 559;
-    static constexpr int KEY_Z = 571;
-    static constexpr int KEY_Y = 570;
-    static constexpr int KEY_LEFT_CTRL = 527;
-    static constexpr int KEY_RIGHT_CTRL = 531;
-    static constexpr int KEY_LEFT_SHIFT = ImGuiKey_LeftShift;
-    static constexpr int KEY_RIGHT_SHIFT = ImGuiKey_RightShift;
-
-    int m_lastShortcutFrame = -1;
     std::vector<WindowTypeInfo> m_cachedWindowTypes;
     std::vector<std::string> m_cachedTopMenus;
     bool m_windowTypesDirty = true;

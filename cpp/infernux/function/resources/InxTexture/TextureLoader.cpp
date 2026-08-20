@@ -5,8 +5,6 @@
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
-#include <function/resources/InxTexture/TextureDecoder.h>
-
 #include <platform/filesystem/InxPath.h>
 #include <stb_image.h>
 
@@ -17,6 +15,48 @@
 
 namespace infernux
 {
+namespace
+{
+struct TextureArtifactInputs
+{
+    std::string sourceHash;
+    std::string artifactPath;
+};
+
+TextureArtifactInputs ResolveArtifactInputs(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
+{
+    if (!adb)
+        throw std::invalid_argument("TextureLoader requires an AssetDatabase");
+    if (filePath.empty() || guid.empty())
+        throw std::invalid_argument("TextureLoader requires a path and GUID");
+    const auto metadata = adb->GetMetaByGuid(guid);
+    if (!metadata)
+        throw std::invalid_argument("TextureLoader could not resolve metadata for GUID: " + guid);
+    if (!metadata->HasKey("content_hash"))
+        throw std::invalid_argument("TextureLoader metadata has no source content hash");
+    const std::string artifactPath = adb->GetRuntimeArtifactPath(guid, ResourceType::Texture);
+    if (artifactPath.empty() || !std::filesystem::is_regular_file(ToFsPath(artifactPath)))
+        throw std::runtime_error("TextureLoader requires a current imported .inxtex artifact; reimport '" + filePath +
+                                 "'");
+    return {metadata->GetDataAs<std::string>("content_hash"), artifactPath};
+}
+
+std::string ReadArtifactBytes(const std::string &artifactPath)
+{
+    std::ifstream artifactFile(ToFsPath(artifactPath), std::ios::binary | std::ios::ate);
+    if (!artifactFile.is_open())
+        throw std::runtime_error("failed to open texture artifact");
+    const auto artifactSize = artifactFile.tellg();
+    if (artifactSize <= 0)
+        throw std::runtime_error("texture artifact is empty");
+    std::string bytes(static_cast<size_t>(artifactSize), '\0');
+    artifactFile.seekg(0);
+    artifactFile.read(bytes.data(), artifactSize);
+    if (!artifactFile)
+        throw std::runtime_error("failed to read texture artifact");
+    return bytes;
+}
+} // namespace
 
 // =============================================================================
 // CreateMeta — texture-specific .meta creation (dimensions, format)
@@ -82,40 +122,8 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
 
 RuntimeAssetPayload TextureLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
-    if (!adb)
-        throw std::invalid_argument("TextureLoader requires an AssetDatabase");
-    if (filePath.empty() || guid.empty())
-        throw std::invalid_argument("TextureLoader requires a path and GUID");
+    const TextureArtifactInputs artifact = ResolveArtifactInputs(filePath, guid, adb);
     const auto metadata = adb->GetMetaByGuid(guid);
-    if (!metadata)
-        throw std::invalid_argument("TextureLoader could not resolve metadata for GUID: " + guid);
-    if (!metadata->HasKey("content_hash"))
-        throw std::invalid_argument("TextureLoader metadata has no source content hash");
-
-    std::shared_ptr<const TextureCpuData> cpuData;
-    const std::string sourceHash = metadata->GetDataAs<std::string>("content_hash");
-    const std::string artifactPath = adb->GetRuntimeArtifactPath(guid, ResourceType::Texture);
-    if (!artifactPath.empty() && std::filesystem::is_regular_file(ToFsPath(artifactPath))) {
-        try {
-            std::ifstream artifactFile(ToFsPath(artifactPath), std::ios::binary | std::ios::ate);
-            if (!artifactFile.is_open())
-                throw std::runtime_error("failed to open texture artifact");
-            const auto artifactSize = artifactFile.tellg();
-            if (artifactSize <= 0)
-                throw std::runtime_error("texture artifact is empty");
-            std::string bytes(static_cast<size_t>(artifactSize), '\0');
-            artifactFile.seekg(0);
-            artifactFile.read(bytes.data(), artifactSize);
-            if (!artifactFile)
-                throw std::runtime_error("failed to read texture artifact");
-            cpuData = TextureArtifact::Deserialize(bytes, sourceHash);
-        } catch (const std::exception &exception) {
-            INXLOG_WARN("TextureLoader: rejected derived artifact for '", filePath, "': ", exception.what(),
-                        "; falling back to source decode");
-        }
-    }
-    if (!cpuData)
-        cpuData = TextureDecoder::Decode(filePath, *metadata);
 
     auto texture = std::make_shared<InxTexture>();
     texture->SetGuid(guid);
@@ -123,9 +131,16 @@ RuntimeAssetPayload TextureLoader::Load(const std::string &filePath, const std::
     texture->SetName(FromFsPath(ToFsPath(filePath).stem()));
 
     texture->ApplyImportSettings(*metadata);
-    texture->SetCpuData(std::move(cpuData));
+    texture->SetArtifactDescription(TextureArtifact::ReadDescription(artifact.artifactPath, artifact.sourceHash));
 
     return texture;
+}
+
+RuntimeAssetPayload TextureLoader::LoadStaging(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
+{
+    const TextureArtifactInputs artifact = ResolveArtifactInputs(filePath, guid, adb);
+    return std::const_pointer_cast<TextureCpuData>(
+        TextureArtifact::Deserialize(ReadArtifactBytes(artifact.artifactPath), artifact.sourceHash));
 }
 
 // =============================================================================
@@ -152,7 +167,8 @@ bool TextureLoader::Reload(const RuntimeAssetPayload &existing, const std::strin
     tex->SetFilterMode(fresh->GetFilterMode());
     tex->SetWrapMode(fresh->GetWrapMode());
     tex->SetAnisoLevel(fresh->GetAnisoLevel());
-    tex->SetCpuData(fresh->GetCpuData());
+    const TextureArtifactInputs artifact = ResolveArtifactInputs(filePath, guid, adb);
+    tex->SetArtifactDescription(TextureArtifact::ReadDescription(artifact.artifactPath, artifact.sourceHash));
 
     INXLOG_INFO("TextureLoader: reloaded '", tex->GetName(), "' in-place (GUID: ", guid, ")");
     return true;

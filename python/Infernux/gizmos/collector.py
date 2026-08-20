@@ -26,7 +26,11 @@ from __future__ import annotations
 from typing import Dict, List, TYPE_CHECKING
 
 from Infernux.gizmos.gizmos import Gizmos, ICON_KIND_DEFAULT
-from Infernux.components.serialized_field import SerializedFieldDescriptor
+from Infernux.components.fields import SerializedFieldDescriptor
+from Infernux.engine.editor_visibility import (
+    component_owner_is_active_in_hierarchy,
+    game_object_is_active_in_hierarchy,
+)
 
 if TYPE_CHECKING:
     from Infernux.engine.engine import Engine
@@ -96,6 +100,13 @@ class GizmosCollector:
         self._cache_built: set = set()   # type_names whose cache entry is filled
         self._last_structure_version: int = -1  # track Scene.structure_version
         self._last_logged_icon_count: int = -1
+        self._builtin_registry = None
+        # The selected-object subtree is stable until the scene structure or
+        # selection changes.  Keep only its IDs: component state and Gizmo
+        # geometry are still evaluated every frame.
+        self._selection_cache_key = None
+        self._selected_ancestor_ids = frozenset()
+        self._cache_generation = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -105,6 +116,9 @@ class GizmosCollector:
         """Invalidate the GO-to-type cache (call on scene change / play mode exit)."""
         self._icon_cache.clear()
         self._cache_built.clear()
+        self._cache_generation += 1
+        self._selection_cache_key = None
+        self._selected_ancestor_ids = frozenset()
 
     def collect_and_upload(self, engine: 'Engine') -> None:
         """Walk the scene, invoke callbacks, upload geometry to C++."""
@@ -144,20 +158,23 @@ class GizmosCollector:
 
         selected_id: int = engine.get_selected_object_id()
 
-        # Build set of descendant IDs for the selected object (including itself)
-        selected_ancestors: set = set()
-        if selected_id:
-            selected_ancestors = self._build_ancestor_set(scene, selected_id)
+        # Build the selected subtree only when its inputs changed.  The set is
+        # used for membership tests below, while all component enabled checks,
+        # callbacks, transforms, and uploads remain per-frame.
+        selected_ancestors = self._get_selected_ancestor_ids(scene, selected_id)
 
-        # Snapshot the builtin registry once per frame
-        builtin_registry = dict(BuiltinComponent._builtin_registry)
-        try:
-            from Infernux.components.builtin import Camera as _CameraBuiltin, Light as _LightBuiltin
-            builtin_registry.setdefault("Camera", _CameraBuiltin)
-            builtin_registry.setdefault("Light", _LightBuiltin)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        # Builtin wrapper registration is process-stable after the import above;
+        # copying this dictionary for every scene frame was needless work.
+        if self._builtin_registry is None:
+            builtin_registry = dict(BuiltinComponent._builtin_registry)
+            try:
+                from Infernux.components.builtin import Camera as _CameraBuiltin, Light as _LightBuiltin
+                builtin_registry.setdefault("Camera", _CameraBuiltin)
+                builtin_registry.setdefault("Light", _LightBuiltin)
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            self._builtin_registry = builtin_registry
+        builtin_registry = self._builtin_registry
 
         # Begin frame: clear Gizmos accumulation buffers
         Gizmos._begin_frame()
@@ -178,6 +195,8 @@ class GizmosCollector:
                 for comp in components:
                     if isinstance(comp, BuiltinComponent):
                         continue
+                    if not component_owner_is_active_in_hierarchy(comp):
+                        continue
                     if not getattr(comp, 'enabled', True):
                         continue
 
@@ -189,10 +208,14 @@ class GizmosCollector:
 
                     always_show = getattr(comp, '_always_show', True)
                     should_draw = always_show or is_selected
-                    if should_draw:
+                    has_gizmos = (
+                        type(comp).on_draw_gizmos is not InxComponent.on_draw_gizmos
+                        or type(comp).on_draw_gizmos_selected is not InxComponent.on_draw_gizmos_selected
+                    )
+                    if should_draw and has_gizmos:
                         comp._call_on_draw_gizmos()
 
-                    if is_selected:
+                    if is_selected and has_gizmos:
                         comp._call_on_draw_gizmos_selected()
 
         # ====================================================================
@@ -240,6 +263,12 @@ class GizmosCollector:
                 matching = scene.get_all_objects()
 
             for go in matching:
+                # Gizmos follow GameObject.activeInHierarchy, not activeSelf.
+                # Keep this gate before component lookup, icon registration,
+                # wrapper creation, and callbacks so every built-in component
+                # shares the same hierarchy visibility contract.
+                if not game_object_is_active_in_hierarchy(go):
+                    continue
                 try:
                     go_id = go.id
                     is_selected = go_id in selected_ancestors
@@ -324,6 +353,19 @@ class GizmosCollector:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _get_selected_ancestor_ids(self, scene, selected_id: int):
+        """Return selected + descendant IDs, reusing the stable scene relation."""
+        selected_id = int(selected_id or 0)
+        key = (self._cache_generation, selected_id)
+        if key != self._selection_cache_key:
+            self._selected_ancestor_ids = (
+                frozenset(self._build_ancestor_set(scene, selected_id))
+                if selected_id
+                else frozenset()
+            )
+            self._selection_cache_key = key
+        return self._selected_ancestor_ids
 
     @staticmethod
     def _register_python_component_icon(comp, go_id: int, icon_color) -> None:

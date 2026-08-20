@@ -542,7 +542,10 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
                                               usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
-    if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
+    const bool usesBindlessTextures = m_surface.UsesBindlessTextures();
+    const auto bindlessTable = m_surface.BindlessTableBinding();
+    if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid() ||
+        (usesBindlessTextures && !bindlessTable.IsValid()))
         return false;
     auto constants = view;
     constants.materialTint = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -563,6 +566,10 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
     encoder.BindGroup(pipeline, 0, geometryGroup);
     encoder.BindGroup(pipeline, 1, usesPerViewBindings ? perView.group : m_emptyGroup);
     encoder.BindGroup(pipeline, 2, surfaceGroup);
+    if (usesBindlessTextures) {
+        encoder.BindGroup(pipeline, 3, bindlessTable.group);
+        m_surface.MarkBindlessTexturesUsed();
+    }
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
@@ -613,7 +620,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
                                                const MaterialPassPipelineDescriptor &pass,
                                                rhi::BindingLayoutHandle perViewLayout)
 {
-    if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
+    if ((!pass.UsesDynamicRendering() && !renderTargetLayout.IsValid()) || !pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
          pass.target != ShaderCompileTarget::Picking && pass.target != ShaderCompileTarget::Motion))
         return {};
@@ -641,10 +648,11 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     desc.fragmentShader = picking  ? m_pickingFragmentShader
                           : motion ? m_motionFragmentShader
                                    : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
-    desc.renderTargetLayout = renderTargetLayout;
+    pass.ApplyRenderingContract(desc, renderTargetLayout);
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
-    desc.depth.writeEnabled = state.depthWriteEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.writeEnabled = state.depthWriteEnabled && !pass.depthReadOnly &&
+                              pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];
@@ -655,7 +663,9 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     desc.bindingLayouts[0] = m_geometryLayout;
     desc.bindingLayouts[1] = usesPerViewBindings ? perViewLayout : m_emptyLayout;
     desc.bindingLayouts[2] = m_surface.Layout();
-    desc.bindingLayoutCount = 3;
+    if (!picking && !motion && m_surface.UsesBindlessTextures())
+        desc.bindingLayouts[3] = m_surface.BindlessTableBinding().layout;
+    desc.bindingLayoutCount = !picking && !motion && m_surface.UsesBindlessTextures() ? 4 : 3;
     desc.pushConstantStages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(GpuParticleViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);

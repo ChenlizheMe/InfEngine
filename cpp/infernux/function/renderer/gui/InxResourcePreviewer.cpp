@@ -587,7 +587,7 @@ std::vector<std::string> BinaryPreviewer::GetSupportedExtensions() const
 {
     // Common binary files that we know exist but can't preview yet
     return {".exe", ".dll", ".so",  ".a",   ".lib",  ".obj", ".o",    ".pdb", ".zip",
-            ".tar", ".gz",  ".7z",  ".rar", ".mp3",  ".wav", ".ogg",  ".mp4", ".avi",
+            ".tar", ".gz",  ".7z",  ".rar", ".mp3",  ".wav", ".ogg",  ".flac", ".mp4", ".avi",
             ".mov", ".mkv", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"};
 }
 

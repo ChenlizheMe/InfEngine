@@ -31,7 +31,11 @@ rhi::BufferHandle CreateStorageBuffer(rhi::Device &device, uint64_t bytes, bool 
         desc.usage = desc.usage | rhi::BufferUsageFlags::TransferSource;
     if (indirect)
         desc.usage = desc.usage | rhi::BufferUsageFlags::Indirect;
-    desc.queueAccess = rhi::QueueAccessFlags::Compute;
+    // Particle compute is allowed to execute on the graphics queue as a
+    // fallback. Diagnostics can additionally copy selected buffers.
+    desc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+    if (diagnostics)
+        desc.queueAccess = desc.queueAccess | rhi::QueueAccessFlags::Transfer;
     return device.CreateBuffer(desc);
 }
 

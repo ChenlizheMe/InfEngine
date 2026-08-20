@@ -5,14 +5,12 @@ Validates Python scripts for syntax errors when files are modified.
 Reports errors to the Console Panel for developer visibility.
 
 Features:
-- Syntax checking using py_compile and ast
+- Syntax and bytecode checking from one captured source snapshot
 - Import validation
 - Error reporting with line numbers
 - Integration with watchdog file monitoring
 """
 
-import ast
-import py_compile
 import os
 from typing import Optional, List
 from dataclasses import dataclass
@@ -78,69 +76,39 @@ class ScriptCompiler:
         if not file_path.endswith('.py'):
             return errors
         
-        # Read file content
-        with open(file_path, 'r', encoding='utf-8') as f:
-            source_code = f.read()
-        
-        # Check 1: AST parsing (syntax check)
-        syntax_errors = self._check_syntax(file_path, source_code)
-        errors.extend(syntax_errors)
-        
-        # If there are syntax errors, skip further checks
-        if syntax_errors:
-            return errors
-        
-        # Check 2: py_compile (bytecode compilation check)
-        compile_errors = self._check_compile(file_path)
-        errors.extend(compile_errors)
-        
+        with open(file_path, "rb") as source_file:
+            source = source_file.read()
+        return self.check_source(file_path, source)
+
+    def check_source(self, file_path: str, source: bytes | str) -> List[ScriptError]:
+        """Validate exactly the captured source bytes supplied by the caller.
+
+        This deliberately does not touch the filesystem.  It prevents a
+        watcher from pairing one revision's hash with a later disk snapshot.
+        """
+        if not file_path.endswith('.py'):
+            return []
+        payload = source.encode("utf-8") if isinstance(source, str) else bytes(source)
+        errors: List[ScriptError] = []
+        try:
+            compile(payload, file_path, "exec")
+        except SyntaxError as error:
+            errors.append(ScriptError(
+                file_path=file_path,
+                line_number=error.lineno or 0,
+                column=error.offset or 0,
+                message=str(error.msg),
+                error_type="syntax",
+            ))
+        except Exception as error:
+            errors.append(ScriptError(
+                file_path=file_path,
+                line_number=0,
+                column=0,
+                message=f"Unexpected error during source compile: {error}",
+                error_type="compile",
+            ))
         self._last_errors = errors
-        return errors
-    
-    def _check_syntax(self, file_path: str, source_code: str) -> List[ScriptError]:
-        """Check syntax using ast.parse()."""
-        errors = []
-        try:
-            ast.parse(source_code, filename=file_path)
-        except SyntaxError as e:
-            errors.append(ScriptError(
-                file_path=file_path,
-                line_number=e.lineno or 0,
-                column=e.offset or 0,
-                message=str(e.msg) if hasattr(e, 'msg') else str(e),
-                error_type='syntax',
-            ))
-        except Exception as e:
-            errors.append(ScriptError(
-                file_path=file_path,
-                line_number=0,
-                column=0,
-                message=f"Unexpected error during syntax check: {e}",
-                error_type='syntax',
-            ))
-        return errors
-    
-    def _check_compile(self, file_path: str) -> List[ScriptError]:
-        """Check using py_compile for bytecode issues."""
-        errors = []
-        try:
-            py_compile.compile(file_path, doraise=True)
-        except py_compile.PyCompileError as e:
-            errors.append(ScriptError(
-                file_path=file_path,
-                line_number=getattr(e, 'lineno', 0) or 0,
-                column=0,
-                message=str(e),
-                error_type='compile',
-            ))
-        except Exception as e:
-            errors.append(ScriptError(
-                file_path=file_path,
-                line_number=0,
-                column=0,
-                message=f"Unexpected compile error: {e}",
-                error_type='compile',
-            ))
         return errors
     
     def check_and_report(self, file_path: str) -> bool:

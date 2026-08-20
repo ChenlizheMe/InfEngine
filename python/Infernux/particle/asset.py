@@ -18,6 +18,10 @@ from Infernux.graph.document import (
     GraphNodeRecord,
 )
 from Infernux.graph.registry import PortKind
+from Infernux.graph.parameters import (
+    GraphParameterCollection,
+    GraphParameterDefinition,
+)
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 from . import nodes as _particle_nodes  # noqa: F401
@@ -421,8 +425,8 @@ _PARTICLE_PARAMETER_TYPES = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class ParticleParameter:
+@dataclass(frozen=True, slots=True)
+class ParticleParameter(GraphParameterDefinition):
     """A graph-level value with a stable runtime ABI identity.
 
     Parameters are not particle attributes: one value belongs to a ParticleGraph
@@ -431,22 +435,8 @@ class ParticleParameter:
     changed freely without breaking overrides.
     """
 
-    stable_id: str
-    name: str
-    value_type: TypeRef
-    default: Any
-    exposed: bool = True
-    category: str = ""
-    tooltip: str = ""
-    writable: bool = False
-
     def __post_init__(self) -> None:
-        if type(self.stable_id) is not str or not self.stable_id:
-            raise ParticleGraphSchemaError("particle parameter stable_id cannot be empty")
-        if type(self.name) is not str or not self.name:
-            raise ParticleGraphSchemaError("particle parameter name cannot be empty")
-        if not isinstance(self.value_type, TypeRef):
-            raise ParticleGraphSchemaError("particle parameter type must be a TypeRef")
+        GraphParameterDefinition.__post_init__(self)
         if self.value_type.space is not CoordinateSpace.NONE and not (
             self.value_type.value_type is ValueType.VEC3
             and self.value_type.space is CoordinateSpace.WORLD
@@ -458,10 +448,6 @@ class ParticleParameter:
             raise ParticleGraphSchemaError(
                 f"particle parameter {self.name!r} uses an unsupported type"
             )
-        if type(self.exposed) is not bool:
-            raise ParticleGraphSchemaError("particle parameter exposed must be a bool")
-        if type(self.writable) is not bool:
-            raise ParticleGraphSchemaError("particle parameter writable must be a bool")
         if self.writable and self.value_type.value_type in {
             ValueType.CURVE,
             ValueType.GRADIENT,
@@ -472,8 +458,6 @@ class ParticleParameter:
                 f"particle parameter {self.name!r} cannot be writable because "
                 f"{self.value_type.value_type.value} is a resource or structured lookup"
             )
-        if type(self.category) is not str or type(self.tooltip) is not str:
-            raise ParticleGraphSchemaError("particle parameter metadata must be strings")
         from Infernux.graph.expression_ir import ExpressionCompiler
 
         error = ExpressionCompiler._literal_error(self.value_type, self.default)
@@ -481,18 +465,6 @@ class ParticleParameter:
             raise ParticleGraphSchemaError(
                 f"particle parameter {self.name!r} default {error}"
             )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "stable_id": self.stable_id,
-            "name": self.name,
-            "type": self.value_type.to_dict(),
-            "default": self.default,
-            "exposed": self.exposed,
-            "writable": self.writable,
-            "category": self.category,
-            "tooltip": self.tooltip,
-        }
 
     @classmethod
     def from_dict(cls, value, location: str) -> "ParticleParameter":
@@ -507,20 +479,29 @@ class ParticleParameter:
                 "writable",
                 "category",
                 "tooltip",
+                "attributes",
             },
             location,
         )
         if type(value["stable_id"]) is not str or type(value["name"]) is not str:
             raise ParticleGraphSchemaError(f"{location} identity must be strings")
+        attributes = value["attributes"]
+        if type(attributes) is not list or any(
+            type(item) is not str for item in attributes
+        ):
+            raise ParticleGraphSchemaError(
+                f"{location}.attributes must be an array of strings"
+            )
         return cls(
-            value["stable_id"],
-            value["name"],
-            TypeRef.from_dict(value["type"]),
-            value["default"],
-            value["exposed"],
-            value["category"],
-            value["tooltip"],
-            value["writable"],
+            stable_id=value["stable_id"],
+            name=value["name"],
+            value_type=TypeRef.from_dict(value["type"]),
+            default=value["default"],
+            exposed=value["exposed"],
+            writable=value["writable"],
+            category=value["category"],
+            tooltip=value["tooltip"],
+            attributes=tuple(attributes),
         )
 
 
@@ -1303,10 +1284,10 @@ class ParticleGraphAsset:
             raise ParticleGraphSchemaError("particle graph event types are invalid")
         if len({emitter.stable_id for emitter in emitters}) != len(emitters):
             raise ParticleGraphSchemaError("particle emitter stable ids must be unique")
-        if len({parameter.stable_id for parameter in parameters}) != len(parameters):
-            raise ParticleGraphSchemaError("particle parameter stable ids must be unique")
-        if len({parameter.name for parameter in parameters}) != len(parameters):
-            raise ParticleGraphSchemaError("particle parameter names must be unique")
+        try:
+            GraphParameterCollection(parameters)
+        except (TypeError, ValueError) as exc:
+            raise ParticleGraphSchemaError(str(exc)) from exc
         if len({value.stable_id for value in event_types}) != len(event_types):
             raise ParticleGraphSchemaError("particle event type stable ids must be unique")
         event_type_ids = {value.stable_id for value in event_types}

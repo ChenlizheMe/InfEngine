@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from Infernux.debug import Debug
 from Infernux.engine.undo._helpers import _get_active_scene
 
 
@@ -13,7 +12,7 @@ def _recreate_game_object_from_document(document: dict,
                                         sibling_index: int) -> object:
     scene = _get_active_scene()
     if not scene:
-        return None
+        raise RuntimeError("cannot restore GameObject without an active scene")
 
     from Infernux.engine.component_restore import (
         commit_prepared_game_object_document,
@@ -31,17 +30,31 @@ def _recreate_game_object_from_document(document: dict,
     obj = scene.create_game_object("__undo_restore__")
     if not obj:
         prepared.discard()
-        return None
+        raise RuntimeError("scene rejected GameObject allocation during undo restore")
 
     if not commit_prepared_game_object_document(obj, document, prepared):
         scene.destroy_game_object(obj)
         scene.process_pending_destroys()
-        return None
+        raise RuntimeError("GameObject document commit failed during undo restore")
+
+    expected_id = int(document.get("id", 0) or 0)
+    actual_id = int(getattr(obj, "id", 0) or 0)
+    if expected_id > 0 and actual_id != expected_id:
+        scene.destroy_game_object(obj)
+        scene.process_pending_destroys()
+        raise RuntimeError(
+            f"GameObject undo restore changed stable id {expected_id} to {actual_id}"
+        )
 
     if parent_id is not None:
         parent = scene.find_by_id(parent_id)
-        if parent:
-            obj.set_parent(parent)
+        if parent is None:
+            scene.destroy_game_object(obj)
+            scene.process_pending_destroys()
+            raise RuntimeError(
+                f"GameObject undo restore cannot find parent {int(parent_id)}"
+            )
+        obj.set_parent(parent)
 
     if getattr(obj, "transform", None):
         obj.transform.set_sibling_index(sibling_index)

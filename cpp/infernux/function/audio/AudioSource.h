@@ -1,6 +1,8 @@
 #pragma once
 
 #include "AudioClip.h"
+#include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetRef.h>
 #include <function/scene/Component.h>
 
 #include <SDL3/SDL_audio.h>
@@ -19,12 +21,19 @@ namespace infernux
  */
 struct AudioTrack
 {
-    std::shared_ptr<AudioClip> clip;
+    AssetRef<AudioClip> clipAsset;
+    std::shared_ptr<AudioClip> transientClip;
     SDL_AudioStream *stream = nullptr;
     bool isPlaying = false;
     bool isPaused = false;
     bool pauseRequestedByDisable = false;
     float volume = 1.0f; ///< Per-track volume multiplier (0.0–1.0)
+
+    [[nodiscard]] std::shared_ptr<AudioClip> GetClip() const
+    {
+        const auto asset = clipAsset.Get();
+        return asset ? asset : transientClip;
+    }
 };
 
 struct AudioOneShotVoice
@@ -78,6 +87,10 @@ class AudioSource : public Component
     void OnDisable() override;
     void OnDestroy() override;
     void Update(float deltaTime) override;
+    [[nodiscard]] bool WantsRuntimeUpdate() const override
+    {
+        return true;
+    }
 
     // ========================================================================
     // Serialization
@@ -105,6 +118,15 @@ class AudioSource : public Component
 
     /// @brief Get the clip on a specific track
     [[nodiscard]] std::shared_ptr<AudioClip> GetTrackClip(int trackIndex) const;
+
+    /// @brief Assign a stable audio asset reference, including a currently missing GUID.
+    void SetTrackClipGuid(int trackIndex, const std::string &guid);
+
+    /// @brief Get the stable audio asset GUID on a specific track.
+    [[nodiscard]] std::string GetTrackClipGuid(int trackIndex) const;
+
+    /// @brief Invalidate or refresh track caches after an audio asset mutation.
+    void OnAudioClipAssetEvent(const std::string &guid, AssetEvent event);
 
     /// @brief Set per-track volume (0.0–1.0)
     void SetTrackVolume(int trackIndex, float volume);
@@ -300,6 +322,8 @@ class AudioSource : public Component
     void NotifyAudioEngineShutdown();
 
   private:
+    void AssignTrackClipReference(int trackIndex, const std::string &guid, std::shared_ptr<AudioClip> clip);
+
     /// @brief Internal: create voice stream and start playback for a track
     void StartVoice(int trackIndex);
 

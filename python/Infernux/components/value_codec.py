@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from enum import Enum
 import math
 from typing import Any, Callable
@@ -156,7 +157,7 @@ class ValueCodecRegistry:
         )
 
     def _validate_builtin(self, value: Any, field_meta_or_type: Any, path: str) -> None:
-        from .serialized_field import FieldType
+        from .fields import FieldType
 
         field_type, element_type = self._field_parts(field_meta_or_type)
         ref_types = self._reference_field_types()
@@ -198,8 +199,11 @@ class ValueCodecRegistry:
         if field_type == FieldType.LIST:
             if not isinstance(value, list):
                 raise TypeError(f"{path}: LIST field requires an array")
+            element_field = self._list_element_field(
+                field_meta_or_type, element_type or FieldType.UNKNOWN
+            )
             for index, item in enumerate(value):
-                self.validate(item, element_type or FieldType.UNKNOWN, f"{path}[{index}]")
+                self.validate(item, element_field, f"{path}[{index}]")
             return
 
         vector_sizes = {
@@ -252,7 +256,7 @@ class ValueCodecRegistry:
         raise TypeError(f"{path}: unsupported value for {field_type.name}")
 
     def _decode_builtin(self, value: Any, field_meta_or_type: Any, path: str) -> Any:
-        from .serialized_field import FieldType, normalize_rgba
+        from .fields import FieldType, normalize_rgba
         from ._serialize_helpers import deserialize_dict_ref, make_null_ref
 
         field_type, element_type = self._field_parts(field_meta_or_type)
@@ -266,8 +270,11 @@ class ValueCodecRegistry:
             from .serializable_object import SerializableObject
             return SerializableObject._deserialize(value)
         if field_type == FieldType.LIST:
+            element_field = self._list_element_field(
+                field_meta_or_type, element_type or FieldType.UNKNOWN
+            )
             return [
-                self.decode(item, element_type or FieldType.UNKNOWN, f"{path}[{index}]")
+                self.decode(item, element_field, f"{path}[{index}]")
                 for index, item in enumerate(value)
             ]
 
@@ -303,8 +310,17 @@ class ValueCodecRegistry:
         return field_meta_or_type, None
 
     @staticmethod
+    def _list_element_field(field_meta_or_type: Any, element_type: Any) -> Any:
+        if not hasattr(field_meta_or_type, "field_type"):
+            return element_type
+        element_field = copy.copy(field_meta_or_type)
+        element_field.field_type = element_type
+        element_field.element_type = None
+        return element_field
+
+    @staticmethod
     def _reference_field_types() -> set[Any]:
-        from .serialized_field import FieldType
+        from .fields import FieldType
         return {
             FieldType.GAME_OBJECT,
             FieldType.COMPONENT,
@@ -429,10 +445,9 @@ class ValueCodecRegistry:
                 raise ValueError(f"{path}: asset reference document has unknown or missing fields")
             if not all(isinstance(value[key], str) for key in ("asset_type", "guid", "path_hint")):
                 raise TypeError(f"{path}: asset reference values must be strings")
-            from Infernux.core.asset_ref import get_asset_type_config
-            if value["asset_type"] not in {"Prefab", "Material", "Texture", "Shader"} and get_asset_type_config(
-                value["asset_type"]
-            ) is None:
+            from Infernux.core.asset_reference_types import asset_type_registry
+
+            if asset_type_registry.get(value["asset_type"]) is None:
                 raise ValueError(f"{path}: unknown asset reference type {value['asset_type']!r}")
             return document_type
 
@@ -451,7 +466,7 @@ class ValueCodecRegistry:
         field_meta: Any,
         path: str,
     ) -> None:
-        from .serialized_field import FieldType
+        from .fields import FieldType
         from .value_document import GAME_OBJECT_REF, COMPONENT_REF, ASSET_REF
 
         if field_type == FieldType.COMPONENT:
@@ -473,12 +488,16 @@ class ValueCodecRegistry:
             FieldType.SHADER: "Shader",
         }.get(field_type)
         if field_type == FieldType.ASSET:
-            expected_asset_type = getattr(field_meta, "asset_type", None)
-            if expected_asset_type is None:
-                from Infernux.core.asset_ref import get_asset_type_config
-                if get_asset_type_config(value["asset_type"]) is not None:
-                    return
-        if value["asset_type"] != expected_asset_type:
+            expected_asset_type = str(
+                getattr(field_meta, "asset_type", "") or ""
+            ).strip()
+            if not expected_asset_type:
+                raise ValueError(f"{path}: ASSET field has no asset_type contract")
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        expected = asset_type_registry.require(expected_asset_type).type_id
+        actual = asset_type_registry.require(value["asset_type"]).type_id
+        if actual != expected:
             raise TypeError(f"{path}: {field_type.name} field requires {expected_asset_type} reference data")
 
 

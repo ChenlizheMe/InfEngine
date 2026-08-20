@@ -26,6 +26,22 @@ namespace infernux
 class Transform : public Component
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.allowMultiple = false;
+        constraints.userAddable = false;
+        constraints.removable = false;
+        constraints.intrinsic = true;
+        return constraints;
+    }
+
+    [[nodiscard]] const ComponentTypeConstraints &GetComponentTypeConstraints() const override
+    {
+        static const ComponentTypeConstraints constraints = GetTypeConstraints();
+        return constraints;
+    }
+
     Transform();
     ~Transform() override;
 
@@ -463,6 +479,14 @@ class Transform : public Component
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
+    friend class Rigidbody;
+
+    /// Physics owns the authoritative pose for a dynamic Rigidbody. Apply its
+    /// position and rotation as one cache invalidation while suppressing only
+    /// the owning Transform's authored-change observer. Descendant observers
+    /// remain active so hierarchy-driven collider motion is still published.
+    void ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::quat &worldRot, bool applyRotation);
+
     [[nodiscard]] Transform *GetParentTransformSafe() const;
     [[nodiscard]] glm::vec3 GetWorldDirection(const glm::vec3 &localAxis) const;
 

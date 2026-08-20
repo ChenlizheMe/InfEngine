@@ -38,7 +38,7 @@ struct GpuParticleBoundsShaderSources
 struct GpuParticleBoundsDesc
 {
     uint32_t capacity = 0;
-    rhi::BufferHandle instances;
+    rhi::BufferHandle visibility;
     rhi::BufferHandle sourceIndices;
     rhi::BufferHandle sourceIndirectArguments;
     rhi::BufferHandle simulationControl;
@@ -86,9 +86,9 @@ class ParticleGpuBounds
     {
         return m_capacity;
     }
-    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
+    [[nodiscard]] rhi::BufferHandle VisibilityBuffer() const noexcept
     {
-        return m_instances;
+        return m_visibility;
     }
     [[nodiscard]] rhi::BufferHandle SourceIndirectBuffer() const noexcept
     {
@@ -124,7 +124,7 @@ class ParticleGpuBounds
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
-    rhi::BufferHandle m_instances;
+    rhi::BufferHandle m_visibility;
     rhi::BufferHandle m_sourceIndices;
     rhi::BufferHandle m_sourceIndirectArguments;
     rhi::BufferHandle m_simulationControl;
@@ -135,6 +135,11 @@ class ParticleGpuBounds
     rhi::ComputePipelineHandle m_preparePipeline;
     rhi::ComputePipelineHandle m_resetPipeline;
     rhi::ComputePipelineHandle m_reducePipeline;
+    // AlwaysSimulate does not consume the visibility feedback word, so its
+    // control state can stay resident until a control input changes.
+    mutable bool m_controlPrepared = false;
+    mutable GpuParticleOffscreenPolicy m_preparedPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
+    mutable bool m_preparedForceSimulation = false;
 };
 
 static_assert(sizeof(GpuParticleBoundsConstants) == 48);

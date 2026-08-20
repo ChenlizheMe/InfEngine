@@ -1,7 +1,7 @@
 """EditorPanel — base class for all dockable editor panels.
 
 Subclass this to create custom inspector-like panels with access to
-:class:`EditorServices` and :class:`EditorEventBus`.
+:class:`EditorServices` and the shared interaction services.
 
 Example::
 
@@ -9,10 +9,10 @@ Example::
 
     class MyPanel(EditorPanel):
         def on_enable(self):
-            self.events.subscribe(EditorEvent.SELECTION_CHANGED, self._on_sel)
+            SelectionService.instance().add_listener(self._on_sel)
 
         def on_disable(self):
-            self.events.unsubscribe(EditorEvent.SELECTION_CHANGED, self._on_sel)
+            SelectionService.instance().remove_listener(self._on_sel)
 
         def on_render_content(self, ctx):
             ctx.text("Hello from my panel!")
@@ -25,7 +25,11 @@ from typing import Optional
 from Infernux.lib import InxGUIContext
 from Infernux.engine.ui.closable_panel import ClosablePanel
 from Infernux.engine.ui.editor_services import EditorServices
-from Infernux.engine.ui.event_bus import EditorEventBus
+from Infernux.engine.interaction import (
+    CommandSource,
+    PanelViewStateSchema,
+    SelectionService,
+)
 
 
 class EditorPanel(ClosablePanel):
@@ -34,16 +38,17 @@ class EditorPanel(ClosablePanel):
     Provides lifecycle hooks, service access, and size/style overrides.
     """
 
+    VIEW_STATE_SCHEMA: Optional[PanelViewStateSchema]
+
     def __init__(self, title: str, window_id: Optional[str] = None) -> None: ...
+
+    def is_content_visible(self) -> bool: ...
+    def was_content_visible(self) -> bool: ...
+    def is_content_hovered(self) -> bool: ...
 
     @property
     def services(self) -> EditorServices:
         """Access to all editor subsystems (engine, undo, scenes, etc.)."""
-        ...
-
-    @property
-    def events(self) -> EditorEventBus:
-        """The editor-wide event bus for pub/sub communication."""
         ...
 
     def on_enable(self) -> None:
@@ -73,3 +78,29 @@ class EditorPanel(ClosablePanel):
     def on_render(self, ctx: InxGUIContext) -> None:
         """Full render cycle (framework calls this — override ``on_render_content``)."""
         ...
+
+    def execute_owned_command(
+        self,
+        command_id: str,
+        *,
+        source: Optional[CommandSource] = None,
+        payload: object = ...,
+    ) -> bool: ...
+    def publish_interaction_ownership(
+        self,
+        *,
+        reason: str = ...,
+        record_history: bool = ...,
+    ) -> bool: ...
+
+
+class FloatingEditorPanel(EditorPanel):
+    """Non-dockable utility panel with the standard Editor lifecycle."""
+
+    def __init__(
+        self,
+        title: str,
+        window_id: str,
+        *,
+        size: tuple[float, float],
+    ) -> None: ...

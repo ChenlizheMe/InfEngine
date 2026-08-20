@@ -27,6 +27,29 @@ from Infernux.debug import Debug
 _log = logging.getLogger("Infernux.ref")
 
 
+def _iter_reference_scenes():
+    """Return every live scene that can own a serialized runtime reference."""
+    try:
+        from Infernux.lib import SceneManager as _SM
+
+        manager = _SM.instance()
+    except (ImportError, RuntimeError):
+        return ()
+
+    scenes = []
+    for getter_name in ("get_active_scene", "get_runtime_persistent_scene"):
+        getter = getattr(manager, getter_name, None)
+        if not callable(getter):
+            continue
+        try:
+            scene = getter()
+        except RuntimeError:
+            continue
+        if scene is not None and all(scene is not existing for existing in scenes):
+            scenes.append(scene)
+    return tuple(scenes)
+
+
 def _get_prefab_asset_database():
     try:
         from Infernux.core.asset_ref import _get_asset_database
@@ -88,19 +111,18 @@ class GameObjectRef:
     # -- resolution --------------------------------------------------------
 
     def _resolve(self):
-        """Try to resolve the live object from the current scene."""
+        """Try to resolve the live object from active or persistent runtime scenes."""
         if self._persistent_id == 0:
             self._cached_obj = None
             self._cached_handle = None
             return None
         try:
-            from Infernux.lib import SceneManager as _SM
-            scene = _SM.instance().get_active_scene()
-            if scene is not None:
+            for scene in _iter_reference_scenes():
                 obj = scene.find_by_id(self._persistent_id)
-                self._cached_obj = obj
-                self._cached_handle = getattr(obj, "handle", None) if obj is not None else None
-                return obj
+                if obj is not None:
+                    self._cached_obj = obj
+                    self._cached_handle = getattr(obj, "handle", None)
+                    return obj
         except (ImportError, RuntimeError):
             # pybind11 raises RuntimeError when the C++ object behind a
             # GameObjectRef has been destroyed — that's the normal
@@ -125,9 +147,7 @@ class GameObjectRef:
         handle = self._cached_handle
         if obj is not None and handle is not None:
             try:
-                from Infernux.lib import SceneManager as _SM
-                scene = _SM.instance().get_active_scene()
-                if scene is not None:
+                for scene in _iter_reference_scenes():
                     resolved = scene.resolve_game_object(handle)
                     if resolved is not None:
                         self._cached_obj = resolved
@@ -510,34 +530,19 @@ class ComponentRef:
     # -- resolution --------------------------------------------------------
 
     def _resolve(self):
-        """Try to resolve the live component from the current scene."""
+        """Try to resolve the component from active or persistent runtime scenes."""
         if self._go_id == 0:
             self._cached = None
             self._cached_handle = None
             return None
 
         try:
-            from Infernux.lib import SceneManager as _SM
-            scene = _SM.instance().get_active_scene()
-            if scene is None:
-                self._cached = None
-                self._cached_handle = None
-                return None
+            for scene in _iter_reference_scenes():
+                go = scene.find_by_id(self._go_id)
+                if go is None:
+                    continue
 
-            go = scene.find_by_id(self._go_id)
-            if go is None:
-                self._cached = None
-                self._cached_handle = None
-                return None
-
-            if self._component_type:
                 found = _resolve_component_on_game_object(go, self._component_type)
-                if found is not None:
-                    self._cached = found
-                    self._cached_handle = _get_component_handle(found)
-                    return found
-            else:
-                found = _resolve_component_on_game_object(go, "")
                 if found is not None:
                     self._cached = found
                     self._cached_handle = _get_component_handle(found)
@@ -558,9 +563,10 @@ class ComponentRef:
         if self._cached is not None:
             try:
                 if self._cached_handle is not None:
-                    from Infernux.lib import SceneManager as _SM
-                    scene = _SM.instance().get_active_scene()
-                    if scene is None or scene.resolve_component(self._cached_handle) is None:
+                    if not any(
+                        scene.resolve_component(self._cached_handle) is not None
+                        for scene in _iter_reference_scenes()
+                    ):
                         self._cached = None
                         self._cached_handle = None
                     else:

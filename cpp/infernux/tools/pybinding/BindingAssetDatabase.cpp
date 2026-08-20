@@ -88,10 +88,13 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), "Import a single asset")
         .def("reimport_asset", &AssetDatabase::ReimportAsset, py::arg("path"),
+             py::call_guard<py::gil_scoped_release>(),
              "Reimport an existing asset while preserving its GUID")
         .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
         .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),
              "Move/rename asset preserving GUID")
+        .def("move_assets_batch", &AssetDatabase::MoveAssetsBatch, py::arg("moves"),
+             "Commit a preflighted asset relocation batch with one catalog publication")
         .def("contains_guid", &AssetDatabase::ContainsGuid, py::arg("guid"), py::call_guard<py::gil_scoped_release>(),
              "Check if GUID exists")
         .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
@@ -114,6 +117,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
             py::arg("path"), py::call_guard<py::gil_scoped_release>(), "Get immutable meta by path")
         .def("get_all_guids", &AssetDatabase::GetAllGuids, py::call_guard<py::gil_scoped_release>(),
              "Get all GUIDs in one published generation")
+        .def("get_all_asset_paths", &AssetDatabase::GetAllAssetPaths, py::call_guard<py::gil_scoped_release>(),
+             "Get all asset paths in one published generation")
         .def(
             "get_directory_catalog",
             [](const AssetDatabase &database, const std::string &directory) {

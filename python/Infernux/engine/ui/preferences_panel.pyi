@@ -2,22 +2,11 @@
 
 from __future__ import annotations
 
+from Infernux.engine.ui.editor_panel import FloatingEditorPanel
 
-class PreferencesPanel:
-    """Standalone floating Preferences window.
 
-    Usage::
-
-        prefs = PreferencesPanel()
-        prefs.open()
-        prefs.render(ctx)
-    """
+class PreferencesPanel(FloatingEditorPanel):
+    """User Preferences utility surface."""
 
     def __init__(self) -> None: ...
-    def open(self) -> None: ...
-    def close(self) -> None: ...
-
-    @property
-    def is_open(self) -> bool: ...
-
-    def render(self, ctx: object) -> None: ...
+    def on_render_content(self, ctx: object) -> None: ...

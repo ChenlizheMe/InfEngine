@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.2.9-orange.svg" alt="Version 0.2.9" />
-  <img src="https://img.shields.io/badge/status-0.3.0_preview-yellow.svg" alt="0.3.0 preview" />
+  <img src="https://img.shields.io/badge/version-0.3.4-orange.svg" alt="Version 0.3.4" />
+  <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++ 17" />
@@ -36,20 +36,21 @@ Infernux 是一个从零构建的开源游戏引擎。它使用 C++ 维护渲染
 
 这里的 Python 不是附加在封闭编辑器上的脚本语言，而是引擎的一等生产界面。这让常规游戏逻辑更容易编写和检查，也让项目可以原生接入 Python 生态中的 AI、视觉、仿真和数据工具。
 
-Infernux 当前仍是以 Windows 为主的技术预览。编辑器和运行时已经可以使用，但部分新数据格式与 API 在 `0.3.0` 前仍可能变化。
+Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶段。`0.3.4` 是一次完整的引擎版本更新；不过项目仍很年轻，现阶段会主动接受必要的破坏性数据格式与 API 更新。
 
-## 0.2.9：0.3.0 前瞻版本
+## 0.3.4
 
-`0.2.9` 是 `0.2.1` 之后第一轮大规模架构更新。它并不只是一次 MCP 更新：场景文档、序列化、资产、渲染、物理、编辑器交互、自动化和游戏分发都围绕更严格的数据所有权与运行时边界进行了重构。
+`0.3.4` 是一次覆盖面很广的引擎更新，并不只是 MCP 或 VFX 更新：场景文档、序列化、资产、渲染、粒子、物理、编辑器交互、运行时执行、自动化和游戏分发都围绕更严格的数据所有权与运行时边界进行了重构。
 
 这一版的主要变化包括：
 
 - 引入带稳定对象/组件身份的 Scene 与 Component 类型化文档，并增加严格校验、脚本缺失恢复和事务式发布/回滚。
 - 重构资产索引、依赖追踪与导入产物，改善材质、网格、纹理和物理材质引用的稳定性。
-- 扩展 RenderGraph/RHI 所有权、异步传输、多相机状态，并修复资源替换和预览生命周期。
-- 加入第一版 VFX Graph 与粒子运行时，包含类型化资产、编译校验以及 Scene/Game 相机支持。
+- 加入可由 Python 编排的 RenderStack、可复用 Effect 资产、显式挂载点以及 Forward/Forward+/Deferred 路由，并整理多相机下的 RenderGraph/RHI 所有权。
+- 建立 GPU ParticleGraph 管线：类型化节点、发射阶段、Graph 到 IR 的 AOT 编译、Sprite/Mesh 输出、编辑器预览与运行时参数控制。
+- 引入结构化 GLSL 写法，明确区分顶点、片元与 Shading Model，同时不要求用户手写 Descriptor Layout。
 - 批处理原生 Transform 与 Jolt 物理路径，改善大场景、Play/Stop 恢复和场景重载。
-- 统一场景和各类资产编辑器的脏状态、保存、另存为、关闭及退出确认。
+- 建立共享 Interaction Core，统一选择、命令、快捷键、撤销回退、文档所有权、脏状态、保存、另存为、关闭与退出行为。
 - 重组游戏导出：原生启动器、私有运行时、压缩的 `Content.inxpkg`，以及随 wheel 分发的 Player Runtime Pack。
 - 增加引擎内置画面捕获，可截取整个编辑器、子视图或游戏相机，不依赖桌面截图。
 
@@ -69,16 +70,17 @@ Infernux 当前仍是以 Windows 为主的技术预览。编辑器和运行时�
 
 | 领域 | 当前范围 |
 |:-----|:---------|
-| 渲染 | Vulkan 前向/延迟路径、PBR、级联阴影、MSAA、后处理、RenderGraph、RenderStack |
+| 渲染 | Vulkan Forward/Forward+/Deferred、PBR、逐相机光照与阴影、MSAA、可复用 Effect、RenderGraph、可编程 RenderStack |
 | 物理 | Jolt 刚体、基础/网格碰撞体、物理材质、查询、回调、层过滤 |
 | 资产 | GUID 身份、依赖索引、导入产物、材质、Prefab、场景、动画与 VFX 资产 |
-| 编辑器 | Hierarchy、Inspector、Scene/Game、Project、Console、UI、动画、Timeline、VFX、构建设置 |
+| 编辑器 | Hierarchy、Inspector、Scene/Game、Project、Console、UI、动画、Timeline、Particle Graph、统一命令/文档、构建设置 |
 | 动画 | 2D 动画片段、骨骼动画、蒙皮网格、FBX Take、状态机、Timeline |
 | 运行时 UI | Canvas、Text、Image、Button、指针输入、持久化的组件方法事件绑定 |
-| Python | 组件生命周期、序列化字段、协程、热重载、公开渲染与物理 API |
+| VFX | GPU 模拟、Emitter/Init/Update/Rendering 阶段、类型化图 IR、Sprite/Mesh 粒子、Scene/Game 预览、实时参数 |
+| Python | 组件生命周期、序列化字段、协程、Play 态热重载，以及公开渲染、VFX、物理和编辑器 API |
 | 分发 | Hub、Windows 安装器、wheel、压缩运行时包、独立游戏导出 |
 
-公开 Shader 路径已经移除 Compute Shader 编排。后续通用并行计算会优先考虑兼容 Python 的外部后端，而不是继续扩展原有 Compute Shader API。
+公开 Shader 工作流不再提供 Compute Shader 编排。引擎内部仍可在合适时通过 RHI 使用 Vulkan Compute；项目侧通过 Particle Graph 或对应的 Python 资产 API 描述粒子行为，不需要直接绑定引擎内部计算 Pass。
 
 ## MCP Harness
 
@@ -187,7 +189,7 @@ cmake --build --preset packaging-installer
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.2.9},
+  version = {0.3.4},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

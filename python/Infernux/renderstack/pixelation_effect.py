@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-from Infernux.components.serialized_field import serialized_field
-from Infernux.renderstack.fullscreen_effect import FullScreenEffect
+from Infernux.components.fields import serialized_field
+from Infernux.renderstack.fullscreen_effect import EffectColorComposition, FullScreenEffect
 
 
 class PixelationSampling(IntEnum):
@@ -29,6 +29,7 @@ class PixelationEffect(FullScreenEffect):
     injection_point = "before_post_process"
     default_order = 300
     menu_path = "Stylized/Pixelation"
+    color_composition = EffectColorComposition.REPLACE
 
     pixel_size: int = serialized_field(
         default=8,
@@ -62,7 +63,7 @@ class PixelationEffect(FullScreenEffect):
         default=1.0,
         range=(0.0, 1.0),
         slider=False,
-        tooltip="Blend between the original image and the pixelated result",
+        tooltip="Move sampling toward each pixel-cell center without layering the original image",
         header="Reconstruction",
     )
     sampling: PixelationSampling = serialized_field(

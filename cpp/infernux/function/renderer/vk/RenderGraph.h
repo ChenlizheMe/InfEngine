@@ -53,10 +53,12 @@
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 #include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/rhi/RhiDescriptors.h>
 #include <function/renderer/rhi/RhiSubmission.h>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -191,6 +193,19 @@ struct PassCompileInfo
     rhi::RenderViewId view = rhi::InvalidRenderViewId;
 };
 
+/// Attachment contract produced by RenderGraph compilation. This reports the
+/// path that will actually execute, rather than the path requested by the
+/// caller, so pipeline owners can fail closed after capability fallback.
+struct PassRenderingContract
+{
+    bool found = false;
+    bool culled = true;
+    bool usesDynamicRendering = false;
+    bool depthReadOnly = false;
+    ResourceHandle depthAttachment;
+    rhi::GraphicsRenderingSignature attachments;
+};
+
 /**
  * @brief Configuration for a render pass
  */
@@ -281,8 +296,9 @@ class RenderContext
     RenderContext(VkCommandBuffer cmdBuffer, RenderGraph *graph);
 
     /// @brief Get the command buffer
-    [[nodiscard]] VkCommandBuffer GetCommandBuffer() const
+    [[nodiscard]] VkCommandBuffer GetCommandBuffer()
     {
+        InvalidateRhiBindingState();
         return m_cmdBuffer;
     }
 
@@ -343,7 +359,35 @@ class RenderContext
     [[nodiscard]] rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
     [[nodiscard]] const RendererList *GetRendererList(ResourceHandle handle) const;
 
+#if INFERNUX_FRAME_PROFILE
+    /// Record a particle draw submitted by the current graphics pass. This is
+    /// CPU-side submission telemetry only; the indirect instance count is not
+    /// read back from the GPU.
+    void RecordParticleDraw(bool indirect = true);
+
+    /// Record a compute dispatch issued by the current pass for the optional
+    /// particle profile. This only updates CPU-side counters; it never reads
+    /// the GPU or changes the command stream.
+    void RecordComputeDispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ, uint64_t inputCount,
+                               bool indirect = false);
+#else
+    void RecordParticleDraw(bool = true)
+    {
+    }
+    void RecordComputeDispatch(uint32_t, uint32_t, uint32_t, uint64_t, bool = false)
+    {
+    }
+#endif
+
   private:
+    friend class RenderGraph;
+
+    void InvalidateRhiBindingState() noexcept
+    {
+        m_graphicsCommandContext.ResetBindingState();
+        m_computeCommandContext.ResetBindingState();
+    }
+
     VkCommandBuffer m_cmdBuffer;
     RenderGraph *m_graph;
     VulkanGraphicsCommandContext m_graphicsCommandContext;
@@ -354,6 +398,9 @@ class RenderContext
     rhi::TransferCommandEncoder m_transferEncoder;
     VkViewport m_viewport{};
     VkRect2D m_scissor{};
+    // RenderContext crosses native module boundaries through pass callbacks.
+    // Keep its layout independent of per-target profiling flags.
+    uint32_t m_activePassId = UINT32_MAX;
 };
 
 // ============================================================================
@@ -463,6 +510,11 @@ class PassBuilder
     /// @brief Set the pass render area
     void SetRenderArea(uint32_t width, uint32_t height);
 
+    /// Request Vulkan dynamic rendering for this graphics pass. The graph
+    /// transparently falls back to a compatible render pass when the device
+    /// did not enable the required capability.
+    void UseDynamicRendering(bool enabled = true);
+
     /// Override the native queue role for commands whose Vulkan capability
     /// requirements are stricter than their logical pass type. For example,
     /// vkCmdResolveImage is transfer-like work but requires a Graphics-capable
@@ -524,6 +576,9 @@ struct RenderPassData
     bool clearColorEnabled = false;
     bool clearDepthEnabled = false;
     bool hasResolveAttachment = false; // True when MSAA resolve is used
+    bool dynamicRenderingRequested = false;
+    bool usesDynamicRendering = false;
+    rhi::GraphicsRenderingSignature renderingSignature;
     bool hasSideEffect = false;
     bool skipCallbackWhenRendererListsEmpty = false;
     std::vector<ResourceHandle> rendererListInputs;
@@ -548,6 +603,9 @@ struct RenderPassData
     VkRenderPassBeginInfo cachedBeginInfo{};
     VkClearValue cachedClearValues[10]{};
     uint32_t cachedClearValueCount = 0;
+    std::array<VkRenderingAttachmentInfo, 10> cachedRenderingColorAttachments{};
+    VkRenderingAttachmentInfo cachedRenderingDepthAttachment{};
+    VkRenderingInfo cachedRenderingInfo{};
     VkViewport cachedViewport{};
     VkRect2D cachedScissor{};
 };
@@ -627,7 +685,15 @@ class RenderGraph
         uint64_t passCount = 0;
         uint64_t graphicsPassCount = 0;
         uint64_t computePassCount = 0;
+        uint64_t dynamicRenderingPassCount = 0;
+        uint64_t legacyRenderPassCount = 0;
         uint64_t barrierCallCount = 0;
+        uint64_t synchronization2BarrierBatchCount = 0;
+        uint64_t legacyBarrierBatchCount = 0;
+        uint64_t rhiPipelineBinds = 0;
+        uint64_t rhiPipelineBindSkips = 0;
+        uint64_t rhiGroupBinds = 0;
+        uint64_t rhiGroupBindSkips = 0;
     };
 
     struct PassCallbackProfileEntry
@@ -635,6 +701,20 @@ class RenderGraph
         std::string name;
         double totalMs = 0.0;
         uint64_t calls = 0;
+    };
+
+    struct ParticlePassProfileEntry
+    {
+        std::string name;
+        uint64_t passCalls = 0;
+        uint64_t dispatchCalls = 0;
+        uint64_t directDispatchCalls = 0;
+        uint64_t indirectDispatchCalls = 0;
+        uint64_t workgroups = 0;
+        uint64_t inputCount = 0;
+        uint64_t barrierPhases = 0;
+        uint64_t drawCalls = 0;
+        uint64_t indirectDrawCalls = 0;
     };
 #endif
 
@@ -722,6 +802,14 @@ class RenderGraph
     /// domain match the previous pass. Used for explicit async phase joins.
     void SetSubmissionBoundaryBefore(PassHandle pass);
 
+    /// Require `later` to run after `earlier` even when they do not share a
+    /// resource version. Do not use this to force a global sim-before-export
+    /// cut across particle graphs: versioned spawn-domain writes already
+    /// serialize Rendering before a sibling Init, and a complete bipartite
+    /// Update→RenderReset cut closes a cycle once two multi-emitter graphs
+    /// compile together.
+    void AddPassDependency(PassHandle later, PassHandle earlier);
+
     /**
      * @brief Add a transfer pass to the graph (copy/blit operations, no render pass)
      */
@@ -778,6 +866,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
     static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
+    static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
     static void ResetExecuteProfileSnapshot();
 #endif
 
@@ -820,12 +909,22 @@ class RenderGraph
      */
     bool Compile();
 
+    /// Cull unused passes and produce a cycle-free execution order without
+    /// allocating GPU resources. Compile() uses this as its structural step.
+    [[nodiscard]] bool CompileExecutionOrder();
+
     /**
      * @brief Execute the render graph
      *
      * @param commandBuffer Command buffer to record into
      */
     void Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
+
+    /// Record another execution into the same command buffer while preserving
+    /// the resource state produced by the preceding Execute/ContinueExecution.
+    /// This is required for fixed-step replay where one graph is recorded
+    /// repeatedly into a single submission.
+    void ContinueExecution(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
 
     /// Reset tracked resource state once before recording the compiled
     /// submission batches. A backend executor calls this once per graph frame.
@@ -936,6 +1035,17 @@ class RenderGraph
 
     [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(PassHandle pass) const;
 
+    [[nodiscard]] bool SupportsDynamicRendering() const noexcept
+    {
+        return m_cmdBeginRendering != nullptr && m_cmdEndRendering != nullptr;
+    }
+
+    [[nodiscard]] bool GetPassUsesDynamicRendering(const std::string &passName) const noexcept;
+
+    [[nodiscard]] rhi::GraphicsRenderingSignature GetPassRenderingSignature(const std::string &passName) const noexcept;
+
+    [[nodiscard]] PassRenderingContract GetPassRenderingContract(const std::string &passName) const noexcept;
+
     /**
      * @brief Get the first graphics pass render pass
      * @return VkRenderPass suitable for pipeline creation, or VK_NULL_HANDLE
@@ -1026,9 +1136,20 @@ class RenderGraph
     /// source work completes in this submission batch.
     void InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32_t batchIndex);
 
+    /// Emit the accumulated resource barriers through synchronization2 when
+    /// the production device enabled it, with the legacy barrier command as
+    /// the hardware fallback.
+    void IssuePipelineBarriers(VkCommandBuffer commandBuffer, VkPipelineStageFlags sourceStages,
+                               VkPipelineStageFlags destinationStages);
+
     /// Record an ordered set of pass ids while preserving the graph's current
     /// resource-state cursor. Used by both Execute() and batch execution.
     void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices);
+
+#if INFERNUX_FRAME_PROFILE
+    void RecordParticleDispatch(uint32_t passId, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+                                uint64_t inputCount, bool indirect);
+#endif
 
     /// @brief Free transient resources
     void FreeResources();
@@ -1082,6 +1203,7 @@ class RenderGraph
 
     // Graph data
     std::vector<RenderPassData> m_passes;
+    std::vector<std::pair<uint32_t, uint32_t>> m_explicitPassDependencies;
     std::vector<ResourceData> m_resources;
     std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
@@ -1146,7 +1268,12 @@ class RenderGraph
     // Pre-allocated scratch buffers reused every Execute() to avoid per-pass heap allocs.
     std::vector<VkImageMemoryBarrier> m_barrierScratch;
     std::vector<VkBufferMemoryBarrier> m_bufferBarrierScratch;
+    std::vector<VkImageMemoryBarrier2> m_barrier2Scratch;
+    std::vector<VkBufferMemoryBarrier2> m_bufferBarrier2Scratch;
     std::vector<VkClearValue> m_clearValueScratch;
+    PFN_vkCmdPipelineBarrier2 m_cmdPipelineBarrier2 = nullptr;
+    PFN_vkCmdBeginRendering m_cmdBeginRendering = nullptr;
+    PFN_vkCmdEndRendering m_cmdEndRendering = nullptr;
 
     // RenderPass cache (long-lived across frames)
     std::unordered_map<size_t, VkRenderPass> m_renderPassCache;
@@ -1171,6 +1298,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not.
     inline static std::unordered_map<std::string, PassCallbackProfileEntry> s_callbackProfiles;
+    inline static std::unordered_map<std::string, ParticlePassProfileEntry> s_particlePassProfiles;
 #endif
 };
 

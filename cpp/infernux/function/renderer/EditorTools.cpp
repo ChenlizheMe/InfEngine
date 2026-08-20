@@ -17,10 +17,10 @@ namespace infernux
 // Axis colors
 // ============================================================================
 
-static constexpr glm::vec3 COLOR_X_DEFAULT{1.0f, 0.2f, 0.2f};
-static constexpr glm::vec3 COLOR_Y_DEFAULT{0.2f, 1.0f, 0.2f};
-static constexpr glm::vec3 COLOR_Z_DEFAULT{0.2f, 0.4f, 1.0f};
-static constexpr glm::vec3 COLOR_HIGHLIGHT{1.0f, 1.0f, 0.0f}; // Yellow highlight
+static constexpr glm::vec3 COLOR_X_DEFAULT{0.92f, 0.30f, 0.30f};
+static constexpr glm::vec3 COLOR_Y_DEFAULT{0.30f, 0.92f, 0.38f};
+static constexpr glm::vec3 COLOR_Z_DEFAULT{0.32f, 0.48f, 0.94f};
+static constexpr glm::vec3 COLOR_HIGHLIGHT{1.0f, 0.92f, 0.18f};
 
 // ============================================================================
 // Construction
@@ -275,18 +275,18 @@ void EditorTools::BuildPlaneQuad(std::vector<Vertex> &verts, std::vector<uint32_
 
 void EditorTools::BuildTranslateHandleMeshes()
 {
-    constexpr float shaftRadius = 0.02f;
+    constexpr float shaftRadius = 0.0175f;
     constexpr float shaftLength = 0.8f;
-    constexpr float coneRadius = 0.06f;
+    constexpr float coneRadius = 0.0525f;
     constexpr float coneHeight = 0.2f;
     constexpr int segments = 12;
 
     glm::vec3 xColor = (m_highlightedAxis == HandleAxis::X) ? COLOR_HIGHLIGHT : COLOR_X_DEFAULT;
     glm::vec3 yColor = (m_highlightedAxis == HandleAxis::Y) ? COLOR_HIGHLIGHT : COLOR_Y_DEFAULT;
     glm::vec3 zColor = (m_highlightedAxis == HandleAxis::Z) ? COLOR_HIGHLIGHT : COLOR_Z_DEFAULT;
-    glm::vec3 xyColor = (m_highlightedAxis == HandleAxis::XY) ? COLOR_HIGHLIGHT : glm::vec3(1.0f, 0.8f, 0.2f);
-    glm::vec3 xzColor = (m_highlightedAxis == HandleAxis::XZ) ? COLOR_HIGHLIGHT : glm::vec3(1.0f, 0.35f, 0.35f);
-    glm::vec3 yzColor = (m_highlightedAxis == HandleAxis::YZ) ? COLOR_HIGHLIGHT : glm::vec3(0.35f, 1.0f, 0.8f);
+    glm::vec3 xyColor = (m_highlightedAxis == HandleAxis::XY) ? COLOR_HIGHLIGHT : glm::vec3(0.95f, 0.78f, 0.30f);
+    glm::vec3 xzColor = (m_highlightedAxis == HandleAxis::XZ) ? COLOR_HIGHLIGHT : glm::vec3(0.92f, 0.42f, 0.42f);
+    glm::vec3 yzColor = (m_highlightedAxis == HandleAxis::YZ) ? COLOR_HIGHLIGHT : glm::vec3(0.42f, 0.92f, 0.76f);
 
     m_arrowXVerts.clear();
     m_arrowXInds.clear();
@@ -332,7 +332,7 @@ void EditorTools::BuildTranslateHandleMeshes()
 void EditorTools::BuildRotateHandleMeshes()
 {
     constexpr float majorRadius = 0.85f; // matches translate arrow length roughly
-    constexpr float tubeRadius = 0.015f;
+    constexpr float tubeRadius = 0.0125f;
     constexpr int majorSegs = 48;
     constexpr int tubeSegs = 8;
 
@@ -361,9 +361,9 @@ void EditorTools::BuildRotateHandleMeshes()
 
 void EditorTools::BuildScaleHandleMeshes()
 {
-    constexpr float shaftRadius = 0.02f;
+    constexpr float shaftRadius = 0.0175f;
     constexpr float shaftLength = 0.75f;
-    constexpr float cubeHalf = 0.04f;
+    constexpr float cubeHalf = 0.036f;
     constexpr int segments = 12;
     static constexpr glm::vec3 COLOR_CENTER_DEFAULT{0.72f, 0.72f, 0.74f};
 

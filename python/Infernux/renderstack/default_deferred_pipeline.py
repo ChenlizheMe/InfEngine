@@ -43,7 +43,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from Infernux.renderstack.render_pipeline import RenderPipeline
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
     DEPTH_TEXTURE,
@@ -56,17 +56,15 @@ from Infernux.renderstack._pipeline_common import (
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_OBJECT_TEXTURE,
     GBUFFER_RESOURCES,
-    POST_PROCESS_RESOURCES,
-    SCENE_RESOURCES,
     SHADOW_MAP_TEXTURE,
     add_shadow_caster_pass,
     add_skybox_pass,
-    add_motion_vector_pass,
     add_standard_post_process_section,
     add_transparent_pass,
     create_deferred_gbuffer,
     create_main_scene_targets,
     opaque_queue_range,
+    result_resources,
     transparent_queue_range,
 )
 
@@ -111,12 +109,6 @@ class DefaultDeferredPipeline(RenderPipeline):
         slider=False,
         tooltip="Shadow map resolution (width & height)",
         header="Shadows",
-    )
-
-    enable_screen_ui: bool = serialized_field(
-        default=True,
-        tooltip="Enable screen-space UI rendering",
-        header="Screen UI",
     )
 
     # ------------------------------------------------------------------
@@ -168,22 +160,31 @@ class DefaultDeferredPipeline(RenderPipeline):
                 material_filter="deferred_compatible",
             )
 
-        add_motion_vector_pass(
+        current = self.geometry_stage(
             graph,
-            name="OpaqueMotionPass",
+            "gbuffer",
+            buffers={
+                "color": graph.get_texture(COLOR_TEXTURE),
+                "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
+                "normal": graph.get_texture(GBUFFER_NORMAL_TEXTURE),
+                "depth": graph.get_texture(DEPTH_TEXTURE),
+                "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
+                "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
+                "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
+            },
             queue_range=opaque_queue_range(),
             clear=True,
         )
 
-        graph.injection_point("after_gbuffer", resources=GBUFFER_RESOURCES)
-        graph.effects(
-            "after_gbuffer",
-            scope="stage",
-            display_name="After GBuffer",
-            inputs=GBUFFER_RESOURCES,
-            outputs=GBUFFER_RESOURCES,
-            capabilities={"fullscreen", "multiple_render_targets"},
-        )
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_gbuffer", resources=resources)
+            graph.effects(
+                "after_gbuffer", scope="stage", display_name="After GBuffer",
+                inputs=resources, outputs=resources,
+                capabilities={"fullscreen", "multiple_render_targets"},
+            )
+            current = graph.current_pass_result
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
         with graph.add_pass("DeferredLightingPass") as p:
@@ -216,56 +217,48 @@ class DefaultDeferredPipeline(RenderPipeline):
                 material_filter="deferred_unsupported",
             )
 
-        graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
-        graph.effects(
-            "after_opaque",
-            scope="stage",
-            display_name="After Opaque Lighting",
-            inputs=SCENE_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen"},
+        current = graph.derive_pass_result(
+            "opaque_lighting", current, {"color": graph.get_texture(COLOR_TEXTURE)}
         )
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_opaque", resources=resources)
+            graph.effects(
+                "after_opaque", scope="stage",
+                display_name="After Opaque Lighting", inputs=resources,
+                outputs={"color"}, capabilities={"fullscreen"},
+            )
+            current = graph.current_pass_result
 
         # ---- Pass 3: Skybox ----
         add_skybox_pass(graph)
-        graph.injection_point("after_sky", resources=SCENE_RESOURCES)
-        graph.effects(
-            "after_sky",
-            scope="composite",
-            display_name="After Sky",
-            inputs=SCENE_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen"},
-        )
+        current = graph.derive_pass_result("sky", current, {"color": graph.get_texture(COLOR_TEXTURE)})
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_sky", resources=resources)
+            graph.effects(
+                "after_sky", scope="composite", display_name="After Sky",
+                inputs=resources, outputs={"color"}, capabilities={"fullscreen"},
+            )
+            current = graph.current_pass_result
 
         # ---- Pass 4: Transparent objects (Forward+ rendering) ----
         add_transparent_pass(graph, material_pass="forward_plus")
-        add_motion_vector_pass(
-            graph,
-            name="TransparentMotionPass",
-            queue_range=transparent_queue_range(),
-            sort_mode="back_to_front",
+        current = graph.derive_pass_result(
+            "transparent", current, {"color": graph.get_texture(COLOR_TEXTURE)}
         )
-        graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
-        graph.effects(
-            "after_transparent",
-            scope="composite",
-            display_name="After Transparent",
-            inputs=SCENE_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen"},
-        )
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_transparent", resources=resources)
+            graph.effects(
+                "after_transparent", scope="composite",
+                display_name="After Transparent", inputs=resources,
+                outputs={"color"}, capabilities={"fullscreen"},
+            )
+            current = graph.current_pass_result
 
-        graph.effects(
-            "final",
-            scope="composite",
-            display_name="Final Post Processing",
-            inputs=POST_PROCESS_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen", "hdr_to_display"},
-        )
-
-        # ---- Post-process + ScreenUI injection points ----
-        add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)
+        # ---- Camera UI + post-process + Screen UI tail ----
+        with graph.pass_result(current):
+            add_standard_post_process_section(graph, current)
 
         graph.set_output(COLOR_TEXTURE)

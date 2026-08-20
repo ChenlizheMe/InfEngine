@@ -14,7 +14,6 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.ui.window_manager import WindowManager
 from Infernux.engine.ui.editor_services import EditorServices
-from Infernux.engine.ui.event_bus import EditorEventBus
 from Infernux.lib import HierarchyPanel, ConsolePanel, InspectorPanel, ProjectPanel
 from Infernux.engine.ui.scene_view_panel import SceneViewPanel
 from Infernux.engine.ui.game_view_panel import GameViewPanel
@@ -40,7 +39,6 @@ class EditorBootstrap:
     scene_file_manager: Optional[SceneFileManager]
     window_manager: Optional[WindowManager]
     services: Optional[EditorServices]
-    event_bus: Optional[EditorEventBus]
 
     menu_bar: object
     toolbar: object

@@ -2,13 +2,117 @@
 
 from __future__ import annotations
 
+import inspect
+import importlib
 from pathlib import Path
 
-from Infernux.engine.project_context import clear_panel_tracking, set_panel_dirty
+import pytest
+
+from Infernux.engine.interaction import (
+    CloseCoordinator,
+    DocumentActionResult,
+    DocumentActionStatus,
+    DocumentCapability,
+    DocumentKind,
+    DocumentRegistry,
+    ModalService,
+)
 from Infernux.engine.ui.dirty_panel_confirmation import (
     DirtyPanelConfirmationCoordinator,
 )
 from Infernux.engine.ui.closable_panel import ClosablePanel
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dirty_confirmation_singleton():
+    from Infernux.engine.interaction import EditorInteractionCore
+
+    coordinator_type = _current_confirmation_type()
+    previous = coordinator_type._instance
+    previous_core = EditorInteractionCore._instance
+    coordinator_type._instance = None
+    EditorInteractionCore._instance = None
+    try:
+        yield
+    finally:
+        coordinator_type._instance = previous
+        EditorInteractionCore._instance = previous_core
+
+
+def _current_confirmation_type():
+    module = importlib.import_module(
+        "Infernux.engine.ui.dirty_panel_confirmation"
+    )
+    return module.DirtyPanelConfirmationCoordinator
+
+
+class _DocumentController:
+    def __init__(self, save=None, save_pending=None, discard=None) -> None:
+        self._save = save
+        self._save_pending = save_pending
+        self._discard = discard
+
+    def save(self, *, ticket, save_as=False):
+        del save_as
+        if not callable(self._save):
+            return False
+        result = self._save()
+        if callable(self._save_pending) and self._save_pending():
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        if result:
+            registry = DocumentRegistry.instance()
+            registry.capture_save_revision(ticket.ticket_id)
+            registry.complete_save(ticket.ticket_id, success=True)
+        return result
+
+    def poll_save(self, _ticket):
+        if callable(self._save_pending) and self._save_pending():
+            return None
+        return False
+
+    def discard(self, *, document_id):
+        del document_id
+        if not callable(self._discard):
+            return False
+        return self._discard()
+
+
+def _open_dirty_document(
+    panel_id: str,
+    *,
+    title: str,
+    save=None,
+    save_pending=None,
+    discard=None,
+):
+    registry = DocumentRegistry.instance()
+    registry.close_view(panel_id)
+    capabilities = DocumentCapability.NONE
+    if callable(save):
+        capabilities |= DocumentCapability.SAVE
+    if callable(discard):
+        capabilities |= DocumentCapability.DISCARD
+    document = registry.create(
+        DocumentKind.GENERIC,
+        title,
+        revision=1,
+        saved_revision=0,
+        capabilities=capabilities,
+        controller=_DocumentController(save, save_pending, discard),
+    )
+    registry.attach_view(document.document_id, panel_id)
+    return document
+
+
+def _close_document_view(panel_id: str) -> None:
+    DocumentRegistry.instance().close_view(panel_id)
+
+
+def _dirty_confirmation() -> DirtyPanelConfirmationCoordinator:
+    return _current_confirmation_type()(
+        CloseCoordinator(DocumentRegistry.instance()),
+        ModalService(),
+    )
 
 
 class _SemanticContext:
@@ -76,16 +180,14 @@ def test_exit_confirmation_saves_panels_sequentially():
     completed: list[str] = []
 
     def save_first() -> bool:
-        set_panel_dirty(first, False)
         return True
 
     def save_second() -> bool:
-        set_panel_dirty(second, False)
         return True
 
-    set_panel_dirty(first, True, title="First", save_handler=save_first)
-    set_panel_dirty(second, True, title="Second", save_handler=save_second)
-    coordinator = DirtyPanelConfirmationCoordinator()
+    _open_dirty_document(first, title="First", save=save_first)
+    _open_dirty_document(second, title="Second", save=save_second)
+    coordinator = _dirty_confirmation()
     try:
         assert coordinator.request_exit(lambda: completed.append("done"), lambda: None)
         assert coordinator.active_panel_id == first
@@ -97,8 +199,55 @@ def test_exit_confirmation_saves_panels_sequentially():
         assert completed == ["done"]
         assert coordinator.is_active is False
     finally:
-        clear_panel_tracking(first)
-        clear_panel_tracking(second)
+        _close_document_view(first)
+        _close_document_view(second)
+
+
+def test_exit_prompts_once_for_a_document_with_two_views():
+    from Infernux.engine.interaction import (
+        DocumentCapability,
+        DocumentKind,
+        DocumentRegistry,
+    )
+
+    registry = DocumentRegistry.instance()
+
+    class _Controller:
+        calls = 0
+
+        def save(self, *, ticket, save_as=False):
+            del save_as
+            self.calls += 1
+            registry.capture_save_revision(ticket.ticket_id)
+            registry.complete_save(ticket.ticket_id, success=True)
+            return True
+
+        @staticmethod
+        def discard():
+            return False
+
+    controller = _Controller()
+    document = registry.create(
+        DocumentKind.TIMELINE,
+        "Shared Timeline",
+        document_id="shared-document",
+        revision=1,
+        saved_revision=0,
+        capabilities=DocumentCapability.SAVE,
+        controller=controller,
+    )
+    registry.attach_view(document.document_id, "timeline-left")
+    registry.attach_view(document.document_id, "timeline-right")
+    completed = []
+    coordinator = _dirty_confirmation()
+
+    coordinator.request_exit(lambda: completed.append(True), lambda: None)
+    assert coordinator.active_document_id == document.document_id
+    coordinator.choose_save()
+
+    assert controller.calls == 1
+    assert completed == [True]
+    assert not coordinator.is_active
 
 
 def test_async_save_as_cancel_reopens_confirmation_without_cancelling_exit():
@@ -111,14 +260,13 @@ def test_async_save_as_cancel_reopens_confirmation_without_cancelling_exit():
         pending = True
         return False
 
-    set_panel_dirty(
+    _open_dirty_document(
         panel_id,
-        True,
         title="Async",
-        save_handler=begin_save_as,
-        save_pending_handler=lambda: pending,
+        save=begin_save_as,
+        save_pending=lambda: pending,
     )
-    coordinator = DirtyPanelConfirmationCoordinator()
+    coordinator = _dirty_confirmation()
     try:
         coordinator.request_exit(lambda: None, lambda: cancelled.append("cancel"))
         coordinator.choose_save()
@@ -140,7 +288,7 @@ def test_async_save_as_cancel_reopens_confirmation_without_cancelling_exit():
         coordinator.choose_cancel()
         assert cancelled == ["cancel"]
     finally:
-        clear_panel_tracking(panel_id)
+        _close_document_view(panel_id)
 
 
 def test_panel_discard_runs_panel_handler_before_approving_close():
@@ -150,10 +298,9 @@ def test_panel_discard_runs_panel_handler_before_approving_close():
 
     def discard() -> None:
         discarded.append(panel_id)
-        set_panel_dirty(panel_id, False)
 
-    set_panel_dirty(panel_id, True, title="Discard", discard_handler=discard)
-    coordinator = DirtyPanelConfirmationCoordinator()
+    _open_dirty_document(panel_id, title="Discard", discard=discard)
+    coordinator = _dirty_confirmation()
     try:
         assert coordinator.request_panel_close(panel_id, lambda: approved.append(panel_id))
         coordinator.choose_discard()
@@ -162,39 +309,37 @@ def test_panel_discard_runs_panel_handler_before_approving_close():
         assert approved == [panel_id]
         assert coordinator.is_active is False
     finally:
-        clear_panel_tracking(panel_id)
+        _close_document_view(panel_id)
 
 
-def test_exit_discard_keeps_panel_dirty_if_later_close_stage_is_cancelled():
+def test_exit_discard_abandons_panel_draft_without_reloading_it():
     panel_id = "dirty_test_exit_discard"
     completed: list[str] = []
     discarded: list[str] = []
 
-    set_panel_dirty(
+    document = _open_dirty_document(
         panel_id,
-        True,
         title="Exit Discard",
-        discard_handler=lambda: discarded.append(panel_id),
+        discard=lambda: discarded.append(panel_id),
     )
-    coordinator = DirtyPanelConfirmationCoordinator()
+    coordinator = _dirty_confirmation()
     try:
         coordinator.request_exit(lambda: completed.append("next"), lambda: None)
         coordinator.choose_discard()
 
         assert completed == ["next"]
         assert discarded == []
-        from Infernux.engine.project_context import is_panel_dirty
-
-        assert is_panel_dirty(panel_id) is True
+        assert not document.is_dirty
+        assert DocumentRegistry.instance().capture_session_state()["documents"] == []
     finally:
-        clear_panel_tracking(panel_id)
+        _close_document_view(panel_id)
 
 
 def test_panel_discard_failure_does_not_approve_close():
     panel_id = "dirty_test_discard_failure"
     approved: list[str] = []
-    set_panel_dirty(panel_id, True, title="Cannot Discard")
-    coordinator = DirtyPanelConfirmationCoordinator()
+    _open_dirty_document(panel_id, title="Cannot Discard")
+    coordinator = _dirty_confirmation()
     try:
         coordinator.request_panel_close(panel_id, lambda: approved.append("closed"))
         coordinator.choose_discard()
@@ -203,13 +348,14 @@ def test_panel_discard_failure_does_not_approve_close():
         assert approved == []
     finally:
         coordinator.choose_cancel()
-        clear_panel_tracking(panel_id)
+        _close_document_view(panel_id)
 
 
 def test_direct_panel_close_routes_through_shared_confirmation():
     panel_id = "dirty_test_direct_close"
     panel = ClosablePanel("Direct Close", panel_id)
-    panel._dirty = True
+    document = _open_dirty_document(panel_id, title="Direct Close")
+    panel.bind_document(document.document_id)
     reopen_requests: list[tuple[str, bool]] = []
 
     class _WindowManager:
@@ -218,9 +364,10 @@ def test_direct_panel_close_routes_through_shared_confirmation():
             reopen_requests.append((window_id, is_open))
 
     panel.set_window_manager(_WindowManager())
-    coordinator = DirtyPanelConfirmationCoordinator()
-    previous = DirtyPanelConfirmationCoordinator._instance
-    DirtyPanelConfirmationCoordinator._instance = coordinator
+    coordinator = _dirty_confirmation()
+    coordinator_type = _current_confirmation_type()
+    previous = coordinator_type._instance
+    coordinator_type._instance = coordinator
     try:
         panel.close()
 
@@ -230,57 +377,110 @@ def test_direct_panel_close_routes_through_shared_confirmation():
         assert panel.is_open is True
         assert reopen_requests == [(panel_id, True)]
     finally:
-        DirtyPanelConfirmationCoordinator._instance = previous
-        clear_panel_tracking(panel_id)
+        coordinator_type._instance = previous
+        _close_document_view(panel_id)
 
 
-def test_panel_confirmation_renders_only_from_its_source_panel():
-    panel_id = "dirty_test_hosted_modal"
-    set_panel_dirty(panel_id, True, title="Hosted Modal")
-    coordinator = DirtyPanelConfirmationCoordinator()
+def test_panel_confirmation_renders_only_from_global_modal_portal():
+    panel_id = "dirty_test_portal_modal"
+    _open_dirty_document(panel_id, title="Portal Modal")
+    modal_service = ModalService()
+    coordinator = DirtyPanelConfirmationCoordinator(
+        CloseCoordinator(DocumentRegistry.instance()),
+        modal_service,
+    )
     try:
         assert coordinator.request_panel_close(panel_id, lambda: None)
 
-        global_ctx = _SemanticContext()
-        coordinator.render(global_ctx)
-        assert global_ctx.opened == []
+        first_portal_frame = _SemanticContext()
+        modal_service.render(first_portal_frame)
+        assert first_portal_frame.opened == []
 
-        other_ctx = _SemanticContext()
-        coordinator.render(other_ctx, panel_host_id="another_panel")
-        assert other_ctx.opened == []
-
-        source_ctx = _SemanticContext()
-        coordinator.render(source_ctx, panel_host_id=panel_id)
-        assert source_ctx.opened == ["Unsaved Changes###editor_dirty_panel_confirm"]
-        assert "editor.dirty_panel.dialog" in source_ctx.semantics
+        second_portal_frame = _SemanticContext()
+        modal_service.render(second_portal_frame)
+        assert second_portal_frame.opened == [
+            "Unsaved Changes###editor_dirty_panel_confirm"
+        ]
+        assert "editor.dirty_panel.dialog" in second_portal_frame.semantics
+        assert modal_service.active_modal_id == coordinator.MODAL_ID
     finally:
         coordinator.choose_cancel()
-        clear_panel_tracking(panel_id)
+        _close_document_view(panel_id)
 
 
-def test_exit_confirmation_renders_only_from_global_overlay():
+def test_exit_confirmation_renders_from_global_modal_portal():
     panel_id = "dirty_test_global_modal"
-    set_panel_dirty(panel_id, True, title="Global Modal")
-    coordinator = DirtyPanelConfirmationCoordinator()
+    _open_dirty_document(panel_id, title="Global Modal")
+    modal_service = ModalService()
+    coordinator = DirtyPanelConfirmationCoordinator(
+        CloseCoordinator(DocumentRegistry.instance()),
+        modal_service,
+    )
     try:
         assert coordinator.request_exit(lambda: None, lambda: None)
 
-        panel_ctx = _SemanticContext()
-        coordinator.render(panel_ctx, panel_host_id=panel_id)
-        assert panel_ctx.opened == []
+        focus_frame = _SemanticContext()
+        modal_service.render(focus_frame)
+        assert focus_frame.opened == []
 
         global_ctx = _SemanticContext()
-        coordinator.render(global_ctx)
+        modal_service.render(global_ctx)
         assert global_ctx.opened == ["Unsaved Changes###editor_dirty_panel_confirm"]
     finally:
         coordinator.choose_cancel()
-        clear_panel_tracking(panel_id)
+        _close_document_view(panel_id)
 
 
-def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
+def test_exit_confirmation_reveals_the_view_that_owns_the_dirty_revision():
+    from Infernux.engine.interaction import FocusService
+    from Infernux.engine.ui.window_manager import WindowManager
+
+    registry = DocumentRegistry.instance()
+    document = registry.create(
+        DocumentKind.SCENE,
+        "Main",
+        revision=1,
+        saved_revision=0,
+        dirty_view_ids=("ui_editor",),
+    )
+    for view_id in ("scene_view", "game_view", "ui_editor"):
+        registry.attach_view(document.document_id, view_id)
+
+    class _WindowManager:
+        def __init__(self):
+            self.revealed = []
+
+        @staticmethod
+        def is_window_open(_view_id):
+            return True
+
+        def restore_close_confirmation_source(self, view_id):
+            self.revealed.append(view_id)
+
+    previous_manager = WindowManager._instance
+    previous_focus = FocusService._instance
+    manager = _WindowManager()
+    WindowManager._instance = manager
+    FocusService()
+    coordinator = _dirty_confirmation()
+    try:
+        assert coordinator.request_exit(lambda: None, lambda: None)
+        assert coordinator.active_panel_id == "ui_editor"
+        assert manager.revealed == ["ui_editor"]
+        assert FocusService.instance().consume_panel_focus_request("ui_editor")
+    finally:
+        coordinator.choose_cancel()
+        WindowManager._instance = previous_manager
+        FocusService._instance = previous_focus
+        for view_id in ("scene_view", "game_view", "ui_editor"):
+            registry.close_view(view_id)
+
+
+def test_titlebar_close_restores_source_tab_before_modal_focus():
     panel_id = "dirty_test_titlebar_close"
     panel = ClosablePanel("Titlebar Close", panel_id)
-    panel._dirty = True
+    document = _open_dirty_document(panel_id, title="Titlebar Close")
+    panel.bind_document(document.document_id)
 
     class _Context:
         focus_calls = 0
@@ -309,22 +509,36 @@ def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
             return True
 
     ctx = _Context()
-    coordinator = DirtyPanelConfirmationCoordinator()
-    previous = DirtyPanelConfirmationCoordinator._instance
-    previous_active = ClosablePanel._active_panel_id
-    DirtyPanelConfirmationCoordinator._instance = coordinator
-    ClosablePanel._active_panel_id = "game"
+    class _WindowManager:
+        def __init__(self):
+            self.restored = []
+
+        def restore_close_confirmation_source(self, window_id):
+            self.restored.append(window_id)
+
+    window_manager = _WindowManager()
+    panel.set_window_manager(window_manager)
+    coordinator = _dirty_confirmation()
+    coordinator_type = _current_confirmation_type()
+    previous = coordinator_type._instance
+    from Infernux.engine.interaction import FocusService
+
+    previous_focus = FocusService._instance
+    focus = FocusService()
+    coordinator_type._instance = coordinator
+    focus.activate_panel("game")
     try:
         assert panel._begin_closable_window(ctx) is True
         assert panel.is_open is True
         assert ctx.focus_calls == 0
+        assert window_manager.restored == [panel_id]
         assert ClosablePanel.get_active_panel_id() == panel_id
         assert coordinator.active_panel_id == panel_id
     finally:
         coordinator.choose_cancel()
-        DirtyPanelConfirmationCoordinator._instance = previous
-        ClosablePanel._active_panel_id = previous_active
-        clear_panel_tracking(panel_id)
+        coordinator_type._instance = previous
+        FocusService._instance = previous_focus
+        _close_document_view(panel_id)
 
 
 def test_native_modals_use_a_dedicated_main_window_child_viewport():
@@ -359,6 +573,13 @@ def test_native_modal_is_promoted_after_late_dock_focus_processing():
     promote_begin = source.index("void InxGUI::PromoteActiveModal()", apply_begin)
     apply_implementation = source[apply_begin:promote_begin]
     assert "ImGui::GetTopMostPopupModal() != nullptr" in apply_implementation
+    assert "if (dockNode == nullptr)" in apply_implementation
+    assert "m_pendingDockTabSelections.push_back(selection);" in apply_implementation
+    assert "dockNode->WantCloseTabId == window->TabId" in apply_implementation
+    assert "dockNode->WantCloseTabId = 0;" in apply_implementation
+    assert "window->DockTabWantClose = false;" in apply_implementation
+    assert "BringDockTreeToDisplayFront(window);" in apply_implementation
+    assert "ImGui::BringWindowToDisplayFront(dockTreeRoot);" not in apply_implementation
     assert "RequestFrame();" in apply_implementation
 
     promote_end = source.index("void InxGUI::RecordCommand", promote_begin)
@@ -366,6 +587,19 @@ def test_native_modal_is_promoted_after_late_dock_focus_processing():
     assert "ImGui::FocusWindow(modal)" in promote_implementation
     assert "ImGui::BringWindowToFocusFront(modal->RootWindow)" in promote_implementation
     assert "ImGui::BringWindowToDisplayFront(modal)" in promote_implementation
+
+
+def test_dock_presentation_moves_the_complete_tree_without_reordering_its_children():
+    source = Path("cpp/infernux/function/renderer/gui/InxGUI.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    begin = source.index("void BringDockTreeToDisplayFront")
+    end = source.index("} // namespace", begin)
+    implementation = source[begin:end]
+    assert "window->RootWindowDockTree" in implementation
+    assert "std::stable_partition(imgui.Windows.begin(), imgui.Windows.end()" in implementation
+    assert "candidate->RootWindowDockTree != root" in implementation
 
 
 def test_imgui_renders_modals_in_the_overlay_layer():
@@ -392,6 +626,10 @@ def test_imgui_renders_modals_in_the_overlay_layer():
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
 from Infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator
+
+
+def _project_delete_confirmation() -> ProjectDeleteConfirmationCoordinator:
+    return ProjectDeleteConfirmationCoordinator(ModalService())
 
 
 class _ProjectDeleteSemanticContext:
@@ -453,7 +691,7 @@ def test_project_delete_modal_publishes_semantics_and_cancel_preserves_asset(tmp
     asset = tmp_path / "Checkpoint.prefab"
     asset.write_text("prefab", encoding="utf-8")
     deleted: list[list[str]] = []
-    coordinator = ProjectDeleteConfirmationCoordinator()
+    coordinator = _project_delete_confirmation()
 
     assert coordinator.request([str(asset)], lambda paths: deleted.append(paths) or True)
     ctx = _ProjectDeleteSemanticContext()
@@ -478,7 +716,7 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
     received: list[list[str]] = []
-    coordinator = ProjectDeleteConfirmationCoordinator()
+    coordinator = _project_delete_confirmation()
 
     assert coordinator.request(
         [str(first), str(first), str(tmp_path / "missing.prefab"), str(second)],
@@ -493,59 +731,10 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
     assert ctx.closed is True
 
 
-def test_prefab_asset_detach_marks_scene_dirty(monkeypatch, tmp_path):
-    prefab = tmp_path / "Checkpoint.prefab"
-    prefab.write_text("prefab", encoding="utf-8")
-
-    class _Object:
-        def __init__(self, guid: str, children=None):
-            self.prefab_guid = guid
-            self.prefab_root = True
-            self._children = list(children or [])
-
-        def get_children(self):
-            return list(self._children)
-
-    child = _Object("prefab-guid")
-    root = _Object("prefab-guid", [child])
-
-    class _Scene:
-        @staticmethod
-        def get_root_objects():
-            return [root]
-
-    class _SceneManager:
-        @staticmethod
-        def instance():
-            return _SceneManager()
-
-        @staticmethod
-        def get_active_scene():
-            return _Scene()
-
-    dirty: list[bool] = []
-
-    class _FileManager:
-        @staticmethod
-        def mark_dirty():
-            dirty.append(True)
-
-    class _Database:
-        @staticmethod
-        def get_guid_from_path(_path):
-            return "prefab-guid"
-
-    monkeypatch.setattr(native, "SceneManager", _SceneManager)
-    from Infernux.engine import scene_manager as scene_manager_module
-
-    monkeypatch.setattr(scene_manager_module.SceneFileManager, "instance", lambda: _FileManager())
-
-    assert project_file_ops._detach_prefab_instances(str(prefab), _Database()) == 2
-    assert root.prefab_guid == ""
-    assert child.prefab_guid == ""
-    assert root.prefab_root is False
-    assert child.prefab_root is False
-    assert dirty == [True]
+def test_prefab_delete_preserves_missing_linkage_for_undo():
+    source = inspect.getsource(project_file_ops.delete_item)
+    assert "prefab_guid" not in source
+    assert "detach_prefab" not in source
 
 
 def test_project_delete_uses_editor_modal_not_platform_message_box():

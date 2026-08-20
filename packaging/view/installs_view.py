@@ -119,13 +119,17 @@ class _RuntimeInstallWorker(QObject):
     finished = Signal(str)
     error = Signal(str)
 
-    def __init__(self, runtime_manager):
+    def __init__(self, runtime_manager, *, reinstall: bool = False):
         super().__init__()
         self._runtime_manager = runtime_manager
+        self._reinstall = reinstall
 
     def run(self):
         try:
-            python_exe = self._runtime_manager.ensure_runtime()
+            if self._reinstall:
+                python_exe = self._runtime_manager.reinstall_runtime()
+            else:
+                python_exe = self._runtime_manager.ensure_runtime()
         except Exception as exc:
             self.error.emit(str(exc))
             return
@@ -133,9 +137,9 @@ class _RuntimeInstallWorker(QObject):
 
 
 class PythonRuntimeInstallDialog(QDialog):
-    def __init__(self, runtime_manager, parent=None):
+    def __init__(self, runtime_manager, parent=None, *, reinstall: bool = False):
         super().__init__(parent)
-        self.setWindowTitle(tr("Installing Python 3.12"))
+        self.setWindowTitle(tr("Preparing Python 3.12"))
         self.setModal(True)
         self.setFixedSize(420, 140)
         self.result_path = ""
@@ -145,14 +149,14 @@ class PythonRuntimeInstallDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        title = QLabel(tr("Installing Python 3.12 for Infernux Hub"))
+        title = QLabel(tr("Preparing Python 3.12 for Infernux Hub"))
         title.setObjectName("cardName")
         layout.addWidget(title)
 
         detail = QLabel(tr(
-            "A background setup process is preparing a managed full Python 3.12 runtime "
+            "A background setup process is extracting an isolated full Python 3.12 runtime "
             "under C:\\Users\\Public\\InfernuxHub. Each new project will receive its own copy of this runtime. "
-            "This window will close automatically when installation finishes."
+            "Your existing Python installations are not used or changed. This window will close automatically when setup finishes."
         ))
         detail.setWordWrap(True)
         detail.setObjectName("cardPath")
@@ -165,7 +169,7 @@ class PythonRuntimeInstallDialog(QDialog):
         layout.addWidget(progress)
 
         self._thread = QThread(self)
-        self._worker = _RuntimeInstallWorker(runtime_manager)
+        self._worker = _RuntimeInstallWorker(runtime_manager, reinstall=reinstall)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -516,7 +520,7 @@ class InstallsView(QWidget):
         else:
             self._runtime_status.setText(tr("Python 3.12 runtime is missing"))
             self._runtime_path.setText(
-                tr("The managed Python runtime is not installed. Hub will download the matching Python 3.12 installer when you choose Install.")
+                tr("The private Python runtime is not ready. Hub will extract its isolated Python 3.12 archive when you choose Install.")
             )
             self._runtime_button.setText(tr("Install Python 3.12"))
 
@@ -531,7 +535,11 @@ class InstallsView(QWidget):
         if self._runtime_manager is None:
             return
 
-        dlg = PythonRuntimeInstallDialog(self._runtime_manager, self)
+        dlg = PythonRuntimeInstallDialog(
+            self._runtime_manager,
+            self,
+            reinstall=self._runtime_manager.has_runtime(),
+        )
         if dlg.exec() == QDialog.Accepted:
             QMessageBox.information(
                 self,

@@ -1,0 +1,4454 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "mcp_ping",
+        "description": "Return a lightweight MCP liveness response.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_version",
+        "description": "Return MCP server version and protocol information.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_discovery",
+        "description": "Return connection info and project-local discovery file locations.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_capabilities",
+        "description": "Return high-level capability groups and known tool names.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_health",
+        "description": "Report editor, scene, asset database, and queue readiness.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_list_tools_verbose",
+        "description": "Return metadata for tools actually registered on this MCP server.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_help",
+        "description": "Return detailed help for one available tool or all available tool groups.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "tool_name": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_catalog_list",
+        "description": "Return the hierarchical MCP tool catalog.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_catalog_get",
+        "description": "Return tools under a category such as camera/framing or scene/query.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_catalog_search",
+        "description": "Search available tools by name, category, summary, tags, aliases, and concepts.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "category": {
+              "default": "",
+              "type": "string"
+            },
+            "limit": {
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_catalog_recommend",
+        "description": "Recommend an available tool chain for a natural-language intent.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "intent": {
+              "type": "string"
+            },
+            "limit": {
+              "default": 12,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "intent"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "engine_concepts",
+        "description": "List Infernux concepts exposed to agents.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "engine_concept_get",
+        "description": "Return a single concept page.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "workflow_list",
+        "description": "List documented workflows.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "workflow_help",
+        "description": "Return detailed workflow guidance for tools available in this session.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "workflow_examples",
+        "description": "Return compact workflow examples filtered to available tools.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_session_status",
+        "description": "Return the active project, mode, build profile, and recording policy.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_checkpoint_status",
+        "description": "Verify a Supervisor-managed checkpoint and compare it with current project files.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "checkpoint": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "checkpoint"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_checkpoint_list",
+        "description": "List payload-verified managed checkpoints before selecting one for an attempt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_supervisor_shutdown",
+        "description": "Ask the leased Supervisor-owned Editor to close through its normal Editor lifecycle.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "lease_token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lease_token"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_attempt_start",
+        "description": "Start a replayable attempt; managed sessions require an explicit checkpoint.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "task": {
+              "type": "string"
+            },
+            "checkpoint": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_attempt_stop",
+        "description": "Stop and save the active project attempt trace.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_blocker_template",
+        "description": "Return the exact trace and evidence contract for a Repair Agent blocker report.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "mcp_report_blocker",
+        "description": "Persist a reproducible blocker report after mcp_attempt_stop has saved its trace.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "enum": [
+                "project_bug",
+                "editor_ui_bug",
+                "engine_bug",
+                "mcp_bug",
+                "public_api_gap",
+                "nonportable_workaround",
+                "policy_violation",
+                "inconclusive"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "expected": {
+              "type": "string"
+            },
+            "actual": {
+              "type": "string"
+            },
+            "normal_workflow": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "logic_evidence": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "persistence_proof": {
+              "type": "string"
+            },
+            "severity": {
+              "default": "medium",
+              "type": "string"
+            },
+            "notes": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "category",
+            "title",
+            "expected",
+            "actual",
+            "normal_workflow",
+            "logic_evidence",
+            "persistence_proof"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_key",
+        "description": "Queue one physical-key transition and optionally wait for editor delivery.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "pressed": {
+              "type": "boolean"
+            },
+            "repeat": {
+              "default": false,
+              "type": "boolean"
+            },
+            "wait_for_delivery": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "key",
+            "pressed"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_key_chord",
+        "description": "Press a key chord through SDL, releasing keys in reverse order.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "keys": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "keys"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_pointer_move",
+        "description": "Move the pointer in window coordinates through the editor event path.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "delta_x": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "delta_y": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "wait_for_delivery": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_pointer_click",
+        "description": "Click a window coordinate with move, press, and release rendered on separate frames.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "button": {
+              "default": 0,
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_mouse_button",
+        "description": "Queue one mouse-button transition at a window coordinate.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "button": {
+              "type": "integer"
+            },
+            "pressed": {
+              "type": "boolean"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "wait_for_delivery": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "button",
+            "pressed",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_mouse_wheel",
+        "description": "Queue one mouse-wheel event through the editor event path.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "horizontal": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "vertical": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "wait_for_delivery": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_text",
+        "description": "Send UTF-8 text to the currently focused editor control.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "wait_for_delivery": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_window_close",
+        "description": "Request window close through the Editor's normal close-request path.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "wait_for_delivery": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_status",
+        "description": "Read delivery status for the synthetic input queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "input_wait",
+        "description": "Wait until a queued input sequence has reached ImGui and InputManager.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "sequence": {
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "sequence"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_snapshot",
+        "description": "Read controls rendered by the latest Editor frame, optionally filtering targets.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "default": "",
+              "description": "Optional case-insensitive substring filter over target labels and IDs. Leave empty to return targets from every label; this is not a snapshot title.",
+              "type": "string"
+            },
+            "kind": {
+              "default": "",
+              "description": "Optional exact target-kind filter. Leave empty to include every rendered kind.",
+              "type": "string"
+            },
+            "window": {
+              "default": "",
+              "description": "Optional case-insensitive window name/ID filter. Leave empty to include every window.",
+              "type": "string"
+            },
+            "semantic_id": {
+              "default": "",
+              "description": "Optional exact semantic ID filter. Leave empty to include every semantic target.",
+              "type": "string"
+            },
+            "visible_only": {
+              "default": true,
+              "description": "When true, omit targets that the current ImGui frame marks as not visible.",
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 500,
+              "description": "Maximum number of matching targets returned.",
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_capture_status",
+        "description": "Read native semantic-capture sequencing without requesting another frame.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_wait_for_target",
+        "description": "Wait for a rendered target to appear after a human-equivalent action.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "",
+              "type": "string"
+            },
+            "window": {
+              "default": "",
+              "type": "string"
+            },
+            "semantic_id": {
+              "default": "",
+              "type": "string"
+            },
+            "visible_only": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 5.0,
+              "type": "number"
+            },
+            "poll_interval": {
+              "default": 0.1,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_wait_for_window_focus",
+        "description": "Wait until an Editor window or one of its child regions owns keyboard focus.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "window_id": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 5.0,
+              "type": "number"
+            },
+            "poll_interval": {
+              "default": 0.05,
+              "type": "number"
+            }
+          },
+          "required": [
+            "window_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_open_menu",
+        "description": "Ensure a known menu item is rendered without toggling an already-open menu closed.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "menu_semantic_id": {
+              "type": "string"
+            },
+            "item_semantic_id": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            },
+            "poll_interval": {
+              "default": 0.05,
+              "type": "number"
+            }
+          },
+          "required": [
+            "menu_semantic_id",
+            "item_semantic_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_click",
+        "description": "Click through SDL, optionally holding one modifier across rendered frames.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "button": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "default": "left"
+            },
+            "modifier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_double_click",
+        "description": "Double-click one target with a rendered-frame barrier between SDL clicks.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_drag",
+        "description": "Drag a rendered target with a named human mouse button to another target or relative offset.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "destination_target_id": {
+              "default": "",
+              "type": "string"
+            },
+            "destination_snapshot_id": {
+              "default": "",
+              "type": "string"
+            },
+            "delta_x": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "delta_y": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "steps": {
+              "default": 8,
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 5.0,
+              "type": "number"
+            },
+            "button": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "default": "left"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_set_checkbox",
+        "description": "Set a rendered checkbox to the requested state without blind toggling.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "checked": {
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id",
+            "checked"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_focus",
+        "description": "Focus a rendered text field through the same left-click input path as a human.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_replace_text",
+        "description": "Focus a text or numeric field, select all, then type replacement text through SDL.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "editor_ui_hover",
+        "description": "Move the pointer over a rendered target without invoking its action.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target_id": {
+              "type": "string"
+            },
+            "snapshot_id": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "target_id",
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "capture_request",
+        "description": "Request an engine render-target capture for later human review.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "default": "game",
+              "enum": [
+                "scene",
+                "game"
+              ],
+              "type": "string"
+            },
+            "file_name": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "capture_status",
+        "description": "Poll an engine capture without returning its pixels.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capture_id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "capture_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "capture_cancel",
+        "description": "Cancel an unfinished engine capture request.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capture_id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "capture_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "scene_pick_request",
+        "description": "Request an asynchronous GPU object-ID pick from the Scene render target.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "normalized_x": {
+              "type": "number"
+            },
+            "normalized_y": {
+              "type": "number"
+            },
+            "viewport_width": {
+              "type": "integer"
+            },
+            "viewport_height": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "normalized_x",
+            "normalized_y",
+            "viewport_width",
+            "viewport_height"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "scene_pick_status",
+        "description": "Poll one Scene GPU object-ID pick without changing editor selection.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "request_id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_launch",
+        "description": "Launch the Debug Player, optionally at a BuildManifest scene for validation.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "executable_path": {
+              "default": "",
+              "type": "string"
+            },
+            "start_scene": {
+              "default": "",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 60.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_status",
+        "description": "Read managed Player process/readiness state without touching gameplay.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_observe",
+        "description": "Read Player state and optionally discover bounded current-scene objects by public component type.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_names": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "component_probes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public component fields observed inside the standalone Debug Player.",
+                    "properties": {
+                      "object_name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "component_type": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "object_name",
+                      "component_type",
+                      "fields"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_scene_objects": {
+              "default": false,
+              "type": "boolean"
+            },
+            "discovery_component_types": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_discovered_objects": {
+              "default": 32,
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_key",
+        "description": "Send one keyboard transition to Player through its SDL synthetic input queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "pressed": {
+              "type": "boolean"
+            },
+            "repeat": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "key",
+            "pressed"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_press",
+        "description": "Press and release a Player key with engine-controlled hold timing.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "duration_seconds": {
+              "default": 0.1,
+              "type": "number"
+            },
+            "object_names": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "component_probes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public component fields observed inside the standalone Debug Player.",
+                    "properties": {
+                      "object_name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "component_type": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "object_name",
+                      "component_type",
+                      "fields"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_mouse_button",
+        "description": "Send one mouse transition to Player through its SDL synthetic input queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "button": {
+              "type": "integer"
+            },
+            "pressed": {
+              "type": "boolean"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "timeout_seconds": {
+              "default": 3.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "button",
+            "pressed",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_capture",
+        "description": "Capture the standalone Player Game render target for human review.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "file_name": {
+              "default": "player-game.png",
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "default": 30.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_motion_capture_arm",
+        "description": "Arm Player-owned sampling and an optional frame-bounded input plan.\n\nThe Player presses held keys only after the target scene and public\nprobe objects are ready, releases them on the requested game frame,\nand can pause after its bounded settle window. Agents should poll the\nreturned capture rather than issuing per-frame input requests. Stop\nassertions are sampled only at ``sample_interval`` and may use scene\nname, sampled Transform position, or fields explicitly declared in\n``component_probes``.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "seconds": {
+              "default": 2.0,
+              "type": "number"
+            },
+            "sample_interval": {
+              "default": 0.1,
+              "type": "number"
+            },
+            "trigger_scene_name": {
+              "default": "",
+              "type": "string"
+            },
+            "trigger_timeout": {
+              "default": 60.0,
+              "type": "number"
+            },
+            "hold_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_keys": {
+              "anyOf": [
+                {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_mouse_buttons": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mouse_x": {
+              "default": -10000.0,
+              "type": "number"
+            },
+            "mouse_y": {
+              "default": -10000.0,
+              "type": "number"
+            },
+            "frame_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_frame_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_frame_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_seconds": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "pause_on_complete": {
+              "default": false,
+              "type": "boolean"
+            },
+            "component_probes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public component fields observed inside the standalone Debug Player.",
+                    "properties": {
+                      "object_name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "component_type": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "object_name",
+                      "component_type",
+                      "fields"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stop_assertions": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public, observation-only assertion accepted by ``runtime_assert``.",
+                    "examples": [
+                      {
+                        "equals": "playing",
+                        "kind": "play_state"
+                      },
+                      {
+                        "equals": false,
+                        "kind": "audio_paused"
+                      },
+                      {
+                        "equals": "Results",
+                        "kind": "scene_name"
+                      },
+                      {
+                        "kind": "object_exists",
+                        "object_name": "PlayerCar"
+                      },
+                      {
+                        "component_type": "Rigidbody",
+                        "kind": "component_exists",
+                        "object_name": "PlayerCar"
+                      },
+                      {
+                        "axis": "z",
+                        "field": "position",
+                        "kind": "transform_axis",
+                        "object_name": "PlayerCar",
+                        "operator": "greater_or_equal",
+                        "value": 10.0
+                      },
+                      {
+                        "component_type": "RaceScenePortal",
+                        "equals": "Results",
+                        "field": "destination_scene",
+                        "kind": "component_field",
+                        "object_name": "FinishPortal"
+                      },
+                      {
+                        "axis": "Vertical",
+                        "equals": 1.0,
+                        "kind": "input_axis"
+                      },
+                      {
+                        "kind": "no_errors"
+                      }
+                    ],
+                    "properties": {
+                      "kind": {
+                        "description": "Assertion behavior to evaluate from public runtime state.",
+                        "enum": [
+                          "play_state",
+                          "audio_paused",
+                          "object_exists",
+                          "component_exists",
+                          "no_errors",
+                          "scene_name",
+                          "scene_path",
+                          "transform_axis",
+                          "input_axis",
+                          "component_field"
+                        ],
+                        "type": "string"
+                      },
+                      "object_id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Runtime GameObject ID. Use object_name instead when IDs may change after scene loads."
+                      },
+                      "object_name": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Public GameObject name resolved in the active scene."
+                      },
+                      "component_type": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Public native or Python component type name."
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "description": "Zero-based component occurrence on the object.",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "field": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Public component field, or transform vector field: position, euler_angles, local_position, local_euler_angles, local_scale."
+                      },
+                      "axis": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "x/y/z for transform_axis, or a public input axis name for input_axis."
+                      },
+                      "operator": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "equals",
+                              "not_equals",
+                              "greater_than",
+                              "greater_or_equal",
+                              "less_than",
+                              "less_or_equal"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Comparison operator. Defaults to equals when omitted."
+                      },
+                      "value": {
+                        "default": null,
+                        "description": "Expected value used with operator.",
+                        "title": "Value"
+                      },
+                      "equals": {
+                        "default": null,
+                        "description": "Shorthand expected value for an equals comparison.",
+                        "title": "Equals"
+                      },
+                      "tolerance": {
+                        "default": 0.0,
+                        "description": "Absolute tolerance for numeric equality.",
+                        "minimum": 0.0,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stop_mode": {
+              "default": "all",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            },
+            "pause_on_condition": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "object_names"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_motion_capture_status",
+        "description": "Read or briefly wait for a Player-owned startup capture.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capture_id": {
+              "type": "string"
+            },
+            "wait_seconds": {
+              "default": 0.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "capture_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_motion_capture_cancel",
+        "description": "Cancel an armed or active Player-owned startup capture.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capture_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "capture_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_logs",
+        "description": "Read bounded Player runtime/stdout log tails for failures and warnings.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "player_validation_shutdown",
+        "description": "Request normal Player shutdown on its main thread; never force-terminate it.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "timeout_seconds": {
+              "default": 15.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "api_subsystems",
+        "description": "List documented engine subsystems available to agents.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "api_get",
+        "description": "Return a subsystem guide or symbol API page.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "api_search",
+        "description": "Search subsystem guides, symbols, shader IDs, and component names.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "limit": {
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "shader_guide",
+        "description": "Return shader authoring rules, property annotation syntax, and examples.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "topic": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "shader_catalog",
+        "description": "List shader IDs from project and built-in shader roots.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "default": "",
+              "type": "string"
+            },
+            "include_hidden": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "shader_describe",
+        "description": "Describe a shader file, annotations, material properties, and usage.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "shader_id": {
+              "type": "string"
+            },
+            "kind": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "shader_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "audio_guide",
+        "description": "Return AudioSource/AudioListener/AudioClip usage guidance.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "topic": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "project_info",
+        "description": "Return the currently opened project and scene state.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "project_asset_state",
+        "description": "Read one project asset's disk/meta and AssetDatabase identity state.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "default": "",
+              "type": "string"
+            },
+            "guid": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "project_wait_for_asset",
+        "description": "Wait until disk/meta and AssetDatabase agree on an asset identity.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "default": "",
+              "type": "string"
+            },
+            "guid": {
+              "default": "",
+              "type": "string"
+            },
+            "exists": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 5.0,
+              "type": "number"
+            },
+            "poll_interval": {
+              "default": 0.05,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "project_build_scenes_get",
+        "description": "Read the project's ordered standalone build scene list.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "console_read",
+        "description": "Read the authoritative Console view without treating status-bar overlays as entries.\n\nIn the Editor, native C++ logs and Python Debug logs share the native\nConsole panel. The response labels that source explicitly. The\n``status_bar`` field is a separate UI surface and is never included in\n``entries``; this matters for renderer Profile text shown at the\nbottom of the Editor window.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            },
+            "levels": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_wait",
+        "description": "Wait until public Play Mode, scene, and deferred-task conditions are met.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "play_state": {
+              "default": "",
+              "type": "string"
+            },
+            "scene_name": {
+              "default": "",
+              "type": "string"
+            },
+            "deferred_idle": {
+              "default": true,
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "default": 10.0,
+              "type": "number"
+            },
+            "poll_interval": {
+              "default": 0.1,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_wait_frames",
+        "description": "Wait for a fixed number of authoritative engine or paused-step frames.\n\nNormal Play advances ``Time.frame_count``.  A paused Step advances the\nnative SceneManager simulation clock instead, because a paused Editor\nintentionally does not produce another Play frame.  This keeps the\nwait bounded and preserves the paused state after the step.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "frames": {
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 120.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "frames"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_run_for",
+        "description": "Let Play Mode run for a duration while polling for errors.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "seconds": {
+              "default": 1.0,
+              "type": "number"
+            },
+            "stop_on_error": {
+              "default": true,
+              "type": "boolean"
+            },
+            "poll_interval": {
+              "default": 0.25,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_measure_motion",
+        "description": "Sample an already-running scene inside one bounded input action.\n\nDo not use this after a separate Play request when startup motion matters:\ntransport/agent latency advances Play between calls. Arm\n``runtime_motion_capture_arm`` before the real Toolbar Play action instead.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "seconds": {
+              "default": 0.25,
+              "type": "number"
+            },
+            "hold_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_keys": {
+              "anyOf": [
+                {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "sample_interval": {
+              "default": 0.1,
+              "type": "number"
+            },
+            "component_probes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public component fields sampled inside an action-owned motion window.",
+                    "properties": {
+                      "object_name": {
+                        "description": "GameObject name present in object_names.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "component_type": {
+                        "description": "Public native or Python component type name.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "description": "Public component fields to sample.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "description": "Zero-based component occurrence on the object.",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "object_name",
+                      "component_type",
+                      "fields"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "object_names"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_motion_capture_arm",
+        "description": "Arm startup sampling before a human-equivalent Play/Pause action.\n\nThis is the required tool for the first seconds after entering Play. An\nOptional SDL keys or mouse buttons, a game-frame budget, public component probes, and a\ndeclarative stop condition are owned by the same bounded capture window.\n``hold_frame_count`` plus ``wait_frame_count`` describes a two-stage\naction: hold keys for N game frames, then release them and let the game\nrun for M more frames and/or ``wait_seconds``. The condition is evaluated\nonly at the configured sample interval, so a slow remote agent cannot\nmiss its own pause point and no per-frame RPC is introduced.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "seconds": {
+              "default": 2.0,
+              "type": "number"
+            },
+            "sample_interval": {
+              "default": 0.1,
+              "type": "number"
+            },
+            "trigger_play_state": {
+              "default": "playing",
+              "enum": [
+                "playing",
+                "paused"
+              ],
+              "type": "string"
+            },
+            "trigger_timeout": {
+              "default": 60.0,
+              "type": "number"
+            },
+            "hold_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_keys": {
+              "anyOf": [
+                {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_mouse_buttons": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mouse_x": {
+              "default": -10000.0,
+              "type": "number"
+            },
+            "mouse_y": {
+              "default": -10000.0,
+              "type": "number"
+            },
+            "frame_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hold_frame_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_frame_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_seconds": {
+              "default": 0.0,
+              "type": "number"
+            },
+            "pause_on_complete": {
+              "default": false,
+              "type": "boolean"
+            },
+            "component_probes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public component fields sampled inside an action-owned motion window.",
+                    "properties": {
+                      "object_name": {
+                        "description": "GameObject name present in object_names.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "component_type": {
+                        "description": "Public native or Python component type name.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "description": "Public component fields to sample.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "description": "Zero-based component occurrence on the object.",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "object_name",
+                      "component_type",
+                      "fields"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stop_assertions": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "description": "Public, observation-only assertion accepted by ``runtime_assert``.",
+                    "examples": [
+                      {
+                        "equals": "playing",
+                        "kind": "play_state"
+                      },
+                      {
+                        "equals": false,
+                        "kind": "audio_paused"
+                      },
+                      {
+                        "equals": "Results",
+                        "kind": "scene_name"
+                      },
+                      {
+                        "kind": "object_exists",
+                        "object_name": "PlayerCar"
+                      },
+                      {
+                        "component_type": "Rigidbody",
+                        "kind": "component_exists",
+                        "object_name": "PlayerCar"
+                      },
+                      {
+                        "axis": "z",
+                        "field": "position",
+                        "kind": "transform_axis",
+                        "object_name": "PlayerCar",
+                        "operator": "greater_or_equal",
+                        "value": 10.0
+                      },
+                      {
+                        "component_type": "RaceScenePortal",
+                        "equals": "Results",
+                        "field": "destination_scene",
+                        "kind": "component_field",
+                        "object_name": "FinishPortal"
+                      },
+                      {
+                        "axis": "Vertical",
+                        "equals": 1.0,
+                        "kind": "input_axis"
+                      },
+                      {
+                        "kind": "no_errors"
+                      }
+                    ],
+                    "properties": {
+                      "kind": {
+                        "description": "Assertion behavior to evaluate from public runtime state.",
+                        "enum": [
+                          "play_state",
+                          "audio_paused",
+                          "object_exists",
+                          "component_exists",
+                          "no_errors",
+                          "scene_name",
+                          "scene_path",
+                          "transform_axis",
+                          "input_axis",
+                          "component_field"
+                        ],
+                        "type": "string"
+                      },
+                      "object_id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Runtime GameObject ID. Use object_name instead when IDs may change after scene loads."
+                      },
+                      "object_name": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Public GameObject name resolved in the active scene."
+                      },
+                      "component_type": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Public native or Python component type name."
+                      },
+                      "ordinal": {
+                        "default": 0,
+                        "description": "Zero-based component occurrence on the object.",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "field": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Public component field, or transform vector field: position, euler_angles, local_position, local_euler_angles, local_scale."
+                      },
+                      "axis": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "x/y/z for transform_axis, or a public input axis name for input_axis."
+                      },
+                      "operator": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "equals",
+                              "not_equals",
+                              "greater_than",
+                              "greater_or_equal",
+                              "less_than",
+                              "less_or_equal"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Comparison operator. Defaults to equals when omitted."
+                      },
+                      "value": {
+                        "default": null,
+                        "description": "Expected value used with operator.",
+                        "title": "Value"
+                      },
+                      "equals": {
+                        "default": null,
+                        "description": "Shorthand expected value for an equals comparison.",
+                        "title": "Equals"
+                      },
+                      "tolerance": {
+                        "default": 0.0,
+                        "description": "Absolute tolerance for numeric equality.",
+                        "minimum": 0.0,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stop_mode": {
+              "default": "all",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            },
+            "pause_on_condition": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "object_names"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_motion_capture_status",
+        "description": "Read or briefly wait for an armed motion capture without changing Play state.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capture_id": {
+              "type": "string"
+            },
+            "wait_seconds": {
+              "default": 0.0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "capture_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_motion_capture_cancel",
+        "description": "Cancel an armed or active capture, optionally pausing Play first.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capture_id": {
+              "type": "string"
+            },
+            "pause": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "capture_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_input_state",
+        "description": "Read Game View focus plus selected keyboard, axis, and mouse input probes.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "keys": {
+              "anyOf": [
+                {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "axes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mouse_buttons": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_renderer_state",
+        "description": "Read current renderer submission and GPU residency telemetry.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_performance_window_begin",
+        "description": "Reset the native numeric frame performance window before a fixed-frame run.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_performance_window",
+        "description": "Read one immutable aggregate of the native frame performance window.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_ui_performance",
+        "description": "Read an engine-recorded rolling UI profile without active frame polling.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_baseline_diagnostics",
+        "description": "Read R0 baseline identity, recorder state, and available live counters.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_physics_state",
+        "description": "Read physics-world population and the latest fixed-step profile.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_physics_raycast",
+        "description": "Run a bounded read-only raycast through the public Physics API.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "origin": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "direction": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "max_distance": {
+              "default": 1000.0,
+              "type": "number"
+            },
+            "layer_mask": {
+              "default": 4294967291,
+              "type": "integer"
+            },
+            "query_triggers": {
+              "default": true,
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 64,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "origin",
+            "direction"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_physics_overlap_box",
+        "description": "Query colliders in an axis-aligned box without mutating the scene.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "center": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "half_extents": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "layer_mask": {
+              "default": 4294967291,
+              "type": "integer"
+            },
+            "query_triggers": {
+              "default": true,
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 64,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "center",
+            "half_extents"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_get_object_state",
+        "description": "Read runtime GameObject transform and component summary.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_find_objects",
+        "description": "Resolve runtime GameObjects by public name/tag and return stable IDs.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "default": "",
+              "type": "string"
+            },
+            "tag": {
+              "default": "",
+              "type": "string"
+            },
+            "limit": {
+              "default": 50,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_get_component_state",
+        "description": "Read a component snapshot at runtime.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "component_type": {
+              "type": "string"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "component_type"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_read_errors",
+        "description": "Read console errors and script loader errors.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "include_warnings": {
+              "default": false,
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "runtime_assert",
+        "description": "Evaluate runtime assertions for state, scene, transforms, input, and public component fields.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "assertions": {
+              "description": "One or more public runtime assertions.",
+              "items": {
+                "additionalProperties": false,
+                "description": "Public, observation-only assertion accepted by ``runtime_assert``.",
+                "examples": [
+                  {
+                    "equals": "playing",
+                    "kind": "play_state"
+                  },
+                  {
+                    "equals": false,
+                    "kind": "audio_paused"
+                  },
+                  {
+                    "equals": "Results",
+                    "kind": "scene_name"
+                  },
+                  {
+                    "kind": "object_exists",
+                    "object_name": "PlayerCar"
+                  },
+                  {
+                    "component_type": "Rigidbody",
+                    "kind": "component_exists",
+                    "object_name": "PlayerCar"
+                  },
+                  {
+                    "axis": "z",
+                    "field": "position",
+                    "kind": "transform_axis",
+                    "object_name": "PlayerCar",
+                    "operator": "greater_or_equal",
+                    "value": 10.0
+                  },
+                  {
+                    "component_type": "RaceScenePortal",
+                    "equals": "Results",
+                    "field": "destination_scene",
+                    "kind": "component_field",
+                    "object_name": "FinishPortal"
+                  },
+                  {
+                    "axis": "Vertical",
+                    "equals": 1.0,
+                    "kind": "input_axis"
+                  },
+                  {
+                    "kind": "no_errors"
+                  }
+                ],
+                "properties": {
+                  "kind": {
+                    "description": "Assertion behavior to evaluate from public runtime state.",
+                    "enum": [
+                      "play_state",
+                      "audio_paused",
+                      "object_exists",
+                      "component_exists",
+                      "no_errors",
+                      "scene_name",
+                      "scene_path",
+                      "transform_axis",
+                      "input_axis",
+                      "component_field"
+                    ],
+                    "type": "string"
+                  },
+                  "object_id": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Runtime GameObject ID. Use object_name instead when IDs may change after scene loads."
+                  },
+                  "object_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Public GameObject name resolved in the active scene."
+                  },
+                  "component_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Public native or Python component type name."
+                  },
+                  "ordinal": {
+                    "default": 0,
+                    "description": "Zero-based component occurrence on the object.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "field": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Public component field, or transform vector field: position, euler_angles, local_position, local_euler_angles, local_scale."
+                  },
+                  "axis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "x/y/z for transform_axis, or a public input axis name for input_axis."
+                  },
+                  "operator": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "equals",
+                          "not_equals",
+                          "greater_than",
+                          "greater_or_equal",
+                          "less_than",
+                          "less_or_equal"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Comparison operator. Defaults to equals when omitted."
+                  },
+                  "value": {
+                    "default": null,
+                    "description": "Expected value used with operator.",
+                    "title": "Value"
+                  },
+                  "equals": {
+                    "default": null,
+                    "description": "Shorthand expected value for an equals comparison.",
+                    "title": "Equals"
+                  },
+                  "tolerance": {
+                    "default": 0.0,
+                    "description": "Absolute tolerance for numeric equality.",
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "assertions"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_inspect_runtime",
+        "description": "Inspect one live ParticleSystem control plane without particle readback.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_get_parameter",
+        "description": "Read one exposed ParticleGraph parameter from a live ParticleSystem.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "name"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_set_parameter",
+        "description": "Set one exposed typed ParticleGraph parameter.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "value": {},
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "name",
+            "value"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_set_emitter_options",
+        "description": "Set one emitter's scene-instance playback policy.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "emitter": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "play_on_start": {
+              "type": "boolean"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "emitter",
+            "enabled",
+            "play_on_start"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_list_events",
+        "description": "List typed gameplay events accepted by a live ParticleSystem.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_start_emitter",
+        "description": "Start one emitter; invalid indices are harmless no-ops.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "emitter_index": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "emitter_index"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_pause_emitter",
+        "description": "Pause one emitter; invalid indices are harmless no-ops.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "emitter_index": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "emitter_index"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_terminate_emitter",
+        "description": "Terminate and reset one emitter; invalid indices are harmless no-ops.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "emitter_index": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "emitter_index"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_restart_emitter",
+        "description": "Restart one emitter; invalid indices are harmless no-ops.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "emitter_index": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "emitter_index"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_seek",
+        "description": "Seek all emitters, or one indexed emitter, using deterministic GPU replay.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "time_seconds": {
+              "type": "number"
+            },
+            "emitter_index": {
+              "default": -1,
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "time_seconds"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_request_gpu_diagnostics",
+        "description": "Request an isolated GPU snapshot and optional bounded live-state samples.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            },
+            "sample_frames": {
+              "default": 60,
+              "type": "integer"
+            },
+            "state_sample_count": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_poll_gpu_diagnostics",
+        "description": "Poll a previously requested GPU particle counter snapshot.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "request_id": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_request_gpu_view_diagnostics",
+        "description": "Request one asynchronous Scene/Game GPU cull-and-draw snapshot.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "view": {
+              "type": "string"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            },
+            "camera_component_id": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "view"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      },
+      {
+        "name": "particle_system_poll_gpu_view_diagnostics",
+        "description": "Poll a requested per-view GPU particle cull-and-draw snapshot.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "object_id": {
+              "type": "integer"
+            },
+            "view": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "integer"
+            },
+            "ordinal": {
+              "default": 0,
+              "type": "integer"
+            },
+            "camera_component_id": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "view",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        }
+      }
+    ]
+  }
+}

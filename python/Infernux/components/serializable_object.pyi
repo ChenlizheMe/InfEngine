@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Type
 
-from .serialized_field import FieldMetadata
+from .fields import FieldMetadata
 
 
 def get_serializable_type_id(value: type | SerializableObject) -> str: ...

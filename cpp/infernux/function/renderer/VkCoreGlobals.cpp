@@ -457,17 +457,17 @@ void InxVkCoreModular::PreallocateInstances(size_t requiredInstances)
     // Descriptor sets may also be referenced by asynchronous preview command
     // buffers. Even rewriting an identical binding invalidates those recorded
     // commands, so only publish a descriptor revision when storage changed.
-    if (m_instanceBuffers[frameIndex].buffer &&
-        previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer())
-        UpdateInstanceBufferDescriptor(frameIndex);
-    if ((m_skinInstanceBuffers[frameIndex].buffer &&
+    const bool instanceChanged = m_instanceBuffers[frameIndex].buffer &&
+                                 previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer();
+    const bool skinChanged =
+        (m_skinInstanceBuffers[frameIndex].buffer &&
          previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
         (m_skinPaletteBuffers[frameIndex].buffer &&
-         previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()))
-        UpdateSkinBufferDescriptors(frameIndex);
-    if (m_instanceAuxBuffers[frameIndex].buffer &&
-        previousInstanceAuxBuffer != m_instanceAuxBuffers[frameIndex].buffer->GetBuffer())
-        UpdateInstanceAuxBufferDescriptor(frameIndex);
+         previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer());
+    const bool instanceAuxChanged = m_instanceAuxBuffers[frameIndex].buffer &&
+                                    previousInstanceAuxBuffer != m_instanceAuxBuffers[frameIndex].buffer->GetBuffer();
+    if (instanceChanged || skinChanged || instanceAuxChanged)
+        (void)PublishGlobalsDescriptorRevision(frameIndex);
 }
 
 bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix)
@@ -503,97 +503,70 @@ bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanc
 
 void InxVkCoreModular::UpdateInstanceBufferDescriptor(uint32_t frameIndex)
 {
+    (void)PublishGlobalsDescriptorRevision(frameIndex);
+}
+
+bool InxVkCoreModular::PublishGlobalsDescriptorRevision(uint32_t frameIndex)
+{
     VkDevice device = GetDevice();
-    if (device == VK_NULL_HANDLE || frameIndex >= m_globalsDescSets.size() || frameIndex >= m_instanceBuffers.size())
-        return;
+    if (device == VK_NULL_HANDLE || m_globalsDescSetLayout == VK_NULL_HANDLE ||
+        frameIndex >= m_globalsDescSets.size() || frameIndex >= m_globalsDescriptorLeases.size() ||
+        frameIndex >= m_globalsBuffers.size() || frameIndex >= m_instanceBuffers.size() ||
+        frameIndex >= m_skinInstanceBuffers.size() || frameIndex >= m_skinPaletteBuffers.size() ||
+        frameIndex >= m_instanceAuxBuffers.size())
+        return false;
 
-    const auto &frame = m_instanceBuffers[frameIndex];
-    if (!frame.buffer)
-        return;
+    const auto &globals = m_globalsBuffers[frameIndex];
+    const auto &instances = m_instanceBuffers[frameIndex];
+    const auto &skinInstances = m_skinInstanceBuffers[frameIndex];
+    const auto &skinPalette = m_skinPaletteBuffers[frameIndex];
+    const auto &instanceAux = m_instanceAuxBuffers[frameIndex];
+    if (!globals || !instances.buffer || !skinInstances.buffer || !skinPalette.buffer || !instanceAux.buffer)
+        return false;
 
-    VkDescriptorBufferInfo ssboBufInfo{};
-    ssboBufInfo.buffer = frame.buffer->GetBuffer();
-    ssboBufInfo.offset = 0;
-    ssboBufInfo.range = VK_WHOLE_SIZE;
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    const auto replacement = descriptorManager.Allocate(m_globalsDescSetLayout, vk::DescriptorArena::Persistent);
+    if (!replacement.IsValid()) {
+        INXLOG_ERROR("Failed to allocate globals descriptor revision for frame ", frameIndex);
+        return false;
+    }
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = m_globalsDescSets[frameIndex];
-    write.dstBinding = 1;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &ssboBufInfo;
+    VkDescriptorBufferInfo bufferInfos[5]{};
+    bufferInfos[0] = {globals->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
+    bufferInfos[1] = {instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    bufferInfos[2] = {skinInstances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    bufferInfos[3] = {skinPalette.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    bufferInfos[4] = {instanceAux.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
 
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    constexpr VkDescriptorType descriptorTypes[5] = {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    VkWriteDescriptorSet writes[5]{};
+    for (uint32_t binding = 0; binding < 5; ++binding) {
+        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[binding].dstSet = replacement.set;
+        writes[binding].dstBinding = binding;
+        writes[binding].descriptorType = descriptorTypes[binding];
+        writes[binding].descriptorCount = 1;
+        writes[binding].pBufferInfo = &bufferInfos[binding];
+    }
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+
+    const auto retired = m_globalsDescriptorLeases[frameIndex];
+    m_globalsDescriptorLeases[frameIndex] = replacement;
+    m_globalsDescSets[frameIndex] = replacement.set;
+    descriptorManager.Retire(retired);
+    return true;
 }
 
 void InxVkCoreModular::UpdateSkinBufferDescriptors(uint32_t frameIndex)
 {
-    VkDevice device = GetDevice();
-    if (device == VK_NULL_HANDLE || frameIndex >= m_globalsDescSets.size() ||
-        frameIndex >= m_skinInstanceBuffers.size() || frameIndex >= m_skinPaletteBuffers.size())
-        return;
-
-    const auto &skinInstances = m_skinInstanceBuffers[frameIndex];
-    const auto &skinPalette = m_skinPaletteBuffers[frameIndex];
-    if (!skinInstances.buffer || !skinPalette.buffer)
-        return;
-
-    VkDescriptorBufferInfo skinInstanceInfo{};
-    skinInstanceInfo.buffer = skinInstances.buffer->GetBuffer();
-    skinInstanceInfo.offset = 0;
-    skinInstanceInfo.range = VK_WHOLE_SIZE;
-
-    VkDescriptorBufferInfo skinPaletteInfo{};
-    skinPaletteInfo.buffer = skinPalette.buffer->GetBuffer();
-    skinPaletteInfo.offset = 0;
-    skinPaletteInfo.range = VK_WHOLE_SIZE;
-
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = m_globalsDescSets[frameIndex];
-    writes[0].dstBinding = 2;
-    writes[0].dstArrayElement = 0;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[0].descriptorCount = 1;
-    writes[0].pBufferInfo = &skinInstanceInfo;
-
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = m_globalsDescSets[frameIndex];
-    writes[1].dstBinding = 3;
-    writes[1].dstArrayElement = 0;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[1].descriptorCount = 1;
-    writes[1].pBufferInfo = &skinPaletteInfo;
-
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    (void)PublishGlobalsDescriptorRevision(frameIndex);
 }
 
 void InxVkCoreModular::UpdateInstanceAuxBufferDescriptor(uint32_t frameIndex)
 {
-    VkDevice device = GetDevice();
-    if (device == VK_NULL_HANDLE || frameIndex >= m_globalsDescSets.size() || frameIndex >= m_instanceAuxBuffers.size())
-        return;
-
-    const auto &frame = m_instanceAuxBuffers[frameIndex];
-    if (!frame.buffer)
-        return;
-
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = frame.buffer->GetBuffer();
-    bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = m_globalsDescSets[frameIndex];
-    write.dstBinding = 4;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &bufferInfo;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    (void)PublishGlobalsDescriptorRevision(frameIndex);
 }
 
 void InxVkCoreModular::PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances)

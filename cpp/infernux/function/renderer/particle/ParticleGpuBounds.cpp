@@ -12,16 +12,12 @@ namespace
 {
 
 constexpr std::string_view CommonBindings = R"glsl(
-struct ParticleInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
+struct ParticleVisibilityInstance {
+    vec4 position_radius;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
+layout(std430, set = 0, binding = 0) readonly buffer Visibility {
+    ParticleVisibilityInstance visibility[];
+};
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
     uint source_vertex_count;
     uint source_instance_count;
@@ -141,25 +137,63 @@ uint inx_ordered_float(float value) {
     uint bits = floatBitsToUint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
+bool inx_is_finite(float value) {
+    return !isnan(value) && !isinf(value);
+}
+bool inx_is_finite_vec3(vec3 value) {
+    return inx_is_finite(value.x) && inx_is_finite(value.y) && inx_is_finite(value.z);
+}
+shared uvec3 shared_lower[256];
+shared uvec3 shared_upper[256];
 void main() {
-    if (simulation_allowed == 0u) return;
+    uint local_index = gl_LocalInvocationID.x;
+    uvec3 lower_bits = uvec3(0xffffffffu);
+    uvec3 upper_bits = uvec3(0u);
     uint index = gl_GlobalInvocationID.x;
     uint source_count = min(source_instance_count, pc.capacity);
-    if (index >= source_count) return;
-    uint particle_index = source_indices[index];
-    if (particle_index >= pc.capacity) return;
-    ParticleInstance instance = instances[particle_index];
-    float radius = abs(instance.position_size.w) *
-        max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
-        1.41421356237;
-    vec3 lower = instance.position_size.xyz - vec3(radius);
-    vec3 upper = instance.position_size.xyz + vec3(radius);
-    atomicMin(min_x, inx_ordered_float(lower.x));
-    atomicMin(min_y, inx_ordered_float(lower.y));
-    atomicMin(min_z, inx_ordered_float(lower.z));
-    atomicMax(max_x, inx_ordered_float(upper.x));
-    atomicMax(max_y, inx_ordered_float(upper.y));
-    atomicMax(max_z, inx_ordered_float(upper.z));
+    if (simulation_allowed != 0u && index < source_count) {
+        uint particle_index = source_indices[index];
+        if (particle_index < pc.capacity) {
+            ParticleVisibilityInstance instance = visibility[particle_index];
+            vec3 position = instance.position_radius.xyz;
+            float radius = instance.position_radius.w;
+            bool valid = inx_is_finite_vec3(position) && inx_is_finite(radius);
+            if (valid) {
+                valid = radius >= 0.0;
+                if (valid) {
+                    vec3 bounds_lower = position - vec3(radius);
+                    vec3 bounds_upper = position + vec3(radius);
+                    valid = inx_is_finite_vec3(bounds_lower) && inx_is_finite_vec3(bounds_upper);
+                    if (valid) {
+                        lower_bits = uvec3(inx_ordered_float(bounds_lower.x), inx_ordered_float(bounds_lower.y),
+                                           inx_ordered_float(bounds_lower.z));
+                        upper_bits = uvec3(inx_ordered_float(bounds_upper.x), inx_ordered_float(bounds_upper.y),
+                                           inx_ordered_float(bounds_upper.z));
+                    }
+                }
+            }
+        }
+    }
+
+    shared_lower[local_index] = lower_bits;
+    shared_upper[local_index] = upper_bits;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local_index < stride) {
+            shared_lower[local_index] = min(shared_lower[local_index], shared_lower[local_index + stride]);
+            shared_upper[local_index] = max(shared_upper[local_index], shared_upper[local_index + stride]);
+        }
+        barrier();
+    }
+
+    if (simulation_allowed != 0u && local_index == 0u) {
+        atomicMin(min_x, shared_lower[0].x);
+        atomicMin(min_y, shared_lower[0].y);
+        atomicMin(min_z, shared_lower[0].z);
+        atomicMax(max_x, shared_upper[0].x);
+        atomicMax(max_y, shared_upper[0].y);
+        atomicMax(max_z, shared_upper[0].z);
+    }
 }
 )glsl");
     return Source;
@@ -204,24 +238,30 @@ ParticleGpuBounds::~ParticleGpuBounds()
 bool ParticleGpuBounds::Create(rhi::Device &device, const GpuParticleBoundsDesc &desc)
 {
     Destroy();
-    if (desc.capacity == 0 || !desc.instances.IsValid() || !desc.sourceIndices.IsValid() ||
+    if (desc.capacity == 0 || !desc.visibility.IsValid() || !desc.sourceIndices.IsValid() ||
         !desc.sourceIndirectArguments.IsValid() || !desc.simulationControl.IsValid() || !desc.program.IsValid()) {
         return false;
     }
 
     m_device = &device;
     m_capacity = desc.capacity;
-    m_instances = desc.instances;
+    m_visibility = desc.visibility;
     m_sourceIndices = desc.sourceIndices;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
     m_simulationControl = desc.simulationControl;
     const auto storage = rhi::BufferUsageFlags::Storage;
-    rhi::BufferDesc boundsDesc;
-    boundsDesc.byteSize = BoundsBufferBytes;
-    boundsDesc.usage = storage | rhi::BufferUsageFlags::TransferSource;
-    boundsDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-    m_bounds = device.CreateBuffer(boundsDesc);
-    m_dispatchArguments = device.CreateBuffer({DispatchBufferBytes, storage | rhi::BufferUsageFlags::Indirect});
+    const auto createSharedStorage = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+        rhi::BufferDesc bufferDesc;
+        bufferDesc.byteSize = bytes;
+        bufferDesc.usage = usage;
+        // Prepare/Reset run inside GpuParticle/Simulation on the independent
+        // compute family. A Graphics-only exclusive dispatch buffer hangs that
+        // queue the first time Game-only preview creates a new emitter.
+        bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        return device.CreateBuffer(bufferDesc);
+    };
+    m_bounds = createSharedStorage(BoundsBufferBytes, storage | rhi::BufferUsageFlags::TransferSource);
+    m_dispatchArguments = createSharedStorage(DispatchBufferBytes, storage | rhi::BufferUsageFlags::Indirect);
     if (!m_bounds.IsValid() || !m_dispatchArguments.IsValid()) {
         Destroy();
         return false;
@@ -239,7 +279,7 @@ bool ParticleGpuBounds::Create(rhi::Device &device, const GpuParticleBoundsDesc 
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 6> buffers = {m_instances,         m_sourceIndirectArguments, m_bounds,
+    const std::array<rhi::BufferHandle, 6> buffers = {m_visibility,        m_sourceIndirectArguments, m_bounds,
                                                       m_dispatchArguments, m_simulationControl,       m_sourceIndices};
     for (uint32_t binding = 0; binding < buffers.size(); ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -286,7 +326,7 @@ void ParticleGpuBounds::Destroy() noexcept
     }
     m_device = nullptr;
     m_capacity = 0;
-    m_instances = {};
+    m_visibility = {};
     m_sourceIndices = {};
     m_sourceIndirectArguments = {};
     m_simulationControl = {};
@@ -297,11 +337,14 @@ void ParticleGpuBounds::Destroy() noexcept
     m_preparePipeline = {};
     m_resetPipeline = {};
     m_reducePipeline = {};
+    m_controlPrepared = false;
+    m_preparedPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
+    m_preparedForceSimulation = false;
 }
 
 bool ParticleGpuBounds::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_instances.IsValid() && m_sourceIndices.IsValid() &&
+    return m_device && m_capacity > 0 && m_visibility.IsValid() && m_sourceIndices.IsValid() &&
            m_sourceIndirectArguments.IsValid() && m_simulationControl.IsValid() && m_bounds.IsValid() &&
            m_dispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_preparePipeline.IsValid() &&
            m_resetPipeline.IsValid() && m_reducePipeline.IsValid();
@@ -310,13 +353,21 @@ bool ParticleGpuBounds::IsValid() const noexcept
 void ParticleGpuBounds::RecordPrepare(const rhi::ComputeCommandEncoder &encoder, GpuParticleOffscreenPolicy policy,
                                       bool forceSimulation) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
+    if (m_controlPrepared && policy == GpuParticleOffscreenPolicy::AlwaysSimulate &&
+        m_preparedPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate &&
+        m_preparedForceSimulation == forceSimulation)
+        return;
     GpuParticleBoundsConstants constants;
     constants.capacity = m_capacity;
     constants.offscreenPolicy = policy;
     constants.forceSimulation = forceSimulation ? 1u : 0u;
     Bind(encoder, m_preparePipeline, constants);
-    if (IsValid() && encoder.IsValid())
-        encoder.Dispatch(1, 1, 1);
+    encoder.Dispatch(1, 1, 1);
+    m_controlPrepared = true;
+    m_preparedPolicy = policy;
+    m_preparedForceSimulation = forceSimulation;
 }
 
 void ParticleGpuBounds::RecordReset(const rhi::ComputeCommandEncoder &encoder, GpuParticleBoundsMode mode,

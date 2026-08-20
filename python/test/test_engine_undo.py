@@ -2,7 +2,7 @@
 
 Pure-Python tests — no C++ backend needed.
 Imports bypass the heavy Infernux.__init__ / native-module chain by loading
-undo.py and selection_manager.py directly via importlib.
+the undo package directly via importlib.
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ def _direct_import(module_name: str, rel_path: str):
 for _pkg in [
     "Infernux",
     "Infernux.engine",
-    "Infernux.engine.ui",
 ]:
     if _pkg not in sys.modules:
         _p = types.ModuleType(_pkg)
@@ -78,8 +77,6 @@ for _pkg in [
 # Now load the actual modules we need — this executes their code but
 # won't trigger Infernux/__init__.py's heavy imports.
 _undo_mod = _direct_import("Infernux.engine.undo", "engine/undo.py")
-_sel_mod = _direct_import(
-    "Infernux.engine.ui.selection_manager", "engine/ui/selection_manager.py")
 
 # Pull symbols into module scope for convenience.
 UndoCommand = _undo_mod.UndoCommand
@@ -94,21 +91,21 @@ ReparentCommand = _undo_mod.ReparentCommand
 MoveGameObjectCommand = _undo_mod.MoveGameObjectCommand
 MaterialDocumentCommand = _undo_mod.MaterialDocumentCommand
 CompoundCommand = _undo_mod.CompoundCommand
-SelectionCommand = _undo_mod.SelectionCommand
-EditorSelectionCommand = _undo_mod.EditorSelectionCommand
+RemoveComponentsCommand = _undo_mod.RemoveComponentsCommand
+GlobalSelectionCommand = _undo_mod.GlobalSelectionCommand
 PrefabModeCommand = _undo_mod.PrefabModeCommand
 PrefabUnpackCommand = _undo_mod.PrefabUnpackCommand
 PrefabRevertCommand = _undo_mod.PrefabRevertCommand
-InspectorSnapshotCommand = _undo_mod.InspectorSnapshotCommand
-InspectorUndoTracker = _undo_mod.InspectorUndoTracker
-HierarchyUndoTracker = _undo_mod.HierarchyUndoTracker
 RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
-SelectionManager = _sel_mod.SelectionManager
+SelectionService = sys.modules["Infernux.engine.interaction"].SelectionService
+SelectionSnapshot = sys.modules["Infernux.engine.interaction"].SelectionSnapshot
+SelectionTarget = sys.modules["Infernux.engine.interaction"].SelectionTarget
+EditorContextSnapshot = sys.modules["Infernux.engine.interaction"].EditorContextSnapshot
+ContextRestoreStatus = sys.modules["Infernux.engine.interaction"].ContextRestoreStatus
 _helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
 _property_mod = sys.modules["Infernux.engine.undo._property_commands"]
 _structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
-_trackers_mod = sys.modules["Infernux.engine.undo._trackers"]
 _recreate_mod = sys.modules["Infernux.engine.undo._recreate"]
 
 
@@ -157,8 +154,16 @@ class _FakeComp:
 
 class _FakeStack:
     """Fake RenderStack with invalidate_graph() for RenderStackFieldCommand."""
-    def __init__(self):
+    def __init__(self, pipeline=None):
+        self.pipeline_class_name = ""
+        self.pipeline = pipeline
         self.invalidated = 0
+        self.synced = 0
+
+    def set_pipeline_parameter(self, field_name, value, **_kwargs):
+        setattr(self.pipeline, field_name, value)
+        self.synced += 1
+        self.invalidate_graph()
 
     def invalidate_graph(self):
         self.invalidated += 1
@@ -170,9 +175,21 @@ def _reset_undo_manager():
     old = UndoManager._instance
     mgr = UndoManager()
     # Prevent dirty-sync from importing SceneFileManager / PlayModeManager
-    mgr._sync_dirty = lambda: None
     yield mgr
     UndoManager._instance = old
+
+
+def test_unbound_component_identity_probe_falls_back_to_own_id():
+    class _UnboundComponent:
+        id = 73
+
+        @property
+        def game_object(self):
+            raise RuntimeError("not bound")
+
+    component = _UnboundComponent()
+    assert _helpers_mod._game_object_id_of(component) == 73
+    assert _helpers_mod._comp_type_name_of(component) == "GameObject"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -368,6 +385,20 @@ class TestGenericComponentCommand:
         cmd.undo()
         assert comp._document == {"value": [1]}
 
+    def test_explicit_component_actions_do_not_merge(self):
+        comp = _FakeComp()
+        continuous = GenericComponentCommand(comp, {}, {"a": 1})
+        discrete = GenericComponentCommand(
+            comp,
+            {"a": 1},
+            {"a": 2},
+            mergeable=False,
+        )
+        discrete.timestamp = continuous.timestamp + 0.1
+
+        assert not continuous.can_merge(discrete)
+        assert not discrete.can_merge(continuous)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # BuiltinPropertyCommand
@@ -435,6 +466,50 @@ class TestMaterialDocumentCommand:
         cmd.undo()
         assert mat._document == {"properties": {"x": [1]}}
 
+    def test_undo_publishes_live_material_without_durable_invalidation(
+        self,
+        monkeypatch,
+    ):
+        publications = []
+
+        class _AsyncMaterial(_FakeComp):
+            file_path = "Assets/Materials/Undo.mat"
+
+            def save(self):
+                return True
+
+        class _AssetManagerProbe:
+            @classmethod
+            def note_asset_edit(cls, path, **kwargs):
+                publications.append((path, kwargs))
+
+            @classmethod
+            def on_material_saved(cls, _path):
+                raise AssertionError(
+                    "Undo/Redo must not publish durable completion before IO finishes"
+                )
+
+        assets_module = types.ModuleType("Infernux.core.assets")
+        assets_module.AssetManager = _AssetManagerProbe
+        monkeypatch.setitem(sys.modules, "Infernux.core.assets", assets_module)
+
+        material = _AsyncMaterial()
+        command = MaterialDocumentCommand(
+            material,
+            {"color": "A"},
+            {"color": "B"},
+        )
+
+        command.execute()
+        command.undo()
+
+        assert [entry[0] for entry in publications] == [
+            material.file_path,
+            material.file_path,
+        ]
+        assert '"color":"B"' in publications[0][1]["material_json"]
+        assert '"color":"A"' in publications[1][1]["material_json"]
+
 
 # ══════════════════════════════════════════════════════════════════════
 # CompoundCommand
@@ -478,12 +553,35 @@ class TestCompoundCommand:
         compound = CompoundCommand(cmds)
         assert compound.supports_redo is True
 
-    def test_compound_add_component_undo_reverses_auto_created(self):
-        """Simulate adding Rigidbody (which auto-creates BoxCollider).
+    def test_only_explicit_selection_context_propagates(self):
+        before = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(7),),
+            owner_id="hierarchy",
+        )
+        after = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(42),),
+            owner_id="hierarchy",
+        )
+        inspector = SetPropertyCommand(_Obj(), "x", 0, 1, "Edit Property")
+        create = CreateGameObjectCommand(
+            42,
+            before_selection=before,
+            after_selection=after,
+        )
 
-        A CompoundCommand [AddBoxCollider, AddRigidbody] should:
-        - undo in reverse: remove Rigidbody first, then BoxCollider
-        - redo in order:  add BoxCollider first, then Rigidbody
+        inspector_only = CompoundCommand([inspector])
+        structural = CompoundCommand([inspector, create])
+
+        assert inspector_only.before_selection_snapshot is None
+        assert inspector_only.after_selection_snapshot is None
+        assert structural.before_selection_snapshot == before
+        assert structural.after_selection_snapshot == after
+
+    def test_compound_add_component_undo_reverses_auto_created(self):
+        """Simulate adding a component with an automatically-created dependency.
+
+        A CompoundCommand [AddDependency, AddMain] should remove the dependent
+        component first and recreate the dependency first.
         """
         log: list = []
 
@@ -498,20 +596,19 @@ class TestCompoundCommand:
             def redo(self):
                 log.append(("re-add", self.tag))
 
-        # Mirror the compound construction from _record_add_component_compound:
-        # auto-created first, main last.
+        # AddComponentTransactionCommand stores dependencies first, main last.
         compound = CompoundCommand(
-            [FakeAddCmd("BoxCollider"), FakeAddCmd("Rigidbody")],
-            "Add Rigidbody")
+            [FakeAddCmd("Dependency"), FakeAddCmd("Main")],
+            "Add Main")
 
-        # Undo should reverse: remove Rigidbody, then BoxCollider
+        # Undo should reverse: remove Main, then Dependency
         compound.undo()
-        assert log == [("remove", "Rigidbody"), ("remove", "BoxCollider")]
+        assert log == [("remove", "Main"), ("remove", "Dependency")]
 
         log.clear()
-        # Redo should replay in order: add BoxCollider, then Rigidbody
+        # Redo should replay in order: add Dependency, then Main
         compound.redo()
-        assert log == [("re-add", "BoxCollider"), ("re-add", "Rigidbody")]
+        assert log == [("re-add", "Dependency"), ("re-add", "Main")]
 
     def test_compound_add_single_undo_through_manager(self, _reset_undo_manager):
         """A CompoundCommand recorded via mgr.record() is a single undo step."""
@@ -541,6 +638,59 @@ class TestCompoundCommand:
         assert state["a"] is False
         assert state["b"] is False
         assert not mgr.can_undo  # only one entry was on the stack
+
+    def test_component_batch_removal_owns_selection_transition(self):
+        previous = SelectionService._instance
+        service = SelectionService()
+        before = SelectionSnapshot.create(
+            (
+                SelectionTarget.component(41, 101),
+                SelectionTarget.component(42, 102),
+            ),
+            owner_id="inspector",
+            primary=SelectionTarget.component(42, 102),
+        )
+        after = SelectionSnapshot.create(
+            (
+                SelectionTarget.scene_object(41),
+                SelectionTarget.scene_object(42),
+            ),
+            owner_id="inspector",
+            primary=SelectionTarget.scene_object(42),
+        )
+        service.apply_snapshot(before, record_history=False)
+        calls = []
+
+        class RemoveStub(UndoCommand):
+            def __init__(self, component_id):
+                super().__init__(f"Remove {component_id}")
+                self.component_id = component_id
+
+            def execute(self):
+                calls.append(("remove", self.component_id))
+
+            def undo(self):
+                calls.append(("restore", self.component_id))
+
+        command = RemoveComponentsCommand(
+            [RemoveStub(101), RemoveStub(102)],
+            before,
+            after,
+        )
+        try:
+            command.execute()
+            assert calls == [("remove", 101), ("remove", 102)]
+            assert service.snapshot == after
+
+            command.undo()
+            assert calls[-2:] == [("restore", 102), ("restore", 101)]
+            assert service.snapshot == before
+
+            command.redo()
+            assert calls[-2:] == [("remove", 101), ("remove", 102)]
+            assert service.snapshot == after
+        finally:
+            SelectionService._instance = previous
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -577,56 +727,47 @@ class TestUndoCommandBase:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# SelectionCommand
+# GlobalSelectionCommand
 # ══════════════════════════════════════════════════════════════════════
 
-class TestSelectionCommand:
-    def test_undo_calls_apply_with_old_ids(self):
-        applied = []
-        cmd = SelectionCommand([1, 2], [3], apply_fn=lambda ids: applied.append(list(ids)))
+class TestGlobalSelectionCommand:
+    def test_undo_redo_are_inert_because_journal_restores_context(self):
+        old = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1), SelectionTarget.scene_object(2)),
+            owner_id="hierarchy",
+        )
+        new = SelectionSnapshot.create(
+            (SelectionTarget.asset("Assets/test.mat"),),
+            owner_id="project",
+        )
+        cmd = GlobalSelectionCommand(old, new)
         cmd.undo()
-        assert applied == [[1, 2]]
-
-    def test_redo_calls_apply_with_new_ids(self):
-        applied = []
-        cmd = SelectionCommand([1], [2, 3], apply_fn=lambda ids: applied.append(list(ids)))
         cmd.redo()
-        assert applied == [[2, 3]]
+        assert cmd.before_selection_snapshot == old
+        assert cmd.after_selection_snapshot == new
 
     def test_execute_is_noop(self):
         applied = []
-        cmd = SelectionCommand([], [1], apply_fn=lambda ids: applied.append(ids))
+        empty = SelectionSnapshot()
+        selected = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1),),
+            owner_id="hierarchy",
+        )
+        cmd = GlobalSelectionCommand(empty, selected)
         cmd.execute()
         assert applied == []
 
-    def test_marks_dirty_false(self):
-        cmd = SelectionCommand([], [], apply_fn=lambda ids: None)
-        assert cmd.marks_dirty is False
-
-    def test_default_description(self):
-        cmd = SelectionCommand([], [], apply_fn=lambda ids: None)
-        assert cmd.description == "Change Selection"
-
-    def test_custom_description(self):
-        cmd = SelectionCommand([], [], apply_fn=lambda ids: None, description="Pick Object")
-        assert cmd.description == "Pick Object"
-
-    def test_supports_redo(self):
-        cmd = SelectionCommand([], [1], apply_fn=lambda ids: None)
-        assert cmd.supports_redo is True
-
-
-class TestEditorSelectionCommand:
-    def test_undo_redo_restore_object_and_file_state(self):
-        applied = []
-        cmd = EditorSelectionCommand(
-            [1], "",
-            [], "Assets/test.mat",
-            apply_fn=lambda ids, path: applied.append((list(ids), path)),
+    def test_is_non_dirty_and_exposes_explicit_context(self):
+        old = SelectionSnapshot()
+        new = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1),),
+            owner_id="hierarchy",
         )
-        cmd.undo()
-        cmd.redo()
-        assert applied == [([1], ""), ([], "Assets/test.mat")]
+        cmd = GlobalSelectionCommand(old, new)
+        assert cmd.marks_dirty is False
+        assert cmd.description == "Change Selection"
+        assert cmd.before_selection_snapshot == old
+        assert cmd.after_selection_snapshot == new
 
 
 class TestPrefabUnpackCommand:
@@ -707,62 +848,26 @@ class TestPrefabModeCommand:
             ("open", "Assets/test.prefab", True),
         ]
 
+    def test_rejected_transition_raises_and_cannot_be_recorded(self, monkeypatch):
+        class _FakeSceneManager:
+            @staticmethod
+            def open_prefab_mode(_path, preserve_undo_history=False):
+                del preserve_undo_history
+                return False
 
-# ══════════════════════════════════════════════════════════════════════
-# InspectorSnapshotCommand
-# ══════════════════════════════════════════════════════════════════════
+        scene_manager_mod = types.ModuleType("Infernux.engine.scene_manager")
 
-class TestInspectorSnapshotCommand:
-    def test_execute_restores_new(self):
-        restored = []
-        cmd = InspectorSnapshotCommand("k", "old_snap", "new_snap",
-                                       restore_fn=lambda s: restored.append(s))
-        cmd.execute()
-        assert restored == ["new_snap"]
+        class _SceneFileManager:
+            @staticmethod
+            def instance():
+                return _FakeSceneManager()
 
-    def test_undo_restores_old(self):
-        restored = []
-        cmd = InspectorSnapshotCommand("k", "old_snap", "new_snap",
-                                       restore_fn=lambda s: restored.append(s))
-        cmd.undo()
-        assert restored == ["old_snap"]
+        scene_manager_mod.SceneFileManager = _SceneFileManager
+        monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
 
-    def test_redo_restores_new(self):
-        restored = []
-        cmd = InspectorSnapshotCommand("k", "old_snap", "new_snap",
-                                       restore_fn=lambda s: restored.append(s))
-        cmd.redo()
-        assert restored == ["new_snap"]
-
-    def test_merge_within_window(self):
-        cmd1 = InspectorSnapshotCommand("go:1", "a", "b", restore_fn=lambda s: None)
-        cmd2 = InspectorSnapshotCommand("go:1", "b", "c", restore_fn=lambda s: None)
-        cmd2.timestamp = cmd1.timestamp + 0.1
-        assert cmd1.can_merge(cmd2)
-        cmd1.merge(cmd2)
-        # After merge, old stays "a", new becomes "c"
-        restored = []
-        cmd1.undo()
-        assert restored == [] or True  # undo restores old
-        # Verify via execute
-        results = []
-        cmd1._restore_fn = lambda s: results.append(s)
-        cmd1.execute()
-        assert results == ["c"]
-        cmd1.undo()
-        assert results == ["c", "a"]
-
-    def test_merge_rejected_different_key(self):
-        cmd1 = InspectorSnapshotCommand("go:1", "a", "b", restore_fn=lambda s: None)
-        cmd2 = InspectorSnapshotCommand("go:2", "a", "b", restore_fn=lambda s: None)
-        cmd2.timestamp = cmd1.timestamp + 0.1
-        assert not cmd1.can_merge(cmd2)
-
-    def test_merge_rejected_outside_window(self):
-        cmd1 = InspectorSnapshotCommand("go:1", "a", "b", restore_fn=lambda s: None)
-        cmd2 = InspectorSnapshotCommand("go:1", "b", "c", restore_fn=lambda s: None)
-        cmd2.timestamp = cmd1.timestamp + 10.0
-        assert not cmd1.can_merge(cmd2)
+        command = PrefabModeCommand("Assets/test.prefab", enter_mode=True)
+        with pytest.raises(RuntimeError, match="Enter Prefab Mode was rejected"):
+            command.execute()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -772,7 +877,7 @@ class TestInspectorSnapshotCommand:
 class TestRenderStackFieldCommand:
     def test_execute_undo_redo(self):
         target = _Obj()
-        stack = _FakeStack()
+        stack = _FakeStack(target)
         cmd = RenderStackFieldCommand(stack, target, "x", 0, 42)
         cmd.execute()
         assert target.x == 42
@@ -786,7 +891,7 @@ class TestRenderStackFieldCommand:
 
     def test_merge_same_target_field(self):
         target = _Obj()
-        stack = _FakeStack()
+        stack = _FakeStack(target)
         cmd1 = RenderStackFieldCommand(stack, target, "x", 0, 1)
         cmd2 = RenderStackFieldCommand(stack, target, "x", 1, 5)
         cmd2.timestamp = cmd1.timestamp + 0.1
@@ -799,7 +904,7 @@ class TestRenderStackFieldCommand:
 
     def test_merge_rejected_different_field(self):
         target = _Obj()
-        stack = _FakeStack()
+        stack = _FakeStack(target)
         cmd1 = RenderStackFieldCommand(stack, target, "x", 0, 1)
         cmd2 = RenderStackFieldCommand(stack, target, "y", 0, 2)
         cmd2.timestamp = cmd1.timestamp + 0.1
@@ -875,7 +980,7 @@ class TestUndoManager:
         cmd2.timestamp = cmd1.timestamp + 0.1
         mgr.execute(cmd2)
         # Should have merged → only 1 entry on the stack
-        assert len(mgr._undo_stack) == 1
+        assert len(mgr.action_journal.applied_entries()) == 1
         mgr.undo()
         assert obj.x == 0
 
@@ -957,13 +1062,20 @@ class TestUndoManager:
             cmd = SetPropertyCommand(obj, "x", i, i + 1)
             cmd.timestamp = i * 10.0
             mgr.execute(cmd)
-        assert len(mgr._undo_stack) == 5
+        assert len(mgr.action_journal.applied_entries()) == 5
 
-    def test_disabled_still_executes(self, _reset_undo_manager):
+    def test_disabled_rejects_user_edits_but_allows_explicit_system_work(self, _reset_undo_manager):
+        from Infernux.engine.interaction import ActionOrigin
+
         mgr = _reset_undo_manager
         mgr.enabled = False
         obj = _Obj()
-        mgr.execute(SetPropertyCommand(obj, "x", 0, 5))
+        assert not mgr.execute(SetPropertyCommand(obj, "x", 0, 5))
+        assert obj.x == 0
+        assert mgr.execute(
+            SetPropertyCommand(obj, "x", 0, 5),
+            origin=ActionOrigin.SYSTEM,
+        )
         assert obj.x == 5
         assert not mgr.can_undo
 
@@ -994,260 +1106,85 @@ class TestUndoManager:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# UndoManager — save point / dirty tracking
+# UndoManager — save points belong to DocumentRegistry
 # ══════════════════════════════════════════════════════════════════════
 
 class TestUndoManagerSavePoint:
-    def test_starts_at_save_point(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        assert mgr.is_at_save_point
-
-    def test_dirty_after_execute(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        obj = _Obj()
-        mgr.execute(SetPropertyCommand(obj, "x", 0, 1))
-        assert not mgr.is_at_save_point
-
-    def test_clean_after_undo(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        obj = _Obj()
-        mgr.execute(SetPropertyCommand(obj, "x", 0, 1))
-        mgr.undo()
-        assert mgr.is_at_save_point
-
-    def test_mark_save_point(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        obj = _Obj()
-        mgr.execute(SetPropertyCommand(obj, "x", 0, 1))
-        mgr.mark_save_point()
-        assert mgr.is_at_save_point
-
-    def test_dirty_after_undo_past_save(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        obj = _Obj()
-        cmd1 = SetPropertyCommand(obj, "x", 0, 1)
-        cmd1.timestamp = 0.0
-        mgr.execute(cmd1)
-        mgr.mark_save_point()
-        mgr.undo()
-        assert not mgr.is_at_save_point
-
     def test_selection_command_does_not_dirty(self, _reset_undo_manager):
         mgr = _reset_undo_manager
-        cmd = SelectionCommand([1], [2], apply_fn=lambda ids: None)
+        old = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1),),
+            owner_id="hierarchy",
+        )
+        new = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(2),),
+            owner_id="hierarchy",
+        )
+        cmd = GlobalSelectionCommand(old, new)
         mgr.record(cmd)
-        # SelectionCommand has marks_dirty=False, so save point unchanged
-        assert mgr.is_at_save_point
+        # UndoManager exposes no independent save-point API.
+        assert not hasattr(mgr, "mark_save_point")
+        assert not hasattr(mgr, "is_at_save_point")
 
 
 # ══════════════════════════════════════════════════════════════════════
-# InspectorUndoTracker
+# Typed scene-object selection operations
 # ══════════════════════════════════════════════════════════════════════
 
-class TestInspectorUndoTracker:
-    def test_detects_change(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-        state = {"val": "A"}
-        restored = []
-
-        tracker.begin_frame()
-        tracker.track("k1",
-                       snapshot_fn=lambda: state["val"],
-                       restore_fn=lambda s: restored.append(s),
-                       description="Edit")
-        # Simulate edit
-        state["val"] = "B"
-        tracker.end_frame()
-
-        assert mgr.can_undo
-        mgr.undo()
-        assert restored == ["A"]
-
-    def test_no_change_no_record(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-        state = {"val": "A"}
-
-        tracker.begin_frame()
-        tracker.track("k1",
-                       snapshot_fn=lambda: state["val"],
-                       restore_fn=lambda s: None,
-                       description="Edit")
-        # No edit → no command recorded
-        tracker.end_frame()
-        assert not mgr.can_undo
-
-    def test_multiple_targets(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-        s1 = {"v": "1"}
-        s2 = {"v": "X"}
-
-        tracker.begin_frame()
-        tracker.track("a", lambda: s1["v"], lambda s: None, "edit a")
-        tracker.track("b", lambda: s2["v"], lambda s: None, "edit b")
-        s1["v"] = "2"  # only s1 changed
-        tracker.end_frame()
-
-        assert len(mgr._undo_stack) == 1  # only 1 command recorded
-
-    def test_begin_frame_clears_previous(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-
-        tracker.begin_frame()
-        tracker.track("k1", lambda: "a", lambda s: None, "edit")
-        # Begin new frame without calling end_frame
-        tracker.begin_frame()
-        tracker.end_frame()
-        assert not mgr.can_undo
-
-    def test_snapshot_exception_skipped(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-
-        def bad_snapshot():
-            raise RuntimeError("broken")
-
-        tracker.begin_frame()
-        tracker.track("k1", bad_snapshot, lambda s: None, "edit")
-        tracker.end_frame()
-        assert not mgr.can_undo
-
-    def test_duplicate_key_ignored(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-        calls = [0]
-
-        def snap():
-            calls[0] += 1
-            return "v"
-
-        tracker.begin_frame()
-        tracker.track("k", snap, lambda s: None, "edit")
-        tracker.track("k", snap, lambda s: None, "edit")  # duplicate
-        # Only 1 snapshot call (the first)
-        assert calls[0] == 1
-
-    def test_invalidate_all_drops_tracked_entries(self, _reset_undo_manager):
-        mgr = _reset_undo_manager
-        tracker = InspectorUndoTracker()
-        state = {"val": "A"}
-
-        tracker.begin_frame()
-        tracker.track("k1",
-                      snapshot_fn=lambda: state["val"],
-                      restore_fn=lambda s: None,
-                      description="Edit")
-        state["val"] = "B"
-        tracker.invalidate_all()
-        tracker.end_frame()
-
-        assert not mgr.can_undo
-
-    def test_invalidate_all_resets_activity_flags(self, _reset_undo_manager):
-        tracker = InspectorUndoTracker()
-
-        tracker.begin_frame()
-        tracker.track("k1", lambda: "A", lambda s: None, "Edit")
-        tracker.end_frame(any_item_active=True)
-
-        tracker.invalidate_all()
-
-        assert tracker._entries == {}
-        assert tracker._was_active is False
-        assert tracker._is_active is False
-
-
-# ══════════════════════════════════════════════════════════════════════
-# HierarchyUndoTracker
-# ══════════════════════════════════════════════════════════════════════
-
-class TestHierarchyUndoTracker:
-    def test_rename_records_undo_and_redo(self, monkeypatch, _reset_undo_manager):
-        class _GameObject:
-            def __init__(self):
-                self.id = 7
-                self.name = "New Name"
-
-        class _Scene:
-            def __init__(self, obj):
-                self.obj = obj
-
-            def find_by_id(self, object_id):
-                return self.obj if object_id == self.obj.id else None
-
-        obj = _GameObject()
-        scene = _Scene(obj)
-        monkeypatch.setattr(_trackers_mod, "_get_active_scene", lambda: scene)
-        monkeypatch.setattr(_helpers_mod, "_get_active_scene", lambda: scene)
-
-        tracker = HierarchyUndoTracker()
-        tracker.record_rename(obj.id, "Old Name", "New Name")
-
-        mgr = _reset_undo_manager
-        assert mgr.undo_description == "Rename GameObject"
-        mgr.undo()
-        assert obj.name == "Old Name"
-        mgr.redo()
-        assert obj.name == "New Name"
-
-
-# ══════════════════════════════════════════════════════════════════════
-# SelectionManager.set_ids
-# ══════════════════════════════════════════════════════════════════════
-
-class TestSelectionManagerSetIds:
+class TestSceneObjectSelectionOperations:
     @pytest.fixture(autouse=True)
     def _fresh_selection(self):
-        old = SelectionManager._instance
-        sel = SelectionManager()
+        old = SelectionService._instance
+        sel = SelectionService()
         yield sel
-        SelectionManager._instance = old
+        SelectionService._instance = old
 
     def test_set_ids_replaces_selection(self, _fresh_selection):
         sel = _fresh_selection
-        sel.set_ids([10, 20, 30])
-        assert sel.get_ids() == [10, 20, 30]
-        assert sel.get_primary() == 30
+        sel.replace_scene_objects(
+            [10, 20, 30], owner_id="hierarchy", record_history=False
+        )
+        assert sel.scene_object_ids() == (10, 20, 30)
+        assert sel.primary_scene_object_id() == 30
 
     def test_set_ids_empty(self, _fresh_selection):
         sel = _fresh_selection
-        sel.set_ids([1])
-        sel.set_ids([])
-        assert sel.get_ids() == []
-        assert sel.get_primary() == 0
+        sel.select_scene_object(1, owner_id="hierarchy", record_history=False)
+        sel.replace_scene_objects([], owner_id="hierarchy", record_history=False)
+        assert sel.scene_object_ids() == ()
+        assert sel.primary_scene_object_id() == 0
 
     def test_set_ids_fires_callback(self, _fresh_selection):
         sel = _fresh_selection
         called = []
-        sel.add_listener(lambda: called.append(1))
-        sel.set_ids([5])
+        sel.add_listener(lambda _change: called.append(1))
+        sel.select_scene_object(5, owner_id="hierarchy", record_history=False)
         assert len(called) == 1
 
     def test_set_ids_no_change_no_callback(self, _fresh_selection):
         sel = _fresh_selection
-        sel.set_ids([5])
+        sel.select_scene_object(5, owner_id="hierarchy", record_history=False)
         called = []
-        sel.add_listener(lambda: called.append(1))
-        sel.set_ids([5])  # same → should not fire
+        sel.add_listener(lambda _change: called.append(1))
+        sel.select_scene_object(
+            5, owner_id="hierarchy", record_history=False
+        )  # same -> should not fire
         assert len(called) == 0
 
     def test_clear(self, _fresh_selection):
         sel = _fresh_selection
-        sel.select(42)
-        sel.clear()
-        assert sel.get_ids() == []
-        assert sel.get_primary() == 0
+        sel.select_scene_object(42, owner_id="hierarchy", record_history=False)
+        sel.clear(reason="test_clear", record_history=False)
+        assert sel.scene_object_ids() == ()
+        assert sel.primary_scene_object_id() == 0
 
     def test_toggle(self, _fresh_selection):
         sel = _fresh_selection
-        sel.select(1)
-        sel.toggle(2)
-        assert sel.get_ids() == [1, 2]
-        sel.toggle(1)
-        assert sel.get_ids() == [2]
+        sel.select_scene_object(1, owner_id="hierarchy", record_history=False)
+        sel.toggle_scene_object(2, owner_id="hierarchy", record_history=False)
+        assert sel.scene_object_ids() == (1, 2)
+        sel.toggle_scene_object(1, owner_id="hierarchy", record_history=False)
+        assert sel.scene_object_ids() == (2,)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1257,91 +1194,123 @@ class TestSelectionManagerSetIds:
 class TestSelectionUndoIntegration:
     @pytest.fixture(autouse=True)
     def _fresh_selection(self):
-        old = SelectionManager._instance
-        self.sel = SelectionManager()
+        old = SelectionService._instance
+        self.sel = SelectionService()
         yield
-        SelectionManager._instance = old
+        SelectionService._instance = old
 
-    def _apply_fn(self, ids):
-        self.sel.set_ids(ids)
-
-    def test_editor_navigation_pushes_non_dirty_undo(self, _reset_undo_manager):
+    @staticmethod
+    def _install_recording_listener():
         module = _direct_import(
             "Infernux.engine._bootstrap_selection",
             "engine/_bootstrap_selection.py",
         )
-
         selection = module.BootstrapSelectionMixin()
-        selection._prev_selection_ids = []
-        selection._prev_selected_file = ""
-        selection._apply_editor_selection_undo = lambda ids, path: (
-            setattr(selection, "_prev_selection_ids", list(ids)),
-            setattr(selection, "_prev_selected_file", path or ""),
+        selection.window_manager = None
+        selection._present_selection_snapshot = lambda _snapshot: None
+        selection._prev_selection_snapshot = SelectionService.instance().snapshot
+        SelectionService.instance().add_listener(
+            selection._on_global_selection_changed
         )
-        selection._record_editor_selection_change([42], "")
+        manager = UndoManager.instance()
+        manager.set_context_hooks(
+            lambda: EditorContextSnapshot(
+                selection=SelectionService.instance().snapshot,
+            ),
+            lambda context, _phase: (
+                SelectionService.instance().apply_snapshot(
+                    context.selection,
+                    reason="test_restore",
+                    record_history=False,
+                ),
+                ContextRestoreStatus.READY,
+            )[1],
+        )
+        return selection
 
-        assert len(_reset_undo_manager._undo_stack) == 1
-        assert isinstance(_reset_undo_manager._undo_stack[0], EditorSelectionCommand)
-        assert not _reset_undo_manager._undo_stack[0].marks_dirty
-        assert selection._prev_selection_ids == [42]
+    def test_editor_navigation_pushes_non_dirty_undo(self, _reset_undo_manager):
+        self._install_recording_listener()
+        SelectionService.instance().select(
+            SelectionTarget.scene_object(42),
+            owner_id="hierarchy",
+            record_history=True,
+        )
+
+        entries = _reset_undo_manager.action_journal.applied_entries()
+        assert len(entries) == 1
+        assert isinstance(entries[0].action, GlobalSelectionCommand)
+        assert not entries[0].action.marks_dirty
 
         _reset_undo_manager.undo()
-        assert selection._prev_selection_ids == []
+        assert SelectionService.instance().snapshot.is_empty
 
         _reset_undo_manager.redo()
-        assert selection._prev_selection_ids == [42]
+        assert (
+            SelectionService.instance().snapshot.primary
+            == SelectionTarget.scene_object(42)
+        )
 
-    def test_select_undo_redo_cycle(self, _reset_undo_manager, _fresh_selection):
+    def test_chained_typed_selection_uses_one_global_cursor(self, _reset_undo_manager):
         mgr = _reset_undo_manager
-        sel = self.sel
-        # Simulate: nothing selected → select [1]
-        mgr.record(SelectionCommand([], [1], self._apply_fn))
-        sel.set_ids([1])
-        assert sel.get_primary() == 1
+        self._install_recording_listener()
+        service = SelectionService.instance()
+        service.select(
+            SelectionTarget.scene_object(1),
+            owner_id="hierarchy",
+            record_history=True,
+        )
+        service.select(
+            SelectionTarget.scene_object(2),
+            owner_id="scene_view",
+            record_history=True,
+        )
+        assert len(mgr.action_journal.entries) == 2
 
         mgr.undo()
-        assert sel.get_ids() == []
+        assert service.snapshot.primary == SelectionTarget.scene_object(1)
+
+        mgr.undo()
+        assert service.snapshot == SelectionSnapshot()
 
         mgr.redo()
-        assert sel.get_ids() == [1]
+        assert service.snapshot.primary == SelectionTarget.scene_object(1)
 
-    def test_multi_selection_undo(self, _reset_undo_manager, _fresh_selection):
-        mgr = _reset_undo_manager
-        sel = self.sel
+    def test_component_header_selection_undo_restores_object_context(
+        self,
+        _reset_undo_manager,
+    ):
+        manager = _reset_undo_manager
+        self._install_recording_listener()
+        service = SelectionService.instance()
+        service.select(
+            SelectionTarget.scene_object(42),
+            owner_id="hierarchy",
+            record_history=False,
+        )
+        component = SelectionTarget.component(
+            42,
+            701,
+            document_id="scene:active",
+            sub_kind="native",
+        )
 
-        mgr.record(SelectionCommand([], [1, 2, 3], self._apply_fn))
-        sel.set_ids([1, 2, 3])
+        service.select(
+            component,
+            owner_id="inspector",
+            reason="inspector_component_select",
+            record_history=True,
+        )
 
-        mgr.undo()
-        assert sel.get_ids() == []
-
-    def test_chained_selection_undo(self, _reset_undo_manager, _fresh_selection):
-        mgr = _reset_undo_manager
-        sel = self.sel
-
-        # Step 1: select [1]
-        c1 = SelectionCommand([], [1], self._apply_fn)
-        c1.timestamp = 0.0
-        mgr.record(c1)
-        sel.set_ids([1])
-
-        # Step 2: select [2]
-        c2 = SelectionCommand([1], [2], self._apply_fn)
-        c2.timestamp = 10.0
-        mgr.record(c2)
-        sel.set_ids([2])
-
-        # Undo step 2 → back to [1]
-        mgr.undo()
-        assert sel.get_ids() == [1]
-
-        # Undo step 1 → back to []
-        mgr.undo()
-        assert sel.get_ids() == []
+        assert len(manager.action_journal.entries) == 1
+        assert service.snapshot.primary == component
+        manager.undo()
+        assert service.snapshot.primary == SelectionTarget.scene_object(42)
+        manager.redo()
+        assert service.snapshot.primary == component
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Delete/Create selection restore callback
+# Structural command selection context
 # ══════════════════════════════════════════════════════════════════════
 
 # The commands call _get_active_scene() which uses SceneManager (native).
@@ -1351,9 +1320,8 @@ class TestSelectionUndoIntegration:
 _undo_mod_ref = _undo_mod  # keep reference for patching
 
 
-class TestDeleteCommandSelectionRestore:
-    """DeleteGameObjectCommand should capture pre-delete selection and restore
-    it on undo via _selection_restore_fn."""
+class TestStructuralCommandSelectionContext:
+    """Structural commands use the global action context for selection."""
 
     @pytest.fixture(autouse=True)
     def _patch_scene(self, monkeypatch):
@@ -1363,69 +1331,218 @@ class TestDeleteCommandSelectionRestore:
 
     @pytest.fixture(autouse=True)
     def _fresh_sel(self):
-        old = SelectionManager._instance
-        self.sel = SelectionManager()
-        SelectionManager._instance = self.sel
+        old = SelectionService._instance
+        self.sel = SelectionService()
         yield
-        SelectionManager._instance = old
+        SelectionService._instance = old
 
-    def test_captures_pre_delete_selection(self):
-        self.sel.set_ids([42])
-        cmd = DeleteGameObjectCommand(42, "Delete")
-        assert cmd._pre_delete_selection_ids == [42]
+    def test_delete_is_one_action_and_context_restores_selection(
+        self,
+        monkeypatch,
+        _reset_undo_manager,
+    ):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
 
-    def test_undo_calls_selection_restore(self, _reset_undo_manager):
-        restored = []
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            self.sel.set_ids([42])
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd._document = {"id": 42}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.undo()
-            assert restored == [[42]]
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+        class _Object:
+            id = 42
+            transform = _Transform()
 
-    def test_redo_clears_selection(self, _reset_undo_manager):
-        restored = []
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd.redo()  # no scene → no-op destruction, but selection should clear
-            assert restored == [[]]
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+            @staticmethod
+            def get_parent():
+                return None
 
-    def test_no_restore_when_callback_not_set(self, _reset_undo_manager):
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = None
-        try:
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd._pre_delete_selection_ids = [42]
-            cmd._document = {"id": 42}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.undo()  # should not raise
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+        class _Scene:
+            def __init__(self):
+                self.object = _Object()
 
-    def test_empty_selection_not_restored(self, _reset_undo_manager):
-        """If nothing was selected before delete, undo doesn't call restore."""
-        restored = []
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            # Don't select anything → pre_delete_selection_ids is []
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd._document = {"id": 42}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.undo()
-            # Empty list → fn not called (guard: `if fn and ids`)
-            assert restored == []
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+            def find_by_id(self, object_id):
+                return self.object if self.object and object_id == 42 else None
+
+        scene = _Scene()
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: setattr(scene, "object", None),
+        )
+
+        service = SelectionService.instance()
+        selected = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(42),),
+            owner_id="hierarchy",
+        )
+        service.apply_snapshot(selected, record_history=False)
+        manager = _reset_undo_manager
+        restore_phases = []
+
+        def _restore_context(context, phase):
+            if phase == "undo_complete":
+                assert scene.object is not None
+            restore_phases.append(phase)
+            service.apply_snapshot(context.selection, record_history=False)
+
+        manager.set_context_hooks(
+            lambda: EditorContextSnapshot(selection=service.snapshot),
+            _restore_context,
+        )
+
+        assert manager.execute(DeleteGameObjectCommand(42, "Delete"))
+        assert service.snapshot == SelectionSnapshot()
+        assert len(manager.action_journal.entries) == 1
+
+        def restore_object(*_args, **_kwargs):
+            scene.object = _Object()
+            return scene.object
+
+        with _override_recreate_game_object(restore_object):
+            manager.undo()
+        assert service.snapshot == selected
+        assert scene.object is not None
+        assert len(manager.action_journal.entries) == 1
+        assert restore_phases == ["prepare_undo", "undo_complete"]
+
+        manager.redo()
+        assert service.snapshot == SelectionSnapshot()
+        assert scene.object is None
+        assert len(manager.action_journal.entries) == 1
+
+    def test_failed_delete_undo_keeps_cursor_and_selection(
+        self,
+        monkeypatch,
+        _reset_undo_manager,
+    ):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
+
+        class _Object:
+            id = 42
+            transform = _Transform()
+
+            @staticmethod
+            def get_parent():
+                return None
+
+        class _Scene:
+            def __init__(self):
+                self.object = _Object()
+
+            def find_by_id(self, object_id):
+                return self.object if self.object and object_id == 42 else None
+
+        scene = _Scene()
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: setattr(scene, "object", None),
+        )
+        service = SelectionService.instance()
+        selected = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(42),), owner_id="hierarchy"
+        )
+        service.apply_snapshot(selected, record_history=False)
+        manager = _reset_undo_manager
+        manager.set_context_hooks(
+            lambda: EditorContextSnapshot(selection=service.snapshot),
+            lambda context, _phase: service.apply_snapshot(
+                context.selection, record_history=False
+            ),
+        )
+
+        assert manager.execute(DeleteGameObjectCommand(42, "Delete"))
+        assert service.snapshot.is_empty
+        assert manager.can_undo
+
+        with _override_recreate_game_object(lambda *_args, **_kwargs: None):
+            manager.undo()
+
+        assert manager.can_undo
+        assert not manager.can_redo
+        assert service.snapshot.is_empty
+        assert scene.object is None
+
+    def test_create_undo_prunes_only_destroyed_selection(self, monkeypatch):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
+
+        class _Object:
+            id = 99
+            transform = _Transform()
+
+            @staticmethod
+            def get_parent():
+                return None
+
+            @staticmethod
+            def get_children():
+                return []
+
+        class _Scene:
+            @staticmethod
+            def find_by_id(object_id):
+                return _Object() if object_id == 99 else None
+
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 99})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: None,
+        )
+        self.sel.replace_scene_objects(
+            [7, 99], owner_id="hierarchy", record_history=False
+        )
+
+        CreateGameObjectCommand(99, "Create").undo()
+
+        assert self.sel.scene_object_ids() == (7,)
+
+    def test_deleting_unselected_object_preserves_selection(self, monkeypatch):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
+
+        class _Object:
+            id = 42
+            transform = _Transform()
+
+            @staticmethod
+            def get_parent():
+                return None
+
+            @staticmethod
+            def get_children():
+                return []
+
+        class _Scene:
+            @staticmethod
+            def find_by_id(object_id):
+                return _Object() if object_id == 42 else None
+
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: None,
+        )
+        self.sel.select_scene_object(
+            7, owner_id="hierarchy", record_history=False
+        )
+
+        DeleteGameObjectCommand(42, "Delete").execute()
+
+        assert self.sel.scene_object_ids() == (7,)
 
 
 class TestDeleteGameObjectsCommand:
@@ -1461,7 +1578,6 @@ class TestDeleteGameObjectsCommand:
         restored = []
 
         monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
-        monkeypatch.setattr(_structural_mod, "_get_current_selection_ids", lambda: [20, 21, 10])
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda obj: {"id": obj.id})
         monkeypatch.setattr(
             _structural_mod,
@@ -1471,46 +1587,19 @@ class TestDeleteGameObjectsCommand:
         monkeypatch.setattr(_structural_mod, "_bump_inspector_structure", lambda: None)
         monkeypatch.setattr(_structural_mod, "_notify_gizmos_scene_changed", lambda: None)
 
-        old_fn = DeleteGameObjectsCommand._selection_restore_fn
-        DeleteGameObjectsCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            command = DeleteGameObjectsCommand([20, 21, 10])
-            assert [entry["object_id"] for entry in command._entries] == [20, 10]
+        command = DeleteGameObjectsCommand([20, 21, 10])
+        assert [entry["object_id"] for entry in command._entries] == [20, 10]
 
-            command.execute()
-            assert destroyed == [20, 10]
+        command.execute()
+        assert destroyed == [20, 10]
 
-            with _override_recreate_game_object(
-                lambda document, parent_id, sibling_index: restored.append(
-                    (document["id"], parent_id, sibling_index)
-                )
-            ):
-                command.undo()
-            assert restored == [[], (10, None, 0), (20, None, 1), [20, 21, 10]]
-        finally:
-            DeleteGameObjectsCommand._selection_restore_fn = old_fn
+        def restore_object(document, parent_id, sibling_index):
+            restored.append((document["id"], parent_id, sibling_index))
+            return self._Object(document["id"], sibling_index)
 
-
-class TestCreateCommandSelectionRestore:
-    """CreateGameObjectCommand should clear selection on undo and re-select
-    on redo via _selection_restore_fn."""
-
-    @pytest.fixture(autouse=True)
-    def _patch_scene(self, monkeypatch):
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: None)
-        _patch_undo_modules(monkeypatch, "_bump_inspector_structure", lambda: None)
-        _patch_undo_modules(monkeypatch, "_notify_gizmos_scene_changed", lambda: None)
-
-    def test_undo_clears_selection(self, _reset_undo_manager):
-        restored = []
-        old_fn = CreateGameObjectCommand._selection_restore_fn
-        CreateGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = CreateGameObjectCommand(99, "Create")
-            cmd.undo()  # no scene → no-op destruction, but selection should clear
-            assert restored == [[]]
-        finally:
-            CreateGameObjectCommand._selection_restore_fn = old_fn
+        with _override_recreate_game_object(restore_object):
+            command.undo()
+        assert restored == [(10, None, 0), (20, None, 1)]
 
 
 class TestImmediateDestroyHelpers:
@@ -1626,32 +1715,3 @@ class TestImmediateDestroyHelpers:
         delete_cmd.redo()
 
         assert calls == [(True, 42), (True, 42), (True, 42)]
-
-    def test_redo_restores_selection(self, _reset_undo_manager):
-        restored = []
-        old_fn = CreateGameObjectCommand._selection_restore_fn
-        CreateGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = CreateGameObjectCommand(99, "Create")
-            cmd._post_create_ids = [99]
-            cmd._document = {"id": 99}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.redo()
-            assert restored == [[99]]
-        finally:
-            CreateGameObjectCommand._selection_restore_fn = old_fn
-
-    def test_redo_no_restore_when_no_post_ids(self, _reset_undo_manager):
-        """If post_create_ids is empty, redo doesn't call restore."""
-        restored = []
-        old_fn = CreateGameObjectCommand._selection_restore_fn
-        CreateGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = CreateGameObjectCommand(99, "Create")
-            cmd._post_create_ids = []
-            cmd._document = {"id": 99}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.redo()
-            assert restored == []
-        finally:
-            CreateGameObjectCommand._selection_restore_fn = old_fn

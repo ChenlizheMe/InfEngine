@@ -80,6 +80,10 @@ struct ShaderProgramVariantKey
 {
     ShaderProgramKey program;
     ShaderCompileTarget target = ShaderCompileTarget::Forward;
+    /// Device shader ABI contract. This keeps a program compiled for the
+    /// bounded descriptor ABI separate from one compiled with the bindless
+    /// set layout and other enabled device contracts.
+    uint64_t deviceContract = 0;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
@@ -90,7 +94,7 @@ struct ShaderProgramVariantKey
 
     friend bool operator==(const ShaderProgramVariantKey &lhs, const ShaderProgramVariantKey &rhs) noexcept
     {
-        return lhs.program == rhs.program && lhs.target == rhs.target;
+        return lhs.program == rhs.program && lhs.target == rhs.target && lhs.deviceContract == rhs.deviceContract;
     }
 
     friend bool operator!=(const ShaderProgramVariantKey &lhs, const ShaderProgramVariantKey &rhs) noexcept
@@ -154,9 +158,13 @@ struct ShaderProgramArtifact
     uint64_t varyingInterfaceSignature = 0;
     uint64_t materialLayoutSignature = 0;
     uint64_t compatibilitySignature = 0;
-    // True when ParticleSprite shaders include the engine-owned set 0,
+    // True when ParticleSprite shaders include the engine-owned set 2,
     // binding 15 scene-depth contract.
     bool usesParticleSceneDepthBinding = false;
+    // True when surface variants consume the device-global sampled-texture
+    // table. The per-domain descriptor set then carries uint texture indices
+    // instead of one combined sampler descriptor per property.
+    bool usesBindlessTextureABI = false;
     struct PassVariant
     {
         ShaderCompileTarget target = ShaderCompileTarget::Forward;

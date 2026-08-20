@@ -218,6 +218,20 @@ class EngineSplashScreen(QWidget):
         self._angle = (self._angle + 8) % 360
         self.update()
 
+    def set_preparation_status(self, message: str, progress: int = 5):
+        """Update the visible pre-launch phase from the Hub worker."""
+        self._status.setText(tr(message))
+        self._progress_bar.setValue(max(0, min(int(progress), 10)))
+
+    def show_preparation_failure(self, detail: str):
+        """Report a failure that happened before an engine process existed."""
+        if self._terminal_handled:
+            return
+        self._terminal_handled = True
+        self._status.setText(tr("Launch failed"))
+        QMessageBox.critical(self, tr("Engine Launch Failed"), detail)
+        self._fade_out_and_close()
+
     # ── Fade-out and close ──
 
     def _fade_out_and_close(self):

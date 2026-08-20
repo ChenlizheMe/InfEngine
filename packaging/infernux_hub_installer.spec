@@ -36,7 +36,7 @@ a = Analysis(
     binaries=[*_ssl_binaries],
     datas=[
         (os.path.join(_PACKAGING_DIR, "resources", "icon.png"), "resources"),
-        (os.path.join(_PACKAGING_DIR, "resources", "PingFangTC-Regular.otf"), "resources"),
+        (os.path.join(_PACKAGING_DIR, "resources", "PingFangSC-Regular.ttf"), "resources"),
         *collect_tree(_PAYLOAD_DIR, "payload"),
     ],
     hiddenimports=[

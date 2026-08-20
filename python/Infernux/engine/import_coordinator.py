@@ -100,9 +100,12 @@ class ImportCoordinator:
         destination: str = "",
         guid_hint: str = "",
         observed_at: float | None = None,
+        debounce_seconds: float | None = None,
     ) -> None:
         if not isinstance(kind, AssetFsEventKind):
             raise TypeError("kind must be AssetFsEventKind")
+        if debounce_seconds is not None and debounce_seconds < 0:
+            raise ValueError("debounce_seconds must be non-negative or None")
         now = self._clock() if observed_at is None else observed_at
         normalized_path = _absolute_path(path)
         normalized_destination = _absolute_path(destination) if destination else ""
@@ -126,14 +129,18 @@ class ImportCoordinator:
         if kind is AssetFsEventKind.MOVED and not event.destination:
             raise ValueError("moved event requires a destination")
         with self._lock:
-            self._submit_locked(event, now)
+            self._submit_locked(event, now, debounce_seconds=debounce_seconds)
 
-    def _delay_for(self, kind: AssetFsEventKind) -> float:
+    def _delay_for(
+        self,
+        kind: AssetFsEventKind,
+        debounce_seconds: float | None = None,
+    ) -> float:
         if kind is AssetFsEventKind.DELETED:
             return self._delete_grace_seconds
         if kind is AssetFsEventKind.META_DELETED:
             return self._meta_delete_grace_seconds
-        return self._debounce_seconds
+        return self._debounce_seconds if debounce_seconds is None else debounce_seconds
 
     def _event_key(self, event: AssetFsEvent) -> str:
         if event.kind is AssetFsEventKind.META_DELETED:
@@ -153,7 +160,18 @@ class ImportCoordinator:
                 return key, pending
         return None
 
-    def _submit_locked(self, event: AssetFsEvent, now: float) -> None:
+    def _submit_locked(
+        self,
+        event: AssetFsEvent,
+        now: float,
+        *,
+        debounce_seconds: float | None = None,
+    ) -> None:
+        debounce = (
+            self._debounce_seconds
+            if debounce_seconds is None
+            else debounce_seconds
+        )
         pair = self._find_guid_pair_locked(event)
         if pair is not None:
             pair_key, pending = pair
@@ -189,19 +207,29 @@ class ImportCoordinator:
             self._pending.pop(source_key, None)
             self._pending.pop(destination_key, None)
             self._pending[self._event_key(event)] = _PendingEvent(
-                event, now + self._delay_for(AssetFsEventKind.MOVED)
+                event,
+                now + self._delay_for(
+                    AssetFsEventKind.MOVED,
+                    debounce_seconds,
+                ),
             )
             return
 
         key = self._event_key(event)
         previous_pending = self._pending.get(key)
         if previous_pending is None:
-            self._pending[key] = _PendingEvent(event, now + self._delay_for(event.kind))
+            self._pending[key] = _PendingEvent(
+                event,
+                now + self._delay_for(event.kind, debounce_seconds),
+            )
             return
 
         previous = previous_pending.event
         if previous.kind is AssetFsEventKind.META_DELETED or event.kind is AssetFsEventKind.META_DELETED:
-            self._pending[key] = _PendingEvent(event, now + self._delay_for(event.kind))
+            self._pending[key] = _PendingEvent(
+                event,
+                now + self._delay_for(event.kind, debounce_seconds),
+            )
             return
 
         if previous.kind is AssetFsEventKind.MOVED:
@@ -217,7 +245,7 @@ class ImportCoordinator:
                     collapsed, now + self._delete_grace_seconds
                 )
             else:
-                previous_pending.ready_at = now + self._debounce_seconds
+                previous_pending.ready_at = now + debounce
             return
 
         if previous.kind is AssetFsEventKind.CREATED and event.kind is AssetFsEventKind.DELETED:
@@ -239,9 +267,20 @@ class ImportCoordinator:
         elif previous.kind is AssetFsEventKind.MODIFIED and event.kind is AssetFsEventKind.CREATED:
             event = replace(event, kind=AssetFsEventKind.MODIFIED)
 
-        self._pending[key] = _PendingEvent(event, now + self._delay_for(event.kind))
+        self._pending[key] = _PendingEvent(
+            event,
+            now + self._delay_for(event.kind, debounce_seconds),
+        )
 
-    def drain(self, *, force: bool = False, now: float | None = None) -> list[AssetFsEvent]:
+    def drain(
+        self,
+        *,
+        force: bool = False,
+        now: float | None = None,
+        max_events: int | None = None,
+    ) -> list[AssetFsEvent]:
+        if max_events is not None and max_events < 1:
+            raise ValueError("max_events must be positive or None")
         current = self._clock() if now is None else now
         with self._lock:
             ready = [
@@ -249,9 +288,11 @@ class ImportCoordinator:
                 for key, pending in self._pending.items()
                 if force or pending.ready_at <= current
             ]
+            ready.sort(key=lambda item: item[1].event.observed_at)
+            if not force and max_events is not None:
+                ready = ready[:max_events]
             for key, _pending in ready:
                 del self._pending[key]
-        ready.sort(key=lambda item: item[1].event.observed_at)
         return [pending.event for _key, pending in ready]
 
     def retry(self, event: AssetFsEvent, *, now: float | None = None) -> bool:
@@ -266,6 +307,23 @@ class ImportCoordinator:
                 retried, current + self._retry_delay_seconds
             )
         return True
+
+    def defer(self, event: AssetFsEvent, *, now: float | None = None) -> None:
+        """Requeue known in-flight owner work without consuming retry budget.
+
+        A DocumentStore write has its own completion ticket.  Watcher echoes
+        that arrive before that ticket completes are not failed imports, so
+        counting them against the bounded importer retry budget can turn a
+        healthy asynchronous save into a false terminal error.
+        """
+        if _event_references_temporary_path(event):
+            return
+        current = self._clock() if now is None else now
+        deferred = replace(event, observed_at=current)
+        with self._lock:
+            self._pending[self._event_key(deferred)] = _PendingEvent(
+                deferred, current + self._retry_delay_seconds
+            )
 
     def clear(self) -> None:
         with self._lock:

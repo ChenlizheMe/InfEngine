@@ -188,7 +188,7 @@ class InstallWorker(QObject):
                 self.progress.emit(tr("Preparing Infernux Hub files..."))
                 installation.prepare()
 
-                self.progress.emit(tr("Installing private Python 3.12 runtime..."))
+                self.progress.emit(tr("Deploying private Python 3.12 runtime..."))
                 install_runtime_for_app(installation.staged_dir, progress_callback=self.progress.emit)
 
                 self.progress.emit(tr("Replacing the installed Infernux Hub..."))
@@ -229,8 +229,8 @@ class InstallerWindow(QWidget):
         root.addWidget(title)
 
         intro = QLabel(tr(
-            "This installer copies Infernux Hub onto your machine. During setup, it will download and prepare "
-            "a managed full Python 3.12 runtime under C:\\Users\\Public\\InfernuxHub for use by all projects."
+            "This installer copies Infernux Hub and its isolated Python 3.12 runtime onto your machine. "
+            "It does not install, upgrade, remove, register, or modify any Python already on your system."
         ))
         intro.setWordWrap(True)
         intro.setMinimumHeight(56)

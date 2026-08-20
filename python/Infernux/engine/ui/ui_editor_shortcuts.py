@@ -24,8 +24,6 @@ if TYPE_CHECKING:
 
 from .imgui_keys import (
     KEY_SPACE,
-    KEY_DELETE,
-    KEY_ESCAPE,
     KEY_LEFT_CTRL,
     KEY_RIGHT_CTRL,
     KEY_LEFT_SHIFT,
@@ -100,11 +98,3 @@ class UIEditorInput:
     def pan_drag_button(self) -> int:
         """Return the mouse button index used for the current pan gesture."""
         return 0 if self.wants_pan_space else 2
-
-    def wants_delete(self) -> bool:
-        """True when the Delete key was pressed this frame."""
-        return self.ctx.is_key_pressed(KEY_DELETE)
-
-    def wants_deselect(self) -> bool:
-        """True when Escape was pressed this frame."""
-        return self.ctx.is_key_pressed(KEY_ESCAPE)

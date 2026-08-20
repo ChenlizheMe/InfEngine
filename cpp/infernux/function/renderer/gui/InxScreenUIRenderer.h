@@ -63,7 +63,8 @@ class InxScreenUIRenderer
      * @param msaaSamples Scene MSAA sample count (e.g. 4x)
      * @return true if successful
      */
-    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples);
+    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples,
+                    bool useDynamicRendering);
 
     void SetRetirementQueue(GpuRetirementQueue *queue)
     {
@@ -145,6 +146,11 @@ class InxScreenUIRenderer
     bool IsEnabled() const
     {
         return m_enabled;
+    }
+
+    [[nodiscard]] bool UsesDynamicRendering() const noexcept
+    {
+        return m_useDynamicRendering;
     }
 
     // ========================================================================
@@ -234,6 +240,7 @@ class InxScreenUIRenderer
     // Formats
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+    bool m_useDynamicRendering = false;
 
     // Pipeline objects
     VkShaderModule m_vertShader = VK_NULL_HANDLE;

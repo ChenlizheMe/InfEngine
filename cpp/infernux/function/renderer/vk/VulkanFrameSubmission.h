@@ -27,7 +27,8 @@ class VulkanFrameSubmission
 
     [[nodiscard]] uint32_t AddWork(rhi::DeviceId device, rhi::QueueRole queue, rhi::SubmissionDomain domain,
                                    rhi::RenderViewId view, rhi::PipelineStage waitStages,
-                                   std::vector<uint32_t> dependencies, Recorder recorder);
+                                   std::vector<uint32_t> dependencies, Recorder recorder,
+                                   std::string diagnosticName = {});
 
     [[nodiscard]] rhi::ComposedSubmissionRange AppendRenderGraph(RenderGraph &graph,
                                                                  const std::vector<uint32_t> &externalDependencies = {},

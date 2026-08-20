@@ -19,8 +19,8 @@ _PHYSICS_SETTINGS_FILE = "PhysicsSettings.json"
 DEFAULT_PHYSICS_SETTINGS: Dict[str, object] = {
     "gravity": [0.0, -9.81, 0.0],
     "fixed_delta_time": 0.02,
-    "max_fixed_delta_time": 0.1,
-    "collision_steps": 2,
+    "max_fixed_delta_time": 1.0 / 3.0,
+    "collision_steps": 1,
     "velocity_steps": 10,
     "position_steps": 3,
     "penetration_slop": 0.002,
@@ -29,16 +29,16 @@ DEFAULT_PHYSICS_SETTINGS: Dict[str, object] = {
     "baumgarte": 0.15,
     "max_penetration_distance": 0.05,
     "linear_cast_threshold": 0.5,
-    "min_velocity_for_restitution": 1.0,
+    "min_velocity_for_restitution": 2.0,
     "time_before_sleep": 0.5,
-    "point_velocity_sleep_threshold": 0.03,
+    "point_velocity_sleep_threshold": 0.1,
     "temp_allocator_mb": 256,
     "max_jobs": 4096,
     "max_barriers": 16,
     "max_bodies": 65536,
     "max_body_pairs": 65536,
     "max_contact_constraints": 65536,
-    "max_worker_threads": 0,
+    "max_concurrency": 0,
 }
 
 _DOCUMENT_KEYS = set(DEFAULT_PHYSICS_SETTINGS)
@@ -65,7 +65,7 @@ def _integer(value: object, field: str, minimum: int, maximum: int) -> int:
     return value
 
 
-def _validate_document(data: object) -> dict:
+def normalize(data: object) -> dict:
     if not isinstance(data, dict):
         raise PhysicsSettingsError("physics settings must be a JSON object")
 
@@ -107,7 +107,7 @@ def _validate_document(data: object) -> dict:
         max_contact_constraints=_integer(
             data["max_contact_constraints"], "max_contact_constraints", 1024, 10_000_000
         ),
-        max_worker_threads=_integer(data["max_worker_threads"], "max_worker_threads", 0, 256),
+        max_concurrency=_integer(data["max_concurrency"], "max_concurrency", 0, 256),
     )
     for field in (
         "penetration_slop",
@@ -162,14 +162,14 @@ def load(project_path: str) -> dict:
             data = json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise PhysicsSettingsError(f"failed to read {path}: {exc}") from exc
-    return _validate_document(data)
+    return normalize(data)
 
 
 def save(project_path: str, settings: dict) -> None:
     """Validate and atomically persist physics settings."""
     if not project_path:
         raise PhysicsSettingsError("project_path is required to save physics settings")
-    validated = _validate_document(settings)
+    validated = normalize(settings)
     path = settings_path(project_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     content = json.dumps(validated, indent=2, ensure_ascii=False) + "\n"
@@ -183,7 +183,7 @@ def apply(settings: dict) -> None:
     from Infernux.physics import Physics
     from Infernux.timing import Time
 
-    validated = _validate_document(settings)
+    validated = normalize(settings)
     gravity = validated["gravity"]
     fixed_dt = validated["fixed_delta_time"]
     max_fixed_dt = validated["max_fixed_delta_time"]
@@ -207,7 +207,7 @@ def apply(settings: dict) -> None:
     config.physics_max_bodies = validated["max_bodies"]
     config.physics_max_body_pairs = validated["max_body_pairs"]
     config.physics_max_contact_constraints = validated["max_contact_constraints"]
-    config.physics_max_worker_threads = validated["max_worker_threads"]
+    config.physics_max_concurrency = validated["max_concurrency"]
 
     Physics.gravity = coerce_vec3(gravity)
     sm = SceneManager.instance()

@@ -10,6 +10,7 @@ from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
 from Infernux.engine.project_context import get_project_root
+from Infernux.engine.interaction import ModalService
 from Infernux.engine.ui._dialogs import is_synthetic_input_frame, save_file_dialog
 from .editor_modal import (
     EditorModalAction,
@@ -22,9 +23,24 @@ from .editor_modal import (
 class AssetSaveAsDialog:
     """Persist an asset below ``Assets/`` through visible Editor controls."""
 
-    def __init__(self, semantic_prefix: str, asset_label: str) -> None:
+    _ALLOWED_PARENT_IDS = (
+        "editor.unsaved_changes",
+        "editor.external_document_conflict",
+    )
+
+    def __init__(
+        self,
+        semantic_prefix: str,
+        asset_label: str,
+        *,
+        owner_id: str = "",
+        modal_service: Optional[ModalService] = None,
+    ) -> None:
         self._semantic_prefix = semantic_prefix
         self._asset_label = asset_label
+        self._owner_id = str(owner_id or semantic_prefix.split(".", 1)[0]).strip()
+        self._modal_id = f"asset.save_as:{semantic_prefix}"
+        self._modal_service: Optional[ModalService] = None
         self._title = "Save Asset"
         self._extension = ""
         self._project_root = ""
@@ -37,6 +53,39 @@ class AssetSaveAsDialog:
         self._focus_name = False
         self._agent_modal = False
         self._native_dialog_pending = False
+        self._save_callback: Optional[Callable[[str], bool]] = None
+        self._cancel_callback: Optional[Callable[[], None]] = None
+        if modal_service is not None:
+            self.bind_modal_service(modal_service)
+
+    def bind_modal_service(self, modal_service: ModalService) -> None:
+        """Bind this presenter to the project-session modal authority."""
+        if not isinstance(modal_service, ModalService):
+            raise TypeError("modal_service must be a ModalService")
+        if self._modal_service is modal_service:
+            return
+        if self._modal_service is not None:
+            self._modal_service.unregister(self._modal_id, cancel=True)
+        self._modal_service = modal_service
+        modal_service.register(
+            self._modal_id,
+            is_active=lambda: self.is_open,
+            render=self.render,
+            cancel=self.cancel,
+            allowed_parent_ids=self._ALLOWED_PARENT_IDS,
+        )
+
+    def _require_modal_service(self) -> ModalService:
+        if self._modal_service is None:
+            from Infernux.engine.interaction import EditorInteractionCore
+
+            core = EditorInteractionCore.instance()
+            if core is None:
+                raise RuntimeError(
+                    "AssetSaveAsDialog requires EditorInteractionCore or an explicit ModalService"
+                )
+            self.bind_modal_service(core.modals)
+        return self._modal_service
 
     @property
     def is_open(self) -> bool:
@@ -66,7 +115,11 @@ class AssetSaveAsDialog:
         default_name: str,
         current_path: str = "",
         project_root: Optional[str] = None,
+        save_callback: Callable[[str], bool],
+        cancel_callback: Optional[Callable[[], None]] = None,
     ) -> bool:
+        if self.is_open or not callable(save_callback):
+            return False
         raw_root = project_root or get_project_root()
         if not raw_root:
             return False
@@ -75,6 +128,10 @@ class AssetSaveAsDialog:
         normalized_extension = str(extension or "").strip().lstrip(".")
         if not normalized_extension:
             raise ValueError("extension must be non-empty")
+
+        modal_service = self._require_modal_service()
+        if not modal_service.activate(self._modal_id, owner_id=self._owner_id):
+            return False
 
         self._title = str(title or "Save Asset")
         self._extension = normalized_extension
@@ -88,6 +145,8 @@ class AssetSaveAsDialog:
         self._requested = self._agent_modal
         self._focus_name = self._agent_modal
         self._native_dialog_pending = not self._agent_modal
+        self._save_callback = save_callback
+        self._cancel_callback = cancel_callback
         return True
 
     def resolve_path(self) -> tuple[str, str]:
@@ -131,16 +190,11 @@ class AssetSaveAsDialog:
             return "", f"{self._asset_label.capitalize()} name contains an invalid path or filename character."
         return target, ""
 
-    def render(
-        self,
-        ctx,
-        save_callback: Callable[[str], bool],
-        cancel_callback: Optional[Callable[[], None]] = None,
-    ) -> None:
-        """Render the modal and call *save_callback* after validation."""
+    def render(self, ctx) -> None:
+        """Render through the global ModalPortal."""
         if self._native_dialog_pending:
             self._native_dialog_pending = False
-            self._save_with_native_dialog(save_callback, cancel_callback)
+            self._save_with_native_dialog()
             return
 
         if not self._open:
@@ -188,15 +242,15 @@ class AssetSaveAsDialog:
             if error:
                 self._error = error
                 return
-            if not self._save_path(path, save_callback):
+            if not self._save_path(path):
                 self._error = self._error or f"The {self._asset_label} could not be saved. Check the Console for details."
                 return
-            self._close(ctx)
+            ctx.close_current_popup()
+            self._finish()
 
         def _cancel() -> None:
-            if cancel_callback is not None:
-                cancel_callback()
-            self._close(ctx)
+            ctx.close_current_popup()
+            self.cancel()
 
         render_editor_modal_actions(
             ctx,
@@ -208,11 +262,7 @@ class AssetSaveAsDialog:
         )
         end_editor_modal(ctx)
 
-    def _save_with_native_dialog(
-        self,
-        save_callback: Callable[[str], bool],
-        cancel_callback: Optional[Callable[[], None]],
-    ) -> None:
+    def _save_with_native_dialog(self) -> None:
         assets_dir = os.path.join(self._project_root, "Assets")
         default_filename = f"{self._strip_extension(self._name)}.{self._extension}"
         label = self._asset_label.capitalize()
@@ -225,17 +275,23 @@ class AssetSaveAsDialog:
             tk_filetypes=[(f"{label} (*.{self._extension})", f"*.{self._extension}")],
         )
         if not path:
-            if cancel_callback is not None:
-                cancel_callback()
+            self.cancel()
             return
 
         path, error = self._validate_path(path)
         if error:
             Debug.log_warning(f"[AssetSaveAsDialog] {error}")
+            self.cancel()
             return
-        self._save_path(path, save_callback)
+        if self._save_path(path):
+            self._finish()
+        else:
+            self.cancel()
 
-    def _save_path(self, path: str, save_callback: Callable[[str], bool]) -> bool:
+    def _save_path(self, path: str) -> bool:
+        save_callback = self._save_callback
+        if save_callback is None:
+            raise RuntimeError("asset Save As has no save callback")
         normalized_path = path_key(path)
         if os.path.exists(path) and normalized_path != self._current_path:
             self._error = "An asset already exists at this location. Choose another name to avoid overwriting it."
@@ -258,11 +314,23 @@ class AssetSaveAsDialog:
             name = name[: -len(suffix)]
         return name
 
-    def _close(self, ctx) -> None:
+    def cancel(self) -> None:
+        callback = self._cancel_callback
+        self._reset()
+        if callback is not None:
+            callback()
+
+    def _finish(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
         self._open = False
         self._requested = False
         self._focus_name = False
         self._agent_modal = False
         self._native_dialog_pending = False
         self._error = ""
-        ctx.close_current_popup()
+        self._save_callback = None
+        self._cancel_callback = None
+        if self._modal_service is not None:
+            self._modal_service.deactivate(self._modal_id)

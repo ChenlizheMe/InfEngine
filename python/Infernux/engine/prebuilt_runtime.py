@@ -65,14 +65,17 @@ def build_prebuilt_runtime(
             enable_jit=False,
         )
         boot_script = game_builder._generate_boot_script()
-        runtime_name = "InfernuxPlayer.exe" if sys.platform == "win32" else "InfernuxPlayer"
         default_icon = os.path.join(
             get_package_resources_path(), "icons", "icon.png"
         )
         builder = NuitkaBuilder(
             entry_script=boot_script,
             output_dir=build_root,
-            output_filename=runtime_name,
+            output_filename=(
+                "_InfernuxPlayer.pyd"
+                if sys.platform == "win32"
+                else "_InfernuxPlayer.so"
+            ),
             product_name="Infernux Player",
             icon_path=default_icon if os.path.isfile(default_icon) else None,
             raw_copy_packages=["numpy"],
@@ -81,16 +84,24 @@ def build_prebuilt_runtime(
             lto=lto,
             runtime_pack_cache=True,
             packaged_runtime_lookup=False,
+            player_module=True,
         )
         builder.build(force_runtime_rebuild=force)
         exported_path = builder.export_runtime_pack(output_root)
+        player_host = Path(get_package_resources_path()) / "player" / "InfernuxPlayerHost.exe"
+        if sys.platform == "win32" and not player_host.is_file():
+            raise RuntimeError(
+                "Release Runtime Pack cannot be exported without InfernuxPlayerHost.exe"
+            )
+        if sys.platform == "win32":
+            shutil.copy2(player_host, Path(exported_path) / player_host.name)
         module_root = str(Path(resolved_path(output_root)).parent / "_runtime_modules")
         exported_module_path = builder.export_runtime_module(
             module_root,
             module_name="parallel",
             packages=["numba", "llvmlite"],
         )
-        manifest_path = os.path.join(exported_path, "runtime-pack.json")
+        manifest_path = os.path.join(exported_path, "Player.inxmanifest")
         with open(manifest_path, "r", encoding="utf-8") as manifest_file:
             manifest = json.load(manifest_file)
         manifest.update({
@@ -103,7 +114,7 @@ def build_prebuilt_runtime(
             manifest_file.write("\n")
         os.replace(temporary, manifest_path)
         module_manifest_path = os.path.join(
-            exported_module_path, "parallel-module.json"
+            exported_module_path, "Player.inxmanifest"
         )
         with open(module_manifest_path, "r", encoding="utf-8") as manifest_file:
             module_manifest = json.load(manifest_file)
@@ -117,7 +128,7 @@ def build_prebuilt_runtime(
             manifest_file.write("\n")
         os.replace(temporary, module_manifest_path)
         exported_resolved = Path(resolved_path(exported_path))
-        for candidate_manifest in Path(output_root).glob("*/runtime-pack.json"):
+        for candidate_manifest in Path(output_root).glob("*/Player.inxmanifest"):
             candidate_root = candidate_manifest.parent.resolve()
             if candidate_root == exported_resolved:
                 continue
@@ -131,7 +142,7 @@ def build_prebuilt_runtime(
             ):
                 shutil.rmtree(candidate_root, ignore_errors=True)
         exported_module_resolved = Path(resolved_path(exported_module_path))
-        for candidate_manifest in Path(module_root).glob("*/parallel-module.json"):
+        for candidate_manifest in Path(module_root).glob("*/Player.inxmanifest"):
             candidate_root = candidate_manifest.parent.resolve()
             if candidate_root == exported_module_resolved:
                 continue

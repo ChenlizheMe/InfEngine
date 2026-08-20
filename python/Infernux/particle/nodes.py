@@ -96,6 +96,7 @@ class ParticleGraphNodeDefinitionSet:
     emitter_index_by_id: Mapping[str, int]
     emitter_capacity_by_id: Mapping[str, int]
     output_definition_by_node: Mapping[tuple[str, str], NodeDef]
+    output_internal_properties_by_node: Mapping[tuple[str, str], frozenset[str]]
     fragment_shader_choices: tuple[tuple[str, str], ...]
     abi_fingerprint: str
 
@@ -159,6 +160,8 @@ def _particle_output_definition(
         shader_choices = ((f"Missing: {shader_id}", shader_id), *shader_choices)
     ports = list(base.ports)
     for item in shader_properties:
+        if bool(item.get("internal", False)):
+            continue
         name = str(item.get("name", "")).strip()
         value_type = _SHADER_PROPERTY_TYPES.get(str(item.get("type", "")))
         if not name or value_type is None:
@@ -370,6 +373,9 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             )
         )
     output_definition_by_node: dict[tuple[str, str], NodeDef] = {}
+    output_internal_properties_by_node: dict[
+        tuple[str, str], frozenset[str]
+    ] = {}
     for emitter in asset.emitters:
         for node in emitter.rendering.nodes:
             if node.type_id not in {
@@ -387,15 +393,23 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             digest = hashlib.sha256(
                 f"{emitter.stable_id}:{node.uid}:{shader_id}".encode("utf-8")
             ).hexdigest()
+            shader_properties = fragment_shader_properties.get(shader_id, ())
             definition = _particle_output_definition(
                 base,
                 shader_id,
-                fragment_shader_properties.get(shader_id, ()),
+                shader_properties,
                 f"internal.particle.output.{digest}",
                 fragment_shader_choices,
             )
             registry.register(definition)
-            output_definition_by_node[(emitter.stable_id, node.uid)] = definition
+            output_key = (emitter.stable_id, node.uid)
+            output_definition_by_node[output_key] = definition
+            output_internal_properties_by_node[output_key] = frozenset(
+                particle_shader_property_port_id(str(item.get("name", "")))
+                for item in shader_properties
+                if bool(item.get("internal", False))
+                and str(item.get("name", "")).strip()
+            )
     abi_payload = {
         "parameters": [
             {
@@ -470,6 +484,7 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             {emitter.stable_id: emitter.settings.capacity for emitter in asset.emitters}
         ),
         MappingProxyType(output_definition_by_node),
+        MappingProxyType(output_internal_properties_by_node),
         fragment_shader_choices,
         hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     )
@@ -586,6 +601,7 @@ def _vector_field_sample() -> NodeDef:
                 PortDirection.INPUT,
                 value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
                 required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "value",
@@ -608,6 +624,7 @@ def _sdf_sample_distance() -> NodeDef:
                 PortDirection.INPUT,
                 value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
                 required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "distance",
@@ -630,6 +647,7 @@ def _sdf_sample_gradient() -> NodeDef:
                 PortDirection.INPUT,
                 value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
                 required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "gradient",
@@ -684,6 +702,7 @@ def _mesh_sample() -> NodeDef:
                 required=False,
                 default=[0.5, 0.5, 0.5],
                 display_name="Sample",
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "position",
@@ -780,11 +799,20 @@ def specialize_particle_output_document(document, definitions, emitter_id: str):
         definition = definitions.output_definition_by_node.get(
             (str(emitter_id), str(node.uid))
         )
-        replacement = (
-            replace(node, type_id=definition.type_id)
-            if definition is not None
-            else node
-        )
+        if definition is None:
+            replacement = node
+        else:
+            internal_properties = definitions.output_internal_properties_by_node.get(
+                (str(emitter_id), str(node.uid)), frozenset()
+            )
+            properties = {
+                key: value
+                for key, value in node.properties.items()
+                if key not in internal_properties
+            }
+            replacement = replace(
+                node, type_id=definition.type_id, properties=properties
+            )
         nodes.append(replacement)
         changed = changed or replacement != node
     return replace(document, nodes=tuple(nodes)) if changed else document

@@ -577,6 +577,8 @@ class Parser final
                 Advance();
                 if (attribute.text == "HDR") {
                     property.hdr = true;
+                } else if (attribute.text == "Internal") {
+                    property.internal = true;
                 } else if (attribute.text == "Range") {
                     property.range = ParseRange();
                 } else {

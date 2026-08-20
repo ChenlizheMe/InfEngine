@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SPIRV/GlslangToSpv.h>
+#include <atomic>
 #include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -9,7 +10,7 @@
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
-#include <optional>
+#include <mutex>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +28,7 @@ struct LinkedShaderProgramCompilation
     std::vector<char> vertexSpirv;
     std::vector<char> fragmentSpirv;
     std::vector<std::string> errors;
+    bool usesBindlessTextureABI = false;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
@@ -65,6 +67,18 @@ class InxShaderLoader
                     bool emitNonSemanticShaderDebugSource, bool compileOnly, bool optimizerAllowExpandedIDBound);
     void SetShaderCompilerOptions(const std::string &prop, bool value);
 
+    /// Serialize glslang and the process-wide authored-shader caches. The lock
+    /// is recursive because compiler entry points parse nested imports and
+    /// shading models through the same loader.
+    class CompilationGuard
+    {
+      public:
+        CompilationGuard();
+
+      private:
+        std::unique_lock<std::recursive_mutex> m_lock;
+    };
+
     /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
@@ -76,6 +90,14 @@ class InxShaderLoader
     /// Invalidate cached shader templates so edits under _templates/ are
     /// picked up on the next compile / reload.
     static void InvalidateTemplateCache();
+
+    /// Select the device-supported material texture ABI used by generated
+    /// shader source. When disabled, shaders that declare BindlessTextures
+    /// are deliberately generated with the bounded sampler ABI instead.
+    /// This is configured once after the Vulkan device capability probe and
+    /// remains device-global for the lifetime of the active renderer.
+    static void SetBindlessTextureABIEnabled(bool enabled) noexcept;
+    [[nodiscard]] static bool IsBindlessTextureABIEnabled() noexcept;
 
     /// Get the currently registered shader search paths.
     static const std::vector<std::string> &GetShaderSearchPaths()
@@ -126,9 +148,16 @@ class InxShaderLoader
     /// Parse shader source into a structured ShaderDescriptor (single pass, no code generation).
     ShaderDescriptor ParseShaderSource(const std::string &source, const std::string &filePath) const;
 
+    /// Return a virtual source path whose extension carries the explicit shader
+    /// stage while preserving the real file's parent directory for imports.
+    /// This is also useful for virtual sources while preserving their parent
+    /// directory for relative imports.
+    [[nodiscard]] static std::string StageQualifiedVirtualPath(const std::string &filePath,
+                                                               const std::string &shaderType);
+
     /// Last shader compile error message (empty on success).
     /// Set by Load() when glslang parse/link fails; read by Infernux::ReloadShaderRuntime.
-    static std::string s_lastCompileError;
+    static thread_local std::string s_lastCompileError;
     [[nodiscard]] static const std::string &GetLastCompileError() noexcept;
 
     using CompiledVariantSet = std::unordered_map<ShaderCompileTarget, std::vector<char>>;
@@ -139,11 +168,12 @@ class InxShaderLoader
     [[nodiscard]] static CompiledVariantSet TakeCompiledVariants(const std::string &filePath);
 
   private:
+    static std::recursive_mutex s_compilationMutex;
     static thread_local std::unordered_map<std::string, CompiledVariantSet> s_compiledVariantCache;
+    static std::atomic_bool s_bindlessTextureABIEnabled;
 
     glslang::SpvOptions m_options{};
     TBuiltInResource m_builtInResources{};
-
     void InitGLSLBuiltResources();
     EShLanguage GetShaderType(const std::string &typeStr);
 

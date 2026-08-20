@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from Infernux.mcp import session
 from Infernux.mcp.threading import MainThreadCommandQueue
@@ -36,6 +37,14 @@ def _snapshot(frame: int = 42) -> dict:
         "snapshot_id": str(frame),
         "mouse": (0.0, 0.0),
         "wants_text_input": False,
+        "drag_drop": {
+            "active": True,
+            "preview": True,
+            "delivery": False,
+            "payload_type": "SCRIPT_FILE",
+            "source_id": 17,
+            "accept_id": 23,
+        },
         "focused_window": "Hierarchy",
         "focused_window_id": "hierarchy",
         "targets": [
@@ -121,14 +130,42 @@ def _focused_int_input_snapshot(frame: int = 42) -> dict:
     return snapshot
 
 
-def test_register_editor_ui_tools_leaves_continuous_capture_disabled(tmp_path, monkeypatch):
+def test_register_editor_ui_tools_does_not_mutate_native_capture_state(tmp_path, monkeypatch):
     session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
     capture_states = []
     monkeypatch.setattr(editor_ui, "set_semantic_capture_enabled", capture_states.append)
 
     editor_ui.register_editor_ui_tools(_FakeMcp())
 
-    assert capture_states == [False]
+    assert capture_states == []
+
+
+def test_capture_status_exposes_native_request_progress(tmp_path, monkeypatch):
+    session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
+    fake = _FakeMcp()
+    monkeypatch.setattr(
+        editor_ui,
+        "_read_native_snapshot",
+        lambda: {
+            "capture_enabled": True,
+            "frame": 42,
+            "request_sequence": 8,
+            "capture_state": {
+                "continuous": False,
+                "active": False,
+                "requested_sequence": 8,
+                "completed_sequence": 8,
+                "pending_input_sequence": 0,
+            },
+        },
+    )
+    editor_ui.register_editor_ui_tools(fake)
+
+    response = fake.tools["editor_ui_capture_status"]()
+
+    assert response["ok"] is True
+    assert response["data"]["published_frame"] == 42
+    assert response["data"]["capture_state"]["completed_sequence"] == 8
 
 
 def test_fresh_semantic_snapshot_requests_one_new_rendered_frame(monkeypatch):
@@ -170,6 +207,128 @@ def test_editor_ui_snapshot_normalizes_rendered_targets(tmp_path, monkeypatch):
     assert target["rect"] == [16.0, 72.0, 180.0, 24.0]
     assert target["click_point"] == [106.0, 84.0]
     assert target["actions"] == ["click"]
+    assert response["data"]["drag_drop"]["payload_type"] == "SCRIPT_FILE"
+
+
+def test_editor_ui_snapshot_exposes_authoritative_interaction_state(tmp_path, monkeypatch):
+    from Infernux.engine.interaction import (
+        CloseIntent,
+        CloseIntentKind,
+        DocumentKey,
+        DocumentKind,
+        EditorInteractionCore,
+            KeyChord,
+            SelectionDomain,
+            SelectionTarget,
+        ShortcutEvent,
+    )
+    from Infernux.engine.undo import UndoManager
+    from Infernux.engine.undo._base import LambdaCommand
+
+    session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
+    _install_main_queue(monkeypatch)
+    monkeypatch.setattr(editor_ui, "set_semantic_capture_enabled", lambda enabled: True)
+    monkeypatch.setattr(editor_ui, "_read_native_snapshot", lambda: _snapshot())
+    core = EditorInteractionCore()
+    core.panels.register_selection_authority("project", (SelectionDomain.ASSET,))
+    manager = UndoManager(core.action_journal)
+    manager.set_context_hooks(core.capture_context, None)
+    core.focus.activate_panel(
+        "project",
+        view_id="project",
+        document_id="Assets/Smoke.mat",
+        record_history=False,
+    )
+    asset_target = SelectionTarget.asset("Assets/Smoke.mat")
+    core.selection.select(
+        asset_target,
+        owner_id="project",
+        record_history=False,
+    )
+    core.shortcuts.route(ShortcutEvent(KeyChord.parse("F12")))
+    document = core.documents.create(
+        DocumentKind.PARTICLE_GRAPH,
+        "Smoke",
+        key=DocumentKey.resource(
+            DocumentKind.PARTICLE_GRAPH,
+            str(tmp_path / "Assets" / "Smoke.particlegraph"),
+        ),
+        revision=1,
+        saved_revision=0,
+    )
+    core.close_coordinator.request(
+        CloseIntent(CloseIntentKind.EXIT_EDITOR),
+        lambda: None,
+    )
+    manager.execute(
+        LambdaCommand(
+            "Diagnostic Edit",
+            undo_fn=lambda: None,
+            redo_fn=lambda: None,
+        )
+    )
+
+    try:
+        fake = _FakeMcp()
+        editor_ui.register_editor_ui_tools(fake)
+        response = fake.tools["editor_ui_snapshot"]()
+        interaction = response["data"]["interaction"]
+
+        assert interaction["available"] is True
+        assert interaction["focus"]["active_panel_id"] == "project"
+        assert interaction["selection"]["owner_id"] == "project"
+        assert interaction["selection"]["primary"] == {
+            "domain": "asset",
+            "target_id": asset_target.target_id,
+            "document_id": "",
+            "sub_kind": "",
+        }
+        assert interaction["shortcut"]["event"]["chord"] == "F12"
+        assert interaction["shortcut"]["result"]["status"] == "no_match"
+        history = interaction["history"]
+        assert history["available"] is True
+        assert history["cursor"] == 1
+        assert history["entry_count"] == 1
+        assert history["can_undo"] is True
+        assert history["can_redo"] is False
+        assert history["undo_description"] == "Diagnostic Edit"
+        assert history["redo_description"] == ""
+        assert history["replay_pending"] is False
+        assert history["redo_tail"] == []
+        assert history["applied_tail"][0]["description"] == "Diagnostic Edit"
+        assert history["applied_tail"][0]["command_type"] == "LambdaCommand"
+        assert history["applied_tail"][0]["marks_dirty"] is True
+        assert history["applied_tail"][0]["origin"] == "user"
+        assert history["applied_tail"][0]["revision"] == 0
+        assert history["applied_tail"][0]["before_context"]["panel_id"] == "project"
+        assert history["applied_tail"][0]["after_context"]["panel_id"] == "project"
+        assert interaction["documents"] == [
+            {
+                "document_id": document.document_id,
+                "stable_id": document.stable_id,
+                "kind": "particle_graph",
+                "title": "Smoke",
+                "resource_path": "",
+                "revision": 1,
+                "saved_revision": 0,
+                    "dirty": True,
+                    "state": "ready",
+                    "view_ids": [],
+                    "dirty_view_ids": [],
+                }
+        ]
+        assert interaction["close_transaction"] == {
+            "active": True,
+            "state": "awaiting_decision",
+            "intent": "exit_editor",
+            "active_document_id": document.document_id,
+            "active_document_title": "Smoke",
+            "issue": "none",
+            "message": "",
+        }
+    finally:
+        UndoManager._instance = None
+        core.shutdown()
 
 
 def test_editor_ui_snapshot_explains_native_window_occlusion(tmp_path, monkeypatch):
@@ -322,6 +481,32 @@ def test_editor_ui_click_routes_through_internal_input_without_window_state(tmp_
 
     assert response["ok"] is True
     assert len(clicks) == 1
+
+
+def test_editor_ui_click_holds_modifier_through_the_pointer_click(tmp_path, monkeypatch):
+    session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
+    _install_main_queue(monkeypatch)
+    monkeypatch.setattr(editor_ui, "set_semantic_capture_enabled", lambda enabled: True)
+    monkeypatch.setattr(editor_ui, "_read_native_snapshot", lambda: _snapshot())
+    calls = []
+    monkeypatch.setattr(
+        input_tools,
+        "perform_modifier_pointer_click",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or ok({"delivered": True}),
+    )
+
+    fake = _FakeMcp()
+    editor_ui.register_editor_ui_tools(fake)
+    response = fake.tools["editor_ui_click"](
+        "tree_node:hierarchy:hierarchy.object.7:101",
+        "42",
+        modifier="Left Ctrl",
+    )
+
+    assert response["ok"] is True
+    assert response["data"]["action_path"] == "synthetic_sdl_modifier_pointer"
+    assert response["data"]["modifier"] == "Left Ctrl"
+    assert calls[0][0][0] == "Left Ctrl"
 
 
 def test_editor_ui_snapshot_explains_when_optional_filters_remove_every_target(tmp_path, monkeypatch):
@@ -1167,6 +1352,52 @@ def test_editor_ui_replace_text_accepts_native_integer_input(tmp_path, monkeypat
     ]
 
 
+def test_editor_ui_replace_text_clears_with_delete_without_empty_sdl_text(tmp_path, monkeypatch):
+    session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
+    _install_main_queue(monkeypatch)
+    monkeypatch.setattr(editor_ui, "set_semantic_capture_enabled", lambda enabled: True)
+    monkeypatch.setattr(editor_ui, "_read_native_snapshot", lambda: _focused_snapshot())
+    calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        input_tools,
+        "perform_pointer_click",
+        lambda x, y, **kwargs: calls.append(("focus", x, y, kwargs)) or ok({"delivered": True}),
+    )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_key_chord",
+        lambda keys, **kwargs: calls.append(("chord", keys, kwargs)) or ok({"delivered": True}),
+    )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_text_input",
+        lambda text, **kwargs: calls.append(("text", text, kwargs)) or ok({"delivered": True}),
+    )
+
+    fake = _FakeMcp()
+    editor_ui.register_editor_ui_tools(fake)
+    response = fake.tools["editor_ui_replace_text"]("text_input:hierarchy:hierarchy.search:102", "42", "")
+
+    assert response["ok"] is True
+    assert response["data"]["action_path"] == "synthetic_sdl_pointer_and_keyboard_clear"
+    assert calls == [
+        (
+            "focus",
+            128.0,
+            45.0,
+            {
+                "button": 0,
+                "timeout_seconds": 3.0,
+                "trace_name": "editor_ui_replace_text.focus",
+                "expected_target_id": "text_input:hierarchy:hierarchy.search:102",
+            },
+        ),
+        ("chord", ["Left Ctrl", "A"], {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.select_all"}),
+        ("chord", ["Delete"], {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.clear"}),
+    ]
+
+
 def test_editor_ui_snapshot_prefers_semantic_target_when_item_id_is_zero():
     generic = {
         "target_id": "vector:inspector:Position:0",
@@ -1207,3 +1438,37 @@ def test_editor_ui_snapshot_prefers_later_domain_alias_for_same_item():
     targets = editor_ui._coalesce_targets([generic, domain_alias])
 
     assert targets == [domain_alias]
+
+
+def test_native_semantic_click_points_are_limited_to_the_child_clip_rect():
+    repository_root = Path(__file__).resolve().parents[2]
+    source = (
+        repository_root
+        / "cpp/infernux/function/renderer/gui/InxGUISemantics.cpp"
+    ).read_text(encoding="utf-8")
+    safe_click = source[
+        source.index("bool FindSafeClickPoint"):
+        source.index("void RecordOccludingWindow")
+    ]
+
+    assert "clickable.ClipWith(source.window->ClipRect)" in safe_click
+    assert "clickable.Min.x + clickableWidth * sample[0]" in safe_click
+    assert "target.x + target.width * sample[0]" not in safe_click
+
+
+def test_native_semantic_reachability_resolves_dock_host_from_panel_root():
+    repository_root = Path(__file__).resolve().parents[2]
+    source = (
+        repository_root
+        / "cpp/infernux/function/renderer/gui/InxGUISemantics.cpp"
+    ).read_text(encoding="utf-8")
+    reachability = source[
+        source.index("bool ReceivesPointerAt"):
+        source.index("bool FindSafeClickPoint")
+    ]
+
+    assert "const ImGuiWindow *sourceRoot = RootWindow(source.window);" in reachability
+    assert "dockNode = sourceRoot->DockNode;" in reachability
+    assert "node = node->ParentNode" in reachability
+    assert "node->HostWindow == hoveredWindow" in reachability
+    assert "hoveredWindow->DockNodeAsHost == node" in reachability

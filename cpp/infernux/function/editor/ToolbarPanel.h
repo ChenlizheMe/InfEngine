@@ -31,15 +31,6 @@ class ToolbarPanel : public EditorPanel
 
     // ── Callbacks set from Python ────────────────────────────────────
 
-    /// Called when user clicks Play/Stop.
-    std::function<void()> onPlay;
-
-    /// Called when user clicks Pause.
-    std::function<void()> onPause;
-
-    /// Called when user clicks Step.
-    std::function<void()> onStep;
-
     /// Query current play state.
     std::function<PlayState()> getPlayState;
 
@@ -49,9 +40,6 @@ class ToolbarPanel : public EditorPanel
     /// Query show-grid state.
     std::function<bool()> isShowGrid;
 
-    /// Set show-grid state.
-    std::function<void(bool)> setShowGrid;
-
     // ── Camera settings ──────────────────────────────────────────────
 
     struct CameraSettings
@@ -59,7 +47,7 @@ class ToolbarPanel : public EditorPanel
         bool orthographic = false;
         float fov = 60.0f;
         float orthographicSize = 5.0f;
-        float rotationSpeed = 0.05f;
+        float rotationSpeed = 0.15f;
         float panSpeed = 1.0f;
         float zoomSpeed = 1.0f;
         float moveSpeed = 5.0f;
@@ -77,6 +65,11 @@ class ToolbarPanel : public EditorPanel
 
     /// Callback to apply camera to engine (Python sets this).
     std::function<void(const CameraSettings &)> applyCameraToEngine;
+
+    /// Continuous-edit boundaries used to publish one global View Command per
+    /// camera widget gesture while keeping the live preview responsive.
+    std::function<void(const std::string &, const CameraSettings &)> beginCameraEdit;
+    std::function<void(const std::string &, const CameraSettings &)> endCameraEdit;
 
     // ── i18n callback ────────────────────────────────────────────────
 
@@ -101,7 +94,7 @@ class ToolbarPanel : public EditorPanel
 
     static constexpr float CAMERA_DEFAULTS_FOV = 60.0f;
     static constexpr float CAMERA_DEFAULTS_ORTHOGRAPHIC_SIZE = 5.0f;
-    static constexpr float CAMERA_DEFAULTS_ROTATION = 0.05f;
+    static constexpr float CAMERA_DEFAULTS_ROTATION = 0.15f;
     static constexpr float CAMERA_DEFAULTS_PAN = 1.0f;
     static constexpr float CAMERA_DEFAULTS_ZOOM = 1.0f;
     static constexpr float CAMERA_DEFAULTS_MOVE = 5.0f;

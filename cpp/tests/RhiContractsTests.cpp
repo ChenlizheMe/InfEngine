@@ -1,5 +1,6 @@
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 #include <function/renderer/rhi/RhiCommand.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 
 #include <cassert>
 #include <cstdint>
@@ -122,6 +123,16 @@ void ResolveTexture(void *context, TextureHandle source, TextureHandle destinati
 
 int main()
 {
+    static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_R8G8B8A8_UNORM) == VK_IMAGE_ASPECT_COLOR_BIT);
+    static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_D32_SFLOAT) == VK_IMAGE_ASPECT_DEPTH_BIT);
+    static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_S8_UINT) == VK_IMAGE_ASPECT_STENCIL_BIT);
+    static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_D24_UNORM_S8_UINT) ==
+                  (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT));
+    static_assert(!infernux::rhi::SelectDynamicRenderingPath(false, true, true));
+    static_assert(!infernux::rhi::SelectDynamicRenderingPath(true, false, false));
+    static_assert(infernux::rhi::SelectDynamicRenderingPath(true, true, false));
+    static_assert(infernux::rhi::SelectDynamicRenderingPath(true, false, true));
+
     constexpr auto shaderStages = PipelineStage::VertexShader | PipelineStage::FragmentShader;
     static_assert(HasAny(shaderStages, PipelineStage::VertexShader));
     static_assert(HasAny(shaderStages, PipelineStage::FragmentShader));
@@ -217,8 +228,29 @@ int main()
     desc.pushConstantStages = ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(constants);
     assert(desc.vertexShader.IsValid());
+    assert(desc.HasValidRenderingContract());
     assert(desc.colorTargets[0].format == PixelFormat::RGBA16SFloat);
     assert(desc.colorTargets[0].premultipliedAlpha);
+
+    GraphicsPipelineDesc contaminatedLegacyDesc = desc;
+    contaminatedLegacyDesc.renderingSignature.colorFormats[0] = PixelFormat::RGBA16SFloat;
+    contaminatedLegacyDesc.renderingSignature.colorFormatCount = 1;
+    assert(!contaminatedLegacyDesc.HasValidRenderingContract());
+
+    GraphicsPipelineDesc dynamicDesc = desc;
+    dynamicDesc.useDynamicRendering = true;
+    dynamicDesc.renderTargetLayout = {};
+    dynamicDesc.renderingSignature.colorFormats[0] = PixelFormat::RGBA16SFloat;
+    dynamicDesc.renderingSignature.colorFormatCount = 1;
+    dynamicDesc.renderingSignature.depthFormat = PixelFormat::D32SFloat;
+    dynamicDesc.renderingSignature.samples = SampleCount::Four;
+    dynamicDesc.depth.testEnabled = true;
+    assert(dynamicDesc.HasValidRenderingContract());
+    dynamicDesc.renderingSignature.samples = SampleCount::One;
+    assert(!dynamicDesc.HasValidRenderingContract());
+    dynamicDesc.renderingSignature.samples = SampleCount::Four;
+    dynamicDesc.renderTargetLayout = {3, 1};
+    assert(!dynamicDesc.HasValidRenderingContract());
 
     ComputePipelineDesc computeDesc;
     computeDesc.computeShader = {9, 1};
@@ -237,6 +269,10 @@ int main()
     assert(textureDesc.dimension == TextureDimension::Texture3D);
     assert(textureDesc.depthOrLayers == 8);
     assert(!IsIntegerFormat(textureDesc.format));
+    assert(IsSrgbFormat(PixelFormat::RGBA8Srgb));
+    assert(LinearColorFormat(PixelFormat::RGBA8Srgb) == PixelFormat::RGBA8UNorm);
+    assert(AreColorSpaceViewFormatsCompatible(PixelFormat::RGBA8Srgb, PixelFormat::RGBA8UNorm));
+    assert(!AreColorSpaceViewFormatsCompatible(PixelFormat::RGBA8Srgb, PixelFormat::BGRA8UNorm));
     assert(IsIntegerFormat(PixelFormat::RG32UInt));
     assert(!IsIntegerFormat(PixelFormat::R32SFloat));
 

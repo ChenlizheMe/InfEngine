@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from Infernux import Engine, Time, run_headless
+from Infernux import Engine, RigidbodyInterpolation, Time, run_headless
 from Infernux.lib import AssetRegistry, Physics, RuntimeMode, SceneManager, Vector3
 from Infernux.physics.settings import DEFAULT_PHYSICS_SETTINGS, save as save_physics_settings
 from Infernux.resources import resources_path
@@ -94,6 +94,7 @@ def main() -> None:
             mover.transform.position = Vector3(0.0, 2.0, 0.0)
             rigidbody = mover.add_component("Rigidbody")
             rigidbody.is_kinematic = True
+            rigidbody.interpolation = RigidbodyInterpolation.Interpolate
             mover.add_component("SphereCollider")
             scene_manager = SceneManager.instance()
             scene_manager.play()

@@ -11,7 +11,7 @@ class UIEditorInput:
     Usage::
 
         inp = UIEditorInput(ctx, area_hovered=True)
-        if inp.wants_delete():
+        if inp.wants_pan:
             ...
     """
 
@@ -53,6 +53,3 @@ class UIEditorInput:
 
     @property
     def pan_drag_button(self) -> int: ...
-
-    def wants_delete(self) -> bool: ...
-    def wants_deselect(self) -> bool: ...

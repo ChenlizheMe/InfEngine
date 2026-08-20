@@ -339,9 +339,9 @@ class SceneRenderGraph
      * @brief Rebuild and compile the render graph if needed (pre-record phase).
      *
      * Must be called BEFORE command buffer recording starts.  Moves
-     * BuildRenderGraph / Compile out of the recording path so that
-     * descriptor set recreation (triggered by InvalidateAllMaterialPipelines)
-     * does not destroy sets already bound to an in-recording command buffer.
+     * BuildRenderGraph / Compile out of the recording path so that graph-owned
+     * descriptors and transient resources are never recreated while their old
+     * generation is bound to an in-recording command buffer.
      */
     void EnsureGraphBuilt();
 
@@ -376,7 +376,8 @@ class SceneRenderGraph
         m_fullscreenRenderer.InvalidateShader(shaderName);
     }
 
-    void UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor);
+    void UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor, bool dithering,
+                                     bool stopNaNs);
 
     // ========================================================================
     // ========================================================================
@@ -428,6 +429,22 @@ class SceneRenderGraph
         m_hasCachedDrawCalls = true;
     }
 
+    [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature, uint64_t objectBufferRevision) const noexcept
+    {
+        return m_hasCachedDrawCalls && signature != 0 && objectBufferRevision != 0 &&
+               m_cachedSubmissionSignature == signature && m_cachedObjectBufferRevision == objectBufferRevision &&
+               m_cachedParticleDrawRegistryRevision == CurrentParticleDrawRegistryRevision();
+    }
+
+    void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner = {},
+                                      uint64_t objectBufferRevision = 0)
+    {
+        m_cachedSubmissionSignature = signature;
+        m_cachedRenderWorldOwner = std::move(owner);
+        m_cachedObjectBufferRevision = objectBufferRevision;
+        m_cachedParticleDrawRegistryRevision = CurrentParticleDrawRegistryRevision();
+    }
+
     /// @brief Cache owned or borrowed shadow-caster candidates for this graph.
     void SetCachedShadowRendererList(RendererList rendererList)
     {
@@ -440,6 +457,10 @@ class SceneRenderGraph
     {
         m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
+        m_cachedSubmissionSignature = 0;
+        m_cachedObjectBufferRevision = 0;
+        m_cachedParticleDrawRegistryRevision = 0;
+        m_cachedRenderWorldOwner.reset();
     }
 
     /// @brief Get cached draw calls
@@ -518,6 +539,10 @@ class SceneRenderGraph
         m_hasCachedDrawCalls = false;
         m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
+        m_cachedSubmissionSignature = 0;
+        m_cachedObjectBufferRevision = 0;
+        m_cachedParticleDrawRegistryRevision = 0;
+        m_cachedRenderWorldOwner.reset();
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
         m_cachedUnjitteredProj = glm::mat4(1.0f);
@@ -527,6 +552,11 @@ class SceneRenderGraph
         m_cameraHistoryValid = false;
         InvalidateTemporalHistory();
     }
+
+    /// Retire per-view particle cullers/sorters and forbid executing a compiled
+    /// graph that still imports those retired buffers. Vulkan may recycle the
+    /// same raw handle values, so handle equality cannot keep these views.
+    void InvalidateParticleViews();
 
     /// @brief Clear cached draw calls and camera state.
     ///
@@ -538,6 +568,7 @@ class SceneRenderGraph
     void ClearCachedFrameState()
     {
         ClearCachedViewSubmission();
+        InvalidateParticleViews();
         InvalidatePerViewShadowBindings();
         m_needsRebuild = true;
         // Prevent Execute() from running the old compiled graph before
@@ -645,6 +676,8 @@ class SceneRenderGraph
     void RegisterTransientTextures(uint32_t width, uint32_t height,
                                    std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
 
+    [[nodiscard]] MaterialPassPipelineDescriptor GetEditorOverlayMaterialPass() const;
+
     /**
      * @brief Append a system auto-pass (gizmos / editor tools) that draws
      * into the backbuffer with read-only depth testing.
@@ -675,7 +708,11 @@ class SceneRenderGraph
     void RefreshForwardPlusParticleRequirement();
     [[nodiscard]] bool PrepareForwardPlusFrame();
     void RetireForwardPlusResources();
+    [[nodiscard]] uint64_t ComputeShadowContentSignature(bool &hasDynamicCaster) const;
+    void RefreshShadowAtlasUpdateState();
+    void CommitShadowAtlasUpdate();
     void RecordParticleViewDiagnostics(VkCommandBuffer commandBuffer);
+    [[nodiscard]] uint64_t CurrentParticleDrawRegistryRevision() const noexcept;
 
     InxVkCoreModular *m_vkCore = nullptr;
     SceneRenderTarget *m_sceneTarget = nullptr;
@@ -759,6 +796,8 @@ class SceneRenderGraph
     bool m_hasCameraClearOverride = false;
     CameraClearFlags m_cameraClearFlags = {};
     glm::vec4 m_cameraBgColor{0.1f, 0.1f, 0.1f, 1.0f};
+    bool m_cameraDithering = false;
+    bool m_cameraStopNaNs = false;
 
     // Previous frame's camera clear state — used to detect changes that
     // actually require a graph rebuild (= loadOp change) vs. changes that
@@ -780,7 +819,18 @@ class SceneRenderGraph
     bool m_hasCachedDrawCalls = false;
     RendererList m_cachedShadowRenderers;
     bool m_hasCachedShadowDrawCalls = false;
+    uint64_t m_cachedSubmissionSignature = 0;
+    uint64_t m_cachedObjectBufferRevision = 0;
+    uint64_t m_cachedParticleDrawRegistryRevision = 0;
+    std::shared_ptr<const void> m_cachedRenderWorldOwner;
     bool m_hasShadowCasterPass = false;
+    // Shadow attachments belong to one camera graph and survive across graph
+    // executions. Static scenes can therefore preserve the atlas until an
+    // input generation changes instead of clearing and redrawing every view.
+    uint64_t m_committedShadowContentSignature = 0;
+    uint64_t m_pendingShadowContentSignature = 0;
+    bool m_shadowAtlasValid = false;
+    bool m_shadowAtlasUpdateRequired = true;
 
     // Per-graph camera VP cache — set by SubmitCulling so the executor
     // uses the exact same matrices that were active during SetupCameraProperties.

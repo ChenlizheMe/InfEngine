@@ -9,7 +9,7 @@ from .inspector_utils import (
     semantic_capture_enabled, inspector_component_semantic_id,
 )
 from ._inspector_undo import (
-    _record_property, _record_builtin_property, _notify_scene_modified,
+    _record_property, _record_builtin_property,
 )
 
 
@@ -19,9 +19,9 @@ from ._inspector_undo import (
 def _tooltip_and_info(ctx, metadata):
     """Show tooltip on hover and info text below the field if available."""
     if metadata.tooltip and ctx.is_item_hovered():
-        ctx.set_tooltip(metadata.tooltip)
+        ctx.set_tooltip(t(metadata.tooltip))
     if metadata.info_text:
-        render_info_text(ctx, metadata.info_text)
+        render_info_text(ctx, t(metadata.info_text))
 
 
 # ── GUID / path resolution ──
@@ -31,7 +31,7 @@ def _portable_asset_path_hint(file_path: str) -> str:
     from Infernux.engine.path_utils import portable_path, relative_path
     from Infernux.engine.project_context import get_project_root
 
-    path = str(file_path or "")
+    path = _resolve_project_asset_path(file_path)
     if not path:
         return ""
     project_root = get_project_root()
@@ -43,11 +43,55 @@ def _portable_asset_path_hint(file_path: str) -> str:
     return portable_path(path)
 
 
+def _resolve_project_asset_path(file_path: str) -> str:
+    """Resolve an asset path against the active project, never the process cwd."""
+    import os
+    from Infernux.engine.path_utils import resolved_path
+    from Infernux.engine.project_context import get_project_root
+
+    path = str(file_path or "").strip()
+    if not path:
+        return ""
+    if not os.path.isabs(path):
+        project_root = get_project_root()
+        if project_root:
+            path = os.path.join(project_root, path)
+    return resolved_path(path)
+
+
+def _is_project_asset_path(file_path: str) -> bool:
+    """Return whether *file_path* belongs to the active project's Assets tree."""
+    import os
+    from Infernux.engine.path_utils import is_path_within
+    from Infernux.engine.project_context import get_project_root
+
+    project_root = get_project_root()
+    if not project_root:
+        return False
+    return is_path_within(
+        _resolve_project_asset_path(file_path),
+        os.path.join(project_root, "Assets"),
+    )
+
+
+def _is_project_path(file_path: str) -> bool:
+    """Return whether *file_path* belongs to the active project worktree."""
+    from Infernux.engine.path_utils import is_path_within
+    from Infernux.engine.project_context import get_project_root
+
+    project_root = get_project_root()
+    return bool(
+        project_root
+        and is_path_within(_resolve_project_asset_path(file_path), project_root)
+    )
+
+
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
     from Infernux.core.asset_types import read_meta_guid
     from Infernux.core.assets import AssetManager
 
+    file_path = _resolve_project_asset_path(file_path)
     guid = ""
     adb = getattr(AssetManager, '_asset_database', None)
     if adb:
@@ -61,30 +105,42 @@ def _asset_guid_from_path(file_path: str) -> str:
     return guid or read_meta_guid(file_path)
 
 
-def _resolve_guid_and_path(payload: str):
-    """Resolve a string payload to (guid, path_hint).
+def _resolve_guid_and_path(payload):
+    """Resolve a picker, drag or clipboard payload to ``(guid, path_hint)``.
 
-    If *payload* is an existing file path, the GUID is looked up from the
-    asset database.  Otherwise *payload* is treated as a GUID and the path
-    is resolved in reverse.
+    Every asset assignment entry point uses this function so a canonical
+    clipboard dictionary behaves exactly like a picker path or drag GUID.
     """
     from Infernux.debug import Debug
     import os
-    guid = ""
-    path_hint = ""
-    if os.path.isfile(payload):
-        path_hint = _portable_asset_path_hint(payload)
-        guid = _asset_guid_from_path(payload)
+    if isinstance(payload, dict):
+        guid = str(payload.get("guid") or "").strip()
+        path_hint = str(payload.get("path_hint") or payload.get("path") or "").strip()
     else:
-        guid = payload
-        try:
-            from Infernux.core.assets import AssetManager
-            adb = getattr(AssetManager, '_asset_database', None)
-            if adb:
-                path_hint = _portable_asset_path_hint(adb.get_path_from_guid(guid) or "")
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        guid = ""
+        path_hint = str(payload or "").strip()
+    try:
+        from Infernux.core.assets import AssetManager
+
+        adb = getattr(AssetManager, '_asset_database', None)
+        if guid and not path_hint and adb:
+            path_hint = str(adb.get_path_from_guid(guid) or "").strip()
+        if path_hint:
+            resolved = _resolve_project_asset_path(path_hint) or path_hint
+            if os.path.isfile(resolved) or os.path.splitext(resolved)[1]:
+                path_hint = _portable_asset_path_hint(resolved)
+                guid = guid or _asset_guid_from_path(resolved)
+            elif not guid and adb:
+                reverse_path = str(adb.get_path_from_guid(path_hint) or "").strip()
+                if reverse_path:
+                    guid = path_hint
+                    path_hint = _portable_asset_path_hint(reverse_path)
+        if not guid and path_hint and adb:
+            guid = str(adb.get_guid_from_path(path_hint) or "").strip()
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    if not guid and path_hint and not os.path.splitext(path_hint)[1]:
+        guid, path_hint = path_hint, ""
     return guid, path_hint
 
 
@@ -92,7 +148,7 @@ def _resolve_guid_and_path(payload: str):
 
 
 def _create_reference_value_from_payload(element_type, payload, required_component: str = None, metadata=None):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if element_type == FieldType.GAME_OBJECT:
         # String payload = prefab drag (GUID or file path)
@@ -117,7 +173,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
             return None
         return GameObjectRef(game_object)
 
-    file_path = str(payload) if not isinstance(payload, str) else payload
+    guid, file_path = _resolve_guid_and_path(payload)
 
     if element_type == FieldType.MATERIAL:
         from Infernux.core.material import Material
@@ -131,30 +187,29 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
     if element_type == FieldType.TEXTURE:
         from Infernux.core.asset_ref import TextureRef
         return TextureRef(
-            guid=_asset_guid_from_path(file_path),
+            guid=guid,
             path_hint=_portable_asset_path_hint(file_path),
         )
 
     if element_type == FieldType.SHADER:
         from Infernux.core.asset_ref import ShaderRef
         return ShaderRef(
-            guid=_asset_guid_from_path(file_path),
+            guid=guid,
             path_hint=_portable_asset_path_hint(file_path),
         )
 
     if element_type == FieldType.ASSET:
-        guid = _asset_guid_from_path(file_path)
-        asset_type = getattr(metadata, "asset_type", None) if metadata else None
-        if asset_type:
-            from Infernux.core.asset_ref import get_asset_type_config
-            cfg = get_asset_type_config(asset_type)
-            if cfg:
-                return cfg["ref_class"](
-                    guid=guid,
-                    path_hint=_portable_asset_path_hint(file_path),
-                )
-        from Infernux.core.asset_ref import AudioClipRef
-        return AudioClipRef(
+        asset_type = str(
+            getattr(metadata, "asset_type", "") if metadata else ""
+        ).strip()
+        if not asset_type:
+            raise ValueError("ASSET reference payload requires an asset_type")
+        from Infernux.core.asset_ref import create_asset_ref
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        descriptor = asset_type_registry.require(asset_type)
+        return create_asset_ref(
+            descriptor.type_id,
             guid=guid,
             path_hint=_portable_asset_path_hint(file_path),
         )
@@ -192,7 +247,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
 
 
 def _get_reference_display_name(element_type, value) -> str:
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if value is None:
         return "None"
@@ -235,7 +290,7 @@ def _render_serializable_object_field(
 ):
     """Render a SerializableObject field as an inline collapsible section."""
     import copy as _copy
-    from Infernux.components.serialized_field import get_serialized_fields, FieldType
+    from Infernux.components.fields import get_serialized_fields, FieldType
 
     so_class = type(current_value) if current_value is not None else getattr(metadata, 'serializable_class', None)
     if so_class is None:
@@ -272,8 +327,6 @@ def _render_serializable_object_field(
         for fn, fv in changes.items():
             setattr(edited, fn, fv)
         _record_property(comp, field_name, current_value, edited, f"Set {field_name}")
-        if hasattr(comp, '_call_on_validate'):
-            comp._call_on_validate()
 
 
 def _render_nested_so(
@@ -282,7 +335,7 @@ def _render_nested_so(
 ):
     """Render a nested SerializableObject sub-field and collect changes."""
     import copy as _copy
-    from Infernux.components.serialized_field import get_serialized_fields, FieldType
+    from Infernux.components.fields import get_serialized_fields, FieldType
 
     so_class = type(so_val) if so_val is not None else getattr(so_meta, 'serializable_class', None)
     if so_class is None:
@@ -324,61 +377,74 @@ _ASSET_REF_CONFIG = None  # lazy-initialized (needs FieldType import)
 def _get_asset_ref_config():
     """Return the base config for the built-in reference FieldTypes.
 
-    ``FieldType.ASSET`` entries are resolved dynamically via the
-    ``asset_type`` metadata and the registry in ``asset_ref.py``.
+    ``FieldType.ASSET`` entries are resolved dynamically from their mandatory
+    ``asset_type`` metadata and are intentionally absent from this table.
     """
     global _ASSET_REF_CONFIG
     if _ASSET_REF_CONFIG is None:
-        from Infernux.components.serialized_field import FieldType
-        from Infernux.core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS
-        texture_patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
-        audio_patterns = tuple(f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS))
+        from Infernux.components.fields import FieldType
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        material = asset_type_registry.require("Material")
+        texture = asset_type_registry.require("Texture")
+        shader = asset_type_registry.require("Shader")
         _ASSET_REF_CONFIG = {
-            FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),            "mat"),
-            FieldType.TEXTURE:  (
-                "Texture",
-                "TEXTURE_FILE",
-                texture_patterns,
-                "tex",
+            FieldType.MATERIAL: (
+                material.display_name,
+                material.drag_types[0],
+                material.patterns,
+                material.widget_prefix,
             ),
-            FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),   "shd"),
-            # ASSET is kept as a fallback; _resolve_asset_config overrides it.
-            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    audio_patterns, "aud"),
+            FieldType.TEXTURE:  (
+                texture.display_name,
+                texture.drag_types[0],
+                texture.patterns,
+                texture.widget_prefix,
+            ),
+            FieldType.SHADER: (
+                shader.display_name,
+                shader.drag_types[0],
+                shader.patterns,
+                shader.widget_prefix,
+            ),
         }
     return _ASSET_REF_CONFIG
 
 
 def _resolve_asset_config(metadata):
     """Return (display, drag_type, extensions, prefix) for an ASSET field,
-    using the registry when *metadata.asset_type* is set."""
-    asset_type = getattr(metadata, "asset_type", None) if metadata else None
-    if asset_type:
-        from Infernux.core.asset_ref import get_asset_type_config
-        cfg = get_asset_type_config(asset_type)
-        if cfg:
-            return (cfg["display"], cfg["drag_type"],
-                    cfg["extensions"], cfg["prefix"])
-    # Fallback to default ASSET entry
-    from Infernux.components.serialized_field import FieldType
-    return _get_asset_ref_config()[FieldType.ASSET]
+    using the authoritative registry contract."""
+    asset_type = str(
+        getattr(metadata, "asset_type", "") if metadata else ""
+    ).strip()
+    if not asset_type:
+        raise ValueError("ASSET Inspector fields require an explicit asset_type")
+    from Infernux.core.asset_reference_types import asset_type_registry
+
+    descriptor = asset_type_registry.require(asset_type)
+    return (
+        descriptor.display_name,
+        descriptor.drag_types[0],
+        descriptor.patterns,
+        descriptor.widget_prefix,
+    )
 
 
-def _create_asset_ref_from_payload(metadata, file_path: str):
+def _create_asset_ref_from_payload(metadata, payload):
     """Create the correct AssetRefBase subclass from a file path,
     using *metadata.asset_type* to select the right ref class."""
-    asset_type = getattr(metadata, "asset_type", None) if metadata else None
-    guid = _asset_guid_from_path(file_path)
-    if asset_type:
-        from Infernux.core.asset_ref import get_asset_type_config
-        cfg = get_asset_type_config(asset_type)
-        if cfg:
-            return cfg["ref_class"](
-                guid=guid,
-                path_hint=_portable_asset_path_hint(file_path),
-            )
-    # Fallback
-    from Infernux.core.asset_ref import AudioClipRef
-    return AudioClipRef(
+    asset_type = str(
+        getattr(metadata, "asset_type", "") if metadata else ""
+    ).strip()
+    if not asset_type:
+        raise ValueError("ASSET reference payload requires an explicit asset_type")
+    guid, file_path = _resolve_guid_and_path(payload)
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.core.asset_reference_types import asset_type_registry
+
+    descriptor = asset_type_registry.require(asset_type)
+    return create_asset_ref(
+        descriptor.type_id,
         guid=guid,
         path_hint=_portable_asset_path_hint(file_path),
     )
@@ -389,52 +455,57 @@ def _render_asset_reference_field(
     *, builtin_attr=None,
 ):
     """Render a MATERIAL / TEXTURE / SHADER / ASSET reference field."""
-    from Infernux.components.serialized_field import FieldType as _FT
+    from Infernux.components.fields import FieldType as _FT
 
     # For ASSET fields, resolve config from registry using metadata.asset_type
     if field_type == _FT.ASSET:
-        type_hint, drag_type, globs, prefix = _resolve_asset_config(metadata)
+        type_hint, drag_type, _globs, prefix = _resolve_asset_config(metadata)
     else:
-        type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+        type_hint, drag_type, _globs, prefix = _get_asset_ref_config()[field_type]
 
     display = _get_reference_display_name(field_type, current_value)
 
-    def _record_change(old, new, description):
-        if builtin_attr is not None:
-            _record_builtin_property(comp, builtin_attr, old, new, description)
-        else:
-            _record_property(comp, field_name, old, new, description)
+    from Infernux.engine.interaction import make_attribute_property_transaction
 
-    def _on_pick(path, _fn=field_name, _comp=comp, _ft=field_type, _meta=metadata):
-        if _ft == _FT.ASSET:
-            ref = _create_asset_ref_from_payload(_meta, path)
-        else:
-            ref = _create_reference_value_from_payload(_ft, path)
-        if ref is not None:
-            old = getattr(_comp, builtin_attr or _fn, None)
-            _record_change(old, ref, f"Set {_fn}")
+    attr_name = builtin_attr or field_name
+    asset_type = (
+        str(getattr(metadata, "asset_type", "") or "")
+        if field_type == _FT.ASSET
+        else type_hint
+    )
 
-    def _on_clear(_fn=field_name, _comp=comp):
-        old = getattr(_comp, builtin_attr or _fn, None)
-        _record_change(old, None, f"Clear {_fn}")
+    def _normalize_reference(candidate):
+        if candidate is None:
+            return None
+        ref = (
+            _create_asset_ref_from_payload(metadata, candidate)
+            if field_type == _FT.ASSET
+            else _create_reference_value_from_payload(field_type, candidate)
+        )
+        if ref is None:
+            raise ValueError(f"could not resolve {asset_type} reference")
+        return ref
 
-    _assets_only = (field_type == _FT.TEXTURE)
+    def _same_reference(left, right):
+        from Infernux.core.asset_reference_types import AssetReferenceCodec
 
-    def _picker(filt):
-        result = []
-        for g in globs:
-            result += _picker_assets(filt, g, assets_only=_assets_only)
-        return result
+        return AssetReferenceCodec.normalize(
+            asset_type, left
+        ) == AssetReferenceCodec.normalize(asset_type, right)
 
-    def _on_drop(payload, _fn=field_name, _comp=comp, _ft=field_type, _meta=metadata):
-        if _ft == _FT.ASSET:
-            file_path = str(payload) if not isinstance(payload, str) else payload
-            ref = _create_asset_ref_from_payload(_meta, file_path)
-            if ref is not None:
-                old = getattr(_comp, builtin_attr or _fn, None)
-                _record_change(old, ref, f"Set {_fn}")
-        else:
-            _apply_reference_drop(_ft, _comp, _fn, payload)
+    validate_callback = getattr(comp, "_call_on_validate", None)
+    transaction = make_attribute_property_transaction(
+        (comp,),
+        attr_name,
+        property_path=f"{type(comp).__name__}.{attr_name}",
+        value_type=asset_type,
+        description=f"Set {field_name}",
+        read_only=bool(getattr(metadata, "readonly", False)),
+        normalize=_normalize_reference,
+        equivalent=_same_reference,
+        publish=(validate_callback if callable(validate_callback) else None),
+        clear_value=None,
+    )
 
     label_key = str(getattr(metadata, "display_name_key", "") or "")
     label = t(label_key) if label_key else pretty_field_name(field_name)
@@ -447,23 +518,24 @@ def _render_asset_reference_field(
         if path:
             ping_asset_in_project(path)
 
-    render_object_field(
+    render_asset_reference_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
         accept_drag_type=drag_type,
-        on_drop_callback=_on_drop,
-        picker_asset_items=_picker,
-        on_pick=_on_pick,
-        on_clear=_on_clear,
         on_ping=_on_ping if current_value is not None and display != "None" else None,
+        ping_path=_resolve_asset_disk_path(current_value),
+        has_value=current_value is not None and display != "None",
         semantic_id=(inspector_component_semantic_id(comp, field_name)
                      if semantic_capture_enabled(ctx) else ""),
+        asset_type=asset_type,
+        reference_value=current_value,
+        transaction=transaction,
     )
 
 
 def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
     """Render a FieldType.COMPONENT reference field."""
     from Infernux.components.ref_wrappers import ComponentRef
-    from Infernux.components.serialized_field import get_raw_field_value, FieldType
+    from Infernux.components.fields import get_raw_field_value, FieldType
     _comp_ref = get_raw_field_value(py_comp, field_name)
     if not isinstance(_comp_ref, ComponentRef):
         _comp_ref = ComponentRef()
@@ -492,6 +564,8 @@ def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
         picker_scene_items=_comp_scene,
         on_pick=_comp_on_pick,
         on_clear=_comp_on_clear,
+        on_ping=(lambda _id=_comp_ref.go_id: ping_scene_object_in_hierarchy(_id))
+        if _comp_ref.go_id else None,
         semantic_id=(inspector_component_semantic_id(py_comp, field_name)
                      if semantic_capture_enabled(ctx) else ""),
     )
@@ -509,6 +583,17 @@ def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_va
             _display_obj = current_value.resolve()
         display = _display_obj.name if _display_obj and hasattr(_display_obj, 'name') else "None"
         _type_hint_prefix = "GameObject"
+    if isinstance(current_value, PrefabRef):
+        _ping_reference = lambda _value=current_value: ping_asset_in_project(
+            _resolve_asset_disk_path(_value)
+        )
+    else:
+        _object_id = int(getattr(current_value, "persistent_id", 0) or 0)
+        if not _object_id and _display_obj is not None:
+            _object_id = int(getattr(_display_obj, "id", 0) or 0)
+        _ping_reference = (
+            lambda _id=_object_id: ping_scene_object_in_hierarchy(_id)
+        ) if _object_id else None
     _type_hint = _type_hint_prefix
     _req_comp = metadata.required_component
     if _req_comp:
@@ -534,6 +619,7 @@ def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_va
         picker_scene_items=_go_scene,
         on_pick=_go_on_pick,
         on_clear=_go_on_clear,
+        on_ping=_ping_reference,
         semantic_id=(inspector_component_semantic_id(py_comp, field_name)
                      if semantic_capture_enabled(ctx) else ""),
     )
@@ -548,9 +634,9 @@ def _apply_reference_drop(field_type, comp, field_name: str, payload, required_c
         ref = _create_reference_value_from_payload(field_type, payload, required_component)
         if ref is None:
             return
-        from Infernux.components.serialized_field import FieldType
+        from Infernux.components.fields import FieldType
         if field_type == FieldType.COMPONENT:
-            from Infernux.components.serialized_field import get_raw_field_value
+            from Infernux.components.fields import get_raw_field_value
             old_val = get_raw_field_value(comp, field_name)
         else:
             old_val = getattr(comp, field_name, None)
@@ -573,14 +659,29 @@ def _apply_gameobject_or_prefab_drop(comp, field_name: str, payload, required_co
             from Infernux.debug import Debug
             Debug.log_error(f"Prefab drop failed: {e}")
     else:
-        from Infernux.components.serialized_field import FieldType
+        from Infernux.components.fields import FieldType
         _apply_reference_drop(FieldType.GAME_OBJECT, comp, field_name, payload, required_component)
 
 
 def _apply_builtin_audio_clip_drop(comp, cpp_attr: str, payload):
     """Handle an AUDIO_FILE drag-drop onto a built-in component AudioClip field."""
     try:
-        file_path = str(payload) if not isinstance(payload, str) else payload
+        supplied_guid = ""
+        if isinstance(payload, dict):
+            supplied_guid = str(payload.get("guid") or "").strip()
+            file_path = str(
+                payload.get("path_hint") or payload.get("path") or ""
+            ).strip()
+        else:
+            file_path = str(payload)
+        if supplied_guid and not file_path:
+            from Infernux.lib import AssetRegistry
+
+            database = AssetRegistry.instance().get_asset_database()
+            file_path = (
+                str(database.get_path_from_guid(supplied_guid) or "")
+                if database else ""
+            )
         from Infernux.core.audio_clip import AudioClip as PyAudioClip
 
         clip = PyAudioClip.load(file_path)
@@ -637,23 +738,44 @@ def _picker_scene_gameobjects(filter_text: str, required_component: str = None):
     return items
 
 
-def _picker_assets(filter_text: str, pattern: str, *, assets_only: bool = False):
-    """Return ``[(display_name, path), ...]`` for assets matching *pattern*."""
+def _project_texture_guid_and_path(payload) -> tuple[str, str]:
+    """Resolve a picker/drop payload to a project-owned texture GUID and path."""
     import os
+    from Infernux.core.asset_types import IMAGE_EXTENSIONS
     from Infernux.core.assets import AssetManager
-    paths = AssetManager.find_assets(pattern)
-    items = []
-    filt = filter_text.lower()
-    for p in paths:
-        if assets_only:
-            norm = p.replace("\\", "/")
-            if "/Assets/" not in norm and not norm.startswith("Assets/"):
-                continue
-        name = os.path.basename(p)
-        if filt and filt not in name.lower():
-            continue
-        items.append((name, p))
-    return items
+
+    supplied_guid = ""
+    supplied_path = ""
+    if isinstance(payload, dict):
+        supplied_guid = str(payload.get("guid", "") or "").strip()
+        supplied_path = str(payload.get("path_hint", "") or "").strip()
+    else:
+        token = str(payload or "").strip()
+        if os.path.splitext(token)[1].lower() in IMAGE_EXTENSIONS:
+            supplied_path = token
+        else:
+            supplied_guid = token
+
+    path = _resolve_project_asset_path(supplied_path) if supplied_path else ""
+    database = getattr(AssetManager, "_asset_database", None)
+    if not path and supplied_guid and database is not None:
+        try:
+            path = _resolve_project_asset_path(
+                database.get_path_from_guid(supplied_guid) or ""
+            )
+        except RuntimeError:
+            path = ""
+
+    extension = os.path.splitext(path)[1].lower()
+    if (
+        not path
+        or extension not in IMAGE_EXTENSIONS
+        or extension.startswith(".inx")
+        or not _is_project_asset_path(path)
+    ):
+        return "", ""
+    guid = supplied_guid or _asset_guid_from_path(path)
+    return (guid, path) if guid else ("", "")
 
 
 # ── Object field wrapper ──
@@ -724,32 +846,104 @@ def _resolve_asset_disk_path(value) -> str:
     return ""
 
 
-def ping_asset_in_project(path: str) -> None:
-    """Focus Project panel and select *path* (navigates to its folder)."""
+def ping_asset_in_project(path: str) -> bool:
+    """Focus FileManager for a referenced asset stored under ``Assets``."""
     disk_path = str(path or "").strip()
     if not disk_path:
-        return
+        return False
     for token in ("::submat:", "::subanim:", "::subbone:"):
         if token in disk_path:
             disk_path = disk_path.split(token, 1)[0]
             break
+    disk_path = _resolve_project_asset_path(disk_path)
+    if not _is_project_asset_path(disk_path):
+        return False
     try:
-        from Infernux.engine.bootstrap import EditorBootstrap
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.interaction import EditorInteractionCore, SelectionTarget
 
-        bs = EditorBootstrap.instance()
-        pp = getattr(bs, "project_panel", None) if bs else None
-        if pp is None:
-            return
-        ClosablePanel.focus_panel_by_id("project")
-        engine = getattr(bs, "engine", None)
-        native = engine.get_native_engine() if engine is not None else None
-        if native is not None and hasattr(native, "select_docked_window"):
-            native.select_docked_window("project")
-        pp.set_selected_file(disk_path)
+        core = EditorInteractionCore.instance()
+        if core is None:
+            return False
+        return bool(core.navigation.locate(
+            SelectionTarget.asset(disk_path),
+            owner_id="project",
+            reason="ping_asset",
+            record_history=True,
+        ))
     except Exception as exc:
         from Infernux.debug import Debug
         Debug.log_suppressed("ping_asset_in_project", exc)
+        return False
+
+
+def ping_scene_object_in_hierarchy(object_id: int) -> None:
+    """Focus Hierarchy and select the referenced live scene object."""
+    object_id = int(object_id or 0)
+    if object_id <= 0:
+        return
+    try:
+        from Infernux.engine.interaction import EditorInteractionCore, SelectionTarget
+
+        core = EditorInteractionCore.instance()
+        if core is None:
+            return
+        core.navigation.locate(
+            SelectionTarget.scene_object(object_id),
+            owner_id="hierarchy",
+            reason="ping_scene_reference",
+            record_history=True,
+        )
+    except Exception as exc:
+        from Infernux.debug import Debug
+        Debug.log_suppressed("ping_scene_object_in_hierarchy", exc)
+
+
+def open_asset_reference(file_path: str) -> bool:
+    """Open one referenced asset through the shared editor document service."""
+    import os
+
+    path = _resolve_project_asset_path(file_path)
+    if not path:
+        return False
+    extension = os.path.splitext(path)[1].casefold()
+    if extension in {".vert", ".frag", ".py"}:
+        from Infernux.engine.project_context import get_project_root
+        from .project_utils import open_file_with_system
+
+        return bool(open_file_with_system(path, get_project_root() or ""))
+
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        DocumentOpenStatus,
+        EditorInteractionCore,
+    )
+
+    document_kinds = {
+        ".particlegraph": DocumentKind.PARTICLE_GRAPH,
+        ".animfsm": DocumentKind.ANIMATION_FSM,
+        ".timelinefsm": DocumentKind.ANIMATION_FSM,
+        ".animtimeline": DocumentKind.TIMELINE,
+        ".animclip2d": DocumentKind.ANIMATION_CLIP,
+        ".mat": DocumentKind.MATERIAL,
+        ".physicmaterial": DocumentKind.PHYSIC_MATERIAL,
+        ".effect": DocumentKind.RENDER_EFFECT,
+        ".effectgroup": DocumentKind.RENDER_EFFECT,
+    }
+    kind = document_kinds.get(extension)
+    core = EditorInteractionCore.instance()
+    if core is not None and kind is not None:
+        result = core.document_open.open_resource(
+            kind,
+            path,
+            title=os.path.basename(path),
+        )
+        if result.status is not DocumentOpenStatus.FAILED:
+            return True
+
+    # Imported assets without a dedicated authoring panel open in Inspector by
+    # selecting/revealing them through the same typed navigation transaction.
+    ping_asset_in_project(path)
+    return True
 
 
 def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
@@ -757,7 +951,9 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
                         accept_drag_type: str = None, on_drop_callback=None,
                         picker_scene_items=None, picker_asset_items=None,
                         on_pick=None, on_clear=None, on_ping=None,
+                        on_open=None,
                         ping_path=None,
+                        has_value=None,
                         semantic_id: str = "") -> bool:
     """Render a Unity-style object field (selectable box showing an object reference)."""
     from .igui import IGUI
@@ -768,6 +964,61 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
         picker_scene_items=picker_scene_items,
         picker_asset_items=picker_asset_items,
         on_pick=on_pick, on_clear=on_clear, on_ping=on_ping,
+        on_open=on_open,
         ping_path=ping_path,
+        has_value=has_value,
         semantic_id=semantic_id,
+    )
+
+
+def render_asset_reference_field(
+    ctx: InxGUIContext,
+    field_id: str,
+    display_text: str,
+    type_hint: str,
+    selected: bool = False,
+    clickable: bool = True,
+    accept_drag_type=None,
+    on_assign=None,
+    picker_scene_items=None,
+    additional_asset_items=None,
+    on_clear=None,
+    on_ping=None,
+    on_open=None,
+    ping_path=None,
+    semantic_id: str = "",
+    asset_type: str = "",
+    on_rejected=None,
+    has_value=None,
+    reference_value=None,
+    transaction=None,
+    alternate_compatibility=None,
+    read_only: bool = False,
+) -> bool:
+    """Render an asset reference through the unique asset-field contract."""
+    from .igui import IGUI
+
+    return IGUI.asset_reference_field(
+        ctx,
+        field_id,
+        display_text,
+        type_hint,
+        selected=selected,
+        clickable=clickable,
+        accept=accept_drag_type,
+        on_assign=on_assign,
+        picker_scene_items=picker_scene_items,
+        additional_asset_items=additional_asset_items,
+        on_clear=on_clear,
+        on_ping=on_ping,
+        on_open=on_open,
+        ping_path=ping_path,
+        has_value=has_value,
+        semantic_id=semantic_id,
+        asset_type=asset_type,
+        on_rejected=on_rejected,
+        reference_value=reference_value,
+        transaction=transaction,
+        alternate_compatibility=alternate_compatibility,
+        read_only=read_only,
     )

@@ -23,6 +23,7 @@ struct FullscreenPipelineKey
     rhi::SampleCount samples = rhi::SampleCount::One;
     rhi::PixelFormat colorFormat = rhi::PixelFormat::RGBA8UNorm;
     uint32_t inputTextureCount = 0;
+    bool useDynamicRendering = false;
 
     bool operator==(const FullscreenPipelineKey &other) const noexcept;
 };

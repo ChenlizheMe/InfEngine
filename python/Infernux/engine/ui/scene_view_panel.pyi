@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Callable
 
 from Infernux.lib import InxGUIContext
 from Infernux.engine.ui.editor_panel import EditorPanel
@@ -21,12 +21,6 @@ class SceneViewPanel(EditorPanel):
     KEY_Q: int
     KEY_E: int
     KEY_R: int
-    KEY_C: int
-    KEY_V: int
-    KEY_X: int
-    KEY_DELETE: int
-    KEY_LEFT_CTRL: int
-    KEY_RIGHT_CTRL: int
     KEY_LEFT_SHIFT: int
     KEY_RIGHT_SHIFT: int
 
@@ -35,15 +29,6 @@ class SceneViewPanel(EditorPanel):
     def set_engine(self, engine: object) -> None: ...
     def set_play_mode_manager(self, manager: object) -> None: ...
     def set_on_object_picked(self, callback: Callable) -> None: ...
-    def set_on_box_select(self, callback: Callable) -> None: ...
-    def set_object_clipboard_handlers(
-        self,
-        copy_selected: Callable,
-        paste_clipboard: Callable,
-        has_clipboard_data: Optional[Callable] = None,
-    ) -> None: ...
-    def set_object_delete_handler(self, delete_selected: Callable) -> None: ...
-
     def reset_camera(self) -> None:
         """Reset camera to the default position and orientation."""
         ...
@@ -59,7 +44,9 @@ class SceneViewPanel(EditorPanel):
         """
         ...
 
-    def fly_to_object(self, game_object: object) -> None:
+    def can_frame_object_by_id(self, object_id: int) -> bool: ...
+    def frame_object_by_id(self, object_id: int) -> bool: ...
+    def fly_to_object(self, game_object: object) -> bool:
         """Smoothly fly the camera to frame *game_object*."""
         ...
 

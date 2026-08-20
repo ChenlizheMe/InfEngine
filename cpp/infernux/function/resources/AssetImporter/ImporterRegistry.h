@@ -2,6 +2,8 @@
 
 #include "AssetImporter.h"
 
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -36,9 +38,10 @@ class ImporterRegistry
             throw std::invalid_argument("ImporterRegistry cannot register a null importer");
 
         auto exts = importer->GetSupportedExtensions();
-        for (const auto &ext : exts) {
+        for (auto &ext : exts) {
             if (ext.empty() || ext.front() != '.')
                 throw std::invalid_argument("Importer extension must start with '.': " + ext);
+            ext = CanonicalizeExtension(std::move(ext));
             if (m_extensionMap.find(ext) != m_extensionMap.end())
                 throw std::logic_error("Importer extension is already registered: " + ext);
         }
@@ -54,7 +57,7 @@ class ImporterRegistry
     /// @return Pointer to the importer, or nullptr if none registered
     [[nodiscard]] AssetImporter *GetImporterForExtension(const std::string &extension) const
     {
-        auto it = m_extensionMap.find(extension);
+        auto it = m_extensionMap.find(CanonicalizeExtension(extension));
         if (it != m_extensionMap.end())
             return it->second;
         return nullptr;
@@ -77,6 +80,13 @@ class ImporterRegistry
     }
 
   private:
+    [[nodiscard]] static std::string CanonicalizeExtension(std::string extension)
+    {
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+        return extension;
+    }
+
     std::vector<std::unique_ptr<AssetImporter>> m_importers;
     std::unordered_map<std::string, AssetImporter *> m_extensionMap;
 };

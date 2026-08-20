@@ -11,6 +11,8 @@ namespace infernux
 struct GpuResidencySnapshot
 {
     uint64_t budgetBytes = 0;
+    uint64_t runtimeBudgetBytes = 0;
+    uint64_t editorTextureBudgetBytes = 0;
     uint64_t allocatorAllocationBytes = 0;
     uint64_t allocatorBlockBytes = 0;
     uint64_t deviceLocalAllocationBytes = 0;
@@ -58,7 +60,11 @@ struct GpuResidencySnapshot
     uint64_t trackedBytes = 0;
     uint64_t unclassifiedBytes = 0;
     uint64_t effectiveAllocationBytes = 0;
+    uint64_t runtimeEffectiveAllocationBytes = 0;
+    uint64_t editorTextureEffectiveAllocationBytes = 0;
     uint64_t overBudgetBytes = 0;
+    uint64_t runtimeOverBudgetBytes = 0;
+    uint64_t editorTextureOverBudgetBytes = 0;
 };
 
 struct MaterialGpuResidencySnapshot

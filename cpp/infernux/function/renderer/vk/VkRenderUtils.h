@@ -87,6 +87,57 @@ inline VkImageMemoryBarrier MakeImageBarrier(VkImage image, VkImageLayout oldLay
     return b;
 }
 
+struct ImageLayoutAccess
+{
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkAccessFlags access = 0;
+};
+
+inline ImageLayoutAccess GetImageLayoutAccess(VkImageLayout layout)
+{
+    switch (layout) {
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+        return {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        return {VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
+        return {VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT};
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        return {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT};
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
+    case VK_IMAGE_LAYOUT_GENERAL:
+        return {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+        return {VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0};
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+        return {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0};
+    default:
+        return {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    }
+}
+
+inline void TransitionTrackedImageLayout(VkCommandBuffer commandBuffer, VkImage image,
+                                         VkImageAspectFlags aspectMask, VkImageLayout &currentLayout,
+                                         VkImageLayout nextLayout)
+{
+    if (commandBuffer == VK_NULL_HANDLE || image == VK_NULL_HANDLE || currentLayout == nextLayout)
+        return;
+
+    const auto source = GetImageLayoutAccess(currentLayout);
+    const auto destination = GetImageLayoutAccess(nextLayout);
+    const auto barrier = MakeImageBarrier(image, currentLayout, nextLayout, aspectMask, source.access,
+                                          destination.access);
+    vkCmdPipelineBarrier(commandBuffer, source.stage, destination.stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    currentLayout = nextLayout;
+}
+
 // ── Safe-destroy helpers (VkDevice-owned handles) ───────────────────────
 
 inline void SafeDestroy(VkDevice device, VkSampler &h)

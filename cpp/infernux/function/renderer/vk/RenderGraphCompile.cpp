@@ -7,6 +7,7 @@
  */
 
 #include "RenderGraph.h"
+#include "RhiVulkanTypes.h"
 #include "VkDeviceContext.h"
 #include "VkPipelineManager.h"
 #include <SDL3/SDL.h>
@@ -57,6 +58,27 @@ VkPipelineStageFlags ToVkPipelineStages(rhi::PipelineStage stages)
     if (rhi::HasAny(stages, rhi::PipelineStage::AllCommands))
         result |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     return result;
+}
+
+bool QueueFamilySupportsStages(VkQueueFlags queueFlags, VkPipelineStageFlags stages)
+{
+    constexpr VkPipelineStageFlags graphicsOnly =
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+        VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+        VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    if ((stages & graphicsOnly) != 0 && (queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0)
+        return false;
+    if ((stages & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT) != 0 && (queueFlags & VK_QUEUE_COMPUTE_BIT) == 0)
+        return false;
+    if ((stages & VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT) != 0 &&
+        (queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0)
+        return false;
+    if ((stages & VK_PIPELINE_STAGE_TRANSFER_BIT) != 0 &&
+        (queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) == 0)
+        return false;
+    return true;
 }
 
 VkAccessFlags ToVkAccessFlags(rhi::Access access)
@@ -124,6 +146,73 @@ VkImageLayout ToVkImageLayout(rhi::TextureLayout layout)
 }
 
 } // namespace
+
+void RenderGraph::IssuePipelineBarriers(VkCommandBuffer commandBuffer, VkPipelineStageFlags sourceStages,
+                                        VkPipelineStageFlags destinationStages)
+{
+    if (m_barrierScratch.empty() && m_bufferBarrierScratch.empty())
+        return;
+
+    if (!m_cmdPipelineBarrier2) {
+        vkCmdPipelineBarrier(commandBuffer, sourceStages, destinationStages, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
+                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
+#if INFERNUX_FRAME_PROFILE
+        ++s_executeProfile.legacyBarrierBatchCount;
+#endif
+        return;
+    }
+
+    m_barrier2Scratch.clear();
+    m_bufferBarrier2Scratch.clear();
+    m_barrier2Scratch.reserve(m_barrierScratch.size());
+    m_bufferBarrier2Scratch.reserve(m_bufferBarrierScratch.size());
+
+    const VkPipelineStageFlags2 sourceStages2 = static_cast<VkPipelineStageFlags2>(sourceStages);
+    const VkPipelineStageFlags2 destinationStages2 = static_cast<VkPipelineStageFlags2>(destinationStages);
+
+    for (const VkBufferMemoryBarrier &barrier : m_bufferBarrierScratch) {
+        VkBufferMemoryBarrier2 converted{};
+        converted.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        converted.srcStageMask = sourceStages2;
+        converted.srcAccessMask = static_cast<VkAccessFlags2>(barrier.srcAccessMask);
+        converted.dstStageMask = destinationStages2;
+        converted.dstAccessMask = static_cast<VkAccessFlags2>(barrier.dstAccessMask);
+        converted.srcQueueFamilyIndex = barrier.srcQueueFamilyIndex;
+        converted.dstQueueFamilyIndex = barrier.dstQueueFamilyIndex;
+        converted.buffer = barrier.buffer;
+        converted.offset = barrier.offset;
+        converted.size = barrier.size;
+        m_bufferBarrier2Scratch.push_back(converted);
+    }
+
+    for (const VkImageMemoryBarrier &barrier : m_barrierScratch) {
+        VkImageMemoryBarrier2 converted{};
+        converted.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        converted.srcStageMask = sourceStages2;
+        converted.srcAccessMask = static_cast<VkAccessFlags2>(barrier.srcAccessMask);
+        converted.dstStageMask = destinationStages2;
+        converted.dstAccessMask = static_cast<VkAccessFlags2>(barrier.dstAccessMask);
+        converted.oldLayout = barrier.oldLayout;
+        converted.newLayout = barrier.newLayout;
+        converted.srcQueueFamilyIndex = barrier.srcQueueFamilyIndex;
+        converted.dstQueueFamilyIndex = barrier.dstQueueFamilyIndex;
+        converted.image = barrier.image;
+        converted.subresourceRange = barrier.subresourceRange;
+        m_barrier2Scratch.push_back(converted);
+    }
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.bufferMemoryBarrierCount = static_cast<uint32_t>(m_bufferBarrier2Scratch.size());
+    dependency.pBufferMemoryBarriers = m_bufferBarrier2Scratch.data();
+    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(m_barrier2Scratch.size());
+    dependency.pImageMemoryBarriers = m_barrier2Scratch.data();
+    m_cmdPipelineBarrier2(commandBuffer, &dependency);
+#if INFERNUX_FRAME_PROFILE
+    ++s_executeProfile.synchronization2BarrierBatchCount;
+#endif
+}
 
 // ============================================================================
 // Pass Culling & Resource Lifetimes
@@ -313,6 +402,13 @@ bool RenderGraph::TopologicalSort()
         }
     }
 
+    for (const auto &[later, earlier] : m_explicitPassDependencies) {
+        if (inDegree.find(later) == inDegree.end() || inDegree.find(earlier) == inDegree.end())
+            continue;
+        adjacency[earlier].push_back(later);
+        m_passes[later].dependsOn.push_back(earlier);
+    }
+
     // Deduplicate edges
     for (auto &[passId, deps] : adjacency) {
         std::sort(deps.begin(), deps.end());
@@ -368,6 +464,10 @@ bool RenderGraph::TopologicalSort()
             if (inDegree[passId] != 0) {
                 INXLOG_ERROR("  unresolved pass [", passId, "] '", m_passes[passId].name, "' has remaining in-degree ",
                              inDegree[passId]);
+                for (const uint32_t predecessor : m_passes[passId].dependsOn) {
+                    if (predecessor < m_passes.size() && inDegree[predecessor] != 0)
+                        INXLOG_ERROR("    waits on unresolved [", predecessor, "] '", m_passes[predecessor].name, "'");
+                }
             }
         }
         m_executionOrder.clear();
@@ -404,7 +504,7 @@ bool RenderGraph::CompileSubmissionPlan()
             }
         }
         workItems.push_back({pass.id, pass.device, pass.queue, pass.submissionDomain, pass.view, waitStages,
-                             pass.dependsOn, pass.forceSubmissionBoundary});
+                             pass.dependsOn, pass.forceSubmissionBoundary, pass.name});
     }
 
     std::string error;
@@ -435,6 +535,19 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
     std::vector<ResourceState> states = m_initialResourceStates;
     states.resize(m_resources.size());
 
+    std::vector<VkQueueFamilyProperties> queueFamilies;
+    if (m_context && m_context->GetPhysicalDevice() != VK_NULL_HANDLE) {
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(m_context->GetPhysicalDevice(), &familyCount, nullptr);
+        queueFamilies.resize(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(m_context->GetPhysicalDevice(), &familyCount, queueFamilies.data());
+    }
+
+    const auto stagesSupportedBy = [&](uint32_t family, rhi::PipelineStage stages) {
+        return family == VK_QUEUE_FAMILY_IGNORED || family >= queueFamilies.size() ||
+               QueueFamilySupportsStages(queueFamilies[family].queueFlags, ToVkPipelineStages(stages));
+    };
+
     auto bindingFor = [&](rhi::QueueRole role) -> NativeQueueBinding {
         if (role == rhi::QueueRole::Count)
             return {};
@@ -457,12 +570,17 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
                          "' targets an unavailable native queue");
             return false;
         }
-
         ResourceState &state = states[access.handle.id];
         const bool hasPreviousOwner =
             state.queueFamily != VK_QUEUE_FAMILY_IGNORED && state.nativeQueueLane != UINT32_MAX;
         const bool laneChange = hasPreviousOwner && state.nativeQueueLane != targetBinding.lane;
         const bool familyChange = hasPreviousOwner && state.queueFamily != targetBinding.family;
+        if (hasPreviousOwner && state.writerPassId == UINT32_MAX &&
+            !stagesSupportedBy(state.queueFamily, state.stages)) {
+            INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Resource '", resource.name,
+                         "' has an initial pipeline stage unsupported by its owner queue family");
+            return false;
+        }
 
         const uint32_t sourceBatch = state.writerPassId < passToBatch.size() ? passToBatch[state.writerPassId]
                                                                              : rhi::InvalidSubmissionBatchIndex;
@@ -647,6 +765,13 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
         appendHandle(pass.depthOutput);
         appendHandle(pass.depthInput);
         appendHandle(pass.resolveOutput);
+    }
+
+    signature.push_back(0x4558504445505300ull); // "EXPDPS"
+    signature.push_back(m_explicitPassDependencies.size());
+    for (const auto &[later, earlier] : m_explicitPassDependencies) {
+        signature.push_back(later);
+        signature.push_back(earlier);
     }
 
     return signature;
@@ -1178,15 +1303,7 @@ bool RenderGraph::AllocateResources()
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         viewInfo.format = resource.textureDesc.format;
 
-        if (resource.type == ResourceType::DepthStencil) {
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        } else {
-            // Detect depth-formatted textures registered as Texture2D
-            VkFormat fmt = resource.textureDesc.format;
-            bool isDepthFmt = (fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
-                               fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
-            viewInfo.subresourceRange.aspectMask = isDepthFmt ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-        }
+        viewInfo.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(resource.textureDesc.format);
 
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = resource.textureDesc.mipLevels;
@@ -1341,7 +1458,84 @@ bool RenderGraph::CreateVulkanRenderPasses()
         if (effectiveDepth.IsValid()) {
             const auto &resource = m_resources[effectiveDepth.id];
             depthFormat = resource.textureDesc.format;
+            if (!hasColorOutputs)
+                sampleCount = resource.textureDesc.samples;
         }
+
+        pass.hasResolveAttachment = false;
+        if (pass.resolveOutput.IsValid()) {
+            if (pass.colorOutputs.size() != 1 || !pass.colorOutputs[0].IsValid() ||
+                pass.resolveOutput.id >= m_resources.size()) {
+                INXLOG_ERROR("RenderGraph pass '", pass.name,
+                             "' requires exactly one valid color attachment for MSAA resolve");
+                return false;
+            }
+            const auto &colorResource = m_resources[pass.colorOutputs[0].id];
+            const auto &resolveResource = m_resources[pass.resolveOutput.id];
+            if (colorResource.textureDesc.samples == VK_SAMPLE_COUNT_1_BIT ||
+                resolveResource.textureDesc.samples != VK_SAMPLE_COUNT_1_BIT ||
+                colorResource.textureDesc.format != resolveResource.textureDesc.format ||
+                colorResource.textureDesc.width != resolveResource.textureDesc.width ||
+                colorResource.textureDesc.height != resolveResource.textureDesc.height) {
+                INXLOG_ERROR("RenderGraph pass '", pass.name,
+                             "' has an incompatible Dynamic Rendering resolve attachment");
+                return false;
+            }
+            pass.hasResolveAttachment = true;
+        }
+
+        // Publish the actual attachment contract for both execution paths.
+        // Pipeline owners must be able to compare the compiled legacy fallback
+        // with the Dynamic Rendering contract they originally requested.
+        pass.renderingSignature = {};
+        auto &signature = pass.renderingSignature;
+        signature.samples = rhi::FromVkSampleCount(sampleCount);
+        signature.colorFormatCount = static_cast<uint32_t>(pass.colorOutputs.size());
+        if (signature.colorFormatCount > signature.colorFormats.size()) {
+            INXLOG_ERROR("RenderGraph pass '", pass.name, "' exceeds the color attachment limit");
+            return false;
+        }
+        for (uint32_t index = 0; index < signature.colorFormatCount; ++index) {
+            const ResourceHandle output = pass.colorOutputs[index];
+            if (!output.IsValid() || output.id >= m_resources.size()) {
+                INXLOG_ERROR("RenderGraph pass '", pass.name, "' has an invalid color attachment");
+                return false;
+            }
+            const auto &resource = m_resources[output.id];
+            if (resource.textureDesc.samples != sampleCount) {
+                INXLOG_ERROR("RenderGraph pass '", pass.name, "' mixes color attachment sample counts");
+                return false;
+            }
+            signature.colorFormats[index] = rhi::FromVkFormat(resource.textureDesc.format);
+        }
+        if (effectiveDepth.IsValid()) {
+            const auto &resource = m_resources[effectiveDepth.id];
+            if (resource.textureDesc.samples != sampleCount) {
+                INXLOG_ERROR("RenderGraph pass '", pass.name, "' mixes color and depth sample counts");
+                return false;
+            }
+            signature.depthFormat = rhi::FromVkFormat(resource.textureDesc.format);
+            if (rhi::IsStencilFormat(signature.depthFormat))
+                signature.stencilFormat = signature.depthFormat;
+        }
+        if (!signature.IsValid()) {
+            INXLOG_ERROR("RenderGraph pass '", pass.name, "' produced an invalid attachment signature");
+            return false;
+        }
+
+        pass.usesDynamicRendering = false;
+        if (pass.dynamicRenderingRequested && (!m_cmdBeginRendering || !m_cmdEndRendering)) {
+            INXLOG_WARN("RenderGraph pass '", pass.name,
+                        "' requested Dynamic Rendering, but the capability is unavailable; using the legacy "
+                        "render-pass path");
+        }
+        if (pass.dynamicRenderingRequested && m_cmdBeginRendering && m_cmdEndRendering) {
+            pass.vulkanRenderPass = VK_NULL_HANDLE;
+            pass.renderTargetLayout = {};
+            pass.usesDynamicRendering = true;
+        }
+        if (pass.usesDynamicRendering)
+            continue;
 
         // Determine whether depth must be stored for later passes
         bool needStoreDepth = false;
@@ -1377,7 +1571,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
         }
 
         // MSAA resolve support
-        if (pass.resolveOutput.IsValid() && sampleCount > VK_SAMPLE_COUNT_1_BIT) {
+        if (pass.hasResolveAttachment) {
             const auto &resolveResource = m_resources[pass.resolveOutput.id];
             config.hasResolve = true;
             config.resolveFormat = resolveResource.textureDesc.format;
@@ -1522,9 +1716,80 @@ void RenderGraph::PrecomputeExecuteData()
         if (pass.culled)
             continue;
 
-        const bool isGfx = (pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE);
+        const bool isDynamicGfx = pass.type == PassType::Graphics && pass.usesDynamicRendering;
+        const bool isGfx = isDynamicGfx || (pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE);
         if (!isGfx)
             continue;
+
+        // Common dynamic state for both legacy render passes and dynamic
+        // rendering. Keep this before either path-specific early exit.
+        pass.cachedViewport.x = 0.0f;
+        pass.cachedViewport.y = 0.0f;
+        pass.cachedViewport.width = static_cast<float>(pass.renderArea.width);
+        pass.cachedViewport.height = static_cast<float>(pass.renderArea.height);
+        pass.cachedViewport.minDepth = 0.0f;
+        pass.cachedViewport.maxDepth = 1.0f;
+        pass.cachedScissor.offset = {0, 0};
+        pass.cachedScissor.extent = pass.renderArea;
+
+        if (isDynamicGfx) {
+            uint32_t colorCount = 0;
+            for (const ResourceHandle output : pass.colorOutputs) {
+                if (!output.IsValid() || output.id >= m_resources.size() ||
+                    colorCount >= pass.cachedRenderingColorAttachments.size())
+                    continue;
+                const auto &resource = m_resources[output.id];
+                VkRenderingAttachmentInfo &attachment = pass.cachedRenderingColorAttachments[colorCount++];
+                attachment = {};
+                attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+                attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                attachment.loadOp = pass.clearColorEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+                attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                attachment.clearValue.color = pass.clearColor;
+                if (colorCount == 1 && pass.hasResolveAttachment && pass.resolveOutput.IsValid() &&
+                    pass.resolveOutput.id < m_resources.size()) {
+                    const auto &resolve = m_resources[pass.resolveOutput.id];
+                    attachment.resolveMode = rhi::IsIntegerFormat(rhi::FromVkFormat(resource.textureDesc.format))
+                                                 ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
+                                                 : VK_RESOLVE_MODE_AVERAGE_BIT;
+                    attachment.resolveImageView = resolve.isExternal ? resolve.externalView : resolve.allocatedView;
+                    attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                }
+            }
+
+            pass.cachedRenderingDepthAttachment = {};
+            const ResourceHandle depth = GetEffectiveDepth(pass);
+            if (depth.IsValid() && depth.id < m_resources.size()) {
+                const auto &resource = m_resources[depth.id];
+                auto &attachment = pass.cachedRenderingDepthAttachment;
+                attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+                const bool writableDepth = pass.depthOutput.IsValid();
+                attachment.imageLayout = writableDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                                       : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                attachment.loadOp =
+                    writableDepth && pass.clearDepthEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+                attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                attachment.clearValue.depthStencil = pass.clearDepth;
+            }
+
+            auto &rendering = pass.cachedRenderingInfo;
+            rendering = {};
+            rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            rendering.renderArea = {{0, 0}, pass.renderArea};
+            rendering.layerCount = 1;
+            rendering.colorAttachmentCount = colorCount;
+            rendering.pColorAttachments = colorCount > 0 ? pass.cachedRenderingColorAttachments.data() : nullptr;
+            rendering.pDepthAttachment = pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE
+                                             ? &pass.cachedRenderingDepthAttachment
+                                             : nullptr;
+            rendering.pStencilAttachment =
+                rendering.pDepthAttachment && rhi::IsStencilFormat(pass.renderingSignature.stencilFormat)
+                    ? &pass.cachedRenderingDepthAttachment
+                    : nullptr;
+            continue;
+        }
 
         // VkRenderPassBeginInfo
         auto &bi = pass.cachedBeginInfo;
@@ -1553,18 +1818,6 @@ void RenderGraph::PrecomputeExecuteData()
         pass.cachedClearValueCount = idx;
         bi.clearValueCount = idx;
         bi.pClearValues = pass.cachedClearValues;
-
-        // Viewport
-        pass.cachedViewport.x = 0.0f;
-        pass.cachedViewport.y = 0.0f;
-        pass.cachedViewport.width = static_cast<float>(pass.renderArea.width);
-        pass.cachedViewport.height = static_cast<float>(pass.renderArea.height);
-        pass.cachedViewport.minDepth = 0.0f;
-        pass.cachedViewport.maxDepth = 1.0f;
-
-        // Scissor
-        pass.cachedScissor.offset = {0, 0};
-        pass.cachedScissor.extent = pass.renderArea;
     }
 }
 
@@ -1595,7 +1848,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             isDepthResource = format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D24_UNORM_S8_UINT ||
                               format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
         }
-        return isDepthResource ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        return isDepthResource ? rhi::ToVkImageAspectMask(resource.textureDesc.format) : VK_IMAGE_ASPECT_COLOR_BIT;
     };
 
     auto addBarrier = [&](const ResourceAccess &access, bool isDepthInput = false) {
@@ -1716,8 +1969,20 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         state.nativeQueueLane = targetBinding.lane;
     };
 
-    // Process read accesses
-    for (const auto &read : pass.reads) {
+    // A resource may be bound to several shader names in one pass. Those
+    // bindings are distinct, but the image transition is not: emitting the
+    // same oldLayout -> newLayout barrier twice in one dependency info makes
+    // the second barrier observe the layout produced by the first one.
+    for (size_t readIndex = 0; readIndex < pass.reads.size(); ++readIndex) {
+        const auto &read = pass.reads[readIndex];
+        const bool duplicateTransition =
+            std::any_of(pass.reads.begin(), pass.reads.begin() + readIndex, [&](const ResourceAccess &previous) {
+                return previous.handle.id == read.handle.id && previous.layout == read.layout &&
+                       (previous.usage & ResourceUsage::VersionDependency) == ResourceUsage::None &&
+                       (read.usage & ResourceUsage::VersionDependency) == ResourceUsage::None;
+            });
+        if (duplicateTransition)
+            continue;
         bool isDepthInput = (static_cast<int>(read.usage & ResourceUsage::DepthRead) != 0);
         addBarrier(read, isDepthInput);
     }
@@ -1741,9 +2006,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         if (dstStageMask == 0)
             dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr,
-                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
-                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
+        IssuePipelineBarriers(cmdBuffer, srcStageMask, dstStageMask);
 
         m_barrierScratch.clear();
         m_bufferBarrierScratch.clear();
@@ -1768,9 +2031,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         if (dstStageMask == 0)
             dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr,
-                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
-                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
+        IssuePipelineBarriers(cmdBuffer, srcStageMask, dstStageMask);
     }
 
     // Update resource states after this pass executes.
@@ -1836,7 +2097,7 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
         const bool depth = resource.type == ResourceType::DepthStencil || format == VK_FORMAT_D32_SFLOAT ||
                            format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D16_UNORM ||
                            format == VK_FORMAT_D32_SFLOAT_S8_UINT;
-        return depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        return depth ? rhi::ToVkImageAspectMask(resource.textureDesc.format) : VK_IMAGE_ASPECT_COLOR_BIT;
     };
 
     for (const uint32_t transferIndex : *outgoing) {
@@ -1894,9 +2155,7 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
     if (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty()) {
         if (srcStageMask == 0)
             srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr,
-                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
-                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
+        IssuePipelineBarriers(cmdBuffer, srcStageMask, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     }
 }
 

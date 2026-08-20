@@ -8,7 +8,6 @@
 
 // Jolt includes (order matters)
 #include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -29,6 +28,7 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
+#include "InfernuxJoltJobSystemAdapter.h"
 #include "PhysicsContactListener.h"
 #include "PhysicsLayers.h"
 #include "PhysicsWorld.h"
@@ -43,12 +43,12 @@
 #include <core/config/EngineConfig.h>
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
+#include <core/threading/JobSystem.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdarg>
-#include <thread>
 #include <unordered_set>
 
 namespace infernux
@@ -345,12 +345,15 @@ void PhysicsWorld::Initialize()
     // -------------------------------------------------------------------------
     auto &cfg = EngineConfig::Get();
 
-    int hwThreads = static_cast<int>(std::thread::hardware_concurrency());
-    int numThreads = cfg.physicsMaxWorkerThreads > 0 ? cfg.physicsMaxWorkerThreads : std::clamp(hwThreads - 1, 1, 8);
+    if (!JobSystem::IsAvailable()) {
+        throw std::logic_error("PhysicsWorld requires an initialized Infernux JobSystem");
+    }
+    JobSystem::Get().SetDomainConcurrency(JobDomain::Physics, cfg.physicsMaxConcurrency);
 
     m_tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(cfg.physicsTempAllocatorSize);
 
-    m_jobSystem = std::make_unique<JPH::JobSystemThreadPool>(cfg.physicsMaxJobs, cfg.physicsMaxBarriers, numThreads);
+    m_jobSystem = std::make_unique<InfernuxJoltJobSystemAdapter>(cfg.physicsMaxJobs, cfg.physicsMaxBarriers,
+                                                                 cfg.physicsMaxConcurrency);
 
     // Layer interfaces
     m_layers = std::make_unique<LayerInterfaces>();
@@ -393,11 +396,16 @@ void PhysicsWorld::Initialize()
     m_contactListener = std::make_unique<InxContactListener>();
     m_physicsSystem->SetContactListener(m_contactListener.get());
 
-    // Warm up the broadphase / job-system worker threads before the first real
-    // Step().  On a cold start with many bodies, the very first Step() generates
-    // a burst of jobs that can transiently exceed queue limits; running this
-    // no-op pass lets the thread pool spin up and avoids the burst.
-    m_physicsSystem->OptimizeBroadPhase();
+    // Warm up the broadphase through the same Physics domain used by real
+    // simulation steps. The adapter never owns a worker thread.
+    {
+        auto warmupGroup = JobSystem::Get().CreateTaskGroup(JobDomain::Physics, JobPriority::Critical);
+        m_jobSystem->BeginFrame(warmupGroup);
+        m_physicsSystem->OptimizeBroadPhase();
+        m_jobSystem->EndFrame();
+        warmupGroup.Close();
+        JobSystem::Get().Wait(warmupGroup);
+    }
 
     m_initialized = true;
     INXLOG_INFO("PhysicsWorld: Jolt Physics initialized.");
@@ -440,7 +448,13 @@ void PhysicsWorld::Shutdown()
     // Step 2: tear down subsystems in dependency order (newest first).
     m_contactListener.reset();
     m_physicsSystem.reset();
-    m_jobSystem.reset();
+    if (m_jobSystem) {
+        m_jobSystem->Shutdown();
+        m_jobSystem.reset();
+    }
+    if (JobSystem::IsAvailable()) {
+        JobSystem::Get().SetDomainConcurrency(JobDomain::Physics, 0);
+    }
     m_tempAllocator.reset();
     m_layers.reset();
 
@@ -616,8 +630,35 @@ void PhysicsWorld::Step(float deltaTime)
     JPH::BodyIDVector activeBefore;
     m_physicsSystem->GetActiveBodies(JPH::EBodyType::RigidBody, activeBefore);
 
-    if (m_contactListener)
+    if (m_contactListener) {
+        uint8_t eventInterestMask = 0;
+        std::unordered_set<GameObject *> visitedObjects;
+        visitedObjects.reserve(m_bodyToCollider.size());
+        for (const auto &[bodyId, collider] : m_bodyToCollider) {
+            (void)bodyId;
+            GameObject *gameObject = collider ? collider->GetGameObject() : nullptr;
+            if (!gameObject || !gameObject->IsActiveInHierarchy() || !visitedObjects.insert(gameObject).second)
+                continue;
+            for (const auto &component : gameObject->GetAllComponents()) {
+                if (!component || !component->IsEnabled() || !component->WantsPhysicsCallbacks())
+                    continue;
+                if (component->WantsCollisionEnterCallbacks())
+                    eventInterestMask |= CollisionEnterInterest;
+                if (component->WantsCollisionStayCallbacks())
+                    eventInterestMask |= CollisionStayInterest;
+                if (component->WantsCollisionExitCallbacks())
+                    eventInterestMask |= CollisionExitInterest;
+                if (component->WantsTriggerEnterCallbacks())
+                    eventInterestMask |= TriggerEnterInterest;
+                if (component->WantsTriggerStayCallbacks())
+                    eventInterestMask |= TriggerStayInterest;
+                if (component->WantsTriggerExitCallbacks())
+                    eventInterestMask |= TriggerExitInterest;
+            }
+        }
+        m_contactListener->SetEventInterestMask(eventInterestMask);
         m_contactListener->PreStep();
+    }
 
     // Jolt's LinearCast narrow phase handles relative target motion, but its
     // broad-phase cast only spans the source body's own displacement. Two fast
@@ -628,23 +669,35 @@ void PhysicsWorld::Step(float deltaTime)
     constexpr int kMaxDynamicCCDSplits = 8;
     constexpr float kTOIPadding = 1e-4f;
     constexpr float kMinStepDuration = 1e-6f;
+    auto physicsGroup = JobSystem::Get().CreateTaskGroup(JobDomain::Physics, JobPriority::Critical);
+    m_jobSystem->BeginFrame(physicsGroup);
     float remainingTime = deltaTime;
     int dynamicCCDSplits = 0;
-    while (remainingTime > kMinStepDuration) {
-        const float hitFraction = FindEarliestDynamicCCDFraction(remainingTime);
-        if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
-            m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps, m_tempAllocator.get(),
-                                    m_jobSystem.get());
-            remainingTime = 0.0f;
-            break;
-        }
+    try {
+        while (remainingTime > kMinStepDuration) {
+            const float hitFraction = FindEarliestDynamicCCDFraction(remainingTime);
+            if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
+                m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps, m_tempAllocator.get(),
+                                        m_jobSystem.get());
+                remainingTime = 0.0f;
+                break;
+            }
 
-        const float segmentFraction = std::clamp(hitFraction + kTOIPadding, kTOIPadding, 0.999f);
-        const float segmentTime = remainingTime * segmentFraction;
-        m_physicsSystem->Update(segmentTime, 1, m_tempAllocator.get(), m_jobSystem.get());
-        remainingTime -= segmentTime;
-        ++dynamicCCDSplits;
+            const float segmentFraction = std::clamp(hitFraction + kTOIPadding, kTOIPadding, 0.999f);
+            const float segmentTime = remainingTime * segmentFraction;
+            m_physicsSystem->Update(segmentTime, 1, m_tempAllocator.get(), m_jobSystem.get());
+            remainingTime -= segmentTime;
+            ++dynamicCCDSplits;
+        }
+    } catch (...) {
+        m_jobSystem->EndFrame();
+        physicsGroup.Close();
+        JobSystem::Get().Wait(physicsGroup);
+        throw;
     }
+    m_jobSystem->EndFrame();
+    physicsGroup.Close();
+    JobSystem::Get().Wait(physicsGroup);
     m_lastDynamicCCDSplitCount = static_cast<size_t>(dynamicCCDSplits);
 
     JPH::BodyIDVector activeAfter;
@@ -684,6 +737,53 @@ size_t PhysicsWorld::DispatchContactEvents()
     std::vector<Component *> receiversB;
     receiversA.reserve(8);
     receiversB.reserve(8);
+
+    std::unordered_map<GameObject *, uint8_t> callbackMasks;
+    callbackMasks.reserve(std::min(events.size() * 2u, m_bodyToCollider.size()));
+
+    auto callbackMask = [&](GameObject *go) {
+        const auto found = callbackMasks.find(go);
+        if (found != callbackMasks.end())
+            return found->second;
+
+        uint8_t mask = 0;
+        for (const auto &comp : go->GetAllComponents()) {
+            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
+                continue;
+            if (comp->WantsCollisionEnterCallbacks())
+                mask |= CollisionEnterInterest;
+            if (comp->WantsCollisionStayCallbacks())
+                mask |= CollisionStayInterest;
+            if (comp->WantsCollisionExitCallbacks())
+                mask |= CollisionExitInterest;
+            if (comp->WantsTriggerEnterCallbacks())
+                mask |= TriggerEnterInterest;
+            if (comp->WantsTriggerStayCallbacks())
+                mask |= TriggerStayInterest;
+            if (comp->WantsTriggerExitCallbacks())
+                mask |= TriggerExitInterest;
+        }
+        callbackMasks.emplace(go, mask);
+        return mask;
+    };
+
+    auto wantsEvent = [](const Component &comp, ContactEventType type) {
+        switch (type) {
+        case ContactEventType::CollisionEnter:
+            return comp.WantsCollisionEnterCallbacks();
+        case ContactEventType::CollisionStay:
+            return comp.WantsCollisionStayCallbacks();
+        case ContactEventType::CollisionExit:
+            return comp.WantsCollisionExitCallbacks();
+        case ContactEventType::TriggerEnter:
+            return comp.WantsTriggerEnterCallbacks();
+        case ContactEventType::TriggerStay:
+            return comp.WantsTriggerStayCallbacks();
+        case ContactEventType::TriggerExit:
+            return comp.WantsTriggerExitCallbacks();
+        }
+        return false;
+    };
 
     for (const auto &evt : events) {
         Collider *colA = ResolveColliderForSubShape(evt.bodyIdA, evt.subShapeIdA);
@@ -725,19 +825,29 @@ size_t PhysicsWorld::DispatchContactEvents()
                 continue;
         }
 
+        const uint8_t requiredBit = ContactEventInterestBit(type);
+        const bool wantsA = (callbackMask(goA) & requiredBit) != 0;
+        const bool wantsB = (callbackMask(goB) & requiredBit) != 0;
+        if (!wantsA && !wantsB)
+            continue;
+
         receiversA.clear();
         receiversB.clear();
 
-        for (const auto &comp : goA->GetAllComponents()) {
-            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
-                continue;
-            receiversA.push_back(comp.get());
+        if (wantsA) {
+            for (const auto &comp : goA->GetAllComponents()) {
+                if (!comp || !comp->IsEnabled() || !wantsEvent(*comp, type))
+                    continue;
+                receiversA.push_back(comp.get());
+            }
         }
 
-        for (const auto &comp : goB->GetAllComponents()) {
-            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
-                continue;
-            receiversB.push_back(comp.get());
+        if (wantsB) {
+            for (const auto &comp : goB->GetAllComponents()) {
+                if (!comp || !comp->IsEnabled() || !wantsEvent(*comp, type))
+                    continue;
+                receiversB.push_back(comp.get());
+            }
         }
 
         if (receiversA.empty() && receiversB.empty())
@@ -1268,11 +1378,11 @@ void PhysicsWorld::SetBodyMotionQuality(uint32_t bodyId, int quality)
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
-    JPH::EMotionQuality mq =
-        (MapMotionQualityMode(quality) == 1) ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
+    const int mappedQuality = MapMotionQualityMode(quality);
+    JPH::EMotionQuality mq = (mappedQuality == 1) ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetMotionQuality(JPH::BodyID(bodyId), mq);
-    if (mq == JPH::EMotionQuality::LinearCast)
+    if (quality == 2)
         m_continuousBodyIds.insert(bodyId);
     else
         m_continuousBodyIds.erase(bodyId);

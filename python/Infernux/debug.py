@@ -100,9 +100,11 @@ class DebugConsole:
     _instance: Optional['DebugConsole'] = None
 
     def __init__(self):
+        from Infernux.engine.runtime_dispatch import ReloadableCallbackRegistry
+
         self._entries: List[LogEntry] = []
         self._max_entries: int = 1000
-        self._listeners: List[Callable[[LogEntry], None]] = []
+        self._listener_registry = ReloadableCallbackRegistry()
         self._native_console = None  # C++ ConsolePanel (set by bootstrap)
 
         # Counters for quick filtering
@@ -120,13 +122,11 @@ class DebugConsole:
     
     def add_listener(self, callback: Callable[[LogEntry], None]):
         """Add a listener to be notified of new log entries."""
-        if callback not in self._listeners:
-            self._listeners.append(callback)
+        self._listener_registry.add_listener(callback)
     
     def remove_listener(self, callback: Callable[[LogEntry], None]):
         """Remove a log listener."""
-        if callback in self._listeners:
-            self._listeners.remove(callback)
+        self._listener_registry.remove_listener(callback)
 
     def set_native_console(self, native_console):
         """Attach the C++ ConsolePanel so Python Debug.log() messages are forwarded."""
@@ -179,8 +179,7 @@ class DebugConsole:
         self._update_counters(entry.log_type, 1)
         
         # Notify listeners
-        for listener in self._listeners:
-            listener(entry)
+        self._listener_registry.invoke(entry, propagate_exceptions=True)
         
         # Forward to C++ ConsolePanel if attached
         if self._native_console is not None:
@@ -247,6 +246,50 @@ class DebugConsole:
         self._error_count = 0
         if self._native_console is not None:
             self._native_console.clear()
+
+    @staticmethod
+    def _source_key(source_file: str) -> str:
+        if not source_file:
+            return ""
+        # Import lazily because Debug is available before the engine package
+        # finishes bootstrapping. Filesystem identity itself remains owned by
+        # the shared path service.
+        from Infernux.engine.path_utils import path_key
+
+        return path_key(source_file)
+
+    def remove_source_entries(self, source_file: str) -> int:
+        """Remove diagnostics emitted by one source file.
+
+        Script publication uses this after a new revision has committed, so a
+        corrected script loses only its stale errors while unrelated Console
+        history remains intact.
+        """
+        source_key = self._source_key(source_file)
+        if not source_key:
+            return 0
+        retained = [
+            entry
+            for entry in self._entries
+            if self._source_key(entry.source_file) != source_key
+        ]
+        removed = len(self._entries) - len(retained)
+        if removed:
+            self._entries = retained
+            self._log_count = 0
+            self._warning_count = 0
+            self._error_count = 0
+            for entry in retained:
+                self._update_counters(entry.log_type, 1)
+        if self._native_console is not None:
+            remove_native = getattr(
+                self._native_console,
+                "remove_entries_from_source",
+                None,
+            )
+            if callable(remove_native):
+                remove_native(source_file)
+        return removed
     
     @property
     def log_count(self) -> int:
@@ -426,6 +469,11 @@ class Debug:
     def clear_console():
         """Clear all entries from the Console."""
         DebugConsole.instance().clear()
+
+    @staticmethod
+    def clear_source_entries(source_file: str) -> int:
+        """Clear Console diagnostics owned by one source file."""
+        return DebugConsole.instance().remove_source_entries(source_file)
 
     @staticmethod
     def log_internal(message: Any, context: Any = None):

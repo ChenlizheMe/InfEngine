@@ -158,6 +158,7 @@ def test_semantic_click_helper_delivers_move_press_release(tmp_path, monkeypatch
         "press_render_frame": 43,
             "release_render_frame": 44,
             "press_target_active": True,
+            "press_target_accepted": True,
             "press_frame": {"frame": 43, "target_active": True},
             "delivered": True,
     }
@@ -329,6 +330,10 @@ def test_semantic_drag_delivers_each_phase_across_rendered_frames(tmp_path, monk
     assert result["ok"] is True
     assert result["data"]["press_render_frame"] == 52
     assert result["data"]["motion_render_frames"] == [53, 54]
+    assert result["data"]["drag_drop_frames"] == [
+        {"frame": 53},
+        {"frame": 54},
+    ]
     assert result["data"]["release_render_frame"] == 55
     assert result["data"]["button"] == 2
     assert result["data"]["press_target_reachable"] is True
@@ -357,6 +362,7 @@ def test_key_chord_presses_in_order_and_releases_in_reverse(tmp_path, monkeypatc
     queue = MainThreadCommandQueue()
     queue._main_thread_id = threading.get_ident()
     monkeypatch.setattr(MainThreadCommandQueue, "_instance", queue)
+    monkeypatch.setattr(input_tools, "_current_rendered_gui_frame", lambda _timeout: None)
 
     result = input_tools.perform_key_chord([224, 4])
 
@@ -373,6 +379,35 @@ def test_key_chord_presses_in_order_and_releases_in_reverse(tmp_path, monkeypatc
         ("full_speed",),
         ("key", 224, False, False),
     ]
+
+
+def test_key_chord_waits_for_a_rendered_press_frame_before_release(
+    tmp_path, monkeypatch
+):
+    session.configure(
+        str(tmp_path),
+        {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}},
+    )
+    native = _FakeNativeEngine()
+    monkeypatch.setattr(input_tools, "_native_engine", lambda: native)
+    monkeypatch.setattr(input_tools, "_current_rendered_gui_frame", lambda _timeout: 70)
+    barriers = []
+    monkeypatch.setattr(
+        input_tools,
+        "_wait_for_rendered_gui_frame",
+        lambda previous, **kwargs: barriers.append((previous, kwargs))
+        or {"frame": 71, "input_sequence": kwargs["minimum_input_sequence"]},
+    )
+
+    queue = MainThreadCommandQueue()
+    queue._main_thread_id = threading.get_ident()
+    monkeypatch.setattr(MainThreadCommandQueue, "_instance", queue)
+
+    result = input_tools.perform_key_chord([224, 4])
+
+    assert result["ok"] is True
+    assert result["data"]["press_render_frame"] == 71
+    assert barriers == [(70, {"timeout_seconds": 3.0, "minimum_input_sequence": 2})]
 
 
 @pytest.mark.parametrize(

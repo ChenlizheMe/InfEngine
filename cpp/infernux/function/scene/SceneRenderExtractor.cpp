@@ -26,10 +26,33 @@ std::shared_ptr<const InlineMeshSnapshot> CaptureInlineMesh(const MeshRenderer &
     owner->indices = renderer.GetInlineIndices();
     return owner;
 }
+
+void CaptureOrReferenceInlineMesh(const MeshRenderer &renderer, const std::vector<Vertex> *&vertices,
+                                  const std::vector<uint32_t> *&indices, std::shared_ptr<const void> &owner)
+{
+    if (renderer.HasSharedInlineMesh()) {
+        // Primitive streams live in PrimitiveMeshes static storage. Retaining
+        // the renderer's direct references avoids N identical allocations and
+        // copies when a scene contains thousands of ordinary Cube objects.
+        vertices = &renderer.GetInlineVertices();
+        indices = &renderer.GetInlineIndices();
+        owner.reset();
+        return;
+    }
+
+    auto inlineOwner = CaptureInlineMesh(renderer);
+    vertices = &inlineOwner->vertices;
+    indices = &inlineOwner->indices;
+    owner = std::move(inlineOwner);
+}
 } // namespace
 
 size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling)
 {
+    // Extraction is deliberately camera-neutral. Scene, Game, previews, and
+    // future stacked Game cameras all consume this same immutable world and
+    // derive their own visible lists in SceneRenderer.
+    (void)useActiveCameraCulling;
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto prepareStart = Clock::now();
@@ -38,6 +61,7 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     m_activeCamera = sm.GetEditorCameraController().GetCamera();
 
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
+    const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
     Scene *activeScene = sm.GetActiveScene();
     const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
     RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
@@ -45,11 +69,12 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     const bool fastPath =
         frame.MatchesSource(currentWorldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
     if (fastPath) {
-        // Fast path: renderer set unchanged — fuse transform/bounds/culling/draw-call patch.
+        // Fast path: renderer set unchanged — fuse transform/bounds/draw-call patch.
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
 #endif
-        UpdateCachedRenderableTransforms(frame, useActiveCameraCulling);
+        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision))
+            UpdateCachedRenderableTransforms(frame);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareFastCalls += 1.0;
@@ -63,16 +88,6 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareSlowCalls += 1.0;
-#endif
-    }
-
-    if (!fastPath && useActiveCameraCulling && m_frustumCulling) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        PerformCulling(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
     }
 
@@ -95,6 +110,8 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
 #endif
     frame.m_worldId = currentWorldId;
     frame.m_structuralRevision = currentVersion;
+    frame.m_transformRevision = currentTransformRevision;
+    m_lastTransformRevision = currentTransformRevision;
     world.Publish();
     return m_visibleCount;
 }
@@ -116,6 +133,7 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 
     SceneManager &sm = SceneManager::Instance();
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
+    const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
     Scene *activeScene = sm.GetActiveScene();
     const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
     RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
@@ -126,7 +144,8 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
 #endif
-        UpdateCachedRenderableTransforms(frame, true);
+        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision))
+            UpdateCachedRenderableTransforms(frame);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareFastCalls += 1.0;
@@ -139,16 +158,6 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareSlowCalls += 1.0;
-#endif
-    }
-
-    if (!fastPath && m_frustumCulling) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        PerformCulling(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
     }
 
@@ -171,6 +180,8 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 #endif
     frame.m_worldId = currentWorldId;
     frame.m_structuralRevision = currentVersion;
+    frame.m_transformRevision = currentTransformRevision;
+    m_lastTransformRevision = currentTransformRevision;
     world.Publish();
     return m_visibleCount;
 }
@@ -193,6 +204,7 @@ void SceneRenderExtractor::CapturePrimaryView(RenderWorldFrame &frame, Camera *c
     view.projection = camera->GetProjectionMatrix();
     view.viewProjection = camera->GetViewProjectionMatrix();
     view.cullingMask = camera->GetCullingMask();
+    view.cameraId = camera->GetComponentID();
     view.valid = true;
     if (GameObject *object = camera->GetGameObject()) {
         if (Transform *transform = object->GetTransform()) {
@@ -208,6 +220,7 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
     frame.m_proxies.clear();
     frame.m_drawCalls = {};
     m_sceneSources.clear();
+    m_allRenderersStatic = true;
 
     Scene *activeScene = SceneManager::Instance().GetActiveScene();
     if (!activeScene)
@@ -228,6 +241,9 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         if (!obj || !obj->IsActiveInHierarchy())
             continue;
 
+        if (!obj->IsStatic() || dynamic_cast<SkinnedMeshRenderer *>(renderer) != nullptr)
+            m_allRenderersStatic = false;
+
         uint32_t objectLayerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
 
         // Check if renderer has inline mesh, asset mesh, or mesh reference
@@ -237,6 +253,7 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         RenderProxy renderable;
         renderable.structural.objectId = obj->GetID();
         renderable.structural.layerMask = objectLayerBit;
+        renderable.structural.isStatic = obj->IsStatic() && dynamic_cast<SkinnedMeshRenderer *>(renderer) == nullptr;
         renderable.structural.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
         renderable.frame.worldMatrix = obj->GetTransform()->GetWorldMatrix();
         renderable.structural.renderMaterial = renderer->GetEffectiveMaterial();
@@ -249,17 +266,17 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         source.transform = obj->GetTransform();
         source.skinnedRenderer = dynamic_cast<SkinnedMeshRenderer *>(renderer);
         if (renderer->HasInlineMesh()) {
-            auto inlineOwner = CaptureInlineMesh(*renderer);
-            source.inlineVertices = &inlineOwner->vertices;
-            source.inlineIndices = &inlineOwner->indices;
-            source.inlineMeshOwner = std::move(inlineOwner);
+            CaptureOrReferenceInlineMesh(*renderer, source.inlineVertices, source.inlineIndices,
+                                         source.inlineMeshOwner);
         }
 
         // Get world-space bounding box for frustum culling — reuse the world matrix
         glm::vec3 boundsMin, boundsMax;
         renderer->ComputeWorldBounds(renderable.frame.worldMatrix, boundsMin, boundsMax);
         renderable.frame.worldBounds = AABB(boundsMin, boundsMax);
-        renderable.frame.visible = true; // Will be set by culling
+        // RenderWorld is shared by every camera. Visibility is intentionally
+        // not stored here; each camera derives and caches its own renderer list.
+        renderable.frame.visible = true;
 
         frame.m_proxies.push_back(std::move(renderable));
         m_sceneSources.push_back(std::move(source));
@@ -268,26 +285,12 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
     m_visibleCount = frame.m_proxies.size();
 }
 
-void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &frame, bool useActiveCameraCulling)
+void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &frame)
 {
-    // Fast path: renderer set unchanged. Refresh transforms, bounds, culling,
-    // and cached draw calls in one O(N) pass.
+    // Fast path: renderer set unchanged. Refresh transforms, bounds, and
+    // cached draw calls in one O(N) pass. Culling is per-camera downstream.
     // Optimization: skip bounds recomputation and heavy draw-call patching
     // for objects whose world transform has not changed since last frame.
-    Frustum frustum;
-    const bool useFrustum = useActiveCameraCulling && m_frustumCulling && frame.m_primaryView.valid;
-    if (useFrustum) {
-        frustum.ExtractFromMatrix(frame.m_primaryView.viewProjection);
-        m_frustumVisibilityDirty = true;
-    } else if (m_frustumVisibilityDirty) {
-        // Transition from frustum-culled → non-frustum: sweep all draw calls
-        // to mark visible, since some may have been marked invisible last frame.
-        for (auto &dc : frame.m_drawCalls.drawCalls) {
-            dc.frustumVisible = true;
-        }
-        m_frustumVisibilityDirty = false;
-    }
-
     m_visibleCount = 0;
 
     for (size_t renderableIndex = 0; renderableIndex < frame.m_proxies.size(); ++renderableIndex) {
@@ -308,10 +311,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
         const bool transformChanged = std::memcmp(&worldMatrix, &frameData.worldMatrix, sizeof(glm::mat4)) != 0;
         const bool bufferDirty = mr->ConsumeMeshBufferDirty();
         if (bufferDirty && mr->HasInlineMesh()) {
-            auto inlineOwner = CaptureInlineMesh(*mr);
-            source.inlineVertices = &inlineOwner->vertices;
-            source.inlineIndices = &inlineOwner->indices;
-            source.inlineMeshOwner = std::move(inlineOwner);
+            CaptureOrReferenceInlineMesh(*mr, source.inlineVertices, source.inlineIndices, source.inlineMeshOwner);
         }
 
         if (transformChanged) {
@@ -330,11 +330,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
             }
         }
 
-        if (useFrustum) {
-            frameData.visible = frustum.IntersectsAABB(frameData.worldBounds);
-        } else {
-            frameData.visible = true;
-        }
+        frameData.visible = true;
 
         if (cache.drawCallCount > 0) {
             const size_t drawCallEnd =
@@ -384,50 +380,20 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                     DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
                     dc.worldMatrix = drawWorldMatrix;
                     dc.worldBounds = frameData.worldBounds;
-                    dc.frustumVisible = frameData.visible;
+                    dc.frustumVisible = true;
                     dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                     patchSkinPalette(dc);
                     firstDirty = false;
-                }
-            } else if (useFrustum) {
-                // Light patch: only update frustumVisible (camera may have moved).
-                for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
-                    DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
-                    dc.frustumVisible = frameData.visible;
-                    patchSkinPalette(dc);
                 }
             } else if (isSkinnedRenderer) {
                 for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     patchSkinPalette(frame.m_drawCalls.drawCalls[drawCallIndex]);
                 }
             }
-            // else: !transformChanged && !useFrustum → draw calls already correct, skip.
+            // else: unchanged static draw calls are already correct.
         }
 
         if (frameData.visible) {
-            ++m_visibleCount;
-        }
-    }
-}
-
-void SceneRenderExtractor::PerformCulling(RenderWorldFrame &frame)
-{
-    if (!frame.m_primaryView.valid) {
-        // No camera, mark all as visible
-        m_visibleCount = frame.m_proxies.size();
-        return;
-    }
-
-    // Extract frustum from view-projection matrix
-    Frustum frustum;
-    frustum.ExtractFromMatrix(frame.m_primaryView.viewProjection);
-
-    // Test each object against frustum
-    m_visibleCount = 0;
-    for (auto &renderable : frame.m_proxies) {
-        // Use AABB-frustum intersection test
-        renderable.frame.visible = frustum.IntersectsAABB(renderable.frame.worldBounds);
-        if (renderable.frame.visible) {
             ++m_visibleCount;
         }
     }
@@ -529,6 +495,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.identity = structural.identity.MakeDrawIdentity();
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
+            dc.isStatic = structural.isStatic;
             dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
@@ -559,6 +526,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.identity = structural.identity.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
+            dc.isStatic = structural.isStatic;
             dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
@@ -605,6 +573,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
                 dc.identity = structural.identity.MakeDrawIdentity(si);
                 dc.frustumVisible = visible;
                 dc.castsShadows = renderer->CastsShadows();
+                dc.isStatic = structural.isStatic;
                 dc.worldBounds = frame.worldBounds;
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
@@ -621,10 +590,8 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         }
     } else if (renderer->HasInlineMesh()) {
         if (!source.inlineVertices || !source.inlineIndices) {
-            auto inlineOwner = CaptureInlineMesh(*renderer);
-            source.inlineVertices = &inlineOwner->vertices;
-            source.inlineIndices = &inlineOwner->indices;
-            source.inlineMeshOwner = std::move(inlineOwner);
+            CaptureOrReferenceInlineMesh(*renderer, source.inlineVertices, source.inlineIndices,
+                                         source.inlineMeshOwner);
         }
         const auto &objVertices = *source.inlineVertices;
         const auto &objIndices = *source.inlineIndices;
@@ -643,10 +610,15 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         dc.identity = structural.identity.MakeDrawIdentity();
         dc.frustumVisible = visible;
         dc.castsShadows = renderer->CastsShadows();
+        dc.isStatic = structural.isStatic;
         dc.worldBounds = frame.worldBounds;
         dc.meshVertices = &objVertices;
         dc.meshIndices = &objIndices;
         dc.meshDataOwner = source.inlineMeshOwner;
+        if (renderer->HasSharedInlineMesh()) {
+            dc.meshAssetGuid = renderer->GetSharedInlineMeshGuid();
+            dc.meshRuntimeVersion = 1;
+        }
         dc.forceBufferUpdate = bufferDirty;
         result.drawCalls.push_back(dc);
     }

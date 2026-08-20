@@ -2,6 +2,7 @@
 
 #include "EditorPanel.h"
 #include "EditorTheme.h"
+#include "interaction/EditorSearchModel.h"
 #include <core/log/InxLog.h>
 
 #include <imgui.h>
@@ -36,6 +37,10 @@ class ConsolePanel : public EditorPanel
     /// Clear all log entries.
     void Clear();
 
+    /// Remove diagnostics owned by one source file without disturbing other
+    /// Console history. Returns the number of removed entries.
+    size_t RemoveEntriesFromSource(const std::string &sourceFile);
+
     /// Query counts for status bar integration.
     int GetInfoCount() const;
     int GetWarningCount() const;
@@ -47,6 +52,9 @@ class ConsolePanel : public EditorPanel
     /// Called from status bar click.
     void SelectLatestEntry();
     void SelectEntry(uint64_t uid);
+    /// Project the authoritative editor selection without publishing a second
+    /// selection event back to Python.
+    void SetSelectionSnapshot(uint64_t uid);
 
     /// Authoritative status-bar snapshot. The latest entry and counts do not
     /// depend on the Console window's current filters.
@@ -54,11 +62,41 @@ class ConsolePanel : public EditorPanel
                               int &outErrorCount, uint64_t &outUid);
     [[nodiscard]] uint64_t GetRevision() const noexcept;
     [[nodiscard]] uint64_t GetSelectedUid() const noexcept;
+    [[nodiscard]] bool HasSelectedEntry() const noexcept;
 
-    /// Python callback: invoked on double-click with (sourceFile, sourceLine).
-    std::function<void(const std::string &, int)> onDoubleClickEntry;
+    /// Snapshot the entries currently visible in the native Console view.
+    /// This is intentionally a bounded, filtered view so external tools do
+    /// not copy the full log buffer every frame.
+    struct VisibleLogSnapshot
+    {
+        std::string message;
+        std::string timestamp;
+        std::string stackTrace;
+        std::string sourceFile;
+        int sourceLine = 0;
+        LogLevel level = LOG_INFO;
+        uint64_t uid = 0;
+        uint64_t latestUid = 0;
+        int count = 1;
+    };
+
+    std::vector<VisibleLogSnapshot> GetVisibleLogSnapshot(size_t limit);
+    bool CopySelectedEntry();
+    [[nodiscard]] bool HasViewOption(const std::string &option) const noexcept;
+    [[nodiscard]] bool GetViewOption(const std::string &option) const noexcept;
+    void SetViewOption(const std::string &option, bool enabled);
+    [[nodiscard]] std::string GetSearchQuery() const;
+    void SetSearchQuery(const std::string &query);
+    void RequestSearchFocus()
+    {
+        m_focusSearchNextFrame = true;
+    }
+    [[nodiscard]] float GetDetailHeight() const noexcept;
+    void SetDetailHeight(float height) noexcept;
+
     std::function<void()> onErrorPause;
     std::function<void()> onRequestFocus;
+    std::function<void(uint64_t, bool)> onSelectionChanged;
 
     /// Filter state — exposed for pybind11 property access.
     bool showInfo = true;
@@ -118,22 +156,27 @@ class ConsolePanel : public EditorPanel
     bool m_prevShowWarnings = true;
     bool m_prevShowErrors = true;
     bool m_prevCollapse = false;
-    std::string m_prevSearch;
+    EditorSearchModel m_searchModel;
     std::vector<VisibleEntry> m_visible;
     std::unordered_map<std::string, size_t> m_collapseLookup;
     int m_cachedInfoCount = 0;
     int m_cachedWarnCount = 0;
     int m_cachedErrorCount = 0;
 
-    // ── Selection & scroll ──
+    // ── Selection projection & scroll ──
+    // m_selectedUid mirrors SelectionService for drawing only. User actions
+    // publish intent and never mutate this field directly.
     uint64_t m_selectedUid = 0;
     uint64_t m_requestedUid = 0;
     bool m_followTail = true;
     bool m_scrollToBottom = false;
     std::array<char, 256> m_search{};
+    std::string m_searchEditStart;
+    bool m_focusSearchNextFrame = false;
     float m_rowHeight = 22.0f;
     bool m_rowHeightMeasured = false;
     float m_detailHeight = 90.0f;
+    float m_detailResizeStart = 90.0f;
 
     double m_subFlush = 0.0;
     double m_subCache = 0.0;
@@ -148,7 +191,8 @@ class ConsolePanel : public EditorPanel
     bool MatchesCurrentFilters(const LogEntry &entry) const;
     std::string CollapseKey(const LogEntry &entry) const;
     int FindVisibleIndexByUid(uint64_t uid) const;
-    void SelectUid(uint64_t uid, bool focusWindow);
+    void SelectUid(uint64_t uid, bool focusWindow, bool publishSelection = true, bool recordHistory = true);
+    void PublishSelection(uint64_t uid, bool recordHistory);
     void RenderToolbar(InxGUIContext *ctx);
     void RenderBody(InxGUIContext *ctx);
     void RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry &ve, bool selected);

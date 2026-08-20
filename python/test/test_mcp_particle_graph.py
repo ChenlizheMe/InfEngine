@@ -21,6 +21,21 @@ class _FakeMcp:
         return _register
 
 
+def test_particle_graph_focus_uses_window_manager_as_single_authority():
+    class Manager:
+        def __init__(self):
+            self.calls = []
+
+        def focus_window(self, panel_id):
+            self.calls.append(panel_id)
+
+    manager = Manager()
+
+    module._focus_particle_graph_panel(manager)
+
+    assert manager.calls == ["particle_graph_editor"]
+
+
 class _Panel:
     def __init__(self, graph_path):
         self.graph_path = str(graph_path)
@@ -478,35 +493,54 @@ def test_particle_graph_open_asset_rejects_non_graph_files(tmp_path, monkeypatch
 def test_asset_create_particle_graph_uses_the_editor_asset_pipeline(
     tmp_path, monkeypatch
 ):
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.undo import UndoManager
+
     assets = tmp_path / "Assets" / "Acceptance" / "VFX"
     assets.mkdir(parents=True)
     calls = []
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
+    core.project_assets.configure(str(tmp_path), None)
 
-    monkeypatch.setattr(
-        assets_module,
-        "main_thread",
-        lambda _operation, callback, **_kwargs: callback(),
-    )
-    monkeypatch.setattr(assets_module, "get_asset_database", lambda: None)
-    monkeypatch.setattr(
-        "Infernux.engine.ui.project_file_ops.create_particlegraph",
-        lambda directory, name, database: (
-            calls.append((directory, name, database)) or (True, "")
-        ),
-    )
-    mcp = _FakeMcp()
-    assets_module.register_asset_tools(mcp, str(tmp_path))
+    def _create_particlegraph(directory, name, database):
+        calls.append((directory, name, database))
+        file_name = name if name.endswith(".particlegraph") else f"{name}.particlegraph"
+        (assets / file_name).write_text("{}\n", encoding="utf-8")
+        return True, ""
 
-    created = mcp.tools["asset_create_particle_graph"](
-        "EventAcceptance.particlegraph", "Assets/Acceptance/VFX"
-    )
+    try:
+        monkeypatch.setattr(
+            assets_module,
+            "main_thread",
+            lambda _operation, callback, **_kwargs: callback(),
+        )
+        monkeypatch.setattr(assets_module, "get_asset_database", lambda: None)
+        monkeypatch.setattr(
+            "Infernux.engine.ui.project_file_ops.create_particlegraph",
+            _create_particlegraph,
+        )
+        mcp = _FakeMcp()
+        assets_module.register_asset_tools(mcp, str(tmp_path))
 
-    assert created["kind"] == "particlegraph"
-    assert created["path"] == "Assets/Acceptance/VFX/EventAcceptance.particlegraph"
-    assert created["created"] is True
-    assert calls == [
-        (str(assets.resolve()), "EventAcceptance.particlegraph", None)
-    ]
+        created = mcp.tools["asset_create_particle_graph"](
+            "EventAcceptance.particlegraph", "Assets/Acceptance/VFX"
+        )
+
+        assert created["kind"] == "particlegraph"
+        assert created["path"] == "Assets/Acceptance/VFX/EventAcceptance.particlegraph"
+        assert created["created"] is True
+        assert calls == [
+            (str(assets.resolve()), "EventAcceptance.particlegraph", None)
+        ]
+        assert manager.action_journal.applied_entries()[-1].action.description == (
+            "Create Particle Graph"
+        )
+    finally:
+        core.shutdown()
+        manager.clear()
+        UndoManager._instance = previous_manager
 
 
 def test_asset_tools_do_not_expose_sdf_source_creation(tmp_path):
@@ -623,11 +657,30 @@ def test_particle_system_mcp_tools_get_and_set_exposed_parameters(monkeypatch):
                 }
             ]
 
+        def _serialize_fields_document(self):
+            return {
+                "__type_name__": type(self).__name__,
+                "values": self.values,
+                "emitter_options": self.emitter_options,
+            }
+
+        def _deserialize_fields_document(self, document):
+            self.values = {
+                key: list(value) for key, value in document["values"].items()
+            }
+            self.emitter_options = dict(document["emitter_options"])
+
     class _Object:
         id = 456
         name = "Parameterized VFX"
 
     component = _Component()
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.undo import UndoManager
+
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
     monkeypatch.setattr(module, "find_game_object", lambda object_id: _Object())
     monkeypatch.setattr(module, "_find_particle_system", lambda _obj, ordinal: component)
     monkeypatch.setattr(
@@ -638,19 +691,24 @@ def test_particle_system_mcp_tools_get_and_set_exposed_parameters(monkeypatch):
     mcp = _FakeMcp()
     module.register_particle_runtime_tools(mcp)
 
-    before = mcp.tools["particle_system_get_parameter"](456, "Wind")
-    changed = mcp.tools["particle_system_set_parameter"](
-        456, "Wind", [4.0, 5.0, 6.0]
-    )
-    emitter_changed = mcp.tools["particle_system_set_emitter_options"](
-        456, "Smoke", False, False
-    )
+    try:
+        before = mcp.tools["particle_system_get_parameter"](456, "Wind")
+        changed = mcp.tools["particle_system_set_parameter"](
+            456, "Wind", [4.0, 5.0, 6.0]
+        )
+        emitter_changed = mcp.tools["particle_system_set_emitter_options"](
+            456, "Smoke", False, False
+        )
 
-    assert before["value"] == [1.0, 2.0, 3.0]
-    assert changed["value"] == [4.0, 5.0, 6.0]
-    assert changed["runtime"]["artifact_revision"] == 9
-    assert emitter_changed["changed"] is True
-    assert emitter_changed["emitters"][0]["enabled"] is False
+        assert before["value"] == [1.0, 2.0, 3.0]
+        assert changed["value"] == [4.0, 5.0, 6.0]
+        assert changed["runtime"]["artifact_revision"] == 9
+        assert emitter_changed["changed"] is True
+        assert emitter_changed["emitters"][0]["enabled"] is False
+        assert len(manager.action_journal.applied_entries()) == 2
+    finally:
+        core.shutdown()
+        UndoManager._instance = previous_manager
 
 
 def test_particle_system_mcp_has_one_parameter_contract(monkeypatch):

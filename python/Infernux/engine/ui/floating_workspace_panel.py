@@ -173,6 +173,8 @@ def render_compact_tab_bar(
     bar_id: str,
     tabs: Sequence[tuple[str, str]],
     active_index: int,
+    *,
+    semantic_prefix: str = "",
 ) -> int:
     """Left-aligned pagination tabs with underline selection (not pill buttons)."""
     selected_index = int(active_index)
@@ -189,6 +191,16 @@ def render_compact_tab_bar(
             if ctx.invisible_button(f"##{bar_id}_{suffix}", text_w, _TAB_BUTTON_H):
                 selected_index = index
                 selected = True
+            if semantic_prefix and bool(
+                getattr(ctx, "semantic_capture_enabled", True)
+            ):
+                ctx.record_semantic_item(
+                    "tab",
+                    label,
+                    True,
+                    f"{semantic_prefix}.{suffix}",
+                    bool_value=selected,
+                )
             hovered = bool(ctx.is_item_hovered())
             x0 = ctx.get_item_rect_min_x()
             y0 = ctx.get_item_rect_min_y()

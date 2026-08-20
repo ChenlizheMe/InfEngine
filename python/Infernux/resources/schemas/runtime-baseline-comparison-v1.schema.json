@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infernux-engine.com/schemas/runtime-baseline-comparison-v1.schema.json",
+  "title": "Infernux Runtime Baseline Comparison",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "generated_utc",
+    "threshold_percent",
+    "comparable",
+    "baseline_identity",
+    "candidate_identity",
+    "identity_mismatches",
+    "summary",
+    "metrics"
+  ],
+  "properties": {
+    "$schema": {"const": "https://infernux-engine.com/schemas/runtime-baseline-comparison-v1.schema.json"},
+    "schema_version": {"const": 1},
+    "generated_utc": {"type": "string"},
+    "threshold_percent": {"type": "number", "minimum": 0},
+    "comparable": {"type": "boolean"},
+    "baseline_identity": {"$ref": "#/$defs/identity"},
+    "candidate_identity": {"$ref": "#/$defs/identity"},
+    "identity_mismatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "baseline", "candidate"],
+        "properties": {
+          "field": {"type": "string"},
+          "baseline": {},
+          "candidate": {}
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["improved", "regressed", "stable", "added", "removed"],
+      "properties": {
+        "improved": {"type": "integer", "minimum": 0},
+        "regressed": {"type": "integer", "minimum": 0},
+        "stable": {"type": "integer", "minimum": 0},
+        "added": {"type": "integer", "minimum": 0},
+        "removed": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "baseline", "candidate", "delta", "percent", "direction", "verdict"],
+        "properties": {
+          "path": {"type": "string"},
+          "baseline": {"type": ["number", "null"]},
+          "candidate": {"type": ["number", "null"]},
+          "delta": {"type": ["number", "null"]},
+          "percent": {"type": ["number", "null"]},
+          "direction": {"enum": ["lower", "higher", "neutral"]},
+          "verdict": {"enum": ["improved", "regressed", "stable", "added", "removed"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": ["build_configuration", "application_role", "runtime_mode", "flavor", "platform", "architecture", "python_version", "native_profile_enabled", "engine_version", "build_preset"],
+      "properties": {
+        "build_configuration": {"enum": ["Debug", "Release"]},
+        "application_role": {"enum": ["Editor", "Player", "Headless"]},
+        "runtime_mode": {"type": "string"},
+        "flavor": {"enum": ["EditorDebug", "EditorRelease", "PlayerDebug", "PlayerRelease", "HeadlessDebug", "HeadlessRelease"]},
+        "platform": {"type": "string"},
+        "architecture": {"type": "string"},
+        "python_version": {"type": "string"},
+        "native_profile_enabled": {"type": "boolean"},
+        "engine_version": {"type": "string"},
+        "build_preset": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

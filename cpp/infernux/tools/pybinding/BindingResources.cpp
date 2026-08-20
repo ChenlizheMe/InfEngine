@@ -6,6 +6,8 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <platform/filesystem/DocumentStore.h>
+#include <platform/filesystem/InxPack.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -47,16 +49,144 @@ ShaderAssetReference ShaderReferenceFromPython(py::handle value)
     return reference;
 }
 
+py::dict InxPackManifestToPython(const inxpack::Manifest &manifest)
+{
+    py::dict result;
+    result["format"] = "infernux-native-inxpack";
+    result["revision"] = manifest.revision;
+    result["codec"] = "zstd-or-store";
+    result["file_count"] = manifest.entries.size();
+    result["raw_bytes"] = manifest.rawBytes;
+    result["stored_bytes"] = manifest.storedBytes;
+    result["payload_bytes"] = manifest.payloadBytes;
+    result["archive_bytes"] = manifest.archiveBytes;
+    result["archive_sha256"] = inxpack::HashToHex(manifest.archiveHash);
+    py::list files;
+    for (const auto &entry : manifest.entries) {
+        py::dict item;
+        item["path"] = entry.path;
+        item["offset"] = entry.offset;
+        item["stored_bytes"] = entry.storedBytes;
+        item["raw_bytes"] = entry.rawBytes;
+        item["codec"] = inxpack::CodecName(entry.codec);
+        item["sha256"] = inxpack::HashToHex(entry.hash);
+        item["stored_sha256"] = inxpack::HashToHex(entry.storedHash);
+        files.append(std::move(item));
+    }
+    result["files"] = std::move(files);
+    return result;
+}
+
+std::vector<inxpack::SourceFile> InxPackSourcesFromPython(py::handle value)
+{
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
+        throw std::invalid_argument("InxPack sources must be a sequence of (logical_path, source_path) pairs");
+    const py::sequence sequence = py::reinterpret_borrow<py::sequence>(value);
+    std::vector<inxpack::SourceFile> sources;
+    sources.reserve(sequence.size());
+    for (const py::handle item : sequence) {
+        if (!py::isinstance<py::sequence>(item) || py::isinstance<py::str>(item))
+            throw std::invalid_argument("InxPack source entry must be a two-value sequence");
+        const py::sequence pair = py::reinterpret_borrow<py::sequence>(item);
+        if (pair.size() != 2)
+            throw std::invalid_argument("InxPack source entry must contain logical and filesystem paths");
+        sources.push_back({py::cast<std::string>(pair[0]), ToFsPath(py::cast<std::string>(pair[1]))});
+    }
+    return sources;
+}
+
+std::vector<std::string> InxPackAllowedRootsFromPython(py::handle value)
+{
+    if (value.is_none())
+        return {};
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
+        throw std::invalid_argument("InxPack allowed_roots must be a sequence or None");
+    const py::sequence sequence = py::reinterpret_borrow<py::sequence>(value);
+    std::vector<std::string> roots;
+    roots.reserve(sequence.size());
+    for (const py::handle item : sequence)
+        roots.push_back(py::cast<std::string>(item));
+    return roots;
+}
+
+inxpack::WriteOptions InxPackWriteOptionsFromPython(py::handle compressionLevel, const std::string &profile)
+{
+    inxpack::WriteOptions options;
+    if (profile == "development")
+        options.profile = inxpack::CompressionProfile::Development;
+    else if (profile == "release")
+        options.profile = inxpack::CompressionProfile::Release;
+    else
+        throw std::invalid_argument("InxPack compression profile must be 'development' or 'release'");
+
+    if (!compressionLevel.is_none()) {
+        options.compressionLevel = py::cast<int>(compressionLevel);
+        inxpack::ValidateCompressionLevel(options.compressionLevel);
+    }
+    return options;
+}
+
 } // namespace
 
 void RegisterResourceBindings(py::module_ &m)
 {
+    m.def(
+        "_inxpack_write",
+        [](py::handle sources, const std::string &destination, py::handle compressionLevel,
+           const std::string &profile) {
+            auto sourceFiles = InxPackSourcesFromPython(sources);
+            const auto destinationPath = ToFsPath(destination);
+            const auto options = InxPackWriteOptionsFromPython(compressionLevel, profile);
+            inxpack::Manifest manifest;
+            {
+                // Content packaging runs on the editor build worker. Holding
+                // the GIL here would still starve the render/UI thread for the
+                // entire read, hash, compression and durable-write operation.
+                py::gil_scoped_release release;
+                manifest = inxpack::Write(destinationPath, std::move(sourceFiles), options);
+            }
+            return InxPackManifestToPython(manifest);
+        },
+        py::arg("sources"), py::arg("destination"), py::arg("compression_level") = py::none(),
+        py::arg("profile") = "development", "Write the single native InxPack format using Store/Zstandard codecs.");
+    m.def(
+        "_inxpack_read_manifest",
+        [](const std::string &path) { return InxPackManifestToPython(inxpack::ReadManifest(ToFsPath(path))); },
+        py::arg("path"), "Read and fully validate a native InxPack manifest.");
+    m.def(
+        "_inxpack_extract",
+        [](const std::string &path, const std::string &destination, py::handle allowedRoots) {
+            return InxPackManifestToPython(
+                inxpack::Extract(ToFsPath(path), ToFsPath(destination), InxPackAllowedRootsFromPython(allowedRoots)));
+        },
+        py::arg("path"), py::arg("destination"), py::arg("allowed_roots") = py::none(),
+        "Validate and extract a native InxPack with an optional allowed root filter.");
+    m.def(
+        "_inxpack_read_entry",
+        [](const std::string &path, const std::string &entryPath) {
+            const auto bytes = inxpack::ReadEntry(ToFsPath(path), entryPath);
+            return py::bytes(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        },
+        py::arg("path"), py::arg("entry_path"), "Read one validated native InxPack entry.");
+
     py::register_exception<DocumentWriteSuperseded>(m, "DocumentWriteSuperseded");
     py::register_exception<DocumentWriteCancelled>(m, "DocumentWriteCancelled");
 
+    py::class_<DocumentFileState>(m, "DocumentFileState")
+        .def(py::init<>())
+        .def_readwrite("exists", &DocumentFileState::exists)
+        .def_readwrite("size", &DocumentFileState::size)
+        .def_readwrite("modified_ns", &DocumentFileState::modifiedNs)
+        .def_readwrite("content_hash", &DocumentFileState::contentHash);
+
     py::class_<DocumentWriteOptions>(m, "DocumentWriteOptions")
         .def(py::init<>())
-        .def_readwrite("create_backup", &DocumentWriteOptions::createBackup);
+        .def_readwrite("create_backup", &DocumentWriteOptions::createBackup)
+        .def_readwrite("expected_file_state", &DocumentWriteOptions::expectedFileState)
+        .def_readwrite("commit_chain_token", &DocumentWriteOptions::commitChainToken)
+        // Keep the short name available to Python tooling while the native
+        // field remains explicit about its role in the write chain.
+        .def_readwrite("chain_id", &DocumentWriteOptions::commitChainToken);
 
     py::class_<DocumentPathMetrics>(m, "DocumentPathMetrics")
         .def_readonly("latest_submitted_generation", &DocumentPathMetrics::latestSubmittedGeneration)
@@ -70,6 +200,8 @@ void RegisterResourceBindings(py::module_ &m)
         .def_property_readonly("generation", &DocumentWriteTicket::GetGeneration)
         .def_property_readonly("is_complete", &DocumentWriteTicket::IsComplete)
         .def_property_readonly("status", &DocumentWriteTicket::GetStatusName)
+        .def_property_readonly("error", &DocumentWriteTicket::GetError)
+        .def_property_readonly("committed_file_state", &DocumentWriteTicket::GetCommittedFileState)
         .def("wait", &DocumentWriteTicket::Wait, py::call_guard<py::gil_scoped_release>());
 
     py::class_<DocumentStore>(m, "NativeDocumentStore")
@@ -80,6 +212,8 @@ void RegisterResourceBindings(py::module_ &m)
              py::arg("options") = DocumentWriteOptions{}, py::call_guard<py::gil_scoped_release>())
         .def("cancel", &DocumentStore::Cancel, py::arg("ticket"))
         .def("get_metrics", &DocumentStore::GetMetrics, py::arg("path"))
+        .def("capture_file_state", &DocumentStore::CaptureFileState, py::arg("path"))
+        .def_property_readonly("is_idle", &DocumentStore::IsIdle, "Whether all queued document writes have completed")
         .def("flush_all", py::overload_cast<>(&DocumentStore::Flush), py::call_guard<py::gil_scoped_release>())
         .def("flush_path", py::overload_cast<const std::string &>(&DocumentStore::Flush), py::arg("path"),
              py::call_guard<py::gil_scoped_release>())

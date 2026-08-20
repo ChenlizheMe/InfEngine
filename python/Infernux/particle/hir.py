@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
@@ -22,6 +23,7 @@ from Infernux.graph.document import (
     GraphNodeRecord,
     GraphSourceLocation,
 )
+from Infernux.graph.parameters import graph_parameter_allows_hdr
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 from .asset import (
@@ -410,6 +412,7 @@ class ParticleParameterHIR:
     slot: int
     category: str
     tooltip: str
+    hdr: bool = False
 
     @classmethod
     def from_asset(cls, parameter: ParticleParameter, slot: int) -> "ParticleParameterHIR":
@@ -423,6 +426,7 @@ class ParticleParameterHIR:
             slot,
             parameter.category,
             parameter.tooltip,
+            graph_parameter_allows_hdr(parameter),
         )
 
 
@@ -1159,6 +1163,8 @@ class ParticleGraphCompiler:
             for operation in stage_hir.flow.iter_operations():
                 if operation.opcode == "attribute.modify_cache":
                     allocate(str(operation.parameter_dict()["attribute"]))
+                if operation.opcode == "attribute.capture":
+                    allocate(str(operation.parameter_dict()["snapshot"]))
             for instruction in stage_hir.expressions.instructions:
                 if instruction.opcode == "load_attribute":
                     allocate(str(instruction.immediate_dict()["attribute"]))
@@ -1253,6 +1259,66 @@ class ParticleGraphCompiler:
                 value_id = operands[0].value_id
             return ""
 
+        missing_literal = object()
+
+        def resize_literal(value, source_type: TypeRef, target_type: TypeRef):
+            dimensions = {
+                ValueType.I32: 1,
+                ValueType.U32: 1,
+                ValueType.F32: 1,
+                ValueType.VEC2: 2,
+                ValueType.VEC3: 3,
+                ValueType.VEC4: 4,
+                ValueType.COLOR: 4,
+            }
+            source_dimension = dimensions.get(source_type.value_type)
+            target_dimension = dimensions.get(target_type.value_type)
+            if source_dimension is None or target_dimension is None:
+                return missing_literal
+            source = list(value) if source_dimension > 1 else [value]
+            if target_dimension == 1:
+                scalar = source[0]
+                return (
+                    float(scalar)
+                    if target_type.value_type is ValueType.F32
+                    else int(scalar)
+                )
+            if source_dimension == 1:
+                scalar = float(source[0])
+                return [scalar] * target_dimension
+            return [
+                float(source[index]) if index < source_dimension else 0.0
+                for index in range(target_dimension)
+            ]
+
+        def compile_time_literal(value_id: str, visited=None):
+            """Resolve immutable output bindings without inventing runtime state."""
+            visited = set(visited or ())
+            if not value_id or value_id in visited:
+                return missing_literal
+            visited.add(value_id)
+            instruction = instructions.get(value_id)
+            if instruction is None:
+                return missing_literal
+            if instruction.opcode == "constant":
+                operands = tuple(instruction.operands)
+                if (
+                    len(operands) == 1
+                    and not operands[0].value_id
+                    and operands[0].literal is not None
+                ):
+                    return copy.deepcopy(operands[0].literal)
+                return missing_literal
+            if instruction.opcode != "numeric_resize":
+                return missing_literal
+            operands = tuple(item for item in instruction.operands if item.value_id)
+            if len(operands) != 1:
+                return missing_literal
+            value = compile_time_literal(operands[0].value_id, visited)
+            if value is missing_literal:
+                return missing_literal
+            return resize_literal(value, operands[0].value_type, instruction.result_type)
+
         shader_properties = []
         if definition is not None:
             for port in definition.ports:
@@ -1261,16 +1327,21 @@ class ParticleGraphCompiler:
                 property_name = port.id.removeprefix("shader.")
                 value_id = value_bindings.get(port.id, "")
                 parameter_id = direct_parameter_id(value_id)
+                default = parameters.get(port.id, port.default)
                 if value_id and not parameter_id:
-                    raise ParticleCompileError(
-                        f"particle output shader property {property_name!r} currently "
-                        "requires a direct ParticleGraph Parameter connection"
-                    )
+                    literal = compile_time_literal(value_id)
+                    if literal is missing_literal:
+                        raise ParticleCompileError(
+                            f"particle output shader property {property_name!r} must "
+                            "be driven by a ParticleGraph Parameter or a compile-time "
+                            "constant expression"
+                        )
+                    default = literal
                 shader_properties.append(
                     ParticleOutputShaderProperty(
                         property_name,
                         port.value_type,
-                        parameters.get(port.id, port.default),
+                        default,
                         parameter_id,
                     )
                 )
@@ -1311,6 +1382,24 @@ class ParticleGraphCompiler:
             mesh_parameter,
         )
 
+    @staticmethod
+    def _reachable_exec_nodes(document, root_uid: str) -> set[str]:
+        """Return Exec-reachable nodes so unused value graphs cannot fail a stage."""
+        outgoing: dict[str, list[str]] = {}
+        for link in document.links:
+            if link.kind is not PortKind.EXEC:
+                continue
+            outgoing.setdefault(link.source_node, []).append(link.target_node)
+        reachable = set()
+        pending = [root_uid]
+        while pending:
+            uid = pending.pop(0)
+            if uid in reachable:
+                continue
+            reachable.add(uid)
+            pending.extend(outgoing.get(uid, ()))
+        return reachable
+
     def _compile_stage(
         self,
         stage: ParticleStage,
@@ -1333,8 +1422,13 @@ class ParticleGraphCompiler:
         registry = definitions.registry
         root_type = root_type or f"particle.root.{stage.value}"
         root = next(node for node in document.nodes if node.type_id == root_type)
+        reachable = self._reachable_exec_nodes(document, root.uid)
         value_links = sorted(
-            (link for link in document.links if link.kind is PortKind.VALUE),
+            (
+                link
+                for link in document.links
+                if link.kind is PortKind.VALUE and link.target_node in reachable
+            ),
             key=lambda link: (
                 link.target_node,
                 link.target_port,

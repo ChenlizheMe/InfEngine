@@ -32,11 +32,29 @@ namespace infernux
 {
 
 class AssetLoadTicket;
+class LinkedShaderProgramLoadTicket;
 
 enum class RuntimeMode
 {
     Graphical,
     Headless,
+};
+
+/// Two-phase linked-program preload. Worker jobs only produce CPU artifacts;
+/// TryCommitLinkedShaderPrograms performs every renderer mutation on the
+/// engine owner thread.
+class LinkedShaderProgramLoadTicket final
+{
+  public:
+    [[nodiscard]] bool IsComplete() const noexcept;
+    [[nodiscard]] bool IsCommitted() const noexcept;
+    [[nodiscard]] bool WasProducedOnWorker() const noexcept;
+    bool Cancel() noexcept;
+
+  private:
+    struct State;
+    friend class Infernux;
+    std::shared_ptr<State> m_state;
 };
 
 class Infernux
@@ -68,11 +86,17 @@ class Infernux
         return m_runtimeMode;
     }
 
+    /// Wall-clock timings captured during the most recent graphical startup.
+    [[nodiscard]] const std::unordered_map<std::string, double> &GetStartupPhaseTimingsMs() const noexcept
+    {
+        return m_startupPhaseTimingsMs;
+    }
+
     // renderer
     void InitRenderer(int width, int height, const std::string &projectPath,
                       const std::string &builtinResourcePath = "");
     void ResetImGuiLayout();
-    void SelectDockedWindow(const std::string &windowId);
+    void SelectDockedWindow(const std::string &windowId, bool allowDuringModal = false);
 
     // Automation input is queued and consumed by the graphical event loop.
     // It is kept separate from gameplay's InputManager query API.
@@ -89,6 +113,13 @@ class Infernux
     /// @return Pointer to AssetDatabase, or nullptr if not initialized
     AssetDatabase *GetAssetDatabase() const;
     [[nodiscard]] std::vector<AssetRuntimeRecord> GetAssetRuntimeRecords() const;
+
+    /// Compile linked shader programs referenced by already-loaded materials
+    /// on the engine JobSystem, then publish them explicitly on the owner
+    /// thread before a scene becomes live.
+    [[nodiscard]] std::shared_ptr<LinkedShaderProgramLoadTicket>
+    BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &materialGuids);
+    bool TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderProgramLoadTicket> &ticket);
 
     // ========================================================================
     // Scene Camera Control API - for Scene View with Unity-style controls
@@ -239,6 +270,7 @@ class Infernux
         uint64_t failedUploadVersion = 0;
         uint64_t textureId = 0;
         bool inFlight = false;
+        bool authoring = false;
         bool hasRenderTicket = false;
         bool renderTicketDone = false;
         int pendingWidth = 0;
@@ -336,14 +368,6 @@ class Infernux
     /// Process queued material preview renders (returns uploads consumed).
     int PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown);
 
-    /// @brief Schedule async material save from JSON snapshot.
-    /// @param key Coalescing key (usually file path)
-    /// @param filePath Target .mat path
-    /// @param jsonSnapshot Serialized material JSON snapshot
-    /// @return true if task accepted
-    bool ScheduleMaterialSaveSnapshotTask(const std::string &key, const std::string &filePath,
-                                          const std::string &jsonSnapshot);
-
     // debug
     void SetLogLevel(LogLevel engineLevel);
 
@@ -427,6 +451,7 @@ class Infernux
         std::string matFilePath;
         uint64_t generation = 0;
         std::string materialJson; ///< If non-empty, render from this JSON instead of reading matFilePath from disk.
+        uint16_t transientGpuFailures = 0;
     };
 
     struct TexturePreviewRequest
@@ -470,6 +495,12 @@ class Infernux
         uint32_t nonTransparentPixelCount = 0;
         uint8_t minRgb = 0;
         uint8_t maxRgb = 0;
+        // Latest accepted source for this key. A newer authoring revision may
+        // arrive while an older GPU readback/upload is still in flight; keep
+        // the source here so the preview pump can immediately continue with
+        // the newest generation instead of waiting for another UI query.
+        std::string latestMatFilePath;
+        std::string latestMaterialJson;
     };
 
     struct TexturePreviewState
@@ -486,6 +517,8 @@ class Infernux
         int readyWidth = 0;
         int readyHeight = 0;
         std::string textureName;
+        std::string importedTextureGuid;
+        bool importedGpuPending = false;
         uint64_t textureId = 0;
         bool nearest = false;
         bool srgb = false;
@@ -543,6 +576,7 @@ class Infernux
     bool m_isCleanedUp = false;
     bool m_isCleaningUp = false;
     bool m_isInitialized = false;
+    std::unordered_map<std::string, double> m_startupPhaseTimingsMs;
     std::atomic<bool> m_exitRequested{false};
     std::mutex m_runMutex;
     std::condition_variable m_runCv;

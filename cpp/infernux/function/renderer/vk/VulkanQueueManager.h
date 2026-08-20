@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <set>
 #include <vector>
@@ -60,7 +61,9 @@ class VulkanQueueManager
     bool AssociateFrameSlot(uint32_t frameSlot, rhi::SubmissionTicket ticket) noexcept;
     [[nodiscard]] rhi::SubmissionTicket CompleteFrameSlot(uint32_t frameSlot) noexcept;
     void MarkCompleted(rhi::SubmissionTicket ticket) noexcept;
-    [[nodiscard]] bool WaitForGraphicsFrameSlot(uint32_t frameSlot) noexcept;
+    using FrameWaitDiagnostic = std::function<void(uint32_t elapsedMilliseconds)>;
+    [[nodiscard]] bool WaitForGraphicsFrameSlot(uint32_t frameSlot,
+                                                const FrameWaitDiagnostic &diagnostic = {}) noexcept;
     [[nodiscard]] bool ResetGraphicsFrameFence(uint32_t frameSlot) noexcept;
     /// Restores a reusable, signaled fence after a submission failed before
     /// Vulkan took ownership of the frame slot.

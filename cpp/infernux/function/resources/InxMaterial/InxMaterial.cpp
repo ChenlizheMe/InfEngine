@@ -5,6 +5,7 @@
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
+#include <core/types/ShaderProgramArtifact.h>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,138 @@ namespace
 bool IsBuiltinTextureToken(const std::string &value)
 {
     return value == "white" || value == "black" || value == "normal";
+}
+
+std::optional<MaterialPropertyType> ShaderMaterialPropertyType(const ShaderProgramPropertyBinding &binding)
+{
+    if (binding.IsTexture() || binding.type == "Texture2D")
+        return MaterialPropertyType::Texture2D;
+    if (binding.type == "Float")
+        return MaterialPropertyType::Float;
+    if (binding.type == "Float2")
+        return MaterialPropertyType::Float2;
+    if (binding.type == "Float3")
+        return MaterialPropertyType::Float3;
+    if (binding.type == "Float4")
+        return MaterialPropertyType::Float4;
+    if (binding.type == "Color")
+        return MaterialPropertyType::Color;
+    if (binding.type == "Int")
+        return MaterialPropertyType::Int;
+    if (binding.type == "Mat4")
+        return MaterialPropertyType::Mat4;
+    return std::nullopt;
+}
+
+bool MaterialValueMatchesType(const MaterialProperty &property, MaterialPropertyType type)
+{
+    if (property.type != type)
+        return false;
+    switch (type) {
+    case MaterialPropertyType::Float:
+        return std::holds_alternative<float>(property.value);
+    case MaterialPropertyType::Float2:
+        return std::holds_alternative<glm::vec2>(property.value);
+    case MaterialPropertyType::Float3:
+        return std::holds_alternative<glm::vec3>(property.value);
+    case MaterialPropertyType::Float4:
+    case MaterialPropertyType::Color:
+        return std::holds_alternative<glm::vec4>(property.value);
+    case MaterialPropertyType::Int:
+        return std::holds_alternative<int>(property.value);
+    case MaterialPropertyType::Mat4:
+        return std::holds_alternative<glm::mat4>(property.value);
+    case MaterialPropertyType::Texture2D:
+        return std::holds_alternative<std::string>(property.value);
+    }
+    return false;
+}
+
+MaterialPropertyValue ShaderPropertyFallback(MaterialPropertyType type)
+{
+    switch (type) {
+    case MaterialPropertyType::Float:
+        return 0.0f;
+    case MaterialPropertyType::Float2:
+        return glm::vec2(0.0f);
+    case MaterialPropertyType::Float3:
+        return glm::vec3(0.0f);
+    case MaterialPropertyType::Float4:
+        return glm::vec4(0.0f);
+    case MaterialPropertyType::Color:
+        return glm::vec4(1.0f);
+    case MaterialPropertyType::Int:
+        return 0;
+    case MaterialPropertyType::Mat4:
+        return glm::mat4(1.0f);
+    case MaterialPropertyType::Texture2D:
+        return std::string{};
+    }
+    return 0.0f;
+}
+
+MaterialPropertyValue ParseShaderPropertyDefault(const ShaderProgramPropertyBinding &binding, MaterialPropertyType type)
+{
+    if (type == MaterialPropertyType::Texture2D || binding.defaultValue.empty())
+        return ShaderPropertyFallback(type);
+
+    const auto value = json::parse(binding.defaultValue, nullptr, false);
+    if (value.is_discarded())
+        return ShaderPropertyFallback(type);
+
+    try {
+        if (type == MaterialPropertyType::Float && value.is_number())
+            return value.get<float>();
+        if (type == MaterialPropertyType::Int && value.is_number_integer())
+            return value.get<int>();
+
+        const auto readVector = [&value](float *destination, size_t count) {
+            if (!value.is_array() || value.size() != count)
+                return false;
+            for (size_t index = 0; index < count; ++index) {
+                if (!value[index].is_number())
+                    return false;
+                destination[index] = value[index].get<float>();
+            }
+            return true;
+        };
+        if (type == MaterialPropertyType::Float2) {
+            glm::vec2 result{};
+            if (readVector(&result[0], 2))
+                return result;
+        } else if (type == MaterialPropertyType::Float3) {
+            glm::vec3 result{};
+            if (readVector(&result[0], 3))
+                return result;
+        } else if (type == MaterialPropertyType::Float4 || type == MaterialPropertyType::Color) {
+            glm::vec4 result{};
+            if (readVector(&result[0], 4))
+                return result;
+        } else if (type == MaterialPropertyType::Mat4) {
+            glm::mat4 result{0.0f};
+            if (readVector(&result[0][0], 16))
+                return result;
+        }
+    } catch (const json::exception &) {
+    }
+    return ShaderPropertyFallback(type);
+}
+
+std::string RestoreTextureGuidReference(const std::string &textureGuid)
+{
+    if (textureGuid.empty() || IsBuiltinTextureToken(textureGuid))
+        return textureGuid;
+
+    auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    if (database == nullptr)
+        return textureGuid;
+
+    const auto metadata = database->GetMetaByGuid(textureGuid);
+    if (!metadata)
+        return textureGuid;
+    if (metadata->GetResourceType() != ResourceType::Texture)
+        throw std::invalid_argument("asset GUID is not a Texture: " + textureGuid);
+    return textureGuid;
 }
 
 json SerializeShaderReference(const ShaderAssetReference &reference)
@@ -580,6 +713,48 @@ const MaterialProperty *InxMaterial::GetProperty(const std::string &name) const
     return nullptr;
 }
 
+bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact &artifact)
+{
+    bool changed = false;
+    std::vector<std::string> propertyOrder;
+    propertyOrder.reserve(artifact.properties.size());
+
+    for (const auto &binding : artifact.properties) {
+        const auto expectedType = ShaderMaterialPropertyType(binding);
+        if (!expectedType || binding.name.empty())
+            continue;
+
+        propertyOrder.push_back(binding.name);
+        auto existing = m_properties.find(binding.name);
+        if (existing == m_properties.end() || !MaterialValueMatchesType(existing->second, *expectedType)) {
+            m_properties[binding.name] =
+                MaterialProperty{binding.name, *expectedType, ParseShaderPropertyDefault(binding, *expectedType),
+                                 binding.hdr, binding.range};
+            changed = true;
+            continue;
+        }
+
+        if (existing->second.hdr != binding.hdr) {
+            existing->second.hdr = binding.hdr;
+            changed = true;
+        }
+        if (existing->second.range != binding.range) {
+            existing->second.range = binding.range;
+            changed = true;
+        }
+    }
+
+    if (m_shaderPropertyOrder != propertyOrder) {
+        m_shaderPropertyOrder = std::move(propertyOrder);
+        changed = true;
+    }
+    if (changed) {
+        m_propertiesDirty = true;
+        ++m_version;
+    }
+    return changed;
+}
+
 size_t InxMaterial::GetPipelineHash() const
 {
     size_t hash = 0;
@@ -1042,7 +1217,11 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
                 break;
             }
             case MaterialPropertyType::Texture2D:
-                prop.value = RequireTextureGuid(propJson["guid"].get<std::string>());
+                // A durable material reference survives deletion of its target.
+                // Keep the GUID so Undo/reimport can reconnect it and the
+                // Inspector can present a recoverable Missing Texture field.
+                // Interactive assignment remains strict in SetTextureGuid().
+                prop.value = RestoreTextureGuidReference(propJson["guid"].get<std::string>());
                 break;
             }
             m_properties[propName] = std::move(prop);

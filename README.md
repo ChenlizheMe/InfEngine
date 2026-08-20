@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.2.9-orange.svg" alt="Version 0.2.9" />
-  <img src="https://img.shields.io/badge/status-0.3.0_preview-yellow.svg" alt="0.3.0 preview" />
+  <img src="https://img.shields.io/badge/version-0.3.4-orange.svg" alt="Version 0.3.4" />
+  <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++ 17" />
@@ -36,20 +36,21 @@ Infernux is an open-source game engine built around a native C++ runtime and a p
 
 The project is intentionally not a sealed editor with a scripting attachment. Python is a first-class engine surface, which makes ordinary game code approachable and gives projects direct access to the wider Python ecosystem, including AI, vision, simulation, and data tooling.
 
-Infernux is currently a Windows-first technical preview. The editor and runtime are usable, but data formats and newer APIs may still change before `0.3.0`.
+Infernux is currently Windows-first and under active development. Version `0.3.4` is a complete engine update, but the project still deliberately accepts breaking data-format and API changes while the architecture is young.
 
-## 0.2.9: A 0.3.0 Preview
+## 0.3.4
 
-Version `0.2.9` is the first large architecture update after `0.2.1`. It is not only an MCP update: scene documents, serialization, assets, rendering, physics, editor behavior, automation, and game distribution were all reworked around stricter ownership and more predictable runtime boundaries.
+Version `0.3.4` is a broad engine update, not only an MCP or VFX release. Scene documents, serialization, assets, rendering, particles, physics, editor interaction, runtime execution, automation, and game distribution were reworked around stricter ownership and more predictable runtime boundaries.
 
 Highlights include:
 
 - Typed Scene and Component documents with stable identities, validation, missing-script recovery, and transactional publication or rollback.
 - Indexed asset records, dependency tracking, artifact-backed imports, and safer material, mesh, texture, and physical-material references.
-- Expanded RenderGraph/RHI ownership, asynchronous transfer publication, multi-camera state, and repaired resource and preview lifetimes.
-- A first VFX Graph and particle runtime with typed assets, compiler validation, and Scene/Game camera support.
+- A programmable Python RenderStack, reusable Effect assets, explicit mount points, Forward/Forward+/Deferred routes, and stronger RenderGraph/RHI ownership across multiple cameras.
+- A GPU ParticleGraph pipeline with typed nodes, emitter stages, AOT graph-to-IR compilation, sprite and mesh outputs, editor preview, and live runtime parameter control.
+- Structured GLSL authoring that keeps vertex, fragment, and shading-model responsibilities explicit without requiring users to hand-write descriptor layouts.
 - Batched native transform and Jolt physics paths for large scenes, including more reliable Play/Stop restoration and scene reloads.
-- Unified dirty-document, Save, Save As, close, and exit behavior across scenes and asset editors.
+- A shared interaction core for selection, commands, shortcuts, undo/redo, document ownership, dirty state, Save, Save As, close, and exit behavior across authoring panels.
 - A smaller, structured game export with a native launcher, private runtime, compressed `Content.inxpkg`, and a wheel-distributed Player Runtime Pack.
 - Engine-native capture for the full editor, individual views, and game cameras without relying on desktop screenshots.
 
@@ -69,16 +70,17 @@ The rule is simple: performance-sensitive state belongs to C++, while the public
 
 | Area | Current scope |
 |:-----|:--------------|
-| Rendering | Vulkan forward/deferred paths, PBR, cascaded shadows, MSAA, post-processing, RenderGraph, RenderStack |
+| Rendering | Vulkan Forward/Forward+/Deferred paths, PBR, per-camera lighting and shadows, MSAA, reusable effects, RenderGraph, programmable RenderStack |
 | Physics | Jolt rigidbodies, primitive and mesh colliders, physical materials, queries, callbacks, layer filtering |
 | Assets | GUID identity, dependency indexing, import artifacts, materials, prefabs, scenes, animation and VFX assets |
-| Editor | Hierarchy, Inspector, Scene/Game views, Project, Console, UI editor, animation, timeline, VFX, build settings |
+| Editor | Hierarchy, Inspector, Scene/Game views, Project, Console, UI editor, animation, Timeline, Particle Graph, unified commands/documents, build settings |
 | Animation | 2D clips, skeletal playback, skinned meshes, FBX takes, state machines, timeline workflows |
 | Runtime UI | Canvas, Text, Image, Button, pointer input, persistent component-method event bindings |
-| Python | Component lifecycle, serialized fields, coroutines, reload support, public render and physics APIs |
+| VFX | GPU simulation, emitter/Init/Update/Rendering stages, typed graph IR, sprite and mesh particles, Scene/Game preview, live parameters |
+| Python | Component lifecycle, serialized fields, coroutines, Play-mode reload support, public render, VFX, physics, and editor APIs |
 | Distribution | Hub, Windows installer, wheel, compressed runtime pack, standalone game export |
 
-Compute-shader authoring has been removed from the public shader path. Future general-purpose parallel computation is intended to integrate with Python-compatible backends rather than extend the former compute-shader API.
+Compute-shader authoring is not part of the public shader workflow. Internal GPU systems can still use Vulkan compute through the RHI when that is the right implementation detail; projects author particle behavior through Particle Graph or its Python-facing asset API instead of binding engine compute passes directly.
 
 ## MCP Harness
 
@@ -187,7 +189,7 @@ The first command builds the portable Hub bundle. The second builds the Windows 
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.2.9},
+  version = {0.3.4},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

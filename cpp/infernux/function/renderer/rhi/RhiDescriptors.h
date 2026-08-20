@@ -199,6 +199,10 @@ struct TextureDesc
     TextureUsageFlags usage = TextureUsageFlags::Sampled;
     SampleCount samples = SampleCount::One;
     bool cubeCompatible = false;
+    /// Allow compatible linear/sRGB views of the same storage. Imported color
+    /// textures use this so editor previews can display encoded texels without
+    /// changing the view used by linear-light material sampling.
+    bool mutableFormat = false;
 };
 
 struct TextureViewDesc
@@ -308,6 +312,72 @@ struct ColorTargetState
     uint8_t writeMask = 0x0f;
 };
 
+/// Attachment compatibility contract used when a graphics pipeline is built
+/// without a backend render-pass object. The signature is immutable pipeline
+/// state and must therefore participate in every owning pipeline cache key.
+struct GraphicsRenderingSignature
+{
+    static constexpr size_t MaxColorTargets = 8;
+
+    std::array<PixelFormat, MaxColorTargets> colorFormats{};
+    uint32_t colorFormatCount = 0;
+    PixelFormat depthFormat = PixelFormat::Undefined;
+    PixelFormat stencilFormat = PixelFormat::Undefined;
+    SampleCount samples = SampleCount::One;
+    uint32_t viewMask = 0;
+
+    [[nodiscard]] constexpr bool IsEmpty() const noexcept
+    {
+        if (colorFormatCount != 0 || depthFormat != PixelFormat::Undefined ||
+            stencilFormat != PixelFormat::Undefined || samples != SampleCount::One || viewMask != 0)
+            return false;
+        for (const PixelFormat format : colorFormats) {
+            if (format != PixelFormat::Undefined)
+                return false;
+        }
+        return true;
+    }
+
+    friend constexpr bool operator==(const GraphicsRenderingSignature &left,
+                                     const GraphicsRenderingSignature &right) noexcept
+    {
+        if (left.colorFormatCount != right.colorFormatCount || left.depthFormat != right.depthFormat ||
+            left.stencilFormat != right.stencilFormat || left.samples != right.samples ||
+            left.viewMask != right.viewMask)
+            return false;
+        for (size_t index = 0; index < left.colorFormats.size(); ++index) {
+            if (left.colorFormats[index] != right.colorFormats[index])
+                return false;
+        }
+        return true;
+    }
+
+    friend constexpr bool operator!=(const GraphicsRenderingSignature &left,
+                                     const GraphicsRenderingSignature &right) noexcept
+    {
+        return !(left == right);
+    }
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        if (colorFormatCount > colorFormats.size())
+            return false;
+        for (uint32_t index = 0; index < colorFormatCount; ++index) {
+            if (!IsValidPixelFormat(colorFormats[index]) || IsDepthFormat(colorFormats[index]))
+                return false;
+        }
+        if (depthFormat != PixelFormat::Undefined && !IsDepthFormat(depthFormat))
+            return false;
+        if (stencilFormat != PixelFormat::Undefined && !IsStencilFormat(stencilFormat))
+            return false;
+        if (depthFormat != PixelFormat::Undefined && stencilFormat != PixelFormat::Undefined &&
+            depthFormat != stencilFormat)
+            return false;
+        return colorFormatCount > 0 || depthFormat != PixelFormat::Undefined ||
+               stencilFormat != PixelFormat::Undefined;
+    }
+};
+
 struct GraphicsPipelineDesc
 {
     static constexpr size_t MaxColorTargets = 8;
@@ -315,6 +385,8 @@ struct GraphicsPipelineDesc
 
     ShaderModuleHandle vertexShader;
     ShaderModuleHandle fragmentShader;
+    bool useDynamicRendering = false;
+    GraphicsRenderingSignature renderingSignature;
     RenderTargetLayoutHandle renderTargetLayout;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     RasterState raster;
@@ -326,6 +398,22 @@ struct GraphicsPipelineDesc
     uint32_t bindingLayoutCount = 0;
     ShaderStage pushConstantStages = ShaderStage::None;
     uint32_t pushConstantBytes = 0;
+
+    [[nodiscard]] constexpr bool HasValidRenderingContract() const noexcept
+    {
+        if (!useDynamicRendering)
+            return renderTargetLayout.IsValid() && renderingSignature.IsEmpty();
+        if (renderTargetLayout.IsValid() || !renderingSignature.IsValid() ||
+            renderingSignature.samples != samples || renderingSignature.colorFormatCount != colorTargetCount)
+            return false;
+        for (uint32_t index = 0; index < colorTargetCount; ++index) {
+            if (renderingSignature.colorFormats[index] != colorTargets[index].format)
+                return false;
+        }
+        if ((depth.testEnabled || depth.writeEnabled) && renderingSignature.depthFormat == PixelFormat::Undefined)
+            return false;
+        return true;
+    }
 };
 
 struct ComputePipelineDesc

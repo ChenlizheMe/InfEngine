@@ -23,6 +23,24 @@
 namespace infernux
 {
 
+namespace
+{
+
+bool IsBuiltinTextureToken(const std::string &value)
+{
+    return value == "white" || value == "black" || value == "normal";
+}
+
+void RejectPathOnlyReference(const std::string &guid, const std::string &pathHint, const std::string &location)
+{
+    if (guid.empty() && !pathHint.empty()) {
+        throw std::runtime_error(location +
+                                 " must provide a GUID; path_hint is non-authoritative and cannot resolve an asset");
+    }
+}
+
+} // namespace
+
 ImportArtifact TextureImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
@@ -83,8 +101,6 @@ ImportArtifact MaterialImporter::Import(const ImportRequest &request) const
 
 std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest &request) const
 {
-    if (!request.resolveAssetGuid)
-        throw std::logic_error("MaterialImporter request has no dependency resolver");
     std::unordered_set<std::string> deps;
 
     nlohmann::json root;
@@ -115,11 +131,10 @@ std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest 
             const auto guidIt = it->find("guid");
             if (guidIt != it->end() && guidIt->is_string())
                 depGuid = guidIt->get<std::string>();
-            if (depGuid.empty()) {
-                const auto pathIt = it->find("path_hint");
-                if (pathIt != it->end() && pathIt->is_string())
-                    depGuid = request.resolveAssetGuid(pathIt->get<std::string>());
-            }
+            const auto pathIt = it->find("path_hint");
+            const std::string pathHint =
+                pathIt != it->end() && pathIt->is_string() ? pathIt->get<std::string>() : std::string{};
+            RejectPathOnlyReference(depGuid, pathHint, "material shaders." + std::string(key));
             if (!depGuid.empty())
                 deps.insert(depGuid);
         }
@@ -140,7 +155,7 @@ std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest 
             auto guidIt = propVal.find("guid");
             if (guidIt != propVal.end() && guidIt->is_string()) {
                 std::string texGuid = guidIt->get<std::string>();
-                if (!texGuid.empty())
+                if (!texGuid.empty() && !IsBuiltinTextureToken(texGuid))
                     deps.insert(texGuid);
             }
         }
@@ -161,9 +176,6 @@ ImportArtifact RenderEffectImporter::Import(const ImportRequest &request) const
 
 std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequest &request) const
 {
-    if (!request.resolveAssetGuid)
-        throw std::logic_error("RenderEffectImporter request has no dependency resolver");
-
     nlohmann::json root;
     try {
         std::ifstream file(ToFsPath(request.sourcePath));
@@ -219,13 +231,12 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
         requireExactKeys(reference, {"guid", "path_hint"}, location);
         if (!reference["guid"].is_string() || !reference["path_hint"].is_string())
             throw std::runtime_error(location + " guid and path_hint must be strings");
-        std::string guid = reference["guid"].get<std::string>();
+        const std::string guid = reference["guid"].get<std::string>();
         const std::string pathHint = reference["path_hint"].get<std::string>();
-        if (guid.empty() && !pathHint.empty())
-            guid = request.resolveAssetGuid(pathHint);
+        RejectPathOnlyReference(guid, pathHint, location);
         if (guid.empty())
-            throw std::runtime_error(location + " could not resolve an asset GUID");
-        dependencies.insert(std::move(guid));
+            throw std::runtime_error(location + " must provide a non-empty asset GUID");
+        dependencies.insert(guid);
     };
 
     const std::string schema = root["$schema"].get<std::string>();
@@ -279,9 +290,6 @@ ImportArtifact ParticleGraphImporter::Import(const ImportRequest &request) const
 
 std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportRequest &request) const
 {
-    if (!request.resolveAssetGuid)
-        throw std::logic_error("ParticleGraphImporter request has no dependency resolver");
-
     nlohmann::json root;
     try {
         std::ifstream file(ToFsPath(request.sourcePath));
@@ -323,11 +331,12 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         requireExactKeys(reference, {"guid", "path_hint"}, location);
         if (!reference["guid"].is_string() || !reference["path_hint"].is_string())
             throw std::runtime_error(location + " guid and path_hint must be strings");
-        std::string guid = reference["guid"].get<std::string>();
+        const std::string guid = reference["guid"].get<std::string>();
         const std::string pathHint = reference["path_hint"].get<std::string>();
-        if (guid.empty() && !pathHint.empty())
-            guid = request.resolveAssetGuid(pathHint);
-        if (!guid.empty())
+        RejectPathOnlyReference(guid, pathHint, location);
+        // Built-in texture tokens are renderer symbols, not AssetDatabase
+        // identities, so they deliberately do not create dependency edges.
+        if (!guid.empty() && !IsBuiltinTextureToken(guid))
             dependencies.insert(guid);
     };
     std::function<void(const nlohmann::json &, const std::string &)> scanReferences;
@@ -468,10 +477,10 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         imported.skinnedMesh ? SkinnedMeshArtifact::Serialize(*imported.skinnedMesh, sourceHash)
                              : SkinnedMeshArtifact::SerializeEmpty(sourceHash)});
 
-    INXLOG_INFO("ModelImporter: imported '", FromFsPath(ToFsPath(request.sourcePath).filename()), "' — ",
-                imported.meshCount, " mesh(es), ", imported.vertexCount, " verts, ", imported.indexCount, " indices, ",
-                imported.materialSlots.size(), " material slot(s), ", imported.boneNames.size(), " bone(s), ",
-                imported.animationNames.size(), " anim(s)");
+    // INXLOG_INFO("ModelImporter: imported '", FromFsPath(ToFsPath(request.sourcePath).filename()), "' — ",
+    //             imported.meshCount, " mesh(es), ", imported.vertexCount, " verts, ", imported.indexCount, " indices,
+    //             ", imported.materialSlots.size(), " material slot(s), ", imported.boneNames.size(), " bone(s), ",
+    //             imported.animationNames.size(), " anim(s)");
 
     return artifact;
 }

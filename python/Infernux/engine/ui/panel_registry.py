@@ -7,12 +7,17 @@ manually edit ``release_engine()`` for every new panel.
 
 Usage::
 
+    from Infernux.engine.interaction import PanelInteractionDescriptor
     from Infernux.engine.ui import EditorPanel, editor_panel
 
-    @editor_panel("My Panel", menu_path="Window/Custom")
+    @editor_panel(
+        "My Panel",
+        menu_path="Window/Custom",
+        interaction=PanelInteractionDescriptor(),
+    )
     class MyPanel(EditorPanel):
         def on_render_content(self, ctx):
-            ctx.text("Hello!")
+            ctx.label("Hello!")
 
 At startup, ``PanelRegistry.apply_all(window_manager)`` registers every
 decorated class with the :class:`WindowManager` so it appears in the
@@ -24,6 +29,10 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Type, TYPE_CHECKING
 
 from Infernux.debug import Debug
+from Infernux.engine.interaction import (
+    PanelInteractionDescriptor,
+    PanelInteractionRegistry,
+)
 
 if TYPE_CHECKING:
     from Infernux.lib import InxGUIRenderable
@@ -41,6 +50,7 @@ class _PanelRegistration:
         "menu_path",
         "factory",
         "singleton",
+        "interaction",
     )
 
     def __init__(
@@ -52,6 +62,7 @@ class _PanelRegistration:
         factory: Optional[Callable],
         singleton: bool,
         title_key: Optional[str] = None,
+        interaction: Optional[PanelInteractionDescriptor] = None,
     ):
         self.panel_class = panel_class
         self.type_id = type_id
@@ -60,6 +71,7 @@ class _PanelRegistration:
         self.menu_path = menu_path
         self.factory = factory
         self.singleton = singleton
+        self.interaction = interaction
 
 
 class PanelRegistry:
@@ -85,18 +97,59 @@ class PanelRegistry:
     # ------------------------------------------------------------------
 
     @classmethod
-    def apply_all(cls, window_manager: WindowManager) -> int:
+    def apply_all(
+        cls,
+        window_manager: WindowManager,
+        interaction_registry: Optional[PanelInteractionRegistry] = None,
+        *,
+        factory_overrides: Optional[Dict[str, Callable]] = None,
+    ) -> int:
         """Register all pending panel classes with *window_manager*.
 
         Returns the number of panels registered.
         """
+        overrides = factory_overrides or {}
+        registrations = tuple(cls._registrations)
+        type_ids = tuple(reg.type_id for reg in registrations)
+        duplicate_type_ids = {
+            type_id for type_id in type_ids if type_ids.count(type_id) > 1
+        }
+        if duplicate_type_ids:
+            names = ", ".join(sorted(duplicate_type_ids))
+            raise RuntimeError(f"duplicate editor panel type registrations: {names}")
+
+        if interaction_registry is not None:
+            missing = tuple(
+                reg.type_id
+                for reg in registrations
+                if reg.interaction is None
+                and interaction_registry.descriptor(reg.type_id) is None
+            )
+            if missing:
+                names = ", ".join(sorted(missing))
+                raise RuntimeError(
+                    "editor panels require a formal interaction descriptor "
+                    f"before registration: {names}"
+                )
+            # Establish every type contract before existing WindowManager
+            # instances are rebound. This keeps registration one-way: type
+            # authority first, live views second, presentation types last.
+            for reg in registrations:
+                if reg.interaction is not None:
+                    interaction_registry.register_type(
+                        reg.type_id,
+                        reg.interaction,
+                        replace=True,
+                    )
+            window_manager.set_panel_interaction_registry(interaction_registry)
+
         count = 0
-        for reg in cls._registrations:
+        for reg in registrations:
             window_manager.register_window_type(
                 type_id=reg.type_id,
                 window_class=reg.panel_class,
                 display_name=reg.display_name,
-                factory=reg.factory,
+                factory=overrides.get(reg.type_id, reg.factory),
                 singleton=reg.singleton,
                 title_key=reg.title_key,
                 menu_path=reg.menu_path,
@@ -131,6 +184,7 @@ def editor_panel(
     menu_path: str = "Window",
     factory: Optional[Callable] = None,
     singleton: bool = True,
+    interaction: Optional[PanelInteractionDescriptor] = None,
 ):
     """Decorator to register a panel class with the editor.
 
@@ -148,13 +202,17 @@ def editor_panel(
         factory: Optional callable that returns a new panel instance.
             Defaults to ``panel_class()``.
         singleton: If *True* (default) only one instance is allowed.
+        interaction: Declarative command, shortcut, and selection capabilities.
 
     Example::
 
-        @editor_panel("My Panel")
+        @editor_panel(
+            "My Panel",
+            interaction=PanelInteractionDescriptor(),
+        )
         class MyPanel(EditorPanel):
             def on_render_content(self, ctx):
-                ctx.text("Hello!")
+                ctx.label("Hello!")
     """
 
     def decorator(cls: Type) -> Type:
@@ -166,6 +224,7 @@ def editor_panel(
         cls.WINDOW_TITLE_KEY = title_key
         cls._panel_menu_path = menu_path
         cls._panel_singleton = singleton
+        cls.PANEL_INTERACTION = interaction
 
         PanelRegistry._register(
             _PanelRegistration(
@@ -176,6 +235,7 @@ def editor_panel(
                 factory=factory,
                 singleton=singleton,
                 title_key=title_key,
+                interaction=interaction,
             )
         )
         return cls

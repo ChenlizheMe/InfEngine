@@ -5,7 +5,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    portable_path,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from Infernux.mcp.tools.common import (
     coerce_vector3,
     find_game_object,
@@ -17,6 +23,101 @@ from Infernux.mcp.tools.common import (
     serialize_vector,
     scene_status,
 )
+
+
+def _scene_object_service():
+    """Return the same scene mutation authority used by visible editor panels."""
+    from Infernux.engine.interaction import EditorInteractionCore
+
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("Editor interaction core is unavailable.")
+    return core.scene_objects
+
+
+def _component_command_service():
+    """Return the component authority shared by Inspector and automation."""
+    from Infernux.engine.interaction import EditorInteractionCore
+
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("Editor interaction core is unavailable.")
+    return core.components
+
+
+def _add_component_through_editor_transaction(
+    obj,
+    component_type: str,
+    *,
+    python_instance=None,
+    fields: dict[str, Any] | None = None,
+):
+    """Use the same atomic add command as the visible Inspector."""
+    initial_fields = dict(fields or {})
+
+    def _initialize(component):
+        for key, value in initial_fields.items():
+            current_value = _component_field_value(component, key)
+            setattr(
+                component,
+                key,
+                _coerce_component_property_value(
+                    component, key, value, current_value
+                ),
+            )
+
+    return _component_command_service().add(
+        obj,
+        component_type,
+        python_instance=python_instance,
+        initializer=_initialize if initial_fields else None,
+        description=f"Add {component_type}",
+    )
+
+
+def _remove_component_through_editor_transaction(obj, component) -> bool:
+    """Use the same constraint-aware undo command as the visible Inspector."""
+    return _component_command_service().remove(
+        obj,
+        component,
+        description="MCP Remove Component",
+    )
+
+
+def _set_component_fields_through_editor_transaction(
+    component,
+    component_type: str,
+    values: dict[str, Any] | None,
+) -> dict[str, Any]:
+    changes = []
+    for field, value in (values or {}).items():
+        old_value = _component_field_value(component, field)
+        new_value = _coerce_component_property_value(
+            component, field, value, old_value
+        )
+        if serialize_value(new_value) != serialize_value(old_value):
+            changes.append((field, old_value, new_value))
+
+    if changes:
+        service = _component_command_service()
+        service.execute_property_changes(
+            [
+                (
+                    component,
+                    field,
+                    old_value,
+                    new_value,
+                    f"Set {component_type}.{field}",
+                )
+                for field, old_value, new_value in changes
+            ],
+            description=f"Set {component_type} Fields",
+        )
+
+    return {
+        field: _serialize_component_field_value(component, field)
+        for field, _old_value, _new_value in changes
+    }
 
 
 def register_scene_tools(mcp) -> None:
@@ -55,25 +156,40 @@ def register_scene_tools(mcp) -> None:
         """Save the active scene. If path is provided, it must be under Assets/."""
 
         def _save():
+            from Infernux.engine.interaction import (
+                DocumentActionStatus,
+                DocumentRegistry,
+            )
             from Infernux.engine.scene_manager import SceneFileManager
             sfm = SceneFileManager.instance()
             if sfm is None:
                 raise RuntimeError("SceneFileManager is not available.")
+            registry = DocumentRegistry.instance()
             if path:
                 from Infernux.engine.project_context import get_project_root
                 save_path = resolve_asset_path(get_project_root(), path)
-                ok = bool(sfm._do_save(save_path))
+                result = registry.request_save_to_resource(
+                    sfm.document_id,
+                    save_path,
+                )
             else:
                 current_path = getattr(sfm, "current_scene_path", "") or ""
                 if current_path:
                     save_path = current_path
-                    ok = bool(sfm._do_save(save_path))
+                    result = registry.request_save(sfm.document_id)
                 else:
-                    default_path = getattr(sfm, "_default_scene_save_path", lambda: None)()
-                    if not default_path:
-                        raise RuntimeError("Cannot determine a default scene save path under Assets/.")
-                    save_path = default_path
-                    ok = bool(sfm._do_save(save_path))
+                    raise ValueError(
+                        "An unnamed scene requires an explicit Assets-relative path."
+                    )
+            if result.status in {
+                DocumentActionStatus.FAILED,
+                DocumentActionStatus.REJECTED,
+            }:
+                raise RuntimeError(result.message or result.status.value)
+            ok = result.status in {
+                DocumentActionStatus.APPLIED,
+                DocumentActionStatus.NO_OP,
+            }
             return {
                 "saved": ok,
                 "path": _project_rel(save_path) if save_path else "",
@@ -91,11 +207,21 @@ def register_scene_tools(mcp) -> None:
 
     @mcp.tool(name="scene_open")
     def scene_open(path: str) -> dict:
-        """Open a .scene file under Assets/."""
+        """Open a .scene file under Assets/.
+
+        If the active scene is dirty, call ``scene_discard(force=True,
+        reason=...)`` or ``scene_save`` first.  MCP never discards scene
+        authoring data implicitly.
+        """
 
         def _open():
             from Infernux.engine.project_context import get_project_root
             from Infernux.engine.scene_manager import SceneFileManager
+            from Infernux.engine.interaction import (
+                DocumentKind,
+                DocumentOpenStatus,
+                EditorInteractionCore,
+            )
             scene_path = resolve_asset_path(get_project_root(), path)
             sfm = SceneFileManager.instance()
             if sfm is None:
@@ -112,14 +238,38 @@ def register_scene_tools(mcp) -> None:
                     "loading": bool(getattr(sfm, "is_loading", False)),
                     "status": scene_status(),
                 }
-            accepted = bool(sfm.open_scene(scene_path))
-            return {"accepted": accepted, "already_open": False, "path": _project_rel(scene_path), "absolute_path": scene_path, "loading": bool(getattr(sfm, "is_loading", False))}
+            core = EditorInteractionCore.instance()
+            if core is None:
+                raise RuntimeError("EditorInteractionCore is not available.")
+            result = core.document_open.open_resource(
+                DocumentKind.SCENE,
+                scene_path,
+                title=os.path.splitext(os.path.basename(scene_path))[0],
+            )
+            if result.status is DocumentOpenStatus.FAILED:
+                raise RuntimeError(result.message or "Scene document open failed")
+            return {
+                "accepted": result.status in {
+                    DocumentOpenStatus.READY,
+                    DocumentOpenStatus.PENDING,
+                },
+                "already_open": False,
+                "path": _project_rel(scene_path),
+                "absolute_path": scene_path,
+                "loading": (
+                    result.status is DocumentOpenStatus.PENDING
+                    or bool(getattr(sfm, "is_loading", False))
+                ),
+            }
 
         return main_thread("scene_open", _open, arguments={"path": path})
 
     @mcp.tool(name="scene_new")
     def scene_new(force: bool = False, reason: str = "") -> dict:
-        """Create a new empty scene through SceneFileManager."""
+        """Create a new empty scene through SceneFileManager.
+
+        A dirty scene must be explicitly saved or discarded first.
+        """
 
         def _new():
             from Infernux.engine.scene_manager import SceneFileManager
@@ -136,6 +286,82 @@ def register_scene_tools(mcp) -> None:
             return {"accepted": True, "loading": bool(getattr(sfm, "is_loading", False)), "status": scene_status()}
 
         return main_thread("scene_new", _new, arguments={"force": force, "reason": reason})
+
+    @mcp.tool(name="scene_discard")
+    def scene_discard(force: bool = False, reason: str = "") -> dict:
+        """Discard the active scene's dirty authoring state explicitly.
+
+        A path-backed scene is reloaded from its current durable file.  An
+        unnamed scene is replaced with a fresh, clean default scene.  The
+        operation is destructive and therefore requires both ``force=true``
+        and a non-empty ``reason``; MCP never silently throws away a scene.
+        """
+
+        def _discard():
+            from Infernux.engine.interaction import (
+                DocumentActionStatus,
+                DocumentRegistry,
+            )
+            from Infernux.engine.scene_manager import SceneFileManager
+
+            if not force:
+                raise ValueError(
+                    "scene_discard is destructive. Pass force=true and a short reason."
+                )
+            if not str(reason or "").strip():
+                raise ValueError(
+                    "scene_discard requires a reason when force=true."
+                )
+            sfm = SceneFileManager.instance()
+            if sfm is None:
+                raise RuntimeError("SceneFileManager is not available.")
+            if not getattr(sfm, "is_dirty", False):
+                return {
+                    "accepted": True,
+                    "discarded": False,
+                    "no_op": True,
+                    "status": scene_status(),
+                }
+
+            registry = DocumentRegistry.instance()
+            document_id = str(getattr(sfm, "document_id", "") or "")
+            if not document_id:
+                raise RuntimeError("The active scene is not bound to a document.")
+
+            if not getattr(sfm, "current_scene_path", None):
+                # SceneFileManager's normal new-scene transaction is the same
+                # authority used by the visible editor.  Establishing the
+                # loaded baseline afterwards makes the unnamed result
+                # explicitly clean instead of leaving a fresh default scene
+                # dirty merely because it contains the default camera/light.
+                if not bool(sfm._do_new_scene()):
+                    raise RuntimeError("The unnamed scene could not be reset.")
+                registry.establish_loaded_baseline(sfm.document_id)
+                return {
+                    "accepted": True,
+                    "discarded": True,
+                    "reset": "clean_unnamed_scene",
+                    "status": scene_status(),
+                }
+
+            result = registry.request_discard(document_id)
+            if result.status in {
+                DocumentActionStatus.FAILED,
+                DocumentActionStatus.REJECTED,
+            }:
+                raise RuntimeError(result.message or "Scene discard failed.")
+            return {
+                "accepted": True,
+                "discarded": True,
+                "reset": "durable_scene_file",
+                "status": scene_status(),
+            }
+
+        return main_thread(
+            "scene_discard",
+            _discard,
+            arguments={"force": force, "reason": reason},
+        )
 
     @mcp.tool(name="scene_serialize")
     def scene_serialize() -> dict:
@@ -217,11 +443,10 @@ def register_scene_tools(mcp) -> None:
         """Add a native, built-in wrapper, registered Python, or script component."""
 
         def _add():
+            _require_creatable_component_type(component_type)
             _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
-            before_ids = _component_ids(obj)
-            is_py = False
-            comp = None
+            instance = None
 
             if script_path:
                 from Infernux.components import load_and_create_component
@@ -234,28 +459,19 @@ def register_scene_tools(mcp) -> None:
                 resolved_script_path = resolve_asset_path(
                     capabilities.project_path(), script_path
                 )
-                comp = load_and_create_component(
+                instance = load_and_create_component(
                     resolved_script_path,
                     asset_database=get_asset_database(),
                     type_name=component_type,
                 )
-                if comp is None:
+                if instance is None:
                     raise RuntimeError(f"Script did not create component '{component_type}'.")
-                comp = obj.add_py_component(comp)
-                is_py = True
-            else:
-                comp = obj.add_component(component_type)
-                is_py = _is_python_script_component(comp)
-
-            if comp is None:
-                raise RuntimeError(f"Failed to add component '{component_type}'.")
-
-            for key, value in (fields or {}).items():
-                current_value = _component_field_value(comp, key)
-                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
-
-            from Infernux.engine.ui._inspector_undo import _record_add_component_compound
-            _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
+            comp = _add_component_through_editor_transaction(
+                obj,
+                component_type,
+                python_instance=instance,
+                fields=fields,
+            )
             return {
                 "object_id": int(obj.id),
                 "component": serialize_component(comp),
@@ -275,9 +491,7 @@ def register_scene_tools(mcp) -> None:
 
         def _create():
             from Infernux.engine.project_context import get_project_root
-            from Infernux.engine.undo._trackers import HierarchyUndoTracker
             from Infernux.mcp.tools.common import get_asset_database
-            from Infernux.lib import SceneManager
 
             absolute_path = resolve_asset_path(get_project_root(), model_path)
             asset_database = get_asset_database()
@@ -287,29 +501,17 @@ def register_scene_tools(mcp) -> None:
                     f"Imported model asset was not found in AssetDatabase: {model_path}"
                 )
 
-            scene = SceneManager.instance().get_active_scene()
-            if not scene:
-                raise RuntimeError("No active scene.")
-            obj = scene.create_from_model(guid)
+            obj = _scene_object_service().create_model_object(
+                guid,
+                parent_id=int(parent_id or 0),
+                is_guid=True,
+                name=str(name or ""),
+                select=bool(select),
+                selection_owner_id="automation",
+                selection_reason="mcp_create_model",
+            )
             if obj is None:
                 raise RuntimeError(f"Failed to instantiate model asset: {model_path}")
-
-            if parent_id:
-                parent = scene.find_by_id(int(parent_id))
-                if parent is None:
-                    scene.destroy_game_object(obj)
-                    raise FileNotFoundError(f"Parent GameObject {parent_id} was not found.")
-                obj.set_parent(parent)
-            if name:
-                obj.name = str(name)
-
-            HierarchyUndoTracker().record_create(
-                int(obj.id), "MCP Create GameObject From Model"
-            )
-            if select:
-                from Infernux.engine.ui.selection_manager import SelectionManager
-
-                SelectionManager.instance().select(int(obj.id))
 
             value = _serialize_object(
                 obj,
@@ -575,23 +777,29 @@ def register_scene_tools(mcp) -> None:
             parent_id = 0
             current_path = ""
             target_path = portable_path(str(path)).strip("/")
-            for part in [p for p in target_path.split("/") if p]:
-                current_path = f"{current_path}/{part}" if current_path else part
-                existing = _find_by_path_exact(current_path)
-                if existing is not None:
-                    parent_id = int(existing.id)
-                    continue
-                entry = HierarchyCreationService.instance().create(
-                    kind if current_path == target_path else "empty",
-                    parent_id=parent_id,
-                    name=part,
-                    select=False,
-                )
-                created.append(entry)
-                parent_id = int(entry["id"])
-            if select and parent_id:
-                from Infernux.engine.ui.selection_manager import SelectionManager
-                SelectionManager.instance().select(parent_id)
+            with _scene_object_service().user_action("Ensure GameObject Path"):
+                for part in [p for p in target_path.split("/") if p]:
+                    current_path = f"{current_path}/{part}" if current_path else part
+                    existing = _find_by_path_exact(current_path)
+                    if existing is not None:
+                        parent_id = int(existing.id)
+                        continue
+                    entry = HierarchyCreationService.instance().create(
+                        kind if current_path == target_path else "empty",
+                        parent_id=parent_id,
+                        name=part,
+                        select=False,
+                    )
+                    created.append(entry)
+                    parent_id = int(entry["id"])
+                if select and parent_id:
+                    from Infernux.engine.interaction import SelectionService
+
+                    SelectionService.instance().select_scene_object(
+                        parent_id,
+                        owner_id="automation",
+                        reason="mcp_ensure_path",
+                    )
             final = find_game_object(parent_id)
             return {"object_id": parent_id, "path": _object_path(final), "created": created}
 
@@ -605,27 +813,42 @@ def register_scene_tools(mcp) -> None:
             obj = find_game_object(object_id)
             allowed = {"name", "active", "tag", "layer", "is_static"}
             changed = {}
-            from Infernux.engine.ui._inspector_undo import _record_property
+            from Infernux.engine.interaction import (
+                PropertyTransactionStatus,
+                make_attribute_property_transaction,
+            )
+            normalized = []
             for key, value in (values or {}).items():
                 if key not in allowed:
                     raise ValueError(f"Unsupported GameObject field: {key}")
-                old_value = getattr(obj, key)
                 new_value = int(value) if key == "layer" else bool(value) if key in {"active", "is_static"} else str(value)
-                _record_property(obj, key, old_value, new_value, f"Set GameObject {key}")
-                changed[key] = serialize_value(getattr(obj, key))
+                normalized.append((key, new_value))
+            with _scene_object_service().user_action("Set GameObject Fields"):
+                for key, new_value in normalized:
+                    transaction = make_attribute_property_transaction(
+                        (obj,),
+                        key,
+                        property_path=f"GameObject.{key}",
+                        description=f"Set GameObject {key}",
+                    )
+                    if transaction.commit(new_value) is PropertyTransactionStatus.APPLIED:
+                        changed[key] = serialize_value(getattr(obj, key))
             return {"object_id": int(obj.id), "changed": changed}
 
         return main_thread("gameobject_set", _set)
 
     @mcp.tool(name="gameobject_delete")
     def gameobject_delete(object_id: int) -> dict:
-        """Delete a GameObject through the hierarchy undo tracker."""
+        """Delete a GameObject through the global scene mutation authority."""
 
         def _delete():
             obj = find_game_object(object_id)
             name = str(obj.name)
-            from Infernux.engine.undo._trackers import HierarchyUndoTracker
-            HierarchyUndoTracker().record_delete(int(object_id), "MCP Delete GameObject")
+            if not _scene_object_service().delete_ids(
+                (int(object_id),),
+                description="Delete GameObject",
+            ):
+                raise RuntimeError(f"Failed to delete GameObject {object_id}.")
             return {"deleted": True, "object_id": int(object_id), "name": name}
 
         return main_thread("gameobject_delete", _delete)
@@ -636,12 +859,14 @@ def register_scene_tools(mcp) -> None:
 
         def _batch_delete():
             deleted = []
-            from Infernux.engine.undo._trackers import HierarchyUndoTracker
-            tracker = HierarchyUndoTracker()
             for object_id in object_ids or []:
                 obj = find_game_object(int(object_id))
                 deleted.append({"id": int(obj.id), "name": str(obj.name), "path": _object_path(obj)})
-                tracker.record_delete(int(object_id), "MCP Batch Delete GameObject")
+            if deleted and not _scene_object_service().delete_ids(
+                (entry["id"] for entry in deleted),
+                description="Delete GameObjects",
+            ):
+                raise RuntimeError("Failed to delete GameObjects.")
             return {"deleted": deleted}
 
         return main_thread("gameobject_batch_delete", _batch_delete)
@@ -653,23 +878,24 @@ def register_scene_tools(mcp) -> None:
         def _batch_create():
             from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
             created = []
-            for item in items or []:
-                parent_id = int(item.get("parent_id", 0) or 0)
-                parent_path = item.get("parent_path", "")
-                if parent_path:
-                    parent = _find_by_path_exact(parent_path)
-                    if parent is None:
-                        raise FileNotFoundError(f"Parent path not found: {parent_path}")
-                    parent_id = int(parent.id)
-                entry = HierarchyCreationService.instance().create(
-                    str(item.get("kind", "empty")),
-                    parent_id=parent_id,
-                    name=item.get("name") or None,
-                    select=bool(item.get("select", False)),
-                )
-                obj = find_game_object(int(entry["id"]))
-                entry["path"] = _object_path(obj)
-                created.append(entry)
+            with _scene_object_service().user_action("Create GameObjects"):
+                for item in items or []:
+                    parent_id = int(item.get("parent_id", 0) or 0)
+                    parent_path = item.get("parent_path", "")
+                    if parent_path:
+                        parent = _find_by_path_exact(parent_path)
+                        if parent is None:
+                            raise FileNotFoundError(f"Parent path not found: {parent_path}")
+                        parent_id = int(parent.id)
+                    entry = HierarchyCreationService.instance().create(
+                        str(item.get("kind", "empty")),
+                        parent_id=parent_id,
+                        name=item.get("name") or None,
+                        select=bool(item.get("select", False)),
+                    )
+                    obj = find_game_object(int(entry["id"]))
+                    entry["path"] = _object_path(obj)
+                    created.append(entry)
             return {"created": created}
 
         return main_thread("gameobject_batch_create", _batch_create)
@@ -679,23 +905,16 @@ def register_scene_tools(mcp) -> None:
         """Duplicate a GameObject transactionally."""
 
         def _duplicate():
-            from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
-            if not scene:
-                raise RuntimeError("No active scene.")
-            source = find_game_object(object_id)
-            parent = scene.find_by_id(int(parent_id)) if parent_id else None
-            from Infernux.engine.component_restore import clone_game_object_transactionally
-            obj = clone_game_object_transactionally(scene, source, parent)
+            obj = _scene_object_service().duplicate_object(
+                int(object_id),
+                parent_id=int(parent_id or 0),
+                name=str(name or ""),
+                select=bool(select),
+                selection_owner_id="automation",
+                selection_reason="mcp_duplicate_object",
+            )
             if obj is None:
                 raise RuntimeError("Failed to duplicate GameObject.")
-            if name:
-                obj.name = str(name)
-            from Infernux.engine.undo._trackers import HierarchyUndoTracker
-            HierarchyUndoTracker().record_create(int(obj.id), "MCP Duplicate GameObject")
-            if select:
-                from Infernux.engine.ui.selection_manager import SelectionManager
-                SelectionManager.instance().select(int(obj.id))
             return _serialize_object(obj, depth=1, include_components=True, include_inactive=True)
 
         return main_thread("gameobject_duplicate", _duplicate)
@@ -707,12 +926,17 @@ def register_scene_tools(mcp) -> None:
         def _set_parent():
             obj = find_game_object(object_id)
             old_parent = obj.get_parent()
-            new_parent = find_game_object(parent_id) if parent_id else None
-            obj.set_parent(new_parent, bool(world_position_stays))
-            from Infernux.engine.scene_manager import SceneFileManager
-            sfm = SceneFileManager.instance()
-            if sfm:
-                sfm.mark_dirty()
+            if not bool(world_position_stays):
+                raise ValueError(
+                    "Editor hierarchy authoring always preserves world position."
+                )
+            moved = _scene_object_service().move_hierarchy(
+                (int(object_id),),
+                "parent" if int(parent_id or 0) else "root",
+                target_id=int(parent_id or 0),
+            )
+            if not moved and int(getattr(old_parent, "id", 0) or 0) != int(parent_id or 0):
+                raise RuntimeError("Failed to move GameObject in Hierarchy.")
             return {
                 "object_id": int(obj.id),
                 "parent_id": int(getattr(obj.get_parent(), "id", 0) or 0),
@@ -728,11 +952,11 @@ def register_scene_tools(mcp) -> None:
         def _set_sibling_index():
             obj = find_game_object(object_id)
             old_index = int(obj.transform.get_sibling_index())
-            obj.transform.set_sibling_index(int(index))
-            from Infernux.engine.scene_manager import SceneFileManager
-            sfm = SceneFileManager.instance()
-            if sfm:
-                sfm.mark_dirty()
+            moved = _scene_object_service().set_sibling_index(
+                int(object_id), int(index)
+            )
+            if not moved and old_index != int(index):
+                raise RuntimeError("Failed to change GameObject sibling index.")
             return {
                 "object_id": int(obj.id),
                 "old_index": old_index,
@@ -760,12 +984,14 @@ def register_scene_tools(mcp) -> None:
                 for obj in scene.get_root_objects() or []:
                     if str(obj.name).startswith(name_prefix):
                         targets.append(obj)
-            from Infernux.engine.undo._trackers import HierarchyUndoTracker
-            tracker = HierarchyUndoTracker()
             deleted = []
             for obj in targets:
                 deleted.append({"id": int(obj.id), "name": str(obj.name), "path": _object_path(obj)})
-                tracker.record_delete(int(obj.id), "MCP Clear Generated")
+            if deleted and not _scene_object_service().delete_ids(
+                (entry["id"] for entry in deleted),
+                description="Clear Generated GameObjects",
+            ):
+                raise RuntimeError("Failed to clear generated GameObjects.")
             return {"deleted": deleted}
 
         return main_thread("scene_clear_generated", _clear)
@@ -787,14 +1013,24 @@ def register_scene_tools(mcp) -> None:
                 "local_scale",
             }
             changed: dict[str, Any] = {}
-            from Infernux.engine.ui._inspector_undo import _record_property
+            from Infernux.engine.interaction import ComponentCommandService
+            changes = []
             for key, value in values.items():
                 if key not in allowed:
                     raise ValueError(f"Unsupported Transform field: {key}")
-                old_value = getattr(trans, key)
                 new_value = coerce_vector3(value)
-                _record_property(trans, key, old_value, new_value, f"Set Transform {key}")
-                changed[key] = serialize_vector(getattr(trans, key))
+                old_value = getattr(trans, key)
+                if serialize_vector(old_value) != serialize_vector(new_value):
+                    changes.append(
+                        (trans, key, old_value, new_value, f"Set Transform {key}")
+                    )
+            if changes:
+                ComponentCommandService.require().execute_property_changes(
+                    changes,
+                    description="Set Transform Fields",
+                )
+                for _target, key, _old_value, _new_value, _description in changes:
+                    changed[key] = serialize_vector(getattr(trans, key))
             return {"object_id": int(obj.id), "changed": changed}
 
         return main_thread("transform_set", _set)
@@ -818,13 +1054,17 @@ def register_scene_tools(mcp) -> None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
             old_value = _component_field_value(comp, field)
             new_value = _coerce_component_property_value(comp, field, value, old_value)
-            from Infernux.engine.ui._inspector_undo import _record_property
-            _record_property(comp, field, old_value, new_value, f"Set {component_type}.{field}")
+            _component_command_service().set_field(
+                comp,
+                field,
+                new_value,
+                description=f"Set {component_type}.{field}",
+            )
             return {
                 "object_id": int(obj.id),
                 "component": serialize_component(comp),
                 "field": field,
-                "value": serialize_value(getattr(comp, field)),
+                "value": _serialize_component_field_value(comp, field),
             }
 
         return main_thread("component_set_field", _set, arguments={"object_id": object_id, "component_type": component_type, "field": field, "knowledge_token": knowledge_token})
@@ -839,50 +1079,11 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            changes = []
-            for field, value in (values or {}).items():
-                old_value = _component_field_value(comp, field)
-                new_value = _coerce_component_property_value(comp, field, value, old_value)
-                changes.append((field, old_value, new_value))
-
-            from Infernux.engine.undo import (
-                CompoundCommand,
-                SetPropertyCommand,
-                UndoManager,
+            changed = _set_component_fields_through_editor_transaction(
+                comp,
+                component_type,
+                values,
             )
-            commands = [
-                SetPropertyCommand(
-                    comp,
-                    field,
-                    old_value,
-                    new_value,
-                    f"Set {component_type}.{field}",
-                )
-                for field, old_value, new_value in changes
-            ]
-            manager = UndoManager.instance()
-            if manager and commands:
-                command = commands[0] if len(commands) == 1 else CompoundCommand(
-                    commands,
-                    f"Set {component_type} Fields",
-                )
-                manager.execute(command)
-            elif commands:
-                applied = []
-                try:
-                    for field, old_value, new_value in changes:
-                        setattr(comp, field, new_value)
-                        applied.append((field, old_value))
-                except Exception:
-                    for field, old_value in reversed(applied):
-                        setattr(comp, field, old_value)
-                    raise
-                from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-                _notify_scene_modified()
-
-            changed = {}
-            for field, _old_value, _new_value in changes:
-                changed[field] = serialize_value(getattr(comp, field))
             return {"object_id": int(obj.id), "component": serialize_component(comp), "changed": changed}
 
         return main_thread("component_set_fields", _set_fields, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
@@ -898,12 +1099,13 @@ def register_scene_tools(mcp) -> None:
         """Return an existing component or add it if missing."""
 
         def _ensure():
+            _require_creatable_component_type(component_type)
             _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             comp = _find_component(obj, component_type, 0)
             created = False
             if comp is None:
-                before_ids = _component_ids(obj)
+                instance = None
                 if script_path:
                     from Infernux.components import load_and_create_component
                     from Infernux.mcp import capabilities
@@ -911,26 +1113,26 @@ def register_scene_tools(mcp) -> None:
                     resolved_script_path = resolve_asset_path(
                         capabilities.project_path(), script_path
                     )
-                    comp = load_and_create_component(
+                    instance = load_and_create_component(
                         resolved_script_path,
                         asset_database=get_asset_database(),
                         type_name=component_type,
                     )
-                    if comp is None:
+                    if instance is None:
                         raise RuntimeError(f"Script did not create component '{component_type}'.")
-                    comp = obj.add_py_component(comp)
-                    is_py = True
-                else:
-                    comp = obj.add_component(component_type)
-                    is_py = _is_python_script_component(comp)
-                if comp is None:
-                    raise RuntimeError(f"Failed to add component '{component_type}'.")
-                from Infernux.engine.ui._inspector_undo import _record_add_component_compound
-                _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
+                comp = _add_component_through_editor_transaction(
+                    obj,
+                    component_type,
+                    python_instance=instance,
+                    fields=fields,
+                )
                 created = True
-            for key, value in (fields or {}).items():
-                current_value = _component_field_value(comp, key)
-                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
+            else:
+                _set_component_fields_through_editor_transaction(
+                    comp,
+                    component_type,
+                    fields,
+                )
             return {"object_id": int(obj.id), "created": created, "component": serialize_component(comp), "components": _all_components(obj)}
 
         return main_thread("component_ensure", _ensure, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
@@ -985,21 +1187,13 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            is_py = _is_python_script_component(comp)
             type_name = getattr(comp, "type_name", type(comp).__name__)
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            if mgr:
-                if is_py and hasattr(obj, "remove_py_component"):
-                    from Infernux.engine.undo._component_commands import RemovePyComponentCommand
-                    mgr.execute(RemovePyComponentCommand(int(obj.id), comp, "MCP Remove Component"))
-                else:
-                    from Infernux.engine.undo._component_commands import RemoveNativeComponentCommand
-                    mgr.execute(RemoveNativeComponentCommand(int(obj.id), str(type_name), comp, "MCP Remove Component"))
-            elif is_py and hasattr(obj, "remove_py_component"):
-                obj.remove_py_component(comp)
-            else:
-                obj.remove_component(comp)
+            removed = _remove_component_through_editor_transaction(obj, comp)
+            if not removed:
+                raise RuntimeError(
+                    f"Component '{type_name}' could not be removed because its "
+                    "registered component constraints rejected the operation."
+                )
             return {"object_id": int(obj.id), "removed": str(type_name), "components": _all_components(obj)}
 
         return main_thread("component_remove", _remove)
@@ -1085,12 +1279,12 @@ def register_scene_tools(mcp) -> None:
                 raise ValueError(
                     f"Component '{component_type}' does not support document snapshots."
                 )
-            if not comp.deserialize_document(document):
-                raise ValueError(f"Component '{component_type}' rejected the document.")
-            from Infernux.engine.scene_manager import SceneFileManager
-            sfm = SceneFileManager.instance()
-            if sfm:
-                sfm.mark_dirty()
+            _component_command_service().restore_document(
+                comp,
+                document,
+                description=f"Restore {component_type} Snapshot",
+                edit_key=f"snapshot:{component_type}",
+            )
             return _component_snapshot(obj, comp)
 
         return main_thread("component_restore_snapshot", _restore)
@@ -1150,18 +1344,6 @@ def _all_components(obj) -> list[dict[str, Any]]:
     except Exception:
         pass
     return items
-
-
-def _component_ids(obj) -> set[int]:
-    ids: set[int] = set()
-    try:
-        for comp in obj.get_components() or []:
-            component_id = getattr(comp, "component_id", 0)
-            if component_id:
-                ids.add(int(component_id))
-    except Exception:
-        pass
-    return ids
 
 
 def _object_path(obj) -> str:
@@ -1238,7 +1420,7 @@ def _find_component(obj, component_type: str, ordinal: int):
 def _component_snapshot(obj, comp) -> dict[str, Any]:
     fields = {}
     try:
-        from Infernux.components.serialized_field import FieldType, get_serialized_fields
+        from Infernux.components.fields import FieldType, get_serialized_fields
         from Infernux.components.value_codec import VALUE_CODECS
         from Infernux.components.value_document import make_enum
 
@@ -1263,6 +1445,12 @@ def _component_snapshot(obj, comp) -> dict[str, Any]:
                 pass
     except Exception:
         pass
+    if _is_material_slot_component(comp):
+        fields["material"] = _material_slot_document(comp, 0)
+        fields["materials"] = [
+            _material_slot_document(comp, index)
+            for index, _guid in enumerate(_material_slot_guids(comp, all_slots=True))
+        ]
     return {
         "object_id": int(obj.id),
         "object_name": str(obj.name),
@@ -1292,14 +1480,153 @@ def _coerce_property_value(field: str, value: Any, current_value: Any = None) ->
 
 
 def _component_field_value(comp, field: str) -> Any:
-    from Infernux.components.serialized_field import (
-        get_raw_field_value,
-        get_serialized_fields,
+    from Infernux.components.fields import get_raw_field_value, get_serialized_fields
+
+    if _is_material_slot_component(comp) and field in {"material", "materials"}:
+        return _material_slot_guids(comp, all_slots=field == "materials")
+
+    # CppProperty metadata is part of the serialized-field schema, but its
+    # value is owned by the native component.  get_raw_field_value() quite
+    # correctly handles Python descriptors; using it for CppProperty would
+    # instead fall back to the metadata default (often None), which later
+    # makes the shared component command compare Vector3 against None.
+    descriptor = next(
+        (cls.__dict__.get(field) for cls in type(comp).__mro__ if field in cls.__dict__),
+        None,
     )
+    if getattr(descriptor, "_is_cpp_property", False):
+        return getattr(comp, field)
 
     if field in get_serialized_fields(type(comp)):
         return get_raw_field_value(comp, field)
     return getattr(comp, field)
+
+
+def _is_material_slot_component_class(cls) -> bool:
+    """Identify the public renderer material-slot contract by capability."""
+    return callable(getattr(cls, "get_material_guids", None)) and callable(
+        getattr(cls, "set_material", None)
+    )
+
+
+def _is_material_slot_component(comp) -> bool:
+    return _is_material_slot_component_class(type(comp))
+
+
+def _material_slot_guids(comp, *, all_slots: bool) -> list[str] | str:
+    try:
+        guids = [str(value or "") for value in comp.get_material_guids() or []]
+    except Exception:
+        guids = []
+    if all_slots:
+        return guids
+    return guids[0] if guids else ""
+
+
+def _material_asset_identity(value: Any, path: str) -> tuple[str, str]:
+    """Resolve a material reference through the active AssetDatabase."""
+    if value is None:
+        return "", ""
+    if isinstance(value, dict):
+        if set(value) == {"$type", "asset_type", "guid", "path_hint"}:
+            if value.get("$type") != "asset_ref" or value.get("asset_type") != "Material":
+                raise TypeError(f"{path}: expected a Material asset reference")
+        elif set(value) != {"guid", "path_hint"}:
+            raise ValueError(f"{path}: material reference requires guid and path_hint")
+        guid = str(value.get("guid") or "").strip()
+        path_hint = str(value.get("path_hint") or "").strip()
+    elif isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return "", ""
+        guid = token
+        path_hint = ""
+        if token.lower().endswith(".mat") or "/" in token or "\\" in token:
+            from Infernux.engine.project_context import get_project_root
+            from Infernux.mcp.tools.common import get_asset_database
+
+            root = get_project_root()
+            resolved = resolve_asset_path(root, token)
+            if not resolved.lower().endswith(".mat"):
+                raise TypeError(f"{path}: expected a .mat material asset")
+            database = get_asset_database()
+            guid = str(database.get_guid_from_path(resolved) or "") if database else ""
+            path_hint = _project_rel(resolved)
+        elif len(token) < 8:
+            raise ValueError(
+                f"{path}: material reference must be a GUID or Assets-relative .mat path"
+            )
+    else:
+        guid = str(getattr(value, "guid", "") or "").strip()
+        path_hint = str(getattr(value, "path_hint", "") or "").strip()
+
+    if not guid:
+        raise ValueError(f"{path}: material reference has no GUID")
+
+    from Infernux.engine.project_context import get_project_root
+    from Infernux.mcp.tools.common import get_asset_database
+
+    database = get_asset_database()
+    database_path = str(database.get_path_from_guid(guid) or "") if database else ""
+    if database is not None:
+        if database_path:
+            effective_path = resolved_path(database_path)
+        elif path_hint:
+            effective_path = resolve_asset_path(get_project_root(), path_hint)
+            resolved_guid = str(database.get_guid_from_path(effective_path) or "")
+            if resolved_guid != guid:
+                raise ValueError(
+                    f"{path}: material GUID does not match the registered asset path"
+                )
+        else:
+            raise ValueError(f"{path}: material GUID is not registered in AssetDatabase")
+    elif path_hint:
+        effective_path = resolve_asset_path(get_project_root(), path_hint)
+    else:
+        effective_path = ""
+    if effective_path:
+        assets = resolve_asset_path(get_project_root(), "")
+        if not is_path_within(effective_path, assets):
+            raise ValueError(f"{path}: material must resolve under Assets/")
+        if not effective_path.lower().endswith(".mat"):
+            raise TypeError(f"{path}: expected a .mat material asset")
+        path_hint = _project_rel(effective_path)
+    return guid, path_hint
+
+
+def _coerce_material_slot_reference(value: Any, path: str) -> str | None:
+    guid, _path_hint = _material_asset_identity(value, path)
+    return guid or None
+
+
+def _material_slot_document(comp, index: int) -> Any:
+    guids = _material_slot_guids(comp, all_slots=True)
+    if not isinstance(guids, list) or index < 0 or index >= len(guids):
+        return None
+    guid = str(guids[index] or "")
+    if not guid:
+        return None
+    from Infernux.mcp.tools.common import get_asset_database
+
+    database = get_asset_database()
+    path_hint = str(database.get_path_from_guid(guid) or "") if database else ""
+    return {
+        "$type": "asset_ref",
+        "asset_type": "Material",
+        "guid": guid,
+        "path_hint": _project_rel(path_hint) if path_hint else "",
+    }
+
+
+def _serialize_component_field_value(comp, field: str) -> Any:
+    if _is_material_slot_component(comp) and field == "material":
+        return _material_slot_document(comp, 0)
+    if _is_material_slot_component(comp) and field == "materials":
+        return [
+            _material_slot_document(comp, index)
+            for index, _guid in enumerate(_material_slot_guids(comp, all_slots=True))
+        ]
+    return serialize_value(getattr(comp, field))
 
 
 def _coerce_component_property_value(
@@ -1308,10 +1635,20 @@ def _coerce_component_property_value(
     value: Any,
     current_value: Any = None,
 ) -> Any:
-    from Infernux.components.serialized_field import (
+    from Infernux.components.fields import (
         coerce_serialized_field_input,
         get_serialized_fields,
     )
+
+    if _is_material_slot_component(comp) and field in {"material", "materials"}:
+        if field == "materials":
+            if not isinstance(value, list):
+                raise TypeError(f"{type(comp).__name__}.materials requires an array")
+            return [
+                _coerce_material_slot_reference(item, f"{type(comp).__name__}.materials[{index}]")
+                for index, item in enumerate(value)
+            ]
+        return _coerce_material_slot_reference(value, f"{type(comp).__name__}.material")
 
     metadata = get_serialized_fields(type(comp)).get(field)
     if metadata is not None:
@@ -1331,7 +1668,7 @@ def _resolved_component_field_metadata(metadata):
     """Resolve lazy built-in enum names to their public pybind enum class."""
     from dataclasses import replace
 
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if metadata.field_type != FieldType.ENUM or not isinstance(metadata.enum_type, str):
         return metadata
@@ -1392,17 +1729,29 @@ def _component_type_entry(name: str, cls, *, builtin: bool, include_fields: bool
 
 
 def _component_field_schema(cls) -> list[dict[str, Any]]:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
+    from Infernux.components.fields import FieldType
 
     fields = []
     for name, meta in get_serialized_fields(cls).items():
+        meta = _resolved_component_field_metadata(meta)
         enum_values = []
         enum_type = getattr(meta, "enum_type", None)
         if enum_type is not None:
             try:
+                # pybind11 enums expose ``__members__`` but are not
+                # themselves iterable like Python's Enum class.  Reading the
+                # registered members also preserves the native declaration
+                # order for the editor and MCP clients.
+                members = getattr(enum_type, "__members__", {}) or {}
+                labels = list(getattr(meta, "enum_labels", ()) or ())
                 enum_values = [
-                    {"name": str(item.name), "value": int(item.value)}
-                    for item in list(enum_type)
+                    {
+                        "name": str(name),
+                        "value": int(member.value),
+                        "label": labels[index] if index < len(labels) else str(name),
+                    }
+                    for index, (name, member) in enumerate(members.items())
                 ]
             except Exception:
                 enum_values = []
@@ -1414,20 +1763,96 @@ def _component_field_schema(cls) -> list[dict[str, Any]]:
             "tooltip": str(getattr(meta, "tooltip", "")),
             "readonly": bool(getattr(meta, "readonly", False)),
             "enum_values": enum_values,
+            "enum_type": (
+                str(getattr(enum_type, "__name__", "") or getattr(enum_type, "__qualname__", ""))
+                if enum_type is not None
+                else ""
+            ),
             "asset_type": str(getattr(meta, "asset_type", "") or ""),
             "component_type": str(getattr(meta, "component_type", "") or ""),
+            "writable": not bool(getattr(meta, "readonly", False)),
         })
+    if _is_material_slot_component_class(cls):
+        fields.extend((
+            {
+                "name": "material",
+                "type": FieldType.MATERIAL.name,
+                "default": None,
+                "range": None,
+                "tooltip": "Material assigned to slot 0",
+                "readonly": False,
+                "writable": True,
+                "enum_values": [],
+                "asset_type": "Material",
+                "component_type": "",
+                "slot": 0,
+            },
+            {
+                "name": "materials",
+                "type": FieldType.LIST.name,
+                "element_type": FieldType.MATERIAL.name,
+                "default": [],
+                "range": None,
+                "tooltip": "Materials assigned to all renderer slots",
+                "readonly": False,
+                "writable": True,
+                "enum_values": [],
+                "asset_type": "Material",
+                "component_type": "",
+            },
+        ))
     return fields
 
 
 def _require_component_knowledge(component_type: str, token: str) -> None:
     type_name = str(component_type or "")
-    audio_types = {"AudioSource", "AudioListener"}
-    ui_types = {"UICanvas", "UIText", "UIButton", "UIImage", "UISelectable", "InxUIScreenComponent", "InxUIComponent"}
-    if type_name in audio_types:
+    component_class = _component_class_for_name(type_name)
+    category = str(getattr(component_class, "_component_category_", "") or "")
+    module_name = str(getattr(component_class, "__module__", "") or "")
+    if category.casefold() == "audio":
         require_knowledge_token("audio", token, required_tool="audio_guide")
-    elif type_name in ui_types:
+    elif category.casefold() == "ui" or module_name.startswith("Infernux.ui"):
         require_knowledge_token("ui", token, required_tool="api_get")
+
+
+def _component_descendants(cls):
+    for child in cls.__subclasses__():
+        yield child
+        yield from _component_descendants(child)
+
+
+def _require_creatable_component_type(component_type: str):
+    """Return a type only when its registration describes a creatable type."""
+    cls = _component_class_for_name(component_type)
+    if cls is None:
+        raise FileNotFoundError(f"Component type '{component_type}' was not found.")
+
+    import inspect as _inspect
+    from Infernux.components.registry import get_component_constraints
+
+    registration = get_component_constraints(cls)
+    explicitly_abstract = bool(
+        getattr(cls, "_component_abstract_", False)
+        or getattr(cls, "__abstractmethods__", frozenset())
+        or _inspect.isabstract(cls)
+    )
+    menu_path = str(getattr(cls, "_component_menu_path_", "") or "")
+    has_concrete_menu_descendant = any(
+        bool(str(getattr(child, "_component_menu_path_", "") or ""))
+        and not bool(getattr(child, "_component_abstract_", False))
+        for child in _component_descendants(cls)
+    )
+    if (
+        explicitly_abstract
+        or not bool(registration.user_addable)
+        or bool(registration.intrinsic)
+        or (not menu_path and has_concrete_menu_descendant)
+    ):
+        raise TypeError(
+            f"Component type '{component_type}' is abstract or not user-creatable. "
+            "Attach a concrete registered component type instead."
+        )
+    return cls
 
 
 def _matches_scene_query(obj, criteria: dict[str, Any]) -> bool:

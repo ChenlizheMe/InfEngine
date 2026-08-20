@@ -23,6 +23,8 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <platform/filesystem/InxPath.h>
@@ -414,11 +416,14 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     std::string ext = FromFsPath(fsPath.extension());
     if (!ext.empty() && ext[0] == '.')
         ext = ext.substr(1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
 
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFileFromMemory(fileData.data(), fileData.size(), flags, ext.c_str());
 
-    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
+    const bool animationOnlyScene = scene && scene->mRootNode && scene->mNumMeshes == 0 && scene->mNumAnimations > 0;
+    if (!scene || !scene->mRootNode || ((scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) && !animationOnlyScene))
         throw std::runtime_error("MeshLoader Assimp import failed for '" + filePath +
                                  "': " + importer.GetErrorString());
 
@@ -476,7 +481,10 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
             animationName = "Anim_" + std::to_string(animationIndex);
         result.animationNames.push_back(std::move(animationName));
     }
-    if (SkinnedModelImporter::HasSkinningData(*scene))
+    // Assimp marks valid animation-only FBX files as incomplete because they
+    // contain no renderable meshes.  Preserve their take metadata in the
+    // model artifact, but do not manufacture an invalid skinned companion.
+    if (scene->mNumMeshes > 0 && SkinnedModelImporter::HasSkinningData(*scene))
         result.skinnedMesh = SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor);
     return result;
 }

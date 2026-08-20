@@ -29,4 +29,15 @@ static_assert(alignof(GpuParticleRenderInstance) == 16);
 static_assert(sizeof(GpuParticleRenderInstance) == 112);
 static_assert(offsetof(GpuParticleRenderInstance, previousPositionHistory) == 96);
 
+/// Compact camera-independent export consumed by bounds, culling, and sort.
+/// The radius includes authored size, particle scale, and the conservative
+/// diagonal factor used by the legacy full-instance visibility path.
+struct alignas(16) GpuParticleVisibilityInstance
+{
+    std::array<float, 4> positionRadius{};
+};
+
+static_assert(alignof(GpuParticleVisibilityInstance) == 16);
+static_assert(sizeof(GpuParticleVisibilityInstance) == 16);
+
 } // namespace infernux::particle

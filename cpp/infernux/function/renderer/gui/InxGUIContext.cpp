@@ -10,6 +10,7 @@
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <imgui_internal.h>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 
@@ -30,6 +31,16 @@ bool InxGUIContext::CanRenderWidgets() const
         return false;
     ImGuiWindow *stackWindow = context->CurrentWindowStack.back().Window;
     return stackWindow != nullptr && context->CurrentWindow == stackWindow;
+}
+
+void InxGUIContext::BeginFrameInteractionState()
+{
+    m_popupOwnedPointerAtFrameStart = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+}
+
+bool InxGUIContext::IsPointerActivationBlockedByPopup() const
+{
+    return m_popupOwnedPointerAtFrameStart || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
 }
 
 MaterialTopInteraction
@@ -114,7 +125,8 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
 
     Separator();
     if (renderSectionHeader(surfaceSectionLabel) && surfacePlan)
-        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, surfaceLabelWidth);
+        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, surfaceLabelWidth,
+                                                    &result.activeSurfaceIndex, &result.deactivatedSurfaceIndex);
 
     if (readOnly)
         EndDisabled();
@@ -286,7 +298,7 @@ bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *dat
     return changed;
 }
 
-bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max)
+bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max, const char *format)
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
@@ -299,7 +311,7 @@ bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max
     bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_Float, value, &min, &max);
     ImGui::SameLine(0.0f, spacing);
     ImGui::SetNextItemWidth(inputW);
-    if (ImGui::InputFloat("##input", value, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_CharsDecimal))
+    if (ImGui::InputFloat("##input", value, 0.0f, 0.0f, format ? format : "%.3f", ImGuiInputTextFlags_CharsDecimal))
         changed = true;
     *value = std::clamp(*value, min, max);
     ImGui::PopID();
@@ -367,12 +379,40 @@ bool InxGUIContext::Selectable(const std::string &label, bool selected, int flag
     return clicked;
 }
 
-/* value editors */
-void InxGUIContext::Checkbox(const std::string &label, bool *value)
+int InxGUIContext::SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt)
 {
-    ImGui::Checkbox(label.c_str(), value);
+    if (!labelAt || itemCount == 0)
+        return -1;
+    if (itemCount > static_cast<size_t>(std::numeric_limits<int>::max()))
+        throw std::overflow_error("SelectableListClipped item count exceeds ImGuiListClipper range");
+
+    int selectedIndex = -1;
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(itemCount));
+    while (clipper.Step()) {
+        for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index) {
+            ImGui::PushID(index);
+            const std::string label = labelAt(static_cast<size_t>(index));
+            const bool clicked = ImGui::Selectable(label.c_str(), false);
+            if (InxGUISemantics::IsCaptureEnabled())
+                RecordSemanticItem("selectable", label);
+            ImGui::PopID();
+            if (clicked && selectedIndex < 0)
+                selectedIndex = index;
+        }
+    }
+    return selectedIndex;
+}
+
+/* value editors */
+bool InxGUIContext::Checkbox(const std::string &label, bool *value)
+{
+    // Unified compact checkbox (75% square, ambient-size label) everywhere,
+    // matching CheckboxInspector. Semantics are recorded here.
+    const bool changed = CheckboxInspector(label, value);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("checkbox", label, true, "", *value);
+    return changed;
 }
 
 namespace
@@ -380,8 +420,8 @@ namespace
 
 bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible)
 {
-    // Split "Visible##id" so only the square is scaled — label text stays at
-    // the ambient inspector font size.
+    // Split "Visible##id" so only the square is drawn — label text stays at
+    // the ambient font size.
     std::string visible;
     std::string id;
     const size_t hashPos = label.find("##");
@@ -395,31 +435,55 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
     if (id.empty() || id == "##")
         id = "##inx_cb";
 
-    // Center the compact square in the current row. Prefer the previous item's
-    // height (component header / icon dummy) over text-line height so the box
-    // sits vertically centered in tall header bars.
-    const float rowY = ImGui::GetCursorPosY();
-    const float rowH = (std::max)(ImGui::GetFrameHeight(), ImGui::GetItemRectSize().y);
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
-    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
-    const float boxH = ImGui::GetFrameHeight();
-    if (boxH < rowH)
-        ImGui::SetCursorPosY(rowY + (rowH - boxH) * 0.5f);
+    // One fixed square size everywhere. The square and its optional label are
+    // submitted as one item so ImGui advances the row exactly once.
+    const float boxSize = EditorTheme::INSPECTOR_CHECKBOX_BOX_PX;
+    const float textHeight = ImGui::GetTextLineHeight();
+    const float rowHeight = (std::max)(boxSize, textHeight);
+    const float labelWidth = visible.empty() ? 0.0f : ImGui::CalcTextSize(visible.c_str()).x;
+    const float labelSpacing = visible.empty() ? 0.0f : ImGui::GetStyle().ItemInnerSpacing.x;
+    const float itemWidth = boxSize + labelSpacing + labelWidth;
 
-    const bool changed = ImGui::Checkbox(id.c_str(), value);
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::PopStyleVar();
+    const bool clicked = ImGui::InvisibleButton(id.c_str(), ImVec2(itemWidth, rowHeight));
+    const bool hovered = ImGui::IsItemHovered();
+
+    const ImVec2 itemMin = ImGui::GetItemRectMin();
+    const float boxOffsetY = (rowHeight - boxSize) * 0.5f;
+    const ImVec2 boxMin(itemMin.x, itemMin.y + boxOffsetY);
+    const ImVec2 boxMax(itemMin.x + boxSize, itemMin.y + boxOffsetY + boxSize);
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    const float rounding = 3.0f;
+    const ImU32 bgColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    const ImU32 borderColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgActive : ImGuiCol_Border);
+    drawList->AddRectFilled(boxMin, boxMax, bgColor, rounding);
+    drawList->AddRect(boxMin, boxMax, borderColor, rounding, 0, 1.0f);
+
+    if (*value) {
+        const ImU32 checkColor = ImGui::GetColorU32(ImGuiCol_CheckMark);
+        const float s = boxSize;
+        const ImVec2 check[3] = {
+            {boxMin.x + s * 0.18f, boxMin.y + s * 0.52f},
+            {boxMin.x + s * 0.42f, boxMin.y + s * 0.76f},
+            {boxMin.x + s * 0.84f, boxMin.y + s * 0.26f},
+        };
+        drawList->AddPolyline(check, 3, checkColor, ImDrawFlags_None, 2.0f);
+    }
+
+    if (clicked)
+        *value = !*value;
 
     if (!visible.empty()) {
-        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(visible.c_str());
+        const ImVec2 textPos(boxMax.x + labelSpacing, itemMin.y + (rowHeight - textHeight) * 0.5f);
+        drawList->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), visible.c_str());
     }
 
     if (outVisible)
         *outVisible = std::move(visible);
-    return changed;
+    return clicked;
 }
 
 } // namespace
@@ -437,9 +501,9 @@ void InxGUIContext::IntSlider(const std::string &label, int *value, int min, int
         RecordSemanticItem("int_slider", label, true, "", std::nullopt, static_cast<double>(*value));
 }
 
-void InxGUIContext::FloatSlider(const std::string &label, float *value, float min, float max)
+void InxGUIContext::FloatSlider(const std::string &label, float *value, float min, float max, const char *format)
 {
-    DrawUnityRangedFloat(label.c_str(), value, min, max);
+    DrawUnityRangedFloat(label.c_str(), value, min, max, format);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("float_slider", label, true, "", std::nullopt, static_cast<double>(*value));
 }
@@ -538,8 +602,22 @@ bool InxGUIContext::ColorPicker(const std::string &label, float color[4], int fl
 }
 
 // Unity-style helper: label on the left, DragFloatN on the right.
-static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *value, int components, float speed,
-                              float labelWidth = 0.0f, const std::string &axisSemanticBase = "")
+static uint32_t CaptureEditLifecycle(bool changed)
+{
+    uint32_t flags = changed ? InxGUIContext::EditChanged : 0u;
+    if (ImGui::IsItemActive())
+        flags |= InxGUIContext::EditActive;
+    if (ImGui::IsItemActivated())
+        flags |= InxGUIContext::EditActivated;
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        flags |= InxGUIContext::EditDeactivatedAfterEdit;
+    if (ImGui::IsItemDeactivated())
+        flags |= InxGUIContext::EditDeactivated;
+    return flags;
+}
+
+static uint32_t LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *value, int components, float speed,
+                                  float labelWidth = 0.0f, const std::string &axisSemanticBase = "")
 {
     if (labelWidth <= 0.0f)
         labelWidth = ImGui::CalcTextSize(label).x + 20.0f;
@@ -551,6 +629,7 @@ static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *valu
     std::string hiddenLabel = std::string("##") + label;
 
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
+    uint32_t lifecycle = 0;
     if (captureSemantics && components >= 2 && components <= 4 && !axisSemanticBase.empty()) {
         // Match ImGui::DragFloatN's layout so each actual field has a stable,
         // focusable semantic target instead of exposing only the aggregate row.
@@ -566,7 +645,8 @@ static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *valu
             // Keep the editor ID below the per-axis PushID scope. An empty
             // label aliases the current ID-stack seed and can collide when
             // DragFloat temporarily swaps to its text-input representation.
-            ImGui::DragFloat("##axis_value", &value[axis], speed);
+            const bool changed = ImGui::DragFloat("##axis_value", &value[axis], speed);
+            lifecycle |= CaptureEditLifecycle(changed);
             ctx.RecordSemanticItem("vector_axis", kAxisLabels[axis], true, axisSemanticBase + "." + kAxisNames[axis],
                                    std::nullopt, static_cast<double>(value[axis]));
             ImGui::PopID();
@@ -575,30 +655,33 @@ static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *valu
         ImGui::PopID();
         ImGui::EndGroup();
     } else {
+        bool changed = false;
         switch (components) {
         case 2:
-            ImGui::DragFloat2(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat2(hiddenLabel.c_str(), value, speed);
             break;
         case 3:
-            ImGui::DragFloat3(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat3(hiddenLabel.c_str(), value, speed);
             break;
         case 4:
-            ImGui::DragFloat4(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat4(hiddenLabel.c_str(), value, speed);
             break;
         default:
-            ImGui::DragFloat(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat(hiddenLabel.c_str(), value, speed);
             break;
         }
+        lifecycle = CaptureEditLifecycle(changed);
     }
     if (captureSemantics)
         ctx.RecordSemanticItem("vector", label);
+    return lifecycle;
 }
 
 void InxGUIContext::Vector2Control(const std::string &label, float value[2], float speed, float labelWidth,
                                    const std::string &axisSemanticBase)
 {
     CompensateWarp();
-    LabeledDragFloatN(*this, label.c_str(), value, 2, speed, labelWidth, axisSemanticBase);
+    m_lastEditLifecycleFlags = LabeledDragFloatN(*this, label.c_str(), value, 2, speed, labelWidth, axisSemanticBase);
     HandleDragCapture();
 }
 
@@ -606,14 +689,14 @@ void InxGUIContext::Vector3Control(const std::string &label, float value[3], flo
                                    const std::string &axisSemanticBase)
 {
     CompensateWarp();
-    LabeledDragFloatN(*this, label.c_str(), value, 3, speed, labelWidth, axisSemanticBase);
+    m_lastEditLifecycleFlags = LabeledDragFloatN(*this, label.c_str(), value, 3, speed, labelWidth, axisSemanticBase);
     HandleDragCapture();
 }
 
 void InxGUIContext::Vector4Control(const std::string &label, float value[4], float speed, float labelWidth)
 {
     CompensateWarp();
-    LabeledDragFloatN(*this, label.c_str(), value, 4, speed, labelWidth);
+    m_lastEditLifecycleFlags = LabeledDragFloatN(*this, label.c_str(), value, 4, speed, labelWidth);
     HandleDragCapture();
 }
 
@@ -901,7 +984,9 @@ std::vector<PopupContentStyle> s_popupContentStyleStack;
 int PushPopupWindowChrome()
 {
     const float em = ImGui::GetFontSize();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.45f, em * 0.5f));
+    // Keep horizontal bleed (content-to-edge breathing room) but keep the
+    // popup itself compact vertically.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.5f));
     return 1;
 }
 
@@ -910,11 +995,9 @@ void PushPopupContentStyle()
 {
     PopupContentStyle entry;
     const float em = ImGui::GetFontSize();
-    // Taller rows: Selectable/MenuItem extend their hover band across the
-    // ItemSpacing gap, so a larger vertical spacing yields a contiguous,
-    // Unity-like highlight instead of thin strips.
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.5f, em * 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(em * 0.5f, em * 0.3f));
+    // Compact rows: tight ItemSpacing / FramePadding so popups stay dense.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.3f, em * 0.3f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(em * 0.4f, em * 0.25f));
     entry.styleVars = 2;
 
     // Clearer hover / click feedback, derived from the active theme so any
@@ -998,6 +1081,14 @@ bool InxGUIContext::MenuItem(const std::string &label, const std::string &shortc
 /* child & windows */
 bool InxGUIContext::BeginChild(const std::string &id, float width, float height, bool border, int flags)
 {
+    // Inside a popup, child scroll regions must not draw their own background
+    // (the popup window already provides one). Keep the stack balanced via the
+    // matching EndChild.
+    const bool inPopup = !s_popupContentStyleStack.empty();
+    if (inPopup) {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ++m_childBgTransparentCount;
+    }
     return ImGui::BeginChild(id.c_str(), ImVec2(width, height), border ? ImGuiChildFlags_Borders : 0,
                              static_cast<ImGuiWindowFlags>(flags));
 }
@@ -1005,6 +1096,10 @@ bool InxGUIContext::BeginChild(const std::string &id, float width, float height,
 void InxGUIContext::EndChild()
 {
     ImGui::EndChild();
+    if (m_childBgTransparentCount > 0) {
+        --m_childBgTransparentCount;
+        ImGui::PopStyleColor();
+    }
 }
 
 /* popups & tooltips */
@@ -1235,6 +1330,29 @@ bool InxGUIContext::BeginWindow(const std::string &name, bool *open, int flags)
     return visible;
 }
 
+bool InxGUIContext::IsCurrentWindowContentPresented()
+{
+    ImGuiContext *context = ImGui::GetCurrentContext();
+    ImGuiWindow *window = context ? ImGui::GetCurrentWindowRead() : nullptr;
+    if (window == nullptr)
+        return false;
+
+    ImGuiWindow *root = window->RootWindow != nullptr ? window->RootWindow : window;
+    if (root->Hidden || root->Collapsed)
+        return false;
+
+#ifdef IMGUI_HAS_DOCK
+    if (const ImGuiDockNode *dockNode = root->DockNode; dockNode != nullptr) {
+        if (!root->DockNodeIsVisible || !root->DockTabIsVisible)
+            return false;
+        if (dockNode->VisibleWindow != nullptr)
+            return dockNode->VisibleWindow == root;
+    }
+#endif
+
+    return true;
+}
+
 void InxGUIContext::EndWindow()
 {
     ImGui::End();
@@ -1285,6 +1403,11 @@ void InxGUIContext::SetCursorPosX(float x)
 void InxGUIContext::SetCursorPosY(float y)
 {
     ImGui::SetCursorPosY(y);
+}
+
+void InxGUIContext::SetCursorScreenPos(float x, float y)
+{
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
 }
 
 float InxGUIContext::GetWindowPosX()
@@ -1395,6 +1518,7 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
         state.highlightedItem = safeCurrent;
         state.needsSearchFocus = true;
         state.scrollToHighlight = true;
+        state.closeRequested = false;
         ImGui::OpenPopup("##popup");
     }
     if (state.restoreTriggerFocus) {
@@ -1406,10 +1530,26 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
     const float listHeight = rowHeight * static_cast<float>(maxVisibleItems) + ImGui::GetStyle().WindowPadding.y * 2.0f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(popupWidth, 0.0f), ImVec2(popupWidth, FLT_MAX));
-    if (ImGui::BeginPopup("##popup")) {
+    const int comboChromeVars = PushPopupWindowChrome();
+    const bool comboOpen = ImGui::BeginPopup("##popup");
+    ImGui::PopStyleVar(comboChromeVars);
+    if (comboOpen) {
+        PushPopupContentStyle();
         if (captureSemantics)
             RecordSemanticWindow("combo_popup", id, id);
-        state.wasOpen = true;
+        const std::string transientToken = "searchable_combo:" + id;
+        if (!state.wasOpen) {
+            state.wasOpen = true;
+            if (m_transientBegin) {
+                m_transientBegin(transientToken, "popup", 150, [this, id]() {
+                    auto it = m_searchableComboStates.find(id);
+                    if (it == m_searchableComboStates.end())
+                        return false;
+                    it->second.closeRequested = true;
+                    return true;
+                });
+            }
+        }
         if (state.needsSearchFocus) {
             ImGui::SetKeyboardFocusHere();
             state.needsSearchFocus = false;
@@ -1460,14 +1600,16 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
         }
 
         bool closePopup = false;
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        if (state.closeRequested) {
             closePopup = true;
+            state.closeRequested = false;
         } else if (submitted && state.highlightedItem >= 0) {
             result = state.highlightedItem;
             closePopup = true;
         }
 
         ImGui::Separator();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         if (ImGui::BeginChild("##results", ImVec2(0.0f, listHeight), ImGuiChildFlags_None)) {
             if (filtered.empty()) {
                 ImGui::TextDisabled("%s", emptyText.c_str());
@@ -1493,16 +1635,23 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
             }
         }
         ImGui::EndChild();
+        ImGui::PopStyleColor(1);
 
         if (closePopup) {
             ImGui::CloseCurrentPopup();
             state.wasOpen = false;
             state.restoreTriggerFocus = true;
+            if (m_transientEnd)
+                m_transientEnd(transientToken);
         }
+        PopPopupContentStyle();
         ImGui::EndPopup();
     } else if (state.wasOpen) {
         state.wasOpen = false;
+        state.closeRequested = false;
         state.restoreTriggerFocus = true;
+        if (m_transientEnd)
+            m_transientEnd("searchable_combo:" + id);
     }
     ImGui::PopID();
     return result;
@@ -2261,17 +2410,22 @@ void InxGUIContext::PopDrawListClipRect()
 // ═════════════════════════════════════════════════════════════════════════
 
 std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector<PropertyDesc> &descriptors,
-                                                               float labelWidth)
+                                                               float labelWidth, int *activeIndex,
+                                                               int *deactivatedAfterEditIndex)
 {
     std::vector<PropertyChange> changes;
+    if (activeIndex)
+        *activeIndex = -1;
+    if (deactivatedAfterEditIndex)
+        *deactivatedAfterEditIndex = -1;
 
-    constexpr float kMinLabelWidth = 156.0f;
+    constexpr float kMinLabelWidth = 132.0f;
 
     auto doLabel = [&](const std::string &label) {
         if (!label.empty()) {
             float w = labelWidth;
             if (w <= 0.0f)
-                w = std::max(ImGui::CalcTextSize(label.c_str()).x + 18.0f, kMinLabelWidth);
+                w = std::max(ImGui::CalcTextSize(label.c_str()).x + 12.0f, kMinLabelWidth);
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(label.c_str());
             ImGui::SameLine(w);
@@ -2317,7 +2471,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             float orig = val;
             CompensateWarp();
             if (d.slider && d.rangeMin > -1e5f)
-                DrawUnityRangedFloat(d.widgetId.c_str(), &val, d.rangeMin, d.rangeMax);
+                DrawUnityRangedFloat(d.widgetId.c_str(), &val, d.rangeMin, d.rangeMax, "%.3f");
             else {
                 const ImGuiSliderFlags flags =
                     d.rangeMin < d.rangeMax ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
@@ -2516,13 +2670,18 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
         // Tooltip for the last rendered widget (label hover is not tracked).
         if (!d.tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s", d.tooltip.c_str());
+        if (activeIndex && ImGui::IsItemActive())
+            *activeIndex = i;
+        if (deactivatedAfterEditIndex && ImGui::IsItemDeactivatedAfterEdit())
+            *deactivatedAfterEditIndex = i;
     }
     return changes;
 }
 
 uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                                 const std::string &typeHint, bool selected, bool clickable,
-                                                bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId)
+                                                bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId,
+                                                float fixedWidth)
 {
     // Unity ObjectField: one shared frame height, left text inset, picker flush
     // to the right. Hover/active fill covers the whole control (body + picker).
@@ -2537,6 +2696,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const ImVec4 buttonActiveColor = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
     const float textInsetX = EditorThemeRegistry::Float("OBJECT_FIELD_TEXT_INSET_X", 12.0f);
 
+    if (fieldId.empty())
+        throw std::invalid_argument("ObjectField fieldId must not be empty.");
+    const std::string resolvedSemanticId = semanticId.empty() ? "object_field." + fieldId : semanticId;
+
     ImGui::PushID(fieldId.c_str());
 
     std::string fullText = displayText + " (" + typeHint + ")";
@@ -2546,7 +2709,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const float fieldHeight = ImGui::GetFrameHeight();
     const float buttonWidth = hasPicker ? fieldHeight : 0.0f;
-    const float totalWidth = (std::max)(availableWidth, buttonWidth + 10.0f);
+    // fixedWidth > 0 caps the field (node-graph pin slots); otherwise fill the
+    // available region like a normal Inspector row.
+    const float totalWidth = fixedWidth > 0.0f ? (std::max)(fixedWidth, buttonWidth + 10.0f)
+                                               : (std::max)(availableWidth, buttonWidth + 10.0f);
     const float bodyWidth = (std::max)(totalWidth - buttonWidth, 10.0f);
 
     const ImVec2 start = ImGui::GetCursorScreenPos();
@@ -2555,11 +2721,28 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const bool bodyHovered = ImGui::IsItemHovered();
     const bool bodyPressed = ImGui::IsItemActive();
     uint32_t result = 0;
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && clickable)
+    // The body always reports navigation intent. `clickable` only describes
+    // whether the current reference can resolve to a useful target; it must
+    // not create a second hit-test contract for read-only fields.
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
         result |= 1u;
-    // Bit 4: body double-click — used by Inspector to ping the asset in Project.
+    // Bit 4: body double-click — domains may use this to open the reference.
     if (bodyHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         result |= 4u;
+    // Bit 8: keyboard activation mirrors a body double-click.  The Python
+    // interaction model decides whether that opens the resource or locates it.
+    if (ImGui::IsItemFocused() &&
+        (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))
+        result |= 8u;
+    // Bit 16: focused ObjectField clear. Text editors retain Delete/Backspace
+    // because their active input owns WantTextInput instead of this field.
+    if (ImGui::IsItemFocused() && !ImGui::GetIO().WantTextInput &&
+        (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)))
+        result |= 16u;
+    // Bit 32: shared ObjectField context menu request. Python opens the
+    // stable field-id popup after native batch rendering has completed.
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+        result |= 32u;
 
     bool pickerHovered = false;
     bool pickerPressed = false;
@@ -2575,24 +2758,27 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
             result |= 2u;
         pickerHovered = ImGui::IsItemHovered();
         pickerPressed = ImGui::IsItemActive();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+            result |= 32u;
         pickerMin = ImGui::GetItemRectMin();
         pickerMax = ImGui::GetItemRectMax();
         if (InxGUISemantics::IsCaptureEnabled())
-            RecordSemanticItem("button", "Select " + typeHint, true, fieldId + ".picker");
+            RecordSemanticItem("button", "Select " + typeHint, true, resolvedSemanticId + ".picker");
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(3);
     }
 
-    // Only the picker button opens the object selector. Body single-click is
-    // reserved / inert; body double-click (bit 4) is handled by callers as a
-    // "ping in Project" action — matching Unity ObjectField behaviour.
+    // Only the picker button opens the object selector. Python applies the
+    // shared ObjectField contract to the body flags: single-click locates the
+    // current reference, while double-click/Enter may open it when a domain
+    // supplies an opener.
     if ((result & 2u) != 0 && hasPicker)
         ImGui::OpenPopup("##obj_picker");
 
     ImGui::EndGroup();
     // Keep the whole ObjectField (body + picker) as the last item so drag-drop
     // targets and semantic outlines cover the Unity-aligned control bounds.
-    RecordSemanticItem("object_field", displayText, clickable, semanticId);
+    RecordSemanticItem("object_field", displayText, clickable || hasPicker, resolvedSemanticId);
 
     const ImVec2 end{start.x + totalWidth, start.y + fieldHeight};
     const bool groupHovered = bodyHovered || pickerHovered || ImGui::IsItemHovered();
@@ -2649,7 +2835,7 @@ std::vector<ObjectFieldInteraction> InxGUIContext::RenderMeshRendererInspectorFi
     if (slotLabels.size() != slotDisplays.size())
         throw std::invalid_argument("Material slot label/display counts do not match.");
 
-    constexpr float kMinLabelWidth = 156.0f;
+    constexpr float kMinLabelWidth = 132.0f;
     const auto &colors = EditorThemeRegistry::Colors();
     const auto &floats = EditorThemeRegistry::Floats();
     const auto outlineIt = colors.find("DND_DROP_OUTLINE");
@@ -2661,7 +2847,7 @@ std::vector<ObjectFieldInteraction> InxGUIContext::RenderMeshRendererInspectorFi
     auto label = [&](const std::string &text) {
         float width = labelWidth;
         if (width <= 0.0f)
-            width = (std::max)(ImGui::CalcTextSize(text.c_str()).x + 18.0f, kMinLabelWidth);
+            width = (std::max)(ImGui::CalcTextSize(text.c_str()).x + 12.0f, kMinLabelWidth);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(text.c_str());
         ImGui::SameLine(width);
@@ -2674,7 +2860,7 @@ std::vector<ObjectFieldInteraction> InxGUIContext::RenderMeshRendererInspectorFi
         label(fieldLabel);
         ObjectFieldInteraction interaction;
         interaction.index = index;
-        interaction.flags = RenderObjectFieldChrome(fieldId, display, typeHint, false, false, true, pickerTextureId);
+        interaction.flags = RenderObjectFieldChrome(fieldId, display, typeHint, false, true, true, pickerTextureId);
 
         ImGui::PushStyleColor(ImGuiCol_DragDropTarget, ImVec4(0, 0, 0, 0));
         if (ImGui::BeginDragDropTarget()) {

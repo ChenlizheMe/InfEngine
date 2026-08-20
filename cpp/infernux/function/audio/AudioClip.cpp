@@ -7,6 +7,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <dr_flac.h>
+#include <dr_mp3.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +32,58 @@ size_t AudioClip::GetRuntimeMemoryBytes() const noexcept
 namespace
 {
 
+bool ReadEncodedAudio(const std::string &filePath, std::vector<unsigned char> &encoded)
+{
+    std::ifstream input(ToFsPath(filePath), std::ios::binary | std::ios::ate);
+    if (!input.is_open()) {
+        INXLOG_ERROR("Failed to open audio file '", filePath, "'");
+        return false;
+    }
+
+    const std::streamsize byteCount = input.tellg();
+    if (byteCount <= 0 || static_cast<uintmax_t>(byteCount) > std::numeric_limits<size_t>::max()) {
+        INXLOG_ERROR("Audio file is empty or too large to decode: ", filePath);
+        return false;
+    }
+    input.seekg(0, std::ios::beg);
+    encoded.resize(static_cast<size_t>(byteCount));
+    if (!input.read(reinterpret_cast<char *>(encoded.data()), byteCount)) {
+        INXLOG_ERROR("Failed to read audio file '", filePath, "'");
+        return false;
+    }
+    return true;
+}
+
+bool StoreS16Pcm(const std::string &filePath, const int16_t *samples, uint64_t frameCount, uint32_t channels,
+                 uint32_t sampleRate, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
+{
+    if (!samples || frameCount == 0 || channels == 0 || channels > std::numeric_limits<Uint8>::max() ||
+        sampleRate == 0 || sampleRate > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        INXLOG_ERROR("Decoded audio stream has invalid PCM metadata: ", filePath);
+        return false;
+    }
+
+    constexpr uint64_t bytesPerSample = sizeof(int16_t);
+    if (frameCount > std::numeric_limits<size_t>::max() / channels / bytesPerSample) {
+        INXLOG_ERROR("Decoded audio stream is too large: ", filePath);
+        return false;
+    }
+    const uint64_t byteCount64 = frameCount * channels * bytesPerSample;
+    if (byteCount64 > std::numeric_limits<uint32_t>::max()) {
+        INXLOG_ERROR("Decoded audio stream exceeds the AudioClip size limit: ", filePath);
+        return false;
+    }
+    const size_t byteCount = static_cast<size_t>(byteCount64);
+    data.resize(byteCount);
+    std::memcpy(data.data(), samples, byteCount);
+
+    spec = {};
+    spec.freq = static_cast<int>(sampleRate);
+    spec.channels = static_cast<Uint8>(channels);
+    spec.format = SDL_AUDIO_S16;
+    return true;
+}
+
 bool DecodeWaveFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
 {
     Uint8 *audioBuffer = nullptr;
@@ -46,21 +101,12 @@ bool DecodeWaveFile(const std::string &filePath, SDL_AudioSpec &spec, std::vecto
 
 bool DecodeOggFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
 {
-    std::ifstream input(ToFsPath(filePath), std::ios::binary | std::ios::ate);
-    if (!input.is_open()) {
-        INXLOG_ERROR("Failed to open OGG file '", filePath, "'");
+    std::vector<unsigned char> encoded;
+    if (!ReadEncodedAudio(filePath, encoded)) {
         return false;
     }
-
-    const std::streamsize byteCount = input.tellg();
-    if (byteCount <= 0 || byteCount > static_cast<std::streamsize>(std::numeric_limits<int>::max())) {
+    if (encoded.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
         INXLOG_ERROR("OGG file is empty or too large to decode: ", filePath);
-        return false;
-    }
-    input.seekg(0, std::ios::beg);
-    std::vector<unsigned char> encoded(static_cast<size_t>(byteCount));
-    if (!input.read(reinterpret_cast<char *>(encoded.data()), byteCount)) {
-        INXLOG_ERROR("Failed to read OGG file '", filePath, "'");
         return false;
     }
 
@@ -76,16 +122,53 @@ bool DecodeOggFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector
         return false;
     }
 
-    const size_t sampleBytes = static_cast<size_t>(sampleFrames) * static_cast<size_t>(channels) * sizeof(short);
-    data.resize(sampleBytes);
-    std::memcpy(data.data(), samples, sampleBytes);
+    const bool stored = StoreS16Pcm(filePath, samples, static_cast<uint64_t>(sampleFrames),
+                                    static_cast<uint32_t>(channels), static_cast<uint32_t>(sampleRate), spec, data);
     std::free(samples);
+    return stored;
+}
 
-    spec = {};
-    spec.freq = sampleRate;
-    spec.channels = static_cast<Uint8>(channels);
-    spec.format = SDL_AUDIO_S16LE;
-    return true;
+bool DecodeMp3File(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
+{
+    std::vector<unsigned char> encoded;
+    if (!ReadEncodedAudio(filePath, encoded)) {
+        return false;
+    }
+
+    drmp3_config config = {};
+    drmp3_uint64 frameCount = 0;
+    drmp3_int16 *samples =
+        drmp3_open_memory_and_read_pcm_frames_s16(encoded.data(), encoded.size(), &config, &frameCount, nullptr);
+    const bool stored = StoreS16Pcm(filePath, samples, frameCount, config.channels, config.sampleRate, spec, data);
+    if (samples) {
+        drmp3_free(samples, nullptr);
+    }
+    if (!stored) {
+        INXLOG_ERROR("Failed to decode MP3 file '", filePath, "'");
+    }
+    return stored;
+}
+
+bool DecodeFlacFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
+{
+    std::vector<unsigned char> encoded;
+    if (!ReadEncodedAudio(filePath, encoded)) {
+        return false;
+    }
+
+    unsigned int channels = 0;
+    unsigned int sampleRate = 0;
+    drflac_uint64 frameCount = 0;
+    drflac_int16 *samples = drflac_open_memory_and_read_pcm_frames_s16(
+        encoded.data(), encoded.size(), &channels, &sampleRate, &frameCount, nullptr);
+    const bool stored = StoreS16Pcm(filePath, samples, frameCount, channels, sampleRate, spec, data);
+    if (samples) {
+        drflac_free(samples, nullptr);
+    }
+    if (!stored) {
+        INXLOG_ERROR("Failed to decode FLAC file '", filePath, "'");
+    }
+    return stored;
 }
 
 bool DecodeAudioFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
@@ -98,6 +181,12 @@ bool DecodeAudioFile(const std::string &filePath, SDL_AudioSpec &spec, std::vect
     }
     if (extension == ".ogg") {
         return DecodeOggFile(filePath, spec, data);
+    }
+    if (extension == ".mp3") {
+        return DecodeMp3File(filePath, spec, data);
+    }
+    if (extension == ".flac") {
+        return DecodeFlacFile(filePath, spec, data);
     }
 
     INXLOG_ERROR("Unsupported audio file format: ", filePath);

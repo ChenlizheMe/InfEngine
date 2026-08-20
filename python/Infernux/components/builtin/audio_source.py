@@ -35,7 +35,7 @@ from __future__ import annotations
 from typing import Optional
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 
 
 class AudioSource(BuiltinComponent):

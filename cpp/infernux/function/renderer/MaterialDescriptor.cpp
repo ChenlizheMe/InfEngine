@@ -52,7 +52,8 @@ void AppendImageWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<VkD
 bool HasSameGpuBinding(const MaterialDescriptorSet::TextureBinding &left,
                        const MaterialDescriptorSet::TextureBinding &right)
 {
-    return left.imageView == right.imageView && left.sampler == right.sampler;
+    return left.imageView == right.imageView && left.sampler == right.sampler &&
+           left.resourceIndex == right.resourceIndex;
 }
 
 } // namespace
@@ -177,6 +178,26 @@ void MaterialUBO::Update(const InxMaterial &material)
     }
 }
 
+void MaterialUBO::UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices)
+{
+    if (!m_mappedData || m_size == 0)
+        return;
+    const size_t memberCount = (std::min)(m_layout.members.size(), indices.size());
+    for (size_t slot = 0; slot < memberCount; ++slot) {
+        const UniformMember &member = m_layout.members[slot];
+        WriteData(member.offset, &indices[slot], (std::min)(member.size, static_cast<uint32_t>(sizeof(indices[slot]))));
+    }
+}
+
+void MaterialUBO::UpdateTextureIndex(std::string_view name, uint32_t index)
+{
+    uint32_t offset = 0;
+    uint32_t size = 0;
+    if (!m_layout.GetMemberInfo(std::string(name), offset, size))
+        return;
+    WriteData(offset, &index, (std::min)(size, static_cast<uint32_t>(sizeof(index))));
+}
+
 void MaterialUBO::WriteData(uint32_t offset, const void *data, uint32_t size)
 {
     if (!m_mappedData || offset + size > m_size) {
@@ -295,16 +316,26 @@ bool MaterialDescriptorManager::TryGetDefaultTextureBinding(std::string_view bin
     if (IsNormalBindingName(bindingName) && m_defaultNormalImageView != VK_NULL_HANDLE &&
         m_defaultNormalSampler != VK_NULL_HANDLE) {
         outBinding = {m_defaultNormalImageView, m_defaultNormalSampler, {}, m_defaultNormalGpuView};
-        return true;
+        return ResolveBindlessIndex(outBinding);
     }
 
     if (m_defaultImageView != VK_NULL_HANDLE && m_defaultSampler != VK_NULL_HANDLE) {
         outBinding = {m_defaultImageView, m_defaultSampler, {}, m_defaultGpuView};
-        return true;
+        return ResolveBindlessIndex(outBinding);
     }
 
     outBinding = {};
     return false;
+}
+
+bool MaterialDescriptorManager::ResolveBindlessIndex(MaterialDescriptorSet::TextureBinding &binding) const
+{
+    if (!m_bindlessMaterialMode)
+        return true;
+    if (!binding.gpuView || !binding.gpuView->IsValid() || !m_bindlessTextureResolver)
+        return false;
+    binding.resourceIndex = m_bindlessTextureResolver(binding.gpuView);
+    return binding.resourceIndex.IsValid();
 }
 
 TextureResolveStatus
@@ -327,6 +358,10 @@ MaterialDescriptorManager::ResolveExplicitTextureBinding(const std::string &text
         outBinding = {};
         INXLOG_ERROR("Texture resolver returned Ready without a complete GPU binding for texture '", texturePath,
                      "' (binding='", bindingName, "')");
+        return TextureResolveStatus::Failed;
+    }
+    if (!ResolveBindlessIndex(outBinding)) {
+        outBinding = {};
         return TextureResolveStatus::Failed;
     }
     return TextureResolveStatus::Ready;
@@ -352,10 +387,14 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         bool needsVertexMaterialUBO = requiredVertexMaterialLayout != nullptr && requiredVertexMaterialLayout->size > 0;
         bool hasMaterialUBO = it->second->materialUBO && it->second->materialUBO->IsValid();
         bool hasVertexMaterialUBO = it->second->vertexMaterialUBO && it->second->vertexMaterialUBO->IsValid();
+        const bool needsBindlessTextureUBO = m_bindlessMaterialMode && program.UsesBindlessTextureABI();
+        const bool hasBindlessTextureUBO = it->second->textureIndexUBO && it->second->textureIndexUBO->IsValid();
+        const bool hasSameTextureABI = it->second->usesBindlessTextureABI == needsBindlessTextureUBO;
 
         // CRITICAL: Must verify layout matches - shader may have changed
         if (it->second->layout == requiredLayout && needsMaterialUBO == hasMaterialUBO &&
-            needsVertexMaterialUBO == hasVertexMaterialUBO) {
+            needsVertexMaterialUBO == hasVertexMaterialUBO && needsBindlessTextureUBO == hasBindlessTextureUBO &&
+            hasSameTextureABI) {
             INXLOG_DEBUG("GetOrCreateDescriptorSet: REUSING cached descriptor for '", materialName, "'");
             return it->second.get();
         } else {
@@ -373,6 +412,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     auto matDescSet = std::make_unique<MaterialDescriptorSet>();
     matDescSet->layout = requiredLayout; // Track which layout we're using
     matDescSet->bindings = program.GetDescriptorBindings();
+    matDescSet->usesBindlessTextureABI = m_bindlessMaterialMode && program.UsesBindlessTextureABI();
 
     if (!m_descriptorManager) {
         INXLOG_ERROR("Material descriptor manager is unavailable for material: ", materialName);
@@ -413,6 +453,21 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         }
     }
 
+    if (matDescSet->usesBindlessTextureABI) {
+        MaterialUBOLayout textureIndexLayout{};
+        if (const auto *reflectedLayout = program.GetBindlessTextureIndexLayout())
+            textureIndexLayout = *reflectedLayout;
+        else {
+            textureIndexLayout.binding = ShaderProgram::MaterialTextureIndexBinding;
+            textureIndexLayout.size = ShaderProgram::MaterialTextureIndexCapacity * sizeof(uint32_t);
+        }
+        matDescSet->textureIndexUBO = std::make_unique<MaterialUBO>();
+        if (!matDescSet->textureIndexUBO->Create(m_vmaAllocator, m_device, textureIndexLayout)) {
+            INXLOG_ERROR("Failed to create bindless texture-index UBO for: ", materialName);
+            matDescSet->textureIndexUBO.reset();
+        }
+    }
+
     // Update descriptor bindings
     if (!UpdateDescriptorBindings(*matDescSet, program)) {
         m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
@@ -431,29 +486,75 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         texWrites.reserve(properties.size());
         texImageInfos.reserve(properties.size());
 
-        for (const auto &[propName, prop] : properties) {
-            if (prop.type != MaterialPropertyType::Texture2D) {
-                continue;
+        if (matDescSet->usesBindlessTextureABI) {
+            const auto *indexLayout = program.GetBindlessTextureIndexLayout();
+            if (!indexLayout) {
+                INXLOG_ERROR("Bindless material program has no reflected texture-index layout: ", materialName);
+                m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+                RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+                return nullptr;
             }
 
-            // Get the texture path from the property value
-            const std::string *texturePath = std::get_if<std::string>(&prop.value);
-            if (!texturePath || texturePath->empty()) {
-                continue;
+            std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> indices{};
+            matDescSet->bindlessTextureIndices.reserve(indexLayout->members.size());
+            for (size_t slot = 0; slot < indexLayout->members.size(); ++slot) {
+                if (slot >= indices.size()) {
+                    INXLOG_ERROR("Bindless material texture count exceeds the fixed shader ABI for: ", materialName);
+                    m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+                    RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+                    return nullptr;
+                }
+
+                const std::string &propName = indexLayout->members[slot].name;
+                const auto property = properties.find(propName);
+                const std::string *texturePath = nullptr;
+                if (property != properties.end() && property->second.type == MaterialPropertyType::Texture2D)
+                    texturePath = std::get_if<std::string>(&property->second.value);
+
+                MaterialDescriptorSet::TextureBinding resolvedBinding{};
+                TextureResolveStatus resolveStatus = TextureResolveStatus::Failed;
+                const bool hasExplicitTexture =
+                    texturePath && !texturePath->empty() && !IsPlaceholderTexturePath(*texturePath);
+                if (hasExplicitTexture)
+                    resolveStatus = ResolveExplicitTextureBinding(*texturePath, propName, resolvedBinding);
+                if (hasExplicitTexture && resolveStatus == TextureResolveStatus::Pending)
+                    matDescSet->hasPendingTextures = true;
+
+                const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
+                if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
+                    INXLOG_ERROR("Failed to initialize required bindless texture property '", propName,
+                                 "' for material '", materialName, "'");
+                    m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+                    RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+                    return nullptr;
+                }
+
+                const uint32_t shaderIndex = resolvedBinding.resourceIndex.IsValid()
+                                                 ? resolvedBinding.resourceIndex.index
+                                                 : rhi::ResourceIndex::FallbackIndex;
+                matDescSet->textureBindings[static_cast<uint32_t>(slot)] = resolvedBinding;
+                matDescSet->bindlessTextureIndices.push_back(resolvedBinding.resourceIndex);
+                indices[slot] = shaderIndex;
             }
-            const bool isPlaceholderTexture = IsPlaceholderTexturePath(*texturePath);
-
-            // Find the matching sampler binding by name (set 0 only)
-            for (const auto &binding : bindings) {
-                if (binding.set != 0) {
+            if (matDescSet->textureIndexUBO)
+                matDescSet->textureIndexUBO->UpdateTextureIndices(indices);
+        } else {
+            for (const auto &[propName, prop] : properties) {
+                if (prop.type != MaterialPropertyType::Texture2D)
                     continue;
-                }
-                if (binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    continue;
-                }
 
-                // Match property name to sampler name from shader reflection
-                if (binding.name == propName) {
+                const std::string *texturePath = std::get_if<std::string>(&prop.value);
+                if (!texturePath || texturePath->empty())
+                    continue;
+                const bool isPlaceholderTexture = IsPlaceholderTexturePath(*texturePath);
+
+                // Find the matching sampler binding by name (set 0 only)
+                for (const auto &binding : bindings) {
+                    if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        continue;
+
+                    if (binding.name != propName)
+                        continue;
                     MaterialDescriptorSet::TextureBinding resolvedBinding{};
                     const TextureResolveStatus resolveStatus =
                         isPlaceholderTexture
@@ -537,7 +638,13 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
             bool isVertexMaterialUBOBinding =
                 vertMatLayout && vertMatLayout->size > 0 && binding.binding == vertMatLayout->binding;
 
-            if (isVertexMaterialUBOBinding && matDescSet.vertexMaterialUBO && matDescSet.vertexMaterialUBO->IsValid()) {
+            if (matDescSet.usesBindlessTextureABI && binding.binding == ShaderProgram::MaterialTextureIndexBinding &&
+                matDescSet.textureIndexUBO && matDescSet.textureIndexUBO->IsValid()) {
+                bufferInfo.buffer = matDescSet.textureIndexUBO->GetBuffer();
+                bufferInfo.offset = 0;
+                bufferInfo.range = matDescSet.textureIndexUBO->GetSize();
+            } else if (isVertexMaterialUBOBinding && matDescSet.vertexMaterialUBO &&
+                       matDescSet.vertexMaterialUBO->IsValid()) {
                 // Vertex-stage material UBO at binding 14
                 bufferInfo.buffer = matDescSet.vertexMaterialUBO->GetBuffer();
                 bufferInfo.offset = 0;
@@ -559,6 +666,8 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
                               binding.descriptorCount);
             matDescSet.bufferBindings[binding.binding] = bufferInfo;
         } else if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+            if (matDescSet.usesBindlessTextureABI)
+                continue;
             // Check if we have a texture bound for this slot
             auto texIt = matDescSet.textureBindings.find(binding.binding);
             MaterialDescriptorSet::TextureBinding textureBinding{};
@@ -571,6 +680,17 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
             AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding, textureBinding.imageView,
                              textureBinding.sampler);
         }
+    }
+
+    if (matDescSet.usesBindlessTextureABI && matDescSet.textureIndexUBO &&
+        matDescSet.bufferBindings.find(ShaderProgram::MaterialTextureIndexBinding) == matDescSet.bufferBindings.end()) {
+        VkDescriptorBufferInfo indexBuffer{};
+        indexBuffer.buffer = matDescSet.textureIndexUBO->GetBuffer();
+        indexBuffer.offset = 0;
+        indexBuffer.range = matDescSet.textureIndexUBO->GetSize();
+        AppendBufferWrite(writes, bufferInfos, matDescSet.descriptorSet, ShaderProgram::MaterialTextureIndexBinding,
+                          VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, indexBuffer);
+        matDescSet.bufferBindings[ShaderProgram::MaterialTextureIndexBinding] = indexBuffer;
     }
 
     if (!writes.empty()) {
@@ -601,18 +721,49 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     bufferInfos.reserve(descriptorSet.bindings.size());
     imageInfos.reserve(descriptorSet.bindings.size());
 
+    std::unique_ptr<MaterialUBO> replacementTextureIndexUBO;
+    if (descriptorSet.usesBindlessTextureABI && descriptorSet.textureIndexUBO) {
+        replacementTextureIndexUBO = std::make_unique<MaterialUBO>();
+        if (!replacementTextureIndexUBO->Create(m_vmaAllocator, m_device, descriptorSet.textureIndexUBO->GetLayout())) {
+            m_descriptorManager->Retire(replacement);
+            return false;
+        }
+        std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> indices{};
+        for (const auto &[binding, textureBinding] : textureBindings) {
+            if (binding < indices.size())
+                indices[binding] = textureBinding.resourceIndex.IsValid() ? textureBinding.resourceIndex.index
+                                                                          : rhi::ResourceIndex::FallbackIndex;
+        }
+        replacementTextureIndexUBO->UpdateTextureIndices(indices);
+    }
+
     for (const auto &binding : descriptorSet.bindings) {
         if (binding.set != 0)
             continue;
         if (binding.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-            const auto buffer = descriptorSet.bufferBindings.find(binding.binding);
-            if (buffer == descriptorSet.bufferBindings.end()) {
+            VkDescriptorBufferInfo bufferInfo{};
+            if (descriptorSet.usesBindlessTextureABI && binding.binding == ShaderProgram::MaterialTextureIndexBinding &&
+                replacementTextureIndexUBO) {
+                bufferInfo.buffer = replacementTextureIndexUBO->GetBuffer();
+                bufferInfo.offset = 0;
+                bufferInfo.range = replacementTextureIndexUBO->GetSize();
+            } else {
+                const auto buffer = descriptorSet.bufferBindings.find(binding.binding);
+                if (buffer == descriptorSet.bufferBindings.end()) {
+                    INXLOG_ERROR("Cannot publish material descriptor replacement: uniform binding ", binding.binding,
+                                 " has no buffer snapshot");
+                    m_descriptorManager->Retire(replacement);
+                    return false;
+                }
+                bufferInfo = buffer->second;
+            }
+            if (bufferInfo.buffer == VK_NULL_HANDLE) {
                 INXLOG_ERROR("Cannot publish material descriptor replacement: uniform binding ", binding.binding,
                              " has no buffer snapshot");
                 m_descriptorManager->Retire(replacement);
                 return false;
             }
-            AppendBufferWrite(writes, bufferInfos, replacement.set, binding.binding, binding.type, buffer->second,
+            AppendBufferWrite(writes, bufferInfos, replacement.set, binding.binding, binding.type, bufferInfo,
                               binding.descriptorCount);
             continue;
         }
@@ -622,6 +773,9 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
             m_descriptorManager->Retire(replacement);
             return false;
         }
+
+        if (descriptorSet.usesBindlessTextureABI)
+            continue;
 
         MaterialDescriptorSet::TextureBinding textureBinding{};
         const auto texture = textureBindings.find(binding.binding);
@@ -643,10 +797,21 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
                          textureBinding.sampler);
     }
 
+    if (descriptorSet.usesBindlessTextureABI && replacementTextureIndexUBO &&
+        descriptorSet.bufferBindings.find(ShaderProgram::MaterialTextureIndexBinding) ==
+            descriptorSet.bufferBindings.end()) {
+        VkDescriptorBufferInfo indexBuffer{};
+        indexBuffer.buffer = replacementTextureIndexUBO->GetBuffer();
+        indexBuffer.offset = 0;
+        indexBuffer.range = replacementTextureIndexUBO->GetSize();
+        AppendBufferWrite(writes, bufferInfos, replacement.set, ShaderProgram::MaterialTextureIndexBinding,
+                          VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, indexBuffer);
+    }
+
     if (!writes.empty())
         vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    if (!m_deletionQueue && !descriptorSet.textureBindings.empty()) {
+    if (!m_deletionQueue && (!descriptorSet.textureBindings.empty() || descriptorSet.textureIndexUBO != nullptr)) {
         INXLOG_ERROR("Cannot publish material descriptor replacement without a GPU retirement queue");
         m_descriptorManager->Retire(replacement);
         return false;
@@ -655,14 +820,41 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     const vk::DescriptorLease retiredLease = descriptorSet.descriptorLease;
     const VkDescriptorSet retiredSet = descriptorSet.descriptorSet;
     auto retiredTextureBindings = std::move(descriptorSet.textureBindings);
+    auto retiredTextureIndexUBO = std::move(descriptorSet.textureIndexUBO);
     descriptorSet.descriptorLease = replacement;
     descriptorSet.descriptorSet = replacement.set;
     descriptorSet.textureBindings = textureBindings;
+    descriptorSet.textureIndexUBO = std::move(replacementTextureIndexUBO);
+    descriptorSet.bindlessTextureIndices.clear();
+    if (descriptorSet.usesBindlessTextureABI) {
+        descriptorSet.bindlessTextureIndices.reserve(textureBindings.size());
+        std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> indices{};
+        for (const auto &[binding, textureBinding] : textureBindings) {
+            if (binding >= indices.size())
+                continue;
+            const uint32_t shaderIndex = textureBinding.resourceIndex.IsValid() ? textureBinding.resourceIndex.index
+                                                                                : rhi::ResourceIndex::FallbackIndex;
+            indices[binding] = shaderIndex;
+            descriptorSet.bindlessTextureIndices.push_back(textureBinding.resourceIndex);
+        }
+        if (descriptorSet.textureIndexUBO) {
+            descriptorSet.textureIndexUBO->UpdateTextureIndices(indices);
+            VkDescriptorBufferInfo indexBuffer{};
+            indexBuffer.buffer = descriptorSet.textureIndexUBO->GetBuffer();
+            indexBuffer.offset = 0;
+            indexBuffer.range = descriptorSet.textureIndexUBO->GetSize();
+            descriptorSet.bufferBindings[ShaderProgram::MaterialTextureIndexBinding] = indexBuffer;
+        }
+    }
     m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(retiredSet));
     m_liveDescriptorHandles.insert(reinterpret_cast<uint64_t>(replacement.set));
     m_descriptorManager->Retire(retiredLease);
     if (m_deletionQueue && !retiredTextureBindings.empty()) {
         m_deletionQueue->Retire([bindings = std::move(retiredTextureBindings)]() mutable { bindings.clear(); });
+    }
+    if (m_deletionQueue && retiredTextureIndexUBO) {
+        auto retiredUbo = std::shared_ptr<MaterialUBO>(std::move(retiredTextureIndexUBO));
+        m_deletionQueue->Retire([ubo = std::move(retiredUbo)]() mutable { ubo.reset(); });
     }
     return true;
 }
@@ -681,7 +873,7 @@ void MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialNam
 }
 
 void MaterialDescriptorManager::ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
-                                                         const std::vector<MergedDescriptorBinding> &bindings)
+                                                         const ShaderProgram &program)
 {
     if (!m_textureResolver) {
         return;
@@ -697,6 +889,76 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
     bool candidateHasPendingTextures = false;
     bool bindingsChanged = false;
     const auto &properties = material.GetAllProperties();
+    const auto &bindings = program.GetDescriptorBindings();
+
+    if (matDescSet.usesBindlessTextureABI) {
+        // The bindless shader exposes texture property names as members of
+        // binding 15 instead of creating one sampler descriptor per property.
+        // Resolve those members directly and publish the complete index set as
+        // one copy-on-write material update.
+        const auto *indexLayout = program.GetBindlessTextureIndexLayout();
+        if (!indexLayout)
+            return;
+        for (size_t slot = 0; slot < indexLayout->members.size(); ++slot) {
+            const std::string &propName = indexLayout->members[slot].name;
+            const auto property = properties.find(propName);
+            if (property == properties.end() || property->second.type != MaterialPropertyType::Texture2D)
+                continue;
+            const auto &prop = property->second;
+            if (prop.type != MaterialPropertyType::Texture2D)
+                continue;
+            const std::string *texturePath = std::get_if<std::string>(&prop.value);
+            if (!texturePath || texturePath->empty()) {
+                MaterialDescriptorSet::TextureBinding defaultBinding{};
+                if (TryGetDefaultTextureBinding(propName, defaultBinding)) {
+                    const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
+                    bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
+                                      !HasSameGpuBinding(previous->second, defaultBinding);
+                    candidateBindings[static_cast<uint32_t>(slot)] = defaultBinding;
+                }
+                continue;
+            }
+
+            MaterialDescriptorSet::TextureBinding resolvedBinding{};
+            const bool placeholder = IsPlaceholderTexturePath(*texturePath);
+            const TextureResolveStatus resolveStatus =
+                placeholder ? TextureResolveStatus::Pending
+                            : ResolveExplicitTextureBinding(*texturePath, propName, resolvedBinding);
+            const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
+            if (!placeholder && resolveStatus == TextureResolveStatus::Pending) {
+                candidateHasPendingTextures = true;
+
+                // Texture uploads publish a complete immutable GPU view. Keep
+                // the previous revision visible until that publication is
+                // ready; rebinding the fallback here makes Scene, Game and
+                // preview briefly flash white during every hot replacement.
+                const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
+                if (previous != candidateBindings.end() && previous->second.gpuView &&
+                    previous->second.gpuView->IsValid()) {
+                    continue;
+                }
+            }
+
+            if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
+                continue;
+            }
+            const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
+            bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
+                              !HasSameGpuBinding(previous->second, resolvedBinding);
+            candidateBindings[static_cast<uint32_t>(slot)] = resolvedBinding;
+        }
+
+        const bool previousHasPendingTextures = matDescSet.hasPendingTextures;
+        matDescSet.hasPendingTextures = candidateHasPendingTextures;
+        if (!bindingsChanged)
+            return;
+        if (!PublishDescriptorReplacement(matDescSet, candidateBindings)) {
+            matDescSet.hasPendingTextures = previousHasPendingTextures;
+            INXLOG_ERROR("Bindless material texture publication failed for '", materialName,
+                         "'; the previous complete descriptor set remains active");
+        }
+        return;
+    }
 
     for (const auto &[propName, prop] : properties) {
         if (prop.type != MaterialPropertyType::Texture2D) {
@@ -779,6 +1041,15 @@ bool MaterialDescriptorManager::HasPendingTextureProperties(const std::string &m
     return it != m_descriptorSets.end() && it->second && it->second->isValid && it->second->hasPendingTextures;
 }
 
+const std::vector<rhi::ResourceIndex> *
+MaterialDescriptorManager::GetBindlessTextureIndices(const std::string &materialName) const noexcept
+{
+    const auto it = m_descriptorSets.find(materialName);
+    if (it == m_descriptorSets.end() || !it->second || !it->second->isValid || !it->second->usesBindlessTextureABI)
+        return nullptr;
+    return &it->second->bindlessTextureIndices;
+}
+
 void MaterialDescriptorManager::BindTexture(const std::string &materialName, uint32_t binding, VkImageView imageView,
                                             VkSampler sampler)
 {
@@ -792,6 +1063,12 @@ void MaterialDescriptorManager::BindTexture(const std::string &materialName, uin
     }
 
     auto &descriptorSet = *it->second;
+    if (descriptorSet.usesBindlessTextureABI) {
+        INXLOG_ERROR("BindTexture cannot mutate a bindless material directly; resolve the TextureGpuView through "
+                     "the material texture resolver instead (material='",
+                     materialName, "', binding=", binding, ")");
+        return;
+    }
     const auto previousBinding = descriptorSet.textureBindings.find(binding);
     if (previousBinding != descriptorSet.textureBindings.end() &&
         HasSameGpuBinding(previousBinding->second, {imageView, sampler})) {

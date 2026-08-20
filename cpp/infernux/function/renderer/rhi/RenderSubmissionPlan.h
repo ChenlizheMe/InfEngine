@@ -26,6 +26,7 @@ struct SubmissionWorkItem
     PipelineStage waitStages = PipelineStage::AllCommands;
     std::vector<uint32_t> dependencies;
     bool forceBatchBoundary = false;
+    std::string diagnosticName;
 };
 
 struct SubmissionBatchDependency
@@ -47,6 +48,7 @@ struct SubmissionBatch
     uint32_t queuePredecessor = InvalidSubmissionBatchIndex;
     std::vector<uint32_t> workItems;
     std::vector<SubmissionBatchDependency> waitsFor;
+    std::string diagnosticName;
 };
 
 struct SubmissionPlan
@@ -99,7 +101,7 @@ class SubmissionPlanComposer
 
     [[nodiscard]] uint32_t AddWork(DeviceId device, QueueRole queue, SubmissionDomain domain, RenderViewId view,
                                    PipelineStage waitStages, std::vector<uint32_t> dependencies = {},
-                                   bool forceBatchBoundary = true);
+                                   bool forceBatchBoundary = true, std::string diagnosticName = {});
 
     [[nodiscard]] ComposedSubmissionRange Append(const SubmissionPlan &source,
                                                  const std::vector<uint32_t> &externalDependencies = {});

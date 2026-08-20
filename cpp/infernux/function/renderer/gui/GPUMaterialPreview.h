@@ -1,6 +1,7 @@
 #pragma once
 
 #include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkHandle.h>
 #include <memory>
@@ -19,7 +20,7 @@ class InxMaterial;
 
 /// @brief GPU-based material preview renderer.
 /// Uses the real material pipeline (vertex + fragment shaders) to render a
-/// lit sphere into a small offscreen framebuffer and reads back RGBA8 pixels.
+/// lit sphere into a small offscreen attachment set and reads back RGBA8 pixels.
 class GPUMaterialPreview
 {
   public:
@@ -29,7 +30,8 @@ class GPUMaterialPreview
     GPUMaterialPreview(const GPUMaterialPreview &) = delete;
     GPUMaterialPreview &operator=(const GPUMaterialPreview &) = delete;
 
-    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> BeginRenderToPixels(InxMaterial &material, int size);
+    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> BeginRenderToPixels(InxMaterial &material, int size,
+                                                                               bool *texturePending = nullptr);
     bool TryCompleteRenderToPixels(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
                                    std::vector<unsigned char> &outPixels);
 
@@ -42,10 +44,9 @@ class GPUMaterialPreview
     bool EnsureResources(int size);
     bool EnsureViewResources();
     void DestroyViewResources();
-    void CreateRenderPass();
-    void CreateFramebuffer(int size);
+    void CreateAttachments(int size);
     void CreateSphereBuffers();
-    void DestroyFramebuffer();
+    void DestroyAttachments();
     void PublishRenderView();
     void UnpublishRenderView();
 
@@ -53,8 +54,7 @@ class GPUMaterialPreview
     rhi::RenderViewContext m_renderView;
     int m_currentSize = 0;
 
-    // Render pass (compatible with MaterialPipelineManager's internal pass)
-    VkRenderPass m_renderPass = VK_NULL_HANDLE;
+    rhi::DynamicRenderingCommands m_dynamicRenderingCommands;
 
     // MSAA color attachment
     vk::VkImageHandle m_msaaColor;
@@ -62,8 +62,9 @@ class GPUMaterialPreview
     vk::VkImageHandle m_resolveColor;
     // MSAA depth attachment
     vk::VkImageHandle m_depth;
-
-    VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
+    VkImageLayout m_msaaColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout m_resolveColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout m_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     // Default per-view shadow descriptor used when no active scene descriptor
     // is available but the shader statically uses set 1.

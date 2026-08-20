@@ -64,6 +64,23 @@ class TestTimeTick:
         Time._tick(1.0)
         assert Time.unscaled_delta_time == pytest.approx(Time.maximum_delta_time)
 
+    def test_scene_boundary_discards_only_the_next_frame_delta(self):
+        Time._tick(0.016)
+        elapsed = Time.time
+        frame = Time.frame_count
+
+        Time._reset_frame_delta()
+        Time._tick(2.0)
+
+        assert Time.delta_time == 0.0
+        assert Time.unscaled_delta_time == 0.0
+        assert Time.time == elapsed
+        assert Time.frame_count == frame + 1
+
+        Time._tick(0.02)
+        assert Time.delta_time == pytest.approx(0.02)
+        assert Time.time == pytest.approx(elapsed + 0.02)
+
 
 class TestTimeFixedTick:
     def test_tick_fixed(self):

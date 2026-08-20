@@ -71,7 +71,7 @@ ShaderInfo
     {
         Float amplitude = 0.35 Range(0.0, 4.0)
         Color crestColor = [0.2, 0.75, 0.9, 1.0] HDR
-        Texture2D normalMap = Normal
+        Texture2D normalMap = Normal Internal
     }
 
     Inputs
@@ -99,6 +99,7 @@ void surface (out SurfaceData surface) { }
     assert(info.properties[0].range.has_value());
     assert(info.properties[0].range->minimum == 0.0);
     assert(info.properties[1].hdr);
+    assert(info.properties[2].internal);
     assert(info.properties[1].defaultValue == "[0.2, 0.75, 0.9, 1.0]");
     assert(info.inputs.size() == 2);
     assert(info.inputs[0].semantic == "TexCoord0");
@@ -259,6 +260,41 @@ void main() {
     assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());
     RequireCompiles(compiler, standalonePassSource, "StandalonePass.frag");
 
+    const std::string linkedSurfaceStandalone = R"(
+#version 450
+ShaderInfo {
+        Name "Tests/RuntimeStandaloneSurface"
+    ShadingModel "Unlit"
+    Inputs {
+        Smooth Float crestFactor
+        Smooth Float normalizedHeight
+    }
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    s.albedo = vec3(fragmentInput.crestFactor, fragmentInput.normalizedHeight, 0.0);
+}
+)";
+    RequireCompiles(compiler, linkedSurfaceStandalone, "RuntimeStandaloneSurface.frag");
+
+    const std::string linkedVertexStandalone = R"(
+#version 450
+ShaderInfo {
+        Name "Tests/RuntimeStandaloneVertex"
+    Outputs {
+        Smooth Float crestFactor
+        Smooth Float normalizedHeight
+    }
+}
+VertexOutput vertex(inout VertexInput v) {
+    VertexOutput result;
+    result.crestFactor = v.position.y;
+    result.normalizedHeight = v.position.y;
+    return result;
+}
+)";
+    RequireCompiles(compiler, linkedVertexStandalone, "RuntimeStandaloneVertex.vert");
+
     for (const auto &entry : std::filesystem::recursive_directory_iterator(INFERNUX_TEST_SHADER_ROOT)) {
         if (!entry.is_regular_file() || entry.path().string().find("_templates") != std::string::npos)
             continue;
@@ -286,11 +322,14 @@ void main() {
             assert((hasCapability("Fullscreen") || hasCapability("Standalone")) &&
                    "explicit main() stages must declare their direct compilation domain");
         }
-        const std::string filename = entry.path().filename().string();
-        const bool linkedParticleStage = filename == "particle_unlit.frag" ||
-                                         filename == "particle_six_way_smoke.frag" ||
-                                         filename == "particle_sprite.vert";
-        if ((extension == ".vert" || extension == ".frag") && !linkedParticleStage)
+        const bool directStage =
+            std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), "Fullscreen") !=
+                builtinInfo.capabilities.end() ||
+            std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), "Standalone") !=
+                builtinInfo.capabilities.end();
+        const bool linkedMaterialStage =
+            !directStage && (!builtinInfo.inputs.empty() || !builtinInfo.outputs.empty());
+        if ((extension == ".vert" || extension == ".frag") && !linkedMaterialStage)
             RequireCompiles(compiler, source, path);
     }
 
@@ -298,6 +337,8 @@ void main() {
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert", shaderRoot + "/particle_unlit.frag");
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert",
                                  shaderRoot + "/particle_six_way_smoke.frag");
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert",
+                                 shaderRoot + "/spectral_ocean.frag");
 
     const std::string removedAnnotationSource =
         "#version 450\n" + std::string(1, '@') + "shader_id: Removed\nvoid main() { }\n";
@@ -344,6 +385,7 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     assert(propertySchema[0]["default"] == 0.35);
     assert(propertySchema[0]["range"] == nlohmann::json::array({0.0, 4.0}));
     assert(propertySchema[1]["hdr"] == true);
+    assert(propertySchema[2]["internal"] == true);
 
     const std::string vertexSource = R"(
 #version 450

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
-from Infernux.engine.path_utils import relative_path
+from Infernux.engine.path_utils import relative_path, same_path
 from Infernux.mcp.tools.common import (
+    get_asset_database,
     main_thread,
     notify_asset_changed,
     register_tool_metadata,
@@ -55,16 +57,38 @@ def register_material_tools(mcp, project_path: str) -> None:
         def _create():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
             from Infernux.core.material import Material
+            from Infernux.engine.interaction import ActionOrigin, ProjectAssetCommandService
+
             _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
             if os.path.exists(file_path) and not overwrite:
                 raise FileExistsError(f"Material already exists: {path}")
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            parent = os.path.dirname(file_path)
+            if not os.path.isdir(parent):
+                raise FileNotFoundError(f"Material directory does not exist: {relative_path(parent, project_path)}")
             name = os.path.splitext(os.path.basename(file_path))[0]
             mat = Material.create_unlit(name) if str(template).lower() == "unlit" else Material.create_lit(name)
+            mat.native.is_builtin = False
             _set_properties(mat, properties or {})
-            mat.save(file_path)
-            notify_asset_changed(file_path, "created")
+
+            def _write_material():
+                if not mat.save(file_path):
+                    return False, f"Failed to save material: {path}"
+                notify_asset_changed(file_path, "created")
+                return True, ""
+
+            service = ProjectAssetCommandService.instance()
+            if service is None:
+                raise RuntimeError("Editor Project asset command service is unavailable")
+            if not service.configured:
+                service.configure(project_path, get_asset_database())
+            service.create(
+                parent,
+                _write_material,
+                description="Create Material",
+                origin=ActionOrigin.AUTOMATION,
+                replace_path=file_path if overwrite and os.path.exists(file_path) else "",
+            )
             return {"path": relative_path(file_path, project_path), **_material_info(mat)}
 
         return main_thread("material_create", _create, arguments={"path": path, "template": template, "overwrite": overwrite, "knowledge_token": knowledge_token})
@@ -92,12 +116,13 @@ def register_material_tools(mcp, project_path: str) -> None:
         def _set():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
             _require_writable_material_path(path)
-            file_path = resolve_project_path(project_path, path)
-            mat = _load_material(project_path, path)
-            _set_one(mat, name, value, value_type)
-            mat.flush()
-            mat.save(file_path)
-            notify_asset_changed(file_path, "modified")
+            mat = _apply_material_edit(
+                project_path,
+                path,
+                lambda candidate: _set_one(candidate, name, value, value_type),
+                edit_key=f"property:{name}",
+                description=f"Set Material {name}",
+            )
             return {"path": path, "name": name, "value": serialize_value(mat.get_property(name)), **_material_info(mat)}
 
         return main_thread("material_set_property", _set, arguments={"path": path, "name": name, "value_type": value_type, "knowledge_token": knowledge_token})
@@ -114,11 +139,13 @@ def register_material_tools(mcp, project_path: str) -> None:
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
             _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
-            mat = _load_material(project_path, path)
-            mat.render_queue = int(render_queue)
-            mat.flush()
-            mat.save(file_path)
-            notify_asset_changed(file_path, "modified")
+            mat = _apply_material_edit(
+                project_path,
+                path,
+                lambda candidate: setattr(candidate, "render_queue", int(render_queue)),
+                edit_key="render_queue",
+                description="Set Material Render Queue",
+            )
             return {
                 "path": relative_path(file_path, project_path),
                 **_material_info(mat),
@@ -149,11 +176,13 @@ def register_material_tools(mcp, project_path: str) -> None:
             if normalized not in {"opaque", "transparent"}:
                 raise ValueError("surface_type must be 'opaque' or 'transparent'.")
             file_path = resolve_project_path(project_path, path)
-            mat = _load_material(project_path, path)
-            mat.surface_type = normalized
-            mat.flush()
-            mat.save(file_path)
-            notify_asset_changed(file_path, "modified")
+            mat = _apply_material_edit(
+                project_path,
+                path,
+                lambda candidate: setattr(candidate, "surface_type", normalized),
+                edit_key="surface_type",
+                description="Set Material Surface Type",
+            )
             return {
                 "path": relative_path(file_path, project_path),
                 **_material_info(mat),
@@ -182,18 +211,26 @@ def register_material_tools(mcp, project_path: str) -> None:
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
             _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
-            mat = _load_material(project_path, path)
-            if vertex:
-                _require_shader_stage(vertex, "vertex")
-                mat.vert_shader_name = str(vertex).strip()
-            if fragment:
-                _require_shader_stage(fragment, "fragment")
-                mat.frag_shader_name = str(fragment).strip()
             if not vertex and not fragment:
                 raise ValueError("At least one of vertex or fragment must be provided.")
-            mat.flush()
-            mat.save(file_path)
-            notify_asset_changed(file_path, "modified")
+            if vertex:
+                _require_shader_stage(vertex, "vertex")
+            if fragment:
+                _require_shader_stage(fragment, "fragment")
+
+            def _assign_shader(candidate):
+                if vertex:
+                    candidate.vert_shader_name = str(vertex).strip()
+                if fragment:
+                    candidate.frag_shader_name = str(fragment).strip()
+
+            mat = _apply_material_edit(
+                project_path,
+                path,
+                _assign_shader,
+                edit_key="shader_program",
+                description="Set Material Shader",
+            )
             return {"path": path, **_material_info(mat)}
 
         return main_thread(
@@ -244,6 +281,71 @@ def _load_material(project_path: str, path: str, *, allow_builtin: bool = False)
     if mat is None:
         raise FileNotFoundError(f"Material not found or failed to load: {path}")
     return mat
+
+
+def _editable_material(project_path: str, path: str):
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        DocumentRegistry,
+        EditableResourceDocumentController,
+        ensure_editable_resource_document,
+    )
+    from Infernux.engine.ui.inspector_material import notify_material_document_restored
+
+    file_path = resolve_project_path(project_path, path)
+    registry = DocumentRegistry.instance()
+    for document in registry.documents:
+        if (
+            document.kind is DocumentKind.MATERIAL
+            and document.resource_path
+            and same_path(document.resource_path, file_path)
+            and isinstance(document.controller, EditableResourceDocumentController)
+        ):
+            return document.controller.resource, document.controller
+
+    material = _load_material(project_path, path)
+    controller = ensure_editable_resource_document(
+        category="material",
+        document_kind=DocumentKind.MATERIAL,
+        file_path=file_path,
+        resource=material,
+        guid=str(getattr(material, "guid", "") or ""),
+        title=os.path.basename(file_path),
+        on_restored=notify_material_document_restored,
+    )
+    return controller.resource, controller
+
+
+def _apply_material_edit(
+    project_path: str,
+    path: str,
+    mutate,
+    *,
+    edit_key: str,
+    description: str,
+):
+    from Infernux.engine.interaction import ActionOrigin
+
+    material, controller = _editable_material(project_path, path)
+    original_document = material.serialize_document()
+    candidate = material.clone()
+    mutate(candidate)
+    document = candidate.serialize_document()
+    # clone() deliberately creates a unique runtime identity.  The candidate
+    # only isolates mutations; its instance name/builtin flag must never leak
+    # back into the durable asset document.
+    for identity_field in ("name", "builtin"):
+        if identity_field in original_document:
+            document[identity_field] = copy.deepcopy(original_document[identity_field])
+    if not controller.apply_document(
+        document,
+        view_id="automation",
+        edit_key=edit_key,
+        description=description,
+        origin=ActionOrigin.AUTOMATION,
+    ):
+        return material
+    return controller.resource
 
 
 def _set_properties(mat, properties: dict[str, Any]) -> None:

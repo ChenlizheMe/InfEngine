@@ -84,7 +84,7 @@ class PhysicMaterial
   private:
     static void ValidateCombine(PhysicsMaterialCombine value, const char *fieldName);
 
-    float m_friction = 0.4f;
+    float m_friction = 0.6f;
     float m_bounciness = 0.0f;
     PhysicsMaterialCombine m_frictionCombine = PhysicsMaterialCombine::Average;
     PhysicsMaterialCombine m_bounceCombine = PhysicsMaterialCombine::Average;

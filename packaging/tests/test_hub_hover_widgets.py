@@ -1,13 +1,24 @@
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QPointF
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtWidgets import QApplication, QLineEdit
 from PySide6.QtTest import QTest
 
-from view.hover_widgets import AnimatedSurfaceFrame, ensure_hover_animation_filter
+from view.hover_widgets import (
+    AnimatedSurfaceFrame,
+    HoverAnimationFilter,
+    ensure_hover_animation_filter,
+    release_hover_animation_filter,
+)
 from view.sidebar_view import SidebarView
 
 
 def _app():
     return QApplication.instance() or QApplication([])
+
+
+def _send_hover_enter(widget):
+    center = QPointF(widget.rect().center())
+    QApplication.sendEvent(widget, QEnterEvent(center, center, center))
 
 
 def test_surface_hover_and_selection_are_animated():
@@ -31,10 +42,31 @@ def test_search_hover_uses_the_global_transition_filter():
     search.resize(260, 36)
     search.show()
 
-    QTest.mouseMove(search, search.rect().center())
+    _send_hover_enter(search)
     QTest.qWait(220)
 
     assert getattr(search, "_hub_hover_progress", 0.0) > 0.95
+
+
+def test_hover_filter_is_singleton_owned_by_the_live_qt_application():
+    app = _app()
+
+    first = ensure_hover_animation_filter(app)
+    second = ensure_hover_animation_filter(app)
+
+    assert first is second
+    assert first.parent() is app
+    assert app.findChild(HoverAnimationFilter, "infernuxHubHoverAnimationFilter") is first
+    assert first._installed is True
+
+    release_hover_animation_filter(app)
+    assert first._installed is False
+
+    # Re-acquiring after an explicit host/test teardown restores the same
+    # owned filter and registers it exactly once again.
+    restored = ensure_hover_animation_filter(app)
+    assert restored is first
+    assert restored._installed is True
 
 
 def test_sidebar_switch_clears_stale_hover_style():
@@ -60,7 +92,7 @@ def test_sidebar_leave_restores_transparent_qss_state():
     sidebar.show()
     button = sidebar._nav_buttons[1]
 
-    QTest.mouseMove(button, button.rect().center())
+    _send_hover_enter(button)
     QTest.qWait(220)
     assert button.styleSheet() != ""
 

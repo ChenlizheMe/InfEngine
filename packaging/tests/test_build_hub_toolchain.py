@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ if str(PACKAGING_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGING_ROOT))
 
 import build_hub
+from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
 
 
 _VALID_MSVC_REPORT = """\
@@ -29,6 +32,118 @@ def test_msbuild_generator_is_required_on_windows(monkeypatch: pytest.MonkeyPatc
     build_hub._require_msbuild_generator("Visual Studio 17 2022")
     with pytest.raises(RuntimeError, match="Visual Studio/MSBuild"):
         build_hub._require_msbuild_generator("Ninja")
+
+
+def test_hub_build_requires_the_private_runtime_bundle(tmp_path: Path):
+    source_root = tmp_path / "source"
+    (source_root / "packaging").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="private Python runtime bundle is missing"):
+        build_hub._build_hub(
+            source_root,
+            tmp_path / "build",
+            tmp_path / "dist",
+            cmake_generator="Visual Studio 17 2022",
+            build_env=None,
+            tools=None,
+        )
+
+
+def test_hub_build_embeds_the_private_runtime_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "source"
+    packaging_dir = source_root / "packaging"
+    runtime_bundle = packaging_dir / "runtime" / "runtime_bundle.zip"
+    runtime_bundle.parent.mkdir(parents=True)
+    archive = runtime_archive_for_machine()
+    marker = {
+        "owner": "Infernux Hub",
+        "kind": "private-python-runtime",
+        "python_version": PYTHON_VERSION,
+        "source_archive": archive.name,
+        "source_archive_sha256": archive.sha256,
+    }
+    with zipfile.ZipFile(runtime_bundle, "w") as bundle:
+        bundle.writestr(
+            "python312/.infernux-private-python-runtime.json",
+            json.dumps(marker),
+        )
+    (packaging_dir / "resources").mkdir()
+    (packaging_dir / "resources" / "icon.png").write_bytes(b"icon")
+    (packaging_dir / "resources" / "hub_notifications.json").write_text(
+        '{"schema": 1, "notifications": []}\n', encoding="utf-8"
+    )
+    (packaging_dir / "launcher.py").write_text("pass\n", encoding="utf-8")
+
+    build_dir = tmp_path / "build"
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(build_hub, "_common_nuitka_command", lambda *args, **kwargs: ["nuitka"])
+    monkeypatch.setattr(build_hub, "_project_version", lambda _root: "0.2.9")
+    monkeypatch.setattr(build_hub, "_validate_msvc_reports", lambda _root: [])
+    monkeypatch.setattr(build_hub, "_sign_windows_binary", lambda *args: None)
+    monkeypatch.setattr(build_hub, "_validate_windows_payload", lambda *args: None)
+    monkeypatch.setattr(build_hub, "_write_toolchain_receipt", lambda *args, **kwargs: None)
+
+    def _fake_run(command, **_kwargs):
+        captured.append(command)
+        output = build_dir / "nuitka" / "launcher.dist"
+        output.mkdir(parents=True)
+        (output / "Infernux Hub.exe").write_bytes(b"hub")
+
+    monkeypatch.setattr(build_hub, "_run", _fake_run)
+
+    build_hub._build_hub(
+        source_root,
+        build_dir,
+        tmp_path / "dist",
+        cmake_generator="Visual Studio 17 2022",
+        build_env={},
+        tools={"visual_studio": "", "msbuild": "", "cl": "", "link": ""},
+    )
+
+    assert captured
+    assert any(
+        argument.endswith(
+            "=InfernuxHubData/runtime/runtime_bundle.zip"
+        )
+        and str(runtime_bundle) in argument
+        for argument in captured[0]
+    )
+    assert any(
+        argument.endswith("=InfernuxHubData/hub_notifications.json")
+        for argument in captured[0]
+    )
+
+
+def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
+    source_root = tmp_path / "source"
+    runtime_bundle = source_root / "packaging" / "runtime" / "runtime_bundle.zip"
+    runtime_bundle.parent.mkdir(parents=True)
+    with zipfile.ZipFile(runtime_bundle, "w") as bundle:
+        bundle.writestr(
+            "python312/.infernux-private-python-runtime.json",
+            json.dumps(
+                {
+                    "owner": "Infernux Hub",
+                    "kind": "private-python-runtime",
+                    "python_version": "3.12.8",
+                    "source_archive": "python-3.12.8-amd64.exe",
+                    "source_archive_sha256": "revoked-installer",
+                }
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="runtime bundle is stale"):
+        build_hub._build_hub(
+            source_root,
+            tmp_path / "build",
+            tmp_path / "dist",
+            cmake_generator="Visual Studio 17 2022",
+            build_env=None,
+            tools=None,
+        )
 
 
 def test_msvc_report_validation_accepts_only_msvc(tmp_path: Path):

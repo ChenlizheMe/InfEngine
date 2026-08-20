@@ -54,6 +54,7 @@ struct ShaderInfoProperty
     std::string type;
     std::string defaultValue;
     bool hdr = false;
+    bool internal = false;
     std::optional<ShaderInfoRangeAttribute> range;
     ShaderSourceRange source;
 };

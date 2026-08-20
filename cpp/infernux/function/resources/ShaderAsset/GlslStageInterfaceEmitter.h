@@ -18,6 +18,8 @@ class GlslStageInterfaceEmitter final
     [[nodiscard]] static std::string EmitVertexDeclarations(const ShaderProgramInterfaceArtifact &artifact,
                                                             const ShaderDescriptor &vertex);
     [[nodiscard]] static std::string EmitFragmentDeclarations(const ShaderProgramInterfaceArtifact &artifact);
+    [[nodiscard]] static std::string EmitStandaloneVertexOutputPreview(const ShaderDescriptor &vertex);
+    [[nodiscard]] static std::string EmitStandaloneFragmentInputPreview(const ShaderDescriptor &fragment);
     [[nodiscard]] static std::string EmitVertexCall(const ShaderProgramInterfaceArtifact &artifact,
                                                     const ShaderDescriptor &vertex);
     [[nodiscard]] static std::string EmitSurfaceCall(const ShaderProgramInterfaceArtifact &artifact);

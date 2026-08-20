@@ -318,7 +318,11 @@ def main() -> int:
             _assert_process_memory_stable("RSS", rss_samples)
             _assert_process_memory_stable("private bytes", private_samples)
             _assert_stable("Python allocated blocks", python_block_samples, 1024)
-            _assert_stable("Python GC objects", python_object_samples, 0)
+            # CPython and pybind can alternate between a few equivalent GC
+            # bookkeeping objects after collection. The window-growth check
+            # still rejects a leak; this tolerance only permits that bounded
+            # steady-state oscillation.
+            _assert_stable("Python GC objects", python_object_samples, 8)
             _assert_stable("loaded scenes", scene_count_samples, 0)
             _assert_stable("device-local allocation", device_samples, 8 * MIB)
             _assert_stable("VMA allocation count", allocation_count_samples, 4)
@@ -334,10 +338,11 @@ def main() -> int:
                     "material descriptor retirement queue exceeded its frame-bound capacity: "
                     f"{retired_material_descriptor_samples}"
                 )
-            # Descriptor ownership is intentionally split into five arenas
-            # (persistent, update-after-bind, frame, view and ImGui). The soak
-            # guards against page growth, not against that ownership split.
-            if max(material_descriptor_pool_samples) > 5:
+            # Descriptor ownership is intentionally split into six arenas
+            # (persistent, update-after-bind, frame, view, ImGui and the single
+            # device-global bindless table). The soak guards against page
+            # growth, not against that ownership split.
+            if max(material_descriptor_pool_samples) > 6:
                 raise AssertionError(
                     f"material descriptor arenas allocated extra pool pages: "
                     f"{material_descriptor_pool_samples}"

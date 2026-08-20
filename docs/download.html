@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Download InfernuxHub and choose an Infernux engine version for Windows.">
     <meta name="theme-color" content="#0a0c11">
@@ -70,8 +70,8 @@
                         <span class="mini-tag">Recommended</span>
                         <h2 id="hub-title-en">InfernuxHub</h2>
                         <p>Use the Hub to install or switch Infernux versions, create projects, and open existing projects. You do not need to prepare Python by hand.</p>
-                        <a class="btn btn-primary" href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/InfernuxHubInstaller-0.2.9.exe"><i class="fas fa-download" aria-hidden="true"></i> Download InfernuxHub</a>
-                        <span class="download-meta">Windows x64 · InfernuxHub 0.2.9</span>
+                        <a class="btn btn-primary" data-latest-hub href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/InfernuxHubInstaller-0.2.9.exe"><i class="fas fa-download" aria-hidden="true"></i> Download InfernuxHub</a>
+                        <span class="download-meta" data-hub-meta>Windows x64 · latest public release</span>
                     </div>
                 </section>
 
@@ -88,7 +88,7 @@
                         <div class="version-picker">
                             <label for="engine-version-en">Infernux version</label>
                             <select id="engine-version-en" data-version-select>
-                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9 · current preview</option>
+                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9 · latest public release</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.1/infernux-0.2.1-cp312-cp312-win_amd64.whl">0.2.1</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.0/infernux-0.2.0-cp312-cp312-win_amd64.whl">0.2.0</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.6/infernux-0.1.6-cp312-cp312-win_amd64.whl">0.1.6</option>
@@ -124,8 +124,8 @@
                         <span class="mini-tag">推荐</span>
                         <h2 id="hub-title-zh">InfernuxHub</h2>
                         <p>通过 Hub 安装或切换 Infernux 版本、创建项目、打开已有项目。普通用户不需要自己准备 Python 环境。</p>
-                        <a class="btn btn-primary" href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/InfernuxHubInstaller-0.2.9.exe"><i class="fas fa-download" aria-hidden="true"></i> 下载 InfernuxHub</a>
-                        <span class="download-meta">Windows x64 · InfernuxHub 0.2.9</span>
+                        <a class="btn btn-primary" data-latest-hub href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/InfernuxHubInstaller-0.2.9.exe"><i class="fas fa-download" aria-hidden="true"></i> 下载 InfernuxHub</a>
+                        <span class="download-meta" data-hub-meta>Windows x64 · GitHub 最新公开版本</span>
                     </div>
                 </section>
 
@@ -142,7 +142,7 @@
                         <div class="version-picker">
                             <label for="engine-version-zh">Infernux 版本</label>
                             <select id="engine-version-zh" data-version-select>
-                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9 · 当前预览版</option>
+                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9 · 最新公开版本</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.1/infernux-0.2.1-cp312-cp312-win_amd64.whl">0.2.1</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.0/infernux-0.2.0-cp312-cp312-win_amd64.whl">0.2.0</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.6/infernux-0.1.6-cp312-cp312-win_amd64.whl">0.1.6</option>
@@ -173,6 +173,6 @@
     <script src="js/main.js?v=14"></script>
     <script src="js/docs-search.js?v=5"></script>
     <script src="js/bilingual-page.js?v=1"></script>
-    <script src="js/download.js?v=3"></script>
+    <script src="js/download.js?v=5"></script>
 </body>
 </html>

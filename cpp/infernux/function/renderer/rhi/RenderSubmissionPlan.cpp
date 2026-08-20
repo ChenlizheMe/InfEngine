@@ -26,10 +26,11 @@ void SubmissionPlanComposer::Reset(uint32_t firstWorkItemId) noexcept
 
 uint32_t SubmissionPlanComposer::AddWork(DeviceId device, QueueRole queue, SubmissionDomain domain, RenderViewId view,
                                          PipelineStage waitStages, std::vector<uint32_t> dependencies,
-                                         bool forceBatchBoundary)
+                                         bool forceBatchBoundary, std::string diagnosticName)
 {
     const uint32_t id = m_nextWorkItemId++;
-    m_workItems.push_back({id, device, queue, domain, view, waitStages, std::move(dependencies), forceBatchBoundary});
+    m_workItems.push_back({id, device, queue, domain, view, waitStages, std::move(dependencies), forceBatchBoundary,
+                           std::move(diagnosticName)});
     return id;
 }
 
@@ -77,7 +78,7 @@ ComposedSubmissionRange SubmissionPlanComposer::Append(const SubmissionPlan &sou
             waitStages = batch.queue == QueueRole::Compute ? PipelineStage::ComputeShader : PipelineStage::AllCommands;
 
         m_workItems.push_back({result.workItems[index], batch.device, batch.queue, batch.domain, batch.view, waitStages,
-                               std::move(dependencies), true});
+                               std::move(dependencies), true, batch.diagnosticName});
     }
 
     for (size_t index = 0; index < source.batches.size(); ++index) {
@@ -138,6 +139,11 @@ bool BuildSubmissionPlan(const std::vector<SubmissionWorkItem> &workItems, Submi
 
         SubmissionBatch &targetBatch = output.batches.back();
         targetBatch.workItems.push_back(item.id);
+        if (!item.diagnosticName.empty()) {
+            if (!targetBatch.diagnosticName.empty())
+                targetBatch.diagnosticName += '|';
+            targetBatch.diagnosticName += item.diagnosticName;
+        }
         itemToBatch.emplace(item.id, targetBatch.index);
 
         for (const uint32_t dependencyId : item.dependencies) {

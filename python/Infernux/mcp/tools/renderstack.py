@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
-from Infernux.engine.path_utils import relative_path
+from Infernux.engine.path_utils import relative_path, same_path
 from Infernux.mcp.tools.common import (
     get_asset_database,
     main_thread,
@@ -23,29 +24,65 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Create and import a strict reusable RenderEffect asset."""
 
         def _create_effect():
-            from Infernux.engine.ui.project_file_ops import create_render_effect
+            from Infernux.engine.interaction import (
+                ActionOrigin,
+                ProjectAssetCommandService,
+            )
+            from Infernux.engine.ui import project_file_ops
 
             file_path = resolve_asset_path(project_path, path)
             if not file_path.lower().endswith(".effect"):
                 file_path += ".effect"
             directory = os.path.dirname(file_path)
-            os.makedirs(directory, exist_ok=True)
             name = os.path.splitext(os.path.basename(file_path))[0]
-            created, error = create_render_effect(
-                directory,
-                name,
-                str(feature_type),
-                get_asset_database(),
+            if os.path.exists(file_path):
+                raise FileExistsError(f"Render Effect already exists: {path}")
+
+            service = ProjectAssetCommandService.instance()
+            if service is None:
+                raise RuntimeError("Editor Project asset command service is unavailable")
+            asset_database = get_asset_database()
+            if not service.configured:
+                service.configure(project_path, asset_database)
+            elif not same_path(service.project_root, project_path):
+                raise RuntimeError("Editor Project asset commands are bound to another project")
+
+            command_directory = directory
+            while not os.path.isdir(command_directory):
+                parent = os.path.dirname(command_directory)
+                if not parent or same_path(parent, command_directory):
+                    raise RuntimeError(f"No existing project parent for Render Effect: {path}")
+                command_directory = parent
+
+            def _create_asset():
+                if not same_path(command_directory, directory):
+                    missing_tree = relative_path(directory, command_directory)
+                    created, error = project_file_ops.create_folder(
+                        command_directory,
+                        missing_tree,
+                    )
+                    if not created:
+                        return False, error
+                created, error = project_file_ops.create_render_effect(
+                    directory,
+                    name,
+                    str(feature_type),
+                    asset_database,
+                )
+                if not created:
+                    return False, error
+                return {
+                    "path": relative_path(file_path, project_path),
+                    "feature_type": str(feature_type),
+                    "created": True,
+                }
+
+            return service.create(
+                command_directory,
+                _create_asset,
+                description="Create Render Effect",
+                origin=ActionOrigin.AUTOMATION,
             )
-            if not created:
-                if os.path.exists(file_path):
-                    raise FileExistsError(error or f"Render Effect already exists: {path}")
-                raise RuntimeError(error or f"Failed to create Render Effect: {path}")
-            return {
-                "path": relative_path(file_path, project_path),
-                "feature_type": str(feature_type),
-                "created": True,
-            }
 
         return main_thread(
             "render_effect_create",
@@ -113,9 +150,15 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Set the active RenderStack pipeline. Empty string means default forward pipeline."""
 
         def _set():
+            from Infernux.engine.interaction import CommandSource, submit_renderstack_command
+
             stack = _require_stack()
-            stack.set_pipeline(str(pipeline or ""))
-            _mark_scene_dirty()
+            submit_renderstack_command(
+                "renderstack.set_pipeline",
+                source=CommandSource.AUTOMATION,
+                stack=stack,
+                pipeline=str(pipeline or ""),
+            )
             return _stack_snapshot(stack)
 
         return main_thread("renderstack_set_pipeline", _set, arguments={"pipeline": pipeline})
@@ -125,7 +168,8 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Set one exposed parameter on the active RenderStack pipeline."""
 
         def _set_parameter():
-            from Infernux.components.serialized_field import get_serialized_fields
+            from Infernux.components.fields import get_serialized_fields
+            from Infernux.engine.interaction import CommandSource, submit_renderstack_command
 
             stack = _require_stack()
             pipeline = stack.pipeline
@@ -144,10 +188,14 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
             coerced = _coerce_pipeline_parameter(
                 value, metadata, f"{pipeline.name}.{field_name}"
             )
-            setattr(pipeline, field_name, coerced)
-            stack.sync_pipeline_parameters()
-            stack.invalidate_graph()
-            _mark_scene_dirty()
+            submit_renderstack_command(
+                "renderstack.set_parameter",
+                source=CommandSource.AUTOMATION,
+                stack=stack,
+                field=field_name,
+                value=coerced,
+                description=f"Set RenderStack {field_name}",
+            )
             return _stack_snapshot(stack)
 
         return main_thread(
@@ -172,10 +220,23 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Mount a .effect or .effectgroup asset in one pipeline EffectStage."""
 
         def _add_effect():
+            from Infernux.engine.interaction import CommandSource, submit_renderstack_command
+
             stack = _require_stack()
             reference = _render_effect_reference(asset_path)
-            stack.add_effect_slot(str(stage_id), reference, enabled=bool(enabled))
-            _mark_scene_dirty()
+            from Infernux.renderstack.effect_slot import EffectSlot
+
+            stage = str(stage_id)
+            slots = copy.deepcopy(list(stack.get_effect_stage_slots(stage)))
+            slots.append(EffectSlot(stage_id=stage, effect=reference, enabled=bool(enabled)))
+            submit_renderstack_command(
+                "renderstack.set_effect_slots",
+                source=CommandSource.AUTOMATION,
+                stack=stack,
+                stage_id=stage,
+                slots=slots,
+                description="Add Render Effect",
+            )
             return _stack_snapshot(stack)
 
         return main_thread(
@@ -189,16 +250,24 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Remove one ordered EffectStage slot."""
 
         def _remove_effect():
+            from Infernux.engine.interaction import CommandSource, submit_renderstack_command
+
             stack = _require_stack()
-            slots = list(stack.get_effect_stage_slots(str(stage_id)))
+            slots = copy.deepcopy(list(stack.get_effect_stage_slots(str(stage_id))))
             slot_index = int(index)
             if slot_index < 0 or slot_index >= len(slots):
                 raise IndexError(
                     f"EffectStage '{stage_id}' has {len(slots)} slots; index {slot_index} is invalid."
                 )
             slots.pop(slot_index)
-            stack.set_effect_stage_slots(str(stage_id), slots)
-            _mark_scene_dirty()
+            submit_renderstack_command(
+                "renderstack.set_effect_slots",
+                source=CommandSource.AUTOMATION,
+                stack=stack,
+                stage_id=str(stage_id),
+                slots=slots,
+                description="Remove Render Effect",
+            )
             return _stack_snapshot(stack)
 
         return main_thread(
@@ -212,22 +281,131 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Enable or disable one ordered EffectStage slot."""
 
         def _set_effect_enabled():
+            from Infernux.engine.interaction import CommandSource, submit_renderstack_command
+
             stack = _require_stack()
-            slots = list(stack.get_effect_stage_slots(str(stage_id)))
+            slots = copy.deepcopy(list(stack.get_effect_stage_slots(str(stage_id))))
             slot_index = int(index)
             if slot_index < 0 or slot_index >= len(slots):
                 raise IndexError(
                     f"EffectStage '{stage_id}' has {len(slots)} slots; index {slot_index} is invalid."
                 )
             slots[slot_index].enabled = bool(enabled)
-            stack.set_effect_stage_slots(str(stage_id), slots)
-            _mark_scene_dirty()
+            submit_renderstack_command(
+                "renderstack.set_effect_slots",
+                source=CommandSource.AUTOMATION,
+                stack=stack,
+                stage_id=str(stage_id),
+                slots=slots,
+                description="Toggle Render Effect",
+            )
             return _stack_snapshot(stack)
 
         return main_thread(
             "renderstack_set_effect_enabled",
             _set_effect_enabled,
             arguments={"stage_id": stage_id, "index": index, "enabled": enabled},
+        )
+
+    @mcp.tool(name="renderstack_set_effect_parameter")
+    def renderstack_set_effect_parameter(
+        stage_id: str,
+        index: int,
+        field: str,
+        value: Any,
+        effect_index: int = 0,
+    ) -> dict:
+        """Edit one mounted Effect parameter through its authoritative document."""
+
+        def _set_effect_parameter():
+            from Infernux.components.fields import (
+                coerce_serialized_field_input,
+                get_serialized_fields,
+            )
+            from Infernux.engine.interaction import ActionOrigin
+            from Infernux.engine.ui.inspector_renderstack import (
+                _resolve_effect_document_controller,
+                _resolve_effect_group_document_controller,
+            )
+            from Infernux.engine.ui.render_effect_inspector import (
+                apply_render_effect_parameter_edit,
+            )
+            from Infernux.renderstack.render_effect_compiler import (
+                expand_render_effect_reference,
+                get_render_effect_feature,
+            )
+
+            stack = _require_stack()
+            slots = tuple(stack.get_effect_stage_slots(str(stage_id)))
+            slot_index = int(index)
+            if slot_index < 0 or slot_index >= len(slots):
+                raise IndexError(
+                    f"EffectStage '{stage_id}' has {len(slots)} slots; "
+                    f"index {slot_index} is invalid."
+                )
+            slot = slots[slot_index]
+            effects = tuple(expand_render_effect_reference(slot.effect_ref))
+            child_index = int(effect_index)
+            if child_index < 0 or child_index >= len(effects):
+                raise IndexError(
+                    f"EffectStage '{stage_id}' slot {slot_index} expands to "
+                    f"{len(effects)} effects; effect_index {child_index} is invalid."
+                )
+            effect = effects[child_index]
+            feature = get_render_effect_feature(effect.feature_type)
+            field_name = str(field)
+            metadata = get_serialized_fields(feature.effect_class).get(field_name)
+            if metadata is None:
+                raise AttributeError(
+                    f"Effect '{effect.name}' has no exposed parameter {field_name!r}"
+                )
+            if metadata.readonly:
+                raise AttributeError(
+                    f"Effect parameter '{effect.name}.{field_name}' is readonly"
+                )
+            coerced = coerce_serialized_field_input(
+                value,
+                metadata,
+                f"{effect.name}.{field_name}",
+            )
+            controller = _resolve_effect_group_document_controller(effect)
+            bind = getattr(effect, "bind_group_document_controller", None)
+            if controller is not None and callable(bind):
+                bind(controller)
+            if controller is None:
+                controller = _resolve_effect_document_controller(effect)
+            if controller is None:
+                raise RuntimeError(
+                    "Mounted RenderEffect has no authoritative editable document"
+                )
+            changed = apply_render_effect_parameter_edit(
+                effect,
+                field_name,
+                coerced,
+                resource_controller=controller,
+                origin=ActionOrigin.AUTOMATION,
+            )
+            return {
+                "changed": bool(changed),
+                "stage_id": str(stage_id),
+                "slot_index": slot_index,
+                "effect_index": child_index,
+                "effect": str(effect.name),
+                "field": field_name,
+                "value": serialize_value(effect.get_param(field_name)),
+                "revision": int(effect.revision),
+                "stack": _stack_snapshot(stack),
+            }
+
+        return main_thread(
+            "renderstack_set_effect_parameter",
+            _set_effect_parameter,
+            arguments={
+                "stage_id": stage_id,
+                "index": index,
+                "effect_index": effect_index,
+                "field": field,
+            },
         )
 
 def _find_stack():
@@ -280,7 +458,7 @@ def _stack_snapshot(stack, *, include_catalog: bool = False) -> dict[str, Any]:
     data = {
         "object_id": int(go.id),
         "object_name": str(go.name),
-        "pipeline": str(getattr(stack, "pipeline_class_name", "") or ""),
+        "pipeline": str(stack.pipeline_class_name),
         "active": bool(stack is type(stack).instance()),
         "enabled": bool(getattr(stack, "enabled", True)),
         "effect_stages": _effect_stages(stack),
@@ -294,7 +472,7 @@ def _stack_snapshot(stack, *, include_catalog: bool = False) -> dict[str, Any]:
 
 
 def _pipeline_parameters(stack) -> list[dict[str, Any]]:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     pipeline = stack.pipeline
     parameters = []
@@ -318,7 +496,7 @@ def _serialize_pipeline_parameter(value: Any) -> Any:
 
 
 def _coerce_pipeline_parameter(value: Any, metadata, path: str) -> Any:
-    from Infernux.components.serialized_field import (
+    from Infernux.components.fields import (
         FieldType,
         coerce_serialized_field_input,
     )
@@ -410,7 +588,7 @@ def _pipeline_entry(name: str, cls) -> dict[str, Any]:
 
 
 def _field_schema(cls) -> list[dict[str, Any]]:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
     fields = []
     for name, meta in get_serialized_fields(cls).items():
         fields.append({
@@ -422,16 +600,6 @@ def _field_schema(cls) -> list[dict[str, Any]]:
             "readonly": bool(getattr(meta, "readonly", False)),
         })
     return fields
-
-
-def _mark_scene_dirty() -> None:
-    try:
-        from Infernux.engine.scene_manager import SceneFileManager
-        sfm = SceneFileManager.instance()
-        if sfm:
-            sfm.mark_dirty()
-    except Exception:
-        pass
 
 
 def _register_metadata() -> None:
@@ -446,6 +614,7 @@ def _register_metadata() -> None:
         "renderstack_add_effect": "Mount a RenderEffect or EffectGroup asset in an EffectStage.",
         "renderstack_remove_effect": "Remove one mounted EffectStage asset slot.",
         "renderstack_set_effect_enabled": "Enable or disable one mounted EffectStage asset slot.",
+        "renderstack_set_effect_parameter": "Edit one mounted Effect parameter through its authoritative document.",
     }.items():
         category = "renderstack/pipeline" if "pipeline" in name or name.endswith(("inspect", "find_or_create")) else "renderstack/effects"
         register_tool_metadata(

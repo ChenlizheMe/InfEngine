@@ -92,13 +92,15 @@ std::string_view GpuParticleRibbonShaderSources::Reset() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
-    if (simulation_allowed == 0u) return;
-    uint live_count = inx_live_count();
+    // Reset is also the draw-safety barrier. A newly created or paused
+    // emitter must publish zero indirect arguments instead of leaving the
+    // buffers with stale or uninitialized GPU contents.
+    uint live_count = simulation_allowed != 0u ? inx_live_count() : 0u;
     dispatch_group_count_x = (live_count + 255u) / 256u;
     dispatch_group_count_y = 1u;
     dispatch_group_count_z = 1u;
     ribbon_vertex_count = live_count > 1u ? (live_count - 1u) * 6u : 0u;
-    ribbon_instance_count = 1u;
+    ribbon_instance_count = live_count > 1u ? 1u : 0u;
     ribbon_first_vertex = 0u;
     ribbon_first_instance = 0u;
 }
@@ -276,10 +278,10 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
     for (auto &buffer : m_indices)
         buffer = createRenderExport(elementBytes, storage);
     m_drawIndirectArguments = createRenderExport(16, storageIndirect);
-    m_dispatchArguments = device.CreateBuffer({12, storageIndirect});
-    m_histograms = device.CreateBuffer({blockBytes, storage});
-    m_blockOffsets = device.CreateBuffer({blockBytes, storage});
-    m_globalOffsets = device.CreateBuffer({Radix * sizeof(uint32_t), storage});
+    m_dispatchArguments = createRenderExport(12, storageIndirect);
+    m_histograms = createRenderExport(blockBytes, storage);
+    m_blockOffsets = createRenderExport(blockBytes, storage);
+    m_globalOffsets = createRenderExport(Radix * sizeof(uint32_t), storage);
     if (!std::all_of(m_indices.begin(), m_indices.end(), [](auto value) { return value.IsValid(); }) ||
         !m_drawIndirectArguments.IsValid() || !m_dispatchArguments.IsValid() || !m_histograms.IsValid() ||
         !m_blockOffsets.IsValid() || !m_globalOffsets.IsValid()) {

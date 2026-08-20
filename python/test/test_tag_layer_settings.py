@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 
 from Infernux.engine.engine import Engine
 from Infernux.engine.ui.tag_layer_settings import PhysicsLayerMatrixPanel, TagLayerSettingsPanel
 from Infernux.lib import TagLayerManager
+from Infernux.physics import settings as physics_settings
 
 
 class _LayerManager:
@@ -14,6 +16,8 @@ class _LayerManager:
         self.layers = [""] * 32
         self.layers[0] = "Default"
         self.layers[8] = "OldName"
+        self.tags = []
+        self.masks = [0xFFFFFFFF] * 32
         self.collisions = {}
 
     def get_all_layers(self):
@@ -32,6 +36,50 @@ class _LayerManager:
 
     def set_layers_collide(self, layer_a, layer_b, value):
         self.collisions[tuple(sorted((layer_a, layer_b)))] = bool(value)
+        return True
+
+    def serialize(self):
+        return json.dumps(
+            {
+                "custom_tags": list(self.tags),
+                "layers": list(self.layers),
+                "layer_collision_masks": list(self.masks),
+            }
+        )
+
+    def deserialize(self, payload):
+        document = json.loads(payload)
+        self.tags = list(document["custom_tags"])
+        self.layers = [str(value).strip() for value in document["layers"]]
+        self.masks = [int(value) & 0xFFFFFFFF for value in document["layer_collision_masks"]]
+        self.collisions = {}
+        for layer_a in range(32):
+            for layer_b in range(layer_a, 32):
+                enabled = bool(self.masks[layer_a] & (1 << layer_b))
+                self.collisions[(layer_a, layer_b)] = enabled
+        return True
+
+
+class _SettingsController:
+    def __init__(self, manager):
+        self.manager = manager
+        self.sections = {
+            "tag_layers": json.loads(manager.serialize()),
+            "physics": copy.deepcopy(physics_settings.DEFAULT_PHYSICS_SETTINGS),
+        }
+        self.calls = []
+
+    def section(self, name):
+        return copy.deepcopy(self.sections[name])
+
+    def capture_document(self):
+        return copy.deepcopy(self.sections)
+
+    def apply_section(self, name, value, *, edit_key, description, view_id=""):
+        self.sections[name] = copy.deepcopy(value)
+        if name == "tag_layers":
+            assert self.manager.deserialize(json.dumps(value)) is True
+        self.calls.append((name, copy.deepcopy(value), edit_key, description, view_id))
         return True
 
 
@@ -129,14 +177,16 @@ def _semantic_by_id(ctx, semantic_id):
 def test_layer_name_fields_publish_stable_authoritative_semantics(monkeypatch):
     panel = TagLayerSettingsPanel()
     manager = _LayerManager()
+    controller = _SettingsController(manager)
+    panel._settings_controller = controller
     ctx = _LayerContext("  DynamicTest  ")
-    saves = []
-    monkeypatch.setattr(panel, "_auto_save", lambda _mgr: saves.append(True))
+    monkeypatch.setattr(panel, "publish_interaction_ownership", lambda **_kwargs: None)
 
     panel._render_layers_section(ctx, manager)
 
     assert manager.layers[8] == "DynamicTest"
-    assert saves == [True]
+    assert len(controller.calls) == 1
+    assert controller.calls[0][2] == "project_settings.layers.8"
     assert _semantic_by_id(ctx, "tag_layer_settings.layer.8.name") == (
         "text_input",
         "Layer 8",
@@ -167,15 +217,16 @@ def test_collision_matrix_publishes_symmetric_authoritative_semantics(monkeypatc
     manager = _LayerManager()
     manager.layers[8] = "DynamicTest"
     manager.layers[9] = "GroundTest"
+    controller = _SettingsController(manager)
+    panel._settings_controller = controller
     ctx = _MatrixContext((8, 9))
     monkeypatch.setattr(panel, "_draw_vertical_text", lambda *_args: None)
-    monkeypatch.setattr(
-        "Infernux.engine.ui.tag_layer_settings._save_mgr_to_project", lambda *_args: None
-    )
+    monkeypatch.setattr(panel, "publish_interaction_ownership", lambda **_kwargs: None)
 
     panel._render_collision_matrix(ctx, manager)
 
     assert manager.get_layers_collide(9, 8) is False
+    assert controller.calls[0][2] == "project_settings.collision.8.9"
     assert _semantic_by_id(ctx, "physics_layer_matrix.collision.8.9") == (
         "checkbox",
         "DynamicTest / GroundTest",
@@ -183,6 +234,23 @@ def test_collision_matrix_publishes_symmetric_authoritative_semantics(monkeypatc
         "physics_layer_matrix.collision.8.9",
         {"bool_value": False},
     )
+
+
+def test_physics_values_commit_through_shared_project_settings_document(monkeypatch):
+    panel = PhysicsLayerMatrixPanel()
+    manager = _LayerManager()
+    controller = _SettingsController(manager)
+    panel._settings_controller = controller
+    panel._gravity = [1.0, -4.0, 2.0]
+    monkeypatch.setattr(panel, "publish_interaction_ownership", lambda **_kwargs: None)
+
+    assert panel._commit_physics_settings(
+        field="gravity",
+        description="Set Physics Gravity",
+    )
+
+    assert controller.section("physics")["gravity"] == [1.0, -4.0, 2.0]
+    assert controller.calls[0][2] == "project_settings.physics.gravity"
 
 
 def test_invalid_asymmetric_collision_matrix_is_rejected_transactionally():

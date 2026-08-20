@@ -32,6 +32,15 @@ namespace py = pybind11;
 namespace
 {
 
+void LogPythonFrameCallbackError(const char *callbackName, const py::error_already_set &error)
+{
+    // error_already_set has already fetched and cleared the Python error
+    // indicator. Never restore it here: these callbacks run every frame, and
+    // leaving PyErr set poisons every later callback while the native render
+    // loop continues, stranding deferred tasks and MCP main-thread commands.
+    INXLOG_ERROR("[PythonFrameCallback] {} failed: {}", callbackName, error.what());
+}
+
 std::vector<uint32_t> DecodeParticleSpirv(const py::handle &value, const std::string &label)
 {
     if (!py::isinstance<py::bytes>(value))
@@ -107,12 +116,12 @@ const char *ParticleSortModeName(particle::ParticleSortMode value)
 particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
-        "bootstrap",        "init",         "update",   "contact_prepare", "contact_solve",
+        "bootstrap",        "init",         "update",   "update_rendering_fused", "contact_prepare", "contact_solve",
         "contact_dispatch", "render_reset", "rendering"};
     for (const char *field :
          {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask", "artifact_revision",
           "stable_id", "capacity", "state_stride", "event_type_count", "collision_enabled", "parameter_words",
-          "continuation", "stages", "billboard", "mesh_shaders", "outputs"}) {
+          "continuation", "update_render_fusion", "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -348,9 +357,34 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         }
     }
 
+    if (!py::isinstance<py::dict>(value["update_render_fusion"]))
+        throw std::invalid_argument("GPU particle update_render_fusion must be a dictionary");
+    const py::dict fusion = py::cast<py::dict>(value["update_render_fusion"]);
+    if (!fusion.contains("eligible") || !fusion.contains("fused_stage") ||
+        !py::isinstance<py::bool_>(fusion["eligible"]) || !py::isinstance<py::str>(fusion["fused_stage"]))
+        throw std::invalid_argument("GPU particle update_render_fusion is missing eligibility metadata");
+    program.supportsFusedUpdateRendering = py::cast<bool>(fusion["eligible"]);
+    const std::string fusedStage = py::cast<std::string>(fusion["fused_stage"]);
+    if (program.supportsFusedUpdateRendering) {
+        if (fusedStage != "update_rendering_fused")
+            throw std::invalid_argument("GPU particle fused stage metadata is invalid");
+    } else if (!fusedStage.empty()) {
+        throw std::invalid_argument("GPU particle ineligible fusion metadata must not name a fused stage");
+    }
+
+    if (!py::isinstance<py::dict>(value["stages"]))
+        throw std::invalid_argument("GPU particle stages must be a dictionary");
     const py::dict stages = py::cast<py::dict>(value["stages"]);
+    const size_t expectedStageCount =
+        static_cast<size_t>(particle::GpuKernelStage::Count) - (program.supportsFusedUpdateRendering ? 0u : 1u);
+    if (py::len(stages) != expectedStageCount)
+        throw std::invalid_argument("GPU particle stages do not match update_render_fusion eligibility");
     for (size_t index = 0; index < StageNames.size(); ++index) {
         const char *stage = StageNames[index];
+        const bool isFusedStage =
+            static_cast<particle::GpuKernelStage>(index) == particle::GpuKernelStage::UpdateRenderingFused;
+        if (isFusedStage && !program.supportsFusedUpdateRendering)
+            continue;
         if (!stages.contains(stage))
             throw std::invalid_argument(std::string("GPU particle program is missing stage ") + stage);
         program.kernels[index] = DecodeParticleSpirv(stages[stage], std::string("particle stage ") + stage);
@@ -466,6 +500,32 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         program.outputs.push_back(std::move(decoded));
     }
     return program;
+}
+
+std::string ResolveGpuParticleOutputPrograms(InxRenderer &renderer,
+                                              std::vector<particle::GpuParticleEmitterProgram> &programs)
+{
+    for (auto &program : programs) {
+        for (auto &output : program.outputs) {
+            if (!output.material)
+                continue;
+            output.shaderProgram = renderer.ResolveShaderProgramArtifact(output.material);
+            if (output.shaderProgram && output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
+                return "particle output '" + output.stableId +
+                       "' shader is incompatible with the particle Surface domain";
+            }
+            const auto &state = output.material->GetRenderState();
+            output.fallbackMaterial = {
+                state.renderQueue,
+                state.blendEnable,
+                state.depthTestEnable,
+                state.depthWriteEnable,
+                state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
+                    state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            };
+        }
+    }
+    return {};
 }
 
 particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &value)
@@ -584,7 +644,7 @@ PYBIND11_MODULE(_Infernux, m)
             "physics_gravity", [](EngineConfig &self) { return self.physicsGravity; },
             [](EngineConfig &self, const glm::vec3 &v) { self.physicsGravity = v; },
             "Default gravity vector (applied on physics init)")
-        .def_readwrite("physics_max_worker_threads", &EngineConfig::physicsMaxWorkerThreads)
+        .def_readwrite("physics_max_concurrency", &EngineConfig::physicsMaxConcurrency)
         // Physics — Default Collider Properties
         .def_readwrite("default_collider_friction", &EngineConfig::defaultColliderFriction)
         .def_readwrite("default_collider_bounciness", &EngineConfig::defaultColliderBounciness)
@@ -816,16 +876,31 @@ PYBIND11_MODULE(_Infernux, m)
             return result;
         });
 
+    py::class_<LinkedShaderProgramLoadTicket, std::shared_ptr<LinkedShaderProgramLoadTicket>>(
+        m, "LinkedShaderProgramLoadTicket")
+        .def_property_readonly("complete", &LinkedShaderProgramLoadTicket::IsComplete)
+        .def_property_readonly("committed", &LinkedShaderProgramLoadTicket::IsCommitted)
+        .def_property_readonly("produced_on_worker", &LinkedShaderProgramLoadTicket::WasProducedOnWorker)
+        .def("cancel", &LinkedShaderProgramLoadTicket::Cancel);
+
     py::class_<Infernux>(m, "Infernux")
         .def(py::init<std::string, RuntimeMode>(), py::arg("dll_path"), py::arg("mode") = RuntimeMode::Graphical)
         .def("init_renderer", &Infernux::InitRenderer, py::arg("width"), py::arg("height"), py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string())
+        .def_property_readonly("startup_phase_timings_ms", &Infernux::GetStartupPhaseTimingsMs,
+                               py::return_value_policy::reference_internal,
+                               "Wall-clock timings for the most recent native graphical startup")
         .def("init_headless", &Infernux::InitHeadless, py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string(),
              "Initialize scene, physics, assets, and workers without SDL/Vulkan/ImGui/audio")
         .def("tick", &Infernux::Tick, py::arg("delta_time"), "Advance one deterministic headless frame")
         .def_property_readonly("exit_requested", &Infernux::IsExitRequested, "Whether shutdown has been requested")
         .def_property_readonly("runtime_mode", &Infernux::GetRuntimeMode)
+        .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
+             py::arg("material_guids"),
+             "Compile linked shader programs for loaded materials on the engine JobSystem")
+        .def("try_commit_linked_shader_programs", &Infernux::TryCommitLinkedShaderPrograms, py::arg("ticket"),
+             "Publish a completed linked-shader preload on the engine owner thread")
         .def_property_readonly("has_renderer", [](const Infernux &self) { return self.GetRenderer() != nullptr; })
         .def_property_readonly("pending_mesh_gpu_upload_count",
                                [](const Infernux &self) {
@@ -1050,6 +1125,8 @@ PYBIND11_MODULE(_Infernux, m)
                                        renderer ? renderer->GetGpuResidencySnapshot() : GpuResidencySnapshot{};
                                    py::dict result;
                                    result["budget_bytes"] = snapshot.budgetBytes;
+                                   result["runtime_budget_bytes"] = snapshot.runtimeBudgetBytes;
+                                   result["editor_texture_budget_bytes"] = snapshot.editorTextureBudgetBytes;
                                    result["allocator_allocation_bytes"] = snapshot.allocatorAllocationBytes;
                                    result["allocator_block_bytes"] = snapshot.allocatorBlockBytes;
                                    result["allocator_allocation_count"] = snapshot.allocatorAllocationCount;
@@ -1104,7 +1181,13 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["tracked_bytes"] = snapshot.trackedBytes;
                                    result["unclassified_bytes"] = snapshot.unclassifiedBytes;
                                    result["effective_allocation_bytes"] = snapshot.effectiveAllocationBytes;
+                                   result["runtime_effective_allocation_bytes"] =
+                                       snapshot.runtimeEffectiveAllocationBytes;
+                                   result["editor_texture_effective_allocation_bytes"] =
+                                       snapshot.editorTextureEffectiveAllocationBytes;
                                    result["over_budget_bytes"] = snapshot.overBudgetBytes;
+                                   result["runtime_over_budget_bytes"] = snapshot.runtimeOverBudgetBytes;
+                                   result["editor_texture_over_budget_bytes"] = snapshot.editorTextureOverBudgetBytes;
                                    return result;
                                })
         .def_property_readonly("renderer_frame_snapshot",
@@ -1249,10 +1332,57 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["scene_update_ms"] = snapshot.sceneUpdateMs;
                                    result["gui_build_ms"] = snapshot.guiBuildMs;
                                    result["prepare_frame_ms"] = snapshot.prepareFrameMs;
+                                   result["gui_frame"] = snapshot.guiFrame;
+                                   result["gui_frame_requested"] = snapshot.guiFrameRequested;
+                                   result["gui_frame_interval_ms"] = snapshot.guiFrameIntervalMs;
+                                   result["gui_frame_until_due_ms"] = snapshot.guiFrameUntilDueMs;
+                                   result["gui_frame_consume_count"] = snapshot.guiFrameConsumeCount;
+                                   result["gui_frame_approved_count"] = snapshot.guiFrameApprovedCount;
+                                   result["gui_frame_forced_count"] = snapshot.guiFrameForcedCount;
+                                   result["gui_frame_request_count"] = snapshot.guiFrameRequestCount;
                                    result["ui_panel_times_ms"] = snapshot.guiPanelTimesMs;
                                    result["ui_panel_sub_times_ms"] = snapshot.guiPanelSubTimesMs;
                                    return result;
                                })
+        .def(
+            "begin_renderer_performance_window",
+            [](Infernux &self) -> uint64_t {
+                auto *renderer = self.GetRenderer();
+                return renderer ? renderer->BeginFramePerformanceWindow() : uint64_t{0};
+            },
+            "Reset the bounded native frame performance window without reading renderer diagnostics")
+        .def(
+            "get_renderer_performance_window",
+            [](Infernux &self) {
+                auto *renderer = self.GetRenderer();
+                const RendererFramePerformanceSnapshot snapshot =
+                    renderer ? renderer->GetFramePerformanceWindow() : RendererFramePerformanceSnapshot{};
+                const auto encodeStats = [](const UIPerformanceMetricStats &stats) {
+                    py::dict result;
+                    result["sample_count"] = stats.sampleCount;
+                    result["avg_ms"] = stats.meanMs;
+                    result["p50_ms"] = stats.medianMs;
+                    result["p95_ms"] = stats.p95Ms;
+                    result["p99_ms"] = stats.p99Ms;
+                    result["max_ms"] = stats.maxMs;
+                    return result;
+                };
+                py::dict timings;
+                timings["frame"] = encodeStats(snapshot.frame);
+                timings["game_only"] = encodeStats(snapshot.gameOnly);
+                timings["render"] = encodeStats(snapshot.render);
+                timings["scene"] = encodeStats(snapshot.scene);
+                timings["gui"] = encodeStats(snapshot.gui);
+                timings["prepare"] = encodeStats(snapshot.prepare);
+                py::dict result;
+                result["first_frame"] = snapshot.firstFrame;
+                result["last_frame"] = snapshot.lastFrame;
+                result["sample_count"] = snapshot.sampleCount;
+                result["dropped_sample_count"] = snapshot.droppedSampleCount;
+                result["timings"] = std::move(timings);
+                return result;
+            },
+            "Read the immutable aggregated native frame performance window")
         .def_property_readonly("renderer_ui_performance_snapshot",
                                [](Infernux &self) {
                                    auto *renderer = self.GetRenderer();
@@ -1345,8 +1475,8 @@ PYBIND11_MODULE(_Infernux, m)
                         py::gil_scoped_acquire acquire;
                         try {
                             fn(deltaTime);
-                        } catch (py::error_already_set &e) {
-                            e.restore();
+                        } catch (const py::error_already_set &e) {
+                            LogPythonFrameCallbackError("pre-scene update", e);
                         }
                     });
                 }
@@ -1367,8 +1497,8 @@ PYBIND11_MODULE(_Infernux, m)
                         py::gil_scoped_acquire acquire;
                         try {
                             fn();
-                        } catch (py::error_already_set &e) {
-                            e.restore();
+                        } catch (const py::error_already_set &e) {
+                            LogPythonFrameCallbackError("pre-GUI", e);
                         }
                     });
                 }
@@ -1390,8 +1520,8 @@ PYBIND11_MODULE(_Infernux, m)
                         py::gil_scoped_acquire acquire;
                         try {
                             fn();
-                        } catch (py::error_already_set &e) {
-                            e.restore();
+                        } catch (const py::error_already_set &e) {
+                            LogPythonFrameCallbackError("post-draw", e);
                         }
                     });
                 }
@@ -1401,8 +1531,16 @@ PYBIND11_MODULE(_Infernux, m)
             "Heavy scene loads run here, sandwiched by SDL_PumpEvents to prevent\n"
             "Windows from flagging the application as Not Responding.")
         .def(
-            "pump_events", [](Infernux & /*self*/) { SDL_PumpEvents(); },
-            "Pump the OS message queue to prevent Windows Not Responding during long operations")
+            "pump_events",
+            [](Infernux &self) -> bool {
+                auto *r = self.GetRenderer();
+                if (!r) {
+                    SDL_PumpEvents();
+                    return true;
+                }
+                return r->PumpStartupEvents();
+            },
+            "Pump the OS message queue so a visible window stays responsive during long operations")
         .def("queue_synthetic_key_input", &Infernux::QueueSyntheticKeyInput, py::arg("scancode"),
              py::arg("pressed"), py::arg("repeat") = false,
              "Queue a synthetic key event for the next graphical input frame")
@@ -1441,7 +1579,8 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("name"))
         .def("select_docked_window", &Infernux::SelectDockedWindow,
-             "Select and focus a docked ImGui window by its stable window_id", py::arg("window_id"))
+             "Select and focus a docked ImGui window by its stable window_id",
+             py::arg("window_id"), py::arg("allow_during_modal") = false)
         .def("reset_imgui_layout", &Infernux::ResetImGuiLayout, "Clear ImGui docking layout and delete saved ini")
         .def("exit", &Infernux::Exit, "Exit the Infernux application")
         .def("cleanup", &Infernux::Cleanup, "Destroy renderer and release all GPU resources")
@@ -1638,6 +1777,7 @@ PYBIND11_MODULE(_Infernux, m)
                     item["failed_upload_version"] = snapshot.failedUploadVersion;
                     item["texture_id"] = snapshot.textureId;
                     item["in_flight"] = snapshot.inFlight;
+                    item["authoring"] = snapshot.authoring;
                     item["has_render_ticket"] = snapshot.hasRenderTicket;
                     item["render_ticket_done"] = snapshot.renderTicketDone;
                     item["pending_width"] = snapshot.pendingWidth;
@@ -1698,8 +1838,6 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("resource_key"), py::arg("image_data"), py::arg("stamp"), py::arg("nearest") = false,
             "Schedule texture preview from an encoded in-memory image buffer (JPEG/PNG/etc.)")
-        .def("schedule_material_save_snapshot_task", &Infernux::ScheduleMaterialSaveSnapshotTask, py::arg("key"),
-             py::arg("file_path"), py::arg("json_snapshot"), "Schedule async material save task from JSON snapshot")
         // ========================================================================
         // Editor Camera (property-based object access — preferred API)
         // ========================================================================
@@ -1826,6 +1964,13 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("width"), py::arg("height"), "Resize the game render target (lazy-initializes on first call)")
         .def(
+            "get_game_render_target_generation",
+            [](Infernux &self) -> uint64_t {
+                auto *r = self.GetRenderer();
+                return r ? r->GetGameRenderTargetGeneration() : 0;
+            },
+            "Return the monotonic generation of the native Game render target")
+        .def(
             "set_game_camera_enabled",
             [](Infernux &self, bool enabled) {
                 auto *r = self.GetRenderer();
@@ -1891,6 +2036,13 @@ PYBIND11_MODULE(_Infernux, m)
                 return r ? r->GetPrepareFrameMs() : 0.0;
             },
             "Get PrepareFrame (collect/cull renderables) time in ms")
+        .def(
+            "get_shader_time_seconds",
+            [](Infernux &self) -> float {
+                auto *r = self.GetRenderer();
+                return r ? r->GetShaderTimeSeconds() : 0.0f;
+            },
+            "Get the exact time uploaded to the global shader _Time.x value")
         .def(
             "get_screen_ui_renderer",
             [](Infernux &self) -> InxScreenUIRenderer * {
@@ -2009,6 +2161,14 @@ PYBIND11_MODULE(_Infernux, m)
                     r->RequestFullSpeedFrame();
             },
             "Force full-speed rendering for the next few frames")
+        .def(
+            "request_editor_wake",
+            [](Infernux &self) {
+                auto *r = self.GetRenderer();
+                if (r)
+                    r->RequestExternalWake();
+            },
+            "Wake the editor event loop from a background service")
         .def(
             "set_editor_fps_cap",
             [](Infernux &self, float fps) {
@@ -2275,30 +2435,9 @@ PYBIND11_MODULE(_Infernux, m)
                         throw std::invalid_argument("GPU particle program batch must contain dictionaries");
                     programs.push_back(DecodeGpuParticleProgram(py::reinterpret_borrow<py::dict>(item)));
                 }
-                for (auto &program : programs) {
-                    for (auto &output : program.outputs) {
-                        if (!output.material)
-                            continue;
-                        // Particle Output assets expose a shader, while the
-                        // transient material is only the native property/state
-                        // carrier. Resolve it before renderer creation so the
-                        // ShaderInfo render defaults cannot lag one publish.
-                        output.shaderProgram = renderer->ResolveShaderProgramArtifact(output.material);
-                        if (output.shaderProgram && output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
-                            return "particle output '" + output.stableId +
-                                   "' shader is incompatible with the particle Surface domain";
-                        }
-                        const auto &state = output.material->GetRenderState();
-                        output.fallbackMaterial = {
-                            state.renderQueue,
-                            state.blendEnable,
-                            state.depthTestEnable,
-                            state.depthWriteEnable,
-                            state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                                state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                        };
-                    }
-                }
+                if (const std::string resolveError = ResolveGpuParticleOutputPrograms(*renderer, programs);
+                    !resolveError.empty())
+                    return resolveError;
                 std::string error;
                 particle::GpuParticleGraphProgram graphProgram;
                 graphProgram.graphInstanceId = graphInstanceId;
@@ -2311,6 +2450,48 @@ PYBIND11_MODULE(_Infernux, m)
             py::arg("graph_instance_id"), py::arg("programs"),
             py::arg("remove_ids") = std::vector<uint64_t>{},
             "Internal control-plane publication for one saved ParticleGraph revision")
+        .def(
+            "_replace_gpu_particle_graphs",
+            [](Infernux &self, const py::sequence &encodedGraphs) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    return std::string("GPU particle runtime requires graphical renderer initialization");
+
+                std::vector<particle::GpuParticleGraphProgram> graphPrograms;
+                graphPrograms.reserve(encodedGraphs.size());
+                for (const py::handle graphValue : encodedGraphs) {
+                    if (!py::isinstance<py::dict>(graphValue))
+                        throw std::invalid_argument("GPU particle graph batch must contain dictionaries");
+                    const py::dict graph = py::reinterpret_borrow<py::dict>(graphValue);
+                    for (const char *field : {"graph_instance_id", "programs", "remove_ids"}) {
+                        if (!graph.contains(field))
+                            throw std::invalid_argument(std::string("GPU particle graph batch is missing ") + field);
+                    }
+                    particle::GpuParticleGraphProgram graphProgram;
+                    graphProgram.graphInstanceId = py::cast<uint64_t>(graph["graph_instance_id"]);
+                    const py::sequence encodedPrograms = py::cast<py::sequence>(graph["programs"]);
+                    graphProgram.emitters.reserve(encodedPrograms.size());
+                    for (const py::handle item : encodedPrograms) {
+                        if (!py::isinstance<py::dict>(item))
+                            throw std::invalid_argument("GPU particle program batch must contain dictionaries");
+                        graphProgram.emitters.push_back(
+                            DecodeGpuParticleProgram(py::reinterpret_borrow<py::dict>(item)));
+                    }
+                    if (const std::string resolveError =
+                            ResolveGpuParticleOutputPrograms(*renderer, graphProgram.emitters);
+                        !resolveError.empty())
+                        return resolveError;
+                    graphProgram.removeEmitterIds = py::cast<std::vector<uint64_t>>(graph["remove_ids"]);
+                    graphPrograms.push_back(std::move(graphProgram));
+                }
+                std::string error;
+                if (!manager->ApplyGraphs(graphPrograms, &error))
+                    return error.empty() ? std::string("failed to publish GPU particle graph batch") : error;
+                return std::string{};
+            },
+            py::arg("graphs"),
+            "Internal atomic publication for several saved ParticleGraph instances")
         .def(
             "_update_gpu_particle_parameters",
             [](Infernux &self, uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords) {
@@ -2494,6 +2675,7 @@ PYBIND11_MODULE(_Infernux, m)
                     item["alive_count"] = emitter.aliveCount;
                     item["visible_count"] = emitter.visibleCount;
                     item["dropped_count"] = emitter.droppedCount;
+                    item["initialized_spawn_count"] = emitter.initializedSpawnCount;
                     item["collision_hit_count"] = emitter.collisionHitCount;
                     item["collision_response_count"] = emitter.collisionResponseCount;
                     item["collision_trigger_count"] = emitter.collisionTriggerCount;

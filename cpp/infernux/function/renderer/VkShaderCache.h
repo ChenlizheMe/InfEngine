@@ -96,6 +96,9 @@ class VkShaderCache
     /// Find fragment SPIR-V code by exact name, filename, or stem.
     [[nodiscard]] const std::vector<char> *FindFragCode(const std::string &id) const;
 
+    /// Stable content fingerprint of one resident SPIR-V stage (0 when absent).
+    [[nodiscard]] uint64_t GetCodeFingerprint(const std::string &name, const std::string &type) const;
+
     [[nodiscard]] ShaderProgramArtifactPublishResult PublishProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
     /// Materialize one semantic pass on first use. Publishing an artifact only

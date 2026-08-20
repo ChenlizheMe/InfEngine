@@ -36,6 +36,70 @@ def test_scene_particle_preview_follows_primary_selection():
     assert calls == ["begin", "pause"]
 
 
+def test_scene_particle_preview_rejects_selected_inactive_object():
+    panel = _panel()
+    calls = []
+    hierarchy_reads = []
+    component = SimpleNamespace(
+        editor_preview_begin=lambda: calls.append("begin") or True,
+    )
+
+    class Selected:
+        @property
+        def active_in_hierarchy(self):
+            hierarchy_reads.append("selection")
+            return False
+
+        @staticmethod
+        def get_py_components():
+            return [component]
+
+    selected = Selected()
+
+    panel._on_particle_preview_selection(selected)
+
+    assert panel._particle_preview_component is None
+    assert panel._particle_preview_object is None
+    assert panel._particle_preview_playing is False
+    assert calls == []
+    assert hierarchy_reads
+
+
+def test_scene_particle_preview_suspends_when_selected_owner_becomes_inactive():
+    panel = _panel()
+    calls = []
+    hierarchy_reads = []
+
+    class Owner:
+        id = 9
+        active = True
+
+        @property
+        def active_in_hierarchy(self):
+            hierarchy_reads.append("tick")
+            return self.active
+
+    owner = Owner()
+    component = SimpleNamespace(
+        game_object=owner,
+        editor_preview_pause=lambda: calls.append("pause") or True,
+        editor_preview_suspend=lambda: calls.append("suspend") or True,
+        editor_preview_update=lambda *_args: calls.append("update") or True,
+    )
+    panel._particle_preview_component = component
+    panel._particle_preview_object = owner
+    panel._particle_preview_playing = True
+
+    owner.active = False
+    panel._tick_particle_preview(0.016)
+
+    assert calls == ["suspend"]
+    assert panel._particle_preview_component is None
+    assert panel._particle_preview_object is None
+    assert panel._particle_preview_playing is False
+    assert hierarchy_reads
+
+
 def test_scene_particle_preview_ticks_only_in_edit_mode():
     panel = _panel()
     component = ParticleSystem()
@@ -391,6 +455,18 @@ def test_invalid_particle_preview_wrapper_never_removes_native_batch():
     assert calls == []
 
 
+def test_preview_authoring_ownership_is_released_without_native_bridge(monkeypatch):
+    preview_module = importlib.import_module(
+        "Infernux.engine.ui.asset_resource_preview"
+    )
+    preview_module._AUTHORING_PREVIEW_KEYS.add("mat|stale-session")
+    monkeypatch.setattr(preview_module, "_resolve_native_engine", lambda _panel: None)
+
+    preview_module.release_all_preview_authoring()
+
+    assert "mat|stale-session" not in preview_module._AUTHORING_PREVIEW_KEYS
+
+
 def test_particle_preview_component_controls_are_hard_disabled_in_play(monkeypatch):
     from Infernux.engine.play_mode import PlayModeManager
 
@@ -483,6 +559,44 @@ def test_particle_preview_entering_play_forgets_handles_without_runtime_command(
     assert calls == []
 
 
+@pytest.mark.parametrize("play_on_awake", [False, True])
+def test_play_mode_deserialize_initializes_particle_runtime_from_play_on_awake(
+    monkeypatch, play_on_awake
+):
+    from Infernux.engine.play_mode import PlayModeManager
+
+    monkeypatch.setattr(
+        PlayModeManager,
+        "instance",
+        classmethod(lambda _cls: SimpleNamespace(is_playing=True)),
+    )
+    component = ParticleSystem()
+    component.play_on_awake = play_on_awake
+
+    component.on_after_deserialize()
+
+    assert component._playing is play_on_awake
+
+
+def test_particle_replacement_retires_edit_preview_native_batch(monkeypatch):
+    from Infernux.components.component import InxComponent
+
+    component = ParticleSystem()
+    component._gpu_controllers = [object()]
+    calls = []
+    component._remove_native_batch = lambda: calls.append("remove")
+    component._clear_runtime_state = lambda: calls.append("clear")
+    monkeypatch.setattr(
+        InxComponent,
+        "_detach_native_binding_for_replacement",
+        lambda _self: calls.append("detach"),
+    )
+
+    component._detach_native_binding_for_replacement()
+
+    assert calls == ["remove", "clear", "detach"]
+
+
 def test_scene_panel_subscribes_to_play_mode_lifecycle():
     panel = _panel()
     listeners = []
@@ -511,9 +625,9 @@ def test_prefab_exit_overlay_is_semantic_and_clickable(monkeypatch):
     exits = []
     manager = SimpleNamespace(
         is_prefab_mode=True,
-        exit_prefab_mode_with_undo=lambda: exits.append(True),
     )
     monkeypatch.setattr(SceneFileManager, "instance", classmethod(lambda _cls: manager))
+    panel._execute_scene_command = lambda command_id: exits.append(command_id) or True
 
     semantics = []
 
@@ -553,7 +667,7 @@ def test_prefab_exit_overlay_is_semantic_and_clickable(monkeypatch):
 
     panel._render_overlays_and_shortcuts(Context(), None, 0.0, 0.0, 640.0, 480.0, 0.016)
 
-    assert exits == [True]
+    assert exits == ["prefab.exit"]
     assert len(semantics) == 1
     assert semantics[0][0] == "button"
     assert semantics[0][1]

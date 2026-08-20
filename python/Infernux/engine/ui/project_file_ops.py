@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import time
 
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import (
@@ -124,7 +125,7 @@ MATERIAL_TEMPLATE = '''{{
 '''
 
 PHYSIC_MATERIAL_TEMPLATE = '''{
-  "friction": 0.4,
+  "friction": 0.6,
   "bounciness": 0.0,
   "friction_combine": 0,
   "bounce_combine": 0
@@ -134,9 +135,11 @@ PHYSIC_MATERIAL_TEMPLATE = '''{
 ANIMCLIP_TEMPLATE = '''{
   "name": "{clip_name}",
   "authoring_texture_guid": "",
-  "frame_indices": [],
+  "authoring_texture_path": "",
+  "frames": [],
   "fps": 12.0,
-  "loop": true
+  "loop": true,
+  "events": []
 }
 '''
 
@@ -156,7 +159,8 @@ ANIMFSM_TEMPLATE = '''{
   "default_state": "",
   "mode": "2d",
   "states": [],
-  "parameters": []
+  "parameters": [],
+  "entry_position": [-100.0, 50.0]
 }
 '''
 
@@ -173,7 +177,8 @@ TIMELINEFSM_TEMPLATE = '''{
   "default_state": "",
   "mode": "timeline",
   "states": [],
-  "parameters": []
+  "parameters": [],
+  "entry_position": [-100.0, 50.0]
 }
 '''
 
@@ -209,74 +214,388 @@ def get_unique_name(current_path: str, base_name: str, extension: str = "") -> s
     return f"{base_name}{counter}"
 
 
+def plan_asset_paste(
+    sources: list[str] | tuple[str, ...],
+    destination_directory: str,
+    *,
+    cut: bool,
+) -> list[tuple[str, str]]:
+    """Plan exact non-conflicting paths for one atomic Project paste."""
+    destination = resolved_path(destination_directory)
+    if not destination or not os.path.isdir(destination):
+        raise ValueError("asset paste destination must be an existing directory")
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for value in sources or ():
+        source = resolved_path(str(value or ""))
+        key = path_key(source)
+        if not source or key in seen or not os.path.exists(source):
+            continue
+        seen.add(key)
+        candidates.append(source)
+    candidates.sort(key=lambda value: (len(path_key(value)), path_key(value)))
+
+    roots: list[str] = []
+    for candidate in candidates:
+        if any(is_path_within(candidate, root, allow_root=True) for root in roots):
+            continue
+        roots.append(candidate)
+
+    reserved: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for source in roots:
+        if os.path.isdir(source) and is_path_within(destination, source, allow_root=True):
+            raise ValueError("cannot paste a directory into itself")
+
+        name = os.path.basename(source)
+        direct = os.path.join(destination, name)
+        if cut and same_path(source, direct):
+            continue
+
+        if os.path.isdir(source):
+            base, extension = name, ""
+        else:
+            base, extension = os.path.splitext(name)
+
+        counter = 0
+        while True:
+            candidate_base = base if counter == 0 else f"{base}{counter}"
+            candidate = os.path.join(destination, candidate_base + extension)
+            candidate_without_extension = os.path.join(destination, candidate_base)
+            candidate_key = path_key(candidate)
+            base_key = path_key(candidate_without_extension)
+            if (
+                candidate_key not in reserved
+                and base_key not in reserved
+                and not os.path.exists(candidate)
+                and not os.path.exists(candidate_without_extension)
+            ):
+                break
+            counter += 1
+            if counter > 9999:
+                raise RuntimeError("could not allocate a unique asset paste path")
+        reserved.add(candidate_key)
+        reserved.add(base_key)
+        result.append((source, resolved_path(candidate)))
+    return result
+
+
 def _iter_asset_move_pairs(old_path: str, new_path: str):
     if os.path.isdir(old_path):
         for dirpath, _dirnames, filenames in os.walk(old_path):
             rel_dir = relative_path(dirpath, old_path, allow_root=True)
             mapped_dir = new_path if rel_dir == "." else os.path.join(new_path, rel_dir)
             for filename in filenames:
+                if filename.lower().endswith(".meta"):
+                    continue
                 yield os.path.join(dirpath, filename), os.path.join(mapped_dir, filename)
     elif os.path.isfile(old_path):
+        if old_path.lower().endswith(".meta"):
+            return
         yield old_path, new_path
 
 
 def _update_build_settings_scene_path(old_path: str, new_path: str):
-    """Replace *old_path* with *new_path* in BuildSettings.json scene list."""
+    """Project a scene asset move into the shared Project Settings document."""
     try:
-        from .build_settings_panel import load_build_settings, save_build_settings
-        settings = load_build_settings()
+        from Infernux.engine.interaction import ensure_project_settings_document
+        from Infernux.engine.project_context import get_project_root
+
+        root = get_project_root()
+        if not root:
+            return
+        controller = ensure_project_settings_document(root)
+        settings = controller.section("build")
         scenes = settings.get("scenes", [])
         old_norm = path_key(old_path)
         changed = False
         for i, s in enumerate(scenes):
-            if path_key(s) == old_norm:
-                scenes[i] = resolved_path(new_path)
+            scene_path = s if os.path.isabs(s) else os.path.join(root, s)
+            if path_key(scene_path) == old_norm:
+                scenes[i] = relative_path(new_path, root)
                 changed = True
         if changed:
             settings["scenes"] = scenes
-            save_build_settings(settings)
+            controller.apply_derived_section("build", settings)
     except Exception as _exc:
         Debug.log(f"[BuildSettings] Failed to update scene path: {_exc}")
 
 
-def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
-    from Infernux.core.assets import AssetManager
+def on_asset_mutation(change) -> None:
+    """Project UI consequences registered with the global mutation service."""
+    from Infernux.engine.interaction import AssetMutationKind, iter_asset_mutations
+
     from . import asset_details_renderer
 
-    if not AssetManager.move_asset(old_path, new_path, database=asset_database):
+    for mutation in iter_asset_mutations(change):
+        old_path = mutation.source_path
+        new_path = mutation.destination_path
+        if (
+            mutation.kind is AssetMutationKind.MOVED
+            and new_path.lower().endswith(".scene")
+        ):
+            _update_build_settings_scene_path(old_path, new_path)
+        asset_details_renderer.invalidate_asset(old_path)
+        if new_path:
+            asset_details_renderer.invalidate_asset(new_path)
+
+
+def _notify_asset_moved(
+    old_path: str,
+    new_path: str,
+    asset_database=None,
+    *,
+    origin="system",
+    operation_id: str = "",
+    publish_interaction: bool = True,
+):
+    from Infernux.core.assets import AssetManager
+
+    result = AssetManager.move_asset(
+        old_path,
+        new_path,
+        database=asset_database,
+        origin=origin,
+        operation_id=operation_id,
+        publish_interaction=publish_interaction,
+    )
+    if not result:
         raise RuntimeError(f"AssetDatabase failed to move '{old_path}' to '{new_path}'")
+    return result
 
-    # Update BuildSettings.json when a .scene file is renamed/moved
-    if old_path.lower().endswith(".scene"):
-        _update_build_settings_scene_path(old_path, new_path)
+def move_paths_batch(
+    moves,
+    asset_database=None,
+    *,
+    origin="system",
+    operation_id: str = "",
+    source_text_patches: dict[str, tuple[str, str]] | None = None,
+):
+    """Move multiple workspace roots through one editor/catalog transaction."""
+    roots: list[tuple[str, str]] = []
+    source_keys: set[str] = set()
+    destination_keys: set[str] = set()
+    for old_path, new_path in moves or ():
+        if not old_path or not new_path or not os.path.exists(old_path):
+            return None
+        old_abs = resolved_path(old_path)
+        new_abs = resolved_path(new_path)
+        if same_path(old_abs, new_abs):
+            continue
+        old_key = path_key(old_abs)
+        new_key = path_key(new_abs)
+        if old_key in source_keys or new_key in destination_keys:
+            raise ValueError("asset move batch contains duplicate sources or destinations")
+        if os.path.exists(new_abs):
+            return None
+        if os.path.isdir(old_abs) and is_path_within(new_abs, old_abs):
+            return None
+        if any(
+            is_path_within(old_abs, existing, allow_root=True)
+            or is_path_within(existing, old_abs, allow_root=True)
+            for existing, _destination in roots
+        ):
+            raise ValueError("asset move batch contains overlapping workspace roots")
+        source_keys.add(old_key)
+        destination_keys.add(new_key)
+        roots.append((old_abs, new_abs))
 
-    asset_details_renderer.invalidate_asset(old_path)
-    asset_details_renderer.invalidate_asset(new_path)
+    if not roots:
+        return tuple()
 
-def move_path(old_path: str, new_path: str, asset_database=None):
-    """Move or rename a file/directory to *new_path* and notify asset systems."""
-    if not old_path or not new_path or not os.path.exists(old_path):
-        return None
+    move_pairs = [
+        pair
+        for old_root, new_root in roots
+        for pair in _iter_asset_move_pairs(old_root, new_root)
+    ]
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import AssetMutationService
 
-    old_abs = resolved_path(old_path)
-    new_abs = resolved_path(new_path)
-    if same_path(old_abs, new_abs):
-        return new_abs
-
-    if os.path.isdir(old_abs) and is_path_within(new_abs, old_abs):
-        return None
-
-    move_pairs = list(_iter_asset_move_pairs(old_abs, new_abs))
+    mutations = AssetMutationService.instance()
     try:
-        shutil.move(old_abs, new_abs)
-    except OSError as _exc:
+        database = AssetManager._mutation_database(asset_database)
+    except RuntimeError:
+        if mutations is not None:
+            mutations = None
+        database = asset_database
+    relocation_entries = tuple(
+        (
+            old_file,
+            new_file,
+            database.get_guid_from_path(old_file) if database is not None else "",
+        )
+        for old_file, new_file in move_pairs
+    )
+    plan = None
+    if mutations is not None and move_pairs:
+        plan = mutations.prepare_relocation(
+            relocation_entries,
+            origin=origin,
+            operation_id=operation_id,
+        )
+    try:
+        from Infernux.engine.interaction.asset_content import (
+            AssetReferenceRelocationPlanner,
+        )
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = str(getattr(database, "project_root", "") or get_project_root() or "")
+        reference_patches = AssetReferenceRelocationPlanner.build_patches(
+            relocation_entries,
+            database=database,
+            project_root=project_root,
+            source_text_patches=source_text_patches,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        if plan is not None:
+            mutations.abort_relocation(plan)
+        Debug.log_error(f"Asset reference relocation preflight failed: {exc}")
+        return None
+    workspace_moves: list[tuple[str, str]] = []
+    patched_sources: list[tuple[str, tuple[str, str]]] = []
+    patched_references = []
+    database_moves: list[tuple[str, str]] = []
+    try:
+        if source_text_patches:
+            from Infernux.core.document_store import write_document_text
+
+            patches_by_key = {
+                path_key(path): patch for path, patch in source_text_patches.items()
+            }
+            for old_abs, _new_abs in roots:
+                patch = patches_by_key.get(path_key(old_abs))
+                if patch is None:
+                    continue
+                write_document_text(old_abs, patch[1])
+                patched_sources.append((old_abs, patch))
+
+        for old_abs, new_abs in roots:
+            os.makedirs(os.path.dirname(new_abs), exist_ok=True)
+            shutil.move(old_abs, new_abs)
+            workspace_moves.append((old_abs, new_abs))
+
+        use_native_batch = (
+            plan is not None
+            and hasattr(database, "move_assets_batch")
+            and all(mutation.guid for mutation in plan.mutations)
+        )
+        if use_native_batch:
+            results = AssetManager.move_assets_batch(move_pairs, database=database)
+            if len(results) != len(move_pairs) or any(not result for result in results):
+                message = next(
+                    (str(getattr(result, "error", "") or "") for result in results if not result),
+                    "native asset relocation batch failed",
+                )
+                raise RuntimeError(message)
+            database_moves.extend(move_pairs)
+        else:
+            for old_file, new_file in move_pairs:
+                if plan is None and origin == "system" and not operation_id:
+                    _notify_asset_moved(old_file, new_file, database)
+                else:
+                    _notify_asset_moved(
+                        old_file,
+                        new_file,
+                        database,
+                        origin=origin,
+                        operation_id=(plan.operation_id if plan is not None else operation_id),
+                        publish_interaction=plan is None,
+                    )
+                database_moves.append((old_file, new_file))
+        if reference_patches:
+            from Infernux.core.document_store import write_document_text
+
+            for patch in reference_patches:
+                AssetManager._suppress_watcher_echo("modified", patch.destination_path)
+                write_document_text(patch.destination_path, patch.updated)
+                patched_references.append(patch)
+            for patch in reference_patches:
+                result = AssetManager.reimport_asset(
+                    patch.destination_path,
+                    database=database,
+                )
+                if not result:
+                    message = str(getattr(result, "error", "") or "asset reimport failed")
+                    raise RuntimeError(
+                        f"asset reference migration failed for '{patch.destination_path}': {message}"
+                    )
+        if plan is not None:
+            mutations.commit_relocation(plan)
+    except (OSError, RuntimeError, ValueError) as _exc:
+        for old_abs, new_abs in reversed(workspace_moves):
+            try:
+                shutil.move(new_abs, old_abs)
+            except OSError as rollback_exc:
+                Debug.log_error(
+                    f"Asset workspace rollback failed for '{new_abs}' -> '{old_abs}': {rollback_exc}"
+                )
+        for patch in reversed(patched_references):
+            if not os.path.isfile(patch.source_path):
+                continue
+            try:
+                from Infernux.core.document_store import write_document_text
+
+                write_document_text(patch.source_path, patch.original)
+            except OSError as rollback_exc:
+                Debug.log_error(
+                    f"Asset reference rollback failed for '{patch.source_path}': {rollback_exc}"
+                )
+        for old_abs, patch in reversed(patched_sources):
+            if not os.path.isfile(old_abs):
+                continue
+            try:
+                from Infernux.core.document_store import write_document_text
+
+                write_document_text(old_abs, patch[0])
+            except OSError as rollback_exc:
+                Debug.log_error(f"Asset content rollback failed for '{old_abs}': {rollback_exc}")
+        for old_file, new_file in reversed(database_moves):
+            try:
+                _notify_asset_moved(
+                    new_file,
+                    old_file,
+                    database,
+                    origin="system",
+                    operation_id=(plan.operation_id if plan is not None else operation_id),
+                    publish_interaction=False,
+                )
+            except Exception as rollback_exc:
+                Debug.log_error(
+                    f"Asset catalog rollback failed for '{new_file}' -> '{old_file}': {rollback_exc}"
+                )
+        if plan is not None:
+            mutations.abort_relocation(plan)
         Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
-    for old_file, new_file in move_pairs:
-        _notify_asset_moved(old_file, new_file, asset_database)
+    return tuple(destination for _source, destination in roots)
 
-    return new_abs
+
+def move_path(
+    old_path: str,
+    new_path: str,
+    asset_database=None,
+    *,
+    origin="system",
+    operation_id: str = "",
+    source_text_patch: tuple[str, str] | None = None,
+):
+    """Move or rename one workspace root through the global transaction."""
+    result = move_paths_batch(
+        ((old_path, new_path),),
+        asset_database,
+        origin=origin,
+        operation_id=operation_id,
+        source_text_patches=(
+            {old_path: source_text_patch} if source_text_patch is not None else None
+        ),
+    )
+    if result is None:
+        return None
+    if not result:
+        return resolved_path(new_path) if same_path(old_path, new_path) else None
+    return result[0]
 
 
 def move_item_to_directory(item_path: str, dest_dir: str, asset_database=None):
@@ -439,17 +758,39 @@ def create_script(current_path: str, script_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{script_name}' already exists"
 
+    started = time.perf_counter()
+    marks: list[tuple[str, float]] = []
+
+    def mark(label: str) -> None:
+        marks.append((label, time.perf_counter()))
+
     content = SCRIPT_TEMPLATE.format(class_name=class_name)
     written, error = _write_new_text_asset(file_path, content)
+    mark("write")
     if not written:
         return False, error
 
     if asset_database:
         try:
             guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered script: {script_name} -> {guid}")
+            mark("import")
+            Debug.log_internal(
+                f"[ProjectPanel] Registered script: {script_name} -> {guid}"
+            )
         except Exception as exc:
             return False, str(exc)
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if elapsed_ms >= 10.0:
+        previous = started
+        pieces = []
+        for label, current in marks:
+            pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+            previous = current
+        Debug.log_internal(
+            f"[ScriptAssetProfile] create={elapsed_ms:.2f}ms "
+            f"file={script_name} " + " ".join(pieces)
+        )
 
     return True, ""
 
@@ -902,56 +1243,16 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
 # Delete & Rename
 # ---------------------------------------------------------------------------
 
-def _detach_prefab_instances(prefab_path: str, asset_database=None):
-    """Clear prefab linkage for live instances and return the changed count."""
-    guid = ""
-    if asset_database:
-        try:
-            guid = asset_database.get_guid_from_path(prefab_path)
-        except Exception:
-            pass
-    if not guid:
-        return 0
-
-    from Infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
-    if scene is None:
-        return 0
-
-    detached = 0
-
-    def _walk(objects):
-        nonlocal detached
-        for obj in objects:
-            try:
-                obj_guid = getattr(obj, 'prefab_guid', '')
-                if obj_guid == guid:
-                    obj.prefab_guid = ""
-                    obj.prefab_root = False
-                    detached += 1
-                children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
-                _walk(children)
-            except Exception:
-                pass
-
-    try:
-        roots = list(scene.get_root_objects())
-        _walk(roots)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-    if detached:
-        from Infernux.engine.scene_manager import SceneFileManager
-
-        manager = SceneFileManager.instance()
-        if manager is not None:
-            manager.mark_dirty()
-    return detached
-
-
 def delete_item(item_path: str, asset_database=None):
     """Delete a file or directory from the filesystem and notify AssetDatabase."""
     if not item_path or not os.path.exists(item_path):
         return False
+
+    started = time.perf_counter()
+    marks: list[tuple[str, float]] = []
+
+    def mark(label: str) -> None:
+        marks.append((label, time.perf_counter()))
 
     is_dir = os.path.isdir(item_path)
     deleted_script_guid = ""
@@ -965,12 +1266,6 @@ def delete_item(item_path: str, asset_database=None):
             from Infernux.core.asset_types import read_meta_guid
             deleted_script_guid = read_meta_guid(item_path)
 
-    # For .prefab files, detach all scene instances BEFORE deleting the asset.
-    # This turns prefab instances into regular scene objects instead of leaving
-    # them orphaned with a dangling prefab_guid.
-    if not is_dir and item_path.lower().endswith('.prefab'):
-        _detach_prefab_instances(item_path, asset_database)
-
     # Notify BEFORE removing the file — GUID is still resolvable at this point
     if not is_dir:
         from Infernux.core.assets import AssetManager
@@ -980,6 +1275,7 @@ def delete_item(item_path: str, asset_database=None):
             guid_hint=deleted_script_guid,
         ):
             raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
+        mark("asset_database")
 
     try:
         if is_dir:
@@ -989,7 +1285,6 @@ def delete_item(item_path: str, asset_database=None):
             # On Windows, transient locks (antivirus, indexer, font loader)
             # can prevent deletion.  Retry with increasing delays.
             import gc
-            import time
             last_exc = None
             for _attempt in range(5):
                 try:
@@ -1006,6 +1301,7 @@ def delete_item(item_path: str, asset_database=None):
                     f"file may be in use by another process. ({last_exc})"
                 )
                 return False
+        mark("filesystem")
     except OSError as _exc:
         Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
         return False
@@ -1013,46 +1309,82 @@ def delete_item(item_path: str, asset_database=None):
     # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_details_renderer
     asset_details_renderer.invalidate_asset(item_path)
+    mark("ui_invalidate")
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if elapsed_ms >= 10.0:
+        previous = started
+        pieces = []
+        for label, current in marks:
+            pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+            previous = current
+        Debug.log_internal(
+            f"[AssetMutationProfile] delete={elapsed_ms:.2f}ms "
+            f"file={os.path.basename(item_path)} " + " ".join(pieces)
+        )
     return True
 
 
-def do_rename(old_path: str, new_name: str, asset_database=None):
-    """Rename a file or directory. Returns the new path on success, ``None`` on failure."""
-    from .project_utils import update_material_name_in_file
-
+def rename_destination(old_path: str, new_name: str) -> str:
+    """Return the canonical destination used by an editor rename intent."""
     if not old_path or not new_name:
-        return None
-
-    safe_name = "".join([c for c in new_name if c.isalnum() or c in "._- "]).strip()
+        return ""
+    safe_name = "".join(
+        c for c in new_name if c.isalnum() or c in "._- "
+    ).strip()
     if not safe_name:
-        return None
-
+        return ""
     if os.path.isfile(old_path):
-        _, ext = os.path.splitext(old_path)
-        if ext and not safe_name.lower().endswith(ext.lower()):
-            safe_name += ext
+        _, extension = os.path.splitext(old_path)
+        if extension and not safe_name.lower().endswith(extension.lower()):
+            safe_name += extension
+    return os.path.join(os.path.dirname(old_path), safe_name)
 
-    new_path = os.path.join(os.path.dirname(old_path), safe_name)
+
+def do_rename(
+    old_path: str,
+    new_name: str,
+    asset_database=None,
+    *,
+    origin="system",
+    operation_id: str = "",
+):
+    """Rename a file or directory. Returns the new path on success, ``None`` on failure."""
+    new_path = rename_destination(old_path, new_name)
+    if not new_path:
+        return None
+    safe_name = os.path.basename(new_path)
 
     if old_path == new_path:
         return new_path  # Nothing to do
 
-    _, ext = os.path.splitext(old_path)
-    if ext.lower() == '.mat' and os.path.isfile(old_path):
-        try:
-            update_material_name_in_file(old_path, os.path.splitext(safe_name)[0])
-        except OSError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return None
+    try:
+        source_text_patch = _build_rename_content_patch(old_path, new_path)
+    except (OSError, ValueError, json.JSONDecodeError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        return None
 
-    if ext.lower() == '.py' and os.path.isfile(old_path):
-        try:
-            _sync_python_script_class_name_on_rename(old_path, new_path)
-        except OSError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return None
+    return move_path(
+        old_path,
+        new_path,
+        asset_database,
+        origin=origin,
+        operation_id=operation_id,
+        source_text_patch=source_text_patch,
+    )
 
-    return move_path(old_path, new_path, asset_database)
+
+def _build_rename_content_patch(old_path: str, new_path: str) -> tuple[str, str] | None:
+    """Build a reversible patch through the shared asset-content registry."""
+    from Infernux.engine.interaction import AssetRenameContentRegistry
+
+    return AssetRenameContentRegistry.instance().build_patch(old_path, new_path)
+
+
+def _renamed_python_script_text(content: str, old_path: str, new_path: str) -> str:
+    """Compatibility helper backed by the shared rename-content registry."""
+    from Infernux.engine.interaction.asset_content import _rename_single_component_class
+
+    return _rename_single_component_class(content, old_path, new_path)
 
 
 def _sync_python_script_class_name_on_rename(old_path: str, new_path: str) -> None:
@@ -1061,40 +1393,9 @@ def _sync_python_script_class_name_on_rename(old_path: str, new_path: str) -> No
     Only rewrites when the file's primary class name matches the old stem, so
     hand-authored multi-class scripts are left untouched.
     """
-    import re
-
-    old_stem = os.path.splitext(os.path.basename(old_path))[0]
-    new_stem = os.path.splitext(os.path.basename(new_path))[0]
-    if not old_stem.isidentifier() or not new_stem.isidentifier() or old_stem == new_stem:
-        return
-
     with open(old_path, "r", encoding="utf-8") as handle:
         content = handle.read()
-
-    def _pascal_case(stem: str) -> str:
-        return "".join(
-            part[:1].upper() + part[1:]
-            for part in stem.split("_")
-            if part
-        )
-
-    rename_pairs = {
-        old_stem: new_stem,
-        _pascal_case(old_stem): _pascal_case(new_stem),
-    }
-    candidates = []
-    for old_class_name, new_class_name in rename_pairs.items():
-        pattern = re.compile(
-            rf"^class\s+{re.escape(old_class_name)}\b",
-            re.MULTILINE,
-        )
-        matches = list(pattern.finditer(content))
-        candidates.extend((pattern, new_class_name) for _match in matches)
-    if len(candidates) != 1:
-        return
-
-    pattern, new_class_name = candidates[0]
-    updated = pattern.sub(f"class {new_class_name}", content, count=1)
+    updated = _renamed_python_script_text(content, old_path, new_path)
     if updated == content:
         return
 

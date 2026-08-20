@@ -21,9 +21,13 @@ Usage::
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
+import threading
 import time
 import weakref
+import uuid
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from Infernux.core.material import Material
@@ -48,6 +52,46 @@ from Infernux.engine.path_utils import path_key, portable_path, resolved_path
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
 _DEFAULT_DEBOUNCE_SEC: float = 0.35  # seconds
+_RUNTIME_VOLUME_TEXTURE_EXTENSIONS = frozenset({".inxvfield", ".inxsdf"})
+
+
+@dataclass(slots=True)
+class _AssetRevisionState:
+    """Monotonic persistence/preview state owned by the unified AssetManager."""
+
+    edit_revision: int = 0
+    requested_write_revision: int = 0
+    persisted_revision: int = 0
+    imported_disk_revision: int = 0
+    preview_dependency_revision: int = 0
+    expected_file_state: Any = None
+    persisted_file_state: Any = None
+    content_token: str = ""
+    commit_chain_token: str = ""
+
+
+@dataclass(slots=True)
+class _PendingDocumentWrite:
+    path: str
+    ticket: Any
+    edit_revision: int
+    requested_write_revision: int
+    commit_token: str
+    snapshot: str
+    content_token: str
+    imported_disk_revision: int = 0
+    expected_file_state: Any = None
+    callback: Optional[Callable[[str], None]] = None
+
+
+@dataclass(slots=True)
+class _SelfWriteCommit:
+    """The last exact publication that a watcher may acknowledge."""
+
+    ticket: Any
+    commit_token: str
+    content_token: str
+    file_state: Any = None
 
 
 class AssetManager:
@@ -69,6 +113,7 @@ class AssetManager:
     # current scene still has pending destroy/update work; doing Vulkan cache
     # eviction there is fragile in large live scenes.
     _pending_gpu_texture_reloads: Dict[str, str] = {}
+    _pending_gpu_texture_reloads_lock = threading.Lock()
 
     # Reference to the C++ AssetDatabase (set during engine init)
     _asset_database = None
@@ -91,7 +136,16 @@ class AssetManager:
     # JSON snapshots are captured on the main thread, while DocumentStore owns
     # coalescing and atomic IO on native worker threads.
     _render_effect_save_snapshots: Dict[str, str] = {}
+    _document_save_expected_states: Dict[str, Any] = {}
+    _document_write_metadata: Dict[str, Dict[str, Any]] = {}
+    _asset_revision_states: Dict[str, _AssetRevisionState] = {}
     _pending_document_writes: Dict[str, Any] = {}
+    _pending_document_write_callbacks: Dict[str, tuple[Any, Callable[[str], None]]] = {}
+    # Keep every ticket, including a ticket superseded by a newer queued
+    # generation.  The legacy single-ticket map above remains as a lookup
+    # compatibility path for callers that only need the latest receipt.
+    _pending_document_write_records: Dict[str, list[_PendingDocumentWrite]] = {}
+    _self_write_commits: Dict[str, list[_SelfWriteCommit]] = {}
 
     # Cached reference to C++ AssetRegistry singleton
     _registry = None
@@ -103,7 +157,7 @@ class AssetManager:
     _meta_write_suppression: Dict[str, float] = {}
     _watcher_echo_suppression: Dict[
         tuple[str, str, str],
-        tuple[float, tuple[int, int] | None],
+        tuple[int, int, int] | None,
     ] = {}
 
     @classmethod
@@ -119,6 +173,22 @@ class AssetManager:
             cls._asset_database = native.get_asset_database()
         # Cache the AssetRegistry singleton
         cls._registry = cls._resolve_registry()
+
+    @classmethod
+    def refresh_pending(cls) -> bool:
+        """Return whether the native catalog is scanning or committing.
+
+        Published query snapshots remain readable during refresh, but asset
+        mutation APIs are intentionally unavailable until the atomic commit
+        completes. Runtime product builders use this as a readiness gate.
+        """
+        database = cls._asset_database
+        if database is None:
+            return False
+        try:
+            return bool(database.refresh_pending)
+        except (AttributeError, RuntimeError):
+            return False
 
     @classmethod
     def load(cls, path: str, asset_type: Optional[Type] = None) -> Optional[Any]:
@@ -266,6 +336,7 @@ class AssetManager:
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
         cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
+        cls.register_save_strategy("physic_material", lambda resource: resource.save() is not False)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
         cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
@@ -324,13 +395,59 @@ class AssetManager:
             cls._meta_write_suppression[normalized] = time.monotonic() + _META_SUPPRESSION_TIMEOUT
 
     @classmethod
+    def _submit_internal_script_change(
+        cls,
+        path: str,
+        *,
+        catalog_event: str | None,
+    ) -> None:
+        """Feed successful internal Python mutations into the shared collector.
+
+        Asset mutations suppress their matching watchdog echo, so ordinary
+        Python files need an explicit ingress here.  ParticleScript source is
+        owned by the particle compiler and is intentionally excluded.
+        """
+        lower = str(path or "").lower()
+        if not lower.endswith(".py") or lower.endswith(".particle.py"):
+            return
+        try:
+            from Infernux.engine.interaction import current_action_origin
+            from Infernux.engine.resources_manager import ResourcesManager
+
+            action_origin = current_action_origin()
+            origin_value = getattr(action_origin, "value", str(action_origin))
+            collector_origin = {
+                "automation": "mcp",
+                "external": "watchdog",
+            }.get(origin_value, "editor")
+            manager = ResourcesManager.instance()
+            if manager is not None:
+                manager.submit_script_change(
+                    path,
+                    origin=collector_origin,
+                    catalog_event=catalog_event,
+                    change_kind=catalog_event or "modified",
+                )
+        except Exception as exc:
+            Debug.log_suppressed("AssetManager._submit_internal_script_change", exc)
+
+    @classmethod
     def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
         """Import one new asset and publish its editor-visible creation."""
+        profile_script = str(path or "").lower().endswith(".py")
+        profile_started = time.perf_counter()
+        profile_marks: list[tuple[str, float]] = []
+
+        def mark(label: str) -> None:
+            if profile_script:
+                profile_marks.append((label, time.perf_counter()))
+
         asset_database = cls._mutation_database(database)
         # Meta sidecars are written through DocumentStore atomic replace, which
         # briefly deletes the previous .meta and must not trigger rebuild work.
         cls._suppress_meta_watcher(path)
         result = asset_database.import_asset(path)
+        mark("database")
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
@@ -355,7 +472,24 @@ class AssetManager:
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._prime_material_preview(path)
-        cls._emit_editor_asset_changed(path, "created")
+        mark("cache_invalidation")
+        cls._publish_asset_content_change(path, "created", guid=result.guid)
+        mark("interaction_publish")
+        if suppress_watcher_echo:
+            cls._submit_internal_script_change(path, catalog_event="created")
+        mark("collector_submit")
+        if profile_script:
+            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
+            if elapsed_ms >= 10.0:
+                previous = profile_started
+                pieces = []
+                for label, current in profile_marks:
+                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+                    previous = current
+                Debug.log_internal(
+                    f"[ScriptAssetProfile] import={elapsed_ms:.2f}ms "
+                    f"file={os.path.basename(path)} " + " ".join(pieces)
+                )
         return result
 
     @classmethod
@@ -389,6 +523,22 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
+        if is_ordinary_script:
+            # Ordinary scripts have their own validated collector and atomic
+            # class-publication transaction. Broadcasting the same edit to
+            # every generic asset/preview listener first made source saves pay
+            # for two independent invalidation graphs on the main thread.
+            # Their exact bytes and SHA-256 revision are already captured by
+            # ScriptChangeCollector; the asset revision ledger exists for
+            # persisted document/preview products and would hash the same
+            # Python source a second time.
+            cls.invalidate(guid)
+            if suppress_watcher_echo:
+                cls._suppress_watcher_echo("modified", path)
+                cls._submit_internal_script_change(path, catalog_event="modified")
+            return result
+
         effect_error = cls._compile_render_effect_runtime(path, guid)
         if effect_error:
             from Infernux.lib import AssetMutationErrorCode
@@ -415,7 +565,19 @@ class AssetManager:
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
                 return result
-        elif not cls._is_compiled_authoring_source(path):
+        elif ext == ".py" and not str(path).lower().endswith(".particle.py"):
+            # Ordinary project scripts are published by the unified script
+            # collector below.  AssetManager owns the catalog/cache mutation,
+            # but must never execute a script or reload the registry before
+            # the collector has produced a validated revision.
+            pass
+        elif (
+            ext not in IMAGE_EXTENSIONS or ext in _RUNTIME_VOLUME_TEXTURE_EXTENSIONS
+        ) and not cls._is_compiled_authoring_source(path):
+            # Textures have one authoritative runtime publication path below:
+            # native reload_texture(). Runtime vector fields/SDFs are the
+            # exception: their immutable volume generation is owned by the
+            # loaded registry object and must advance in place on reimport.
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
                 from Infernux.lib import AssetMutationErrorCode
@@ -433,9 +595,12 @@ class AssetManager:
         from Infernux.core.asset_types import MESH_EXTENSIONS
         if ext in MESH_EXTENSIONS:
             cls._reload_mesh_asset(path)
+        cls.note_imported_disk_change(path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("modified", path)
-        cls._emit_editor_asset_changed(path, "modified")
+        cls._publish_asset_content_change(path, "modified", guid=guid)
+        if suppress_watcher_echo:
+            cls._submit_internal_script_change(path, catalog_event="modified")
         return result
 
     @classmethod
@@ -492,16 +657,33 @@ class AssetManager:
             return f"particle compile failed; keeping last-known-good: {exc}"
 
     @classmethod
-    def _emit_editor_asset_changed(cls, path: str, event_type: str = "modified") -> None:
+    def _publish_asset_content_change(
+        cls,
+        path: str,
+        event_type: str = "modified",
+        *,
+        guid: str = "",
+    ) -> None:
+        """Publish one committed database consequence to Interaction Core."""
         if not path:
             return
         try:
-            from Infernux.engine.ui.event_bus import EditorEventBus, EditorEvent
+            from Infernux.engine.interaction import (
+                AssetMutationKind,
+                AssetMutationService,
+                current_action_origin,
+            )
 
-            bus = EditorEventBus.instance()
-            bus.emit(EditorEvent.ASSET_CHANGED, path, event_type)
+            service = AssetMutationService.instance()
+            if service is not None:
+                service.publish_content_change(
+                    path,
+                    AssetMutationKind(str(event_type).casefold()),
+                    guid=guid,
+                    origin=current_action_origin(),
+                )
         except Exception as exc:
-            Debug.log_suppressed("AssetManager._emit_editor_asset_changed", exc)
+            Debug.log_suppressed("AssetManager._publish_asset_content_change", exc)
 
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
@@ -523,14 +705,67 @@ class AssetManager:
         *,
         database=None,
         suppress_watcher_echo: bool = True,
+        origin="system",
+        operation_id: str = "",
+        publish_interaction: bool = True,
     ):
-        """Commit a GUID-stable move, then patch all loaded path-bearing state."""
+        """Commit one GUID-stable catalog move and update loaded runtime state.
+
+        Project workspace operations preflight and publish a complete relocation
+        batch themselves, so they disable the per-entry interaction publication.
+        """
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(old_path)
+        mutations = None
+        plan = None
+        if publish_interaction:
+            from Infernux.engine.interaction import ActionOrigin, AssetMutationService
+
+            mutations = AssetMutationService.instance()
+            action_origin = ActionOrigin(origin)
+            if mutations is not None and action_origin is not ActionOrigin.EXTERNAL:
+                plan = mutations.prepare_relocation(
+                    ((old_path, new_path, guid),),
+                    origin=action_origin,
+                    operation_id=operation_id,
+                )
         result = asset_database.move_asset(old_path, new_path)
         if not result:
+            if mutations is not None and plan is not None:
+                mutations.abort_relocation(plan)
             return result
+        cls._finalize_asset_move(
+            old_path,
+            new_path,
+            guid=guid,
+            suppress_watcher_echo=suppress_watcher_echo,
+        )
+        if mutations is not None:
+            if plan is not None:
+                mutations.commit_relocation(plan)
+            elif publish_interaction:
+                try:
+                    mutations.publish_move(
+                        old_path,
+                        new_path,
+                        guid=guid,
+                        origin=origin,
+                        operation_id=operation_id,
+                    )
+                except Exception as exc:
+                    Debug.log_suppressed("AssetManager.move_asset.external_interaction", exc)
+        return result
 
+    @classmethod
+    def _finalize_asset_move(
+        cls,
+        old_path: str,
+        new_path: str,
+        *,
+        guid: str = "",
+        suppress_watcher_echo: bool = True,
+    ) -> None:
+        """Apply loaded-runtime and editor-cache consequences of a catalog move."""
         registry = cls._get_registry()
         if registry:
             registry.update_loaded_asset_path(old_path, new_path)
@@ -544,14 +779,35 @@ class AssetManager:
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
-        cls._emit_editor_asset_changed(new_path, "moved")
         if suppress_watcher_echo and new_path.lower().endswith(".py"):
             from Infernux.engine.resources_manager import ResourcesManager
 
             resources = ResourcesManager.instance()
             if resources is not None:
                 resources.reload_moved_script(old_path, new_path)
-        return result
+
+    @classmethod
+    def move_assets_batch(
+        cls,
+        moves,
+        *,
+        database=None,
+        suppress_watcher_echo: bool = True,
+    ):
+        """Commit one native catalog batch, then project runtime consequences."""
+        asset_database = cls._mutation_database(database)
+        pairs = tuple((str(old), str(new)) for old, new in moves)
+        results = asset_database.move_assets_batch(pairs)
+        if len(results) != len(pairs) or any(not result for result in results):
+            return results
+        for (old_path, new_path), result in zip(pairs, results):
+            cls._finalize_asset_move(
+                old_path,
+                new_path,
+                guid=str(result.guid or ""),
+                suppress_watcher_echo=suppress_watcher_echo,
+            )
+        return results
 
     @classmethod
     def delete_asset(
@@ -562,18 +818,40 @@ class AssetManager:
         suppress_watcher_echo: bool = True,
         guid_hint: str = "",
     ):
-        """Evict loaded state before deleting the database record and metadata."""
+        """Evict loaded state while preserving serialized references by GUID.
+
+        A deleted asset becomes a missing reference in live documents. Keeping
+        that identity intact lets Undo or a later reimport reconnect it without
+        silently rewriting user data.
+        """
         from Infernux.core.asset_types import MATERIAL_EXTENSIONS
+
+        profile_script = str(path or "").lower().endswith(".py")
+        profile_started = time.perf_counter()
+        profile_marks: list[tuple[str, float]] = []
+
+        def mark(label: str) -> None:
+            if profile_script:
+                profile_marks.append((label, time.perf_counter()))
 
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(path) or str(guid_hint or "").strip()
+        ext = os.path.splitext(path)[1].lower()
+
+        # The catalog mutation owns dependency notification.  Do not evict
+        # live payloads before it commits: a failed metadata/database delete
+        # must leave the running editor exactly as it was.
+        result = asset_database.delete_asset(path)
+        mark("database")
+        if not result:
+            return result
+
         registry = cls._get_registry()
         if registry and guid:
             registry.remove_asset(guid)
         if guid:
             cls.invalidate(guid)
 
-        ext = os.path.splitext(path)[1].lower()
         if ext in MATERIAL_EXTENSIONS:
             if guid:
                 cls._remove_material_pipeline(guid)
@@ -581,35 +859,34 @@ class AssetManager:
                 cls._remove_material_pipeline_by_path(path)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
-            cls._clear_deleted_texture_from_active_ui(path)
             cls._schedule_gpu_texture_reload(path)
 
-        result = asset_database.delete_asset(path)
-        if not result:
-            return result
         if ext == ".py" and guid:
             from Infernux.engine.play_mode import PlayModeManager
 
             play_mode = PlayModeManager.instance()
             if play_mode is not None:
                 play_mode.mark_components_missing_for_script(guid, path)
-        cls._clear_deleted_live_references(guid, path)
+        mark("runtime_detach")
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
-        cls._emit_editor_asset_changed(path, "deleted")
+        cls._publish_asset_content_change(path, "deleted", guid=guid)
+        mark("interaction_publish")
+        if profile_script:
+            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
+            if elapsed_ms >= 10.0:
+                previous = profile_started
+                pieces = []
+                for label, current in profile_marks:
+                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+                    previous = current
+                Debug.log_internal(
+                    f"[ScriptAssetProfile] asset_delete={elapsed_ms:.2f}ms "
+                    f"file={os.path.basename(path)} " + " ".join(pieces)
+                )
         return result
-
-    @classmethod
-    def _clear_deleted_live_references(cls, guid: str, path: str) -> dict:
-        from Infernux.engine.asset_reference_cleanup import clear_deleted_asset_references
-
-        try:
-            return clear_deleted_asset_references(guid, path)
-        except Exception as exc:
-            Debug.log_error(f"Failed to clear live references for deleted asset '{path}': {exc}")
-            return {"references_cleared": 0, "components_changed": 0, "fields": []}
 
     @classmethod
     def schedule_save(cls, key: str, save_fn: Callable[[], object], debounce_sec: float = _DEFAULT_DEBOUNCE_SEC):
@@ -652,10 +929,404 @@ class AssetManager:
         if save_handler is None:
             return
 
-        cls.schedule_save(key, lambda: save_handler(resource_obj), debounce_sec=debounce_sec)
+        if asset_category == "material":
+            # The document controller owns the durable target.  Python
+            # Material wrappers intentionally expose data rather than relying
+            # on a view/native object's incidental file_path attribute.
+            cls.schedule_save(
+                key,
+                lambda: save_handler(resource_obj, key),
+                debounce_sec=debounce_sec,
+            )
+        else:
+            cls.schedule_save(
+                key,
+                lambda: save_handler(resource_obj),
+                debounce_sec=debounce_sec,
+            )
 
     @classmethod
-    def set_material_save_snapshot(cls, file_path: str, json_str: str):
+    def cancel_scheduled_save(cls, key: str) -> bool:
+        """Cancel a debounced write that has not reached its persistence backend."""
+        removed = cls._scheduled_saves.pop(key, None) is not None
+        normalized = path_key(key) if key else ""
+        if normalized:
+            cls._material_save_snapshots.pop(normalized, None)
+            cls._render_effect_save_snapshots.pop(normalized, None)
+            cls._document_save_expected_states.pop(normalized, None)
+            cls._document_write_metadata.pop(normalized, None)
+        return removed
+
+    @classmethod
+    def _asset_revision_state(cls, file_path: str) -> _AssetRevisionState:
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            raise ValueError("asset revision state requires a file path")
+        return cls._asset_revision_states.setdefault(normalized, _AssetRevisionState())
+
+    @classmethod
+    def _ensure_commit_chain_token(
+        cls,
+        file_path: str,
+        *,
+        document_id: str = "",
+    ) -> str:
+        state = cls._asset_revision_state(file_path)
+        if not state.commit_chain_token:
+            state.commit_chain_token = (
+                f"document:{document_id}"
+                if document_id
+                else f"asset:{uuid.uuid4().hex}"
+            )
+        metadata = cls._document_write_metadata.setdefault(path_key(file_path), {})
+        metadata["commit_chain_token"] = state.commit_chain_token
+        return state.commit_chain_token
+
+    @staticmethod
+    def _content_token(value: str) -> str:
+        return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _file_state_signature(state: Any):
+        """Return the CAS identity without using modified time as ordering."""
+        if state is None:
+            return None
+        if isinstance(state, dict):
+            exists = state.get("exists")
+            size = state.get("size", 0)
+            content_hash = state.get("content_hash", state.get("contentHash", 0))
+        elif isinstance(state, (tuple, list)) and len(state) >= 3:
+            exists, size, content_hash = state[0], state[1], state[2]
+        else:
+            exists = getattr(state, "exists", None)
+            size = getattr(state, "size", 0)
+            content_hash = getattr(state, "content_hash", 0)
+        if exists is None:
+            return None
+        try:
+            return bool(exists), int(size or 0), int(content_hash or 0)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _capture_file_fingerprint(cls, file_path: str):
+        """Capture the same content identity used by native DocumentStore."""
+        try:
+            from Infernux.core.document_store import capture_document_file_state
+
+            signature = cls._file_state_signature(
+                capture_document_file_state(file_path)
+            )
+            if signature is not None:
+                return signature
+        except (ImportError, OSError, RuntimeError, AttributeError, TypeError, ValueError):
+            pass
+
+        target = str(file_path or "")
+        if not os.path.isfile(target):
+            return False, 0, 0
+        digest = 1469598103934665603
+        size = 0
+        try:
+            with open(target, "rb") as stream:
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    for value in chunk:
+                        digest ^= value
+                        digest = (digest * 1099511628211) & ((1 << 64) - 1)
+        except OSError:
+            return None
+        return True, size, digest
+
+    @classmethod
+    def _file_state_matches(cls, file_path: str, expected_state: Any) -> bool:
+        expected = cls._file_state_signature(expected_state)
+        return expected is not None and expected == cls._capture_file_fingerprint(file_path)
+
+    @classmethod
+    def _register_self_write_commit(cls, record: _PendingDocumentWrite) -> None:
+        committed_state = getattr(record.ticket, "committed_file_state", None)
+        if committed_state is None:
+            return
+        entries = cls._self_write_commits.setdefault(record.path, [])
+        if any(entry.commit_token == record.commit_token for entry in entries):
+            return
+        entries.append(
+            _SelfWriteCommit(
+                ticket=record.ticket,
+                commit_token=record.commit_token,
+                content_token=record.content_token,
+                file_state=committed_state,
+            )
+        )
+
+    @classmethod
+    def register_local_commit(
+        cls,
+        file_path: str,
+        *,
+        commit_token: str,
+        content_token: str = "",
+        file_state: Any = None,
+        edit_revision: int = 0,
+        document_id: str = "",
+    ):
+        """Publish a completed editor write to the watcher/CAS ledger.
+
+        This is the synchronous counterpart of ``_submit_document_snapshot``.
+        It is intentionally based on the exact committed file fingerprint, so
+        the next watcher notification can acknowledge the editor's own write
+        without a time-based suppression window.
+        """
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            raise ValueError("local commit requires a file path")
+        if not str(commit_token or "").strip():
+            raise ValueError("local commit requires a commit token")
+        if file_state is None:
+            from Infernux.core.document_store import capture_document_file_state
+
+            file_state = capture_document_file_state(file_path)
+        state = cls._asset_revision_state(normalized)
+        state.persisted_file_state = file_state
+        state.expected_file_state = file_state
+        if edit_revision:
+            state.edit_revision = max(state.edit_revision, int(edit_revision))
+            state.persisted_revision = max(state.persisted_revision, int(edit_revision))
+        if content_token:
+            state.content_token = str(content_token)
+        if document_id:
+            metadata = cls._document_write_metadata.setdefault(normalized, {})
+            metadata["document_id"] = str(document_id)
+        entries = cls._self_write_commits.setdefault(normalized, [])
+        entries[:] = [
+            entry
+            for entry in entries
+            if entry.file_state != file_state
+        ]
+        entries.append(
+            _SelfWriteCommit(
+                ticket=None,
+                commit_token=str(commit_token),
+                content_token=str(content_token or ""),
+                file_state=file_state,
+            )
+        )
+        return file_state
+
+    @classmethod
+    def has_pending_local_revision(cls, file_path: str) -> bool:
+        """Return whether local authored content must win over a watcher event."""
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            return False
+        state = cls._asset_revision_states.get(normalized)
+        if state is not None and state.edit_revision > state.persisted_revision:
+            return True
+        if cls._material_save_snapshots.get(normalized) is not None:
+            return True
+        if cls._render_effect_save_snapshots.get(normalized) is not None:
+            return True
+        return any(
+            not bool(getattr(record.ticket, "is_complete", False))
+            for record in cls._pending_document_write_records.get(normalized, ())
+        )
+
+    @classmethod
+    def local_write_event_state(cls, file_path: str) -> str:
+        """Classify a modified watcher event before the importer touches memory."""
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            return "none"
+        if cls._acknowledge_self_write(normalized, file_path):
+            return "ack"
+        records = cls._pending_document_write_records.get(normalized, ())
+        for record in records:
+            ticket = record.ticket
+            if not bool(getattr(ticket, "is_complete", False)):
+                return "pending"
+            if str(getattr(ticket, "status", "") or "").lower() != "succeeded":
+                continue
+            committed = getattr(ticket, "committed_file_state", None)
+            if committed is not None and cls._file_state_matches(file_path, committed):
+                cls._register_self_write_commit(record)
+                return "ack"
+
+        if cls._material_save_snapshots.get(normalized) is not None:
+            return "pending"
+        if cls._render_effect_save_snapshots.get(normalized) is not None:
+            return "pending"
+        state = cls._asset_revision_states.get(normalized)
+        if state is not None and state.edit_revision > state.persisted_revision:
+            # A completed write with a mismatching fingerprint is an external
+            # edit; only an unsent revision should defer the event.
+            if not any(
+                bool(getattr(record.ticket, "is_complete", False))
+                and str(getattr(record.ticket, "status", "") or "").lower()
+                == "succeeded"
+                for record in records
+            ):
+                return "pending"
+        return "none"
+
+    @classmethod
+    def _acknowledge_self_write(cls, normalized: str, file_path: str) -> bool:
+        """Consume an exact self-write fingerprint, never by elapsed time."""
+        entries = cls._self_write_commits.get(normalized, ())
+        if not entries:
+            return False
+        for entry in entries:
+            if cls._file_state_matches(file_path, entry.file_state):
+                # Keep the exact committed fingerprint alive: Windows can
+                # deliver several notifications for one atomic replace, and
+                # every duplicate must be acknowledged without a time window.
+                return True
+        # The path no longer contains the committed bytes.  Let the event pass
+        # through as a real external edit rather than swallowing it.
+        cls._self_write_commits.pop(normalized, None)
+        return False
+
+    @classmethod
+    def note_imported_disk_change(cls, file_path: str) -> None:
+        """Advance the disk/dependency side of one asset's revision ledger."""
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            return
+        state = cls._asset_revision_state(normalized)
+        state.imported_disk_revision += 1
+        state.preview_dependency_revision += 1
+        try:
+            from Infernux.core.document_store import capture_document_file_state
+
+            state.persisted_file_state = capture_document_file_state(file_path)
+            state.expected_file_state = state.persisted_file_state
+        except (ImportError, OSError, RuntimeError, ValueError):
+            state.persisted_file_state = None
+            state.expected_file_state = None
+        cls._self_write_commits.pop(normalized, None)
+
+    @classmethod
+    def note_asset_edit(
+        cls,
+        file_path: str,
+        *,
+        edit_revision: int = 0,
+        document_id: str = "",
+        content_token: str = "",
+        expected_file_state: Any = None,
+        material_json: str = "",
+    ) -> _AssetRevisionState:
+        """Publish one in-memory edit through the shared asset revision ledger.
+
+        ``edit_revision`` may originate from DocumentRegistry, but the ledger
+        keeps its own monotonic high-water mark so Undo/Redo or repeated UI
+        callbacks can never make an older async job look newer.  Preview
+        invalidation is part of the same publication, before disk IO begins.
+        """
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            raise ValueError("asset edit requires a file path")
+        state = cls._asset_revision_state(normalized)
+        token = str(content_token or "")
+        if not token and material_json:
+            token = cls._content_token(material_json)
+        metadata = cls._document_write_metadata.setdefault(normalized, {})
+        if document_id:
+            metadata["document_id"] = str(document_id)
+        cls._ensure_commit_chain_token(normalized, document_id=document_id)
+        if expected_file_state is not None:
+            metadata["expected_file_state"] = expected_file_state
+            if state.persisted_file_state is None:
+                state.expected_file_state = expected_file_state
+        if token and token == state.content_token:
+            if edit_revision:
+                state.edit_revision = max(state.edit_revision, int(edit_revision))
+            return state
+
+        state.edit_revision = max(
+            state.edit_revision + 1,
+            int(edit_revision or 0),
+            1,
+        )
+        state.content_token = token
+        state.preview_dependency_revision += 1
+        metadata["edit_revision"] = state.edit_revision
+        if token:
+            metadata["content_token"] = token
+
+        if material_json:
+            # This is deliberately live-document input.  It keeps the preview
+            # on the in-memory value while persistence is still asynchronous.
+            cls._invalidate_material_ui_cache(file_path)
+            cls._prime_material_preview(file_path, material_json)
+        return state
+
+    @classmethod
+    def preview_dependency_signature(cls, file_path: str) -> int:
+        """Return a deterministic stamp for a resource and its dependencies."""
+        normalized = path_key(file_path) if file_path else ""
+        if not normalized:
+            return 0
+        parts = [normalized]
+        state = cls._asset_revision_states.get(normalized)
+        if state is not None:
+            parts.extend(
+                (
+                    str(state.imported_disk_revision),
+                    str(state.preview_dependency_revision),
+                    str(state.persisted_revision),
+                )
+            )
+        try:
+            guid = cls._get_guid_from_path(file_path) or ""
+            from Infernux.lib import AssetDependencyGraph
+
+            graph = AssetDependencyGraph.instance()
+            dependencies = graph.get_dependencies(guid) if guid else set()
+            database = cls._asset_database
+            for dependency_guid in sorted(str(value) for value in dependencies):
+                dependency_path = ""
+                if database is not None:
+                    dependency_path = str(database.get_path_from_guid(dependency_guid) or "")
+                dependency_key = path_key(dependency_path) if dependency_path else dependency_guid
+                dependency_state = cls._asset_revision_states.get(dependency_key)
+                parts.append(
+                    ":".join(
+                        (
+                            dependency_guid,
+                            dependency_key,
+                            str(
+                                getattr(
+                                    dependency_state,
+                                    "preview_dependency_revision",
+                                    0,
+                                )
+                            ),
+                            str(getattr(dependency_state, "imported_disk_revision", 0)),
+                            str(getattr(dependency_state, "persisted_revision", 0)),
+                        )
+                    )
+                )
+        except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+            # A project can be inspected before the dependency graph is
+            # initialized.  The asset-local revision remains a valid stamp.
+            pass
+        digest = hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "little", signed=False)
+
+    @classmethod
+    def set_material_save_snapshot(
+        cls,
+        file_path: str,
+        json_str: str,
+        *,
+        edit_revision: int = 0,
+        document_id: str = "",
+        expected_file_state: Any = None,
+    ):
         """Pre-capture a material JSON snapshot for async save.
 
         Called by the inspector when the final material state is known
@@ -666,13 +1337,202 @@ class AssetManager:
         if file_path and "::submat:" in file_path:
             return
         if file_path and json_str:
-            cls._material_save_snapshots[path_key(file_path)] = json_str
+            normalized = path_key(file_path)
+            cls._material_save_snapshots[normalized] = json_str
+            cls.note_asset_edit(
+                file_path,
+                edit_revision=edit_revision,
+                document_id=document_id,
+                content_token=cls._content_token(json_str),
+                expected_file_state=expected_file_state,
+                material_json=json_str,
+            )
 
     @classmethod
-    def set_render_effect_save_snapshot(cls, file_path: str, json_str: str) -> None:
+    def set_render_effect_save_snapshot(
+        cls,
+        file_path: str,
+        json_str: str,
+        *,
+        edit_revision: int = 0,
+        document_id: str = "",
+        expected_file_state: Any = None,
+    ) -> None:
         """Replace the pending immutable snapshot for one RenderEffect asset."""
         if file_path and json_str:
             cls._render_effect_save_snapshots[path_key(file_path)] = json_str
+            cls.note_asset_edit(
+                file_path,
+                edit_revision=edit_revision,
+                document_id=document_id,
+                content_token=cls._content_token(json_str),
+                expected_file_state=expected_file_state,
+            )
+
+    @classmethod
+    def set_document_save_expected_state(
+        cls,
+        file_path: str,
+        state,
+        *,
+        edit_revision: int = 0,
+        document_id: str = "",
+    ) -> None:
+        """Freeze the DocumentRegistry baseline for the next durable write."""
+        normalized = path_key(file_path) if file_path else ""
+        if normalized:
+            cls._document_save_expected_states[normalized] = state
+            metadata = cls._document_write_metadata.setdefault(normalized, {})
+            metadata["expected_file_state"] = state
+            if document_id:
+                metadata["document_id"] = str(document_id)
+            revision_state = cls._asset_revision_state(normalized)
+            cls._ensure_commit_chain_token(normalized, document_id=document_id)
+            if revision_state.persisted_file_state is None:
+                revision_state.expected_file_state = state
+            if edit_revision:
+                revision_state.edit_revision = max(
+                    revision_state.edit_revision,
+                    int(edit_revision),
+                )
+                metadata["edit_revision"] = revision_state.edit_revision
+
+    @classmethod
+    def _latest_committed_file_state(cls, normalized: str):
+        """Find a completed same-editor commit before the Python poll tick."""
+        for record in reversed(cls._pending_document_write_records.get(normalized, ())):
+            if not bool(getattr(record.ticket, "is_complete", False)):
+                continue
+            if str(getattr(record.ticket, "status", "") or "").lower() != "succeeded":
+                continue
+            committed = getattr(record.ticket, "committed_file_state", None)
+            if committed is not None:
+                return committed
+        state = cls._asset_revision_states.get(normalized)
+        return getattr(state, "persisted_file_state", None) if state else None
+
+    @classmethod
+    def _submit_document_snapshot(
+        cls,
+        file_path: str,
+        snapshot: str,
+        *,
+        callback: Optional[Callable[[str], None]] = None,
+    ):
+        """Submit one immutable snapshot with a monotonic editor commit token."""
+        normalized = path_key(file_path)
+        state = cls._asset_revision_state(normalized)
+        content_token = cls._content_token(snapshot)
+        metadata = cls._document_write_metadata.get(normalized, {})
+        chain_token = cls._ensure_commit_chain_token(
+            normalized,
+            document_id=str(metadata.get("document_id", "") or ""),
+        )
+        if content_token != state.content_token:
+            state.edit_revision = max(state.edit_revision + 1, 1)
+            state.preview_dependency_revision += 1
+            state.content_token = content_token
+
+        cls._document_save_expected_states.pop(normalized, None)
+        # Inspector and other editor asset writes replace the current target.
+        # A stale CAS baseline (slider drag after a disk edit, a mtime bump,
+        # or the last commit in this document chain) must not reject the
+        # user's in-memory values. Explicit callers that still want
+        # protection pass expected_file_state to submit_document_text.
+        expected = None
+
+        state.requested_write_revision += 1
+        requested_revision = state.requested_write_revision
+        commit_token = uuid.uuid4().hex
+        from Infernux.core.document_store import submit_document_text
+
+        ticket = submit_document_text(
+            file_path,
+            snapshot,
+            expected_file_state=expected,
+            commit_chain_token=chain_token,
+        )
+        record = _PendingDocumentWrite(
+            path=normalized,
+            ticket=ticket,
+            edit_revision=state.edit_revision,
+            requested_write_revision=requested_revision,
+            commit_token=commit_token,
+            snapshot=snapshot,
+            content_token=content_token,
+            imported_disk_revision=state.imported_disk_revision,
+            expected_file_state=expected,
+            callback=callback,
+        )
+        cls._pending_document_write_records.setdefault(normalized, []).append(record)
+        cls._pending_document_writes[normalized] = ticket
+        if callback is not None:
+            cls._pending_document_write_callbacks[normalized] = (ticket, callback)
+        return ticket
+
+    @classmethod
+    def poll_pending_asset_writes(cls) -> None:
+        """Retire every submitted ticket without allowing an old one to regress state."""
+        for path, records in tuple(cls._pending_document_write_records.items()):
+            remaining: list[_PendingDocumentWrite] = []
+            for record in records:
+                ticket = record.ticket
+                if not bool(getattr(ticket, "is_complete", False)):
+                    remaining.append(record)
+                    continue
+                status = str(getattr(ticket, "status", "") or "").lower()
+                state = cls._asset_revision_state(path)
+                if status == "succeeded":
+                    cls._register_self_write_commit(record)
+                    disk_is_current = (
+                        record.imported_disk_revision == state.imported_disk_revision
+                    )
+                    if disk_is_current:
+                        state.persisted_revision = max(
+                            state.persisted_revision,
+                            record.edit_revision,
+                        )
+                    committed_state = getattr(ticket, "committed_file_state", None)
+                    if committed_state is not None and disk_is_current:
+                        state.persisted_file_state = committed_state
+                        state.expected_file_state = committed_state
+                    if record.content_token == state.content_token and record.callback is None:
+                        state.content_token = record.content_token
+                elif status not in {"superseded", "cancelled"}:
+                    detail = str(getattr(ticket, "error", "") or "").strip()
+                    Debug.log_error(
+                        f"Asset document write failed for '{path}' "
+                        f"({status or 'unknown'}): {detail or 'no diagnostic'}"
+                    )
+                current_revision = (
+                    record.content_token == state.content_token
+                    and record.requested_write_revision == state.requested_write_revision
+                    and record.imported_disk_revision == state.imported_disk_revision
+                )
+                if record.callback is not None and current_revision:
+                    try:
+                        record.callback(status)
+                    except Exception as exc:
+                        Debug.log_suppressed(
+                            "AssetManager.poll_pending_asset_writes.callback",
+                            exc,
+                        )
+
+            if remaining:
+                cls._pending_document_write_records[path] = remaining
+                latest = remaining[-1]
+                cls._pending_document_writes[path] = latest.ticket
+                if latest.callback is not None:
+                    cls._pending_document_write_callbacks[path] = (
+                        latest.ticket,
+                        latest.callback,
+                    )
+                else:
+                    cls._pending_document_write_callbacks.pop(path, None)
+            else:
+                cls._pending_document_write_records.pop(path, None)
+                cls._pending_document_writes.pop(path, None)
+                cls._pending_document_write_callbacks.pop(path, None)
 
     @classmethod
     def _save_render_effect_resource(cls, resource_obj):
@@ -686,97 +1546,76 @@ class AssetManager:
             from Infernux.renderstack.render_effect_asset import dump_render_effect_document
 
             snapshot = dump_render_effect_document(resource_obj.to_asset())
-
-        from Infernux.core.document_store import submit_document_text
-
-        # The live shared instance already contains this generation.  Do not
-        # re-read our own atomic replace through the file watcher.
-        cls._suppress_watcher_echo("modified", file_path, match_any=True)
         try:
-            ticket = submit_document_text(file_path, snapshot)
+            return cls._submit_document_snapshot(
+                file_path,
+                snapshot,
+                callback=getattr(resource_obj, "_on_save_completed", None),
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             Debug.log_error(f"RenderEffect save submission failed for '{file_path}': {exc}")
             return False
-        cls._pending_document_writes[norm_path] = ticket
-        callback = getattr(resource_obj, "_on_save_submitted", None)
-        if callable(callback):
-            callback()
-        return True
 
     @classmethod
-    def poll_pending_asset_writes(cls) -> None:
-        """Retire completed asynchronous asset writes and surface failures."""
-        for path, ticket in list(cls._pending_document_writes.items()):
-            if not bool(getattr(ticket, "is_complete", False)):
-                continue
-            status = str(getattr(ticket, "status", "") or "")
-            if status not in {"succeeded", "superseded"}:
-                Debug.log_error(f"Asset document write failed for '{path}' ({status or 'unknown'})")
-            if cls._pending_document_writes.get(path) is ticket:
-                cls._pending_document_writes.pop(path, None)
-
-    @classmethod
-    def _save_material_resource(cls, resource_obj):
-        """Save a material resource and invalidate editor preview caches."""
-        file_path = getattr(resource_obj, "file_path", "") or ""
-
-        # Use pre-captured snapshot if available (avoids main-thread serialize).
+    def _save_material_resource(cls, resource_obj, target_path: str = ""):
+        """Save a material resource without evicting its live in-memory value."""
+        file_path = str(target_path or getattr(resource_obj, "file_path", "") or "")
         norm_path = path_key(file_path) if file_path else ""
         snapshot = cls._material_save_snapshots.pop(norm_path, "")
-
-        # Prefer C++ async save path when available to avoid main-thread stalls.
-        native = cls._native_engine()
-        if native and hasattr(native, "schedule_material_save_snapshot_task") and file_path:
-            try:
-                if not snapshot:
-                    serialize = getattr(resource_obj, "serialize", None)
-                    if callable(serialize):
-                        snapshot = serialize() or ""
-                if snapshot:
-                    key = f"material-save|{file_path}"
-                    ok = bool(native.schedule_material_save_snapshot_task(key, file_path, snapshot))
-                    if ok:
-                        cls.on_material_saved(file_path)
-                        return True
-            except Exception as exc:
-                Debug.log_suppressed("AssetManager.schedule_material_save_async.native_path", exc)
-
-        # Fallback for older native builds — run synchronous save on the
-        # IO thread pool to avoid blocking the main/render thread.
-        save = getattr(resource_obj, "save", None)
-        if not callable(save):
+        if not snapshot:
+            serialize = getattr(resource_obj, "serialize", None)
+            if callable(serialize):
+                snapshot = serialize() or ""
+        if not file_path or not snapshot:
             return False
-
-        from Infernux.core.asset_types import _io_pool
-
-        def _fallback_save():
-            try:
-                saved = bool(save())
-                if saved and file_path:
-                    cls.on_material_saved(file_path)
-                return saved
-            except Exception as exc:
-                Debug.log_suppressed("AssetManager.schedule_material_save_async.fallback_save", exc)
-                return False
-
-        _io_pool.submit(_fallback_save)
-        # Optimistically invalidate caches now; actual file write may
-        # complete a few ms later, but mtime-based systems will reconverge.
-        if file_path:
-            cls.on_material_saved(file_path)
-        return True
+        # The live material has already been published by the editor. Record
+        # that JSON for the preview/revision ledger before queuing disk IO;
+        # disk still contains the previous value at this point.
+        cls.note_asset_edit(
+            file_path,
+            content_token=cls._content_token(snapshot),
+            material_json=snapshot,
+        )
+        callback = lambda status, _path=file_path, _snapshot=snapshot: (
+            cls.on_material_saved(_path, _snapshot)
+            if status == "succeeded"
+            else None
+        )
+        try:
+            ticket = cls._submit_document_snapshot(
+                file_path,
+                snapshot,
+                callback=callback,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"Material save submission failed for '{file_path}': {exc}")
+            return False
+        return ticket
 
     @classmethod
-    def on_material_saved(cls, path: str) -> None:
-        """Invalidate caches that depend on a material asset's file contents."""
+    def on_material_saved(cls, path: str, material_json: str = "") -> None:
+        """Hand a committed material preview back from memory to disk.
+
+        The async write callback runs only after the atomic replace completed.
+        Publishing the exact committed snapshot before releasing authoring
+        ownership prevents ProjectPanel from briefly rendering the previous
+        disk revision during the hand-off.
+        """
         if not path:
             return
-        # Inspector already holds the live material. Suppress the DocumentStore
-        # publish echo; match_any covers async writes whose mtime changes after
-        # this call returns.
-        cls._suppress_watcher_echo("modified", path, match_any=True)
+        if material_json:
+            cls._prime_material_preview(path, material_json)
         cls.invalidate_path(path)
         cls._invalidate_material_ui_cache(path)
+        if not cls.has_pending_local_revision(path):
+            try:
+                from Infernux.engine.ui.asset_resource_preview import (
+                    invalidate_live_material_preview,
+                )
+
+                invalidate_live_material_preview(path)
+            except Exception as exc:
+                Debug.log_suppressed("AssetManager.on_material_saved.preview", exc)
 
     @classmethod
     def _save_animclip_resource(cls, resource_obj):
@@ -818,19 +1657,25 @@ class AssetManager:
         if key is not None:
             record = cls._scheduled_saves.get(key)
             if not record:
-                return
+                # A runtime owner (for example RenderEffect.flush()) may have
+                # submitted the shared path before its Inspector controller
+                # reaches the footer in the same frame. Return that exact
+                # receipt so DocumentRegistry can still own completion.
+                return cls._pending_document_writes.get(path_key(key), False)
             if not force and bool(record.get("wait_one_flush", False)):
                 record["wait_one_flush"] = False
-                return
+                return False
             if not force and now < float(record.get("deadline", 0.0)):
-                return
+                return False
+            result: object = True
             try:
                 save_fn = record.get("save_fn")
                 if callable(save_fn):
-                    save_fn()
+                    value = save_fn()
+                    result = False if value is False else (True if value is None else value)
             finally:
                 cls._scheduled_saves.pop(key, None)
-            return
+            return result
 
         due_keys = []
         for k, v in cls._scheduled_saves.items():
@@ -848,6 +1693,7 @@ class AssetManager:
                         save_fn()
             finally:
                 cls._scheduled_saves.pop(k, None)
+        return bool(due_keys)
 
     @classmethod
     def flush_all_asset_writes(cls) -> None:
@@ -857,6 +1703,27 @@ class AssetManager:
 
         DocumentStore.flush()
         cls.poll_pending_asset_writes()
+
+    @classmethod
+    def begin_asset_write_flush(cls) -> None:
+        """Submit all pending asset snapshots without blocking the UI thread.
+
+        Call :meth:`asset_writes_idle` from a frame-driven transaction until
+        it returns ``True``.  This preserves the same durable boundary as
+        ``flush_all_asset_writes`` without turning a Player-build click into a
+        synchronous filesystem stall.
+        """
+        cls.flush_scheduled_saves(force=True)
+
+    @classmethod
+    def asset_writes_idle(cls) -> bool:
+        """Poll submitted writes and report whether the durable queue drained."""
+        cls.poll_pending_asset_writes()
+        if cls._pending_document_write_records:
+            return False
+        from Infernux.core.document_store import DocumentStore
+
+        return DocumentStore.is_idle()
 
     # ==========================================================================
     # Internal helpers
@@ -956,7 +1823,7 @@ class AssetManager:
             return AnimationClip3D
         if ext in ANIMFSM_EXTENSIONS:
             return AnimStateMachine
-        if ext == ".effect":
+        if ext in {".effect", ".effectgroup"}:
             from Infernux.renderstack.render_effect import RenderEffect
             return RenderEffect
         if ext in PARTICLE_GRAPH_EXTENSIONS:
@@ -984,10 +1851,16 @@ class AssetManager:
             return AnimationClip3D.load(path)
         if asset_type is AnimStateMachine:
             return AnimStateMachine.load(path)
-        from Infernux.renderstack.render_effect import RenderEffect
-        if asset_type is RenderEffect or (asset_type is None and path.endswith(".effect")):
+        from Infernux.renderstack.render_effect import EditableRenderEffectGroup, RenderEffect
+        if asset_type is RenderEffect or (
+            asset_type is None
+            and path.lower().endswith((".effect", ".effectgroup"))
+        ):
             try:
-                from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+                from Infernux.renderstack.render_effect_asset import (
+                    RenderEffectAsset,
+                    RenderEffectGroupAsset,
+                )
                 from Infernux.renderstack.render_effect_compiler import (
                     RenderEffectArtifactRegistry,
                 )
@@ -1001,6 +1874,12 @@ class AssetManager:
                     effect = RenderEffect(document, file_path=path, guid=guid)
                     effect._artifact_revision = artifact.revision
                     return effect
+                if isinstance(document, RenderEffectGroupAsset):
+                    return EditableRenderEffectGroup(
+                        document,
+                        file_path=path,
+                        guid=guid,
+                    )
                 return None
             except (OSError, RuntimeError, TypeError, ValueError):
                 return None
@@ -1022,7 +1901,8 @@ class AssetManager:
     def _schedule_gpu_texture_reload(cls, path: str) -> None:
         """Queue native GPU texture invalidation for the next post-draw tick."""
         key = cls._normalize_asset_path(path) or path_key(path)
-        cls._pending_gpu_texture_reloads[key] = path
+        with cls._pending_gpu_texture_reloads_lock:
+            cls._pending_gpu_texture_reloads[key] = path
 
         guid = cls._get_guid_from_path(path)
         if guid:
@@ -1030,14 +1910,37 @@ class AssetManager:
             cls._cache.pop(guid, None)
 
     @classmethod
-    def flush_pending_gpu_texture_reloads(cls) -> None:
-        """Run queued native GPU texture reloads between frames."""
-        if not cls._pending_gpu_texture_reloads:
-            return
-        pending = list(cls._pending_gpu_texture_reloads.values())
-        cls._pending_gpu_texture_reloads.clear()
+    def flush_pending_gpu_texture_reloads(
+        cls,
+        *,
+        paths: Optional[List[str]] = None,
+        max_items: Optional[int] = 1,
+    ) -> int:
+        """Publish queued GPU textures at a safe point without an unbounded frame.
+
+        Normal post-draw ticks publish one texture. Explicit import UI may pass
+        ``paths`` to synchronously publish only the asset the user applied.
+        """
+        if max_items is not None and max_items < 1:
+            raise ValueError("max_items must be positive or None")
+        with cls._pending_gpu_texture_reloads_lock:
+            if paths is None:
+                keys = list(cls._pending_gpu_texture_reloads)
+            else:
+                keys = []
+                for path in paths:
+                    key = cls._normalize_asset_path(path) or path_key(path)
+                    if key in cls._pending_gpu_texture_reloads and key not in keys:
+                        keys.append(key)
+            if max_items is not None:
+                keys = keys[:max_items]
+            pending = [
+                cls._pending_gpu_texture_reloads.pop(key)
+                for key in keys
+            ]
         for path in pending:
             cls._reload_gpu_texture_now(path)
+        return len(pending)
 
     @classmethod
     def _reload_gpu_texture_now(cls, path: str) -> None:
@@ -1094,37 +1997,41 @@ class AssetManager:
             fingerprint = None
         else:
             target = destination if event_type == "moved" else path
-            try:
-                stat = os.stat(target)
-                fingerprint = (stat.st_size, stat.st_mtime_ns)
-            except FileNotFoundError:
-                fingerprint = False
-        cls._watcher_echo_suppression[key] = (
-            time.monotonic() + _META_SUPPRESSION_TIMEOUT,
-            fingerprint,
-        )
+            fingerprint = cls._capture_file_fingerprint(target)
+        # Keep the exact fingerprint until the watcher presents it. A delayed
+        # notification is a self-write only when its committed bytes match.
+        cls._watcher_echo_suppression[key] = fingerprint
 
     @classmethod
     def is_watcher_echo_suppressed(cls, event_type: str, path: str, destination: str = "") -> bool:
-        now = time.monotonic()
-        for key, (expiry, _fingerprint) in tuple(cls._watcher_echo_suppression.items()):
-            if expiry <= now:
-                cls._watcher_echo_suppression.pop(key, None)
+        normalized = path_key(path) if path else ""
+        if event_type == "modified" and normalized:
+            # A watcher can run before the main thread polls the native ticket.
+            # Inspect completed records directly so the editor's own replace is
+            # acknowledged by commit fingerprint, not by a time window.
+            for record in cls._pending_document_write_records.get(normalized, ()):
+                if not bool(getattr(record.ticket, "is_complete", False)):
+                    continue
+                if str(getattr(record.ticket, "status", "") or "").lower() != "succeeded":
+                    continue
+                committed = getattr(record.ticket, "committed_file_state", None)
+                if committed is not None and cls._file_state_matches(path, committed):
+                    cls._register_self_write_commit(record)
+                    return True
+
+            if cls._acknowledge_self_write(normalized, path):
+                return True
+
         key = cls._watcher_echo_key(event_type, path, destination)
         suppression = cls._watcher_echo_suppression.get(key)
         if suppression is None:
             return False
-        _expiry, expected_fingerprint = suppression
-        # match_any: time-window suppression for async DocumentStore publishes
-        # whose final mtime is not known yet when the save is scheduled.
+        expected_fingerprint = suppression
         if expected_fingerprint is None:
-            return True
+            cls._watcher_echo_suppression.pop(key, None)
+            return False
         target = destination if event_type == "moved" else path
-        try:
-            stat = os.stat(target)
-            current_fingerprint = (stat.st_size, stat.st_mtime_ns)
-        except FileNotFoundError:
-            current_fingerprint = False
+        current_fingerprint = cls._capture_file_fingerprint(target)
         if current_fingerprint == expected_fingerprint:
             return True
         cls._watcher_echo_suppression.pop(key, None)
@@ -1170,7 +2077,11 @@ class AssetManager:
             stamp = 0 if live_document else int(os.stat(normalized).st_mtime_ns)
             resource_key = f"mat|{normalized}"
             native.query_or_schedule_material_preview(
-                resource_key, normalized, live_document, stamp, False,
+                resource_key,
+                normalized,
+                live_document,
+                stamp,
+                bool(live_document),
             )
             if hasattr(native, "request_full_speed_frame"):
                 native.request_full_speed_frame()
@@ -1278,52 +2189,6 @@ class AssetManager:
         mat_name = os.path.splitext(os.path.basename(path))[0]
         if mat_name:
             native.remove_material_pipeline(mat_name)
-
-    @classmethod
-    def _clear_deleted_texture_from_active_ui(cls, path: str) -> bool:
-        """Clear stale texture_path fields from active UI Python components."""
-        normalized = cls._normalize_asset_path(path)
-        if not normalized:
-            return False
-
-        changed = False
-
-        try:
-            from Infernux.lib import SceneManager
-
-            scene = SceneManager.instance().get_active_scene()
-            if scene is None:
-                return False
-
-            for game_object in scene.get_all_objects():
-                if game_object is None:
-                    continue
-                for py_comp in game_object.get_py_components():
-                    tex_path = getattr(py_comp, "texture_path", None)
-                    if not isinstance(tex_path, str) or not tex_path:
-                        continue
-                    if cls._normalize_asset_path(tex_path) != normalized:
-                        continue
-                    setattr(py_comp, "texture_path", "")
-                    changed = True
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._clear_deleted_texture_from_active_ui.scan", exc)
-            return False
-
-        if changed:
-            try:
-                from Infernux.engine.scene_manager import SceneFileManager
-
-                sfm = SceneFileManager.instance()
-                if sfm is not None:
-                    sfm.mark_dirty()
-            except Exception as exc:
-                Debug.log_suppressed(
-                    "AssetManager._clear_deleted_texture_from_active_ui.mark_dirty",
-                    exc,
-                )
-
-        return changed
 
     @classmethod
     def invalidate_project_panel_cache(cls) -> None:

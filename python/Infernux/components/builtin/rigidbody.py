@@ -25,7 +25,7 @@ from __future__ import annotations
 from enum import IntEnum, IntFlag
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from Infernux.math.coerce import coerce_quat, coerce_vec3
 from Infernux.lib import ForceMode as _ForceMode
 
@@ -49,13 +49,16 @@ class CollisionDetectionMode(IntEnum):
     """Collision algorithms supported by the Jolt backend.
 
     Backend mapping:
-    Dynamic ``Continuous`` uses Jolt LinearCast sweep CCD.
+    Dynamic ``Continuous`` uses Jolt LinearCast sweep CCD against static
+    geometry. ``ContinuousDynamic`` additionally resolves fast dynamic pairs
+    and is substantially more expensive.
     Kinematic ``Continuous`` uses Jolt's discrete quality because Jolt does not
     expose Unity's speculative mode as an equivalent per-body setting.
     """
 
     Discrete = 0
     Continuous = 1
+    ContinuousDynamic = 2
 
 
 class RigidbodyInterpolation(IntEnum):
@@ -120,15 +123,15 @@ class Rigidbody(BuiltinComponent):
         FieldType.ENUM,
         default=CollisionDetectionMode.Discrete,
         enum_type=CollisionDetectionMode,
-        enum_labels=["Discrete", "Continuous"],
-        tooltip="CCD mode. Dynamic Continuous uses Jolt LinearCast sweep CCD.",
-        range=(0, 1),
+        enum_labels=["Discrete", "Continuous", "Continuous Dynamic"],
+        tooltip="CCD mode. Continuous Dynamic also sweeps against moving rigidbodies and costs more.",
+        range=(0, 2),
     )
 
     interpolation = CppProperty(
         "interpolation",
         FieldType.ENUM,
-        default=RigidbodyInterpolation.Interpolate,
+        default=RigidbodyInterpolation.None_,
         enum_type=RigidbodyInterpolation,
         enum_labels=["None", "Interpolate"],
         tooltip="Smooths presentation between fixed physics steps.",

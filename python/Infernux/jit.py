@@ -8,7 +8,7 @@ Or via the top-level convenience re-export::
 
     from Infernux import njit
 
-``njit`` wraps ``numba.njit`` with two extra niceties:
+``njit`` wraps ``numba.njit`` with Infernux runtime contracts:
 
 * Falls back to a no-op decorator when Numba is not installed.
 * Attaches a ``.py`` attribute to every decorated function,
@@ -20,6 +20,13 @@ Or via the top-level convenience re-export::
 
     compute(42)      # JIT (or fallback)
     compute.py(42)   # always pure Python
+
+* ``auto_parallel=True`` uses a conservative Typed HIR legality pass. Runtime
+  choices are kept per dtype/rank/layout/shape bucket. A static HIR work model
+  decides clear small/large one-shot workloads before timing; only gray-zone
+  signatures use :func:`warmup`'s isolated equivalence and multi-sample timing.
+  ``parallel_policy="required"`` turns a conservative rejection into a build
+  or decoration error.
 
 ``warmup(fn, *args)`` pre-compiles a ``@njit`` function.
 """

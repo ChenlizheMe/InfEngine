@@ -24,6 +24,7 @@ namespace infernux
 class InxMaterial;
 class InxTexture;
 class AssetRegistry;
+struct TextureCpuData;
 
 struct AssetResidencyRecord
 {
@@ -82,6 +83,45 @@ class AssetLoadTicket final
     std::thread::id m_producerThread;
     uint64_t m_expectedMutationGeneration = 0;
     bool m_committed = false;
+    bool m_rejected = false;
+};
+
+/// One-shot loader-to-RHI bridge for imported texture bytes. The payload is
+/// never published as an asset and is discarded as soon as the renderer has
+/// copied it into a native upload buffer.
+class TextureUploadStagingTicket final
+{
+  public:
+    [[nodiscard]] const std::string &GetGuid() const noexcept
+    {
+        return m_guid;
+    }
+    [[nodiscard]] uint64_t GetRuntimeVersion() const noexcept
+    {
+        return m_runtimeVersion;
+    }
+    [[nodiscard]] bool IsComplete() const noexcept
+    {
+        return !m_job.IsValid() || m_job.IsComplete();
+    }
+    [[nodiscard]] bool WasProducedOnWorker() const noexcept
+    {
+        return IsComplete() && m_producerThread != std::thread::id{} && m_producerThread != m_ownerThread;
+    }
+
+  private:
+    friend class AssetRegistry;
+    AssetRegistry *m_registry = nullptr;
+    std::string m_guid;
+    std::string m_sourcePath;
+    RuntimeAssetPayload m_stagingPayload;
+    JobHandle m_job;
+    std::exception_ptr m_failure;
+    std::thread::id m_ownerThread;
+    std::thread::id m_producerThread;
+    uint64_t m_expectedMutationGeneration = 0;
+    uint64_t m_runtimeVersion = 0;
+    bool m_consumed = false;
     bool m_rejected = false;
 };
 
@@ -173,6 +213,9 @@ class AssetRegistry
     /// no live cache entry exists, metadata/index churn during a first import
     /// must not discard an otherwise valid decoded payload.
     bool TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded = false);
+    [[nodiscard]] std::shared_ptr<TextureUploadStagingTicket> BeginTextureUploadStaging(const std::string &guid);
+    [[nodiscard]] std::shared_ptr<const TextureCpuData>
+    TryConsumeTextureUploadStaging(const std::shared_ptr<TextureUploadStagingTicket> &ticket);
     void DrainPendingLoads() noexcept;
 
     /// Patch path-bearing state after AssetDatabase has committed a GUID-stable move.
@@ -257,6 +300,7 @@ class AssetRegistry
     std::unordered_map<std::string, uint64_t> m_assetRuntimeVersions;
     std::unordered_map<std::string, ResourceType> m_assetRuntimeTypes;
     std::vector<std::weak_ptr<AssetLoadTicket>> m_pendingLoads;
+    std::vector<std::weak_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
     std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders;        // type → loader
     std::unordered_map<std::string, std::shared_ptr<InxMaterial>> m_builtinMaterials; // name → builtin mat
     mutable uint64_t m_accessSerial = 0;

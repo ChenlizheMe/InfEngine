@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Union
 
+import os
+
 from Infernux.engine.path_utils import portable_path
 
 
@@ -18,6 +20,52 @@ RENDER_EFFECT_GROUP_SCHEMA = "infernux.render_effect_group"
 _TYPE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 
 
+def _stamp_effect_asset_reference(guid: str, path_hint: str) -> tuple[str, str]:
+    """Resolve a path-only reference the same way materials stamp texture GUIDs.
+
+    Identity lives in the target ``.meta``. ``path_hint`` is only a lookup key
+    used to find or import that identity; it is never a substitute for it.
+    """
+    identity = str(guid or "").strip()
+    hint = portable_path(str(path_hint or "").strip())
+    if identity or not hint:
+        return identity, hint
+
+    try:
+        from Infernux.core.asset_reference_types import canonical_asset_reference_identity
+
+        stamped, recovered = canonical_asset_reference_identity("", hint)
+        if stamped:
+            return stamped, recovered or hint
+    except (ImportError, RuntimeError, TypeError, ValueError):
+        pass
+
+    try:
+        from Infernux.core.asset_types import read_meta_guid
+        from Infernux.engine.project_context import get_project_root
+
+        candidates = [hint]
+        project_root = str(get_project_root() or "")
+        if project_root and not os.path.isabs(hint):
+            candidates.insert(0, os.path.join(project_root, hint))
+        for candidate in candidates:
+            found = read_meta_guid(candidate)
+            if found:
+                return found, hint
+            if not os.path.isfile(candidate):
+                continue
+            from Infernux.core.assets import AssetManager
+
+            if getattr(AssetManager, "_asset_database", None) is None:
+                continue
+            imported = str(getattr(AssetManager.import_asset(candidate), "guid", "") or "")
+            if imported:
+                return imported, hint
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        pass
+    return "", hint
+
+
 @dataclass(frozen=True)
 class EffectAssetReference:
     """GUID-first reference with a readable and recoverable path hint."""
@@ -26,8 +74,7 @@ class EffectAssetReference:
     path_hint: str = ""
 
     def __post_init__(self) -> None:
-        guid = str(self.guid or "").strip()
-        path_hint = portable_path(str(self.path_hint or "").strip())
+        guid, path_hint = _stamp_effect_asset_reference(self.guid, self.path_hint)
         if not guid and not path_hint:
             raise ValueError("effect asset reference requires guid or path_hint")
         object.__setattr__(self, "guid", guid)

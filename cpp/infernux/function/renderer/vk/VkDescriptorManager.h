@@ -21,6 +21,10 @@ enum class DescriptorArena : uint8_t
     FrameTransient,
     ViewPersistent,
     ImGuiExternal,
+    /// Device-global update-after-bind tables with a variable descriptor count.
+    /// The arena owns the pool page and its lease; callers never allocate a
+    /// bindless descriptor set directly from Vulkan.
+    BindlessGlobal,
     Count,
 };
 
@@ -66,6 +70,9 @@ class VkDescriptorManager
     void Reset(VkDevice device = VK_NULL_HANDLE, rhi::DeviceId deviceId = rhi::InvalidDeviceId) noexcept;
     [[nodiscard]] DescriptorLease Allocate(VkDescriptorSetLayout layout,
                                            DescriptorArena arena = DescriptorArena::Persistent);
+    /// Allocate one variable-count descriptor set from the manager-owned
+    /// bindless arena. The layout must expose a variable-count binding.
+    [[nodiscard]] DescriptorLease AllocateBindlessTextureSet(VkDescriptorSetLayout layout, uint32_t descriptorCount);
     /// Returns a manager-owned pool for a third-party allocator such as ImGui.
     /// Sets allocated from this pool remain externally owned and are not leases.
     [[nodiscard]] VkDescriptorPool AcquireExternalPool(DescriptorArena arena);
@@ -95,7 +102,7 @@ class VkDescriptorManager
         bool retired = false;
     };
 
-    [[nodiscard]] VkDescriptorPool CreatePool(DescriptorArena arena) const;
+    [[nodiscard]] VkDescriptorPool CreatePool(DescriptorArena arena, uint32_t bindlessDescriptorCount = 0) const;
     void FreeLease(LeaseState &state) noexcept;
     [[nodiscard]] static constexpr size_t ArenaIndex(DescriptorArena arena) noexcept
     {

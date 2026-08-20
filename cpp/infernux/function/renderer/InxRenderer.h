@@ -44,6 +44,7 @@ class InxMesh;
 class InxVkCoreModular;
 class InxView;
 class OutlineRenderer;
+struct ParticleProgramBootstrap;
 class RenderPipelineCallback;
 class ResourcePreviewManager;
 class Scene;
@@ -154,6 +155,14 @@ struct RendererFrameTelemetrySnapshot
     double sceneUpdateMs = 0.0;
     double guiBuildMs = 0.0;
     double prepareFrameMs = 0.0;
+    uint64_t guiFrame = 0;
+    bool guiFrameRequested = false;
+    double guiFrameIntervalMs = 0.0;
+    double guiFrameUntilDueMs = 0.0;
+    uint64_t guiFrameConsumeCount = 0;
+    uint64_t guiFrameApprovedCount = 0;
+    uint64_t guiFrameForcedCount = 0;
+    uint64_t guiFrameRequestCount = 0;
     std::unordered_map<std::string, double> guiPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> guiPanelSubTimesMs;
 };
@@ -180,6 +189,7 @@ struct UIPerformanceMetricStats
     double meanMs = 0.0;
     double medianMs = 0.0;
     double p95Ms = 0.0;
+    double p99Ms = 0.0;
     double maxMs = 0.0;
 };
 
@@ -191,6 +201,20 @@ struct RendererUIPerformanceSnapshot
     UIPerformanceMetricStats guiBuild;
     std::unordered_map<std::string, UIPerformanceMetricStats> panelTimes;
     std::unordered_map<std::string, std::unordered_map<std::string, UIPerformanceMetricStats>> panelSubTimes;
+};
+
+struct RendererFramePerformanceSnapshot
+{
+    uint64_t firstFrame = 0;
+    uint64_t lastFrame = 0;
+    size_t sampleCount = 0;
+    size_t droppedSampleCount = 0;
+    UIPerformanceMetricStats frame;
+    UIPerformanceMetricStats gameOnly;
+    UIPerformanceMetricStats render;
+    UIPerformanceMetricStats scene;
+    UIPerformanceMetricStats gui;
+    UIPerformanceMetricStats prepare;
 };
 
 class InxRenderer
@@ -257,6 +281,8 @@ class InxRenderer
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
+    [[nodiscard]] uint64_t BeginFramePerformanceWindow();
+    [[nodiscard]] RendererFramePerformanceSnapshot GetFramePerformanceWindow() const;
     [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
                                                              uint64_t cameraComponentId = 0);
     [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot
@@ -268,6 +294,7 @@ class InxRenderer
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetGpuResidency() const;
 
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
+    void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
@@ -291,6 +318,11 @@ class InxRenderer
     [[nodiscard]] size_t GetPendingSyntheticInputCount() const;
     void ShowWindow();
     void HideWindow();
+    /// Player-only: apply chrome from the environment and show the window as
+    /// soon as the SDL window exists, before Vulkan device and pipeline work.
+    /// Drain startup events without revealing the hidden native window.
+    /// Returns false if the user requested close/quit.
+    [[nodiscard]] bool PumpStartupEvents();
     [[nodiscard]] bool IsWindowMinimized() const;
     void SetWindowIcon(const std::string &iconPath);
     void SetWindowFullscreen(bool fullscreen);
@@ -307,12 +339,14 @@ class InxRenderer
     float GetDisplayScale() const;
     void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void UnregisterGUIRenderable(const char *name);
-    void QueueDockTabSelection(const char *windowId);
+    void QueueDockTabSelection(const char *windowId, bool allowDuringModal = false);
     void SetGUIPlayerMode(bool enabled);
 
     // ImGui texture management
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+    uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
+    void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;
     uint64_t GetImGuiTextureId(const std::string &name) const;
@@ -337,12 +371,14 @@ class InxRenderer
 
     // Scene system integration
     void InitializeDefaultScene();
+    void InitializeRuntimeScene();
     void UpdateSceneLighting();
 
     // Get the material from the first MeshRenderer in the scene
     std::shared_ptr<InxMaterial> GetFirstMeshRendererMaterial();
 
-    // Scene render target for offscreen rendering
+    // Scene render target for offscreen rendering. Replacements publish all
+    // resources at one device completion epoch shared with their framebuffers.
     uint64_t GetSceneTextureId() const;
     void ResizeSceneRenderTarget(uint32_t width, uint32_t height);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestRenderTargetReadback(bool gameView);
@@ -383,7 +419,7 @@ class InxRenderer
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
 
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size);
+    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending = nullptr);
     bool TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
                                        std::vector<unsigned char> &outPixels);
 
@@ -430,6 +466,15 @@ class InxRenderer
 
     /// @brief Get Game View texture ID for ImGui display
     uint64_t GetGameTextureId();
+
+    /// @brief Monotonic generation of the native Game render target.
+    ///
+    /// The ImGui descriptor changes whenever resize or MSAA reconfiguration
+    /// replaces the target, even if the active Scene and Camera are unchanged.
+    [[nodiscard]] uint64_t GetGameRenderTargetGeneration() const
+    {
+        return m_gameRenderTargetGeneration;
+    }
 
     /// @brief Resize the game render target to match Game View panel size
     void ResizeGameRenderTarget(uint32_t width, uint32_t height);
@@ -483,6 +528,14 @@ class InxRenderer
     [[nodiscard]] double GetPrepareFrameMs() const
     {
         return m_prepareFrameMs;
+    }
+
+    /// @brief Get the exact time uploaded to EngineGlobalsUBO._Time.x.
+    /// CPU simulations that mirror vertex displacement use this to stay in
+    /// phase with the rendered surface across editor and play transitions.
+    [[nodiscard]] float GetShaderTimeSeconds() const
+    {
+        return m_totalTime;
     }
 
     /// @brief Get the screen UI renderer for GPU-based 2D screen-space UI
@@ -563,6 +616,8 @@ class InxRenderer
 
     /// @brief Tell the renderer whether the engine is in play mode.
     /// In play mode, the frame-rate cap and idle sleep are both disabled.
+    /// A Play/Stop edge also drains GPU work and drops Game/Scene view caches
+    /// so particle graphs cannot keep retired buffer bindings.
     void SetPlayModeRendering(bool play);
 
     /// @brief Check if the renderer is in play-mode (uncapped FPS).
@@ -572,9 +627,14 @@ class InxRenderer
     /// a programmatic scene change that doesn't generate SDL events).
     void RequestFullSpeedFrame();
 
+    /// @brief Wake the editor event loop from a background service.
+    void RequestExternalWake();
+
   private:
     void UpdateParticleCollisionScene();
     void ConsumeSceneTemporalDiscontinuity();
+    void InvalidateGpuViewStateForSceneBoundary();
+    void RecreateSceneRenderGraph();
 
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;
@@ -619,6 +679,8 @@ class InxRenderer
     std::unique_ptr<GizmosDrawCallBuffer> m_componentGizmos;
     std::unique_ptr<particle::ParticleGpuDrawRegistry> m_particleGpuDrawRegistry;
     std::unique_ptr<particle::ParticleGpuSystemManager> m_particleGpuSystemManager;
+    std::shared_ptr<ParticleProgramBootstrap> m_particleProgramBootstrap;
+    bool m_particleGpuSystemManagerInitializationAttempted = false;
     const Scene *m_particleCollisionSourceScene = nullptr;
     uint64_t m_particleCollisionSourceRevision = 0;
     uint64_t m_particleCollisionPublishedRevision = 1;
@@ -650,6 +712,24 @@ class InxRenderer
     double m_guiBuildMs = 0.0;       ///< GUI::BuildFrame (all ImGui panels) (ms)
     double m_prepareFrameMs = 0.0;   ///< PrepareFrame (collect/cull) (ms)
     double m_gameOnlyFrameMs = 0.0;  ///< Sum of game-only phases (ms)
+
+    static constexpr size_t FRAME_PERFORMANCE_HISTORY_SIZE = 240;
+    struct FramePerformanceSample
+    {
+        uint64_t frame = 0;
+        double frameMs = 0.0;
+        double gameOnlyMs = 0.0;
+        double renderMs = 0.0;
+        double sceneMs = 0.0;
+        double guiMs = 0.0;
+        double prepareMs = 0.0;
+    };
+    std::array<FramePerformanceSample, FRAME_PERFORMANCE_HISTORY_SIZE> m_framePerformanceHistory{};
+    bool m_framePerformanceWindowActive = false;
+    size_t m_framePerformanceWriteIndex = 0;
+    size_t m_framePerformanceSampleCount = 0;
+    size_t m_framePerformanceDroppedSampleCount = 0;
+    void RecordFramePerformanceSample(double frameMs);
 
     static constexpr size_t UI_PERFORMANCE_HISTORY_SIZE = 240;
     struct UIMetricHistory

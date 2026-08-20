@@ -167,18 +167,42 @@ class ExpressionCompiler:
                 for port, operand in raw_operands:
                     target_type = input_targets[port.id]
                     if operand.value_type != target_type:
-                        resize_id = f"{node_uid}.{port.id}.__numeric_resize"
-                        instructions.append(
-                            ExpressionInstruction(
-                                resize_id,
-                                "numeric_resize",
-                                target_type,
-                                (operand,),
-                                node_uid,
-                                port.id,
+                        semantic = (
+                            "position"
+                            if (
+                                port.id in {"position", "target", "input"}
+                                and definition.type_id
+                                == "common.space.transform_position"
                             )
+                            or port.id in {"position", "target"}
+                            else "direction"
                         )
-                        operand = ExpressionOperand(target_type, value_id=resize_id)
+                        adapted = operand
+                        for index, (opcode, result_type, immediates) in enumerate(
+                            self._types.adaptation_ops(
+                                operand.value_type,
+                                target_type,
+                                semantic=semantic,
+                            )
+                        ):
+                            step_id = f"{node_uid}.{port.id}.__{opcode}_{index}"
+                            instructions.append(
+                                ExpressionInstruction(
+                                    step_id,
+                                    opcode,
+                                    result_type,
+                                    (adapted,),
+                                    node_uid,
+                                    port.id,
+                                    tuple(sorted(immediates.items())),
+                                )
+                            )
+                            adapted = ExpressionOperand(result_type, value_id=step_id)
+                        operand = ExpressionOperand(
+                            target_type,
+                            value_id=adapted.value_id,
+                            literal=adapted.literal if not adapted.value_id else None,
+                        )
                     operands.append(operand)
                     input_types[port.id] = target_type
                 result_type = self._resolve_output_type(
@@ -216,9 +240,40 @@ class ExpressionCompiler:
                     CoordinateSpace.SIMULATION,
                     CoordinateSpace.WORLD,
                 }
+                source_space = source_type.space
+                semantic = (
+                    "position"
+                    if definition.type_id == "common.space.transform_position"
+                    else "direction"
+                )
+                if source_space is CoordinateSpace.NONE:
+                    # Kernel convert_space keys types by value id. Retagging
+                    # the operand in place still leaves the compose/constant
+                    # result as ``none``, so emit a real none→emitter_local
+                    # step first. GPU treats that as a cast; the following
+                    # emitter_local→target step is the authored transform.
+                    tagged_type = TypeRef(ValueType.VEC3, CoordinateSpace.EMITTER_LOCAL)
+                    tagged_id = f"{result_id}.__as_emitter_local"
+                    instructions.append(
+                        ExpressionInstruction(
+                            tagged_id,
+                            "convert_space",
+                            tagged_type,
+                            tuple(operands),
+                            node_uid,
+                            port_id,
+                            (
+                                ("from", CoordinateSpace.NONE.value),
+                                ("to", CoordinateSpace.EMITTER_LOCAL.value),
+                                ("semantic", semantic),
+                            ),
+                        )
+                    )
+                    operands = [ExpressionOperand(tagged_type, value_id=tagged_id)]
+                    source_space = CoordinateSpace.EMITTER_LOCAL
                 if (
                     source_type.value_type is not ValueType.VEC3
-                    or source_type.space not in supported_spaces
+                    or source_space not in supported_spaces
                     or result_type.value_type is not ValueType.VEC3
                     or result_type.space not in supported_spaces
                 ):
@@ -233,14 +288,9 @@ class ExpressionCompiler:
                     )
                 opcode = "convert_space"
                 immediates = [
-                    ("from", source_type.space.value),
+                    ("from", source_space.value),
                     ("to", result_type.space.value),
-                    (
-                        "semantic",
-                        "position"
-                        if definition.type_id == "common.space.transform_position"
-                        else "direction",
-                    ),
+                    ("semantic", semantic),
                 ]
             if opcode == "split_component":
                 try:

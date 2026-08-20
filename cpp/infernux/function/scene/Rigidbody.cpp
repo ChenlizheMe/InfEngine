@@ -74,6 +74,10 @@ static uint32_t GetPrimaryBodyId(GameObject *go)
 static int MapCollisionDetectionModeToMotionQuality(int mode, bool isKinematic)
 {
     switch (mode) {
+    case static_cast<int>(CollisionDetectionMode::ContinuousDynamic):
+        // ContinuousDynamic keeps Jolt's static sweep and additionally opts
+        // into PhysicsWorld's dynamic-pair TOI subdivision.
+        return isKinematic ? 0 : 2;
     case static_cast<int>(CollisionDetectionMode::Continuous):
         // Jolt's LinearCast path only runs for dynamic bodies. Kinematic CCD
         // would require a separate speculative-contact implementation.
@@ -344,8 +348,9 @@ void Rigidbody::SetFreezeRotation(bool freeze)
 void Rigidbody::SetCollisionDetectionMode(int mode)
 {
     if (mode < static_cast<int>(CollisionDetectionMode::Discrete) ||
-        mode > static_cast<int>(CollisionDetectionMode::Continuous)) {
-        throw std::invalid_argument("collision detection mode must be Discrete or Continuous");
+        mode > static_cast<int>(CollisionDetectionMode::ContinuousDynamic)) {
+        throw std::invalid_argument(
+            "collision detection mode must be Discrete, Continuous, or ContinuousDynamic");
     }
     auto &d = DataMut();
     if (d.collisionDetectionMode == mode)
@@ -776,10 +781,7 @@ void Rigidbody::SyncPhysicsToTransform()
                            static_cast<int>(RigidbodyConstraints::FreezeRotation);
 
     if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose) {
-        tf->SetPosition(bodyPos);
-        if (!rotFrozen) {
-            tf->SetWorldRotation(bodyRot);
-        }
+        tf->ApplyWorldPoseFromPhysics(bodyPos, bodyRot, !rotFrozen);
         d.lastSyncedPosition = bodyPos;
         // Always read back the reconstructed rotation from the Transform so
         // that the cached value matches what SyncExternalMovesToPhysics() will
@@ -830,10 +832,7 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
                            static_cast<int>(RigidbodyConstraints::FreezeRotation);
 
-    tf->SetPosition(presentedPos);
-    if (!rotFrozen) {
-        tf->SetWorldRotation(presentedRot);
-    }
+    tf->ApplyWorldPoseFromPhysics(presentedPos, presentedRot, !rotFrozen);
 
     d.lastSyncedPosition = presentedPos;
     // Read back reconstructed rotation so the cache matches what
@@ -849,12 +848,9 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     }
 }
 
-void Rigidbody::SyncExternalMovesToPhysics()
+void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
 {
     auto &d = DataMut();
-    if (d.isKinematic)
-        return; // Kinematic is user-driven via SyncCollidersToPhysics already
-
     auto *go = GetGameObject();
     if (!go)
         return;
@@ -887,12 +883,21 @@ void Rigidbody::SyncExternalMovesToPhysics()
             return;
 
         glm::vec3 bodyPos = pw.GetBodyPosition(bodyId);
-        bool firstFrameDiff = glm::length(currentPos - bodyPos) > posEps;
+        const glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bodyId));
+        bool firstFrameDiff =
+            glm::length(currentPos - bodyPos) > posEps || (1.0f - std::abs(glm::dot(currentRot, bodyRot))) > rotEps;
         if (!firstFrameDiff)
             return;
 
-        // Transform was modified after body creation — teleport now.
-        TeleportBodies(pw, go, currentPos, currentRot);
+        if (d.isKinematic && fixedDeltaTime > 0.0f) {
+            pw.MoveBodyKinematic(bodyId, currentPos, currentRot, fixedDeltaTime, PhysicsWorld::kMaxTransformDriveSpeed);
+        } else {
+            // A direct Transform assignment outside the fixed simulation
+            // phase is an authored teleport. Resetting both interpolation
+            // samples prevents the previous physics pose from snapping the
+            // object back before the next fixed step.
+            TeleportBodies(pw, go, currentPos, currentRot);
+        }
         return;
     }
 
@@ -906,13 +911,30 @@ void Rigidbody::SyncExternalMovesToPhysics()
     //             " posDelta=", glm::length(currentPos - d.lastSyncedPosition),
     //             " rotDelta=", (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))));
 
-    // The user (gizmo / inspector) moved the object externally.
-    // Teleport ALL sibling collider bodies to the new Transform position.
     auto &pw = PhysicsWorld::Instance();
     if (!pw.IsInitialized())
         return;
 
-    TeleportBodies(pw, go, currentPos, currentRot);
+    const uint32_t bodyId = GetPrimaryBodyId(go);
+    if (bodyId == 0xFFFFFFFF)
+        return;
+
+    if (d.isKinematic && fixedDeltaTime > 0.0f) {
+        // A kinematic Transform animated into a fixed step should carry
+        // contact velocity, matching Unity's script-driven kinematic bodies.
+        pw.MoveBodyKinematic(bodyId, currentPos, currentRot, fixedDeltaTime, PhysicsWorld::kMaxTransformDriveSpeed);
+        d.lastSyncedPosition = currentPos;
+        d.lastSyncedRotation = currentRot;
+        auto colliders = go->GetComponents<Collider>();
+        for (auto *collider : colliders) {
+            if (collider && collider->GetBodyId() != 0xFFFFFFFF)
+                collider->SetLastSyncedTransform(currentPos, currentRot);
+        }
+    } else {
+        // Dynamic bodies and frame-authored kinematic poses use teleport
+        // semantics. TeleportBodies also resets interpolation history.
+        TeleportBodies(pw, go, currentPos, currentRot);
+    }
 
     // Update cache
     d.lastSyncedPosition = currentPos;
@@ -1091,7 +1113,7 @@ void Rigidbody::ValidateSerializedDocument(const nlohmann::json &j)
     if (constraints < 0 || (constraints & ~kValidConstraintBits) != 0)
         throw std::invalid_argument("Rigidbody.constraints contains unsupported bits");
     if (collisionDetectionMode < static_cast<int>(CollisionDetectionMode::Discrete) ||
-        collisionDetectionMode > static_cast<int>(CollisionDetectionMode::Continuous))
+        collisionDetectionMode > static_cast<int>(CollisionDetectionMode::ContinuousDynamic))
         throw std::invalid_argument("Rigidbody.collision_detection_mode is unsupported");
     if (interpolation < static_cast<int>(RigidbodyInterpolation::None) ||
         interpolation > static_cast<int>(RigidbodyInterpolation::Interpolate))

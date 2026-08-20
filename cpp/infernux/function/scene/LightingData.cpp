@@ -11,6 +11,7 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <core/types/ColorSpace.h>
+#include <cstring>
 #include <limits>
 
 namespace infernux
@@ -78,7 +79,7 @@ void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPos
 
 void SceneLightCollector::Clear()
 {
-    m_canonicalLightSnapshot.Clear(m_canonicalLightSnapshot.generation + 1u);
+    m_canonicalLightSnapshot.Clear(m_canonicalGeneration);
     m_lightingUBO = LightingUBO{};
     m_simpleLightingUBO = SimpleLightingUBO{};
     m_directionalLightCount = 0;
@@ -97,6 +98,25 @@ void SceneLightCollector::Clear()
     m_lightingUBO.ambientGroundColor = glm::vec4(inx::color::SrgbToLinear(glm::vec3(0.1f, 0.1f, 0.1f)), 0.3f);
     m_lightingUBO.ambientEquatorColor =
         glm::vec4(inx::color::SrgbToLinear(glm::vec3(0.15f, 0.15f, 0.2f)), 0.0f); // mode = 0 (flat)
+}
+
+void SceneLightCollector::PublishCanonicalGeneration()
+{
+    const auto bytesEqual = [](const std::vector<CanonicalLightData> &left,
+                               const std::vector<CanonicalLightData> &right) {
+        return left.size() == right.size() &&
+               (left.empty() || std::memcmp(left.data(), right.data(), left.size() * sizeof(CanonicalLightData)) == 0);
+    };
+    const bool changed = !m_hasCanonicalPublication ||
+                         !bytesEqual(m_canonicalLightSnapshot.directionalLights, m_lastCanonicalDirectionalLights) ||
+                         !bytesEqual(m_canonicalLightSnapshot.localLights, m_lastCanonicalLocalLights);
+    if (changed) {
+        ++m_canonicalGeneration;
+        m_lastCanonicalDirectionalLights = m_canonicalLightSnapshot.directionalLights;
+        m_lastCanonicalLocalLights = m_canonicalLightSnapshot.localLights;
+        m_hasCanonicalPublication = true;
+    }
+    m_canonicalLightSnapshot.generation = m_canonicalGeneration;
 }
 
 void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition,
@@ -592,6 +612,7 @@ void SceneLightCollector::BuildShaderLightingUBO()
     };
     applyCanonicalAssignments(m_canonicalLightSnapshot.directionalLights);
     applyCanonicalAssignments(m_canonicalLightSnapshot.localLights);
+    PublishCanonicalGeneration();
 
     const uint32_t shadowViewCount =
         std::min<uint32_t>(static_cast<uint32_t>(m_shadowFrame.views.size()), lighting::MaxShadowViews);

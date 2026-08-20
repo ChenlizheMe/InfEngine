@@ -13,9 +13,11 @@ from Infernux.core.anim_state_machine import (
     AnimState,
     AnimTransition,
     AnimParameter,
+    AnimCondition,
     AnimConditionError,
     evaluate_anim_condition,
 )
+from Infernux.graph import TypeRef, ValueType
 
 
 # ── evaluate_anim_condition ─────────────────────────────────────────────────
@@ -119,24 +121,33 @@ def test_condition_mixed_type_compare_does_not_crash():
 def test_parameter_defaults():
     p = AnimParameter()
     assert p.name == "NewVar"
-    assert p.kind == "float"
-    assert p.default_float == 0.0
+    assert p.value_type == TypeRef(ValueType.F32)
+    assert p.default == 0.0
+    assert p.stable_id
 
 
 def test_parameter_to_dict_bool():
-    d = AnimParameter(name="jump", kind="bool", default_bool=True).to_dict()
-    assert d == {"name": "jump", "kind": "bool", "default_bool": True}
+    d = AnimParameter(
+        name="jump", value_type=TypeRef(ValueType.BOOL), default=True
+    ).to_dict()
+    assert d["name"] == "jump"
+    assert d["type"] == {"value_type": "bool", "space": "none"}
+    assert d["default"] is True
+    assert d["stable_id"]
 
 
 def test_parameter_to_dict_float():
-    d = AnimParameter(name="speed", kind="float", default_float=2.5).to_dict()
-    assert d["default_float"] == 2.5
-    assert "default_bool" not in d
+    d = AnimParameter(
+        name="speed", value_type=TypeRef(ValueType.F32), default=2.5
+    ).to_dict()
+    assert d["default"] == 2.5
 
 
 def test_parameter_to_dict_int():
-    d = AnimParameter(name="hp", kind="int", default_int=7).to_dict()
-    assert d["default_int"] == 7
+    d = AnimParameter(
+        name="hp", value_type=TypeRef(ValueType.I32), default=7
+    ).to_dict()
+    assert d["default"] == 7
 
 
 @pytest.mark.parametrize(
@@ -153,14 +164,31 @@ def test_parameter_rejects_noncanonical_documents(document):
 
 
 def test_parameter_round_trip():
-    p = AnimParameter(name="x", kind="int", default_int=4)
+    p = AnimParameter(
+        name="x", value_type=TypeRef(ValueType.I32), default=4
+    )
     p2 = AnimParameter.from_dict(p.to_dict())
-    assert p2.name == "x" and p2.kind == "int" and p2.default_int == 4
+    assert p2.name == "x"
+    assert p2.value_type == TypeRef(ValueType.I32)
+    assert p2.default == 4
+    assert p2.stable_id == p.stable_id
 
 
 def test_parameter_invalid_float_default_is_rejected():
     with pytest.raises(TypeError):
-        AnimParameter.from_dict({"name": "s", "kind": "float", "default_float": "NaNN"})
+        AnimParameter.from_dict(
+            {
+                "stable_id": "parameter-s",
+                "name": "s",
+                "type": {"value_type": "f32", "space": "none"},
+                "default": "NaNN",
+                "exposed": True,
+                "writable": True,
+                "category": "",
+                "tooltip": "",
+                "attributes": [],
+            }
+        )
 
 
 # ── AnimTransition ──────────────────────────────────────────────────────────
@@ -168,21 +196,39 @@ def test_parameter_invalid_float_default_is_rejected():
 def test_transition_defaults():
     t = AnimTransition()
     assert t.target_state == ""
-    assert t.condition == ""
+    assert t.conditions == []
     assert t.duration == 0.0
 
 
 def test_transition_round_trip():
-    t = AnimTransition(target_state="Run", condition="speed > 1", duration=0.25)
+    condition = AnimCondition(parameter_id="speed-id", operator=">", threshold=1.0)
+    t = AnimTransition(target_state="Run", conditions=[condition], duration=0.25)
     t2 = AnimTransition.from_dict(t.to_dict())
     assert t2.target_state == "Run"
-    assert t2.condition == "speed > 1"
+    assert t2.conditions == [condition]
     assert t2.duration == 0.25
 
 
 def test_transition_incomplete_document_is_rejected():
     with pytest.raises(ValueError):
         AnimTransition.from_dict({})
+
+
+def test_fsm_rejects_condition_with_unknown_parameter_id():
+    condition = AnimCondition(parameter_id="missing-parameter")
+    document = AnimStateMachine(
+        states=[
+            AnimState(
+                name="Idle",
+                transitions=[AnimTransition(target_state="Run", conditions=[condition])],
+            ),
+            AnimState(name="Run"),
+        ],
+        default_state="Idle",
+    ).to_dict()
+
+    with pytest.raises(ValueError, match="declared parameters"):
+        AnimStateMachine.from_dict(document)
 
 
 # ── AnimState ───────────────────────────────────────────────────────────────
@@ -257,7 +303,10 @@ def test_state_invalid_header_color_is_rejected(value):
 
 def test_state_transitions_round_trip():
     s = AnimState(name="A", transitions=[
-        AnimTransition(target_state="B", condition="x"),
+        AnimTransition(
+            target_state="B",
+            conditions=[AnimCondition(parameter_id="x-id", operator="==", threshold=1.0)],
+        ),
         AnimTransition(target_state="C"),
     ])
     s2 = AnimState.from_dict(s.to_dict())
@@ -352,7 +401,11 @@ def test_fsm_round_trip():
     fsm = AnimStateMachine(name="Player", mode="3d")
     fsm.add_state("Idle")
     fsm.add_state("Run")
-    fsm.parameters.append(AnimParameter(name="speed", kind="float", default_float=1.0))
+    fsm.parameters.append(
+        AnimParameter(
+            name="speed", value_type=TypeRef(ValueType.F32), default=1.0
+        )
+    )
     fsm2 = AnimStateMachine.from_dict(fsm.to_dict())
     assert fsm2.name == "Player"
     assert fsm2.mode == "3d"
@@ -376,9 +429,16 @@ def test_fsm_copy_is_independent():
 def test_fsm_equality_by_content():
     a = AnimStateMachine(name="X")
     a.add_state("Idle")
+    b = a.copy()
+    assert a == b
+
+
+def test_fsm_identity_is_part_of_serialized_content():
+    a = AnimStateMachine(name="X")
+    a.add_state("Idle")
     b = AnimStateMachine(name="X")
     b.add_state("Idle")
-    assert a == b
+    assert a != b
 
 
 def test_fsm_equality_ignores_file_path():
