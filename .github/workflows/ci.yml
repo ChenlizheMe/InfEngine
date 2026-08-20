@@ -87,4 +87,4 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          ctest --preset native-tests -LE "performance|requires_vulkan_device" --timeout 120 --output-on-failure
+          ctest --preset native-tests -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
