@@ -292,6 +292,9 @@ _SceneDocumentReadTicket = _native_module._SceneDocumentReadTicket
 _preflight_scene_resource_dependencies = (
     _native_module._preflight_scene_resource_dependencies
 )
+_collect_scene_resource_dependencies = (
+    _native_module._collect_scene_resource_dependencies
+)
 _schedule_scene_document_read = _native_module._schedule_scene_document_read
 
 # `import *` skips underscore-prefixed names.  Re-export internal C++

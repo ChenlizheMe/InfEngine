@@ -257,6 +257,30 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             [](AssetRegistry &self, const std::string &guid) { return self.BeginLoadAsset(guid, ResourceType::Mesh); },
             py::arg("guid"), "Schedule Assimp CPU mesh preparation on JobSystem")
         .def(
+            "begin_load_material_by_guid",
+            [](AssetRegistry &self, const std::string &guid) {
+                return self.BeginLoadAsset(guid, ResourceType::Material);
+            },
+            py::arg("guid"), "Schedule material parsing on JobSystem")
+        .def(
+            "begin_load_physic_material_by_guid",
+            [](AssetRegistry &self, const std::string &guid) {
+                return self.BeginLoadAsset(guid, ResourceType::PhysicMaterial);
+            },
+            py::arg("guid"), "Schedule physics material parsing on JobSystem")
+        .def(
+            "begin_load_shader_by_guid",
+            [](AssetRegistry &self, const std::string &guid) {
+                return self.BeginLoadAsset(guid, ResourceType::Shader);
+            },
+            py::arg("guid"), "Schedule authored shader compilation on JobSystem")
+        .def(
+            "begin_load_audio_by_guid",
+            [](AssetRegistry &self, const std::string &guid) {
+                return self.BeginLoadAsset(guid, ResourceType::Audio);
+            },
+            py::arg("guid"), "Schedule audio decode on JobSystem")
+        .def(
             "load_texture_by_guid",
             [](AssetRegistry &self, const std::string &guid) {
                 return self.LoadAsset<InxTexture>(guid, ResourceType::Texture);

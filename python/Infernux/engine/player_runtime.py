@@ -34,13 +34,19 @@ class PlayerRuntimeSession:
             scheduler = RuntimeExecutionScheduler(name="player")
         self._execution_scheduler = scheduler
         self._scene_service = scene_service or PlayerSceneService(
-            asset_database=asset_database
+            asset_database=asset_database,
+            native_engine=native_engine,
         )
         self._scene_service_installed = False
         self._runtime_manifest: Optional[RuntimeProductManifest] = None
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
         self._state = "stopped"
         self._last_frame_time = time.time()
+
+    def _refresh_execution_membership(self) -> None:
+        refresh = getattr(self._execution_scheduler, "refresh_scene_membership", None)
+        if callable(refresh):
+            refresh()
 
     @property
     def is_playing(self) -> bool:
@@ -137,7 +143,12 @@ class PlayerRuntimeSession:
         if self._runtime_manifest is None or self._runtime_catalog is None:
             Debug.log_error("Player scene load rejected: runtime contract is not configured")
             return False
-        return bool(self._scene_service.load_initial(path, on_tick=self._pump_startup_events))
+        loaded = bool(
+            self._scene_service.load_initial(path, on_tick=self._pump_startup_events)
+        )
+        if loaded:
+            self._refresh_execution_membership()
+        return loaded
 
     def _pump_startup_events(self) -> None:
         native = self._native_engine
@@ -173,6 +184,7 @@ class PlayerRuntimeSession:
         try:
             scene.set_playing(True)
             self._refresh_loaded_scene(scene)
+            self._refresh_execution_membership()
             SceneManager.instance().play()
         except Exception:
             RuntimeSceneManager.remove_runtime_service(self._scene_service)
@@ -192,7 +204,10 @@ class PlayerRuntimeSession:
         """
         if not self.is_playing:
             return 0.0
+        previous_scene_path = self._scene_service.active_scene_path
         self._scene_service.process_pending_load()
+        if self._scene_service.active_scene_path != previous_scene_path:
+            self._refresh_execution_membership()
 
         current_time = time.time()
         delta_time = (

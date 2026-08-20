@@ -81,9 +81,9 @@ def test_lit_geometry_uses_the_camera_local_lighting_domain() -> None:
         / "InxShaderLoader.cpp"
     ).read_text(encoding="utf-8")
 
-    assert 'if (needsLightingUBO)' in source
+    assert 'if (needsLightingUBO || needsCameraLocalView)' in source
     assert '#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz' in source
-    assert source.index('if (needsLightingUBO)') < source.index(
+    assert source.index('if (needsLightingUBO || needsCameraLocalView)') < source.index(
         '#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz'
     )
 
@@ -974,6 +974,16 @@ def test_game_camera_stack_owns_one_render_graph_per_camera() -> None:
     assert "cameraDependency = cameraFinal" in source
 
 
+def test_render_graph_rebuild_preserves_compatible_material_pipelines() -> None:
+    source = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+    body = _function_body(source, "void SceneRenderGraph::BuildRenderGraph")
+
+    # Switching a custom RenderPipeline must rebuild its graph topology, but
+    # it must not make every compatible scene material compile again. Format,
+    # sample-count, and shader compatibility changes own their invalidation.
+    assert "InvalidateAllMaterialPipelines" not in body
+
+
 def test_camera_stack_uses_target_owned_color_and_depth_attachments() -> None:
     graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
     backend = (VULKAN_BACKEND / "RenderGraph.cpp").read_text(encoding="utf-8")
@@ -1000,7 +1010,7 @@ def test_player_shader_scan_uses_catalog_metadata_for_opaque_artifacts() -> None
 def test_player_init_skips_full_asset_refresh_when_runtime_catalog_exists() -> None:
     source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void Infernux::InitRenderer")
-    catalog_install = body.index("InstallRuntimeAssetCatalog(runtimeAssetCatalog)")
+    catalog_install = body.index("InstallRuntimeAssetCatalog(runtimeAssetCatalog, true)")
     refresh = body.index("->Refresh()")
     player_guard = body.index("playerMode && hasRuntimeCatalog")
     assert player_guard < catalog_install < refresh
@@ -1014,13 +1024,13 @@ def test_player_init_pumps_events_around_shader_and_pipeline_work() -> None:
     assert body.index("PreparePipeline") < body.rindex("PumpStartupEvents")
 
 
-def test_player_window_is_revealed_before_vulkan_device_init() -> None:
+def test_player_window_stays_hidden_during_vulkan_device_init() -> None:
     source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void InxRenderer::Init")
-    assert "RevealStartupWindow" in body
-    assert body.index("m_view->Init") < body.index("RevealStartupWindow")
-    assert body.index("RevealStartupWindow") < body.index("m_vkCore->Init")
-    assert "_INFERNUX_PLAYER_MODE" in body
+    assert "RevealStartupWindow" not in source
+    assert "ShowWindow()" not in body
+    assert body.index("m_view->Init") < body.index("PumpStartupEvents")
+    assert body.index("PumpStartupEvents") < body.index("m_vkCore->Init")
 
 
 def test_player_window_skips_startup_maximize() -> None:
@@ -1038,9 +1048,11 @@ def test_prepare_pipeline_pumps_between_engine_shader_compiles() -> None:
     source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void InxRenderer::PreparePipeline")
     assert "PumpStartupEvents" in body
-    assert body.count("pumpStartup()") >= 6
-    assert body.index("CompileParticleSortProgram") < body.index(
-        "CompileParticleRibbonRenderProgram"
+    assert body.count("pumpStartup()") >= 5
+    assert "JobSystem::Get().Schedule" in body
+    assert "CompileParticleProgramBundle" in body
+    assert body.index("CompileParticleProgramBundle") < body.index(
+        "m_sceneRenderGraph->Initialize"
     )
 
 

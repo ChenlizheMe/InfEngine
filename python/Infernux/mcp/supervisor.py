@@ -1618,7 +1618,10 @@ def _validate_player_executable(executable_path: str, project_root: str) -> tupl
 
     player_manifest = _read_json_object(os.path.join(data_root, "Player.inxmanifest"))
     product = player_manifest.get("product") or {}
-    if product.get("layout") == "infernux-single-entry-player":
+    if product.get("layout") in {
+        "infernux-single-entry-player",
+        "single_executable_native_packages",
+    }:
         entry_points = [str(value or "") for value in product.get("entry_points", []) or []]
         if not bool(product.get("single_entry_point", False)) or entry_points != [os.path.basename(launcher)]:
             raise ValueError("Player single-entry manifest does not match the selected executable.")
@@ -1664,7 +1667,10 @@ def _player_data_root(runtime_executable: str) -> str:
         os.path.join(runtime_directory, f"{os.path.splitext(os.path.basename(runtime))[0]}_Data")
     )
     player_manifest = _read_json_object(os.path.join(single_entry_data, "Player.inxmanifest"))
-    if (player_manifest.get("product") or {}).get("layout") == "infernux-single-entry-player":
+    if (player_manifest.get("product") or {}).get("layout") in {
+        "infernux-single-entry-player",
+        "single_executable_native_packages",
+    }:
         return single_entry_data
     if os.path.basename(runtime_directory) != "Runtime":
         raise ValueError("Player runtime executable is not inside the current organized Player layout.")

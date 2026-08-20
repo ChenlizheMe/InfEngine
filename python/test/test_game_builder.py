@@ -3455,7 +3455,7 @@ def test_project_render_scripts_make_declared_shader_ids_reachable(tmp_path):
     }
 
 
-def test_copy_cooked_assets_does_not_duplicate_read_only_builtin_resources(tmp_path):
+def test_copy_cooked_assets_catalogs_builtin_shaders_without_duplicating_them(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     scene = project / "Assets" / "Main.scene"
@@ -3485,6 +3485,26 @@ def test_copy_cooked_assets_does_not_duplicate_read_only_builtin_resources(tmp_p
 
     assert (data_dir / "Assets" / "Main.scene").is_file()
     assert not (data_dir / "Library" / "Resources" / "shaders" / "standard.vert").exists()
+    assert "builtin-shader-guid" in builder._cooked_asset_entries
+
+    builder._cooked_asset_entries = {"builtin-shader-guid": shader_entry}
+    builder._runtime_artifact_bindings = {}
+    builder._write_runtime_asset_records(str(tmp_path / "dist"))
+    records = json.loads(
+        (data_dir / "Library" / "RuntimeAssetRecords.json").read_text(encoding="utf-8")
+    )
+    shader_record = next(
+        item for item in records["entries"] if item["guid"] == "builtin-shader-guid"
+    )
+    assert shader_record["runtime_artifacts"] == [
+        {
+            "package": "Runtime.inxrt",
+            "runtime_path": "Infernux/resources/shaders/standard.vert",
+            "runtime_artifact_id": game_builder_module.runtime_artifact_id(
+                "Runtime.inxrt", "Infernux/resources/shaders/standard.vert"
+            ),
+        }
+    ]
 
 
 def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path):
@@ -4173,6 +4193,15 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
         "TestGame_Data/Content.inxpkg",
     }
     assert all(package["archive_sha256"] for package in catalog["packages"])
+    package_index = (
+        data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME
+    ).read_text(encoding="ascii").splitlines()
+    assert package_index[0] == "INFERNUX_PLAYER_PACKAGE_INDEX_V1"
+    assert {line.split("\t", 1)[0] for line in package_index[1:]} == {
+        "runtime",
+        "content",
+    }
+    assert all(len(line.split("\t")) == 3 for line in package_index[1:])
     assert len(catalog["artifacts"]) == 2
     assert all(
         artifact["runtime_artifact_id"].startswith("ra_")
@@ -4354,6 +4383,18 @@ class TestGameBuilderOutputSafety:
         assert 'os.add_dll_directory(_dll_dir)' in boot_source
         assert '_CONTENT_ARCHIVE = os.path.join(_DATA_ROOT, "Content.inxpkg")' in boot_source
         assert '_PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")' in boot_source
+        assert 'class _ParallelRuntimeFinder:' in boot_source
+        assert '_mark_boot_phase("parallel_deferred")' in boot_source
+        assert '_RUNTIME_MODULE_DIR = _extract_cached_archive(' in boot_source
+        assert 'if os.path.isfile(_PARALLEL_ARCHIVE):\n    _RUNTIME_MODULE_DIR = _extract_cached_archive(' not in boot_source
+        assert '_index_path = os.path.join(_DATA_ROOT, "PackageIndex.inxmanifest")' in boot_source
+        assert "_PLAYER_PACKAGE_INDEX = _load_player_package_index()" in boot_source
+        assert "for _package_kind, (_package_hash, _package_bytes) in _PLAYER_PACKAGE_INDEX.items():" in boot_source
+        assert '_source_marker = os.path.join(_cache_root, ".source")' in boot_source
+        assert "_archive_stat.st_mtime_ns" not in boot_source
+        assert '_source_identity = _expected_hash + "\\n" + str(_archive_stat.st_size)' in boot_source
+        assert "_extracted_manifest = dict(" in boot_source
+        assert "identity does not match its build index" in boot_source
         assert '"_INFERNUX_PLAYER_DATA_ROOT"' in boot_source
         assert "_extract_cached_archive" in boot_source
         assert "_NATIVE_PACK._inxpack_extract" in boot_source

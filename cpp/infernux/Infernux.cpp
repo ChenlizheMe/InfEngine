@@ -561,6 +561,55 @@ bool IsPrefabPreviewPath(const std::string &filePath)
 
 } // namespace
 
+struct LinkedShaderProgramLoadTicket::State
+{
+    struct Work
+    {
+        ShaderStagePair stages;
+        std::string vertexPath;
+        std::string fragmentPath;
+        std::string vertexSource;
+        std::string fragmentSource;
+        uint64_t sourceStamp = 0;
+        bool directStructuredStage = false;
+        ShaderDescriptor fragmentDescriptor;
+        LinkedShaderProgramArtifactCompilation compilation;
+        std::string error;
+    };
+
+    std::vector<Work> work;
+    JobHandle job;
+    std::exception_ptr failure;
+    std::thread::id ownerThread;
+    std::thread::id producerThread;
+    std::atomic<bool> cancelRequested{false};
+    bool committed = false;
+};
+
+bool LinkedShaderProgramLoadTicket::IsComplete() const noexcept
+{
+    return !m_state || !m_state->job.IsValid() || m_state->job.IsComplete();
+}
+
+bool LinkedShaderProgramLoadTicket::IsCommitted() const noexcept
+{
+    return m_state && m_state->committed;
+}
+
+bool LinkedShaderProgramLoadTicket::WasProducedOnWorker() const noexcept
+{
+    return IsComplete() && m_state && m_state->producerThread != std::thread::id{} &&
+           m_state->producerThread != m_state->ownerThread;
+}
+
+bool LinkedShaderProgramLoadTicket::Cancel() noexcept
+{
+    if (!m_state)
+        return false;
+    m_state->cancelRequested.store(true, std::memory_order_release);
+    return !m_state->job.IsValid() || m_state->job.Cancel();
+}
+
 // ----------------------------------
 // Helper method for validation
 // ----------------------------------
@@ -644,6 +693,176 @@ std::vector<AssetRuntimeRecord> Infernux::GetAssetRuntimeRecords() const
     return result;
 }
 
+std::shared_ptr<LinkedShaderProgramLoadTicket>
+Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &materialGuids)
+{
+    auto ticket = std::make_shared<LinkedShaderProgramLoadTicket>();
+    ticket->m_state = std::make_shared<LinkedShaderProgramLoadTicket::State>();
+    auto state = ticket->m_state;
+    state->ownerThread = std::this_thread::get_id();
+
+    if (!m_renderer)
+        return ticket;
+    auto *adb = GetAssetDatabase();
+    if (!adb)
+        return ticket;
+
+    auto resolvePath = [&](const ShaderAssetReference &reference, const char *stage) {
+        if (!reference.guid.empty())
+            return adb->GetPathFromGuid(reference.guid);
+        if (!reference.pathHint.empty())
+            return std::string{};
+        return adb->FindShaderPathById(reference.shaderId, stage);
+    };
+    auto readSource = [&](const std::string &path, std::string &source) {
+        std::vector<char> bytes;
+        if (!adb->ReadFile(path, bytes) || bytes.empty())
+            return false;
+        if (bytes.back() == '\0')
+            bytes.pop_back();
+        source.assign(bytes.begin(), bytes.end());
+        return true;
+    };
+
+    std::unordered_set<ShaderStagePair, ShaderStagePairHash> scheduled;
+    auto &registry = AssetRegistry::Instance();
+    for (const auto &guid : materialGuids) {
+        auto material = registry.GetAsset<InxMaterial>(guid);
+        if (!material)
+            continue;
+
+        const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+        if (!stages.IsValid() || !scheduled.insert(stages).second)
+            continue;
+        const auto cached = m_linkedShaderProgramCache.find(stages);
+        if (cached != m_linkedShaderProgramCache.end() && cached->second.sourceStamp != 0 &&
+            cached->second.programKey.IsValid() && m_renderer->HasShaderProgramArtifact(cached->second.programKey)) {
+            continue;
+        }
+
+        LinkedShaderProgramLoadTicket::State::Work work;
+        work.stages = stages;
+        work.vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
+        work.fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
+        if (work.vertexPath.empty() || work.fragmentPath.empty() || !readSource(work.vertexPath, work.vertexSource) ||
+            !readSource(work.fragmentPath, work.fragmentSource)) {
+            continue;
+        }
+        work.sourceStamp =
+            ComputeShaderProgramRevision(work.vertexSource, work.fragmentSource, ShaderCompileTarget::Forward, 0);
+        if (cached != m_linkedShaderProgramCache.end() && cached->second.failedSourceStamp == work.sourceStamp)
+            continue;
+        state->work.push_back(std::move(work));
+    }
+
+    if (state->work.empty())
+        return ticket;
+
+    auto compile = [state]() {
+        state->producerThread = std::this_thread::get_id();
+        try {
+            // One job compiles the scene's unique pairs serially. This keeps
+            // compiler memory bounded on low-end machines while the shared
+            // guard also protects editor hot reload and imported shaders.
+            const InxShaderLoader::CompilationGuard compilationGuard;
+            InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
+            for (auto &work : state->work) {
+                if (state->cancelRequested.load(std::memory_order_acquire))
+                    return;
+                const std::string vertexCompilePath =
+                    InxShaderLoader::StageQualifiedVirtualPath(work.vertexPath, "vertex");
+                const std::string fragmentCompilePath =
+                    InxShaderLoader::StageQualifiedVirtualPath(work.fragmentPath, "fragment");
+                const ShaderDescriptor vertexDescriptor =
+                    compiler.ParseShaderSource(work.vertexSource, vertexCompilePath);
+                work.fragmentDescriptor = compiler.ParseShaderSource(work.fragmentSource, fragmentCompilePath);
+                if (IsDirectStructuredStage(vertexDescriptor) || IsDirectStructuredStage(work.fragmentDescriptor)) {
+                    work.directStructuredStage = true;
+                    continue;
+                }
+                if (vertexDescriptor.shaderId != work.stages.vertexShaderId ||
+                    work.fragmentDescriptor.shaderId != work.stages.fragmentShaderId) {
+                    work.error = "ShaderInfo Name must match the shader IDs referenced by the material";
+                    continue;
+                }
+                work.compilation = compiler.CompileLinkedProgramArtifact(
+                    work.vertexSource, vertexCompilePath, work.fragmentSource, fragmentCompilePath);
+                if (!work.compilation.IsValid()) {
+                    std::ostringstream diagnostics;
+                    for (const auto &error : work.compilation.errors) {
+                        if (diagnostics.tellp() > 0)
+                            diagnostics << '\n';
+                        diagnostics << error;
+                    }
+                    work.error = diagnostics.str();
+                    if (work.error.empty())
+                        work.error = "Linked shader program compilation failed";
+                }
+            }
+        } catch (...) {
+            state->failure = std::current_exception();
+        }
+    };
+
+    if (JobSystem::IsAvailable()) {
+        state->job = JobSystem::Get().Schedule(std::move(compile), JobDomain::Asset, JobPriority::High);
+    } else {
+        compile();
+    }
+    return ticket;
+}
+
+bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderProgramLoadTicket> &ticket)
+{
+    if (!ticket || !ticket->m_state)
+        return false;
+    auto &state = *ticket->m_state;
+    if (std::this_thread::get_id() != state.ownerThread)
+        throw std::logic_error("linked shader program publication must run on the ticket owner thread");
+    if (!ticket->IsComplete())
+        return false;
+    if (state.committed)
+        return true;
+    if (state.failure)
+        std::rethrow_exception(state.failure);
+    if (state.cancelRequested.load(std::memory_order_acquire))
+        return false;
+
+    for (auto &work : state.work) {
+        if (work.directStructuredStage) {
+            m_linkedShaderProgramCache.erase(work.stages);
+            continue;
+        }
+        if (!work.error.empty()) {
+            auto &entry = m_linkedShaderProgramCache[work.stages];
+            entry.failedSourceStamp = work.sourceStamp;
+            entry.lastError = work.error;
+            INXLOG_ERROR("Linked shader prewarm rejected '", work.stages.ToString(), "': ", work.error);
+            continue;
+        }
+
+        ShaderProgramArtifact artifact = work.compilation.CreateRuntimeArtifact();
+        if (!artifact.IsValid() || artifact.key.stages != work.stages ||
+            !m_renderer->PublishShaderProgramArtifact(artifact)) {
+            auto &entry = m_linkedShaderProgramCache[work.stages];
+            entry.failedSourceStamp = work.sourceStamp;
+            entry.lastError = "Renderer rejected the prewarmed linked shader program artifact";
+            INXLOG_ERROR("Linked shader prewarm publication failed for '", work.stages.ToString(), "'");
+            continue;
+        }
+
+        m_linkedShaderProgramCache[work.stages] =
+            LinkedShaderProgramCacheEntry{work.sourceStamp, artifact.key, 0, {}};
+        const auto &fragment = work.fragmentDescriptor;
+        m_renderer->StoreShaderRenderMeta(
+            work.stages.fragmentShaderId, fragment.surfaceOptions.cullMode, fragment.depthWrite, fragment.depthTest,
+            fragment.surfaceOptions.blendMode, fragment.renderQueue, fragment.passTag, fragment.stencil,
+            fragment.surfaceOptions.alphaClip);
+    }
+    state.committed = true;
+    return true;
+}
+
 // ----------------------------------
 // Lifecycle
 // ----------------------------------
@@ -674,6 +893,10 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
                 }
             }
         });
+        m_renderer->SetShaderAssetResolver(
+            [this](const std::string &shaderId, const std::string &shaderType) {
+                return EnsureShaderLoaded(shaderId, shaderType);
+            });
     }
 }
 
@@ -2646,7 +2869,17 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         throw std::logic_error("Engine is already initialized");
     }
 
+    using StartupClock = std::chrono::steady_clock;
+    m_startupPhaseTimingsMs.clear();
+    const auto startupBegin = StartupClock::now();
+    auto startupPhase = [this](const char *name, const StartupClock::time_point begin) {
+        m_startupPhaseTimingsMs[name] =
+            std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
+    };
+
+    auto phaseBegin = StartupClock::now();
     m_renderer->Init(width, height, m_metadata);
+    startupPhase("renderer_init", phaseBegin);
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 
@@ -2681,6 +2914,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         // Register the built-in shader search path for ShaderInfo imports.
         InxShaderLoader::AddShaderSearchPath(defaultShaderPath);
 
+        phaseBegin = StartupClock::now();
         m_assetDatabase->Initialize(projectPath);
 
         // ── Transfer AssetDatabase ownership to AssetRegistry ──────
@@ -2722,22 +2956,33 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             // and the engine resource tree here re-imports every builtin
             // texture/icon on launch and is the dominant enter-game stall.
             // Builtin shaders still import on demand in LoadAndRegisterShaders.
-            registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog);
+            registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog, true);
         } else {
-            registry.GetAssetDatabase()->Refresh();
+            const bool restoredCachedCatalog = registry.GetAssetDatabase()->RestoreCachedCatalog();
+            if (restoredCachedCatalog) {
+                // The cached catalog is sufficient for scene/resource lookup.
+                // Validate source fingerprints and import changed files on the
+                // JobSystem after the editor becomes interactive.
+                registry.GetAssetDatabase()->BeginRefresh();
+            } else {
+                registry.GetAssetDatabase()->Refresh();
+            }
             if (hasRuntimeCatalog)
                 registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog);
         }
+        startupPhase("asset_catalog", phaseBegin);
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
 
         RegisterPhysicMaterialAssetCallback();
 
         // ── Load and register shaders via AssetRegistry ─────────────
+        phaseBegin = StartupClock::now();
         LoadAndRegisterShaders(defaultShaderPath, false);
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
         LoadAndRegisterShaders(assetsPath, true);
+        startupPhase("startup_shaders", phaseBegin);
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
 
@@ -2857,7 +3102,9 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     }
 
     INXLOG_DEBUG("Prepare pipeline.");
+    phaseBegin = StartupClock::now();
     m_renderer->PreparePipeline();
+    startupPhase("prepare_pipeline", phaseBegin);
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 
@@ -2865,6 +3112,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     // layout persistence (keeps project directory clean / not in VCS).
     // We use std::filesystem::path throughout (wide-char on Windows) so
     // paths with non-ASCII characters (e.g. Chinese usernames) work.
+    phaseBegin = StartupClock::now();
     {
         std::filesystem::path layoutDir;
 #ifdef INX_PLATFORM_WINDOWS
@@ -2893,14 +3141,20 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     LoadImGuiLayout();
+    startupPhase("layout", phaseBegin);
 
     // Initialize physics world (Jolt)
+    phaseBegin = StartupClock::now();
     PhysicsWorld::Instance().Initialize();
+    startupPhase("physics", phaseBegin);
 
     // Initialize audio engine (SDL3 audio)
+    phaseBegin = StartupClock::now();
     if (!AudioEngine::Instance().Initialize()) {
         INXLOG_WARN("Audio engine failed to initialize. Audio features will be unavailable.");
     }
+    startupPhase("audio", phaseBegin);
+    startupPhase("total", startupBegin);
     m_isInitialized = true;
 }
 
@@ -3226,6 +3480,56 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
     const bool directoryExists = fs::exists(dirPath);
     if (!directoryExists && !recursive)
         return;
+    // Project shaders resolve lazily from AssetDatabase metadata in both the
+    // Editor and cooked Player. Eagerly compiling every authored fullscreen
+    // and material stage made startup proportional to the entire project,
+    // although the active scene normally references only a small subset.
+    // Material refresh and FullscreenRenderer share EnsureShaderLoaded(), so
+    // this changes timing rather than shader availability or hot reload.
+    if (recursive)
+        return;
+
+    // Bootstrap needs only a valid surface while the first scene's authored
+    // material programs are being prepared. Running this fallback through the
+    // ShaderInfo linker expands templates and shading models that cannot be
+    // observed before scene publication. Compile a tiny ABI-compatible GLSL
+    // pair instead. This is not a cooked project shader: authored GLSL remains
+    // dynamic and replaces the fallback as soon as its material is resident.
+    static constexpr std::string_view bootstrapVertex = R"glsl(#version 450
+layout(std140, set = 1, binding = 5) uniform UniformBufferObject {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+    mat4 previousViewProj;
+    mat4 inverseViewProj;
+    vec4 projectionParams;
+    vec4 zBufferParams;
+} ubo;
+layout(std430, set = 2, binding = 1) readonly buffer InstanceBuffer {
+    mat4 instanceModels[];
+};
+layout(location = 0) in vec3 inPosition;
+void main() {
+    gl_Position = ubo.proj * ubo.view * instanceModels[gl_InstanceIndex] * vec4(inPosition, 1.0);
+}
+)glsl";
+    static constexpr std::string_view bootstrapFragment = R"glsl(#version 450
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(1.0);
+}
+)glsl";
+    InxShaderLoader bootstrapCompiler(false, true, false, true, false, false, false, false, false, false);
+    auto bootstrapVertexSpirv =
+        bootstrapCompiler.CompileVertexGlsl(std::string(bootstrapVertex), "<infernux-bootstrap.vert>");
+    auto bootstrapFragmentSpirv =
+        bootstrapCompiler.CompileFragmentGlsl(std::string(bootstrapFragment), "<infernux-bootstrap.frag>");
+    if (!bootstrapVertexSpirv.empty() && !bootstrapFragmentSpirv.empty()) {
+        m_renderer->LoadShader("default", bootstrapVertexSpirv, "vertex");
+        m_renderer->LoadShader("default", bootstrapFragmentSpirv, "fragment");
+        return;
+    }
+    INXLOG_WARN("Minimal default shader bootstrap failed; falling back to authored asset compilation");
 
     std::unordered_set<std::string> loadedShaderKeys;
     std::vector<char> defaultVertCode;
@@ -3270,6 +3574,14 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
         }
         if (shaderType != "vertex" && shaderType != "fragment")
             return;
+
+        if (!recursive) {
+            const bool minimalBootstrapShader =
+                (shaderId == "Standard" && shaderType == "vertex") ||
+                (shaderId == "Unlit" && shaderType == "fragment");
+            if (!minimalBootstrapShader)
+                return;
+        }
 
         const std::string stageExt = shaderType == "vertex" ? ".vert" : ".frag";
 

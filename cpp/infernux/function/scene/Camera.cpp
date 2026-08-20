@@ -2,6 +2,7 @@
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "GameObject.h"
+#include "Scene.h"
 #include <InxLog.h>
 #include <cmath>
 #include <limits>
@@ -13,6 +14,18 @@ namespace infernux
 {
 
 INFERNUX_REGISTER_VALIDATED_COMPONENT("Camera", Camera)
+
+void Camera::SetDepth(float depth)
+{
+    if (m_depth == depth)
+        return;
+
+    m_depth = depth;
+    if (GameObject *owner = GetGameObject()) {
+        if (Scene *scene = owner->GetScene())
+            scene->BumpStructureVersion();
+    }
+}
 
 // ============================================================================
 // Serialization

@@ -256,9 +256,10 @@ class MaterialPipelineManager
     /**
      * @brief Mark ALL cached material pipelines as dirty.
      *
-     * Called when the render graph topology changes (e.g. forward→deferred switch,
-     * MSAA change) so that every material's pipeline is re-evaluated on the next
-     * draw against the new render pass configuration.
+     * Reserved for global material ABI changes. Render-graph topology changes
+     * do not require this: semantic pass caches already include compile target,
+     * attachment formats and sample count in their keys, while MSAA changes use
+     * ReconfigureSampleCount transactionally.
      */
     void InvalidateAllMaterialPipelines();
 

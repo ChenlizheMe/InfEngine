@@ -140,6 +140,11 @@ class ScenePlayModeSnapshot
         PreflightSceneResourceDependencies(m_document);
     }
 
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> ResourceDependencies() const
+    {
+        return CollectSceneResourceDependencies(m_document);
+    }
+
     [[nodiscard]] std::shared_ptr<SceneCommitToken> CommitRetainingWorld(Scene &scene) const
     {
         return scene.CommitDocumentRetainingCurrentWorld(m_document);
@@ -2115,6 +2120,10 @@ void RegisterSceneBindings(py::module_ &m)
         "_preflight_scene_resource_dependencies",
         [](py::handle document) { PreflightSceneResourceDependencies(PythonToJson(document)); }, py::arg("document"),
         "Validate native Scene resource GUIDs and embedded resource documents on the owner thread");
+    m.def(
+        "_collect_scene_resource_dependencies",
+        [](py::handle document) { return CollectSceneResourceDependencies(PythonToJson(document)); },
+        py::arg("document"), "Return the typed transitive resource dependencies of a Scene document");
 
     // ========================================================================
     // Scene binding
@@ -2126,7 +2135,8 @@ void RegisterSceneBindings(py::module_ &m)
 
     py::class_<ScenePlayModeSnapshot, std::shared_ptr<ScenePlayModeSnapshot>>(m, "_ScenePlayModeSnapshot")
         .def("_python_component_records", &ScenePlayModeSnapshot::GetPythonComponentRecords)
-        .def("_preflight_resource_dependencies", &ScenePlayModeSnapshot::PreflightResourceDependencies);
+        .def("_preflight_resource_dependencies", &ScenePlayModeSnapshot::PreflightResourceDependencies)
+        .def("_resource_dependencies", &ScenePlayModeSnapshot::ResourceDependencies);
 
     py::class_<Scene>(m, "Scene")
         .def_property("name", &Scene::GetName, &Scene::SetName)

@@ -13,11 +13,22 @@ if TYPE_CHECKING:
     from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
 
+def _player_log(message: str) -> None:
+    """Append packaged scene diagnostics without enabling release console spam."""
+    try:
+        from Infernux.engine.player_bootstrap import _plog
+
+        _plog(message)
+    except Exception as exc:
+        Debug.log_suppressed("player_scene.write_player_log", exc)
+
+
 class PlayerSceneService:
     """Own Player scene transactions without editor document services."""
 
-    def __init__(self, *, asset_database: Any = None) -> None:
+    def __init__(self, *, asset_database: Any = None, native_engine: Any = None) -> None:
         self._asset_database = asset_database
+        self._native_engine = native_engine
         self._runtime_catalog: Any = None
         self._active_scene_path: Optional[str] = None
         self._pending_scene_path: Optional[str] = None
@@ -75,6 +86,7 @@ class PlayerSceneService:
                 f"Player scene load failed for '{target}': {self._last_error}"
             )
             return False
+        self._log_transaction_timings(target, transaction, initial=True)
         self._publish_completed_scene(target, start_for_play=False)
         return True
 
@@ -165,6 +177,10 @@ class PlayerSceneService:
             return
 
         target = self._transaction_path
+        # Phase timings are optional diagnostics, not part of the scene
+        # transaction protocol.  Alternate/test transactions must remain
+        # valid without implementing profiling state.
+        phase_timings = getattr(transaction, "phase_timings_ms", None)
         self._clear_pending_load()
         if not transaction.succeeded:
             self._last_error = transaction.error or "scene transaction failed"
@@ -173,7 +189,27 @@ class PlayerSceneService:
             )
             return
         assert target is not None
+        if phase_timings:
+            self._log_transaction_timings(target, transaction, initial=False)
         self._publish_completed_scene(target, start_for_play=True)
+
+    @staticmethod
+    def _log_transaction_timings(
+        target: str, transaction: SceneDocumentTransaction, *, initial: bool
+    ) -> None:
+        phase_timings = getattr(transaction, "phase_timings_ms", None) or {}
+        if not phase_timings:
+            return
+        details = ", ".join(
+            f"{name}={float(duration):.1f}ms"
+            for name, duration in phase_timings.items()
+        )
+        message = (
+            f"[SceneLoad] {'initial' if initial else 'switch'} "
+            f"scene={os.path.basename(target)!r}, {details}"
+        )
+        _player_log(message)
+        Debug.log_internal(message)
 
     def cancel_pending_load(self) -> None:
         self._request_generation += 1
@@ -214,6 +250,7 @@ class PlayerSceneService:
             scene,
             path=path,
             asset_database=self._asset_database,
+            native_engine=self._native_engine,
             clear_registries=True,
             before_commit=getattr(
                 scene_manager, "prepare_active_scene_replacement", None
@@ -241,11 +278,13 @@ class PlayerSceneService:
         Time._reset_frame_delta()
         if start_for_play:
             scene_manager._start_active_scene_for_play()
-        Debug.log_internal(
+        message = (
             f"Player loaded scene: {os.path.basename(path)} "
             f"(objects={len(scene.get_all_objects()) if scene is not None else 0}, "
             f"camera={scene is not None and scene.main_camera is not None})"
         )
+        _player_log(f"[SceneLoad] {message}")
+        Debug.log_internal(message)
 
 
 __all__ = ["PlayerSceneService"]

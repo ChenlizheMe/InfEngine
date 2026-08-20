@@ -497,12 +497,14 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     _RUNTIME_ARCHIVE_FILENAME = "Runtime.inxrt"
     _PARALLEL_ARCHIVE_FILENAME = "Parallel.inxmod"
     _PLAYER_MANIFEST_FILENAME = "Player.inxmanifest"
+    _PLAYER_PACKAGE_INDEX_FILENAME = "PackageIndex.inxmanifest"
     _RUNTIME_ASSET_RECORDS_FILENAME = "RuntimeAssetRecords.json"
     _RUNTIME_TYPE_REGISTRY_FILENAME = "RuntimeTypeRegistry.json"
     _PLAYER_CONTENT_CONTROL_RELATIVE_PATHS = frozenset(
         {
             "BuildManifest.json",
             _PLAYER_MANIFEST_FILENAME,
+            _PLAYER_PACKAGE_INDEX_FILENAME,
             _CONTENT_ARCHIVE_FILENAME,
         }
     )
@@ -924,7 +926,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             names = ", ".join(os.path.basename(m) for m in missing)
             raise FileNotFoundError(f"Scene file(s) not found: {names}")
 
-        self._asset_index_entries()
+        entries = self._asset_index_entries()
+        selected = self._collect_library_asset_entries(entries)
+        self._ensure_selected_particle_artifacts(selected)
         self._validate_animation_clip_assets()
 
         if self.icon_path:
@@ -1124,6 +1128,12 @@ import os
 import sys
 import time
 
+_BOOT_STARTED = time.perf_counter()
+_BOOT_PHASES = []
+
+def _mark_boot_phase(_name):
+    _BOOT_PHASES.append((_name, time.perf_counter() - _BOOT_STARTED))
+
 # Activate Player mode before importing the engine package.
 os.environ["_INFERNUX_PLAYER_MODE"] = "1"
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1153,6 +1163,8 @@ except ImportError as _bootstrap_error:
         "The Player bootstrap InxPack API is unavailable; "
         "Python/ZIP/LZMA package readers are not supported."
     ) from _bootstrap_error
+
+_mark_boot_phase("native_bootstrap")
 
 for _bootstrap_api in (
     "_inxpack_read_manifest",
@@ -1188,18 +1200,67 @@ def _validate_native_archive_paths(_archive_path, _allowed_roots=None):
             )
     return _manifest
 
+def _load_player_package_index():
+    """Read the tiny pre-runtime package identity index without json/stdlib."""
+    _index_path = os.path.join(_DATA_ROOT, "PackageIndex.inxmanifest")
+    _records = {}
+    try:
+        with open(_index_path, "r", encoding="ascii") as _stream:
+            _header = _stream.readline().strip()
+            if _header != "INFERNUX_PLAYER_PACKAGE_INDEX_V1":
+                return _records
+            for _line in _stream:
+                _parts = _line.rstrip("\\r\\n").split("\\t")
+                if len(_parts) != 3:
+                    continue
+                _kind, _archive_hash, _archive_bytes = _parts
+                if (
+                    _kind not in {"runtime", "content", "parallel"}
+                    or len(_archive_hash) != 64
+                    or any(_ch not in "0123456789abcdef" for _ch in _archive_hash)
+                ):
+                    continue
+                try:
+                    _archive_bytes = int(_archive_bytes)
+                except ValueError:
+                    continue
+                if _archive_bytes < 0:
+                    continue
+                _records[_kind] = (_archive_hash, _archive_bytes)
+    except OSError:
+        pass
+    return _records
+
+_PLAYER_PACKAGE_INDEX = _load_player_package_index()
+for _package_kind, (_package_hash, _package_bytes) in _PLAYER_PACKAGE_INDEX.items():
+    _kind_key = str(_package_kind).upper()
+    os.environ["_INFERNUX_PLAYER_" + _kind_key + "_ARCHIVE_SHA256"] = _package_hash
+    os.environ["_INFERNUX_PLAYER_" + _kind_key + "_ARCHIVE_BYTES"] = str(_package_bytes)
+
 _DEBUG_MODE = __INFERNUX_DEBUG_MODE__
 os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = "1" if _DEBUG_MODE else "0"
 
 def _extract_cached_archive(_archive_path, _cache_kind, _allowed_roots=None):
     if not os.path.isfile(_archive_path):
         raise RuntimeError("Required native Player package is missing: " + _archive_path)
-    _manifest = _validate_native_archive_paths(_archive_path, _allowed_roots)
-    _expected_hash = str(_manifest.get("archive_sha256", ""))
+    _archive_stat = os.stat(_archive_path)
+    _indexed_identity = _PLAYER_PACKAGE_INDEX.get(str(_cache_kind))
+    _manifest = None
+    if _indexed_identity is None:
+        _manifest = _validate_native_archive_paths(_archive_path, _allowed_roots)
+        _expected_hash = str(_manifest.get("archive_sha256", ""))
+        _expected_bytes = int(_manifest.get("archive_bytes", -1))
+    else:
+        _expected_hash, _expected_bytes = _indexed_identity
     if not _expected_hash:
         raise RuntimeError("Native Player package has no archive checksum: " + _archive_path)
-    if int(_manifest.get("archive_bytes", -1)) != os.path.getsize(_archive_path):
+    if _expected_bytes != _archive_stat.st_size:
         raise RuntimeError("Native Player package size mismatch: " + _archive_path)
+    # The build-authored digest is the durable archive identity.  File times
+    # change when a Player is copied, downloaded, or restored by an installer;
+    # including mtime here forced a complete extraction again even though the
+    # package bytes were identical.
+    _source_identity = _expected_hash + "\\n" + str(_archive_stat.st_size)
 
     # The native manifest has already verified the complete archive.  Pass
     # that trusted result to PlayerBootstrap so startup does not hash the
@@ -1207,7 +1268,7 @@ def _extract_cached_archive(_archive_path, _cache_kind, _allowed_roots=None):
     _kind_key = str(_cache_kind).upper()
     os.environ["_INFERNUX_PLAYER_" + _kind_key + "_ARCHIVE_SHA256"] = _expected_hash
     os.environ["_INFERNUX_PLAYER_" + _kind_key + "_ARCHIVE_BYTES"] = str(
-        _manifest.get("archive_bytes", -1)
+        _expected_bytes
     )
 
     _cache_parent = (
@@ -1223,9 +1284,15 @@ def _extract_cached_archive(_archive_path, _cache_kind, _allowed_roots=None):
         _cache_kind + "-" + _expected_hash[:20],
     )
     _ready_marker = os.path.join(_cache_root, ".ready")
+    _source_marker = os.path.join(_cache_root, ".source")
     try:
-        with open(_ready_marker, "r", encoding="ascii") as _marker:
-            if _marker.read().strip() == _expected_hash:
+        with open(_ready_marker, "r", encoding="ascii") as _marker, open(
+            _source_marker, "r", encoding="ascii"
+        ) as _source:
+            if (
+                _marker.read().strip() == _expected_hash
+                and _source.read().strip() == _source_identity
+            ):
                 return _cache_root
     except OSError:
         pass
@@ -1234,13 +1301,25 @@ def _extract_cached_archive(_archive_path, _cache_kind, _allowed_roots=None):
     _remove_player_path(_temporary, ignore_errors=True)
     os.makedirs(_temporary, exist_ok=False)
     try:
-        _NATIVE_PACK._inxpack_extract(
-            _archive_path,
-            _temporary,
-            None if _allowed_roots is None else sorted(_allowed_roots),
+        _extracted_manifest = dict(
+            _NATIVE_PACK._inxpack_extract(
+                _archive_path,
+                _temporary,
+                None if _allowed_roots is None else sorted(_allowed_roots),
+            )
         )
+        if (
+            str(_extracted_manifest.get("archive_sha256", "")) != _expected_hash
+            or int(_extracted_manifest.get("archive_bytes", -1)) != _expected_bytes
+        ):
+            raise RuntimeError(
+                "Native Player package identity does not match its build index: "
+                + _archive_path
+            )
         with open(os.path.join(_temporary, ".ready"), "w", encoding="ascii") as _marker:
             _marker.write(_expected_hash)
+        with open(os.path.join(_temporary, ".source"), "w", encoding="ascii") as _source:
+            _source.write(_source_identity)
         _publish_player_cache(_temporary, _cache_root, _expected_hash)
         return _cache_root
     finally:
@@ -1253,6 +1332,7 @@ _CORE_RUNTIME_DIR = _extract_cached_archive(
     "runtime",
     {"Infernux", "numpy", "numpy.libs", "stdlib"},
 )
+_mark_boot_phase("runtime_ready")
 _STDLIB_RUNTIME_DIR = os.path.join(_CORE_RUNTIME_DIR, "stdlib")
 _INFERNUX_LIB_DIR = os.path.join(_CORE_RUNTIME_DIR, "Infernux", "lib")
 os.environ["INFERNUX_NATIVE_MODULE_DIR"] = _INFERNUX_LIB_DIR
@@ -1271,6 +1351,7 @@ os.environ["_INFERNUX_PACKAGED_RESOURCE_ROOT"] = os.path.join(
 
 _CONTENT_ARCHIVE = os.path.join(_DATA_ROOT, "Content.inxpkg")
 _DATA_DIR = _extract_cached_archive(_CONTENT_ARCHIVE, "content")
+_mark_boot_phase("content_ready")
 _BUILD_MANIFEST_PATH = os.path.join(_DATA_ROOT, "BuildManifest.json")
 if os.path.isfile(_BUILD_MANIFEST_PATH):
     _copy_player_file_atomic(
@@ -1280,7 +1361,25 @@ if os.path.isfile(_BUILD_MANIFEST_PATH):
 
 _PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")
 _RUNTIME_MODULE_DIR = ""
-if os.path.isfile(_PARALLEL_ARCHIVE):
+_DLL_DIR_HANDLES = []
+
+_PARALLEL_RUNTIME_READY = False
+
+def _register_player_dll_directory(_dll_dir):
+    if sys.platform != "win32" or not os.path.isdir(_dll_dir):
+        return
+    try:
+        _DLL_DIR_HANDLES.append(os.add_dll_directory(_dll_dir))
+    except OSError:
+        pass
+
+def _ensure_parallel_runtime():
+    """Mount the optional Numba/LLVM payload only when a script imports it."""
+    global _PARALLEL_RUNTIME_READY, _RUNTIME_MODULE_DIR
+    if _PARALLEL_RUNTIME_READY or not os.path.isfile(_PARALLEL_ARCHIVE):
+        return _RUNTIME_MODULE_DIR
+    # Python's import lock serializes finder callbacks, so another lock would
+    # only enlarge the tiny pre-runtime bootstrap closure.
     _RUNTIME_MODULE_DIR = _extract_cached_archive(
         _PARALLEL_ARCHIVE,
         "parallel",
@@ -1288,25 +1387,39 @@ if os.path.isfile(_PARALLEL_ARCHIVE):
     )
     if _RUNTIME_MODULE_DIR not in sys.path:
         sys.path.insert(0, _RUNTIME_MODULE_DIR)
+    for _parallel_dll_dir in (
+        _RUNTIME_MODULE_DIR,
+        os.path.join(_RUNTIME_MODULE_DIR, "llvmlite", "binding"),
+        os.path.join(_RUNTIME_MODULE_DIR, "llvmlite.libs"),
+    ):
+        _register_player_dll_directory(_parallel_dll_dir)
+    _PARALLEL_RUNTIME_READY = True
+    _mark_boot_phase("parallel_ready")
+    return _RUNTIME_MODULE_DIR
 
-_DLL_DIR_HANDLES = []
+class _ParallelRuntimeFinder:
+    def find_spec(self, fullname, path=None, target=None):
+        root = fullname.partition(".")[0]
+        if root not in {"numba", "llvmlite"}:
+            return None
+        _ensure_parallel_runtime()
+        # Returning None resumes the normal finder chain with the newly
+        # mounted module directory. Avoid recursively calling find_spec here.
+        return None
+
+if os.path.isfile(_PARALLEL_ARCHIVE):
+    sys.meta_path.insert(0, _ParallelRuntimeFinder())
+_mark_boot_phase("parallel_deferred")
+
 if sys.platform == "win32":
     for _dll_dir in (
         _PLAYER_ROOT,
         _CORE_RUNTIME_DIR,
         _STDLIB_RUNTIME_DIR,
         _INFERNUX_LIB_DIR,
-        _RUNTIME_MODULE_DIR,
         os.path.join(_CORE_RUNTIME_DIR, "numpy.libs"),
-        os.path.join(_RUNTIME_MODULE_DIR, "llvmlite", "binding"),
-        os.path.join(_RUNTIME_MODULE_DIR, "llvmlite.libs"),
     ):
-        if not os.path.isdir(_dll_dir):
-            continue
-        try:
-            _DLL_DIR_HANDLES.append(os.add_dll_directory(_dll_dir))
-        except OSError:
-            pass
+        _register_player_dll_directory(_dll_dir)
 
 _STATE_HOME = (
     os.environ.get("LOCALAPPDATA", "").strip()
@@ -1358,9 +1471,14 @@ def _crash_report(_exc):
         pass
 
 try:
+    _log(
+        "boot phases: "
+        + ", ".join(_name + "=" + format(_elapsed, ".3f") + "s" for _name, _elapsed in _BOOT_PHASES)
+    )
     _log("boot: importing run_player")
     from Infernux.engine import run_player
     from Infernux.lib import LogLevel
+    _log("boot: imports ready at " + format(time.perf_counter() - _BOOT_STARTED, ".3f") + "s")
     _log("boot: calling run_player")
     run_player(
         project_path=_DATA_DIR,
@@ -1787,6 +1905,11 @@ finally:
 
         try:
             entries = self._asset_index_entries()
+            if not entries and self._full_build_validated:
+                raise RuntimeError(
+                    "Player asset cook selected no runtime assets; refresh Assets "
+                    "and add at least one valid build scene"
+                )
             selected = self._collect_library_asset_entries(entries)
         except RuntimeArtifactError as exc:
             raise RuntimeError(f"Player asset cook failed: {exc}") from exc
@@ -1936,12 +2059,27 @@ finally:
 
         Direct AssetIndex dependencies are still followed so a selected
         project product can retain read-only engine artifacts it explicitly
-        references.  This is validation and identity propagation, not content
-        pruning.
+        references.  Engine shaders are also symbolic runtime entry points:
+        RenderGraph and FullscreenRenderer address hidden stages by ShaderInfo
+        name, so no serialized project GUID can express those edges.  Preserve
+        every read-only built-in shader identity in the Player catalog while
+        keeping its bytes exclusively in Runtime.inxrt.  This is validation
+        and identity propagation, not content pruning.
         """
 
         by_guid = {str(item["guid"]): item for item in entries}
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        indexed_source_paths = {
+            os.path.normcase(self._library_source_entry_path(entry))
+            for entry in entries
+        }
+        for configured_scene in load_build_settings(self.project_path).get("scenes", []):
+            scene_path = self._resolve_build_scene_path(configured_scene)
+            if os.path.normcase(scene_path) not in indexed_source_paths:
+                raise RuntimeError(
+                    "BuildSettings scene is absent from the current AssetIndex: "
+                    f"{configured_scene}"
+                )
         roots = {
             str(entry["guid"])
             for entry in entries
@@ -1951,6 +2089,20 @@ finally:
                 allow_root=False,
             )
         }
+        builtin_shader_root = resolved_path(
+            os.path.join(self.project_path, "Library", "Resources", "shaders")
+        )
+        roots.update(
+            str(entry["guid"])
+            for entry in entries
+            if bool(entry.get("read_only", False))
+            and logical_asset_type(entry) == "shader"
+            and is_path_within(
+                self._library_source_entry_path(entry),
+                builtin_shader_root,
+                allow_root=False,
+            )
+        )
 
         selected: dict[str, dict] = {}
         pending = sorted(roots)
@@ -3017,6 +3169,7 @@ finally:
             cls._CONTENT_ARCHIVE_FILENAME.casefold(),
             cls._RUNTIME_ARCHIVE_FILENAME.casefold(),
             cls._PLAYER_MANIFEST_FILENAME.casefold(),
+            cls._PLAYER_PACKAGE_INDEX_FILENAME.casefold(),
             cls.OUTPUT_MARKER_FILENAME.casefold(),
             "bootstrap.inxrt",
             "buildmanifest.json",
@@ -3800,6 +3953,52 @@ finally:
         )
         catalog_path = os.path.join(library_root, "RuntimeAssetCatalog.json")
         _write_json_atomic(catalog_path, catalog)
+
+        # The native boot stub intentionally avoids importing the full Python
+        # stdlib before Runtime.inxrt is mounted. Keep a tiny ASCII identity
+        # index beside the packages so an already verified cache can be opened
+        # without hashing every large archive twice on every launch.
+        package_by_name = {
+            os.path.basename(str(record["path"])).casefold(): record
+            for record in packages
+        }
+        package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX_V1"]
+        for kind, filename in (
+            ("runtime", self._RUNTIME_ARCHIVE_FILENAME),
+            ("content", self._CONTENT_ARCHIVE_FILENAME),
+            ("parallel", self._PARALLEL_ARCHIVE_FILENAME),
+        ):
+            record = package_by_name.get(filename.casefold())
+            if record is None:
+                continue
+            package_index_lines.append(
+                "\t".join(
+                    (
+                        kind,
+                        str(record["archive_sha256"]),
+                        str(int(record["archive_bytes"])),
+                    )
+                )
+            )
+        package_index_path = os.path.join(
+            data_root, self._PLAYER_PACKAGE_INDEX_FILENAME
+        )
+        package_index_temporary = (
+            package_index_path + f".{os.getpid()}.{time.time_ns()}.tmp"
+        )
+        try:
+            with open(
+                package_index_temporary, "x", encoding="ascii", newline="\n"
+            ) as package_index_stream:
+                package_index_stream.write("\n".join(package_index_lines) + "\n")
+                package_index_stream.flush()
+                os.fsync(package_index_stream.fileno())
+            os.replace(package_index_temporary, package_index_path)
+        finally:
+            try:
+                os.remove(package_index_temporary)
+            except FileNotFoundError:
+                pass
 
         flavor = (
             RuntimeFlavor.PLAYER_DEBUG

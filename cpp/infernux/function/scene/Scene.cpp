@@ -1687,7 +1687,11 @@ void Scene::SetMainCamera(Camera *camera)
         if (!owner || owner->GetScene() != this)
             throw std::invalid_argument("Scene.main_camera must reference a Camera owned by this Scene");
     }
+    if (m_mainCamera == camera)
+        return;
+
     m_mainCamera = camera;
+    ++m_structureVersion;
 }
 
 Camera *Scene::FindGameCamera(Camera *editorCam)

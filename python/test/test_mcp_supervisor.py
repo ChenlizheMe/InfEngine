@@ -588,7 +588,7 @@ def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_bui
     (data / "Player.inxmanifest").write_text(json.dumps({
         "audit": {"passed": True},
         "product": {
-            "layout": "infernux-single-entry-player",
+            "layout": "single_executable_native_packages",
             "single_entry_point": True,
             "entry_points": ["Pilot.exe"],
         },

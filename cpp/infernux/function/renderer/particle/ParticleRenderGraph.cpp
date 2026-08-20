@@ -184,7 +184,10 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
         rhi::BufferDesc desc;
         desc.byteSize = bytes;
         desc.usage = usage;
-        desc.queueAccess = rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+        // RenderGraph compute passes may fall back to the graphics queue while
+        // the dedicated compute queue is unavailable or being retired.
+        desc.queueAccess =
+            rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
         return device.CreateBuffer(desc);
     };
     m_burstRequestCounts = createDeviceLocal(uint64_t(slotCount) * sizeof(uint32_t), readableStorage);
@@ -194,7 +197,8 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     activeDesc.byteSize = uint64_t(slotCount) * sizeof(uint32_t);
     activeDesc.usage = readableStorage;
     activeDesc.memory = rhi::BufferMemory::Upload;
-    activeDesc.queueAccess = rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+    activeDesc.queueAccess =
+        rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
     activeDesc.initialData = zeroCounts.data();
     activeDesc.initialDataBytes = activeDesc.byteSize;
     m_acceptingRequestSlots = device.CreateBuffer(activeDesc);
@@ -210,7 +214,7 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     parameterDesc.byteSize = parameterWordCount * sizeof(uint32_t);
     parameterDesc.usage = storage;
     parameterDesc.memory = rhi::BufferMemory::Upload;
-    parameterDesc.queueAccess = rhi::QueueAccessFlags::Compute;
+    parameterDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
     parameterDesc.initialData = parameterData;
     parameterDesc.initialDataBytes = parameterDesc.byteSize;
     m_parameterBuffer = device.CreateBuffer(parameterDesc);
@@ -920,49 +924,53 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         };
     });
 
-    vk::PassHandle simulationTail = graph.AddComputePass(StageName(namePrefix, "Update"), [&](vk::PassBuilder &builder) {
-        m_spawnDomain->DeclareKernelWrite(builder);
-        states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
-        freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
-        counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
-        aliveIndices[0] = builder.ReadWrite(aliveIndices[0], rhi::PipelineStage::ComputeShader);
-        aliveIndices[1] = builder.ReadWrite(aliveIndices[1], rhi::PipelineStage::ComputeShader);
-        builder.ReadIndirectBuffer(aliveDispatch);
-        aliveControl = builder.ReadWrite(aliveControl, rhi::PipelineStage::ComputeShader);
-        builder.ReadUniformBuffer(transforms);
-        builder.ReadStorageBuffer(simulationControl);
-        if (runtime.HasContinuations()) {
-            continuationRecords = builder.ReadWrite(continuationRecords, rhi::PipelineStage::ComputeShader);
-            continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
-            continuationActiveQueueA = builder.ReadWrite(continuationActiveQueueA, rhi::PipelineStage::ComputeShader);
-            continuationActiveQueueB = builder.ReadWrite(continuationActiveQueueB, rhi::PipelineStage::ComputeShader);
-            continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
-            continuationLaneSlots = builder.ReadWrite(continuationLaneSlots, rhi::PipelineStage::ComputeShader);
-            continuationJoinStates = builder.ReadWrite(continuationJoinStates, rhi::PipelineStage::ComputeShader);
-        }
-        if (runtime.HasContactRuntime()) {
-            contactRecords = builder.ReadWrite(contactRecords, rhi::PipelineStage::ComputeShader);
-            contactParticleRecordIndices =
-                builder.ReadWrite(contactParticleRecordIndices, rhi::PipelineStage::ComputeShader);
-            contactParticleStates = builder.ReadWrite(contactParticleStates, rhi::PipelineStage::ComputeShader);
-            contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
-        }
-        return [this](vk::RenderContext &context) {
-            if (!m_framePending || !m_request.simulate || !m_runtime ||
-                ShouldUseFusedUpdateRendering(m_request, *m_runtime))
-                return;
-            const bool indirectDispatch = m_runtime->IsAliveListReady();
-            const bool recorded = m_runtime->RecordUpdate(
-                context.GetComputeCommandEncoder(), m_request.systemSeed, m_request.simulationStep, m_request.deltaTime,
-                m_spawnDomain->RuntimeGroup(m_graphEmitterIndex), m_request.collectCollisionDiagnostics);
-            if (!recorded)
-                return;
-            context.RecordComputeDispatch(
-                indirectDispatch ? 0u : 1u + (m_runtime->Capacity() - 1u) / ParticleGpuRuntime::WorkgroupSize,
-                indirectDispatch ? 0u : 1u, indirectDispatch ? 0u : 1u, m_runtime->Capacity(), indirectDispatch);
-            m_runtime->PublishAliveWrite();
-        };
-    });
+    vk::PassHandle simulationTail =
+        graph.AddComputePass(StageName(namePrefix, "Update"), [&](vk::PassBuilder &builder) {
+            m_spawnDomain->DeclareKernelWrite(builder);
+            states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
+            freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
+            counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            aliveIndices[0] = builder.ReadWrite(aliveIndices[0], rhi::PipelineStage::ComputeShader);
+            aliveIndices[1] = builder.ReadWrite(aliveIndices[1], rhi::PipelineStage::ComputeShader);
+            builder.ReadIndirectBuffer(aliveDispatch);
+            aliveControl = builder.ReadWrite(aliveControl, rhi::PipelineStage::ComputeShader);
+            builder.ReadUniformBuffer(transforms);
+            builder.ReadStorageBuffer(simulationControl);
+            if (runtime.HasContinuations()) {
+                continuationRecords = builder.ReadWrite(continuationRecords, rhi::PipelineStage::ComputeShader);
+                continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
+                continuationActiveQueueA =
+                    builder.ReadWrite(continuationActiveQueueA, rhi::PipelineStage::ComputeShader);
+                continuationActiveQueueB =
+                    builder.ReadWrite(continuationActiveQueueB, rhi::PipelineStage::ComputeShader);
+                continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
+                continuationLaneSlots = builder.ReadWrite(continuationLaneSlots, rhi::PipelineStage::ComputeShader);
+                continuationJoinStates = builder.ReadWrite(continuationJoinStates, rhi::PipelineStage::ComputeShader);
+            }
+            if (runtime.HasContactRuntime()) {
+                contactRecords = builder.ReadWrite(contactRecords, rhi::PipelineStage::ComputeShader);
+                contactParticleRecordIndices =
+                    builder.ReadWrite(contactParticleRecordIndices, rhi::PipelineStage::ComputeShader);
+                contactParticleStates = builder.ReadWrite(contactParticleStates, rhi::PipelineStage::ComputeShader);
+                contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
+            }
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_request.simulate || !m_runtime ||
+                    ShouldUseFusedUpdateRendering(m_request, *m_runtime))
+                    return;
+                const bool indirectDispatch = m_runtime->IsAliveListReady();
+                const bool recorded = m_runtime->RecordUpdate(context.GetComputeCommandEncoder(), m_request.systemSeed,
+                                                              m_request.simulationStep, m_request.deltaTime,
+                                                              m_spawnDomain->RuntimeGroup(m_graphEmitterIndex),
+                                                              m_request.collectCollisionDiagnostics);
+                if (!recorded)
+                    return;
+                context.RecordComputeDispatch(
+                    indirectDispatch ? 0u : 1u + (m_runtime->Capacity() - 1u) / ParticleGpuRuntime::WorkgroupSize,
+                    indirectDispatch ? 0u : 1u, indirectDispatch ? 0u : 1u, m_runtime->Capacity(), indirectDispatch);
+                m_runtime->PublishAliveWrite();
+            };
+        });
 
     if (runtime.HasContactRuntime()) {
         graph.AddComputePass(StageName(namePrefix, "ContactSolve"), [&](vk::PassBuilder &builder) {

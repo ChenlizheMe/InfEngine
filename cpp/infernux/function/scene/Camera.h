@@ -133,10 +133,7 @@ class Camera : public Component
     {
         return m_depth;
     }
-    void SetDepth(float depth)
-    {
-        m_depth = depth;
-    }
+    void SetDepth(float depth);
 
     /// @brief Culling mask — which layers this camera renders (bitmask)
     [[nodiscard]] uint32_t GetCullingMask() const

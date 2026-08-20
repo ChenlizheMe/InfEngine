@@ -10,6 +10,7 @@
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
+#include <mutex>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -65,6 +66,18 @@ class InxShaderLoader
                     bool disassemble, bool validate, bool emitNonSemanticShaderDebugInfo,
                     bool emitNonSemanticShaderDebugSource, bool compileOnly, bool optimizerAllowExpandedIDBound);
     void SetShaderCompilerOptions(const std::string &prop, bool value);
+
+    /// Serialize glslang and the process-wide authored-shader caches. The lock
+    /// is recursive because compiler entry points parse nested imports and
+    /// shading models through the same loader.
+    class CompilationGuard
+    {
+      public:
+        CompilationGuard();
+
+      private:
+        std::unique_lock<std::recursive_mutex> m_lock;
+    };
 
     /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
@@ -155,6 +168,7 @@ class InxShaderLoader
     [[nodiscard]] static CompiledVariantSet TakeCompiledVariants(const std::string &filePath);
 
   private:
+    static std::recursive_mutex s_compilationMutex;
     static thread_local std::unordered_map<std::string, CompiledVariantSet> s_compiledVariantCache;
     static std::atomic_bool s_bindlessTextureABIEnabled;
 

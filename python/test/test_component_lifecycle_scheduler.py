@@ -87,6 +87,154 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     assert counters["plan_prepare_calls"] == 2
 
 
+def test_scene_replacement_retirement_cannot_remove_same_id_new_component():
+    scheduler = RuntimeExecutionScheduler(name="scene-replacement")
+    old_scene_component = _ScheduledProbe(17)
+    new_scene_component = _ScheduledProbe(17)
+
+    # Runtime scene transactions publish the replacement graph before the
+    # retained old graph is finalized. Both mirrors may have the same authored
+    # component ID and their first native binding generation.
+    scheduler.register_component(old_scene_component)
+    scheduler.register_component(new_scene_component)
+    scheduler.unregister_component(old_scene_component)
+
+    assert scheduler.phase_plan("update") == (new_scene_component,)
+    scheduler.execute_phase("update", 0.25)
+    assert old_scene_component.calls == []
+    assert new_scene_component.calls == ["update:0.25"]
+
+
+def test_scene_membership_refresh_recovers_missed_incremental_notification(monkeypatch):
+    scheduler = RuntimeExecutionScheduler(name="scene-publication")
+    component = _ScheduledProbe(31)
+
+    from Infernux.components.component import InxComponent
+
+    monkeypatch.setattr(
+        InxComponent,
+        "_active_instances",
+        {31: [component]},
+    )
+    scheduler.refresh_scene_membership()
+
+    assert scheduler.phase_plan("update") == (component,)
+
+
+def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monkeypatch):
+    from Infernux.components.component import InxComponent
+    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import Infernux.lib as native_lib
+
+    class _SceneObject:
+        def __init__(self, object_id, component):
+            self.id = object_id
+            self._component = component
+
+        def get_py_components(self):
+            return [self._component]
+
+    class _Scene:
+        def __init__(self, *objects):
+            self._objects = objects
+
+        def get_all_objects(self):
+            return self._objects
+
+    class _RegistryProbe(_ScheduledProbe):
+        def _set_game_object(self, game_object):
+            self._game_object = game_object
+            InxComponent._active_instances.setdefault(game_object.id, []).append(self)
+
+        def _refresh_native_handle(self):
+            return None
+
+    active_component = _RegistryProbe(41)
+    persistent_component = _RegistryProbe(42)
+    active_scene = _Scene(_SceneObject(401, active_component))
+    persistent_scene = _Scene(_SceneObject(402, persistent_component))
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return type(
+                "_Manager",
+                (),
+                {"get_runtime_persistent_scene": lambda self: persistent_scene},
+            )()
+
+    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
+    monkeypatch.setattr(InxComponent, "_active_instances", {999: [_ScheduledProbe(99)]})
+
+    transaction = SceneDocumentTransaction(active_scene, document={})
+    transaction._rebuild_python_registries()
+
+    scheduler = RuntimeExecutionScheduler(name="persistent-scene-publication")
+    scheduler.refresh_scene_membership()
+
+    assert scheduler.phase_plan("update") == (active_component, persistent_component)
+
+
+def test_scene_registry_reconcile_only_restores_persistent_components(monkeypatch):
+    from Infernux.components.component import InxComponent
+    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import Infernux.lib as native_lib
+
+    class _SceneObject:
+        def __init__(self, object_id, component):
+            self.id = object_id
+            self._component = component
+
+        def get_py_components(self):
+            return [self._component]
+
+    class _Scene:
+        def __init__(self, *objects):
+            self._objects = objects
+
+        def get_all_objects(self):
+            return self._objects
+
+    class _RegistryProbe(_ScheduledProbe):
+        def __init__(self, component_id):
+            super().__init__(component_id)
+            self.bind_count = 0
+
+        def _set_game_object(self, game_object):
+            self.bind_count += 1
+            InxComponent._active_instances.setdefault(game_object.id, []).append(self)
+
+        def _refresh_native_handle(self):
+            return None
+
+    active_component = _RegistryProbe(51)
+    persistent_component = _RegistryProbe(52)
+    active_scene = _Scene(_SceneObject(501, active_component))
+    persistent_scene = _Scene(_SceneObject(502, persistent_component))
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return type(
+                "_Manager",
+                (),
+                {"get_runtime_persistent_scene": lambda self: persistent_scene},
+            )()
+
+    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
+    monkeypatch.setattr(InxComponent, "_active_instances", {501: [active_component]})
+
+    transaction = SceneDocumentTransaction(active_scene, document={})
+    transaction._reconcile_persistent_python_registries()
+
+    assert active_component.bind_count == 0
+    assert persistent_component.bind_count == 1
+    assert InxComponent._active_instances == {
+        501: [active_component],
+        502: [persistent_component],
+    }
+
+
 def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
     scheduler = RuntimeExecutionScheduler(name="snapshot-cache")
     probe = _ScheduledProbe(1)

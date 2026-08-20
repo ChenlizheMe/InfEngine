@@ -157,6 +157,30 @@ def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
     assert stack.pipeline_class_name == "Missing Packaged Pipeline"
 
 
+def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monkeypatch):
+    from Infernux.renderstack.render_stack import RenderStack
+
+    stack = RenderStack()
+    stack.pipeline_class_name = "Pipeline A"
+    stack._pipeline = object()
+    stack._cached_ips = object()
+    invalidations = []
+    monkeypatch.setattr(stack, "_save_current_pipeline_params", lambda: None)
+    monkeypatch.setattr(stack, "invalidate_graph", lambda: invalidations.append(True))
+
+    stack.set_pipeline("Pipeline B")
+
+    assert stack.pipeline_class_name == "Pipeline B"
+    assert stack._pipeline is None
+    assert stack._cached_ips is None
+    assert invalidations == [True]
+
+    # Reapplying the active pipeline is a no-op. Runtime showcases can update
+    # their material/effect state without rebuilding the same graph twice.
+    stack.set_pipeline("Pipeline B")
+    assert invalidations == [True]
+
+
 def test_effect_feature_lookup_discovers_project_registration_module(tmp_path):
     from Infernux.engine.project_context import get_project_root, set_project_root
     from Infernux.renderstack.discovery import invalidate_discovery_cache

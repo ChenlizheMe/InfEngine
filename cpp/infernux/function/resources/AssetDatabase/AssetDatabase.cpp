@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -429,10 +430,10 @@ std::shared_ptr<const AssetDatabase::QuerySnapshot> AssetDatabase::LoadQuerySnap
     return std::atomic_load_explicit(&m_querySnapshot, std::memory_order_acquire);
 }
 
-void AssetDatabase::PublishQuerySnapshot()
+void AssetDatabase::PublishQuerySnapshot(bool includeCatalog)
 {
-    InstallQuerySnapshot(
-        BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_queryGeneration + 1));
+    InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates,
+                                                    m_queryGeneration + 1, includeCatalog));
 }
 
 void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
@@ -565,6 +566,8 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
         throw std::runtime_error("Failed to create project Assets directory: " + directoryError.message());
     m_assetsRoot = FromFsPath(assetsPath);
     m_assetIndexPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.json");
+    m_assetStartupCachePath =
+        FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.startup-cache.json");
     m_assetTransactionJournalPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetRefresh.transaction");
     if (DocumentTransaction::Recover(m_projectRoot, m_assetTransactionJournalPath))
         INXLOG_WARN("AssetDatabase recovered an interrupted metadata transaction");
@@ -609,21 +612,151 @@ void AssetDatabase::AddReadOnlyScanRoot(const std::string &path)
     m_readOnlyScanRoots.insert(FromFsPath(ToFsPath(path)));
 }
 
-void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath)
+bool AssetDatabase::RestoreCachedCatalog()
+{
+    AssertMutationThread("RestoreCachedCatalog");
+    AssertNoPendingCommit("RestoreCachedCatalog");
+    if (m_pendingAssetScan)
+        throw std::logic_error("AssetDatabase cached catalog cannot be restored during an asynchronous refresh");
+
+    const bool profileStartup = [] {
+        const char *value = std::getenv("INFERNUX_PROFILE_STARTUP");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    const auto restoreStarted = std::chrono::steady_clock::now();
+    auto previousPhase = restoreStarted;
+    auto reportPhase = [&](const char *name) {
+        if (!profileStartup)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        INXLOG_INFO("AssetDatabase cached restore ", name, "=",
+                    std::chrono::duration<double, std::milli>(now - previousPhase).count(), "ms");
+        previousPhase = now;
+    };
+
+    AssetIndex cached;
+    std::string restoredPath = m_assetIndexPath;
+    try {
+        if (!cached.Load(restoredPath, FilesystemPathKey(m_projectRoot))) {
+            restoredPath = m_assetStartupCachePath;
+            if (!cached.Load(restoredPath, FilesystemPathKey(m_projectRoot))) {
+                INXLOG_INFO("AssetDatabase: no committed startup catalog is available");
+                return false;
+            }
+        }
+    } catch (const std::exception &exception) {
+        INXLOG_WARN("AssetDatabase: discarded cached startup catalog: ", exception.what());
+        return false;
+    }
+    reportPhase("load_index");
+
+    // Projects created before the dedicated startup cache already have a
+    // valid live index but no fallback copy. Seed it once while that committed
+    // snapshot is in hand; later refreshes keep it current on a worker.
+    if (restoredPath == m_assetIndexPath) {
+        std::error_code startupCacheError;
+        const bool hasStartupCache =
+            std::filesystem::is_regular_file(ToFsPath(m_assetStartupCachePath), startupCacheError) &&
+            !startupCacheError;
+        if (!hasStartupCache) {
+            try {
+                cached.Save(m_assetStartupCachePath);
+            } catch (const std::exception &exception) {
+                // Startup remains valid with the live index. Failure to seed a
+                // resilience copy must not make the editor unavailable.
+                INXLOG_WARN("AssetDatabase: could not seed startup catalog: ", exception.what());
+            }
+        }
+    }
+
+    WorkingSet restored;
+    restored.assetIndex = cached;
+    restored.fileStates.reserve(cached.Size());
+    std::unordered_map<std::string, std::vector<std::string>> dependencies;
+    dependencies.reserve(cached.Size());
+
+    for (const auto &[normalizedPath, entry] : cached.Entries()) {
+        if (entry.guid.empty() || normalizedPath.empty())
+            return false;
+
+        std::string path = normalizedPath;
+        if (entry.metadata.HasKey("file_path")) {
+            try {
+                const std::string indexedPath = entry.metadata.GetDataAs<std::string>("file_path");
+                if (!indexedPath.empty())
+                    path = indexedPath;
+            } catch (const std::exception &) {
+                return false;
+            }
+        }
+
+        restored.guidToPath.emplace(entry.guid, path);
+        restored.pathToGuid.emplace(normalizedPath, entry.guid);
+        restored.metas.emplace(entry.guid, std::make_shared<InxResourceMeta>(entry.metadata));
+        restored.fileStates.emplace(normalizedPath, CachedFileState{entry.source, entry.meta, entry.readOnly});
+        restored.importResults.emplace(entry.guid, ImportResultState{entry.importSucceeded, entry.importError});
+        dependencies.emplace(entry.guid, entry.dependencies);
+    }
+    reportPhase("rebuild_working_set");
+
+    const uint64_t queryGeneration = m_queryGeneration + 1;
+    auto query = BuildQuerySnapshotArtifact(restored.guidToPath, restored.pathToGuid, restored.metas,
+                                            restored.fileStates, queryGeneration);
+    reportPhase("build_query_snapshot");
+    const uint64_t dependencyGeneration = AssetDependencyGraph::Instance().GetAssetGeneration() + 1;
+    auto dependencySnapshot = AssetDependencyGraph::BuildAssetSnapshot(dependencies, dependencyGeneration);
+    reportPhase("build_dependency_snapshot");
+
+    (void)TakeWorkingSet();
+    InstallWorkingSet(std::move(restored));
+    AssetDependencyGraph::Instance().InstallAssetSnapshot(std::move(dependencySnapshot));
+    InstallQuerySnapshot(std::move(query));
+    reportPhase("publish");
+    m_assetIndexDirty = false;
+    INXLOG_INFO("AssetDatabase: restored ", cached.Size(), " cached editor asset identities from ", restoredPath);
+    return true;
+}
+
+void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, bool trustedPackage)
 {
     AssertMutationThread("InstallRuntimeAssetCatalog");
     AssertNoPendingCommit("InstallRuntimeAssetCatalog");
+
+    const bool profileStartup = [] {
+        const char *value = std::getenv("INFERNUX_PROFILE_STARTUP");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    auto previousPhase = std::chrono::steady_clock::now();
+    auto reportPhase = [&](const char *name) {
+        if (!profileStartup)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        INXLOG_INFO("AssetDatabase runtime catalog ", name, "=",
+                    std::chrono::duration<double, std::milli>(now - previousPhase).count(), "ms");
+        previousPhase = now;
+    };
 
     std::ifstream stream(ToFsPath(catalogPath));
     if (!stream)
         throw std::runtime_error("runtime asset catalog cannot be opened: " + catalogPath);
 
     const nlohmann::json document = nlohmann::json::parse(stream);
+    reportPhase("parse");
     if (document.value("$schema", std::string{}) != "infernux.runtime_asset_records")
         throw std::runtime_error("runtime asset catalog has an unsupported schema");
     const auto entries = document.find("entries");
     if (entries == document.end() || !entries->is_array())
         throw std::runtime_error("runtime asset catalog has no entry array");
+
+    // Player installation is a single bulk publication. Reserve every working
+    // map once so larger projects do not repeatedly rehash the same identity
+    // set while the startup window is still hidden.
+    const size_t expectedIdentityCount = m_guidToPath.size() + entries->size();
+    m_guidToPath.reserve(expectedIdentityCount);
+    m_pathToGuid.reserve(m_pathToGuid.size() + entries->size());
+    m_metas.reserve(m_metas.size() + entries->size());
+    m_importResults.reserve(m_importResults.size() + entries->size());
+    m_fileStates.reserve(m_fileStates.size() + entries->size());
 
     for (const auto &entry : *entries) {
         if (!entry.is_object())
@@ -665,10 +798,12 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath)
                             throw std::runtime_error("runtime Content asset path escapes the project: " + runtimePath);
                     }
                     const std::filesystem::path candidate = ToFsPath(m_projectRoot) / contentRelative;
-                    std::error_code fileError;
-                    if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
-                        throw std::runtime_error("runtime Content asset was not extracted below the project root: " +
-                                                 runtimePath);
+                    if (!trustedPackage) {
+                        std::error_code fileError;
+                        if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
+                            throw std::runtime_error(
+                                "runtime Content asset was not extracted below the project root: " + runtimePath);
+                    }
                     resolvedAssetPath = candidate;
                     resolvedPrimaryArtifact = true;
                     break;
@@ -689,9 +824,11 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath)
                 bool found = false;
                 for (const auto &root : m_readOnlyScanRoots) {
                     const std::filesystem::path candidate = ToFsPath(root) / builtinRelative;
-                    std::error_code fileError;
-                    if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
-                        continue;
+                    if (!trustedPackage) {
+                        std::error_code fileError;
+                        if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
+                            continue;
+                    }
                     resolvedAssetPath = candidate;
                     found = true;
                     break;
@@ -734,11 +871,20 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath)
 
         CachedFileState fileState;
         fileState.readOnly = true;
-        (void)ReadFingerprint(ToFsPath(path), fileState.source);
+        // The Player launcher validates the immutable package hash before it
+        // exposes the extraction root. Re-statting and hashing every cooked
+        // file here made startup proportional to project size and duplicated
+        // that trust decision. Editor/test callers retain strict validation.
+        if (!trustedPackage)
+            (void)ReadFingerprint(ToFsPath(path), fileState.source);
         m_fileStates[normalizedPath] = fileState;
     }
+    reportPhase("install_entries");
 
-    PublishQuerySnapshot();
+    // Player has no Project/FileManager panel. Keep GUID/path/metadata queries,
+    // but skip the editor-only directory grouping and sorting work.
+    PublishQuerySnapshot(false);
+    reportPhase("publish_snapshot");
     INXLOG_INFO("AssetDatabase: installed ", entries->size(), " cooked Player asset identities");
 }
 
@@ -1590,7 +1736,7 @@ std::shared_ptr<AssetDatabase::QuerySnapshot> AssetDatabase::BuildQuerySnapshotA
     const std::unordered_map<std::string, std::string> &guidToPath,
     const std::unordered_map<std::string, std::string> &pathToGuid,
     const std::unordered_map<std::string, std::shared_ptr<InxResourceMeta>> &metas,
-    const std::unordered_map<std::string, CachedFileState> &fileStates, uint64_t generation)
+    const std::unordered_map<std::string, CachedFileState> &fileStates, uint64_t generation, bool includeCatalog)
 {
     auto snapshot = std::make_shared<QuerySnapshot>();
     snapshot->generation = generation;
@@ -1605,6 +1751,10 @@ std::shared_ptr<AssetDatabase::QuerySnapshot> AssetDatabase::BuildQuerySnapshotA
 
     auto catalog = std::make_shared<AssetCatalogSnapshot>();
     catalog->m_generation = generation;
+    if (!includeCatalog) {
+        snapshot->catalog = std::move(catalog);
+        return snapshot;
+    }
     catalog->m_directories.reserve(pathToGuid.size());
     for (const auto &[normalizedPath, guid] : pathToGuid) {
         const auto mappedPath = guidToPath.find(guid);
@@ -1656,12 +1806,13 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
     state->indexRebuildRequired = !reusedLoadedIndex;
     const std::string normalizedProjectRoot = FilesystemPathKey(m_projectRoot);
     const std::string assetIndexPath = m_assetIndexPath;
+    const std::string assetStartupCachePath = m_assetStartupCachePath;
     const uint64_t queryGeneration = m_queryGeneration + 1;
     state->expectedDependencyGeneration = AssetDependencyGraph::Instance().GetAssetGeneration();
     const uint64_t dependencyGeneration = state->expectedDependencyGeneration + 1;
     state->phase = PendingRefreshCommit::Phase::IndexBuild;
-    state->indexBuildJob = JobSystem::Get().Schedule([state, normalizedProjectRoot, assetIndexPath, queryGeneration,
-                                                      dependencyGeneration] {
+    state->indexBuildJob = JobSystem::Get().Schedule([state, normalizedProjectRoot, assetIndexPath,
+                                                      assetStartupCachePath, queryGeneration, dependencyGeneration] {
         try {
             if (state->indexRebuildRequired) {
                 state->indexProducerThread = std::this_thread::get_id();
@@ -1672,9 +1823,19 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStarted).count();
                 const auto saveStarted = std::chrono::steady_clock::now();
                 index.Save(assetIndexPath);
+                index.Save(assetStartupCachePath);
                 state->indexSaveMilliseconds =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - saveStarted).count();
                 state->builtAssetIndex = std::move(index);
+            } else {
+                // A valid live index may predate the startup-cache feature.
+                // Publish its immutable snapshot asynchronously so a later
+                // metadata transaction can invalidate AssetIndex.json without
+                // turning the next launch into a full source-tree scan.
+                const auto saveStarted = std::chrono::steady_clock::now();
+                state->stagedWorkingSet.assetIndex.Save(assetStartupCachePath);
+                state->indexSaveMilliseconds =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - saveStarted).count();
             }
 
             state->queryProducerThread = std::this_thread::get_id();
@@ -1789,6 +1950,7 @@ void AssetDatabase::FlushDerivedIndex()
         return;
     RebuildDerivedIndex();
     m_assetIndex.Save(m_assetIndexPath);
+    m_assetIndex.Save(m_assetStartupCachePath);
     m_assetIndexDirty = false;
 }
 

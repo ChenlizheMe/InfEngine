@@ -445,6 +445,20 @@ void InxVkCoreModular::LoadShader(const char *name, const std::vector<char> &spi
     m_shaderCache.LoadShader(name, spirvCode, type, m_pipelineManager);
 }
 
+bool InxVkCoreModular::EnsureShaderAvailable(const std::string &name, const std::string &type)
+{
+    if (HasShader(name, type))
+        return true;
+    if (!m_shaderAssetResolver || !m_shaderAssetResolver(name, type))
+        return false;
+    return HasShader(name, type);
+}
+
+uint64_t InxVkCoreModular::GetShaderCodeFingerprint(const std::string &name, const std::string &type) const
+{
+    return m_shaderCache.GetCodeFingerprint(name, type);
+}
+
 bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
 {
     const auto publish = m_shaderCache.PublishProgramArtifact(artifact);

@@ -10,9 +10,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -498,7 +500,7 @@ bool IsAllowedRoot(const std::string &path, const std::vector<std::string> &allo
     return std::find(allowedRoots.begin(), allowedRoots.end(), root) != allowedRoots.end();
 }
 
-Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path)
+Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path, const bool validateWholeArchive)
 {
     HeaderDisk header{};
     ReadExact(input, &header, sizeof(header));
@@ -530,13 +532,16 @@ Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path)
     ReadExact(input, toc.data(), toc.size());
     if (HashBytes(toc.data(), toc.size()) != CopyHash(header.tocHash))
         throw std::runtime_error("InxPack TOC checksum mismatch: " + FromFsPath(path));
-    if (HashFileRange(path, header.payloadOffset, header.payloadBytes) != CopyHash(header.payloadHash))
-        throw std::runtime_error("InxPack payload checksum mismatch: " + FromFsPath(path));
-    const auto packageHash = HashFileRange(
-        path, 0, fileBytes,
-        std::make_pair(static_cast<uint64_t>(offsetof(HeaderDisk, packageHash)), sizeof(header.packageHash)));
-    if (packageHash != CopyHash(header.packageHash))
-        throw std::runtime_error("InxPack package checksum mismatch: " + FromFsPath(path));
+    if (validateWholeArchive) {
+        // packageHash covers the payload, fixed header and TOC. payloadHash is
+        // deliberately not recomputed as that would reread every large Player
+        // archive without adding corruption coverage.
+        const auto packageHash = HashFileRange(
+            path, 0, fileBytes,
+            std::make_pair(static_cast<uint64_t>(offsetof(HeaderDisk, packageHash)), sizeof(header.packageHash)));
+        if (packageHash != CopyHash(header.packageHash))
+            throw std::runtime_error("InxPack package checksum mismatch: " + FromFsPath(path));
+    }
 
     if (toc.size() < sizeof(TocPrefixDisk))
         throw std::runtime_error("InxPack TOC is truncated: " + FromFsPath(path));
@@ -821,12 +826,15 @@ Manifest ReadManifest(const std::filesystem::path &path)
     std::ifstream input(path, std::ios::binary);
     if (!input)
         throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
-    return ParseManifest(input, path);
+    return ParseManifest(input, path, true);
 }
 
 std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::string &entryPath)
 {
-    const Manifest manifest = ReadManifest(path);
+    std::ifstream manifestInput(path, std::ios::binary);
+    if (!manifestInput)
+        throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
+    const Manifest manifest = ParseManifest(manifestInput, path, false);
     const std::string normalized = NormalizePath(entryPath);
     const auto found = std::find_if(manifest.entries.begin(), manifest.entries.end(),
                                     [&normalized](const Entry &entry) { return entry.path == normalized; });
@@ -868,19 +876,42 @@ std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::str
 Manifest Extract(const std::filesystem::path &path, const std::filesystem::path &destination,
                  const std::vector<std::string> &allowedRoots)
 {
-    const Manifest manifest = ReadManifest(path);
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
+    std::ifstream manifestInput(path, std::ios::binary);
+    if (!manifestInput)
         throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
+    const Manifest manifest = ParseManifest(manifestInput, path, false);
     const auto &targetRoot = destination;
     if (!targetRoot.empty())
         std::filesystem::create_directories(targetRoot);
     HeaderDisk header{};
-    input.seekg(0);
-    ReadExact(input, &header, sizeof(header));
+    manifestInput.seekg(0);
+    ReadExact(manifestInput, &header, sizeof(header));
+
+    // Resolve and create the complete directory tree before workers start.
+    // Apart from avoiding duplicate create_directories calls, this keeps the
+    // parallel phase limited to independent package reads, decompression,
+    // validation and file writes.
+    std::vector<std::filesystem::path> outputs;
+    outputs.reserve(manifest.entries.size());
     for (const auto &entry : manifest.entries) {
         if (!IsAllowedRoot(entry.path, allowedRoots))
             throw std::runtime_error("InxPack entry root is not allowed: " + entry.path);
+        std::filesystem::path output = targetRoot;
+        size_t begin = 0;
+        while (begin < entry.path.size()) {
+            const size_t end = entry.path.find('/', begin);
+            output /= ToFsPath(entry.path.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+            if (end == std::string::npos)
+                break;
+            begin = end + 1;
+        }
+        if (!output.parent_path().empty())
+            std::filesystem::create_directories(output.parent_path());
+        outputs.push_back(std::move(output));
+    }
+
+    const auto extractEntry = [&](std::ifstream &input, size_t index) {
+        const auto &entry = manifest.entries[index];
         const uint64_t absoluteOffset = CheckedAdd(header.payloadOffset, entry.offset, "entry offset");
         input.seekg(static_cast<std::streamoff>(absoluteOffset));
         if (!input)
@@ -890,6 +921,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
             ReadExact(input, stored.data(), stored.size());
         if (HashBytes(stored.data(), stored.size()) != entry.storedHash)
             throw std::runtime_error("InxPack stored block checksum mismatch: " + entry.path);
+
         std::vector<uint8_t> raw(static_cast<size_t>(entry.rawBytes));
         if (entry.codec == Codec::Store) {
             if (stored.size() != raw.size())
@@ -904,22 +936,50 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
         }
         if (HashBytes(raw.data(), raw.size()) != entry.hash)
             throw std::runtime_error("InxPack raw block checksum mismatch: " + entry.path);
-        std::filesystem::path output = targetRoot;
-        size_t begin = 0;
-        while (begin < entry.path.size()) {
-            const size_t end = entry.path.find('/', begin);
-            output /= ToFsPath(entry.path.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
-            if (end == std::string::npos)
-                break;
-            begin = end + 1;
-        }
-        if (!output.parent_path().empty())
-            std::filesystem::create_directories(output.parent_path());
-        std::ofstream destinationFile(output, std::ios::binary | std::ios::trunc);
-        if (!destinationFile || (!raw.empty() && !destinationFile.write(reinterpret_cast<const char *>(raw.data()),
-                                                                        static_cast<std::streamsize>(raw.size()))))
+
+        std::ofstream destinationFile(outputs[index], std::ios::binary | std::ios::trunc);
+        if (!destinationFile ||
+            (!raw.empty() && !destinationFile.write(reinterpret_cast<const char *>(raw.data()),
+                                                     static_cast<std::streamsize>(raw.size()))))
             throw std::runtime_error("InxPack cannot extract entry: " + entry.path);
+    };
+
+    // Archive entries are independently compressed and hashed. Bounded
+    // parallel extraction uses otherwise idle cores during a cold Player
+    // launch without creating an unbounded number of disk writers on slower
+    // machines. Every worker owns its input stream and output file.
+    const size_t hardwareThreads = std::max<size_t>(1, std::thread::hardware_concurrency());
+    const size_t workerCount = std::min({manifest.entries.size(), hardwareThreads, size_t{4}});
+    std::atomic<size_t> nextEntry{0};
+    std::atomic<bool> failed{false};
+    std::exception_ptr failure;
+    std::mutex failureMutex;
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    for (size_t worker = 0; worker < workerCount; ++worker) {
+        workers.emplace_back([&] {
+            try {
+                std::ifstream input(path, std::ios::binary);
+                if (!input)
+                    throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
+                while (!failed.load(std::memory_order_acquire)) {
+                    const size_t index = nextEntry.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= manifest.entries.size())
+                        break;
+                    extractEntry(input, index);
+                }
+            } catch (...) {
+                failed.store(true, std::memory_order_release);
+                std::lock_guard lock(failureMutex);
+                if (!failure)
+                    failure = std::current_exception();
+            }
+        });
     }
+    for (auto &worker : workers)
+        worker.join();
+    if (failure)
+        std::rethrow_exception(failure);
     return manifest;
 }
 

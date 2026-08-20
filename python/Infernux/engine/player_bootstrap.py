@@ -8,9 +8,8 @@ Replaces :class:`EditorBootstrap` with a stripped-down path that:
   4. Enables the game camera
   5. Registers the fullscreen PlayerGUI (with optional splash sequence)
   6. Loads the first scene from BuildSettings.json (or a Supervisor-approved Debug validation scene)
-  7. Leaves the scene loaded but not playing — the window is already
-     visible during load. Play starts only after PlayerGUI confirms
-     loading (and splash) are done
+  7. Leaves the scene loaded but not playing. The native window stays hidden
+     during engine loading; Play starts after an optional project splash
 
 No undo, no selection, no hierarchy, no inspector, no docking layout.
 """
@@ -21,6 +20,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import Infernux.resources as _resources
@@ -88,28 +88,45 @@ class PlayerBootstrap:
         self._player_gui: Optional[PlayerGUI] = None
         self._runtime_manifest: Optional[RuntimeProductManifest] = None
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
+        self._runtime_manifest_document: Optional[dict] = None
+        self._runtime_package_root: str = ""
 
     # ── Public entry point ─────────────────────────────────────────────
 
     def run(self):
         """Execute all bootstrap phases and start the main loop."""
-        self._force_player_mode()
-        self._load_runtime_contract()
-        self._init_engine()
+        startup_started = time.perf_counter()
+        phase_started = startup_started
+
+        def phase(name: str, callback) -> None:
+            nonlocal phase_started
+            callback()
+            now = time.perf_counter()
+            _plog(f"[Startup] {name}: {(now - phase_started) * 1000.0:.1f} ms")
+            phase_started = now
+
+        phase("force player mode", self._force_player_mode)
+        phase("load runtime contract", self._load_runtime_contract)
+        phase("initialize engine", self._init_engine)
         self._pump_startup_events()
-        self._create_managers()
+        phase("load runtime asset catalog", self._load_runtime_asset_catalog)
         self._pump_startup_events()
-        self._setup_game_camera()
-        self._register_player_gui()
+        phase("create runtime managers", self._create_managers)
         self._pump_startup_events()
-        self._load_initial_scene()
-        # Do not activate Play here. The window is already visible during
-        # native/Python load, but starting the session would let
-        # Awake/Start/Update run before splash/loading cover finishes.
-        # PlayerGUI starts Play after that cover is done.
+        phase("setup game camera", self._setup_game_camera)
+        phase("register player GUI", self._register_player_gui)
+        self._pump_startup_events()
+        phase("schedule initial scene", self._load_initial_scene)
+        # Do not activate Play here. The caller reveals the initialized native
+        # window after bootstrap; PlayerGUI starts Play after any project
+        # splash has finished.
         if self.engine is not None:
-            self.engine.prepare_startup_refresh()
+            phase("prepare runtime scripts", self.engine.prepare_startup_refresh)
         self._pump_startup_events()
+        _plog(
+            f"[Startup] bootstrap ready: "
+            f"{(time.perf_counter() - startup_started) * 1000.0:.1f} ms"
+        )
 
     @staticmethod
     def _force_player_mode() -> None:
@@ -132,9 +149,8 @@ class PlayerBootstrap:
         self._apply_runtime_policy()
 
     def _validate_runtime_manifest(self) -> None:
-        """Require the current Player.inxmanifest before engine startup."""
+        """Validate the small product contract before creating the window."""
         from Infernux.engine.player_service_graph import (
-            PlayerRuntimeAssetCatalog,
             RuntimeProductManifest,
         )
 
@@ -157,11 +173,6 @@ class PlayerBootstrap:
         runtime_manifest = RuntimeProductManifest.from_document(manifest)
         runtime_manifest.require_service("player_bootstrap")
         runtime_manifest.require_service("runtime_asset_catalog")
-        from Infernux.engine.runtime_artifact_catalog import (
-            CATALOG_SCHEMA,
-            CATALOG_VERSION,
-            runtime_artifact_id,
-        )
         product = manifest.get("product", {})
         if product.get("single_entry_point") is not True:
             raise RuntimeError("Player package must have exactly one executable entry point")
@@ -169,6 +180,24 @@ class PlayerBootstrap:
         for artifact in ("Runtime.inxrt", "Content.inxpkg"):
             if not os.path.isfile(os.path.join(required_root, artifact)):
                 raise RuntimeError(f"Player package artifact is missing: {artifact}")
+
+        self._runtime_manifest = runtime_manifest
+        self._runtime_manifest_document = manifest
+        self._runtime_package_root = required_root
+
+    def _load_runtime_asset_catalog(self) -> None:
+        """Load the immutable asset catalog before revealing the game window."""
+        from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+        from Infernux.engine.runtime_artifact_catalog import (
+            CATALOG_SCHEMA,
+            CATALOG_VERSION,
+            runtime_artifact_id,
+        )
+
+        runtime_manifest = self._runtime_manifest
+        if runtime_manifest is None:
+            raise RuntimeError("Player runtime manifest is unavailable")
+        required_root = self._runtime_package_root or self.project_path
 
         catalog_path = os.path.join(required_root, "Library", "RuntimeAssetCatalog.json")
         try:
@@ -194,7 +223,8 @@ class PlayerBootstrap:
             validated = self._validated_archive_summary(str(package.get("path", "")))
             if validated is None:
                 raise RuntimeError(
-                    "Runtime asset catalog package has no boot-validated native manifest"
+                    "Runtime asset catalog package has no boot-validated native manifest: "
+                    + str(package.get("path", ""))
                 )
             validated_hash, validated_bytes = validated
             if int(package.get("archive_bytes", -1)) != validated_bytes:
@@ -265,7 +295,6 @@ class PlayerBootstrap:
             raise RuntimeError(
                 f"Player runtime type registry is invalid: {type_registry_path}"
             ) from exc
-        self._runtime_manifest = runtime_manifest
         self._runtime_catalog = runtime_catalog
 
     def _apply_runtime_policy(self) -> None:
@@ -372,9 +401,8 @@ class PlayerBootstrap:
                 "Player startup created the editor ResourcesManager/file watcher"
             )
 
-        # Publish window chrome before native Init() so the Player can show
-        # immediately after the SDL surface exists, without a maximized
-        # windowed flash or a later fullscreen switch.
+        # Publish window chrome before native Init() so the hidden SDL window
+        # can be revealed in its final state after bootstrap.
         if self.display_mode == "fullscreen_borderless":
             os.environ["_INFERNUX_PLAYER_FULLSCREEN"] = "1"
         else:
@@ -396,6 +424,19 @@ class PlayerBootstrap:
         self.engine.init_renderer(
             width=w, height=h, project_path=self.project_path
         )
+        native = self.engine.get_native_engine()
+        if native is not None:
+            try:
+                timings = dict(native.startup_phase_timings_ms)
+                _plog(
+                    "[Startup.Native] "
+                    + ", ".join(
+                        f"{name}={float(duration):.1f}ms"
+                        for name, duration in sorted(timings.items())
+                    )
+                )
+            except Exception as exc:
+                _plog(f"[Startup.Native] diagnostics unavailable: {exc}")
         self._pump_startup_events()
 
         # Explicitly tell C++ we are in player mode — no scene view rendering.
@@ -468,6 +509,7 @@ class PlayerBootstrap:
             splash_items=self.splash_items,
             data_root=self.project_path,
             control_channel=control_channel,
+            activate_play=self._activate_initial_scene_for_play,
         )
         self.engine.register_gui("player_gui", self._player_gui)
 
@@ -539,4 +581,21 @@ class PlayerBootstrap:
         if self.runtime_session is None:
             Debug.log_error("No PlayerRuntimeSession available")
             return
-        return self.runtime_session.activate()
+        activated = self.runtime_session.activate()
+        scene_service = getattr(self.runtime_session, "scene_service", None)
+        active_scene = str(getattr(scene_service, "active_scene_path", "") or "")
+        scheduler = getattr(self.runtime_session, "execution_scheduler", None)
+        if scheduler is not None:
+            try:
+                plans = {
+                    phase: len(scheduler.phase_plan(phase))
+                    for phase in ("fixed_update", "update", "late_update")
+                }
+                _plog(
+                    "[Startup] Play activation: "
+                    f"active={bool(activated)}, scene={active_scene!r}, "
+                    f"lifecycle_plans={plans}"
+                )
+            except Exception as exc:
+                _plog(f"[Startup] lifecycle plan diagnostics failed: {exc}")
+        return activated

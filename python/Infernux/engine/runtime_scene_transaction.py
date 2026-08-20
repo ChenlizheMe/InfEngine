@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 
 from Infernux.lib import (
     _SceneDocumentReadTicket,
-    _preflight_scene_resource_dependencies,
+    _collect_scene_resource_dependencies,
     _schedule_scene_document_read,
 )
 from Infernux.engine.path_utils import resolved_path
@@ -60,6 +60,7 @@ class SceneDocumentTransaction:
         path: Optional[os.PathLike[str] | str] = None,
         document: Any = None,
         asset_database: Any = None,
+        native_engine: Any = None,
         clear_registries: bool = True,
         borrow_document: bool = False,
         prefer_loaded_types: bool = False,
@@ -84,6 +85,7 @@ class SceneDocumentTransaction:
             else copy.deepcopy(document) if document is not None else None
         )
         self._asset_database = asset_database
+        self._native_engine = native_engine
         self._clear_registries = bool(clear_registries)
         self._prefer_loaded_types = bool(prefer_loaded_types)
         self._before_commit = before_commit
@@ -92,6 +94,9 @@ class SceneDocumentTransaction:
         self._state = SceneDocumentTransactionState.CREATED
         self._ticket: Optional[_SceneDocumentReadTicket] = None
         self._asset_load_tickets: list[Any] = []
+        self._linked_shader_ticket: Any = None
+        self._linked_shader_preload_started = False
+        self._resource_dependencies: tuple[tuple[str, str], ...] = ()
         self._resource_preflight_started: Optional[float] = None
         self._prepared_graph = None
         self._commit_token = None
@@ -188,6 +193,25 @@ class SceneDocumentTransaction:
                     component._set_game_object(game_object)
                     component._refresh_native_handle()
 
+    def _reconcile_persistent_python_registries(self) -> None:
+        """Restore only persistent components cleared by scene publication."""
+        if not self._clear_registries:
+            return
+        try:
+            from Infernux.lib import SceneManager
+
+            persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
+        except (AttributeError, RuntimeError):
+            # Source-only tests can run against an older installed native
+            # module until the consolidated preset build publishes this API.
+            return
+        if persistent_scene is None or persistent_scene is self._scene:
+            return
+        for game_object in persistent_scene.get_all_objects():
+            for component in game_object.get_py_components() or []:
+                component._set_game_object(game_object)
+                component._refresh_native_handle()
+
     @staticmethod
     def _scene_mesh_guids(document: dict[str, Any]) -> tuple[str, ...]:
         """Collect external meshes that would otherwise load during commit."""
@@ -221,31 +245,63 @@ class SceneDocumentTransaction:
         return tuple(result)
 
     def _start_asset_preloads(self) -> None:
-        if not isinstance(self._document, dict):
-            return
         from Infernux.lib import AssetRegistry
 
         registry = AssetRegistry.instance()
         asset_database = registry.get_asset_database()
-        self._asset_load_tickets = [
-            registry.begin_load_mesh_by_guid(guid)
-            for guid in self._scene_mesh_guids(self._document)
-            if asset_database.get_path_from_guid(guid)
-        ]
+        begin_load = {
+            "Material": getattr(registry, "begin_load_material_by_guid", None),
+            "PhysicMaterial": getattr(
+                registry, "begin_load_physic_material_by_guid", None
+            ),
+            "Audio": getattr(registry, "begin_load_audio_by_guid", None),
+            "Mesh": getattr(registry, "begin_load_mesh_by_guid", None),
+            "Texture": getattr(registry, "begin_load_texture_by_guid", None),
+        }
+        tickets: list[Any] = []
+        for guid, resource_type in self._resource_dependencies:
+            schedule = begin_load.get(resource_type)
+            if schedule is not None and asset_database.get_path_from_guid(guid):
+                tickets.append(schedule(guid))
+        self._asset_load_tickets = tickets
 
     def _poll_asset_preloads(self) -> bool:
         """Publish completed worker payloads; return true once all are resident."""
-        if not self._asset_load_tickets:
-            return True
-        from Infernux.lib import AssetRegistry
+        if self._asset_load_tickets:
+            from Infernux.lib import AssetRegistry
 
-        registry = AssetRegistry.instance()
-        if any(not ticket.complete for ticket in self._asset_load_tickets):
-            return False
-        for ticket in self._asset_load_tickets:
-            if not ticket.committed and not registry.try_commit_asset_load(ticket):
+            registry = AssetRegistry.instance()
+            if any(not ticket.complete for ticket in self._asset_load_tickets):
                 return False
-        self._asset_load_tickets.clear()
+            for ticket in self._asset_load_tickets:
+                if not ticket.committed and not registry.try_commit_asset_load(ticket):
+                    return False
+            self._asset_load_tickets.clear()
+
+        if not self._linked_shader_preload_started:
+            self._linked_shader_preload_started = True
+            begin = getattr(
+                self._native_engine, "begin_prepare_linked_shader_programs", None
+            )
+            if callable(begin):
+                material_guids = [
+                    guid
+                    for guid, resource_type in self._resource_dependencies
+                    if resource_type == "Material"
+                ]
+                self._linked_shader_ticket = begin(material_guids)
+
+        ticket = self._linked_shader_ticket
+        if ticket is not None:
+            if not ticket.complete:
+                return False
+            if not ticket.committed:
+                commit = getattr(
+                    self._native_engine, "try_commit_linked_shader_programs", None
+                )
+                if not callable(commit) or not commit(ticket):
+                    return False
+            self._linked_shader_ticket = None
         return True
 
     def _rollback_after_commit(self, cause: BaseException) -> None:
@@ -315,8 +371,17 @@ class SceneDocumentTransaction:
                 self._state = SceneDocumentTransactionState.RESOURCE_PREFLIGHTING
                 self._resource_preflight_started = time.perf_counter()
                 native_preflight = getattr(self._document, "_preflight_resource_dependencies", None)
-                if not callable(native_preflight):
-                    _preflight_scene_resource_dependencies(self._document)
+                native_dependencies = getattr(self._document, "_resource_dependencies", None)
+                if callable(native_dependencies):
+                    self._resource_dependencies = tuple(
+                        (str(guid), str(resource_type))
+                        for guid, resource_type in native_dependencies()
+                    )
+                else:
+                    self._resource_dependencies = tuple(
+                        (str(guid), str(resource_type))
+                        for guid, resource_type in _collect_scene_resource_dependencies(self._document)
+                    )
                 self._start_asset_preloads()
                 if not self._asset_load_tickets:
                     self._phase_timings_ms["resources"] = (
@@ -384,6 +449,11 @@ class SceneDocumentTransaction:
                     self._prepared_graph,
                     clear_registries=self._clear_registries,
                 )
+                # The active scene was registered while its prepared graph was
+                # attached. Only DontDestroyOnLoad objects were removed by the
+                # shared registry clear, so restore those without clearing and
+                # binding the new scene a second time.
+                self._reconcile_persistent_python_registries()
                 self._phase_timings_ms["python_publish"] = (
                     time.perf_counter() - phase_started
                 ) * 1000.0
@@ -419,6 +489,10 @@ class SceneDocumentTransaction:
             return False
         if self._ticket is not None:
             self._ticket.cancel()
+        if self._linked_shader_ticket is not None:
+            cancel = getattr(self._linked_shader_ticket, "cancel", None)
+            if callable(cancel):
+                cancel()
         if self._prepared_graph is not None:
             self._prepared_graph.discard()
         self._prepared_graph = None

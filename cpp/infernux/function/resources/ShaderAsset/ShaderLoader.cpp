@@ -9,7 +9,6 @@
 #include <platform/filesystem/InxPath.h>
 
 #include <filesystem>
-
 namespace infernux
 {
 
@@ -20,6 +19,10 @@ namespace infernux
 static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePath, const std::string &guid,
                                                        AssetDatabase *adb)
 {
+    // Share one compiler/cache lock with linked-program prewarming and editor
+    // hot reload. Publication into AssetRegistry still occurs on the owner
+    // thread through AssetLoadTicket.
+    const InxShaderLoader::CompilationGuard compileGuard;
     if (filePath.empty() || guid.empty()) {
         INXLOG_WARN("ShaderLoader: empty filePath or guid");
         return nullptr;

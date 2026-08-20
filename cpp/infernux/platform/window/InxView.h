@@ -98,8 +98,8 @@ class InxView
     void Show();
     void Hide();
 
-    /// Pump the OS queue during long startup work so a visible window stays
-    /// responsive. Returns false if the user requested close/quit.
+    /// Pump the OS queue during long startup work while the native window is
+    /// still hidden. Returns false if the user requested close/quit.
     [[nodiscard]] bool PumpStartupEvents();
     void SetWindowIcon(const std::string &iconPath);
     void SetWindowFullscreen(bool fullscreen);

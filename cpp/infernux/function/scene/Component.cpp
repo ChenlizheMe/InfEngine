@@ -193,6 +193,13 @@ void Component::SetEnabled(bool enabled)
 
     m_enabled = enabled;
 
+    // Enabled components enter or leave scene queries (camera discovery in
+    // particular), so cached query results must observe this state change.
+    if (m_gameObject) {
+        if (Scene *scene = m_gameObject->GetScene())
+            scene->BumpStructureVersion();
+    }
+
     // Unity semantics:
     // - OnEnable fires only when component is enabled and active in hierarchy.
     // - OnDisable fires when transitioning out of that effective-active state.

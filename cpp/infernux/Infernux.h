@@ -32,11 +32,29 @@ namespace infernux
 {
 
 class AssetLoadTicket;
+class LinkedShaderProgramLoadTicket;
 
 enum class RuntimeMode
 {
     Graphical,
     Headless,
+};
+
+/// Two-phase linked-program preload. Worker jobs only produce CPU artifacts;
+/// TryCommitLinkedShaderPrograms performs every renderer mutation on the
+/// engine owner thread.
+class LinkedShaderProgramLoadTicket final
+{
+  public:
+    [[nodiscard]] bool IsComplete() const noexcept;
+    [[nodiscard]] bool IsCommitted() const noexcept;
+    [[nodiscard]] bool WasProducedOnWorker() const noexcept;
+    bool Cancel() noexcept;
+
+  private:
+    struct State;
+    friend class Infernux;
+    std::shared_ptr<State> m_state;
 };
 
 class Infernux
@@ -68,6 +86,12 @@ class Infernux
         return m_runtimeMode;
     }
 
+    /// Wall-clock timings captured during the most recent graphical startup.
+    [[nodiscard]] const std::unordered_map<std::string, double> &GetStartupPhaseTimingsMs() const noexcept
+    {
+        return m_startupPhaseTimingsMs;
+    }
+
     // renderer
     void InitRenderer(int width, int height, const std::string &projectPath,
                       const std::string &builtinResourcePath = "");
@@ -89,6 +113,13 @@ class Infernux
     /// @return Pointer to AssetDatabase, or nullptr if not initialized
     AssetDatabase *GetAssetDatabase() const;
     [[nodiscard]] std::vector<AssetRuntimeRecord> GetAssetRuntimeRecords() const;
+
+    /// Compile linked shader programs referenced by already-loaded materials
+    /// on the engine JobSystem, then publish them explicitly on the owner
+    /// thread before a scene becomes live.
+    [[nodiscard]] std::shared_ptr<LinkedShaderProgramLoadTicket>
+    BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &materialGuids);
+    bool TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderProgramLoadTicket> &ticket);
 
     // ========================================================================
     // Scene Camera Control API - for Scene View with Unity-style controls
@@ -545,6 +576,7 @@ class Infernux
     bool m_isCleanedUp = false;
     bool m_isCleaningUp = false;
     bool m_isInitialized = false;
+    std::unordered_map<std::string, double> m_startupPhaseTimingsMs;
     std::atomic<bool> m_exitRequested{false};
     std::mutex m_runMutex;
     std::condition_variable m_runCv;

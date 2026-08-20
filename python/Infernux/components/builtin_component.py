@@ -317,14 +317,20 @@ class BuiltinComponent(InxComponent):
                 from Infernux.debug import Debug
                 Debug.log_warning(f"[BuiltinComponent] cache clear failed: {exc}")
         BuiltinComponent._wrapper_cache.clear()
-        try:
-            from Infernux.engine.ui.inspector_components import (
-                clear_component_value_cache,
-            )
+        # Inspector state is an editor-only cache. Importing it from Player
+        # scene publication pulls the complete Inspector/serialization UI
+        # graph into the startup path even though no editor panel exists.
+        from Infernux.application import Application
 
-            clear_component_value_cache()
-        except ImportError:
-            pass
+        if Application.is_editor():
+            try:
+                from Infernux.engine.ui.inspector_components import (
+                    clear_component_value_cache,
+                )
+
+                clear_component_value_cache()
+            except ImportError:
+                pass
 
     @classmethod
     def _invalidate_component_ids(cls, component_ids) -> None:

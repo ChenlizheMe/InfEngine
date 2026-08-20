@@ -71,8 +71,14 @@ class RuntimeExecutionScheduler:
         self._change_cursor = change_journal.create_cursor(
             f"runtime-execution:{self.name}:{id(self):x}"
         )
-        self._components: dict[tuple[int, int], Any] = {}
-        self._component_tokens: dict[int, tuple[int, int]] = {}
+        # Scene replacement publishes the new graph before the retained old
+        # graph is finalized. Component IDs are scene-local, and freshly bound
+        # Python mirrors both start at native generation 1, so the old and new
+        # instances may temporarily have the same stable token. Keep instance
+        # identity in the scheduler membership key; the two-field token remains
+        # the durable identity used by the change journal and diagnostics.
+        self._components: dict[tuple[int, int, int], Any] = {}
+        self._component_tokens: dict[int, tuple[int, int, int]] = {}
         self._phase_plan: dict[str, tuple[Any, ...]] = {
             phase: () for phase in _RUNTIME_SCHEDULER_PHASES
         }
@@ -115,6 +121,20 @@ class RuntimeExecutionScheduler:
 
     def sync_native_work_availability(self) -> None:
         """Synchronize the native fast-path after lifecycle bridge installation."""
+        self._sync_active_registry_once()
+        self._sync_native_work_availability()
+
+    def refresh_scene_membership(self) -> None:
+        """Reconcile the plan after one complete scene graph publication.
+
+        Component bind/unbind notifications remain the cheap steady-state
+        path.  Scene deserialization is different: it publishes a whole
+        Python mirror while the retained previous graph can still be alive.
+        Treat that publication boundary as authoritative and reconcile once,
+        so a missed or reordered incremental notification cannot leave the
+        native lifecycle fast path disabled for the entire scene.
+        """
+        self._registry_scan_pending = True
         self._sync_active_registry_once()
         self._sync_native_work_availability()
 
@@ -212,6 +232,11 @@ class RuntimeExecutionScheduler:
         generation = int(getattr(component, "_native_generation", 0) or 0)
         return component_id, generation
 
+    @classmethod
+    def _membership_token(cls, component: Any) -> tuple[int, int, int]:
+        component_id, generation = cls._component_token(component)
+        return component_id, generation, id(component)
+
     @staticmethod
     def _sort_key(component: Any) -> tuple[int, int, int]:
         return (
@@ -234,15 +259,16 @@ class RuntimeExecutionScheduler:
             # A present event may also represent a rebind.  Refresh from the
             # current owner instead of trusting the previous component mirror.
             self._refresh_owner_active_mirror(component)
-            token = self._component_token(component)
+            token = self._membership_token(component)
             previous = self._component_tokens.get(id(component))
             self._component_tokens[id(component)] = token
             self._components[token] = component
             if previous is not None and previous != token:
-                self._components.pop(previous, None)
+                if self._components.get(previous) is component:
+                    self._components.pop(previous, None)
         else:
             previous = self._component_tokens.pop(id(component), None)
-            if previous is not None:
+            if previous is not None and self._components.get(previous) is component:
                 self._components.pop(previous, None)
         self._sync_native_work_availability()
         # The typed journal advances the plan revision at the next explicit
@@ -319,7 +345,7 @@ class RuntimeExecutionScheduler:
             active = {}
             for values in tuple(getattr(InxComponent, "_active_instances", {}).values()):
                 for component in tuple(values):
-                    active[self._component_token(component)] = component
+                    active[self._membership_token(component)] = component
         except (ImportError, AttributeError, RuntimeError):
             active = {}
         if set(active) != set(self._components):

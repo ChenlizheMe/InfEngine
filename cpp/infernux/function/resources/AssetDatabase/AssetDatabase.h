@@ -126,6 +126,13 @@ class AssetDatabase
     /// @brief Refresh all assets by scanning the Assets folder
     void Refresh();
 
+    /// @brief Restore the last published editor catalog without touching source files.
+    ///
+    /// This is the interactive-startup path. A caller must follow it with an
+    /// asynchronous BeginRefresh/TryCommitRefresh transaction so external
+    /// changes made while the editor was closed are still reconciled.
+    [[nodiscard]] bool RestoreCachedCatalog();
+
     /// @brief Schedule filesystem enumeration and fingerprint collection.
     /// The worker never mutates AssetDatabase, metadata, or dependency state.
     void BeginRefresh();
@@ -149,7 +156,7 @@ class AssetDatabase
     /// @brief Overlay the cooked Player asset identities after the immutable
     /// project payload has been scanned. The catalog replaces editor .meta
     /// sidecars inside Player builds and is never persisted back to disk.
-    void InstallRuntimeAssetCatalog(const std::string &catalogPath);
+    void InstallRuntimeAssetCatalog(const std::string &catalogPath, bool trustedPackage = false);
 
     /// @brief Import an asset and create/update its meta.
     /// Runs the appropriate AssetImporter to scan dependencies.
@@ -577,7 +584,7 @@ class AssetDatabase
     [[nodiscard]] bool CanReadWorkingSet() const;
     [[nodiscard]] WorkingSet TakeWorkingSet();
     void InstallWorkingSet(WorkingSet workingSet);
-    void PublishQuerySnapshot();
+    void PublishQuerySnapshot(bool includeCatalog = true);
     void PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
@@ -592,7 +599,8 @@ class AssetDatabase
     BuildQuerySnapshotArtifact(const std::unordered_map<std::string, std::string> &guidToPath,
                                const std::unordered_map<std::string, std::string> &pathToGuid,
                                const std::unordered_map<std::string, std::shared_ptr<InxResourceMeta>> &metas,
-                               const std::unordered_map<std::string, CachedFileState> &fileStates, uint64_t generation);
+                               const std::unordered_map<std::string, CachedFileState> &fileStates, uint64_t generation,
+                               bool includeCatalog = true);
     [[nodiscard]] bool CommitScanArtifact(AssetScanArtifact artifact, uint64_t expectedQueryGeneration);
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
@@ -648,6 +656,11 @@ class AssetDatabase
 
     AssetIndex m_assetIndex;
     std::string m_assetIndexPath;
+    // Last committed catalog retained across source/meta mutations. The live
+    // AssetIndex is deliberately invalidated while a refresh is pending so a
+    // build cannot consume stale data; Editor startup may still restore these
+    // identities and validate them asynchronously after the window appears.
+    std::string m_assetStartupCachePath;
     std::string m_assetTransactionJournalPath;
     std::unordered_map<std::string, ImportResultState> m_importResults;
     size_t m_lastRefreshReusedCount = 0;

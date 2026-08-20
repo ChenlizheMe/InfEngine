@@ -339,9 +339,9 @@ class SceneRenderGraph
      * @brief Rebuild and compile the render graph if needed (pre-record phase).
      *
      * Must be called BEFORE command buffer recording starts.  Moves
-     * BuildRenderGraph / Compile out of the recording path so that
-     * descriptor set recreation (triggered by InvalidateAllMaterialPipelines)
-     * does not destroy sets already bound to an in-recording command buffer.
+     * BuildRenderGraph / Compile out of the recording path so that graph-owned
+     * descriptors and transient resources are never recreated while their old
+     * generation is bound to an in-recording command buffer.
      */
     void EnsureGraphBuilt();
 
@@ -708,6 +708,9 @@ class SceneRenderGraph
     void RefreshForwardPlusParticleRequirement();
     [[nodiscard]] bool PrepareForwardPlusFrame();
     void RetireForwardPlusResources();
+    [[nodiscard]] uint64_t ComputeShadowContentSignature(bool &hasDynamicCaster) const;
+    void RefreshShadowAtlasUpdateState();
+    void CommitShadowAtlasUpdate();
     void RecordParticleViewDiagnostics(VkCommandBuffer commandBuffer);
     [[nodiscard]] uint64_t CurrentParticleDrawRegistryRevision() const noexcept;
 
@@ -821,6 +824,13 @@ class SceneRenderGraph
     uint64_t m_cachedParticleDrawRegistryRevision = 0;
     std::shared_ptr<const void> m_cachedRenderWorldOwner;
     bool m_hasShadowCasterPass = false;
+    // Shadow attachments belong to one camera graph and survive across graph
+    // executions. Static scenes can therefore preserve the atlas until an
+    // input generation changes instead of clearing and redrawing every view.
+    uint64_t m_committedShadowContentSignature = 0;
+    uint64_t m_pendingShadowContentSignature = 0;
+    bool m_shadowAtlasValid = false;
+    bool m_shadowAtlasUpdateRequired = true;
 
     // Per-graph camera VP cache — set by SubmitCulling so the executor
     // uses the exact same matrices that were active during SetupCameraProperties.

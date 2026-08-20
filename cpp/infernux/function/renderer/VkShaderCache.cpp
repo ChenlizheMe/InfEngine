@@ -159,6 +159,24 @@ const std::vector<char> *VkShaderCache::FindFragCode(const std::string &id) cons
     return FindCodeInMap(m_fragCodes, id);
 }
 
+uint64_t VkShaderCache::GetCodeFingerprint(const std::string &name, const std::string &type) const
+{
+    const std::vector<char> *code = nullptr;
+    if (type == "vert" || type == "vertex")
+        code = FindVertCode(name);
+    else if (type == "frag" || type == "fragment")
+        code = FindFragCode(name);
+    if (!code || code->empty())
+        return 0;
+
+    uint64_t hash = 1469598103934665603ull;
+    for (const char value : *code) {
+        hash ^= static_cast<uint8_t>(value);
+        hash *= 1099511628211ull;
+    }
+    return hash == 0 ? 1 : hash;
+}
+
 ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const ShaderProgramArtifact &artifact)
 {
     ShaderProgramArtifactPublishResult result;

@@ -37,6 +37,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <unordered_set>
 
 namespace infernux
@@ -44,6 +45,24 @@ namespace infernux
 
 namespace
 {
+
+constexpr uint64_t kShadowHashOffset = 1469598103934665603ull;
+constexpr uint64_t kShadowHashPrime = 1099511628211ull;
+
+void HashShadowBytes(uint64_t &hash, const void *data, size_t size)
+{
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    for (size_t index = 0; index < size; ++index) {
+        hash ^= bytes[index];
+        hash *= kShadowHashPrime;
+    }
+}
+
+template <typename T> void HashShadowValue(uint64_t &hash, const T &value)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    HashShadowBytes(hash, &value, sizeof(T));
+}
 
 lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const std::vector<DrawCall> &drawCalls)
 {
@@ -2003,6 +2022,8 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
     if (!m_graphBuilt)
         return false;
 
+    RefreshShadowAtlasUpdateState();
+
     BindTemporalHistoryResources();
 
     if (m_hasCameraClearOverride && !m_mainClearPassName.empty()) {
@@ -2030,6 +2051,90 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
         }
     }
     return true;
+}
+
+uint64_t SceneRenderGraph::ComputeShadowContentSignature(bool &hasDynamicCaster) const
+{
+    hasDynamicCaster = false;
+    uint64_t hash = kShadowHashOffset;
+    HashShadowValue(hash, m_cachedSubmissionSignature);
+    HashShadowValue(hash, m_cachedObjectBufferRevision);
+    if (m_vkCore) {
+        const uint64_t materialGeneration = m_vkCore->GetMaterialPipelineManager().GetPublicationGeneration();
+        HashShadowValue(hash, materialGeneration);
+    }
+
+    const auto &shadowFrame = m_cameraLightCollector.GetShadowFrame();
+    HashShadowValue(hash, shadowFrame.atlasSize);
+    const uint64_t viewCount = shadowFrame.views.size();
+    const uint64_t assignmentCount = shadowFrame.assignments.size();
+    HashShadowValue(hash, viewCount);
+    HashShadowValue(hash, assignmentCount);
+    for (const auto &view : shadowFrame.views) {
+        HashShadowValue(hash, view.lightId);
+        HashShadowValue(hash, view.type);
+        HashShadowValue(hash, view.subView);
+        HashShadowValue(hash, view.viewProjection);
+        HashShadowValue(hash, view.atlas);
+        HashShadowValue(hash, view.nearPlane);
+        HashShadowValue(hash, view.farPlane);
+        HashShadowValue(hash, view.worldUnitsPerTexel);
+        HashShadowValue(hash, view.filterRadiusTexels);
+        HashShadowValue(hash, view.splitNear);
+        HashShadowValue(hash, view.splitFar);
+        HashShadowValue(hash, view.lightVector);
+        HashShadowValue(hash, view.lightVectorIsPosition);
+        HashShadowValue(hash, view.depthBiasTexels);
+        HashShadowValue(hash, view.normalBiasTexels);
+        HashShadowValue(hash, view.viewRight);
+        HashShadowValue(hash, view.viewUp);
+        HashShadowValue(hash, view.cullingMask);
+    }
+    for (const auto &assignment : shadowFrame.assignments) {
+        HashShadowValue(hash, assignment.lightId);
+        HashShadowValue(hash, assignment.firstView);
+        HashShadowValue(hash, assignment.viewCount);
+    }
+
+    // Transform revisions cover ordinary moving renderers. GPU skinning and
+    // shadow-casting particles mutate device buffers without necessarily
+    // changing that revision, so those paths deliberately remain dynamic.
+    for (const DrawCall &drawCall : m_cachedShadowRenderers.DrawCalls()) {
+        if (drawCall.skinBoneMatrices != nullptr) {
+            hasDynamicCaster = true;
+            break;
+        }
+    }
+    if (!hasDynamicCaster && m_particleDrawRegistry) {
+        const auto particles = m_particleDrawRegistry->SnapshotShared(std::numeric_limits<int32_t>::min(),
+                                                                      std::numeric_limits<int32_t>::max());
+        if (particles) {
+            hasDynamicCaster = std::any_of(particles->begin(), particles->end(), [](const auto &entry) {
+                return entry.semantics.castShadows && entry.renderer && entry.renderer->CanCastShadows();
+            });
+        }
+    }
+    return hash == 0 ? 1 : hash;
+}
+
+void SceneRenderGraph::RefreshShadowAtlasUpdateState()
+{
+    if (!m_hasShadowCasterPass || m_cameraLightCollector.GetShadowFrame().views.empty()) {
+        m_pendingShadowContentSignature = 0;
+        m_shadowAtlasUpdateRequired = false;
+        return;
+    }
+    bool hasDynamicCaster = false;
+    m_pendingShadowContentSignature = ComputeShadowContentSignature(hasDynamicCaster);
+    m_shadowAtlasUpdateRequired =
+        hasDynamicCaster || !m_shadowAtlasValid || m_pendingShadowContentSignature != m_committedShadowContentSignature;
+}
+
+void SceneRenderGraph::CommitShadowAtlasUpdate()
+{
+    m_committedShadowContentSignature = m_pendingShadowContentSignature;
+    m_shadowAtlasValid = true;
+    m_shadowAtlasUpdateRequired = false;
 }
 
 bool SceneRenderGraph::CompleteSubmissionExecution(VkCommandBuffer commandBuffer)
@@ -2130,6 +2235,26 @@ std::string SceneRenderGraph::GetDebugString() const
         result += "Passes (" + std::to_string(m_pythonGraphDesc.passes.size()) + "):\n";
         for (const auto &pass : m_pythonGraphDesc.passes) {
             result += "  " + pass.name + "\n";
+        }
+        if (m_vkCore) {
+            std::vector<std::string> fullscreenShaders;
+            for (const auto &pass : m_pythonGraphDesc.passes) {
+                for (const auto &command : pass.commands) {
+                    if (command.type == GraphCommandType::FullscreenQuad && !command.shaderName.empty() &&
+                        std::find(fullscreenShaders.begin(), fullscreenShaders.end(), command.shaderName) ==
+                            fullscreenShaders.end()) {
+                        fullscreenShaders.push_back(command.shaderName);
+                    }
+                }
+            }
+            if (!fullscreenShaders.empty()) {
+                std::sort(fullscreenShaders.begin(), fullscreenShaders.end());
+                result += "Fullscreen shader fingerprints (resident SPIR-V):\n";
+                for (const auto &shader : fullscreenShaders) {
+                    result += "  " + shader + "=" +
+                              std::to_string(m_vkCore->GetShaderCodeFingerprint(shader, "fragment")) + "\n";
+                }
+            }
         }
         if (!m_parameterBlocks.empty()) {
             result += "Parameter blocks (authored defaults, before native runtime overrides) (" +
@@ -2590,6 +2715,10 @@ void SceneRenderGraph::BuildRenderGraph()
         });
     }
     m_renderGraph->Reset();
+    m_committedShadowContentSignature = 0;
+    m_pendingShadowContentSignature = 0;
+    m_shadowAtlasValid = false;
+    m_shadowAtlasUpdateRequired = true;
     InvalidateTemporalHistory();
     m_renderView.color = {};
     m_renderView.depth = {};
@@ -2606,7 +2735,14 @@ void SceneRenderGraph::BuildRenderGraph()
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.ParticleSet());
     currentViewFrame.shadowBinding = {};
 
-    m_vkCore->GetMaterialPipelineManager().InvalidateAllMaterialPipelines();
+    // Graph topology and material pipeline compatibility are independent.
+    // Effect-stack edits commonly rebuild transient graph resources while the
+    // attachment formats and sample count remain unchanged. Material pass
+    // descriptors already key their cache by compile target, formats, samples
+    // and render state; invalidating every material here discarded valid GPU
+    // pipelines and made a runtime effect/pipeline switch compile the whole
+    // scene again. True compatibility changes (currently MSAA publication)
+    // are handled transactionally by MaterialPipelineManager itself.
 
     m_graphBuilt = false;
     m_shadowMapInputHandle = {};
@@ -2854,12 +2990,15 @@ void SceneRenderGraph::BuildRenderGraph()
                 const auto visibleIndexLastStage = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                        ? rhi::PipelineStage::VertexShader
                                                        : rhi::PipelineStage::ComputeShader;
+                const auto visibleIndexLastQueue = entry.semantics.sortMode == particle::ParticleSortMode::None
+                                                       ? rhi::QueueRole::Graphics
+                                                       : rhi::QueueRole::Compute;
                 m_renderGraph->SetResourceInitialState(resources.renderIndices, rhi::TextureLayout::Undefined,
                                                        rhi::Access::ShaderRead, visibleIndexLastStage,
-                                                       rhi::QueueRole::Compute);
+                                                       visibleIndexLastQueue);
                 m_renderGraph->SetResourceInitialState(resources.indirectArguments, rhi::TextureLayout::Undefined,
                                                        rhi::Access::IndirectRead, rhi::PipelineStage::DrawIndirect,
-                                                       rhi::QueueRole::Compute);
+                                                       rhi::QueueRole::Graphics);
                 const auto sortDispatchLastAccess = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                         ? rhi::Access::ShaderWrite
                                                         : rhi::Access::IndirectRead;
@@ -4010,7 +4149,9 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 if (rendererListHandle.IsValid()) {
                     builder.ReadRendererList(rendererListHandle);
-                    builder.SkipCallbackWhenRendererListsEmpty(particlePackets.empty());
+                    // A shadow pass with no casters must still clear a
+                    // previously populated persistent atlas.
+                    builder.SkipCallbackWhenRendererListsEmpty(!usesShadowRendererList && particlePackets.empty());
                 }
 
                 // ----- Determine pass dimensions -----
@@ -4141,7 +4282,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 if (clearColor) {
                     builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
                 }
-                if (clearDepth) {
+                if (clearDepth && !isShadowPass) {
                     builder.SetClearDepth(clearDepthVal, 0);
                 }
 
@@ -4167,6 +4308,17 @@ void SceneRenderGraph::BuildRenderGraph()
                         }
                     }
                     if (isShadowPass) {
+                        if (!m_shadowAtlasUpdateRequired)
+                            return;
+                        VkClearAttachment clearAttachment{};
+                        clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                        clearAttachment.clearValue.depthStencil = {1.0f, 0};
+                        VkClearRect clearRect{};
+                        clearRect.rect.offset = {0, 0};
+                        clearRect.rect.extent = {passWidth, passHeight};
+                        clearRect.baseArrayLayer = 0;
+                        clearRect.layerCount = 1;
+                        vkCmdClearAttachments(ctx.GetCommandBuffer(), 1, &clearAttachment, 1, &clearRect);
                         const VkRenderPass compatibleRenderPass =
                             usesDynamicShadow ? VK_NULL_HANDLE : m_renderGraph->GetPassRenderPass(passName);
                         const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
@@ -4204,6 +4356,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                     ctx.RecordParticleDraw(true);
                                 }
                             });
+                        CommitShadowAtlasUpdate();
                         return;
                     }
                     if (callback)

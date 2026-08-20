@@ -435,6 +435,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                     scene,
                     document=document,
                     asset_database=self._asset_database,
+                    native_engine=self._native_engine_for_close(),
                     clear_registries=True,
                     before_commit=self._prepare_native_scene_swap,
                 )
@@ -855,6 +856,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             scene,
             path=path,
             asset_database=self._asset_database,
+            native_engine=self._native_engine_for_close(),
             clear_registries=True,
             before_commit=before_commit,
         )
@@ -1123,6 +1125,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             document=snapshot.document if snapshot is not None else None,
             path=None if snapshot is not None else path,
             asset_database=self._asset_database,
+            native_engine=self._native_engine_for_close(),
             clear_registries=True,
             before_commit=before_commit,
         )
@@ -1194,6 +1197,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             scene,
             document=_empty_scene_document(DEFAULT_SCENE_NAME),
             asset_database=self._asset_database,
+            native_engine=self._native_engine_for_close(),
             clear_registries=True,
             before_commit=before_commit,
         )

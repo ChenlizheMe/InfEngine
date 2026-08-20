@@ -850,16 +850,31 @@ PYBIND11_MODULE(_Infernux, m)
             return result;
         });
 
+    py::class_<LinkedShaderProgramLoadTicket, std::shared_ptr<LinkedShaderProgramLoadTicket>>(
+        m, "LinkedShaderProgramLoadTicket")
+        .def_property_readonly("complete", &LinkedShaderProgramLoadTicket::IsComplete)
+        .def_property_readonly("committed", &LinkedShaderProgramLoadTicket::IsCommitted)
+        .def_property_readonly("produced_on_worker", &LinkedShaderProgramLoadTicket::WasProducedOnWorker)
+        .def("cancel", &LinkedShaderProgramLoadTicket::Cancel);
+
     py::class_<Infernux>(m, "Infernux")
         .def(py::init<std::string, RuntimeMode>(), py::arg("dll_path"), py::arg("mode") = RuntimeMode::Graphical)
         .def("init_renderer", &Infernux::InitRenderer, py::arg("width"), py::arg("height"), py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string())
+        .def_property_readonly("startup_phase_timings_ms", &Infernux::GetStartupPhaseTimingsMs,
+                               py::return_value_policy::reference_internal,
+                               "Wall-clock timings for the most recent native graphical startup")
         .def("init_headless", &Infernux::InitHeadless, py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string(),
              "Initialize scene, physics, assets, and workers without SDL/Vulkan/ImGui/audio")
         .def("tick", &Infernux::Tick, py::arg("delta_time"), "Advance one deterministic headless frame")
         .def_property_readonly("exit_requested", &Infernux::IsExitRequested, "Whether shutdown has been requested")
         .def_property_readonly("runtime_mode", &Infernux::GetRuntimeMode)
+        .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
+             py::arg("material_guids"),
+             "Compile linked shader programs for loaded materials on the engine JobSystem")
+        .def("try_commit_linked_shader_programs", &Infernux::TryCommitLinkedShaderPrograms, py::arg("ticket"),
+             "Publish a completed linked-shader preload on the engine owner thread")
         .def_property_readonly("has_renderer", [](const Infernux &self) { return self.GetRenderer() != nullptr; })
         .def_property_readonly("pending_mesh_gpu_upload_count",
                                [](const Infernux &self) {

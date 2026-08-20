@@ -13,8 +13,9 @@ sees it.
 
 from __future__ import annotations
 
+import os
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from Infernux.debug import Debug
 from Infernux.lib import InxGUIRenderable, InxGUIContext
@@ -30,7 +31,8 @@ class PlayerGUI(InxGUIRenderable):
     def __init__(self, engine, *,
                  splash_items: Optional[List[Dict]] = None,
                  data_root: str = "",
-                 control_channel=None):
+                 control_channel=None,
+                 activate_play: Optional[Callable[[], bool]] = None):
         super().__init__()
         self._engine = engine
         self._last_w = 0
@@ -38,8 +40,13 @@ class PlayerGUI(InxGUIRenderable):
         self._ui_event_processor = UIEventProcessor()
         self._last_frame_time = time.time()
         self._control = control_channel
+        self._activate_play = activate_play
         self._play_started = False
         self._play_start_failed = False
+        self._profile_frames = os.environ.get(
+            "_INFERNUX_PLAYER_PROFILE_FRAMES", ""
+        ).strip() == "1"
+        self._next_profile_time = time.monotonic() + 2.0
 
         # Splash
         self._splash = None
@@ -106,16 +113,20 @@ class PlayerGUI(InxGUIRenderable):
             return False
         if self._splash is not None and not self._splash.is_finished:
             return False
-        getter = getattr(self._engine, "get_player_runtime", None)
-        session = getter() if callable(getter) else None
-        if session is None:
-            self._play_start_failed = True
-            Debug.log_error("Player cannot start Play: runtime session is unavailable")
-            return False
-        if getattr(session, "is_playing", False):
-            self._play_started = True
-            return True
-        activate = getattr(session, "activate", None)
+        activate = self._activate_play
+        if activate is None:
+            getter = getattr(self._engine, "get_player_runtime", None)
+            session = getter() if callable(getter) else None
+            if session is None:
+                self._play_start_failed = True
+                Debug.log_error(
+                    "Player cannot start Play: runtime session is unavailable"
+                )
+                return False
+            if getattr(session, "is_playing", False):
+                self._play_started = True
+                return True
+            activate = getattr(session, "activate", None)
         if not callable(activate) or not activate():
             self._play_start_failed = True
             Debug.log_error("Player cannot start Play: initial scene is not ready")
@@ -127,8 +138,7 @@ class PlayerGUI(InxGUIRenderable):
         """Handle Player window input and debug-control polling.
 
         Play timing is owned by ``Engine.tick_play_mode``. This must not start
-        the session: splash and the first visible frames are a loading cover,
-        not a hidden gameplay head-start.
+        the session before an optional project splash has finished.
         """
         # Standalone Players have no competing Editor viewport.  Establish the
         # gameplay-input contract before any early return caused by splash,
@@ -149,6 +159,16 @@ class PlayerGUI(InxGUIRenderable):
             if native and native.is_close_requested():
                 native.confirm_close()
                 return
+
+            if self._profile_frames and time.monotonic() >= self._next_profile_time:
+                self._next_profile_time = time.monotonic() + 2.0
+                try:
+                    from Infernux.engine.player_bootstrap import _plog
+
+                    snapshot = dict(native.renderer_frame_snapshot) if native else {}
+                    _plog(f"[FrameProfile] {snapshot}")
+                except Exception as exc:
+                    Debug.log_suppressed("player_gui.frame_profile", exc)
 
     def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
         target_w = max(1, int(vp_w))

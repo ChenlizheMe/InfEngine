@@ -60,6 +60,27 @@ VkPipelineStageFlags ToVkPipelineStages(rhi::PipelineStage stages)
     return result;
 }
 
+bool QueueFamilySupportsStages(VkQueueFlags queueFlags, VkPipelineStageFlags stages)
+{
+    constexpr VkPipelineStageFlags graphicsOnly =
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+        VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+        VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    if ((stages & graphicsOnly) != 0 && (queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0)
+        return false;
+    if ((stages & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT) != 0 && (queueFlags & VK_QUEUE_COMPUTE_BIT) == 0)
+        return false;
+    if ((stages & VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT) != 0 &&
+        (queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0)
+        return false;
+    if ((stages & VK_PIPELINE_STAGE_TRANSFER_BIT) != 0 &&
+        (queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) == 0)
+        return false;
+    return true;
+}
+
 VkAccessFlags ToVkAccessFlags(rhi::Access access)
 {
     VkAccessFlags result = 0;
@@ -514,6 +535,19 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
     std::vector<ResourceState> states = m_initialResourceStates;
     states.resize(m_resources.size());
 
+    std::vector<VkQueueFamilyProperties> queueFamilies;
+    if (m_context && m_context->GetPhysicalDevice() != VK_NULL_HANDLE) {
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(m_context->GetPhysicalDevice(), &familyCount, nullptr);
+        queueFamilies.resize(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(m_context->GetPhysicalDevice(), &familyCount, queueFamilies.data());
+    }
+
+    const auto stagesSupportedBy = [&](uint32_t family, rhi::PipelineStage stages) {
+        return family == VK_QUEUE_FAMILY_IGNORED || family >= queueFamilies.size() ||
+               QueueFamilySupportsStages(queueFamilies[family].queueFlags, ToVkPipelineStages(stages));
+    };
+
     auto bindingFor = [&](rhi::QueueRole role) -> NativeQueueBinding {
         if (role == rhi::QueueRole::Count)
             return {};
@@ -536,12 +570,17 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
                          "' targets an unavailable native queue");
             return false;
         }
-
         ResourceState &state = states[access.handle.id];
         const bool hasPreviousOwner =
             state.queueFamily != VK_QUEUE_FAMILY_IGNORED && state.nativeQueueLane != UINT32_MAX;
         const bool laneChange = hasPreviousOwner && state.nativeQueueLane != targetBinding.lane;
         const bool familyChange = hasPreviousOwner && state.queueFamily != targetBinding.family;
+        if (hasPreviousOwner && state.writerPassId == UINT32_MAX &&
+            !stagesSupportedBy(state.queueFamily, state.stages)) {
+            INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Resource '", resource.name,
+                         "' has an initial pipeline stage unsupported by its owner queue family");
+            return false;
+        }
 
         const uint32_t sourceBatch = state.writerPassId < passToBatch.size() ? passToBatch[state.writerPassId]
                                                                              : rhi::InvalidSubmissionBatchIndex;

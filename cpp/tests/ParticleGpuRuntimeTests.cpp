@@ -14,9 +14,9 @@
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
-#include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiBuffer.h>
+#include <function/renderer/vk/RenderGraph.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -696,8 +696,10 @@ int main()
             assert(continuationDevice.buffers[index].memory == rhi::BufferMemory::DeviceLocal &&
                    continuationDevice.buffers[index].initialData == nullptr &&
                    continuationDevice.buffers[index].initialDataBytes == 0 &&
-                   continuationDevice.buffers[index].queueAccess == rhi::QueueAccessFlags::Compute);
+                   rhi::HasQueueAccess(continuationDevice.buffers[index].queueAccess,
+                                       rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
         }
+        assert(rhi::HasQueueAccess(continuationDevice.buffers[5].queueAccess, rhi::QueueAccessFlags::Transfer));
         assert(rhi::HasBufferUsage(continuationDevice.buffers[5].usage, rhi::BufferUsageFlags::TransferSource));
         assert(rhi::HasBufferUsage(continuationDevice.buffers[6].usage, rhi::BufferUsageFlags::Indirect) &&
                rhi::HasBufferUsage(continuationDevice.buffers[7].usage, rhi::BufferUsageFlags::Indirect));
@@ -2764,7 +2766,8 @@ int main()
         using infernux::vk::RenderGraph;
         using infernux::vk::ResourceHandle;
 
-        struct EmitterPasses {
+        struct EmitterPasses
+        {
             uint64_t graphInstanceId = 0;
             PassHandle update{};
             PassHandle renderReset{};
@@ -2800,14 +2803,13 @@ int main()
                                 builder.ReadWrite(emitters[slot].counters, PipelineStage::ComputeShader);
                             return [](infernux::vk::RenderContext &) {};
                         });
-                    graph.AddComputePass(prefix + "/Rendering",
-                                         [&spawn, &emitters, graphIndex, slot](PassBuilder &builder) {
-                                             spawn[graphIndex] =
-                                                 builder.ReadWrite(spawn[graphIndex], PipelineStage::ComputeShader);
-                                             emitters[slot].counters =
-                                                 builder.ReadWrite(emitters[slot].counters, PipelineStage::ComputeShader);
-                                             return [](infernux::vk::RenderContext &) {};
-                                         });
+                    graph.AddComputePass(
+                        prefix + "/Rendering", [&spawn, &emitters, graphIndex, slot](PassBuilder &builder) {
+                            spawn[graphIndex] = builder.ReadWrite(spawn[graphIndex], PipelineStage::ComputeShader);
+                            emitters[slot].counters =
+                                builder.ReadWrite(emitters[slot].counters, PipelineStage::ComputeShader);
+                            return [](infernux::vk::RenderContext &) {};
+                        });
                 }
             }
             if (!linkCrossGraphExportToSim)

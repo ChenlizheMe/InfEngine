@@ -44,6 +44,7 @@ class InxMesh;
 class InxVkCoreModular;
 class InxView;
 class OutlineRenderer;
+struct ParticleProgramBootstrap;
 class RenderPipelineCallback;
 class ResourcePreviewManager;
 class Scene;
@@ -293,6 +294,7 @@ class InxRenderer
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetGpuResidency() const;
 
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
+    void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
@@ -318,8 +320,7 @@ class InxRenderer
     void HideWindow();
     /// Player-only: apply chrome from the environment and show the window as
     /// soon as the SDL window exists, before Vulkan device and pipeline work.
-    void RevealStartupWindow();
-    /// Keep Windows from marking a visible startup window as Not Responding.
+    /// Drain startup events without revealing the hidden native window.
     /// Returns false if the user requested close/quit.
     [[nodiscard]] bool PumpStartupEvents();
     [[nodiscard]] bool IsWindowMinimized() const;
@@ -370,6 +371,7 @@ class InxRenderer
 
     // Scene system integration
     void InitializeDefaultScene();
+    void InitializeRuntimeScene();
     void UpdateSceneLighting();
 
     // Get the material from the first MeshRenderer in the scene
@@ -677,6 +679,8 @@ class InxRenderer
     std::unique_ptr<GizmosDrawCallBuffer> m_componentGizmos;
     std::unique_ptr<particle::ParticleGpuDrawRegistry> m_particleGpuDrawRegistry;
     std::unique_ptr<particle::ParticleGpuSystemManager> m_particleGpuSystemManager;
+    std::shared_ptr<ParticleProgramBootstrap> m_particleProgramBootstrap;
+    bool m_particleGpuSystemManagerInitializationAttempted = false;
     const Scene *m_particleCollisionSourceScene = nullptr;
     uint64_t m_particleCollisionSourceRevision = 0;
     uint64_t m_particleCollisionPublishedRevision = 1;

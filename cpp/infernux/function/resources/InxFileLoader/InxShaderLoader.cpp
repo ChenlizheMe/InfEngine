@@ -153,12 +153,17 @@ ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtif
 
 // Static members
 std::vector<std::string> InxShaderLoader::s_additionalSearchPaths;
+std::recursive_mutex InxShaderLoader::s_compilationMutex;
 std::unordered_map<std::string, std::string> InxShaderLoader::s_templateCache;
 std::unordered_map<std::string, ShaderDescriptor> InxShaderLoader::s_shadingModelCache;
 thread_local std::unordered_map<std::string, InxShaderLoader::CompiledVariantSet>
     InxShaderLoader::s_compiledVariantCache;
 thread_local std::string InxShaderLoader::s_lastCompileError;
 std::atomic_bool InxShaderLoader::s_bindlessTextureABIEnabled{false};
+
+InxShaderLoader::CompilationGuard::CompilationGuard() : m_lock(InxShaderLoader::s_compilationMutex)
+{
+}
 
 const std::string &InxShaderLoader::GetLastCompileError() noexcept
 {
@@ -369,6 +374,7 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
 
 void InxShaderLoader::InvalidateDirectoryCache(const std::string &dir)
 {
+    const CompilationGuard guard;
     if (dir.empty()) {
         s_shaderIdMapCache.clear();
         s_shadingModelCache.clear();
@@ -388,6 +394,7 @@ void InxShaderLoader::InvalidateTemplateCache()
 
 void InxShaderLoader::AddShaderSearchPath(const std::string &dir)
 {
+    const CompilationGuard guard;
     const std::string normalizedDir = FromFsPath(ToFsPath(dir));
 
     // Avoid duplicates
@@ -449,6 +456,7 @@ void InxShaderLoader::SetShaderCompilerOptions(const std::string &prop, bool val
 void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                                  InxResourceMeta &metaData) const
 {
+    const CompilationGuard guard;
     if (!content) {
         INXLOG_ERROR("Invalid shader content for metadata creation");
         return;
@@ -571,6 +579,7 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
 
 ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, const std::string &filePath) const
 {
+    const CompilationGuard guard;
     ShaderDescriptor desc;
     desc.filePath = filePath;
 
@@ -1026,12 +1035,15 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "#define INX_DEFERRED_LIGHTING_PASS 1\n";
         result << "#define INX_FORWARD_PLUS_PASS 1\n";
     }
-    // View-dependent lighting must consume the camera-local set-1 UBO. The
-    // engine globals set is shared by Scene and Game graphs, so using its
-    // editor camera position here makes Game-view specular highlights move
-    // with the Scene camera. Unlit geometry keeps the legacy global fallback
-    // because it has no LightingUBO and does not evaluate a shading model.
-    if (needsLightingUBO) {
+    // Every geometry surface may use camera helpers, including an Unlit
+    // surface that calls getViewDir() directly. The engine globals set is
+    // shared by Scene and Game graphs and is staged from the editor camera,
+    // so it is never a valid per-view camera source. Geometry fragments use
+    // the camera-local set-1 UBO regardless of their lighting model.
+    const bool needsCameraLocalView = !fullscreenDomain && !particleSpriteDomain && desc.isFragmentShader &&
+                                      (desc.hasExplicitType || hasSurfaceFunc) &&
+                                      target != ShaderCompileTarget::Shadow;
+    if (needsLightingUBO || needsCameraLocalView) {
         result << "#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz\n";
     } else if (particleSpriteDomain) {
         result << "#define INX_SHADING_CAMERA_POSITION vec3(0.0)\n";
@@ -1109,9 +1121,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "\n" << LoadTemplate("forward_plus_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
-                // LightingUBO — only when the shading model requires it
-                if (needsLightingUBO) {
-                    result << "\n// Auto-generated LightingUBO (required by shading model)\n";
+                // The canonical per-view UBO is also the camera source for
+                // Unlit surface shaders. Keeping camera data here avoids the
+                // shared EngineGlobals camera leaking between render views.
+                if (needsLightingUBO || needsCameraLocalView) {
+                    result << "\n// Auto-generated per-view LightingUBO\n";
                     result << LoadTemplate(particleSpriteDomain ? "particle_lighting_ubo.glsl" : "lighting_ubo.glsl")
                            << "\n";
                     if (target == ShaderCompileTarget::ForwardPlus) {
@@ -1751,6 +1765,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
 std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content, size_t contentSize,
                                                             InxResourceMeta &metaData)
 {
+    const CompilationGuard guard;
     s_lastCompileError.clear();
 
     if (!content) {
@@ -1824,6 +1839,7 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedForward(const std::
                                                                      const std::string &fragmentSource,
                                                                      const std::string &fragmentPath)
 {
+    const CompilationGuard guard;
     return CompileLinkedProgram(vertexSource, vertexPath, fragmentSource, fragmentPath, ShaderCompileTarget::Forward);
 }
 
@@ -1833,6 +1849,7 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
                                                                      const std::string &fragmentPath,
                                                                      ShaderCompileTarget target)
 {
+    const CompilationGuard guard;
     LinkedShaderProgramCompilation compilation;
     compilation.target = target;
     if (target != ShaderCompileTarget::Forward && target != ShaderCompileTarget::ForwardPlus &&
@@ -1881,6 +1898,7 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
                                                                                      const std::string &fragmentSource,
                                                                                      const std::string &fragmentPath)
 {
+    const CompilationGuard guard;
     LinkedShaderProgramArtifactCompilation result;
     const std::string vertexCompilePath = StageQualifiedVirtualPath(vertexPath, "vertex");
     const std::string fragmentCompilePath = StageQualifiedVirtualPath(fragmentPath, "fragment");
@@ -2066,6 +2084,7 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
 
 std::vector<char> InxShaderLoader::CompileComputeGlsl(const std::string &source, const std::string &virtualPath)
 {
+    const CompilationGuard guard;
     std::vector<char> spirv;
     if (!CompileGLSL(source, EShLangCompute, virtualPath, spirv))
         return {};
@@ -2074,6 +2093,7 @@ std::vector<char> InxShaderLoader::CompileComputeGlsl(const std::string &source,
 
 std::vector<char> InxShaderLoader::CompileVertexGlsl(const std::string &source, const std::string &virtualPath)
 {
+    const CompilationGuard guard;
     std::vector<char> spirv;
     if (!CompileGLSL(source, EShLangVertex, virtualPath, spirv))
         return {};
@@ -2082,6 +2102,7 @@ std::vector<char> InxShaderLoader::CompileVertexGlsl(const std::string &source, 
 
 std::vector<char> InxShaderLoader::CompileFragmentGlsl(const std::string &source, const std::string &virtualPath)
 {
+    const CompilationGuard guard;
     std::vector<char> spirv;
     if (!CompileGLSL(source, EShLangFragment, virtualPath, spirv))
         return {};

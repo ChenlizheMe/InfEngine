@@ -160,6 +160,7 @@ def test_player_run_loads_scene_without_starting_play():
     bootstrap._force_player_mode = lambda: calls.append("force")
     bootstrap._load_runtime_contract = lambda: calls.append("contract")
     bootstrap._init_engine = lambda: calls.append("engine")
+    bootstrap._load_runtime_asset_catalog = lambda: calls.append("catalog")
     bootstrap._create_managers = lambda: calls.append("managers")
     bootstrap._setup_game_camera = lambda: calls.append("camera")
     bootstrap._register_player_gui = lambda: calls.append("gui")
@@ -173,6 +174,7 @@ def test_player_run_loads_scene_without_starting_play():
         "force",
         "contract",
         "engine",
+        "catalog",
         "managers",
         "camera",
         "gui",

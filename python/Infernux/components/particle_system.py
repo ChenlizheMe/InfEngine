@@ -33,14 +33,11 @@ from Infernux.particle import (
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelLowerer,
-    ParticleKernelProgram,
     ParticleRuntimeCompatibility,
     SdfVolume,
     VectorField,
     build_gpu_particle_migration,
     classify_emitter_update,
-    decode_gpu_particle_spirv,
-    decode_particle_runtime_metadata,
     pack_gpu_particle_parameters,
 )
 from Infernux.particle.data_interface import MeshResourceBinding
@@ -1599,11 +1596,11 @@ class ParticleSystem(InxComponent):
 
             while True:
                 try:
-                    hir = artifact.hir
-                    kernel = ParticleKernelProgram.from_dict(artifact.kernel_ir)
+                    metadata, kernel, decoded_emitters = (
+                        ParticleArtifactRegistry.decode_runtime_artifact(artifact)
+                    )
                     revision = artifact.revision
                     source_key = artifact.source_key
-                    metadata = decode_particle_runtime_metadata(hir)
                     self._reconcile_parameter_overrides(metadata.parameters)
                     self._reconcile_emitter_overrides(metadata.emitters)
                     previous_metadata = getattr(self, "_particle_metadata", None)
@@ -1635,6 +1632,7 @@ class ParticleSystem(InxComponent):
                         metadata,
                         kernel,
                         reload_compatibility,
+                        decoded_emitters,
                     )
                     break
                 except (OSError, RuntimeError, TypeError, ValueError):
@@ -1665,7 +1663,7 @@ class ParticleSystem(InxComponent):
         return True
 
     def _publish_gpu_particle_graph(
-        self, artifact, metadata, kernel, reload_compatibility
+        self, artifact, metadata, kernel, reload_compatibility, decoded_emitters
     ) -> None:
         if artifact is None:
             raise RuntimeError("GPU ParticleGraph execution requires an AOT artifact")
@@ -1687,6 +1685,8 @@ class ParticleSystem(InxComponent):
         glsl_emitters = artifact.gpu_glsl.get("emitters")
         if type(glsl_emitters) is not list or len(glsl_emitters) != len(metadata.emitters):
             raise RuntimeError("ParticleGraph GPU emitter metadata is incomplete")
+        if len(decoded_emitters) != len(metadata.emitters):
+            raise RuntimeError("ParticleGraph decoded GPU programs are incomplete")
 
         programs = []
         controllers = []
@@ -1734,7 +1734,7 @@ class ParticleSystem(InxComponent):
                 or "continuation" not in glsl_emitter
             ):
                 raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
-            decoded = decode_gpu_particle_spirv(artifact.gpu_spirv, index)
+            decoded = decoded_emitters[index]
             glsl_update_render_fusion = glsl_emitter.get("update_render_fusion")
             decoded_update_render_fusion = decoded.get("update_render_fusion")
             if type(glsl_update_render_fusion) is not dict or type(decoded_update_render_fusion) is not dict or glsl_update_render_fusion != decoded_update_render_fusion:

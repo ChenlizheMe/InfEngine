@@ -1739,13 +1739,20 @@ class ResourcesManager:
         deadline = time.monotonic() + 180.0
         idle_rounds = 0
         while time.monotonic() < deadline:
-            processed = self.process_pending_reloads(force=True)
+            # The watcher owns syntax/AST work during startup.  The owner
+            # thread only publishes completed revisions, preserving the same
+            # transaction boundary as ordinary hot reload without compiling
+            # every project script on the UI thread.
+            processed = self.process_pending_reloads(force=False)
             if not self._startup_work_pending() and processed == 0:
                 idle_rounds += 1
                 if idle_rounds >= 2:
                     return
             else:
                 idle_rounds = 0
+            pump_events = getattr(self._engine, "pump_events", None)
+            if callable(pump_events):
+                pump_events()
             time.sleep(0)
         raise RuntimeError(
             "startup resource refresh did not finish before the engine window opened"
@@ -1765,13 +1772,49 @@ class ResourcesManager:
             return
         if on_progress:
             on_progress("Scanning project scripts...")
+        phase_started = time.perf_counter()
         self._ensure_event_handler()
+        Debug.log_internal(
+            "Startup resource refresh event handler initialized in "
+            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
+        )
+
+        # Start the watcher/frontend worker before submitting the startup
+        # snapshots.  skip_initial_scan keeps a single owner-created startup
+        # transaction while the worker performs the expensive frontend work.
+        phase_started = time.perf_counter()
+        self.start(skip_initial_scan=True)
+        worker_deadline = time.monotonic() + 5.0
+        while (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._frontend_worker_running
+            and time.monotonic() < worker_deadline
+        ):
+            pump_events = getattr(self._engine, "pump_events", None)
+            if callable(pump_events):
+                pump_events()
+            time.sleep(0)
+        Debug.log_internal(
+            "Startup resource refresh worker started in "
+            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
+        )
+
+        phase_started = time.perf_counter()
         self._initial_script_scan()
+        Debug.log_internal(
+            "Startup resource refresh snapshots submitted in "
+            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
+        )
         if on_progress:
             on_progress("Publishing project scripts...")
+        phase_started = time.perf_counter()
         self._wait_for_startup_idle()
+        Debug.log_internal(
+            "Startup resource refresh revisions published in "
+            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
+        )
         self._startup_prepared = True
-        self.start(skip_initial_scan=True)
 
     def _scan_resources(self):
         """
@@ -1863,6 +1906,14 @@ class ResourcesManager:
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
         """Commit worker artifacts and asset events on the main thread."""
+        asset_database = self._engine.get_asset_database()
+        if self._startup_prepared and bool(
+            getattr(asset_database, "refresh_pending", False)
+        ):
+            try:
+                asset_database.try_commit_refresh()
+            except Exception as exc:
+                Debug.log_error(f"Background AssetDatabase refresh failed: {exc}")
         if self._event_handler is None:
             return 0
         if force or not self._frontend_worker_running:

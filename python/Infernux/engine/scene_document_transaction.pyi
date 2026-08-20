@@ -33,6 +33,7 @@ class SceneDocumentTransaction:
         path: Optional[PathLike[str] | str] = None,
         document: Optional[dict[str, Any]] = None,
         asset_database: Any = None,
+        native_engine: Any = None,
         clear_registries: bool = True,
         borrow_document: bool = False,
         before_commit: Optional[Callable[[], None]] = None,

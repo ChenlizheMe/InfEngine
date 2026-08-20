@@ -23,6 +23,7 @@ from .runtime_metadata import decode_particle_runtime_metadata
 from .gpu_glsl_backend import (
     GpuParticleGlslLowerer,
     compile_gpu_particle_spirv,
+    decode_gpu_particle_spirv,
     validate_gpu_particle_spirv,
 )
 from .script import ParticleScriptCompiler
@@ -94,6 +95,13 @@ class PreparedParticleGraphArtifact:
 
 class ParticleArtifactRegistry:
     _artifacts: dict[str, ParticleArtifact] = {}
+    # Runtime decoding is immutable and shared by every component referencing
+    # the same AOT revision.  Instance parameters, controllers and playback
+    # state deliberately remain on ParticleSystem.
+    _runtime_decode_cache: dict[
+        tuple[str, str, int],
+        tuple[Any, ParticleKernelProgram, tuple[Mapping[str, Any], ...]],
+    ] = {}
     _revision = 0
     _request_generation: dict[str, int] = {}
     _lock = threading.RLock()
@@ -102,8 +110,40 @@ class ParticleArtifactRegistry:
     def clear(cls) -> None:
         with cls._lock:
             cls._artifacts.clear()
+            cls._runtime_decode_cache.clear()
             cls._request_generation.clear()
             cls._revision = 0
+
+    @classmethod
+    def decode_runtime_artifact(
+        cls, artifact: ParticleArtifact
+    ) -> tuple[Any, ParticleKernelProgram, tuple[Mapping[str, Any], ...]]:
+        """Decode one immutable AOT revision once for all scene instances."""
+        if not isinstance(artifact, ParticleArtifact):
+            raise TypeError("particle runtime artifact has an invalid type")
+        key = (artifact.source_hash, artifact.behavior_hash, artifact.revision)
+        with cls._lock:
+            cached = cls._runtime_decode_cache.get(key)
+        if cached is not None:
+            return cached
+
+        metadata = decode_particle_runtime_metadata(artifact.hir)
+        kernel = ParticleKernelProgram.from_dict(artifact.kernel_ir)
+        decoded_emitters = tuple(
+            decode_gpu_particle_spirv(artifact.gpu_spirv, index)
+            for index in range(len(metadata.emitters))
+        )
+        decoded = (metadata, kernel, decoded_emitters)
+        with cls._lock:
+            published = cls._runtime_decode_cache.setdefault(key, decoded)
+            # Hot reload can create many revisions during a long editor run.
+            # Retain a bounded working set without adding another lifecycle.
+            while len(cls._runtime_decode_cache) > 64:
+                oldest = next(iter(cls._runtime_decode_cache))
+                if oldest == key and len(cls._runtime_decode_cache) == 1:
+                    break
+                cls._runtime_decode_cache.pop(oldest, None)
+            return published
 
     @classmethod
     def on_asset_mutation(cls, change) -> None:

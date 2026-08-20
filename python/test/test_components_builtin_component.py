@@ -289,6 +289,23 @@ class TestBuiltinComponent:
         BuiltinComponent._clear_cache()
         assert len(BuiltinComponent._wrapper_cache) == 0
 
+    def test_clear_cache_does_not_import_inspector_in_player(self, monkeypatch):
+        import builtins
+
+        from Infernux.application import Application
+
+        BuiltinComponent._wrapper_cache.clear()
+        monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
+        original_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "Infernux.engine.ui.inspector_components":
+                raise AssertionError("Player cache cleanup imported editor Inspector state")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+        BuiltinComponent._clear_cache()
+
     def test_wrapper_rebinds_when_native_instance_is_replaced(self):
         BuiltinComponent._wrapper_cache.clear()
         game_object = type("FakeGO", (), {"id": 1})()

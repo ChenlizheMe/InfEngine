@@ -206,10 +206,17 @@ struct FullscreenRenderer::Impl
             return {};
         }
 
-        VkShaderModule vertex = core->GetShaderModule(key.shaderName, "vertex");
-        if (vertex == VK_NULL_HANDLE)
+        // Fullscreen effects name their fragment program only. Their vertex
+        // stage is the engine's fixed fullscreen triangle; probing for a
+        // same-named vertex asset first produces false missing-shader warnings
+        // and makes packed pipelines depend on an asset that cannot exist.
+        VkShaderModule vertex = VK_NULL_HANDLE;
+        if (core->EnsureShaderAvailable("Fullscreen Triangle", "vertex"))
             vertex = core->GetShaderModule("Fullscreen Triangle", "vertex");
-        const VkShaderModule fragment = core->GetShaderModule(key.shaderName, "fragment");
+        VkShaderModule fragment = VK_NULL_HANDLE;
+        if (core->EnsureShaderAvailable(key.shaderName, "fragment")) {
+            fragment = core->GetShaderModule(key.shaderName, "fragment");
+        }
         if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE) {
             INXLOG_ERROR("FullscreenRenderer: missing shader modules for '", key.shaderName, "'");
             DestroyPipeline(entry);

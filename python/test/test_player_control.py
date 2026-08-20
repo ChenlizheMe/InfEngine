@@ -92,6 +92,7 @@ def test_standalone_player_keeps_gameplay_input_enabled_without_hover(monkeypatc
         )(),
     })()
     player._control = type("_Control", (), {"poll": lambda self, engine: None})()
+    player._profile_frames = False
     player._tick(None)
 
     assert focused == [True]
@@ -108,6 +109,7 @@ def test_standalone_player_enables_input_before_game_texture_exists(monkeypatch)
     player = PlayerGUI.__new__(PlayerGUI)
     player._engine = _PlayerEngine()
     player._control = type("_Control", (), {"poll": lambda self, engine: None})()
+    player._profile_frames = False
 
     player._tick(None)
 
@@ -120,6 +122,7 @@ def _player_gui_for_play_gate(session):
         "get_player_runtime": lambda self: session,
     })()
     player._splash = None
+    player._activate_play = None
     player._play_started = False
     player._play_start_failed = False
     return player
@@ -162,7 +165,7 @@ def test_player_gui_starts_play_after_splash_finishes():
     assert player._play_started is True
 
 
-def test_player_gui_starts_play_only_after_loading_cover():
+def test_player_gui_starts_play_immediately_without_project_splash():
     activated = []
 
     class Session:

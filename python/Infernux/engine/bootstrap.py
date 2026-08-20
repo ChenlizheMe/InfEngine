@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import threading
+import time
 from typing import Optional
 
 import Infernux.resources as _resources
@@ -37,7 +39,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 6
-_TOTAL_STEPS = 15
+_TOTAL_STEPS = 13
 
 
 def _iter_project_material_paths(project_path: str):
@@ -106,6 +108,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         # Progress tracking for launcher splash
         self._progress_step = 0
+        self._progress_started_at = time.perf_counter()
+        self._progress_phase_started_at = self._progress_started_at
+        self._progress_phase_message = ""
+        self._mcp_start_thread = None
 
     @classmethod
     def instance(cls) -> Optional["EditorBootstrap"]:
@@ -148,16 +154,17 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Compiling builtin shaders\u2026")
         self._prewarm_builtin_pipelines()
 
-        self._report_progress("Prewarming material previews\u2026")
-        self._prewarm_material_previews()
-
         self._report_progress("Refreshing project resources\u2026")
         if self.engine:
             self.engine.prepare_startup_refresh()
-        self._report_progress("Compiling particle artifacts\u2026")
-        self._ensure_particle_artifacts()
 
-        self._start_mcp_http_server()
+        # MCP is an editor automation service, not a prerequisite for the
+        # first interactive frame.  Importing FastMCP and its HTTP stack can
+        # take well over a second on a cold machine, so start it in parallel
+        # after all editor-owned state has been wired.
+        self._start_mcp_http_server_async()
+
+        self._finish_progress()
 
         if self.engine:
             try:
@@ -180,10 +187,50 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         except Exception as exc:
             Debug.log_warning(f"Failed to start Infernux MCP HTTP server: {exc}")
 
+    def _start_mcp_http_server_async(self):
+        thread = self._mcp_start_thread
+        if thread is not None and thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._start_mcp_http_server,
+            name="InfernuxMCPStartup",
+            daemon=True,
+        )
+        self._mcp_start_thread = thread
+        thread.start()
+
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""
+        now = time.perf_counter()
+        if self._progress_phase_message:
+            self._log_startup_profile(
+                "Editor startup phase "
+                f"'{self._progress_phase_message}' completed in "
+                f"{(now - self._progress_phase_started_at) * 1000.0:.1f} ms"
+            )
         self._progress_step += 1
+        self._progress_phase_started_at = now
+        self._progress_phase_message = message
         _signal_progress(self._progress_step, _TOTAL_STEPS, message)
+
+    def _finish_progress(self) -> None:
+        now = time.perf_counter()
+        if self._progress_phase_message:
+            self._log_startup_profile(
+                "Editor startup phase "
+                f"'{self._progress_phase_message}' completed in "
+                f"{(now - self._progress_phase_started_at) * 1000.0:.1f} ms"
+            )
+        self._log_startup_profile(
+            f"Editor startup completed in {(now - self._progress_started_at) * 1000.0:.1f} ms"
+        )
+
+    @staticmethod
+    def _log_startup_profile(message: str) -> None:
+        if os.environ.get("INFERNUX_PROFILE_STARTUP", "").strip() == "1":
+            Debug.log(message)
+        else:
+            Debug.log_internal(message)
 
 
     def _ensure_particle_artifacts(self) -> None:
@@ -219,6 +266,16 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.engine.init_renderer(
             width=1600, height=900, project_path=self.project_path
         )
+        native = self.engine.get_native_engine()
+        if native is not None:
+            timings = dict(native.startup_phase_timings_ms)
+            self._log_startup_profile(
+                "Native renderer startup phases: "
+                + ", ".join(
+                    f"{name}={float(milliseconds):.1f}ms"
+                    for name, milliseconds in sorted(timings.items())
+                )
+            )
         # Match Unity's default UI text density more closely. Player bootstrap
         # uses the same base size; explicit project UIText sizes stay unchanged.
         self.engine.set_gui_font(_resources.engine_font_path, 18)

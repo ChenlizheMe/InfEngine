@@ -127,8 +127,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         asyncCompute && (!m_frameAsyncComputePrimed || asyncComputeGeneration != m_frameAsyncComputePrimedGeneration);
     const bool frameComputeHasWork =
         m_frameComputeExecutor && (!m_frameComputeWorkPredicate || m_frameComputeWorkPredicate());
-    const bool separateComputeBatch = !asyncCompute && frameComputeHasWork && graphicsQueue.queue != VK_NULL_HANDLE &&
-                                      computeQueue.queue != VK_NULL_HANDLE;
+    const bool separateComputeBatch = !asyncCompute && frameComputeHasWork && partitionedCompute;
 
     const bool composedFrame = static_cast<bool>(m_frameSubmissionBuilder);
     if (composedFrame) {
@@ -174,6 +173,21 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
                     return true;
                 },
                 "GpuParticle/Simulation");
+        } else if (!asyncCompute && frameComputeHasWork) {
+            // Small particle workloads stay on Graphics. This is not a CPU
+            // fallback: the same GPU compute graph is recorded before the
+            // camera graphs, but queue order replaces the expensive
+            // previous-frame fence/timeline dependency. It also keeps all
+            // particle buffers on one queue family, preserving the validation
+            // guarantees that motivated the cross-frame guard.
+            particleComputeWork = m_frameSubmission.AddWork(
+                device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+                rhi::PipelineStage::ComputeShader, setupDependencies,
+                [this](VkCommandBuffer commandBuffer) {
+                    m_frameComputeExecutor(commandBuffer);
+                    return true;
+                },
+                "GpuParticle/InlineSimulation");
         }
 
         // Frame/Setup only updates globals. Waiting here for Simulation plus
@@ -186,6 +200,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             [this](VkCommandBuffer commandBuffer) {
 #if INFERNUX_FRAME_PROFILE
                 m_gpuTimestampQueries.BeginFrame(commandBuffer, m_currentFrame);
+                m_composedFrameTimestampRegion =
+                    m_gpuTimestampQueries.BeginRegion(commandBuffer, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 #endif
                 CmdUpdateGlobals(commandBuffer);
                 return true;
@@ -210,12 +226,16 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         }
 
         vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
-        const auto guiRange = m_frameSubmission.AppendRenderGraph(guiGraph, {setupWork}, {}, [this](VkCommandBuffer) {
+        const auto guiRange =
+            m_frameSubmission.AppendRenderGraph(guiGraph, {setupWork}, {}, [this](VkCommandBuffer commandBuffer) {
 #if INFERNUX_FRAME_PROFILE
-            m_gpuTimestampQueries.FinishFrame(m_currentFrame);
+                m_gpuTimestampQueries.EndRegion(commandBuffer, m_composedFrameTimestampRegion,
+                                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                m_composedFrameTimestampRegion = {};
+                m_gpuTimestampQueries.FinishFrame(m_currentFrame);
 #endif
-            return true;
-        });
+                return true;
+            });
         if (guiRange.Empty()) {
             INXLOG_ERROR("Swapchain GUI RenderGraph produced no submission work");
             return;
@@ -2030,7 +2050,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         const bool cachedVisibility =
             staticShadowSubmission && cachedView.valid && cachedView.cullingMask == shadowView.cullingMask &&
             cachedView.type == shadowView.type &&
-            std::memcmp(&cachedView.viewProjection, &shadowView.viewProjection, sizeof(glm::mat4)) == 0;
+            (cachedView.fullSequence ||
+             std::memcmp(&cachedView.viewProjection, &shadowView.viewProjection, sizeof(glm::mat4)) == 0);
         if (cachedVisibility) {
             visibleIndices = cachedView.fullSequence ? &m_shadowAllVisible : &cachedView.visibleIndices;
         } else {
@@ -2072,9 +2093,25 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             // static casters costs more CPU than letting fixed-function clipping
             // reject the small outside tail. Canonicalizing dense views to the
             // full sequence also makes their per-frame-in-flight uploads stable.
-            const bool useFullStaticSequence = staticShadowSubmission && everyCasterLayerAccepted &&
-                                               !m_shadowAllVisible.empty() &&
-                                               m_shadowViewVisible.size() * 5 >= m_shadowAllVisible.size() * 4;
+            // A large static submission that resolves to one cheap instanced
+            // batch is usually faster when its immutable matrix stream is
+            // reused verbatim. Re-compacting even one cascade copies several
+            // megabytes every frame and prevents every frame-in-flight stream
+            // from becoming resident. Keep the conservative dense-view rule
+            // for arbitrary geometry, and extend it only to simple uniform
+            // batches whose full index workload remains bounded.
+            constexpr uint64_t kSimpleStaticShadowIndexBudget = 4ull * 1024ull * 1024ull;
+            const uint64_t fullSequenceIndexWork =
+                m_shadowScratchUniformBatch && !m_shadowDrawScratch.empty()
+                    ? static_cast<uint64_t>(m_shadowAllVisible.size()) *
+                          static_cast<uint64_t>(m_shadowDrawScratch.front().dc->indexCount)
+                    : std::numeric_limits<uint64_t>::max();
+            const bool cheapUniformFullSequence = m_shadowScratchUniformBatch && m_shadowAllVisible.size() >= 4096 &&
+                                                  fullSequenceIndexWork <= kSimpleStaticShadowIndexBudget &&
+                                                  m_shadowViewVisible.size() * 4 >= m_shadowAllVisible.size();
+            const bool useFullStaticSequence =
+                staticShadowSubmission && everyCasterLayerAccepted && !m_shadowAllVisible.empty() &&
+                (m_shadowViewVisible.size() * 5 >= m_shadowAllVisible.size() * 4 || cheapUniformFullSequence);
             visibleIndices = useFullStaticSequence ? &m_shadowAllVisible : &m_shadowViewVisible;
             if (staticShadowSubmission) {
                 // Adaptive CSM may move the light-space matrix by tiny amounts

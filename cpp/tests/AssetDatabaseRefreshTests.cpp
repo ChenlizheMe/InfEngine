@@ -201,6 +201,63 @@ void TestLegacySidecarWithoutContentHashIsRebuilt()
     std::filesystem::remove_all(root);
 }
 
+void TestStartupCatalogSurvivesLiveIndexInvalidation()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-startup-catalog";
+    std::filesystem::remove_all(root);
+    const auto script = root / "Assets" / "Scripts" / "Startup.py";
+    WriteText(script, "class Startup:\n    pass\n");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        std::string scriptGuid;
+        {
+            auto database = std::make_unique<infernux::AssetDatabase>();
+            database->Initialize(infernux::FromFsPath(root));
+            auto &registry = infernux::AssetRegistry::Instance();
+            registry.Initialize(std::move(database));
+            registry.RegisterLoader(infernux::ResourceType::Script,
+                                    std::make_unique<infernux::InxPythonScriptLoader>());
+            registry.PopulateAssetDatabaseLoaders();
+            auto *assetDatabase = registry.GetAssetDatabase();
+            assetDatabase->Refresh();
+            scriptGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(script));
+            Require(!scriptGuid.empty(), "initial refresh did not register the startup fixture");
+            registry.Shutdown();
+        }
+
+        const auto liveIndex = root / "Library" / "AssetIndex.json";
+        const auto startupIndex = root / "Library" / "AssetIndex.startup-cache.json";
+        Require(std::filesystem::is_regular_file(liveIndex), "initial refresh did not publish the live index");
+        Require(std::filesystem::is_regular_file(startupIndex), "initial refresh did not publish the startup index");
+        std::filesystem::remove(startupIndex);
+        {
+            infernux::AssetDatabase legacyRestore;
+            legacyRestore.Initialize(infernux::FromFsPath(root));
+            Require(legacyRestore.RestoreCachedCatalog(), "legacy live index did not restore");
+            Require(std::filesystem::is_regular_file(startupIndex),
+                    "legacy live index did not seed the startup fallback");
+        }
+        std::filesystem::remove(liveIndex);
+
+        {
+            infernux::AssetDatabase restored;
+            restored.Initialize(infernux::FromFsPath(root));
+            Require(restored.RestoreCachedCatalog(), "startup catalog did not restore after live index invalidation");
+            Require(restored.GetGuidFromPath(infernux::FromFsPath(script)) == scriptGuid,
+                    "startup catalog did not preserve the committed asset identity");
+        }
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-asset-catalog";
@@ -347,6 +404,7 @@ int main()
         TestImporterExtensionsAreCaseInsensitive();
         TestPathOnlyDependencyIsRejectedOnInitialRefresh();
         TestLegacySidecarWithoutContentHashIsRebuilt();
+        TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();

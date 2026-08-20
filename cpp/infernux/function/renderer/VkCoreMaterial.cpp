@@ -940,8 +940,10 @@ VkBuffer InxVkCoreModular::GetInstanceSSBO(size_t index) const
     return VK_NULL_HANDLE;
 }
 
-VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const std::string &type) const
+VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const std::string &type)
 {
+    if (!EnsureShaderAvailable(name, type))
+        return VK_NULL_HANDLE;
     return m_shaderCache.GetModule(name, type);
 }
 

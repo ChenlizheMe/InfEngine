@@ -35,9 +35,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <core/config/MathConstants.h>
 #include <core/threading/JobSystem.h>
+#include <cstdlib>
 #include <cstring>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
@@ -233,6 +233,24 @@ struct CompiledParticleRibbonRenderProgram
     }
 };
 
+struct CompiledParticleProgramBundle
+{
+    CompiledParticleSortProgram sort;
+    CompiledParticleCullProgram cull;
+    CompiledParticleBoundsProgram bounds;
+    CompiledParticleMigrationProgram migration;
+    CompiledParticleSpawnProgram spawn;
+    CompiledParticleRibbonTopologyProgram ribbonTopology;
+    CompiledParticleRibbonRenderProgram ribbonRender;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return sort.View().IsValid() && cull.View().IsValid() && bounds.View().IsValid() &&
+               migration.View().IsValid() && spawn.View().IsValid() && ribbonTopology.View().IsValid() &&
+               ribbonRender.View().IsValid();
+    }
+};
+
 CompiledParticleSortProgram CompileParticleSortProgram()
 {
     InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
@@ -374,7 +392,26 @@ CompiledParticleRibbonRenderProgram CompileParticleRibbonRenderProgram()
     return result;
 }
 
+CompiledParticleProgramBundle CompileParticleProgramBundle()
+{
+    CompiledParticleProgramBundle result;
+    result.sort = CompileParticleSortProgram();
+    result.cull = CompileParticleCullProgram();
+    result.bounds = CompileParticleBoundsProgram();
+    result.migration = CompileParticleMigrationProgram();
+    result.spawn = CompileParticleSpawnProgram();
+    result.ribbonTopology = CompileParticleRibbonTopologyProgram();
+    result.ribbonRender = CompileParticleRibbonRenderProgram();
+    return result;
+}
+
 } // namespace
+
+struct ParticleProgramBootstrap
+{
+    CompiledParticleProgramBundle programs;
+    JobHandle job;
+};
 
 InxRenderer::InxRenderer()
 {
@@ -522,11 +559,10 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
     INXLOG_DEBUG("Init View.");
     m_view->Init(width, height);
 
-    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
-    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
-    if (playerMode)
-        RevealStartupWindow();
-    else if (!PumpStartupEvents())
+    // Keep the native window hidden until the Player bootstrap has finished.
+    // A game may provide its own splash sequence, but the engine must not
+    // impose a visible loading window while Vulkan and runtime assets start.
+    if (!PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 
     uint32_t extCount = 0;
@@ -585,129 +621,25 @@ void InxRenderer::PreparePipeline()
         // Set initial scene render target size for aspect ratio calculation
         m_vkCore->SetSceneRenderTargetSize(800, 600);
 
-        // Initialize default scene with gizmos
-        InitializeDefaultScene();
+        const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+        const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+        if (playerMode)
+            InitializeRuntimeScene();
+        else
+            InitializeDefaultScene();
         pumpStartup();
-        m_particleGpuSystemManager = std::make_unique<particle::ParticleGpuSystemManager>();
-        auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
-                                                               const std::string &bindingName) {
-            particle::GpuBillboardTextureLease lease;
-            TextureResolveResult resolved;
-            if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
-                const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
-                                    bindingName.find("Normal") != std::string::npos;
-                auto residentSlot = core->GetTextureCache().Find(normal ? "_default_normal" : "white");
-                auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
-                if (!resident || !resident->IsValid()) {
-                    lease.status = particle::GpuBillboardTextureStatus::Pending;
-                    return lease;
-                }
-                resolved.status = TextureResolveStatus::Ready;
-                resolved.binding.gpuSlot = std::move(residentSlot);
-                resolved.binding.gpuView = std::move(resident);
-            } else {
-                resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
-            }
 
-            if (resolved.status == TextureResolveStatus::Pending) {
-                lease.status = particle::GpuBillboardTextureStatus::Pending;
-                return lease;
-            }
-            if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
-                !resolved.binding.gpuView->IsValid()) {
-                lease.status = particle::GpuBillboardTextureStatus::Failed;
-                return lease;
-            }
-            lease.texture = resolved.binding.gpuView->GetView();
-            lease.sampler = resolved.binding.gpuView->GetSampler();
-            lease.gpuSlot = std::move(resolved.binding.gpuSlot);
-            lease.gpuView = std::move(resolved.binding.gpuView);
-            lease.status = particle::GpuBillboardTextureStatus::Ready;
-            return lease;
-        };
-        auto particleVectorFieldTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
-                                                                          bool linearFiltering, bool repeat) {
-            particle::GpuBillboardTextureLease lease;
-            auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat);
-            if (resolved.status == TextureResolveStatus::Pending) {
-                lease.status = particle::GpuBillboardTextureStatus::Pending;
-                return lease;
-            }
-            if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
-                !resolved.binding.gpuView->IsValid()) {
-                lease.status = particle::GpuBillboardTextureStatus::Failed;
-                return lease;
-            }
-            lease.texture = resolved.binding.gpuView->GetView();
-            lease.sampler = resolved.binding.gpuView->GetSampler();
-            lease.gpuSlot = std::move(resolved.binding.gpuSlot);
-            lease.gpuView = std::move(resolved.binding.gpuView);
-            lease.status = particle::GpuBillboardTextureStatus::Ready;
-            return lease;
-        };
-        const auto particleSortProgram = CompileParticleSortProgram();
-        if (!particleSortProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle sorting kernels");
-        pumpStartup();
-        const auto particleCullProgram = CompileParticleCullProgram();
-        if (!particleCullProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle view-culling kernels");
-        pumpStartup();
-        const auto particleBoundsProgram = CompileParticleBoundsProgram();
-        if (!particleBoundsProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle bounds kernels");
-        pumpStartup();
-        const auto particleMigrationProgram = CompileParticleMigrationProgram();
-        if (!particleMigrationProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
-        pumpStartup();
-        const auto particleSpawnProgram = CompileParticleSpawnProgram();
-        if (!particleSpawnProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle graph spawn kernels");
-        pumpStartup();
-        const auto particleRibbonTopologyProgram = CompileParticleRibbonTopologyProgram();
-        if (!particleRibbonTopologyProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle Ribbon topology kernels");
-        pumpStartup();
-        const auto particleRibbonRenderProgram = CompileParticleRibbonRenderProgram();
-        if (!particleRibbonRenderProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle Ribbon render shaders");
-        pumpStartup();
-        const auto particleSkinnedMeshResolver =
-            [](const ObjectHandle &handle) -> std::optional<particle::GpuParticleSkinnedMeshSnapshot> {
-            Scene *scene = SceneManager::Instance().GetActiveScene();
-            auto *renderer = scene ? dynamic_cast<SkinnedMeshRenderer *>(scene->ResolveComponent(handle)) : nullptr;
-            if (!renderer || !renderer->GetGameObject() || !renderer->GetGameObject()->GetTransform())
-                return std::nullopt;
-            const auto pose = renderer->GetRuntimeSkinPoseSnapshot();
-            auto mesh = renderer->GetMeshAssetRef().Get();
-            auto model = renderer->GetRuntimeModelSnapshot();
-            if (!pose || !pose->IsValid() || !mesh || !model)
-                return std::nullopt;
-            particle::GpuParticleSkinnedMeshSnapshot snapshot;
-            snapshot.mesh = std::move(mesh);
-            snapshot.model = std::move(model);
-            snapshot.currentPalette = pose->current;
-            snapshot.previousPalette = pose->previous;
-            snapshot.revision = pose->revision;
-            const glm::mat4 &world = renderer->GetGameObject()->GetTransform()->GetWorldMatrix();
-            for (uint32_t row = 0; row < 4; ++row) {
-                for (uint32_t column = 0; column < 4; ++column)
-                    snapshot.sourceToWorld[row * 4 + column] = world[column][row];
-            }
-            return snapshot;
-        };
-        if (!m_particleGpuSystemManager->Initialize(
-                m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
-                m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
-                std::move(particleVectorFieldTextureResolver), std::move(particleSkinnedMeshResolver),
-                particleSortProgram.View(), particleCullProgram.View(), particleBoundsProgram.View(),
-                particleMigrationProgram.View(), particleSpawnProgram.View(), particleRibbonTopologyProgram.View(),
-                particleRibbonRenderProgram.View(), m_vkCore->GetMaxFramesInFlight())) {
-            m_particleGpuSystemManager.reset();
-            INXLOG_ERROR("Failed to initialize the GPU particle system manager");
+        // These support shaders are CPU-compiled. Overlap that work with the
+        // remaining renderer setup and Player catalog/scene publication. The
+        // first real ParticleSystem consumes the finished bundle, while a
+        // project without particles never blocks startup on it.
+        if (JobSystem::IsAvailable() && !m_particleProgramBootstrap) {
+            m_particleProgramBootstrap = std::make_shared<ParticleProgramBootstrap>();
+            auto bootstrap = m_particleProgramBootstrap;
+            bootstrap->job =
+                JobSystem::Get().Schedule([bootstrap] { bootstrap->programs = CompileParticleProgramBundle(); },
+                                          JobDomain::Render, JobPriority::Low);
         }
-        pumpStartup();
 
         // Initialize RenderGraph pipeline (scene rendering in pre-render pass)
         if (!m_sceneRenderGraph) {
@@ -742,9 +674,24 @@ void InxRenderer::PreparePipeline()
             [this](VkCommandBuffer cmdBuf) {
                 return m_particleGpuSystemManager && m_particleGpuSystemManager->RecordAsyncExport(cmdBuf);
             },
-            [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->CanExecuteAsync(); },
+            [this] {
+                // Independent-compute submission has a real cross-queue and
+                // cross-frame synchronization cost. Small systems are faster
+                // and just as safe when their compute graph is recorded on
+                // Graphics, where Vulkan queue order provides the dependency
+                // without a CPU fence or a terminal timeline join.
+                constexpr uint32_t kAsyncParticleCapacityThreshold = 4096;
+                return m_particleGpuSystemManager && m_particleGpuSystemManager->CanExecuteAsync() &&
+                       m_particleGpuSystemManager->TelemetrySnapshot().totalCapacity >=
+                           kAsyncParticleCapacityThreshold;
+            },
             [this] { return m_particleGpuSystemManager ? m_particleGpuSystemManager->AsyncExecutionGeneration() : 0; },
-            [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->CanRecordPartitioned(); });
+            [this] {
+                constexpr uint32_t kAsyncParticleCapacityThreshold = 4096;
+                return m_particleGpuSystemManager && m_particleGpuSystemManager->CanRecordPartitioned() &&
+                       m_particleGpuSystemManager->TelemetrySnapshot().totalCapacity >=
+                           kAsyncParticleCapacityThreshold;
+            });
 
         // Hook RenderGraph execution into the pre-render callback
         m_vkCore->SetRenderGraphExecutor([this](VkCommandBuffer cmdBuf) {
@@ -846,38 +793,38 @@ void InxRenderer::PreparePipeline()
 #endif
         });
 
-        m_vkCore->SetFramePreSetupBuilder([this](vk::VulkanFrameSubmission &submission,
-                                                 std::vector<uint32_t> &extraSetupDependencies) {
-            const auto collectOwnershipReleases = [&](SceneRenderGraph *graph) {
-                if (!graph || !graph->GetCompiledRenderGraph())
-                    return;
-                vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
-                const auto &viewContext = graph->GetRenderViewContext();
-                for (const rhi::QueueRole sourceQueue :
-                     {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
-                    if (!compiled->HasExternalQueueOwnershipReleases(sourceQueue))
-                        continue;
-                    extraSetupDependencies.push_back(submission.AddWork(
-                        viewContext.device, sourceQueue, rhi::SubmissionDomain::Frame, viewContext.id,
-                        rhi::PipelineStage::AllCommands, {},
-                        [compiled, sourceQueue](VkCommandBuffer commandBuffer) {
-                            return compiled->RecordExternalQueueOwnershipReleases(sourceQueue, commandBuffer);
-                        },
-                        "SceneGraph/OwnershipRelease"));
+        m_vkCore->SetFramePreSetupBuilder(
+            [this](vk::VulkanFrameSubmission &submission, std::vector<uint32_t> &extraSetupDependencies) {
+                const auto collectOwnershipReleases = [&](SceneRenderGraph *graph) {
+                    if (!graph || !graph->GetCompiledRenderGraph())
+                        return;
+                    vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
+                    const auto &viewContext = graph->GetRenderViewContext();
+                    for (const rhi::QueueRole sourceQueue :
+                         {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
+                        if (!compiled->HasExternalQueueOwnershipReleases(sourceQueue))
+                            continue;
+                        extraSetupDependencies.push_back(submission.AddWork(
+                            viewContext.device, sourceQueue, rhi::SubmissionDomain::Frame, viewContext.id,
+                            rhi::PipelineStage::AllCommands, {},
+                            [compiled, sourceQueue](VkCommandBuffer commandBuffer) {
+                                return compiled->RecordExternalQueueOwnershipReleases(sourceQueue, commandBuffer);
+                            },
+                            "SceneGraph/OwnershipRelease"));
+                    }
+                };
+                // AlwaysSimulate particles keep submitting compute after the user
+                // hides Scene/Game. Those compiled graphs still owe last frame's
+                // Graphics→Compute releases; skipping them hangs PrimeSimulation.
+                collectOwnershipReleases(m_sceneRenderGraph.get());
+                for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+                    (void)cameraId;
+                    collectOwnershipReleases(graph.get());
                 }
-            };
-            // AlwaysSimulate particles keep submitting compute after the user
-            // hides Scene/Game. Those compiled graphs still owe last frame's
-            // Graphics→Compute releases; skipping them hangs PrimeSimulation.
-            collectOwnershipReleases(m_sceneRenderGraph.get());
-            for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-                (void)cameraId;
-                collectOwnershipReleases(graph.get());
-            }
-            return true;
-        });
+                return true;
+            });
         m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
-                                                  uint32_t particleComputeWorkItem) {
+                                                   uint32_t particleComputeWorkItem) {
             const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
                                            (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
                                           m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
@@ -2427,6 +2374,12 @@ void InxRenderer::LoadShader(const char *name, const std::vector<char> &code, co
     m_vkCore->LoadShader(name, code, type);
 }
 
+void InxRenderer::SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver)
+{
+    if (m_vkCore)
+        m_vkCore->SetShaderAssetResolver(std::move(resolver));
+}
+
 bool InxRenderer::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
 {
     return m_vkCore && m_vkCore->PublishShaderProgramArtifact(artifact);
@@ -2518,26 +2471,6 @@ size_t InxRenderer::GetPendingSyntheticInputCount() const
 void InxRenderer::ShowWindow()
 {
     m_view->Show();
-}
-
-void InxRenderer::RevealStartupWindow()
-{
-    if (const char *title = std::getenv("_INFERNUX_PLAYER_WINDOW_TITLE")) {
-        if (title[0] != '\0')
-            SetWindowTitle(title);
-    }
-    if (const char *icon = std::getenv("_INFERNUX_PLAYER_WINDOW_ICON")) {
-        if (icon[0] != '\0')
-            SetWindowIcon(icon);
-    }
-    const char *fullscreenFlag = std::getenv("_INFERNUX_PLAYER_FULLSCREEN");
-    const bool fullscreen = fullscreenFlag != nullptr && fullscreenFlag[0] == '1' && fullscreenFlag[1] == '\0';
-    if (fullscreen)
-        SetWindowFullscreen(true);
-    else
-        SetWindowMaximized(false);
-    ShowWindow();
-    (void)PumpStartupEvents();
 }
 
 bool InxRenderer::PumpStartupEvents()
@@ -2851,6 +2784,20 @@ void InxRenderer::InitializeDefaultScene()
     m_lastFrameTime = std::chrono::high_resolution_clock::now();
 
     INXLOG_INFO("Default scene initialized with cube, directional light, and gizmos");
+}
+
+void InxRenderer::InitializeRuntimeScene()
+{
+    // The Player replaces this scene before its first rendered frame. Keep
+    // only the state required by scene publication and GPU particle binding;
+    // editor gizmos, tools, preview geometry, and their materials are not
+    // runtime dependencies.
+    m_particleGpuDrawRegistry = std::make_unique<particle::ParticleGpuDrawRegistry>();
+    if (m_scenePickingService)
+        m_scenePickingService->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+
+    SceneManager::Instance().CreateScene("Runtime Bootstrap");
+    m_lastFrameTime = std::chrono::high_resolution_clock::now();
 }
 
 void InxRenderer::UpdateSceneLighting()
@@ -3508,6 +3455,115 @@ particle::ParticleGpuDrawRegistry *InxRenderer::GetParticleGpuDrawRegistry()
 
 particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
 {
+    if (m_particleGpuSystemManager)
+        return m_particleGpuSystemManager.get();
+    if (m_particleGpuSystemManagerInitializationAttempted || !m_vkCore || !m_particleGpuDrawRegistry)
+        return nullptr;
+
+    m_particleGpuSystemManagerInitializationAttempted = true;
+    auto manager = std::make_unique<particle::ParticleGpuSystemManager>();
+    auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
+                                                           const std::string &bindingName) {
+        particle::GpuBillboardTextureLease lease;
+        TextureResolveResult resolved;
+        if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
+            const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
+                                bindingName.find("Normal") != std::string::npos;
+            auto residentSlot = core->GetTextureCache().Find(normal ? "_default_normal" : "white");
+            auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
+            if (!resident || !resident->IsValid()) {
+                lease.status = particle::GpuBillboardTextureStatus::Pending;
+                return lease;
+            }
+            resolved.status = TextureResolveStatus::Ready;
+            resolved.binding.gpuSlot = std::move(residentSlot);
+            resolved.binding.gpuView = std::move(resident);
+        } else {
+            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
+        }
+
+        if (resolved.status == TextureResolveStatus::Pending) {
+            lease.status = particle::GpuBillboardTextureStatus::Pending;
+            return lease;
+        }
+        if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
+            !resolved.binding.gpuView->IsValid()) {
+            lease.status = particle::GpuBillboardTextureStatus::Failed;
+            return lease;
+        }
+        lease.texture = resolved.binding.gpuView->GetView();
+        lease.sampler = resolved.binding.gpuView->GetSampler();
+        lease.gpuSlot = std::move(resolved.binding.gpuSlot);
+        lease.gpuView = std::move(resolved.binding.gpuView);
+        lease.status = particle::GpuBillboardTextureStatus::Ready;
+        return lease;
+    };
+    auto particleVectorFieldTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
+                                                                      bool linearFiltering, bool repeat) {
+        particle::GpuBillboardTextureLease lease;
+        auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat);
+        if (resolved.status == TextureResolveStatus::Pending) {
+            lease.status = particle::GpuBillboardTextureStatus::Pending;
+            return lease;
+        }
+        if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
+            !resolved.binding.gpuView->IsValid()) {
+            lease.status = particle::GpuBillboardTextureStatus::Failed;
+            return lease;
+        }
+        lease.texture = resolved.binding.gpuView->GetView();
+        lease.sampler = resolved.binding.gpuView->GetSampler();
+        lease.gpuSlot = std::move(resolved.binding.gpuSlot);
+        lease.gpuView = std::move(resolved.binding.gpuView);
+        lease.status = particle::GpuBillboardTextureStatus::Ready;
+        return lease;
+    };
+    CompiledParticleProgramBundle programs;
+    if (m_particleProgramBootstrap) {
+        JobSystem::Get().WaitPassive(m_particleProgramBootstrap->job);
+        programs = std::move(m_particleProgramBootstrap->programs);
+        m_particleProgramBootstrap.reset();
+    } else {
+        programs = CompileParticleProgramBundle();
+    }
+    if (!programs.IsValid()) {
+        INXLOG_ERROR("Failed to compile one or more GPU particle support programs");
+        return nullptr;
+    }
+    const auto particleSkinnedMeshResolver =
+        [](const ObjectHandle &handle) -> std::optional<particle::GpuParticleSkinnedMeshSnapshot> {
+        Scene *scene = SceneManager::Instance().GetActiveScene();
+        auto *renderer = scene ? dynamic_cast<SkinnedMeshRenderer *>(scene->ResolveComponent(handle)) : nullptr;
+        if (!renderer || !renderer->GetGameObject() || !renderer->GetGameObject()->GetTransform())
+            return std::nullopt;
+        const auto pose = renderer->GetRuntimeSkinPoseSnapshot();
+        auto mesh = renderer->GetMeshAssetRef().Get();
+        auto model = renderer->GetRuntimeModelSnapshot();
+        if (!pose || !pose->IsValid() || !mesh || !model)
+            return std::nullopt;
+        particle::GpuParticleSkinnedMeshSnapshot snapshot;
+        snapshot.mesh = std::move(mesh);
+        snapshot.model = std::move(model);
+        snapshot.currentPalette = pose->current;
+        snapshot.previousPalette = pose->previous;
+        snapshot.revision = pose->revision;
+        const glm::mat4 &world = renderer->GetGameObject()->GetTransform()->GetWorldMatrix();
+        for (uint32_t row = 0; row < 4; ++row) {
+            for (uint32_t column = 0; column < 4; ++column)
+                snapshot.sourceToWorld[row * 4 + column] = world[column][row];
+        }
+        return snapshot;
+    };
+    if (!manager->Initialize(
+            m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
+            m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
+            std::move(particleVectorFieldTextureResolver), std::move(particleSkinnedMeshResolver), programs.sort.View(),
+            programs.cull.View(), programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
+            programs.ribbonTopology.View(), programs.ribbonRender.View(), m_vkCore->GetMaxFramesInFlight())) {
+        INXLOG_ERROR("Failed to initialize the GPU particle system manager");
+        return nullptr;
+    }
+    m_particleGpuSystemManager = std::move(manager);
     return m_particleGpuSystemManager.get();
 }
 

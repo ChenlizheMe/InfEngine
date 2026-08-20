@@ -903,6 +903,9 @@ void surface(out SurfaceData surface)
         compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(unconsumedOutputsProgram.IsValid());
     assert(unconsumedOutputsProgram.interfaceArtifact.varyings.empty());
+    assert(unconsumedOutputsProgram.generatedFragmentSource.find(
+               "#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz") != std::string::npos);
+    assert(unconsumedOutputsProgram.generatedFragmentSource.find("uniform LightingUBO") != std::string::npos);
     assert(unconsumedOutputsProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
            std::string::npos);
 

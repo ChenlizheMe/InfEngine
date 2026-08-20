@@ -19,6 +19,7 @@ class PlayerGUI(InxGUIRenderable):
         splash_items: list | None = None,
         data_root: str = "",
         control_channel: object | None = None,
+        activate_play: object | None = None,
     ) -> None: ...
 
     def on_render(self, ctx: InxGUIContext) -> None: ...

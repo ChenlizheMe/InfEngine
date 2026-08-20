@@ -201,6 +201,12 @@ class InxVkCoreModular
     // ========================================================================
 
     void LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type);
+    void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver)
+    {
+        m_shaderAssetResolver = std::move(resolver);
+    }
+    [[nodiscard]] bool EnsureShaderAvailable(const std::string &name, const std::string &type);
+    [[nodiscard]] uint64_t GetShaderCodeFingerprint(const std::string &name, const std::string &type) const;
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
@@ -894,7 +900,7 @@ class InxVkCoreModular
     [[nodiscard]] VkBuffer GetInstanceSSBO(size_t index) const;
 
     /// @brief Get shader module by name and type ("vertex" or "fragment")
-    [[nodiscard]] VkShaderModule GetShaderModule(const std::string &name, const std::string &type) const;
+    [[nodiscard]] VkShaderModule GetShaderModule(const std::string &name, const std::string &type);
 
     /// @brief Get the shadow depth sampler (used by per-view shadow descriptors)
     [[nodiscard]] VkSampler GetShadowDepthSampler() const
@@ -1083,6 +1089,12 @@ class InxVkCoreModular
     std::vector<bool> m_guiRenderGraphReady;
 #if INFERNUX_FRAME_PROFILE
     vk::GpuTimestampQueries m_gpuTimestampQueries;
+#if INFERNUX_FRAME_PROFILE
+    // The composed submission path records setup, views and GUI into separate
+    // command buffers. Keep the outer frame region alive across those ordered
+    // submissions so profiling still reports real GPU time.
+    rhi::TimestampRegionHandle m_composedFrameTimestampRegion{};
+#endif
 #endif
 
     // ========================================================================
@@ -1196,6 +1208,7 @@ class InxVkCoreModular
     // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
     VkShaderCache m_shaderCache;
     std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
+    std::function<bool(const std::string &, const std::string &)> m_shaderAssetResolver;
 
     // Reflection-based material pipeline manager
     MaterialPipelineManager m_materialPipelineManager;
