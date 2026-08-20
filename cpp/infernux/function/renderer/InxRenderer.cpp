@@ -2217,9 +2217,10 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
 
     const auto statistics = vk::QueryVmaRuntimeStatistics(m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                                           m_vkCore->GetDeviceContext().GetPhysicalDevice());
-    snapshot.runtimeBudgetBytes = GetGpuResidencyBudgetBytes();
-    snapshot.editorTextureBudgetBytes = m_gui && !m_guiPlayerMode ? m_gui->GetImGuiTextureBudgetBytes() : 0;
-    snapshot.budgetBytes = snapshot.runtimeBudgetBytes + snapshot.editorTextureBudgetBytes;
+    constexpr uint64_t AutoBudgetCap = 1536ULL * 1024ULL * 1024ULL;
+    snapshot.budgetBytes = m_gpuResidencyBudgetBytes != 0
+                               ? m_gpuResidencyBudgetBytes
+                               : std::min<uint64_t>(AutoBudgetCap, (statistics.deviceLocalBudgetBytes / 10ULL) * 7ULL);
     snapshot.allocatorAllocationBytes = statistics.allocationBytes;
     snapshot.allocatorBlockBytes = statistics.blockBytes;
     snapshot.deviceLocalAllocationBytes = statistics.deviceLocalAllocationBytes;
