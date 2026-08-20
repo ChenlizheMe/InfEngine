@@ -3009,11 +3009,14 @@ std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const
 
         if (meta->HasKey("shader_id") && meta->HasKey("file_path")) {
             std::string metaShaderId = meta->GetDataAs<std::string>("shader_id");
+            const auto runtimePath = snapshot->guidToPath.find(guid);
+            if (runtimePath == snapshot->guidToPath.end())
+                continue;
             if (metaShaderId == shaderId) {
-                return meta->GetDataAs<std::string>("file_path");
+                return runtimePath->second;
             }
             if (normalizedMatch.empty() && NormalizeShaderIdForLookup(metaShaderId) == normalizedQuery) {
-                normalizedMatch = meta->GetDataAs<std::string>("file_path");
+                normalizedMatch = runtimePath->second;
             }
         }
     }

@@ -13,7 +13,11 @@ namespace py = pybind11;
 
 int main()
 {
-    py::scoped_interpreter interpreter{};
+    // Production loads the native runtime from a Python-owned process and
+    // never asks pybind11 to finalize CPython. Keep that ownership model here:
+    // all local py::objects still destruct before main returns, while the OS
+    // tears down the one-shot test interpreter with the process.
+    py::initialize_interpreter();
     py::exec(R"PY(
 class ContractScheduler:
     def __init__(self, value):
