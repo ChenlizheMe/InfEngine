@@ -927,6 +927,9 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_py_component_proxy_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.py_component_proxy COMMAND infernux_py_component_proxy_tests)
+    set_tests_properties(infernux.py_component_proxy PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+    )
 
     add_executable(infernux_runtime_frame_barrier_tests
         cpp/tests/RuntimeFrameBarrierTests.cpp
