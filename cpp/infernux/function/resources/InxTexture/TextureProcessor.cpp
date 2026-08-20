@@ -1,6 +1,7 @@
 #include "TextureProcessor.h"
 
 #define STB_DXT_IMPLEMENTATION
+#include <cstring>
 #include <stb_dxt.h>
 
 #include <glm/gtc/packing.hpp>
@@ -8,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
