@@ -371,10 +371,7 @@ class SceneManager
                                       RuntimeLifecyclePhaseCallback lateUpdate,
                                       RuntimeLifecyclePhaseCallback editorUpdate, RuntimeLifecycleEndCallback endFrame);
     void SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback);
-    void SetRuntimeLifecycleWorkAvailable(bool available) noexcept
-    {
-        m_runtimeLifecycleWorkAvailable = available;
-    }
+    void SetRuntimeLifecycleWorkAvailable(bool available) noexcept;
     void EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const;
     void ClearRuntimeLifecycleCallbacks();
 

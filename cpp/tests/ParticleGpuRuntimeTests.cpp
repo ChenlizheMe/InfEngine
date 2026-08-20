@@ -1473,16 +1473,17 @@ int main()
     runtime.RecordInitIndirect(encoder, 300, 100, 2, 7, 9, 1.0f / 60.0f, graphSpawnGroup, spawnMetadata,
                                sizeof(uint32_t) * 4u);
     assert(runtime.RecordUpdate(encoder, 7, 9, 1.0f / 60.0f, graphSpawnGroup, true));
+    runtime.PublishAliveWrite();
+    assert(runtime.IsAliveListReady() && runtime.AliveReadSlot() == 1 && runtime.AliveWriteSlot() == 0);
     assert(!runtime.RecordRenderReset(encoder, {}, true));
     assert(runtime.RecordRenderReset(encoder, graphSpawnGroup, true));
     assert(runtime.RecordRendering(encoder, 7, 9, graphSpawnGroup));
     assert(trace.pipelines.size() == 5 && trace.groups.size() == 40 && trace.constants.size() == 5);
     assert(trace.groupSets == std::vector<uint32_t>({0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3,
                                                      4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7}));
-    assert(trace.dispatches == std::vector<uint32_t>({4, 1}));
-    assert(trace.indirectBuffers == std::vector<rhi::BufferHandle>(
-                                        {spawnMetadata, runtime.AliveDispatchBuffer(), runtime.AliveDispatchBuffer()}));
-    assert(trace.indirectOffsets == std::vector<uint64_t>({sizeof(uint32_t) * 4u, 0u, 0u}));
+    assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1}));
+    assert(trace.indirectBuffers == std::vector<rhi::BufferHandle>({runtime.AliveDispatchBuffer()}));
+    assert(trace.indirectOffsets == std::vector<uint64_t>({16u}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);
     assert(trace.constants[1].diagnosticFlags == 0u);
@@ -1505,12 +1506,12 @@ int main()
     assert(fusedRuntime.RecordUpdateRenderingFused(encoder, 7, 9, 1.0f / 60.0f, graphSpawnGroup));
     assert(trace.pipelines.size() == 1 && trace.dispatches.empty() &&
            trace.indirectBuffers == std::vector<rhi::BufferHandle>({runtime.AliveDispatchBuffer()}) &&
-           trace.indirectOffsets == std::vector<uint64_t>({0u}) && trace.constants.size() == 1 &&
+           trace.indirectOffsets == std::vector<uint64_t>({16u}) && trace.constants.size() == 1 &&
            trace.constants[0].simulationStep == 9);
     assert(!fusedRuntime.RecordUpdateRenderingFused(encoder, 7, 9, 1.0f / 60.0f, {}) &&
-           fusedRuntime.AliveReadSlot() == 0u);
-    runtime.PublishAliveWrite();
-    assert(runtime.IsAliveListReady() && runtime.AliveReadSlot() == 1 && runtime.AliveWriteSlot() == 0);
+           fusedRuntime.AliveReadSlot() == 1u);
+    fusedRuntime.PublishAliveWrite();
+    assert(runtime.IsAliveListReady() && runtime.AliveReadSlot() == 0 && runtime.AliveWriteSlot() == 1);
 
     // Recording multiple views/export consumers is read-only with respect to
     // the simulation ping-pong cursor. Both recordings must consume the same
@@ -1518,15 +1519,15 @@ int main()
     trace = {};
     assert(runtime.RecordRendering(encoder, 7, 10, graphSpawnGroup));
     assert(fusedRuntime.RecordRendering(encoder, 7, 10, graphSpawnGroup));
-    assert(runtime.AliveReadSlot() == 1 && fusedRuntime.AliveReadSlot() == 1 &&
-           trace.indirectOffsets == std::vector<uint64_t>({16u, 16u}));
+    assert(runtime.AliveReadSlot() == 0 && fusedRuntime.AliveReadSlot() == 0 &&
+           trace.indirectOffsets == std::vector<uint64_t>({0u, 0u}));
 
     trace = {};
     assert(runtime.RecordUpdate(encoder, 7, 10, 1.0f / 60.0f, graphSpawnGroup));
-    assert(trace.constants.size() == 1 && trace.constants[0].aliveReadSlot == 1u &&
-           trace.constants[0].aliveWriteSlot == 0u && trace.indirectOffsets == std::vector<uint64_t>({16u}));
+    assert(trace.constants.size() == 1 && trace.constants[0].aliveReadSlot == 0u &&
+           trace.constants[0].aliveWriteSlot == 1u && trace.indirectOffsets == std::vector<uint64_t>({0u}));
     runtime.PublishAliveWrite();
-    assert(runtime.AliveReadSlot() == 0 && runtime.AliveWriteSlot() == 1);
+    assert(runtime.AliveReadSlot() == 1 && runtime.AliveWriteSlot() == 0);
     assert(runtime.AdoptCompatibleRevision(fusedRuntime));
     assert(runtime.SupportsFusedUpdateRendering() && !fusedRuntime.SupportsFusedUpdateRendering());
     particle::GpuParticleFrameRequest routeRequest;

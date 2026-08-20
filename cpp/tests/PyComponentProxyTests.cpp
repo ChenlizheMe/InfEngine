@@ -1,5 +1,5 @@
-#include <function/scene/PyComponentProxy.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/PyComponentProxy.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
 
@@ -97,18 +97,21 @@ class CollisionEnterOnlyProbe(InxComponent):
     infernux::Scene *scene = sceneManager.CreateScene("RuntimeSchedulerFallback");
     infernux::GameObject *owner = scene->CreateGameObject("PythonOwner");
     const py::object runtimeProbe = probeType();
-    runtimeProbe.attr("_native_test_sink") = py::cpp_function([](const std::string &) {});
+    int nativeProxyUpdates = 0;
+    runtimeProbe.attr("_native_test_sink") =
+        py::cpp_function([&nativeProxyUpdates](const std::string &) { ++nativeProxyUpdates; });
     assert(owner->AddExistingComponent(std::make_unique<infernux::PyComponentProxy>(runtimeProbe)) != nullptr);
 
     int runtimeUpdates = 0;
-    sceneManager.SetRuntimeLifecycleCallbacks(
-        [] {}, [](float) {}, [&runtimeUpdates](float) { ++runtimeUpdates; }, [](float) {}, [](float) {}, [] {});
+    sceneManager.SetRuntimeLifecycleCallbacks([] {}, [](float) {}, [&runtimeUpdates](float) { ++runtimeUpdates; },
+                                              [](float) {}, [](float) {}, [] {});
     sceneManager.SetRuntimeLifecycleWorkAvailable(false);
     sceneManager.Play();
     sceneManager.Update(1.0f / 60.0f);
     sceneManager.LateUpdate(1.0f / 60.0f);
     sceneManager.EndFrame();
-    assert(runtimeUpdates == 1);
+    assert(runtimeUpdates == 0);
+    assert(nativeProxyUpdates == 1);
     sceneManager.Stop();
     sceneManager.ClearRuntimeLifecycleCallbacks();
     sceneManager.UnloadAllScenes();

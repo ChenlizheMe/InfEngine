@@ -53,19 +53,19 @@ jobs:
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Configure debug preset
+      - name: Configure native test preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset debug
+          cmake --preset native-tests
 
-      - name: Build debug preset
+      - name: Build native test preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --build --preset debug
+          cmake --build --preset native-tests
 
       - name: Provide Vulkan loader for headless tests
         shell: pwsh
@@ -87,4 +87,4 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          ctest --preset debug -LE "performance|requires_vulkan_device" --timeout 120 --output-on-failure
+          ctest --preset native-tests -LE "performance|requires_vulkan_device" --timeout 120 --output-on-failure

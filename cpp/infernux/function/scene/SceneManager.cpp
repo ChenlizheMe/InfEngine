@@ -138,7 +138,7 @@ void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 Scene *SceneManager::CreateScene(const std::string &name)
 {
     auto scene = std::make_unique<Scene>(name);
-    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable);
     Scene *ptr = scene.get();
     m_scenes.push_back(std::move(scene));
 
@@ -167,7 +167,8 @@ void SceneManager::SetActiveScene(Scene *scene)
         m_resetDeltaTimeOnNextFrame = true;
     }
     if (m_activeScene) {
-        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled &&
+                                                           m_runtimeLifecycleWorkAvailable);
         m_activeScene->SetPlaying(m_isPlaying);
     }
 
@@ -301,12 +302,28 @@ void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback be
         static_cast<bool>(m_runtimeLifecycleBegin) && static_cast<bool>(m_runtimeLifecycleFixedUpdate) &&
         static_cast<bool>(m_runtimeLifecycleUpdate) && static_cast<bool>(m_runtimeLifecycleLateUpdate) &&
         static_cast<bool>(m_runtimeLifecycleEditorUpdate) && static_cast<bool>(m_runtimeLifecycleEnd);
+    const bool schedulerActive = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
     for (const auto &scene : m_scenes) {
         if (scene)
-            scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+            scene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
     }
     if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
+}
+
+void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
+{
+    if (m_runtimeLifecycleWorkAvailable == available)
+        return;
+
+    m_runtimeLifecycleWorkAvailable = available;
+    const bool schedulerActive = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
+    for (const auto &scene : m_scenes) {
+        if (scene)
+            scene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
+    }
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
 }
 
 void SceneManager::SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback)
@@ -594,7 +611,7 @@ void SceneManager::Step(float deltaTime)
         m_activeScene->ProcessPendingStarts();
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
-    const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled;
+    const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
     if (useRuntimeScheduler) {
         m_runtimeLifecycleBegin();
         m_runtimeLifecycleFrameOpen = true;
@@ -660,7 +677,8 @@ Scene *SceneManager::EnsureRuntimePersistentScene()
         return nullptr;
     if (!m_runtimePersistentScene) {
         m_runtimePersistentScene = std::make_unique<Scene>("DontDestroyOnLoad");
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled &&
+                                                                      m_runtimeLifecycleWorkAvailable);
         m_runtimePersistentScene->SetPlaying(true);
         // Start the empty Scene once. Trees transferred into it already own
         // their lifecycle state and must never replay Awake/Start/OnEnable.

@@ -131,7 +131,7 @@ class Rigidbody(BuiltinComponent):
     interpolation = CppProperty(
         "interpolation",
         FieldType.ENUM,
-        default=RigidbodyInterpolation.Interpolate,
+        default=RigidbodyInterpolation.None_,
         enum_type=RigidbodyInterpolation,
         enum_labels=["None", "Interpolate"],
         tooltip="Smooths presentation between fixed physics steps.",
