@@ -351,16 +351,16 @@ class in <b>Infernux.renderstack</b>
 </code></pre></div>
 <p>Example::</p>
 <div class="language-text highlight"><pre><span></span><code>class MyPipeline(RenderPipeline):
-    name = &quot;My Pipeline&quot;
+    name = "My Pipeline"
 
     def define_topology(self, graph):
-        graph.create_texture(&quot;color&quot;, camera_target=True)
-        graph.create_texture(&quot;depth&quot;, format=Format.D32_SFLOAT)
-        with graph.add_pass(&quot;OpaquePass&quot;) as p:
-            p.write_color(&quot;color&quot;)
-            p.write_depth(&quot;depth&quot;)
+        graph.create_texture("color", camera_target=True)
+        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        with graph.add_pass("OpaquePass") as p:
+            p.write_color("color")
+            p.write_depth("depth")
             p.draw_renderers(queue_range=(0, 2500))
-        graph.set_output(&quot;color&quot;)
+        graph.set_output("color")
 </code></pre></div>
 <!-- USER CONTENT START -->
 <p>description</p>

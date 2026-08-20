@@ -347,7 +347,7 @@ class variables for Inspector-editable properties.</p>
     speed: float = serialized_field(default=5.0, range=(0, 100))
 
     def start(self):
-        Debug.log(&quot;PlayerController started&quot;)
+        Debug.log("PlayerController started")
 
     def update(self, delta_time: float):
         pos = self.transform.position

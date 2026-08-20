@@ -358,14 +358,14 @@ Fires <code>on_click</code> when the user performs a full click (down + up).</p>
 <p>Example::</p>
 <div class="language-text highlight"><pre><span></span><code>class MyUI(InxComponent):
     def start(self):
-        start_btn = GameObject.find(&quot;StartBtn&quot;)
+        start_btn = GameObject.find("StartBtn")
         if start_btn is None:
             return
         btn = start_btn.get_component(UIButton)
         btn.on_click.add_listener(self.on_start)
 
     def on_start(self):
-        print(&quot;Start clicked!&quot;)
+        print("Start clicked!")
 </code></pre></div>
 <!-- USER CONTENT START -->
 <p>description</p>
