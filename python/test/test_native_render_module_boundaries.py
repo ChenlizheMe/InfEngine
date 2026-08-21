@@ -1075,3 +1075,17 @@ def test_native_pack_writers_release_the_gil_during_compression() -> None:
         write_call = binding.index("inxpack::Write(")
         manifest_conversion = binding.index("InxPackManifestToPython(manifest)")
         assert release < write_call < manifest_conversion
+
+
+def test_renderer_keeps_primary_selection_separate_from_outline_subtree() -> None:
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    renderer_body = _function_body(renderer, "void InxRenderer::SetSelectionState")
+    engine = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(
+        encoding="utf-8"
+    )
+    outline_body = _function_body(engine, "void Infernux::SetSelectionOutlines")
+
+    assert "m_selectedObjectId = primaryObjectId" in renderer_body
+    assert "m_selectedOutlineObjectIds = outlineObjectIds" in renderer_body
+    assert "outlineObjectIds.back()" not in renderer_body
+    assert "SetSelectionState(primaryObjectId, expandedIds)" in outline_body

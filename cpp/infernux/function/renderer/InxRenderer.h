@@ -407,9 +407,10 @@ class InxRenderer
         return m_frameCount + 1;
     }
 
-    /// @brief Set the selected object ID for outline tracking
+    /// @brief Set one selected object as both the gizmo target and outline target.
     void SetSelectedObjectId(uint64_t objectId);
-    void SetSelectedObjectIds(const std::vector<uint64_t> &objectIds);
+    /// @brief Publish the primary gizmo target separately from the objects outlined for selection.
+    void SetSelectionState(uint64_t primaryObjectId, const std::vector<uint64_t> &outlineObjectIds);
     [[nodiscard]] uint64_t GetSelectedObjectId() const
     {
         return m_selectedObjectId;

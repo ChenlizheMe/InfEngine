@@ -3402,7 +3402,7 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
     if (objectIds.empty()) {
         m_cachedOutlineIds.clear();
         m_selectedObjectId = 0;
-        m_renderer->SetSelectedObjectIds({});
+        m_renderer->SetSelectionState(0, {});
         gizmos.ClearSelectionOutline();
         return;
     }
@@ -3411,7 +3411,7 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
     if (!scene) {
         m_cachedOutlineIds.clear();
         m_selectedObjectId = 0;
-        m_renderer->SetSelectedObjectIds({});
+        m_renderer->SetSelectionState(0, {});
         gizmos.ClearSelectionOutline();
         return;
     }
@@ -3419,7 +3419,7 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
     std::vector<uint64_t> expandedIds = ExpandOutlineIds(scene, objectIds);
     const uint64_t primaryObjectId = objectIds.empty() ? 0 : objectIds.back();
     m_selectedObjectId = primaryObjectId;
-    m_renderer->SetSelectedObjectIds(expandedIds);
+    m_renderer->SetSelectionState(primaryObjectId, expandedIds);
     if (expandedIds == m_cachedOutlineIds) {
         return;
     }
@@ -3466,9 +3466,6 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
     }
 
     gizmos.SetSelectionOutline(mergedPositions, mergedNormals, mergedIndices, glm::mat4(1.0f));
-
-    // Keep the primary object for gizmo tools; post-process outline receives all expanded IDs above.
-    m_selectedObjectId = primaryObjectId;
 }
 
 // ----------------------------------

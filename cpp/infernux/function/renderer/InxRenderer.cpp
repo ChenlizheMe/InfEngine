@@ -682,15 +682,13 @@ void InxRenderer::PreparePipeline()
                 // without a CPU fence or a terminal timeline join.
                 constexpr uint32_t kAsyncParticleCapacityThreshold = 4096;
                 return m_particleGpuSystemManager && m_particleGpuSystemManager->CanExecuteAsync() &&
-                       m_particleGpuSystemManager->TelemetrySnapshot().totalCapacity >=
-                           kAsyncParticleCapacityThreshold;
+                       m_particleGpuSystemManager->TelemetrySnapshot().totalCapacity >= kAsyncParticleCapacityThreshold;
             },
             [this] { return m_particleGpuSystemManager ? m_particleGpuSystemManager->AsyncExecutionGeneration() : 0; },
             [this] {
                 constexpr uint32_t kAsyncParticleCapacityThreshold = 4096;
                 return m_particleGpuSystemManager && m_particleGpuSystemManager->CanRecordPartitioned() &&
-                       m_particleGpuSystemManager->TelemetrySnapshot().totalCapacity >=
-                           kAsyncParticleCapacityThreshold;
+                       m_particleGpuSystemManager->TelemetrySnapshot().totalCapacity >= kAsyncParticleCapacityThreshold;
             });
 
         // Hook RenderGraph execution into the pre-render callback
@@ -4671,16 +4669,16 @@ bool InxRenderer::IsPlayModeRendering() const
 
 void InxRenderer::SetSelectedObjectId(uint64_t objectId)
 {
-    SetSelectedObjectIds(objectId == 0 ? std::vector<uint64_t>{} : std::vector<uint64_t>{objectId});
+    SetSelectionState(objectId, objectId == 0 ? std::vector<uint64_t>{} : std::vector<uint64_t>{objectId});
 }
 
-void InxRenderer::SetSelectedObjectIds(const std::vector<uint64_t> &objectIds)
+void InxRenderer::SetSelectionState(uint64_t primaryObjectId, const std::vector<uint64_t> &outlineObjectIds)
 {
-    if (m_selectedOutlineObjectIds == objectIds)
+    if (m_selectedObjectId == primaryObjectId && m_selectedOutlineObjectIds == outlineObjectIds)
         return;
 
-    m_selectedOutlineObjectIds = objectIds;
-    m_selectedObjectId = objectIds.empty() ? 0 : objectIds.back();
+    m_selectedObjectId = primaryObjectId;
+    m_selectedOutlineObjectIds = outlineObjectIds;
 
     // Selection changes are editor state publications, not ordinary scene
     // mutations. Publish them to the outline owner immediately so an idle or
