@@ -3,8 +3,11 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// shellapi.h depends on declarations supplied by windows.h.
+// clang-format off
 #include <windows.h>
 #include <shellapi.h>
+// clang-format on
 
 #include "PlayerHost.h"
 
