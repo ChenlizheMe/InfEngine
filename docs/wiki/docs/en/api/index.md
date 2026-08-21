@@ -1,7 +1,7 @@
 # Infernux Scripting API
 
 <div class="class-info">
-Version 0.2.9
+Version 0.3.4
  &nbsp;|&nbsp; <a href="../../zh/api/index.html">中文</a>
 </div>
 
@@ -17,8 +17,8 @@ Welcome to the Infernux Scripting API Reference. Browse packages from the sideba
 
 | Package | Description |
 |------|------|
-| Infernux | LogLevel, PrimitiveType, Space, LightType, LightShadows, CameraProjection, ... |
-| Infernux.components | InxComponent, require_component, disallow_multiple, execute_in_edit_mode |
+| Infernux | LogLevel, PrimitiveType, Space, LightType, LightShadows, CameraProjection, ..., serialized_field |
+| Infernux.components | InxComponent, Space, serialized_field, require_component, disallow_multiple |
 | Infernux.components.builtin | AudioListener, AudioSource, BoxCollider, Camera, CapsuleCollider, Collider, ... |
 | Infernux.core | AudioClip, Material, Shader, Texture |
 | Infernux.coroutine | WaitForSeconds, WaitForSecondsRealtime, WaitForEndOfFrame, WaitForFixedUpdate, WaitUntil, WaitWhile, ... |

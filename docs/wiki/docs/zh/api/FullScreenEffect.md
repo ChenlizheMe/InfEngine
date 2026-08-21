@@ -31,6 +31,7 @@
 | requires | `Set[str]` |  *(只读)* |
 | modifies | `Set[str]` |  *(只读)* |
 | menu_path | `str` |  *(只读)* |
+| color_composition | `EffectColorComposition` |  *(只读)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -46,6 +47,7 @@
 | `get_params_dict() → Dict[str, Any]` | Get serializable parameters as a dictionary. |
 | `set_params_dict(params: Dict[str, Any]) → None` | Restore parameters from a dictionary. |
 | `apply_single_source_effect(graph: RenderGraph, bus: ResourceBus, output_name: str, pass_name: str, shader_name: str, format: Any, params: Mapping[str, object] | None = ...) → bool` | Apply a one-pass fullscreen effect that rewrites the scene color. |
+| `bind_buffers(render_pass: Any, bus: ResourceBus, extra_bindings: Mapping[str, object] | None = ...) → None` |  |
 
 <!-- USER CONTENT START --> public_methods
 
@@ -74,7 +76,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.2.9 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.3.4 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

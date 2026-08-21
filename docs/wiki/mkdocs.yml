@@ -43,8 +43,10 @@ nav:
       - Space: en/api/Space.md
       - SphereCollider: en/api/SphereCollider.md
       - Transform: en/api/Transform.md
+      - serialized_field: en/api/serialized_field.md
     - Infernux.components:
       - InxComponent: en/api/InxComponent.md
+      - Space: en/api/Space.md
       - add_component_menu: en/api/add_component_menu.md
       - disallow_multiple: en/api/disallow_multiple.md
       - execute_in_edit_mode: en/api/execute_in_edit_mode.md
@@ -157,8 +159,10 @@ nav:
       - Space: zh/api/Space.md
       - SphereCollider: zh/api/SphereCollider.md
       - Transform: zh/api/Transform.md
+      - serialized_field: zh/api/serialized_field.md
     - Infernux.components:
       - InxComponent: zh/api/InxComponent.md
+      - Space: zh/api/Space.md
       - add_component_menu: zh/api/add_component_menu.md
       - disallow_multiple: zh/api/disallow_multiple.md
       - execute_in_edit_mode: zh/api/execute_in_edit_mode.md

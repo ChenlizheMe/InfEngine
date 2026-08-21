@@ -14,7 +14,7 @@
     <meta property="og:title" content="Infernux · 熔炉 — Open game engine">
     <meta property="og:description" content="A C++17/Vulkan native runtime with a Python production layer, an integrated editor, and an inspectable MIT-licensed architecture.">
     <meta property="og:url" content="https://infernux-engine.com/">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.2.1.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · 熔炉 — Open game engine">
     <meta name="twitter:description" content="C++17/Vulkan runtime · Python production layer · MIT licensed.">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.2.1.jpg">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
     <title>Infernux · 熔炉 — Open game engine</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
@@ -40,7 +40,7 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip">
             <div class="mission-ribbon-inner">
-                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open engine · release 0.2.1 online</span>
+                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span>
                 <span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span>
                 <span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span>
             </div>
@@ -101,7 +101,7 @@
                         </div>
                         <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · Infernux 0.3.4 · broader platforms in development</p>
                         <div class="hero-text-links" aria-label="More ways to explore Infernux" data-i18n-aria-label="home.hero.moreActions">
-                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">Inspect the benchmark</a>
+                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">Inspect the showcase</a>
                             <span aria-hidden="true">/</span>
                             <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
                                 <i class="fab fa-github" aria-hidden="true"></i>
@@ -167,24 +167,24 @@
             <section class="section" id="runtime-capture">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.demo.kicker">Runtime capture · 0.2.1</div>
-                        <h2 class="section-title" data-i18n="home.demo.title">10,000-cube reference workload running inside the editor.</h2>
+                        <div class="section-kicker" data-i18n="home.demo.kicker">Project showcase · 0.3.4</div>
+                        <h2 class="section-title" data-i18n="home.demo.title">A 65,536-object voxel continent authored and rendered inside Infernux.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.demo.intro">A dual-axis sine-wave workload updates a 100 × 100 cube grid through the Batch + JIT path while one directional light and one shared material keep the render setup explicit.</p>
+                    <p class="section-intro" data-i18n="home.demo.intro">This real editor capture combines standard scene objects, shared lit rendering, per-camera shadows, and a custom RenderStack tilt-shift treatment in one authored scene.</p>
                 </div>
                 <div class="stack-layout demo-layout">
                     <div class="demo-frame" data-reveal>
                         <picture>
-                            <source srcset="assets/demo-0.2.1.avif" type="image/avif">
-                            <img src="assets/demo-0.2.1.webp" width="1245" height="653" alt="Infernux 0.2.1 editor running the 10,000-cube ocean FFT reference workload" loading="lazy" decoding="async">
+                            <source srcset="assets/demo-0.3.4.avif" type="image/avif">
+                            <img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
                         </picture>
                     </div>
                     <div class="stack-board" data-reveal>
-                            <h3 data-i18n="home.demo.panel.title">Benchmark evidence and limits</h3>
+                            <h3 data-i18n="home.demo.panel.title">What this capture demonstrates</h3>
                             <ul class="list-clean">
-                            <li data-i18n="home.demo.panel.item1">Test environment: 1920 × 1080, V-Sync off, Windows 11, Core Ultra 7 265K, RTX 5070 Ti and 64 GB DDR5-6400.</li>
-                            <li data-i18n="home.demo.panel.item2">After a 60-frame warm-up, the 10,000-cube single-material workload averaged 127 FPS in the Infernux editor and 171 FPS at runtime over 300 frames.</li>
-                            <li data-i18n="home.demo.panel.item3">Unity 6 is included only as a reference: shading complexity, batching and editor maturity differ. Read the <a href="https://arxiv.org/abs/2604.10263" target="_blank" rel="noopener">methodology and complete tables</a> before comparing results.</li>
+                            <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects share one mesh and material while remaining part of the regular Scene and Hierarchy model.</li>
+                            <li data-i18n="home.demo.panel.item2">A custom RenderStack pipeline applies tilt-shift focus, distance and height fog, color controls, and MSAA without leaving the editor workflow.</li>
+                            <li data-i18n="home.demo.panel.item3">This is a real 1920 × 1032 editor capture from the 0.3.4 technology showcase, not a mock-up or offline render.</li>
                         </ul>
                     </div>
                 </div>
@@ -372,7 +372,7 @@
           "url": "https://infernux-engine.com/",
           "downloadUrl": "https://github.com/ChenlizheMe/Infernux/releases/latest",
           "codeRepository": "https://github.com/ChenlizheMe/Infernux",
-          "screenshot": "https://infernux-engine.com/assets/demo-0.2.1.webp",
+          "screenshot": "https://infernux-engine.com/assets/demo-0.3.4.webp",
           "sameAs": "https://github.com/ChenlizheMe/Infernux",
           "isAccessibleForFree": true
         }

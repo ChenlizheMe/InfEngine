@@ -31,6 +31,7 @@ Base class for fullscreen post-processing effects.
 | requires | `Set[str]` |  *(read-only)* |
 | modifies | `Set[str]` |  *(read-only)* |
 | menu_path | `str` |  *(read-only)* |
+| color_composition | `EffectColorComposition` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -46,6 +47,7 @@ Base class for fullscreen post-processing effects.
 | `get_params_dict() → Dict[str, Any]` | Get serializable parameters as a dictionary. |
 | `set_params_dict(params: Dict[str, Any]) → None` | Restore parameters from a dictionary. |
 | `apply_single_source_effect(graph: RenderGraph, bus: ResourceBus, output_name: str, pass_name: str, shader_name: str, format: Any, params: Mapping[str, object] | None = ...) → bool` | Apply a one-pass fullscreen effect that rewrites the scene color. |
+| `bind_buffers(render_pass: Any, bus: ResourceBus, extra_bindings: Mapping[str, object] | None = ...) → None` |  |
 
 <!-- USER CONTENT START --> public_methods
 
@@ -74,7 +76,7 @@ Base class for fullscreen post-processing effects.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

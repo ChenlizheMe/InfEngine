@@ -18,8 +18,11 @@ A single scene containing GameObjects.
 |------|------|------|
 | name | `str` |  |
 | structure_version | `int` |  *(read-only)* |
+| temporal_discontinuity_revision | `int` |  *(read-only)* |
 | world_id | `int` |  *(read-only)* |
 | main_camera | `Optional[Camera]` |  |
+| effective_game_camera | `Optional[Camera]` |  *(read-only)* |
+| active_game_cameras | `List[Camera]` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -29,10 +32,13 @@ A single scene containing GameObjects.
 
 | Method | Description |
 |------|------|
+| `get_environment() → Dict[str, Any]` |  |
+| `set_environment(settings: Dict[str, Any]) → None` |  |
+| `resolve_skybox_material() → Optional[InxMaterial]` |  |
 | `set_playing(playing: bool) → None` |  |
 | `create_game_object(name: str = 'GameObject') → GameObject` |  |
 | `create_primitive(type: PrimitiveType, name: str = '') → GameObject` |  |
-| `create_primitives_batch(type: PrimitiveType, count: int, name_prefix: str = '') → List[GameObject]` |  |
+| `create_primitives_batch(type: PrimitiveType, count: int, name_prefix: str = '', with_colliders: bool = True) → List[GameObject]` |  |
 | `create_from_model(guid: str, name: str = '') → Optional[GameObject]` |  |
 | `get_root_objects() → List[GameObject]` |  |
 | `get_all_objects() → List[GameObject]` |  |
@@ -73,7 +79,7 @@ A single scene containing GameObjects.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

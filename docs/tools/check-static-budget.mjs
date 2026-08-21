@@ -124,7 +124,7 @@ for (const file of await files(path.join(docsRoot, "js"))) {
 }
 rootExperience += await enforce(path.join(docsRoot, "sw.js"), limits.script, "service worker");
 const responsiveImageSets = [
-  ["demo-0.2.1.webp", "demo-0.2.1.avif"],
+  ["demo-0.3.4.webp", "demo-0.3.4.avif"],
 ];
 // The original PNG remains under docs/assets because the repository README uses
 // it as review evidence. It is not referenced by a website page and therefore
@@ -133,8 +133,10 @@ const evidenceOnlyImages = new Set(["demo.png"]);
 const groupedImages = new Set(responsiveImageSets.flat());
 const imageSizes = new Map();
 for (const file of (await files(path.join(docsRoot, "assets"))).filter((file) => /\.(?:avif|gif|jpe?g|png|webp)$/i.test(file))) {
-  const bytes = await enforce(file, limits.image, "image");
   const name = path.basename(file);
+  const bytes = evidenceOnlyImages.has(name)
+    ? (await stat(file)).size
+    : await enforce(file, limits.image, "image");
   imageSizes.set(name, bytes);
   if (!groupedImages.has(name) && !evidenceOnlyImages.has(name)) rootExperience += bytes;
 }

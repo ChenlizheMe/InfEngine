@@ -6,16 +6,36 @@ class in <b>Infernux.coroutine</b>
 
 ## Description
 
-Suspend a coroutine until the end of the current frame.
+Suspend until one or more frame-end phases have completed.
 
 <!-- USER CONTENT START --> description
+
+<!-- USER CONTENT END -->
+
+## Constructors
+
+| Signature | Description |
+|------|------|
+| `WaitForEndOfFrame.__init__(frames: int = ...) → None` |  |
+
+<!-- USER CONTENT START --> constructors
+
+<!-- USER CONTENT END -->
+
+## Properties
+
+| Name | Type | Description |
+|------|------|------|
+| frames | `int` |  |
+
+<!-- USER CONTENT START --> properties
 
 <!-- USER CONTENT END -->
 
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

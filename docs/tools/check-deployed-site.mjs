@@ -21,7 +21,7 @@ const checks = [
     { route: "/learn.html", tokens: ["data-learn-search", "data-learn-tag", "learn/shaders.html", "learn/renderstack-post-processing.html"] },
     { route: "/learn/shaders.html", tokens: ["ShaderInfo", "Capabilities [Standalone]", "shaders.md"] },
     { route: "/learn/renderstack-post-processing.html", tokens: ["RenderStack", "EffectStage", "renderstack-post-processing.md"] },
-    { route: "/download.html", tokens: ["InfernuxHub", "advanced-download", "data-version-select", ".whl", "0.2.9", "0.2.1"], forbid: ["SHA-256", "checksum", "校验码", "pwa-install.js", "advanced-download\" open"] },
+    { route: "/download.html", tokens: ["InfernuxHub", "advanced-download", "data-version-select", ".whl", "0.3.4", "0.2.9"], forbid: ["SHA-256", "checksum", "校验码", "pwa-install.js", "advanced-download\" open"] },
     { route: "/community.html", tokens: ["https://infernux-engine.discourse.group/", "http-equiv=\"refresh\""] },
     { route: "/roadmap.html", tokens: ["<h1", "start.html"] },
     { route: "/wiki/site/en/api/index.html", tokens: ["API", "/start.html", "/learn.html"], forbid: [">Manual</a>", "/manual/"] },

@@ -11,7 +11,7 @@
 为场景提供照明的光源组件。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.2.9
+**状态：** Preview · **验证版本：** 0.3.4
 
 根据场景尺度选择 Light 类型、范围、强度、颜色和阴影。先确认无阴影光照，再启用阴影并调整 Bias。
 <!-- USER CONTENT END -->
@@ -29,6 +29,10 @@
 | shadows | `int` | The shadow casting mode of the light. |
 | shadow_strength | `float` | 阴影强度。 |
 | shadow_bias | `float` | 阴影偏移量。 |
+| shadow_normal_bias | `float` | 阴影法线偏移量。 |
+| shadow_softness | `float` |  |
+| affect_geometry | `bool` |  |
+| affect_particles | `bool` |  |
 
 <!-- USER CONTENT START --> properties
 
@@ -38,8 +42,6 @@
 
 | 方法 | 描述 |
 |------|------|
-| `get_light_view_matrix() → Any` | Return the light's view matrix for shadow mapping. |
-| `get_light_projection_matrix(shadow_extent: float = ..., near_plane: float = ..., far_plane: float = ...) → Any` | Return the light's projection matrix for shadow mapping. |
 | `serialize() → str` | Serialize the component to a JSON string. |
 
 <!-- USER CONTENT START --> public_methods

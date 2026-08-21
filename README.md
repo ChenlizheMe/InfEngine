@@ -22,13 +22,16 @@
   <a href="README-zh.md">中文</a> ·
   <a href="https://infernux-engine.com/">Website</a> ·
   <a href="https://infernux-engine.com/wiki.html">Documentation</a> ·
+  <a href="https://infernux-engine.discourse.group/">Community</a> ·
   <a href="https://github.com/ChenlizheMe/Infernux/releases">Releases</a> ·
   <a href="https://arxiv.org/pdf/2604.10263">Technical Report</a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="Infernux editor rendering a 10,000-object scene" width="100%" />
+  <img src="docs/assets/demo.png" alt="Infernux 0.3.4 editor rendering a 65,536-object voxel continent with a custom RenderStack" width="100%" />
 </p>
+
+The capture above is a real 1920×1032 editor session: 65,536 regular GameObjects share one mesh and material to form a lit voxel continent while a programmable RenderStack applies tilt-shift focus, atmospheric fog, color treatment, and MSAA in real time.
 
 ## What Infernux Is
 
@@ -156,6 +159,7 @@ python -m pytest test/ -v
 
 - Website: <https://infernux-engine.com/>
 - Documentation hub: <https://infernux-engine.com/wiki.html>
+- Community forum: <https://infernux-engine.discourse.group/>
 - Technical report: [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting](https://arxiv.org/pdf/2604.10263)
 - API reference: published under `docs/wiki/site/`
 

@@ -46,7 +46,7 @@ if (!renderStackGuide.includes("RenderStack") || !renderStackGuide.includes("Eff
 }
 
 const download = await readFile(path.join(docsRoot, "download.html"), "utf8");
-for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", "0.2.9", "0.2.1", "0.2.0", "js/download.js?v=5"]) {
+for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=5"]) {
     if (!download.includes(contract)) fail(`download.html: missing '${contract}'`);
 }
 if (/SHA-?256|checksum|校验码|publisher signature|data-pwa-install|pwa-install\.js/i.test(download)) {

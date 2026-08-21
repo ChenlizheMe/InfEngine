@@ -1,7 +1,7 @@
 # Infernux 脚本 API
 
 <div class="class-info">
-版本 0.2.9
+版本 0.3.4
  &nbsp;|&nbsp; <a href="../../en/api/index.html">English</a>
 </div>
 
@@ -17,8 +17,8 @@
 
 | 包 | 描述 |
 |------|------|
-| Infernux | LogLevel, PrimitiveType, Space, LightType, LightShadows, CameraProjection, ... |
-| Infernux.components | InxComponent, require_component, disallow_multiple, execute_in_edit_mode |
+| Infernux | LogLevel, PrimitiveType, Space, LightType, LightShadows, CameraProjection, ..., serialized_field |
+| Infernux.components | InxComponent, Space, serialized_field, require_component, disallow_multiple |
 | Infernux.components.builtin | AudioListener, AudioSource, BoxCollider, Camera, CapsuleCollider, Collider, ... |
 | Infernux.core | AudioClip, Material, Shader, Texture |
 | Infernux.coroutine | WaitForSeconds, WaitForSecondsRealtime, WaitForEndOfFrame, WaitForFixedUpdate, WaitUntil, WaitWhile, ... |

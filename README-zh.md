@@ -22,13 +22,16 @@
   <a href="README.md">English</a> ·
   <a href="https://infernux-engine.com/">官网</a> ·
   <a href="https://infernux-engine.com/wiki.html">文档</a> ·
+  <a href="https://infernux-engine.discourse.group/">社区论坛</a> ·
   <a href="https://github.com/ChenlizheMe/Infernux/releases">下载</a> ·
   <a href="https://arxiv.org/pdf/2604.10263">技术报告</a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="Infernux 编辑器渲染 10000 个物体的场景" width="100%" />
+  <img src="docs/assets/demo.png" alt="Infernux 0.3.4 编辑器通过自定义 RenderStack 渲染由 65536 个物体组成的体素大陆" width="100%" />
 </p>
+
+上图来自真实的 1920×1032 编辑器会话：65,536 个标准 GameObject 共享一套网格与材质构成受光体素大陆，同时由可编程 RenderStack 实时完成移轴景深、大气雾、色彩处理与 MSAA。
 
 ## Infernux 是什么
 
@@ -156,6 +159,7 @@ python -m pytest test/ -v
 
 - 官网：<https://infernux-engine.com/>
 - 文档入口：<https://infernux-engine.com/wiki.html>
+- 社区论坛：<https://infernux-engine.discourse.group/>
 - 技术报告：[Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting](https://arxiv.org/pdf/2604.10263)
 - API 参考：发布于 `docs/wiki/site/`
 

@@ -53,7 +53,9 @@
 | 方法 | 描述 |
 |------|------|
 | `to_dict() → dict` | 将材质序列化为字典。 |
+| `serialize_document() → dict` |  |
 | `apply_dict(document: dict) → bool` | Transactionally apply a material document. |
+| `deserialize_document(document: dict) → bool` |  |
 | `dispose() → None` | 释放底层原生材质资源。 |
 | `clone() → Material` | Create a deep copy of this material, including shader state and properties. |
 | `set_shader(shader_name: str) → None` | 设置材质使用的着色器。 |
@@ -114,7 +116,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.2.9 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.3.4 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

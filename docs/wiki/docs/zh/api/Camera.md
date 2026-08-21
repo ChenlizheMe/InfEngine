@@ -11,7 +11,7 @@
 渲染场景视图的摄像机组件。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.2.9
+**状态：** Preview · **验证版本：** 0.3.4
 
 普通 3D 深度使用透视 Camera，尺度稳定的 2D 构图使用正交 Camera。Near/Far 裁剪应与场景尺度匹配。
 <!-- USER CONTENT END -->
@@ -30,6 +30,8 @@
 | culling_mask | `int` | 用于剔除对象的图层遮罩。 *(只读)* |
 | clear_flags | `int` | 摄像机渲染前清除背景的方式。 |
 | background_color | `List[float]` | 清除标志设为纯色时使用的背景颜色。 |
+| stop_nans | `bool` | Whether invalid final-output pixels are replaced before display encoding. |
+| dithering | `bool` | Whether display-space dithering is applied before output quantization. |
 | pixel_width | `int` | 渲染目标宽度（像素）。 *(只读)* |
 | pixel_height | `int` | 渲染目标高度（像素）。 *(只读)* |
 

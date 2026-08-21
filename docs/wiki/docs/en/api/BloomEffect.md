@@ -39,9 +39,7 @@ Attributes:
 | intensity | `float` |  |
 | scatter | `float` |  |
 | clamp | `float` |  |
-| tint_r | `float` |  |
-| tint_g | `float` |  |
-| tint_b | `float` |  |
+| tint | `list[float]` |  |
 | max_iterations | `int` |  |
 
 <!-- USER CONTENT START --> properties
@@ -62,7 +60,7 @@ Attributes:
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

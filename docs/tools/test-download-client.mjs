@@ -10,7 +10,7 @@ const listeners = new Map();
 
 function makeSelect(id, initialUrl) {
     const link = { href: "" };
-    const options = [{ value: initialUrl, textContent: "0.2.9 · fallback" }];
+    const options = [{ value: initialUrl, textContent: "0.3.4 · fallback" }];
     const select = {
         id,
         value: initialUrl,
@@ -31,7 +31,7 @@ function makeSelect(id, initialUrl) {
     return { select, link };
 }
 
-const oldWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl";
+const oldWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/infernux-0.3.4-cp312-cp312-win_amd64.whl";
 const latestWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/infernux-0.3.7-cp312-cp312-win_amd64.whl";
 const latestHub = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe";
 const previousWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.6/infernux-0.3.6-cp312-cp312-win_amd64.whl";

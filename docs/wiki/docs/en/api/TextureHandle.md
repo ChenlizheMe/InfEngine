@@ -16,7 +16,7 @@ A handle to a transient texture resource in the render graph.
 
 | Signature | Description |
 |------|------|
-| `TextureHandle.__init__(name: str, format: Format, is_camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ...) → None` |  |
+| `TextureHandle.__init__(name: str, format: Format, is_camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: int = ...) → None` |  |
 
 <!-- USER CONTENT START --> constructors
 
@@ -31,6 +31,7 @@ A handle to a transient texture resource in the render graph.
 | is_camera_target | `bool` |  |
 | size | `Optional[Tuple[int, int]]` |  |
 | size_divisor | `int` |  |
+| samples | `int` |  |
 | is_depth | `bool` | Returns True if this texture uses a depth format. *(read-only)* |
 
 <!-- USER CONTENT START --> properties
@@ -52,7 +53,7 @@ A handle to a transient texture resource in the render graph.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also
