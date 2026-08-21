@@ -276,9 +276,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             py::arg("guid"), "Schedule authored shader compilation on JobSystem")
         .def(
             "begin_load_audio_by_guid",
-            [](AssetRegistry &self, const std::string &guid) {
-                return self.BeginLoadAsset(guid, ResourceType::Audio);
-            },
+            [](AssetRegistry &self, const std::string &guid) { return self.BeginLoadAsset(guid, ResourceType::Audio); },
             py::arg("guid"), "Schedule audio decode on JobSystem")
         .def(
             "load_texture_by_guid",

@@ -328,8 +328,8 @@ struct GraphicsRenderingSignature
 
     [[nodiscard]] constexpr bool IsEmpty() const noexcept
     {
-        if (colorFormatCount != 0 || depthFormat != PixelFormat::Undefined ||
-            stencilFormat != PixelFormat::Undefined || samples != SampleCount::One || viewMask != 0)
+        if (colorFormatCount != 0 || depthFormat != PixelFormat::Undefined || stencilFormat != PixelFormat::Undefined ||
+            samples != SampleCount::One || viewMask != 0)
             return false;
         for (const PixelFormat format : colorFormats) {
             if (format != PixelFormat::Undefined)
@@ -373,8 +373,7 @@ struct GraphicsRenderingSignature
         if (depthFormat != PixelFormat::Undefined && stencilFormat != PixelFormat::Undefined &&
             depthFormat != stencilFormat)
             return false;
-        return colorFormatCount > 0 || depthFormat != PixelFormat::Undefined ||
-               stencilFormat != PixelFormat::Undefined;
+        return colorFormatCount > 0 || depthFormat != PixelFormat::Undefined || stencilFormat != PixelFormat::Undefined;
     }
 };
 
@@ -403,8 +402,8 @@ struct GraphicsPipelineDesc
     {
         if (!useDynamicRendering)
             return renderTargetLayout.IsValid() && renderingSignature.IsEmpty();
-        if (renderTargetLayout.IsValid() || !renderingSignature.IsValid() ||
-            renderingSignature.samples != samples || renderingSignature.colorFormatCount != colorTargetCount)
+        if (renderTargetLayout.IsValid() || !renderingSignature.IsValid() || renderingSignature.samples != samples ||
+            renderingSignature.colorFormatCount != colorTargetCount)
             return false;
         for (uint32_t index = 0; index < colorTargetCount; ++index) {
             if (renderingSignature.colorFormats[index] != colorTargets[index].format)

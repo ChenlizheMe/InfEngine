@@ -268,8 +268,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         // Simulation records on the independent compute family. Default
         // Graphics-only exclusive buffers hang that queue the first time
         // Game-only preview or a newly selected six-way system touches them.
-        m_residentState->states =
-            createSharedStorage(stateBytes, storage | rhi::BufferUsageFlags::TransferSource);
+        m_residentState->states = createSharedStorage(stateBytes, storage | rhi::BufferUsageFlags::TransferSource);
         m_residentState->freeList =
             createSharedStorage(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
         m_residentState->counters =

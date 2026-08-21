@@ -121,8 +121,8 @@ int main()
         const Manifest defaultB = Write(deterministicB, compressibleSources);
         Require(ReadFile(deterministicA) == ReadFile(deterministicB), "default InxPack output is not deterministic");
         Require(defaultA.archiveHash == defaultB.archiveHash, "default InxPack manifest hash is not deterministic");
-        const Manifest release = Write(releasePackage, compressibleSources,
-                                       {CompressionProfile::Release, kReleaseCompressionLevel});
+        const Manifest release =
+            Write(releasePackage, compressibleSources, {CompressionProfile::Release, kReleaseCompressionLevel});
         Require(release.entries.size() == 1 && release.entries.front().rawBytes == compressibleBytes.size(),
                 "explicit release compression produced an invalid manifest");
 
@@ -140,8 +140,7 @@ int main()
 
         phase = "ReadEntry";
         std::cerr << "[InxPackTests] " << phase << '\n' << std::flush;
-        Require(ReadEntry(packagePath, read.entries.front().path) == expected,
-                "ReadEntry returned unexpected bytes");
+        Require(ReadEntry(packagePath, read.entries.front().path) == expected, "ReadEntry returned unexpected bytes");
 
         phase = "Extract";
         std::cerr << "[InxPackTests] " << phase << '\n' << std::flush;

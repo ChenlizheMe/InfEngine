@@ -360,8 +360,7 @@ static GameObject *CreatePrimitiveObject(Scene *scene, PrimitiveType type, const
  * Returns a Python list of GameObjects.
  */
 static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, size_t count,
-                                            const std::string &namePrefix = "",
-                                            bool withColliders = true)
+                                            const std::string &namePrefix = "", bool withColliders = true)
 {
     const std::vector<Vertex> *vertices = nullptr;
     const std::vector<uint32_t> *indices = nullptr;
@@ -1018,8 +1017,7 @@ void RegisterSceneBindings(py::module_ &m)
             py::arg("type"), "Set the mesh to a built-in primitive (Cube, Sphere, Quad, etc.)")
         .def(
             "set_inline_mesh_data",
-            [](MeshRenderer &mr,
-               const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
+            [](MeshRenderer &mr, const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
                const py::array_t<float, py::array::c_style | py::array::forcecast> &normals,
                const py::array_t<float, py::array::c_style | py::array::forcecast> &uvs,
                const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices,
@@ -2285,8 +2283,7 @@ void RegisterSceneBindings(py::module_ &m)
                                                    instantiateInWorldSpace, returnObjects);
             },
             py::arg("source"), py::arg("positions"), py::arg("rotations") = py::none(), py::arg("scales") = py::none(),
-            py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = true,
-            py::arg("return_objects") = true,
+            py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = true, py::arg("return_objects") = true,
             "Internal native bulk subtree clone used by the public Instantiate overload")
         .def(
             "_instantiate_document",

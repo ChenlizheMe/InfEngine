@@ -4,8 +4,8 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -231,9 +231,8 @@ void TestQueuedCancellationAndGenerationMetrics()
 void TestConditionalWriteRejectsAChangedTarget()
 {
     const auto path = std::filesystem::temp_directory_path() /
-                      ("infernux-document-cas-" + std::to_string(
-                           std::chrono::steady_clock::now().time_since_epoch().count()) +
-                       ".txt");
+                      ("infernux-document-cas-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << "before";
@@ -249,9 +248,9 @@ void TestConditionalWriteRejectsAChangedTarget()
     const auto external = store.CaptureFileState(path.u8string());
     Require(external.size == expected.size, "CAS test external content changed file size");
     Require(external.modifiedNs == expected.modifiedNs, "CAS test failed to restore modification time");
-    const std::string hashDiagnostic =
-        "CAS state did not distinguish same-size same-mtime external content (before=" +
-        std::to_string(expected.contentHash) + ", external=" + std::to_string(external.contentHash) + ")";
+    const std::string hashDiagnostic = "CAS state did not distinguish same-size same-mtime external content (before=" +
+                                       std::to_string(expected.contentHash) +
+                                       ", external=" + std::to_string(external.contentHash) + ")";
     Require(external.contentHash != expected.contentHash, hashDiagnostic.c_str());
 
     infernux::DocumentWriteOptions options;
@@ -277,9 +276,8 @@ void TestConditionalWriteRejectsAChangedTarget()
 void TestExplicitCommitChainAdvancesItsCasBaseline()
 {
     const auto path = std::filesystem::temp_directory_path() /
-                      ("infernux-document-chain-" + std::to_string(
-                           std::chrono::steady_clock::now().time_since_epoch().count()) +
-                       ".txt");
+                      ("infernux-document-chain-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << "base";
@@ -306,9 +304,8 @@ void TestExplicitCommitChainAdvancesItsCasBaseline()
 void TestDifferentCommitChainsDoNotShareCasBaseline()
 {
     const auto path = std::filesystem::temp_directory_path() /
-                      ("infernux-document-independent-chain-" + std::to_string(
-                           std::chrono::steady_clock::now().time_since_epoch().count()) +
-                       ".txt");
+                      ("infernux-document-independent-chain-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << "base";
@@ -345,9 +342,8 @@ void TestDifferentCommitChainsDoNotShareCasBaseline()
 void TestCommitChainRejectsAnInterveningExternalEdit()
 {
     const auto path = std::filesystem::temp_directory_path() /
-                      ("infernux-document-chain-external-" + std::to_string(
-                           std::chrono::steady_clock::now().time_since_epoch().count()) +
-                       ".txt");
+                      ("infernux-document-chain-external-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << "base";

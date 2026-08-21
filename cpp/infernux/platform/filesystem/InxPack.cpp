@@ -938,9 +938,8 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
             throw std::runtime_error("InxPack raw block checksum mismatch: " + entry.path);
 
         std::ofstream destinationFile(outputs[index], std::ios::binary | std::ios::trunc);
-        if (!destinationFile ||
-            (!raw.empty() && !destinationFile.write(reinterpret_cast<const char *>(raw.data()),
-                                                     static_cast<std::streamsize>(raw.size()))))
+        if (!destinationFile || (!raw.empty() && !destinationFile.write(reinterpret_cast<const char *>(raw.data()),
+                                                                        static_cast<std::streamsize>(raw.size()))))
             throw std::runtime_error("InxPack cannot extract entry: " + entry.path);
     };
 

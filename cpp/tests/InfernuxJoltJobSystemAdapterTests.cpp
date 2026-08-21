@@ -2,8 +2,8 @@
 
 #include <Jolt/Core/Factory.h>
 
-#include <function/scene/physics/InfernuxJoltJobSystemAdapter.h>
 #include <core/threading/JobSystem.h>
+#include <function/scene/physics/InfernuxJoltJobSystemAdapter.h>
 
 #include <atomic>
 #include <cassert>
@@ -25,12 +25,13 @@ void TestDependenciesAndBarrier()
 
     std::atomic<int> runs{0};
     JPH::JobSystem::JobHandle dependent;
-    auto dependency = adapter.CreateJob("dependency", JPH::Color::sGreen,
-                                        [&] {
-                                            runs.fetch_add(1);
-                                            dependent.RemoveDependency();
-                                        },
-                                        1);
+    auto dependency = adapter.CreateJob(
+        "dependency", JPH::Color::sGreen,
+        [&] {
+            runs.fetch_add(1);
+            dependent.RemoveDependency();
+        },
+        1);
     dependent = adapter.CreateJob("dependent", JPH::Color::sBlue, [&] { runs.fetch_add(10); }, 1);
     auto *barrier = adapter.CreateBarrier();
     assert(barrier != nullptr);
@@ -54,11 +55,14 @@ void TestDynamicBarrierAndException()
     std::atomic<int> childRuns{0};
     auto *barrier = adapter.CreateBarrier();
     assert(barrier != nullptr);
-    auto parent = adapter.CreateJob("parent", JPH::Color::sYellow, [&] {
-        auto child = adapter.CreateJob("child", JPH::Color::sOrange, [&] { childRuns.fetch_add(1); }, 0);
-        barrier->AddJob(child);
-        throw std::runtime_error("adapter must contain user exceptions");
-    }, 1);
+    auto parent = adapter.CreateJob(
+        "parent", JPH::Color::sYellow,
+        [&] {
+            auto child = adapter.CreateJob("child", JPH::Color::sOrange, [&] { childRuns.fetch_add(1); }, 0);
+            barrier->AddJob(child);
+            throw std::runtime_error("adapter must contain user exceptions");
+        },
+        1);
     barrier->AddJob(parent);
     parent.RemoveDependency();
     adapter.WaitForJobs(barrier);

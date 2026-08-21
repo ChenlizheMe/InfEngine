@@ -17,9 +17,9 @@ bool IsValidEntry(const GpuParticleDrawEntry &entry)
 {
     return entry.id != 0 && entry.emitterId != 0 && entry.graphInstanceId != 0 && entry.capacity != 0 &&
            entry.instances.IsValid() && entry.visibility.IsValid() && entry.renderIndices.IsValid() &&
-           entry.indirectArguments.IsValid() &&
-           entry.bounds.IsValid() && entry.simulationControl.IsValid() && entry.renderer && entry.renderer->IsValid() &&
-           entry.renderer->VertexCount() > 0 && entry.renderer->InstanceBuffer() == entry.instances &&
+           entry.indirectArguments.IsValid() && entry.bounds.IsValid() && entry.simulationControl.IsValid() &&
+           entry.renderer && entry.renderer->IsValid() && entry.renderer->VertexCount() > 0 &&
+           entry.renderer->InstanceBuffer() == entry.instances &&
            entry.renderer->RenderIndexBuffer() == entry.renderIndices &&
            (!entry.cullProgram || entry.cullProgram->IsValid()) &&
            (!entry.sortProgram || (entry.sortProgram->IsValid() && entry.cullProgram));
@@ -91,11 +91,9 @@ bool ParticleGpuDrawRegistry::Remove(uint64_t id)
     const auto currentState = std::atomic_load_explicit(&m_state, std::memory_order_acquire);
     auto nextState = std::make_shared<RegistryState>(*currentState);
     const auto previousSize = nextState->entries.size();
-    nextState->entries.erase(
-        std::remove_if(nextState->entries.begin(), nextState->entries.end(), [&](const auto &entry) {
-            return entry.id == id;
-        }),
-        nextState->entries.end());
+    nextState->entries.erase(std::remove_if(nextState->entries.begin(), nextState->entries.end(),
+                                            [&](const auto &entry) { return entry.id == id; }),
+                             nextState->entries.end());
     if (nextState->entries.size() == previousSize)
         return false;
     ++nextState->revision;
@@ -119,7 +117,7 @@ void ParticleGpuDrawRegistry::Clear()
 }
 
 ParticleGpuDrawRegistry::SnapshotHandle ParticleGpuDrawRegistry::SnapshotShared(int32_t queueMin,
-                                                                                  int32_t queueMax) const
+                                                                                int32_t queueMax) const
 {
     if (queueMin > queueMax)
         return EmptySnapshot();

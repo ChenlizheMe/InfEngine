@@ -187,8 +187,7 @@ int main()
     // Python registry/module/descriptor state and explicitly finalizes it.
     const size_t publishedBeforeCommittedRollback = store.GetPublishedClassCount();
     const auto committedRollbackTransaction = store.BeginSchemaTransaction();
-    const auto committedRollbackClass =
-        store.PrepareClass(committedRollbackTransaction, "tests:CommittedRollback");
+    const auto committedRollbackClass = store.PrepareClass(committedRollbackTransaction, "tests:CommittedRollback");
     store.PrepareField(committedRollbackTransaction, committedRollbackClass, "value",
                        ComponentDataStore::DataType::Float64);
     store.AllocatePreparedSlot(committedRollbackTransaction, committedRollbackClass);
@@ -213,8 +212,8 @@ int main()
     const auto newValue =
         store.PrepareField(layoutTransaction, newLayout, "value", ComponentDataStore::DataType::Float64);
     const ComponentDataStore::FieldMigration layoutMigration[] = {{oldValue, newValue}};
-    const auto newLayoutSlot = store.MigrateSlotToPrepared(
-        layoutTransaction, newLayout, oldLayout, oldLayoutSlot, layoutMigration, 1);
+    const auto newLayoutSlot =
+        store.MigrateSlotToPrepared(layoutTransaction, newLayout, oldLayout, oldLayoutSlot, layoutMigration, 1);
     const auto layoutIds = store.CommitSchemaTransaction(layoutTransaction);
     const uint32_t newLayoutId = layoutIds.at(newLayout);
     assert(newLayoutId != oldLayout);

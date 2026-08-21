@@ -503,7 +503,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 }
 
 std::string ResolveGpuParticleOutputPrograms(InxRenderer &renderer,
-                                              std::vector<particle::GpuParticleEmitterProgram> &programs)
+                                             std::vector<particle::GpuParticleEmitterProgram> &programs)
 {
     for (auto &program : programs) {
         for (auto &output : program.outputs) {

@@ -789,7 +789,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     const std::string missingProgramKey =
         vertShaderName + "|" + fragShaderName + (m_materialPipelineManagerInitialized ? "|ready" : "|initializing");
     if (reportedMissingPrograms.insert(missingProgramKey).second) {
-        // INXLOG_WARN("RefreshMaterialPipeline: shader codes not found or MPM not initialized for '", material->GetName(),
+        // INXLOG_WARN("RefreshMaterialPipeline: shader codes not found or MPM not initialized for '",
+        // material->GetName(),
         //             "' (vert='", vertShaderName, "', frag='", fragShaderName, "')");
     }
 
@@ -801,13 +802,14 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         // INXLOG_WARN("  Available vert shaders:", vertKeys);
         // INXLOG_WARN("  Available frag shaders:", fragKeys);
         // INXLOG_WARN("  MPM initialized: ", m_materialPipelineManagerInitialized ? "true" : "false",
-        //             ", vertCode found: ", (vertCode ? "yes" : "no"), ", fragCode found: ", (fragCode ? "yes" : "no"));
+        //             ", vertCode found: ", (vertCode ? "yes" : "no"), ", fragCode found: ", (fragCode ? "yes" :
+        //             "no"));
     }
     return false;
 }
 
 MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material,
-                                                                          bool useDynamicRendering)
+                                                                         bool useDynamicRendering)
 {
     if (!material)
         return nullptr;
@@ -1452,9 +1454,8 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     if (compatibleRenderPass == VK_NULL_HANDLE) {
         rhi::GraphicsRenderingSignature signature;
         signature.depthFormat = rhi::FromVkFormat(depthFormat);
-        signature.stencilFormat = rhi::IsStencilFormat(signature.depthFormat)
-                                      ? signature.depthFormat
-                                      : rhi::PixelFormat::Undefined;
+        signature.stencilFormat =
+            rhi::IsStencilFormat(signature.depthFormat) ? signature.depthFormat : rhi::PixelFormat::Undefined;
         signature.samples = rhi::SampleCount::One;
         if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
             INXLOG_WARN("Failed to build Dynamic Rendering signature for shadow pipeline");

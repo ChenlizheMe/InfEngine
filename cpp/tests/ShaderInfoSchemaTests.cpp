@@ -322,13 +322,11 @@ VertexOutput vertex(inout VertexInput v) {
             assert((hasCapability("Fullscreen") || hasCapability("Standalone")) &&
                    "explicit main() stages must declare their direct compilation domain");
         }
-        const bool directStage =
-            std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), "Fullscreen") !=
-                builtinInfo.capabilities.end() ||
-            std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), "Standalone") !=
-                builtinInfo.capabilities.end();
-        const bool linkedMaterialStage =
-            !directStage && (!builtinInfo.inputs.empty() || !builtinInfo.outputs.empty());
+        const bool directStage = std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(),
+                                           "Fullscreen") != builtinInfo.capabilities.end() ||
+                                 std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(),
+                                           "Standalone") != builtinInfo.capabilities.end();
+        const bool linkedMaterialStage = !directStage && (!builtinInfo.inputs.empty() || !builtinInfo.outputs.empty());
         if ((extension == ".vert" || extension == ".frag") && !linkedMaterialStage)
             RequireCompiles(compiler, source, path);
     }
@@ -337,8 +335,7 @@ VertexOutput vertex(inout VertexInput v) {
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert", shaderRoot + "/particle_unlit.frag");
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert",
                                  shaderRoot + "/particle_six_way_smoke.frag");
-    RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert",
-                                 shaderRoot + "/spectral_ocean.frag");
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert", shaderRoot + "/spectral_ocean.frag");
 
     const std::string removedAnnotationSource =
         "#version 450\n" + std::string(1, '@') + "shader_id: Removed\nvoid main() { }\n";

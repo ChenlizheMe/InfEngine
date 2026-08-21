@@ -65,9 +65,8 @@ int main()
     manager.EmitRuntimeFrameBarrier(Barrier::RenderGraph);
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
     manager.EndFrame();
-    assert((observed ==
-            std::vector<Barrier>{Barrier::RenderExtraction, Barrier::RenderGraph, Barrier::SnapshotPublication,
-                                 Barrier::PendingDestroy}));
+    assert((observed == std::vector<Barrier>{Barrier::RenderExtraction, Barrier::RenderGraph,
+                                             Barrier::SnapshotPublication, Barrier::PendingDestroy}));
     assert(endCount == 1);
 
     // Exercise the real empty-scene production flow. Physics work is skipped,
@@ -111,12 +110,10 @@ int main()
     child->SetParent(root, true);
     auto &transforms = TransformECSStore::Instance();
     std::vector<Transform *> invalidated;
-    transforms.SetInvalidationObserver(
-        [&invalidated](Transform *transform) { invalidated.push_back(transform); });
+    transforms.SetInvalidationObserver([&invalidated](Transform *transform) { invalidated.push_back(transform); });
     transforms.SyncSceneWorldMatrices(scene);
     transforms.BeginFrameCache(scene);
-    transforms.SetCachedWorldPoseFromPhysics(root->GetTransform()->GetECSHandle().index,
-                                             glm::vec3(1.0f, 2.0f, 3.0f),
+    transforms.SetCachedWorldPoseFromPhysics(root->GetTransform()->GetECSHandle().index, glm::vec3(1.0f, 2.0f, 3.0f),
                                              glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true);
     const uint64_t revisionBeforePhysicsPose = manager.GetRenderTransformRevision();
     const bool publishedPhysicsPose = transforms.EndFrameCache();
@@ -129,8 +126,7 @@ int main()
     transforms.BeginFrameCache(scene);
     root->GetTransform()->SetPosition(glm::vec3(2.0f, 3.0f, 4.0f));
     assert(!transforms.EndFrameCache());
-    assert((invalidated ==
-            std::vector<Transform *>{root->GetTransform(), child->GetTransform()}));
+    assert((invalidated == std::vector<Transform *>{root->GetTransform(), child->GetTransform()}));
 
     // Runtime authoring and bulk Instantiate may allocate transforms after
     // BeginFrameCache(). Every frame-cache array must grow in lockstep so the

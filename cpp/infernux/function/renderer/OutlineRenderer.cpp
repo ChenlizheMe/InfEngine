@@ -14,9 +14,9 @@
 #include "shader/ShaderProgram.h"
 #include "shader/ShaderReflection.h"
 #include "vk/DescriptorBindTrace.h"
+#include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
-#include "vk/RhiVulkanTypes.h"
 #include <core/types/ColorSpace.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -367,8 +367,9 @@ void OutlineRenderer::CreateOutlinePipelineLayouts()
 
 bool OutlineRenderer::CreateOutlinePipelines()
 {
-    if (!m_core || ((!m_outlineMaskUsesDynamicRendering && m_outlineMaskRenderPass == VK_NULL_HANDLE) ||
-                   (!m_outlineCompositeUsesDynamicRendering && m_outlineCompositeRenderPass == VK_NULL_HANDLE)) ||
+    if (!m_core ||
+        ((!m_outlineMaskUsesDynamicRendering && m_outlineMaskRenderPass == VK_NULL_HANDLE) ||
+         (!m_outlineCompositeUsesDynamicRendering && m_outlineCompositeRenderPass == VK_NULL_HANDLE)) ||
         m_outlineMaskPipelineLayout == VK_NULL_HANDLE || m_outlineCompositePipelineLayout == VK_NULL_HANDLE) {
         return false;
     }

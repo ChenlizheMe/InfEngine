@@ -123,17 +123,16 @@ inline ImageLayoutAccess GetImageLayoutAccess(VkImageLayout layout)
     }
 }
 
-inline void TransitionTrackedImageLayout(VkCommandBuffer commandBuffer, VkImage image,
-                                         VkImageAspectFlags aspectMask, VkImageLayout &currentLayout,
-                                         VkImageLayout nextLayout)
+inline void TransitionTrackedImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageAspectFlags aspectMask,
+                                         VkImageLayout &currentLayout, VkImageLayout nextLayout)
 {
     if (commandBuffer == VK_NULL_HANDLE || image == VK_NULL_HANDLE || currentLayout == nextLayout)
         return;
 
     const auto source = GetImageLayoutAccess(currentLayout);
     const auto destination = GetImageLayoutAccess(nextLayout);
-    const auto barrier = MakeImageBarrier(image, currentLayout, nextLayout, aspectMask, source.access,
-                                          destination.access);
+    const auto barrier =
+        MakeImageBarrier(image, currentLayout, nextLayout, aspectMask, source.access, destination.access);
     vkCmdPipelineBarrier(commandBuffer, source.stage, destination.stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     currentLayout = nextLayout;
 }

@@ -58,20 +58,12 @@ int main()
     assert(motion.IsValid());
 
     const MaterialPassPipelineDescriptor normal{
-        ShaderCompileTarget::Normal,
-        {PixelFormat::RGBA16SFloat},
-        PixelFormat::D32SFloat,
-        SampleCount::One,
-        true,
+        ShaderCompileTarget::Normal, {PixelFormat::RGBA16SFloat}, PixelFormat::D32SFloat, SampleCount::One, true,
     };
     assert(normal.IsValid());
 
     const MaterialPassPipelineDescriptor baseColor{
-        ShaderCompileTarget::BaseColor,
-        {PixelFormat::RGBA16SFloat},
-        PixelFormat::D32SFloat,
-        SampleCount::One,
-        true,
+        ShaderCompileTarget::BaseColor, {PixelFormat::RGBA16SFloat}, PixelFormat::D32SFloat, SampleCount::One, true,
     };
     assert(baseColor.IsValid());
     auto invalidBaseColor = baseColor;
@@ -133,8 +125,7 @@ int main()
     dynamicGBuffer.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     assert(dynamicGBuffer.IsValid());
     assert(dynamicGBuffer != gbuffer);
-    assert(MaterialPassPipelineDescriptorHash{}(dynamicGBuffer) !=
-           MaterialPassPipelineDescriptorHash{}(gbuffer));
+    assert(MaterialPassPipelineDescriptorHash{}(dynamicGBuffer) != MaterialPassPipelineDescriptorHash{}(gbuffer));
     const auto gbufferSignature = dynamicGBuffer.RenderingSignature();
     assert(gbufferSignature.IsValid());
     assert(gbufferSignature.colorFormatCount == gbuffer.colorFormats.size());

@@ -322,8 +322,8 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
     desc.raster.cullMode = rhi::CullMode::Back;
     desc.raster.frontFace = rhi::FrontFace::Clockwise;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
-    desc.depth.writeEnabled = state.depthWriteEnabled && !pass.depthReadOnly &&
-                              pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.writeEnabled =
+        state.depthWriteEnabled && !pass.depthReadOnly && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];

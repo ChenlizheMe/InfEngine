@@ -104,8 +104,7 @@ class JobHandle
 
     struct State
     {
-        explicit State(uint32_t count = 0, bool groupState = false)
-            : remaining(count), closed(!groupState)
+        explicit State(uint32_t count = 0, bool groupState = false) : remaining(count), closed(!groupState)
         {
         }
 
@@ -118,7 +117,6 @@ class JobHandle
     };
 
   private:
-
     explicit JobHandle(std::shared_ptr<State> state, bool waitsForClose = false)
         : m_state(std::move(state)), m_waitsForClose(waitsForClose)
     {
@@ -134,8 +132,7 @@ using JobFence = JobHandle;
 class TaskGroup
 {
   public:
-    explicit TaskGroup(JobDomain domain = JobDomain::Default,
-                       JobPriority priority = JobPriority::Normal);
+    explicit TaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
     ~TaskGroup();
 
     TaskGroup(const TaskGroup &) = delete;
@@ -194,35 +191,22 @@ class JobSystem
     JobSystem &operator=(JobSystem &&) = delete;
 
     /** Existing callers retain Default/Normal behavior. */
-    JobHandle Schedule(JobFn job,
-                       JobDomain domain = JobDomain::Default,
-                       JobPriority priority = JobPriority::Normal);
+    JobHandle Schedule(JobFn job, JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
 
     JobHandle Schedule(TaskGroup &group, JobFn job);
     JobHandle Schedule(TaskGroup &group, JobFn job, JobPriority priority);
 
-    JobHandle ScheduleBatch(uint32_t count,
-                            std::function<JobFn(uint32_t index)> factory,
-                            JobDomain domain = JobDomain::Default,
-                            JobPriority priority = JobPriority::Normal);
-    JobHandle ScheduleBatch(TaskGroup &group,
-                            uint32_t count,
-                            std::function<JobFn(uint32_t index)> factory);
-    JobHandle ScheduleBatch(TaskGroup &group,
-                            uint32_t count,
-                            std::function<JobFn(uint32_t index)> factory,
+    JobHandle ScheduleBatch(uint32_t count, std::function<JobFn(uint32_t index)> factory,
+                            JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
+    JobHandle ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory);
+    JobHandle ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory,
                             JobPriority priority);
 
-    void ParallelFor(uint32_t count,
-                     std::function<void(uint32_t index)> body,
-                     JobDomain domain = JobDomain::Default,
+    void ParallelFor(uint32_t count, std::function<void(uint32_t index)> body, JobDomain domain = JobDomain::Default,
                      JobPriority priority = JobPriority::Normal);
-    void ParallelFor(TaskGroup &group,
-                     uint32_t count,
-                     std::function<void(uint32_t index)> body);
+    void ParallelFor(TaskGroup &group, uint32_t count, std::function<void(uint32_t index)> body);
 
-    TaskGroup CreateTaskGroup(JobDomain domain = JobDomain::Default,
-                              JobPriority priority = JobPriority::Normal) const;
+    TaskGroup CreateTaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal) const;
 
     /** Wait helps work from the target group/domain while preserving permits. */
     void Wait(const JobHandle &handle);
@@ -300,15 +284,10 @@ class JobSystem
     void Execute(Task task, bool helped) noexcept;
     void StopAndJoin() noexcept;
 
-    JobHandle ScheduleInternal(JobFn job,
-                               JobDomain domain,
-                               JobPriority priority,
+    JobHandle ScheduleInternal(JobFn job, JobDomain domain, JobPriority priority,
                                std::shared_ptr<JobHandle::State> groupState);
-    JobHandle ScheduleBatchInternal(uint32_t count,
-                                    std::function<JobFn(uint32_t index)> factory,
-                                    JobDomain domain,
-                                    JobPriority priority,
-                                    std::shared_ptr<JobHandle::State> groupState,
+    JobHandle ScheduleBatchInternal(uint32_t count, std::function<JobFn(uint32_t index)> factory, JobDomain domain,
+                                    JobPriority priority, std::shared_ptr<JobHandle::State> groupState,
                                     std::mutex *groupMutex);
 
     bool DequeueTask(Task &task, const std::function<bool(const Task &)> &allowed);
@@ -322,8 +301,7 @@ class JobSystem
 
     std::shared_ptr<ProfilerState> ProfilerForDomain(JobDomain domain);
     static JobProfilerCounters Snapshot(const std::shared_ptr<ProfilerState> &state);
-    static void RecordFailure(const std::shared_ptr<JobHandle::State> &state,
-                              std::exception_ptr failure) noexcept;
+    static void RecordFailure(const std::shared_ptr<JobHandle::State> &state, std::exception_ptr failure) noexcept;
     static void CompleteState(const std::shared_ptr<JobHandle::State> &state) noexcept;
 
     std::vector<std::thread> m_workers;

@@ -758,8 +758,8 @@ bool InxView::PumpStartupEvents()
     SDL_Event event{};
     while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_QUIT, SDL_EVENT_QUIT) > 0)
         m_closeRequested = true;
-    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_WINDOW_CLOSE_REQUESTED,
-                          SDL_EVENT_WINDOW_CLOSE_REQUESTED) > 0)
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_WINDOW_CLOSE_REQUESTED, SDL_EVENT_WINDOW_CLOSE_REQUESTED) >
+           0)
         m_closeRequested = true;
     return !m_closeRequested;
 }

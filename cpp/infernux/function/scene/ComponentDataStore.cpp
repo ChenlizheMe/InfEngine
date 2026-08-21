@@ -277,8 +277,8 @@ uint32_t ComponentDataStore::GetFieldId(uint32_t classId, const std::string &fie
 
 size_t ComponentDataStore::GetPublishedClassCount() const noexcept
 {
-    return static_cast<size_t>(std::count_if(
-        m_classes.begin(), m_classes.end(), [](const ClassStorage &storage) { return !storage.retired; }));
+    return static_cast<size_t>(std::count_if(m_classes.begin(), m_classes.end(),
+                                             [](const ClassStorage &storage) { return !storage.retired; }));
 }
 
 ComponentDataStore::SchemaTransaction &ComponentDataStore::RequireSchemaTransaction(SchemaTransactionId transactionId)
@@ -630,9 +630,8 @@ ComponentDataStore::SchemaCommitMap ComponentDataStore::SealSchemaTransaction(Sc
         const auto &prepared = transaction.classes[preparedClassId];
         if (!prepared.active)
             continue;
-        const uint32_t classId = reusableIndex < reusableClassIds.size()
-                                     ? reusableClassIds[reusableIndex++]
-                                     : nextClassId++;
+        const uint32_t classId =
+            reusableIndex < reusableClassIds.size() ? reusableClassIds[reusableIndex++] : nextClassId++;
         if (!publishedNameMap.emplace(prepared.name, classId).second)
             throw std::invalid_argument("ComponentDataStore: prepared class conflicts with a published class");
         commitMap.emplace(preparedClassId, classId);
@@ -674,8 +673,7 @@ ComponentDataStore::SchemaCommitMap ComponentDataStore::CommitSchemaTransaction(
         if (committed == transaction.commitMap.end())
             throw std::logic_error("ComponentDataStore: sealed schema publication order changed");
         if (committed->second < m_classes.size()) {
-            if (std::find(m_freeClassIds.begin(), m_freeClassIds.end(), committed->second) ==
-                m_freeClassIds.end()) {
+            if (std::find(m_freeClassIds.begin(), m_freeClassIds.end(), committed->second) == m_freeClassIds.end()) {
                 throw std::logic_error("ComponentDataStore: sealed schema reused a live class id");
             }
             reusedClassIds[committed->second] = 1;
@@ -691,19 +689,19 @@ ComponentDataStore::SchemaCommitMap ComponentDataStore::CommitSchemaTransaction(
     for (auto &prepared : transaction.classes) {
         if (!prepared.active)
             continue;
-        const auto committed = transaction.commitMap.find(
-            static_cast<PreparedClassId>(&prepared - transaction.classes.data()));
+        const auto committed =
+            transaction.commitMap.find(static_cast<PreparedClassId>(&prepared - transaction.classes.data()));
         if (committed == transaction.commitMap.end())
             throw std::logic_error("ComponentDataStore: prepared schema publication order changed");
         m_classes[committed->second] = std::move(prepared.storage);
         transaction.committedClassIds.push_back(committed->second);
         ++transaction.committedClassCount;
     }
-    m_freeClassIds.erase(
-        std::remove_if(m_freeClassIds.begin(), m_freeClassIds.end(), [&](uint32_t classId) {
-            return classId < reusedClassIds.size() && reusedClassIds[classId] != 0;
-        }),
-        m_freeClassIds.end());
+    m_freeClassIds.erase(std::remove_if(m_freeClassIds.begin(), m_freeClassIds.end(),
+                                        [&](uint32_t classId) {
+                                            return classId < reusedClassIds.size() && reusedClassIds[classId] != 0;
+                                        }),
+                         m_freeClassIds.end());
     for (const auto &prepared : transaction.classes) {
         if (prepared.active)
             MarkSupersededLayouts(transaction, prepared.name);

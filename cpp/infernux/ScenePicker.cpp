@@ -62,8 +62,8 @@ static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec3 &rayOrigin
         glm::vec3 closestOnRay = rayOrigin + rayDirection * t;
         float dist = glm::length(closestOnRay - icon.position);
         float camDist = glm::length(icon.position - rayOrigin);
-        float iconRadius = std::max(camDist * GizmosDrawCallBuffer::ICON_SIZE_FACTOR,
-                                    GizmosDrawCallBuffer::ICON_MIN_WORLD_SIZE);
+        float iconRadius =
+            std::max(camDist * GizmosDrawCallBuffer::ICON_SIZE_FACTOR, GizmosDrawCallBuffer::ICON_MIN_WORLD_SIZE);
         if (dist >= iconRadius)
             continue;
         // Rank icons by the ray's entry into the screen-space billboard

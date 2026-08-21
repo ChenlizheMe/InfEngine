@@ -24,8 +24,7 @@ SpriteRenderer::SpriteRenderer()
 void SpriteRenderer::SetFrameId(const std::string &frameId)
 {
     if (!frameId.empty()) {
-        const bool valid = frameId.size() == 32 &&
-                           std::all_of(frameId.begin(), frameId.end(), [](unsigned char ch) {
+        const bool valid = frameId.size() == 32 && std::all_of(frameId.begin(), frameId.end(), [](unsigned char ch) {
                                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
                            });
         if (!valid)

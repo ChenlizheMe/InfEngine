@@ -4,8 +4,8 @@
 #include "GameObject.h"
 #include "MeshCollider.h"
 #include "SceneManager.h"
-#include <core/log/InxLog.h>
 #include <algorithm>
+#include <core/log/InxLog.h>
 #include <cstring>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -827,10 +827,10 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     if (expectedType == "SpriteRenderer") {
         const auto &frameId = RequireString(j, "frameId", expectedType);
         if (!frameId.empty()) {
-            const bool valid = frameId.size() == 32 &&
-                               std::all_of(frameId.begin(), frameId.end(), [](unsigned char ch) {
-                                   return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-                               });
+            const bool valid =
+                frameId.size() == 32 && std::all_of(frameId.begin(), frameId.end(), [](unsigned char ch) {
+                    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+                });
             if (!valid)
                 throw std::invalid_argument(
                     "SpriteRenderer.frameId must be empty or a 32-character lowercase UUID hex string");

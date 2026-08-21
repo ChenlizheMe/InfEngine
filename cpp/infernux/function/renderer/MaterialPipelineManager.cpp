@@ -865,8 +865,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
                                                               VkRenderPass compatibleRenderPass)
 {
     if (pipelineDesc.UsesDynamicRendering() && !m_dynamicRenderingEnabled) {
-        INXLOG_ERROR("Dynamic Rendering material pipeline requested for ",
-                     ShaderCompileTargetName(pipelineDesc.target),
+        INXLOG_ERROR("Dynamic Rendering material pipeline requested for ", ShaderCompileTargetName(pipelineDesc.target),
                      ", but the RHI capability is unavailable; SceneRenderGraph must select the legacy contract");
         return VK_NULL_HANDLE;
     }
@@ -886,8 +885,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     }
     if (pipelineDesc.depthReadOnly)
         effectiveState.depthWriteEnable = false;
-    if (pipelineDesc.target == ShaderCompileTarget::Normal ||
-        pipelineDesc.target == ShaderCompileTarget::BaseColor) {
+    if (pipelineDesc.target == ShaderCompileTarget::Normal || pipelineDesc.target == ShaderCompileTarget::BaseColor) {
         // The normal pass replays the visible opaque geometry against the
         // camera depth attachment.  Exact equality is unnecessarily brittle:
         // a semantic shader variant can produce a sub-ULP clip-depth change

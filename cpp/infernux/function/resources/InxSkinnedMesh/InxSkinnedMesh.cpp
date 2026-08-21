@@ -44,8 +44,8 @@ template <typename T> static size_t FindKeySpan(const std::vector<std::pair<doub
     if (keys.size() < 2)
         return 0;
 
-    const auto upper = std::upper_bound(keys.begin(), keys.end(), t,
-                                        [](double time, const auto &key) { return time < key.first; });
+    const auto upper =
+        std::upper_bound(keys.begin(), keys.end(), t, [](double time, const auto &key) { return time < key.first; });
     if (upper == keys.begin())
         return 0;
     if (upper == keys.end())

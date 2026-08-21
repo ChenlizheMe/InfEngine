@@ -280,8 +280,7 @@ ParticleGpuCuller::~ParticleGpuCuller()
 bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc &desc)
 {
     Destroy();
-    if (desc.capacity == 0 || desc.vertexCount == 0 || !desc.visibility.IsValid() ||
-        !desc.ribbonInstances.IsValid() ||
+    if (desc.capacity == 0 || desc.vertexCount == 0 || !desc.visibility.IsValid() || !desc.ribbonInstances.IsValid() ||
         !desc.sourceIndirectArguments.IsValid() || !desc.sourceIndices.IsValid() || !desc.bounds.IsValid() ||
         !desc.simulationControl.IsValid() || !desc.program.IsValid()) {
         return false;
@@ -330,7 +329,7 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     groupDesc.layout = m_layout;
     const std::array<rhi::BufferHandle, 9> buffers = {
         m_visibility, m_sourceIndirectArguments, m_visibleIndices, m_drawIndirectArguments, m_sortDispatchArguments,
-        m_bounds, m_simulationControl, m_sourceIndices, m_ribbonInstances,
+        m_bounds,     m_simulationControl,       m_sourceIndices,  m_ribbonInstances,
     };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -398,8 +397,7 @@ void ParticleGpuCuller::Destroy() noexcept
 
 bool ParticleGpuCuller::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_vertexCount > 0 && m_visibility.IsValid() &&
-           m_ribbonInstances.IsValid() &&
+    return m_device && m_capacity > 0 && m_vertexCount > 0 && m_visibility.IsValid() && m_ribbonInstances.IsValid() &&
            m_sourceIndirectArguments.IsValid() && m_sourceIndices.IsValid() && m_bounds.IsValid() &&
            m_simulationControl.IsValid() && m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() &&
            m_sortDispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() &&

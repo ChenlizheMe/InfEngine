@@ -566,8 +566,7 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
         throw std::runtime_error("Failed to create project Assets directory: " + directoryError.message());
     m_assetsRoot = FromFsPath(assetsPath);
     m_assetIndexPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.json");
-    m_assetStartupCachePath =
-        FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.startup-cache.json");
+    m_assetStartupCachePath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.startup-cache.json");
     m_assetTransactionJournalPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetRefresh.transaction");
     if (DocumentTransaction::Recover(m_projectRoot, m_assetTransactionJournalPath))
         INXLOG_WARN("AssetDatabase recovered an interrupted metadata transaction");

@@ -651,8 +651,8 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     pass.ApplyRenderingContract(desc, renderTargetLayout);
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
-    desc.depth.writeEnabled = state.depthWriteEnabled && !pass.depthReadOnly &&
-                              pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.writeEnabled =
+        state.depthWriteEnabled && !pass.depthReadOnly && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];

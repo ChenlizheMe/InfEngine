@@ -1041,8 +1041,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // so it is never a valid per-view camera source. Geometry fragments use
     // the camera-local set-1 UBO regardless of their lighting model.
     const bool needsCameraLocalView = !fullscreenDomain && !particleSpriteDomain && desc.isFragmentShader &&
-                                      (desc.hasExplicitType || hasSurfaceFunc) &&
-                                      target != ShaderCompileTarget::Shadow;
+                                      (desc.hasExplicitType || hasSurfaceFunc) && target != ShaderCompileTarget::Shadow;
     if (needsLightingUBO || needsCameraLocalView) {
         result << "#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz\n";
     } else if (particleSpriteDomain) {
@@ -1194,8 +1193,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         linkedInterface == nullptr && hasMainFunc && (!desc.inputs.empty() || !desc.outputs.empty());
     const bool injectedUnifiedFragmentVaryings =
         !fullscreenDomain && desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc);
-    const bool injectedUnifiedVertexBuiltins =
-        !fullscreenDomain && desc.isVertexShader && !explicitVertexInterface;
+    const bool injectedUnifiedVertexBuiltins = !fullscreenDomain && desc.isVertexShader && !explicitVertexInterface;
     if (!userHasLayoutDecls && linkedInterface == nullptr && (!desc.inputs.empty() || !desc.outputs.empty())) {
         if (injectedUnifiedFragmentVaryings) {
             if (!desc.inputs.empty())
@@ -1817,8 +1815,7 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
             // particle shadow helpers that a mesh GBuffer stage does not own.
             if (!DescriptorHasCapability(sourceDescriptor, "ParticleSprite") &&
                 !EqualsInsensitive(sourceDescriptor.surfaceOptions.surfaceType, "transparent") &&
-                !sourceDescriptor.shadingModel.empty() &&
-                !EqualsInsensitive(sourceDescriptor.shadingModel, "custom")) {
+                !sourceDescriptor.shadingModel.empty() && !EqualsInsensitive(sourceDescriptor.shadingModel, "custom")) {
                 CompileVariant(content, filePath, ShaderCompileTarget::GBuffer, "GBuffer");
             }
         }

@@ -135,7 +135,8 @@ bool RunTransientReplaceLockGate(const std::filesystem::path &target)
 
     bool written = false;
     std::string writeError;
-    std::thread writer([&] { written = infernux::WriteTextFileAtomically(target.u8string(), "after-lock", writeError); });
+    std::thread writer(
+        [&] { written = infernux::WriteTextFileAtomically(target.u8string(), "after-lock", writeError); });
     ::Sleep(40);
     ::CloseHandle(lock);
     writer.join();

@@ -219,8 +219,7 @@ class InxView
     // immediately on high-refresh machines and makes continuously visible
     // panels oscillate between full speed and the 10 FPS idle tier.
     static constexpr auto ACTIVE_COOLDOWN_DURATION = std::chrono::milliseconds(100);
-    std::chrono::steady_clock::time_point m_activeUntil =
-        std::chrono::steady_clock::now() + ACTIVE_COOLDOWN_DURATION;
+    std::chrono::steady_clock::time_point m_activeUntil = std::chrono::steady_clock::now() + ACTIVE_COOLDOWN_DURATION;
     std::atomic_bool m_externalWakeRequested{false};
 
     /// Timestamp of the last frame start — used to compute the remaining

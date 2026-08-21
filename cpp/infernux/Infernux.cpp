@@ -53,9 +53,9 @@
 #include <imgui_internal.h>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <platform/filesystem/DocumentStore.h>
 #include <stdexcept>
 #include <string_view>
-#include <platform/filesystem/DocumentStore.h>
 #include <system_error>
 #include <unordered_map>
 #include <unordered_set>
@@ -787,8 +787,8 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
                     work.error = "ShaderInfo Name must match the shader IDs referenced by the material";
                     continue;
                 }
-                work.compilation = compiler.CompileLinkedProgramArtifact(
-                    work.vertexSource, vertexCompilePath, work.fragmentSource, fragmentCompilePath);
+                work.compilation = compiler.CompileLinkedProgramArtifact(work.vertexSource, vertexCompilePath,
+                                                                         work.fragmentSource, fragmentCompilePath);
                 if (!work.compilation.IsValid()) {
                     std::ostringstream diagnostics;
                     for (const auto &error : work.compilation.errors) {
@@ -853,13 +853,12 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
             continue;
         }
 
-        m_linkedShaderProgramCache[work.stages] =
-            LinkedShaderProgramCacheEntry{work.sourceStamp, artifact.key, 0, {}};
+        m_linkedShaderProgramCache[work.stages] = LinkedShaderProgramCacheEntry{work.sourceStamp, artifact.key, 0, {}};
         const auto &fragment = work.fragmentDescriptor;
-        m_renderer->StoreShaderRenderMeta(
-            work.stages.fragmentShaderId, fragment.surfaceOptions.cullMode, fragment.depthWrite, fragment.depthTest,
-            fragment.surfaceOptions.blendMode, fragment.renderQueue, fragment.passTag, fragment.stencil,
-            fragment.surfaceOptions.alphaClip);
+        m_renderer->StoreShaderRenderMeta(work.stages.fragmentShaderId, fragment.surfaceOptions.cullMode,
+                                          fragment.depthWrite, fragment.depthTest, fragment.surfaceOptions.blendMode,
+                                          fragment.renderQueue, fragment.passTag, fragment.stencil,
+                                          fragment.surfaceOptions.alphaClip);
     }
     state.committed = true;
     return true;
@@ -895,10 +894,9 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
                 }
             }
         });
-        m_renderer->SetShaderAssetResolver(
-            [this](const std::string &shaderId, const std::string &shaderType) {
-                return EnsureShaderLoaded(shaderId, shaderType);
-            });
+        m_renderer->SetShaderAssetResolver([this](const std::string &shaderId, const std::string &shaderType) {
+            return EnsureShaderLoaded(shaderId, shaderType);
+        });
     }
 }
 
@@ -2875,8 +2873,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     m_startupPhaseTimingsMs.clear();
     const auto startupBegin = StartupClock::now();
     auto startupPhase = [this](const char *name, const StartupClock::time_point begin) {
-        m_startupPhaseTimingsMs[name] =
-            std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
+        m_startupPhaseTimingsMs[name] = std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
     };
 
     auto phaseBegin = StartupClock::now();
@@ -2990,11 +2987,10 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         // presentation fallback and cannot provide Standard|Lit's material
         // ABI, so publish the canonical pair before material initialization in
         // both Editor and Player.
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2>
-            defaultMaterialShaderStages{{
-                {"Standard", "vertex"},
-                {"Lit", "fragment"},
-            }};
+        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> defaultMaterialShaderStages{{
+            {"Standard", "vertex"},
+            {"Lit", "fragment"},
+        }};
         for (const auto &[shaderId, shaderType] : defaultMaterialShaderStages) {
             if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
                 INXLOG_ERROR("Default material shader is unavailable: '", shaderId, "' (", shaderType, ")");
@@ -3005,11 +3001,10 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         // creates a dependency edge that can prewarm it for a Player. Its two
         // Standalone main() stages are compiled independently, so publish both
         // before the material system creates the builtin sky material.
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2>
-            proceduralSkyShaderStages{{
-                {"Skybox Procedural", "vertex"},
-                {"Skybox Procedural", "fragment"},
-            }};
+        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> proceduralSkyShaderStages{{
+            {"Skybox Procedural", "vertex"},
+            {"Skybox Procedural", "fragment"},
+        }};
         for (const auto &[shaderId, shaderType] : proceduralSkyShaderStages) {
             if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
                 INXLOG_ERROR("Required procedural sky shader is unavailable: '", shaderId, "' (", shaderType, ")");
@@ -3021,19 +3016,18 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             // set before their built-in materials can create fallback pipelines.
             // A late publication cannot repair a cached fallback descriptor
             // generation without an explicit material invalidation.
-            static constexpr std::array<std::pair<std::string_view, std::string_view>, 10>
-                editorOverlayShaderStages{{
-                    {"Gizmo", "vertex"},
-                    {"Gizmo", "fragment"},
-                    {"Grid", "vertex"},
-                    {"Grid", "fragment"},
-                    {"Gizmo Icon", "vertex"},
-                    {"Gizmo Icon", "fragment"},
-                    {"Outline Mask", "vertex"},
-                    {"Outline Mask", "fragment"},
-                    {"Outline Composite", "vertex"},
-                    {"Outline Composite", "fragment"},
-                }};
+            static constexpr std::array<std::pair<std::string_view, std::string_view>, 10> editorOverlayShaderStages{{
+                {"Gizmo", "vertex"},
+                {"Gizmo", "fragment"},
+                {"Grid", "vertex"},
+                {"Grid", "fragment"},
+                {"Gizmo Icon", "vertex"},
+                {"Gizmo Icon", "fragment"},
+                {"Outline Mask", "vertex"},
+                {"Outline Mask", "fragment"},
+                {"Outline Composite", "vertex"},
+                {"Outline Composite", "fragment"},
+            }};
             for (const auto &[shaderId, shaderType] : editorOverlayShaderStages) {
                 if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
                     INXLOG_ERROR("Editor overlay shader is unavailable: '", shaderId, "' (", shaderType, ")");
@@ -3632,8 +3626,7 @@ void main() {
 
         if (!recursive) {
             const bool minimalBootstrapShader =
-                (shaderId == "Standard" && shaderType == "vertex") ||
-                (shaderId == "Unlit" && shaderType == "fragment");
+                (shaderId == "Standard" && shaderType == "vertex") || (shaderId == "Unlit" && shaderType == "fragment");
             if (!minimalBootstrapShader)
                 return;
         }

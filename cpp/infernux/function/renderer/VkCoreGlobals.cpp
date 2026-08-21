@@ -459,11 +459,10 @@ void InxVkCoreModular::PreallocateInstances(size_t requiredInstances)
     // commands, so only publish a descriptor revision when storage changed.
     const bool instanceChanged = m_instanceBuffers[frameIndex].buffer &&
                                  previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer();
-    const bool skinChanged =
-        (m_skinInstanceBuffers[frameIndex].buffer &&
-         previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
-        (m_skinPaletteBuffers[frameIndex].buffer &&
-         previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer());
+    const bool skinChanged = (m_skinInstanceBuffers[frameIndex].buffer &&
+                              previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
+                             (m_skinPaletteBuffers[frameIndex].buffer &&
+                              previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer());
     const bool instanceAuxChanged = m_instanceAuxBuffers[frameIndex].buffer &&
                                     previousInstanceAuxBuffer != m_instanceAuxBuffers[frameIndex].buffer->GetBuffer();
     if (instanceChanged || skinChanged || instanceAuxChanged)

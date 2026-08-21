@@ -159,8 +159,8 @@ bool DecodeFlacFile(const std::string &filePath, SDL_AudioSpec &spec, std::vecto
     unsigned int channels = 0;
     unsigned int sampleRate = 0;
     drflac_uint64 frameCount = 0;
-    drflac_int16 *samples = drflac_open_memory_and_read_pcm_frames_s16(
-        encoded.data(), encoded.size(), &channels, &sampleRate, &frameCount, nullptr);
+    drflac_int16 *samples = drflac_open_memory_and_read_pcm_frames_s16(encoded.data(), encoded.size(), &channels,
+                                                                       &sampleRate, &frameCount, nullptr);
     const bool stored = StoreS16Pcm(filePath, samples, frameCount, channels, sampleRate, spec, data);
     if (samples) {
         drflac_free(samples, nullptr);

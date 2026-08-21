@@ -1,5 +1,6 @@
 #include "SceneResourceDependencyPreflight.h"
 
+#include <algorithm>
 #include <core/types/InxFwdType.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
@@ -8,9 +9,8 @@
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/scene/ComponentRecord.h>
-#include <stdexcept>
-#include <algorithm>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -59,9 +59,12 @@ bool IsBuiltinTexture(const std::string &guid)
 std::optional<ResourceType> ResourceTypeFromName(const std::string &name)
 {
     static const std::unordered_map<std::string, ResourceType> types = {
-        {"Shader", ResourceType::Shader},         {"Texture", ResourceType::Texture},
-        {"Mesh", ResourceType::Mesh},             {"Material", ResourceType::Material},
-        {"Script", ResourceType::Script},         {"Audio", ResourceType::Audio},
+        {"Shader", ResourceType::Shader},
+        {"Texture", ResourceType::Texture},
+        {"Mesh", ResourceType::Mesh},
+        {"Material", ResourceType::Material},
+        {"Script", ResourceType::Script},
+        {"Audio", ResourceType::Audio},
         {"PhysicMaterial", ResourceType::PhysicMaterial},
         {"RenderEffect", ResourceType::RenderEffect},
         {"ParticleGraph", ResourceType::ParticleGraph},
@@ -80,8 +83,8 @@ class ResourcePreflight
             ValidateObject(objects[index], "Scene.objects[" + std::to_string(index) + "]");
 
         CollectSerializedAssetRefs(document, "Scene");
-        if (const auto environment = document.find("environment"); environment != document.end() &&
-            environment->is_object()) {
+        if (const auto environment = document.find("environment");
+            environment != document.end() && environment->is_object()) {
             const auto skybox = environment->find("skybox_material_guid");
             if (skybox != environment->end() && skybox->is_string() && !skybox->get_ref<const std::string &>().empty())
                 RequireAsset(skybox->get<std::string>(), ResourceType::Material,

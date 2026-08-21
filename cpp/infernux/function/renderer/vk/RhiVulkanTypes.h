@@ -31,14 +31,12 @@ struct DynamicRenderingCommands final
         return {};
 
     DynamicRenderingCommands commands;
-    commands.begin =
-        reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRendering"));
+    commands.begin = reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRendering"));
     commands.end = reinterpret_cast<PFN_vkCmdEndRendering>(vkGetDeviceProcAddr(device, "vkCmdEndRendering"));
     if (commands.IsValid())
         return commands;
 
-    commands.begin =
-        reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"));
+    commands.begin = reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"));
     commands.end = reinterpret_cast<PFN_vkCmdEndRendering>(vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR"));
     return commands.IsValid() ? commands : DynamicRenderingCommands{};
 }

@@ -154,8 +154,8 @@ enum class TextureLayout : uint8_t
 
 [[nodiscard]] constexpr bool IsSrgbFormat(PixelFormat format) noexcept
 {
-    return format == PixelFormat::RGBA8Srgb || format == PixelFormat::BGRA8Srgb ||
-           format == PixelFormat::BC1RgbaSrgb || format == PixelFormat::BC3Srgb || format == PixelFormat::BC7Srgb;
+    return format == PixelFormat::RGBA8Srgb || format == PixelFormat::BGRA8Srgb || format == PixelFormat::BC1RgbaSrgb ||
+           format == PixelFormat::BC3Srgb || format == PixelFormat::BC7Srgb;
 }
 
 [[nodiscard]] constexpr PixelFormat LinearColorFormat(PixelFormat format) noexcept
@@ -177,10 +177,9 @@ enum class TextureLayout : uint8_t
 }
 
 [[nodiscard]] constexpr bool AreColorSpaceViewFormatsCompatible(PixelFormat imageFormat,
-                                                                 PixelFormat viewFormat) noexcept
+                                                                PixelFormat viewFormat) noexcept
 {
-    return imageFormat == viewFormat ||
-           (IsSrgbFormat(imageFormat) && LinearColorFormat(imageFormat) == viewFormat) ||
+    return imageFormat == viewFormat || (IsSrgbFormat(imageFormat) && LinearColorFormat(imageFormat) == viewFormat) ||
            (IsSrgbFormat(viewFormat) && LinearColorFormat(viewFormat) == imageFormat);
 }
 

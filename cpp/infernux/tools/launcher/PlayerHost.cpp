@@ -5,9 +5,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
-#include <shlobj.h>
 #include <Python.h>
+#include <shlobj.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <chrono>
@@ -136,8 +136,8 @@ class CacheLock
     {
         if (handle_ == INVALID_HANDLE_VALUE)
             return;
-        const std::string metadata = "pid=" + std::to_string(::GetCurrentProcessId()) +
-                                     "\ntime=" + std::to_string(std::time(nullptr)) + "\n";
+        const std::string metadata =
+            "pid=" + std::to_string(::GetCurrentProcessId()) + "\ntime=" + std::to_string(std::time(nullptr)) + "\n";
         DWORD written = 0;
         ::WriteFile(handle_, metadata.data(), static_cast<DWORD>(metadata.size()), &written, nullptr);
         ::FlushFileBuffers(handle_);
@@ -367,9 +367,7 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::filesystem::path 
                               const std::vector<std::wstring> &gameArguments)
 {
     auto *python = static_cast<HMODULE>(pythonModule_);
-    const auto resolve = [python](const char *name) -> FARPROC {
-        return ::GetProcAddress(python, name);
-    };
+    const auto resolve = [python](const char *name) -> FARPROC { return ::GetProcAddress(python, name); };
     const auto initIsolated = reinterpret_cast<PyConfigInitIsolated>(resolve("PyConfig_InitIsolatedConfig"));
     const auto setString = reinterpret_cast<PyConfigSetString>(resolve("PyConfig_SetString"));
     const auto appendPath = reinterpret_cast<PyWideStringListAppend>(resolve("PyWideStringList_Append"));

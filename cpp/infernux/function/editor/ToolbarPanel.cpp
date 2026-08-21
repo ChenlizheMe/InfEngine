@@ -269,12 +269,12 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
         float *value;
         float mn, mx, step, stepFast;
         const char *headerKey; // null if no header
-    // Percent remap: when nonzero, the slider works in display-percent space
-    // (value*scale), clamped to [mn, mx], and writes value/scale back. This
-    // lets raw values with awkward magnitudes (e.g. 0.005 deg/px, 5.0 m/s)
-    // be presented as an intuitive percentage instead of leading zeros.
-    // The baseline differs per parameter: "100%" always means the default.
-    float percentScale = 0.0f;
+        // Percent remap: when nonzero, the slider works in display-percent space
+        // (value*scale), clamped to [mn, mx], and writes value/scale back. This
+        // lets raw values with awkward magnitudes (e.g. 0.005 deg/px, 5.0 m/s)
+        // be presented as an intuitive percentage instead of leading zeros.
+        // The baseline differs per parameter: "100%" always means the default.
+        float percentScale = 0.0f;
     };
 
     CamParam perspectiveParams[] = {

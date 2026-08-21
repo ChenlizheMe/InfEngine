@@ -356,8 +356,7 @@ void ParticleGpuBounds::RecordPrepare(const rhi::ComputeCommandEncoder &encoder,
     if (!IsValid() || !encoder.IsValid())
         return;
     if (m_controlPrepared && policy == GpuParticleOffscreenPolicy::AlwaysSimulate &&
-        m_preparedPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate &&
-        m_preparedForceSimulation == forceSimulation)
+        m_preparedPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate && m_preparedForceSimulation == forceSimulation)
         return;
     GpuParticleBoundsConstants constants;
     constants.capacity = m_capacity;

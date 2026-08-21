@@ -611,9 +611,8 @@ class InxVkCoreModular
     /// that exported instance buffers this frame. Scene graphs must wait on it
     /// directly; Frame/Setup must not, or a later graphics ownership release
     /// deadlocks against Simulation.
-    using FrameSubmissionBuildCallback =
-        std::function<bool(vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
-                           uint32_t particleComputeWorkItem)>;
+    using FrameSubmissionBuildCallback = std::function<bool(
+        vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem, uint32_t particleComputeWorkItem)>;
     void SetFrameSubmissionBuilder(FrameSubmissionBuildCallback builder)
     {
         m_frameSubmissionBuilder = std::move(builder);

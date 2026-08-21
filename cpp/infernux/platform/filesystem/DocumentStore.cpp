@@ -120,9 +120,8 @@ DocumentStore::DocumentStore(Writer writer, size_t workerCount)
             if (atomicOptions.expectedState.has_value()) {
                 const AtomicFileState current = CaptureAtomicFileState(path);
                 if (!(current == *atomicOptions.expectedState)) {
-                    throw std::runtime_error(
-                        "atomic write failed for '" + path +
-                        "': target changed outside the editor before atomic replace");
+                    throw std::runtime_error("atomic write failed for '" + path +
+                                             "': target changed outside the editor before atomic replace");
                 }
             }
             std::string error;
@@ -335,8 +334,7 @@ void DocumentStore::WorkerMain()
             {
                 std::lock_guard lock(m_mutex);
                 const auto committed = m_committedFileStates.find(request.key);
-                if (!request.options.commitChainToken.empty() &&
-                    committed != m_committedFileStates.end() &&
+                if (!request.options.commitChainToken.empty() && committed != m_committedFileStates.end() &&
                     committed->second.commitChainToken == request.options.commitChainToken &&
                     effectiveOptions.expectedFileState.has_value()) {
                     // Preserve CAS semantics only across the explicit same
@@ -362,8 +360,7 @@ void DocumentStore::WorkerMain()
                 // same chain still performs strict CAS against this complete
                 // state, so an intervening external edit is rejected.
                 m_committedFileStates.insert_or_assign(
-                    request.key,
-                    CommittedChainState{request.options.commitChainToken, *fileState});
+                    request.key, CommittedChainState{request.options.commitChainToken, *fileState});
             } else if (succeeded) {
                 // An unchained writer is independent and invalidates any
                 // previous store-owned chain baseline for this path.

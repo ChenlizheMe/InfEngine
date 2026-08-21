@@ -349,8 +349,7 @@ void Rigidbody::SetCollisionDetectionMode(int mode)
 {
     if (mode < static_cast<int>(CollisionDetectionMode::Discrete) ||
         mode > static_cast<int>(CollisionDetectionMode::ContinuousDynamic)) {
-        throw std::invalid_argument(
-            "collision detection mode must be Discrete, Continuous, or ContinuousDynamic");
+        throw std::invalid_argument("collision detection mode must be Discrete, Continuous, or ContinuousDynamic");
     }
     auto &d = DataMut();
     if (d.collisionDetectionMode == mode)

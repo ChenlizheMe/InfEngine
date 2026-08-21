@@ -150,8 +150,7 @@ class ParticleGpuGraphSpawnDomain
     void DeclareKernelWrite(vk::PassBuilder &builder);
     void DeclareInitRead(vk::PassBuilder &builder);
     void RecordPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t targetSlot, uint32_t capacity,
-                       const GpuParticleFrameRequest &request, bool discardCpuSpawn,
-                       bool resetPreviousState) const;
+                       const GpuParticleFrameRequest &request, bool discardCpuSpawn, bool resetPreviousState) const;
 
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint64_t GraphInstanceId() const noexcept

@@ -255,9 +255,7 @@ JobHandle JobSystem::Schedule(TaskGroup &group, JobFn job, JobPriority priority)
     }
 }
 
-JobHandle JobSystem::ScheduleInternal(JobFn job,
-                                      JobDomain domain,
-                                      JobPriority priority,
+JobHandle JobSystem::ScheduleInternal(JobFn job, JobDomain domain, JobPriority priority,
                                       std::shared_ptr<JobHandle::State> groupState)
 {
     if (!job) {
@@ -295,40 +293,26 @@ JobHandle JobSystem::ScheduleInternal(JobFn job,
     return JobHandle(std::move(handleState));
 }
 
-JobHandle JobSystem::ScheduleBatch(uint32_t count,
-                                   std::function<JobFn(uint32_t index)> factory,
-                                   JobDomain domain,
+JobHandle JobSystem::ScheduleBatch(uint32_t count, std::function<JobFn(uint32_t index)> factory, JobDomain domain,
                                    JobPriority priority)
 {
     return ScheduleBatchInternal(count, std::move(factory), domain, priority, nullptr, nullptr);
 }
 
-JobHandle JobSystem::ScheduleBatch(TaskGroup &group,
-                                   uint32_t count,
-                                   std::function<JobFn(uint32_t index)> factory)
+JobHandle JobSystem::ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory)
 {
     return ScheduleBatch(group, count, std::move(factory), group.GetPriority());
 }
 
-JobHandle JobSystem::ScheduleBatch(TaskGroup &group,
-                                   uint32_t count,
-                                   std::function<JobFn(uint32_t index)> factory,
+JobHandle JobSystem::ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory,
                                    JobPriority priority)
 {
-    return ScheduleBatchInternal(count,
-                                 std::move(factory),
-                                 group.GetDomain(),
-                                 priority,
-                                 group.m_state,
-                                 &group.m_mutex);
+    return ScheduleBatchInternal(count, std::move(factory), group.GetDomain(), priority, group.m_state, &group.m_mutex);
 }
 
-JobHandle JobSystem::ScheduleBatchInternal(uint32_t count,
-                                           std::function<JobFn(uint32_t index)> factory,
-                                           JobDomain domain,
-                                           JobPriority priority,
-                                           std::shared_ptr<JobHandle::State> groupState,
-                                           std::mutex *groupMutex)
+JobHandle JobSystem::ScheduleBatchInternal(uint32_t count, std::function<JobFn(uint32_t index)> factory,
+                                           JobDomain domain, JobPriority priority,
+                                           std::shared_ptr<JobHandle::State> groupState, std::mutex *groupMutex)
 {
     if (count == 0) {
         return JobHandle();
@@ -403,9 +387,7 @@ JobHandle JobSystem::ScheduleBatchInternal(uint32_t count,
     return JobHandle(std::move(state));
 }
 
-void JobSystem::ParallelFor(uint32_t count,
-                            std::function<void(uint32_t index)> body,
-                            JobDomain domain,
+void JobSystem::ParallelFor(uint32_t count, std::function<void(uint32_t index)> body, JobDomain domain,
                             JobPriority priority)
 {
     if (count == 0) {
@@ -414,13 +396,12 @@ void JobSystem::ParallelFor(uint32_t count,
     if (!body) {
         throw std::invalid_argument("JobSystem::ParallelFor requires a callable");
     }
-    auto handle = ScheduleBatch(count, [body](uint32_t i) -> JobFn { return [body, i] { body(i); }; }, domain, priority);
+    auto handle =
+        ScheduleBatch(count, [body](uint32_t i) -> JobFn { return [body, i] { body(i); }; }, domain, priority);
     Wait(handle);
 }
 
-void JobSystem::ParallelFor(TaskGroup &group,
-                            uint32_t count,
-                            std::function<void(uint32_t index)> body)
+void JobSystem::ParallelFor(TaskGroup &group, uint32_t count, std::function<void(uint32_t index)> body)
 {
     if (count == 0) {
         return;
@@ -611,8 +592,7 @@ bool JobSystem::WaitSatisfied(const JobHandle &handle) const
     }
 
     auto *context = s_currentContext;
-    if (context != nullptr && context->system == this &&
-        (context->state == state || context->groupState == state)) {
+    if (context != nullptr && context->system == this && (context->state == state || context->groupState == state)) {
         return (!handle.m_waitsForClose || state->closed.load(std::memory_order_acquire)) &&
                state->remaining.load(std::memory_order_acquire) <= 1;
     }
@@ -647,9 +627,8 @@ void JobSystem::Wait(const JobHandle &handle)
     while (!WaitSatisfied(handle)) {
         if (!TryRunOneForWait(handle)) {
             std::unique_lock<std::mutex> lock(handle.m_state->completionMutex);
-            handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1), [this, &handle] {
-                return WaitSatisfied(handle);
-            });
+            handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1),
+                                                  [this, &handle] { return WaitSatisfied(handle); });
         }
     }
     if (suspended) {
@@ -673,9 +652,8 @@ void JobSystem::WaitPassive(const JobHandle &handle)
     const bool suspended = SuspendCurrentPermit();
     while (!WaitSatisfied(handle)) {
         std::unique_lock<std::mutex> lock(handle.m_state->completionMutex);
-        handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1), [this, &handle] {
-            return WaitSatisfied(handle);
-        });
+        handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1),
+                                              [this, &handle] { return WaitSatisfied(handle); });
     }
     if (suspended) {
         ResumeCurrentPermit();
@@ -810,8 +788,7 @@ void JobSystem::WorkerLoop()
     }
 }
 
-void JobSystem::RecordFailure(const std::shared_ptr<JobHandle::State> &state,
-                              std::exception_ptr failure) noexcept
+void JobSystem::RecordFailure(const std::shared_ptr<JobHandle::State> &state, std::exception_ptr failure) noexcept
 {
     if (!state || !failure) {
         return;

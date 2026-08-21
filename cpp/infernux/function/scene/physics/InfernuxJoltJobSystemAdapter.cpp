@@ -66,9 +66,8 @@ class InfernuxJoltJobSystemAdapter::AdapterJob final : public JPH::JobSystem::Jo
     void WaitUntilQueued()
     {
         std::unique_lock<std::mutex> lock(m_executionMutex);
-        m_executionCv.wait_for(lock, std::chrono::milliseconds(1), [this] {
-            return m_execution.IsValid() || IsDone();
-        });
+        m_executionCv.wait_for(lock, std::chrono::milliseconds(1),
+                               [this] { return m_execution.IsValid() || IsDone(); });
     }
 
     void SetBarrierOwner(BarrierImpl *barrier)
@@ -256,13 +255,12 @@ int InfernuxJoltJobSystemAdapter::GetMaxConcurrency() const
 }
 
 JPH::JobSystem::JobHandle InfernuxJoltJobSystemAdapter::CreateJob(const char *name, JPH::ColorArg color,
-                                                                   const JPH::JobSystem::JobFunction &jobFunction,
-                                                                   uint32_t numDependencies)
+                                                                  const JPH::JobSystem::JobFunction &jobFunction,
+                                                                  uint32_t numDependencies)
 {
     std::unique_lock<std::mutex> capacityLock(m_stateMutex);
     m_jobCapacityCv.wait(capacityLock, [this] {
-        return m_liveJobs.load(std::memory_order_acquire) < m_maxJobs ||
-               !m_accepting.load(std::memory_order_acquire);
+        return m_liveJobs.load(std::memory_order_acquire) < m_maxJobs || !m_accepting.load(std::memory_order_acquire);
     });
     if (!m_accepting.load(std::memory_order_acquire)) {
         throw std::runtime_error("Jolt job submission rejected after adapter shutdown");
@@ -317,9 +315,8 @@ void InfernuxJoltJobSystemAdapter::DestroyBarrier(JPH::JobSystem::Barrier *barri
     auto *target = static_cast<BarrierImpl *>(barrier);
     target->Wait();
     std::lock_guard<std::mutex> lock(m_stateMutex);
-    auto it = std::find_if(m_barriers.begin(), m_barriers.end(), [target](const auto &entry) {
-        return entry.get() == target;
-    });
+    auto it = std::find_if(m_barriers.begin(), m_barriers.end(),
+                           [target](const auto &entry) { return entry.get() == target; });
     if (it != m_barriers.end()) {
         m_barriers.erase(it);
     }

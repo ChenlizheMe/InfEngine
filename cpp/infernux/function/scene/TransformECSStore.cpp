@@ -732,10 +732,9 @@ const glm::mat4 &TransformECSStore::ComposeFrameCacheWorldMatrix(Handle h, const
 {
     EnsureFrameCacheSlot(h.index);
     const glm::vec3 scale = owner ? owner->GetWorldScale() : m_localScales[h.index];
-    m_cachedWorldMatrices[h.index] =
-        glm::translate(glm::mat4(1.0f), m_fcWorldPositions[h.index]) *
-        glm::mat4_cast(glm::normalize(m_fcWorldRotations[h.index])) *
-        glm::scale(glm::mat4(1.0f), scale);
+    m_cachedWorldMatrices[h.index] = glm::translate(glm::mat4(1.0f), m_fcWorldPositions[h.index]) *
+                                     glm::mat4_cast(glm::normalize(m_fcWorldRotations[h.index])) *
+                                     glm::scale(glm::mat4(1.0f), scale);
     return m_cachedWorldMatrices[h.index];
 }
 

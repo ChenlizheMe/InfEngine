@@ -240,33 +240,38 @@ void TestDomainConcurrencyPermitAndProfilerCounters()
     std::condition_variable condition;
     bool blockerStarted = false;
     bool releaseBlocker = false;
-    auto blocker = jobs.Schedule([&] {
-        active.fetch_add(1, std::memory_order_acq_rel);
-        {
-            std::lock_guard lock(mutex);
-            blockerStarted = true;
-        }
-        condition.notify_all();
-        std::unique_lock lock(mutex);
-        condition.wait(lock, [&] { return releaseBlocker; });
-        active.fetch_sub(1, std::memory_order_acq_rel);
-    }, infernux::JobDomain::Asset);
+    auto blocker = jobs.Schedule(
+        [&] {
+            active.fetch_add(1, std::memory_order_acq_rel);
+            {
+                std::lock_guard lock(mutex);
+                blockerStarted = true;
+            }
+            condition.notify_all();
+            std::unique_lock lock(mutex);
+            condition.wait(lock, [&] { return releaseBlocker; });
+            active.fetch_sub(1, std::memory_order_acq_rel);
+        },
+        infernux::JobDomain::Asset);
     {
         std::unique_lock lock(mutex);
         Require(condition.wait_for(lock, std::chrono::seconds(2), [&] { return blockerStarted; }),
                 "domain permit blocker did not start");
     }
 
-    auto handle = jobs.ScheduleBatch(32, [&active, &maximum](uint32_t) {
-        return [&active, &maximum] {
-            const uint32_t now = active.fetch_add(1, std::memory_order_acq_rel) + 1;
-            uint32_t old = maximum.load(std::memory_order_relaxed);
-            while (old < now && !maximum.compare_exchange_weak(old, now, std::memory_order_relaxed)) {
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            active.fetch_sub(1, std::memory_order_acq_rel);
-        };
-    }, infernux::JobDomain::Asset);
+    auto handle = jobs.ScheduleBatch(
+        32,
+        [&active, &maximum](uint32_t) {
+            return [&active, &maximum] {
+                const uint32_t now = active.fetch_add(1, std::memory_order_acq_rel) + 1;
+                uint32_t old = maximum.load(std::memory_order_relaxed);
+                while (old < now && !maximum.compare_exchange_weak(old, now, std::memory_order_relaxed)) {
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                active.fetch_sub(1, std::memory_order_acq_rel);
+            };
+        },
+        infernux::JobDomain::Asset);
     const auto blockedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (jobs.GetProfilerCounters().blocked == 0 && std::chrono::steady_clock::now() < blockedDeadline)
         std::this_thread::yield();
@@ -339,8 +344,7 @@ void TestGroupAwareNestedWaitReleasesPermit()
     group.Close();
     jobs.Wait(group.Fence());
     Require(childRan.load(std::memory_order_acquire), "nested group wait deadlocked behind its domain permit");
-    Require(jobs.GetDomainActiveCount(infernux::JobDomain::Runtime) == 0,
-            "nested group wait leaked its domain permit");
+    Require(jobs.GetDomainActiveCount(infernux::JobDomain::Runtime) == 0, "nested group wait leaked its domain permit");
     jobs.SetDomainConcurrency(infernux::JobDomain::Runtime, 0);
     infernux::JobSystem::Shutdown();
 }
@@ -354,12 +358,14 @@ void TestPriorityAgingPreventsStarvation()
     bool blockerStarted = false;
     bool releaseBlocker = false;
 
-    auto blocker = jobs.Schedule([&] {
-        std::unique_lock lock(mutex);
-        blockerStarted = true;
-        condition.notify_all();
-        condition.wait(lock, [&] { return releaseBlocker; });
-    }, infernux::JobDomain::Runtime, infernux::JobPriority::Normal);
+    auto blocker = jobs.Schedule(
+        [&] {
+            std::unique_lock lock(mutex);
+            blockerStarted = true;
+            condition.notify_all();
+            condition.wait(lock, [&] { return releaseBlocker; });
+        },
+        infernux::JobDomain::Runtime, infernux::JobPriority::Normal);
     {
         std::unique_lock lock(mutex);
         Require(condition.wait_for(lock, std::chrono::seconds(2), [&] { return blockerStarted; }),
@@ -367,10 +373,10 @@ void TestPriorityAgingPreventsStarvation()
     }
 
     std::atomic<bool> lowRan{false};
-    auto high = jobs.ScheduleBatch(128, [](uint32_t) { return [] {}; }, infernux::JobDomain::Runtime,
-                                   infernux::JobPriority::High);
-    auto low = jobs.Schedule([&lowRan] { lowRan.store(true, std::memory_order_release); },
-                             infernux::JobDomain::Runtime, infernux::JobPriority::Low);
+    auto high = jobs.ScheduleBatch(
+        128, [](uint32_t) { return [] {}; }, infernux::JobDomain::Runtime, infernux::JobPriority::High);
+    auto low = jobs.Schedule([&lowRan] { lowRan.store(true, std::memory_order_release); }, infernux::JobDomain::Runtime,
+                             infernux::JobPriority::Low);
     {
         std::lock_guard lock(mutex);
         releaseBlocker = true;

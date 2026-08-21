@@ -360,8 +360,8 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     pass.ApplyRenderingContract(desc, renderTargetLayout);
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = materialState.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
-    desc.depth.writeEnabled = materialState.depthWriteEnabled && !pass.depthReadOnly &&
-                              pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.writeEnabled =
+        materialState.depthWriteEnabled && !pass.depthReadOnly && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];

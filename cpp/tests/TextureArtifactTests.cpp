@@ -112,8 +112,9 @@ int main()
     assert(description.payloadBytes == source.bytes.size());
     std::filesystem::remove(descriptionPath);
 
-    RequireInvalid("legacy version",
-        [&] { (void)infernux::TextureArtifact::Deserialize(MakeVersion1Artifact(source, SourceHash), SourceHash); });
+    RequireInvalid("legacy version", [&] {
+        (void)infernux::TextureArtifact::Deserialize(MakeVersion1Artifact(source, SourceHash), SourceHash);
+    });
 
     infernux::TextureCpuData volume;
     volume.dimension = infernux::TextureDimension::Texture3D;
@@ -140,21 +141,19 @@ int main()
 
     std::string corrupted = bytes;
     corrupted[corrupted.size() / 2] ^= 0x5a;
-    RequireInvalid("checksum mismatch",
-                   [&] { (void)infernux::TextureArtifact::Deserialize(corrupted, SourceHash); });
-    RequireInvalid("truncated checksum",
-        [&] { (void)infernux::TextureArtifact::Deserialize(bytes.substr(0, bytes.size() - 1), SourceHash); });
+    RequireInvalid("checksum mismatch", [&] { (void)infernux::TextureArtifact::Deserialize(corrupted, SourceHash); });
+    RequireInvalid("truncated checksum", [&] {
+        (void)infernux::TextureArtifact::Deserialize(bytes.substr(0, bytes.size() - 1), SourceHash);
+    });
 
     std::string trailing = bytes.substr(0, bytes.size() - sizeof(uint64_t));
     trailing.push_back('\0');
     AppendU64(trailing, Fnv1a64(trailing));
-    RequireInvalid("trailing payload",
-                   [&] { (void)infernux::TextureArtifact::Deserialize(trailing, SourceHash); });
+    RequireInvalid("trailing payload", [&] { (void)infernux::TextureArtifact::Deserialize(trailing, SourceHash); });
 
     auto invalidChain = source;
     invalidChain.mipLevels[1].width = 3;
-    RequireInvalid("invalid mip chain",
-                   [&] { (void)infernux::TextureArtifact::Serialize(invalidChain, SourceHash); });
+    RequireInvalid("invalid mip chain", [&] { (void)infernux::TextureArtifact::Serialize(invalidChain, SourceHash); });
     RequireInvalid("missing source hash", [&] { (void)infernux::TextureArtifact::Serialize(source, {}); });
 
     std::cout << "Texture artifact tests passed\n";
