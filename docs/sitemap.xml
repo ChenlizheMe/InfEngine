@@ -13,11 +13,75 @@
     <lastmod>2026-08-21</lastmod>
   </url>
   <url>
-    <loc>https://infernux-engine.com/learn/renderstack-post-processing.html</loc>
+    <loc>https://infernux-engine.com/learn/custom-render-pipelines.html</loc>
     <lastmod>2026-08-21</lastmod>
   </url>
   <url>
-    <loc>https://infernux-engine.com/learn/shaders.html</loc>
+    <loc>https://infernux-engine.com/learn/fragment-materials.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-audio-events.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-components-fields.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-coroutines.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-first-component.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-input-movement.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-physics-events.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-prefabs-runtime.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay-ui-scenes.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/gameplay.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/render-effects.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/rendergraph-advanced.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/rendering-overview.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/rendering.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/renderstack-mount-points.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/shading-models-glsl.html</loc>
+    <lastmod>2026-08-21</lastmod>
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/learn/vertex-stage.html</loc>
     <lastmod>2026-08-21</lastmod>
   </url>
   <url>

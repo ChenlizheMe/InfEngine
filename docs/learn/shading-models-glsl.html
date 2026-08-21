@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Write one lighting model for Forward, Forward+, and Deferred, and move reusable math into imported GLSL libraries.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/shading-models-glsl.html">
+    <title>Shading models and GLSL libraries · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="rendering.html"><span data-page-language="en">Author the rendering pipeline</span><span data-page-language="zh" lang="zh-CN" hidden>编写自定义渲染</span></a><span class="learn-chapter-position"><span data-page-language="en">Rendering course · 4/8</span><span data-page-language="zh" lang="zh-CN" hidden>渲染课程 · 4/8</span></span><a href="shading-models-glsl.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Custom Rendering · Chapter 4</span></p>
+<h1 id="shading-models-and-glsl-libraries">Shading models and GLSL libraries</h1>
+<p>A <code>.frag</code> assembles <code>SurfaceData</code>. A <code>.shadingmodel</code> defines how that surface responds to light. A <code>.glsl</code> file holds reusable functions. Render-path adapters connect those contracts to Forward, Forward+, and eligible Deferred routes.</p>
+<p>PBR, unlit color, toon bands, halftone lighting, skin response, and project-specific lighting belong in a ShadingModel. Infernux gives every model the fixed <code>shading()</code> entry shown below.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
+
+<div class="learn-note"><strong>First-pass finish line.</strong><p>Create the three files in the complete example, select the new fragment stage on one Material, and confirm that a lit Cube changes appearance without Console errors. Stop there on a first reading; importer diagnostics and Deferred boundaries are reference material for when that visible result fails or the model grows.</p></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/real-render-styles.webp" alt="style reference showing two contrasting rendered character appearances" loading="lazy" decoding="async">
+  <figcaption>Style reference only. The workspace contains this WebP, but no matching scene, Material, ShadingModel, RenderStack configuration, source revision, or capture record that can reproduce it.</figcaption>
+</figure>
+
+<h2 id="complete-example">Build a complete three-file model</h2>
+<p>Create this folder under the current project:</p>
+<pre><code class="language-text">Assets/Shaders/LearnBand/
+  learn_band_math.glsl
+  learn_band.shadingmodel
+  learn_band_surface.frag
+</code></pre>
+<p>The Project panel currently creates <strong>Fragment Shader (.frag)</strong> and <strong>Vertex Shader (.vert)</strong> assets, but it has no creation command for <code>.glsl</code> or <code>.shadingmodel</code>. Create those two UTF-8 text files with an external or configured text editor and place them under <code>Assets</code>. This is the current authoring limitation; changing their extension or inventing another asset type will not make them discoverable.</p>
+<p>Put this reusable function in <code>learn_band_math.glsl</code>:</p>
+<pre><code class="language-glsl">ShaderInfo {
+    Name &quot;Learn Band Math&quot;
+}
+
+float learnBand(float ndl, float threshold) {
+    return mix(0.25, 1.0, step(threshold, ndl));
+}
+</code></pre>
+<p>Put the lighting entry in <code>learn_band.shadingmodel</code>:</p>
+<pre><code class="language-glsl">ShadingModelInfo {
+    Name &quot;Learn Band&quot;
+    Imports [&quot;Lighting&quot;, &quot;Learn Band Math&quot;]
+    Requires [Lighting]
+}
+
+void shading(in SurfaceData s, out vec4 color) {
+    ShadingContext ctx = GetShadingContext();
+    vec3 N = normalize(s.normalWS);
+    Light mainLight = getMainLight(ctx.positionWS, N, ctx.viewDepth);
+    float ndl = max(dot(N, mainLight.direction), 0.0);
+    float band = learnBand(ndl, clamp(s.shadingParam0, 0.0, 1.0));
+    vec3 radiance = mainLight.color
+                  * mainLight.attenuation
+                  * mainLight.shadow;
+    color = vec4(s.albedo * radiance * band + s.emission, s.alpha);
+}
+</code></pre>
+<p>Put the Material-facing surface in <code>learn_band_surface.frag</code>:</p>
+<pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name &quot;Learn Band Surface&quot;
+    ShadingModel &quot;Learn Band&quot;
+    Surface Opaque
+    Queue 2000
+    Properties {
+        Color baseColor = [0.9, 0.3, 0.08, 1.0]
+        Float threshold = 0.55 Range(0.0, 1.0)
+        Texture2D mainTexture = white
+    }
+}
+
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    vec4 texel = sampleAlbedoAlpha(mainTexture);
+    s.albedo = texel.rgb * getVertexColor() * material.baseColor.rgb;
+    s.alpha = texel.a * material.baseColor.a;
+    s.shadingParam0 = material.threshold;
+}
+</code></pre>
+<p>The dependency graph for these exact files is:</p>
+<pre><code class="language-text">Material -&gt; Standard + Learn Band Surface
+Learn Band Surface --ShadingModel--&gt; Learn Band
+Learn Band --Imports--&gt; Lighting
+Learn Band --Imports--&gt; Learn Band Math
+</code></pre>
+<p>To run it end to end:</p>
+<ol>
+<li>Let the Project panel discover the three files, then select or reimport <code>learn_band_surface.frag</code>. The Console must have no shader import, parse, link, or pipeline compile error.</li>
+<li>Create a <strong>Material (.mat)</strong>. In its Inspector set <strong>Vertex</strong> to <code>Standard</code> and <strong>Fragment</strong> to <code>Learn Band Surface</code>.</li>
+<li>Create <strong>3D Object &gt; Cube</strong>, assign the Material to <strong>MeshRenderer &gt; Materials &gt; Element 0</strong>, and keep an enabled Camera and Directional Light in the scene.</li>
+<li>Change <strong>Threshold</strong> between <code>0.2</code> and <code>0.8</code>. The hard light band should move while the texture and Base Color remain Material-owned.</li>
+</ol>
+<p>This example has a deliberately narrow lighting promise. <code>getMainLight()</code> evaluates the first directional light and includes its attenuation/shadow term. Additional directional, point, spot, and area lights, ambient probes, and indirect lighting do not contribute. There is no declaration that automatically upgrades a model to full light support. Use the loops in the built-in <code>PBR</code> and <code>Toon</code> models when the intended model must cover those lights.</p>
+<h2 id="discovery-diagnostics">Placement, discovery, and diagnostics</h2>
+<p>The loader recursively scans the dependent <code>.frag</code> file's parent directory and the built-in shader roots for <code>.vert</code>, <code>.frag</code>, <code>.glsl</code>, and <code>.shadingmodel</code> files; <code>_templates</code> directories are excluded. <code>Name</code> values are exact, case-sensitive IDs. Project declarations in the fragment's directory tree take precedence over built-in fallbacks. Avoid duplicate project IDs: recursive discovery does not issue a dedicated duplicate-name diagnostic, and a later discovered declaration can replace an earlier one.</p>
+<p>Runtime reload currently accepts <code>.vert</code> and <code>.frag</code> assets only. After editing <code>learn_band_math.glsl</code> or <code>learn_band.shadingmodel</code>, save, touch, or reimport <code>learn_band_surface.frag</code>; restarting the Editor also rebuilds discovery. This exact limitation means a dependency save can leave the previous GPU program visible until a dependent root stage is reloaded.</p>
+<p>Use this failure matrix before debugging pixels:</p>
+<table>
+<thead>
+<tr>
+<th>Reproduction</th>
+<th>Expected diagnostic and behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Change <code>Learn Band Math</code> to a missing ID, then reimport the <code>.frag</code></td>
+<td>The generated source contains <code>shader import not found</code>; unresolved <code>learnBand</code> can follow. The new program is rejected.</td>
+</tr>
+<tr>
+<td>Remove <code>Imports ["Lighting", ...]</code> but keep <code>Requires [Lighting]</code></td>
+<td>Lighting declarations/helpers are absent, so symbols such as <code>Light</code> or <code>getMainLight</code> fail compilation.</td>
+</tr>
+<tr>
+<td>Keep the import but remove <code>Requires [Lighting]</code></td>
+<td>The lighting library is linked, but its camera-local resources are not bound/injected; the dependent variant fails compilation.</td>
+</tr>
+<tr>
+<td>Introduce invalid GLSL in the library, then reimport the <code>.frag</code></td>
+<td>The Console reports the dependent root <code>.frag</code> compile failure and the last-known-good program remains active.</td>
+</tr>
+</tbody>
+</table>
+<p>Imports are expanded recursively, with cycle suppression and a maximum nesting depth of 16. Current generated shader diagnostics do not add source-file <code>#line</code> mapping for imported text, so a compiler line number may refer to the expanded/root source. Start with the first import error, inspect the named library, and reimport the root <code>.frag</code> after the fix. A visible old result proves only that last-known-good fallback worked; a cleared Console plus a deliberate Threshold change proves the new program became active.</p>
+<h2 id="requirements">Requirements and Deferred limits</h2>
+<p><code>Imports ["Lighting"]</code> links declarations and helper functions. <code>Requires [Lighting]</code> asks the compiler and pipeline contract to supply camera-local lighting data. Both are required by this sample, and neither selects a render route.</p>
+<p>The compiler makes a valid model eligible for Deferred when it has <code>void shading(in SurfaceData s, out vec4 color)</code> and does not declare <code>Unsupported [Deferred]</code>. The canonical GBuffer stores <code>albedo</code>, encoded world normal, <code>smoothness</code>, <code>metallic</code>, <code>occlusion</code>, <code>specularHighlights</code>, <code>emission</code>, <code>alpha</code>, <code>shadingParam0</code>, and <code>shadingParam1</code>, plus the object light-layer mask and ShadingModel ID. Deferred reconstructs world position from depth and dispatches <code>shading()</code> by that ID.</p>
+<p><code>Learn Band</code> is eligible because its custom threshold fits in <code>shadingParam0</code> and its remaining inputs come from stored Surface fields or reconstructed context. Test the boundary explicitly:</p>
+<ol>
+<li>With no RenderStack, or with <strong>Default Forward</strong> selected in a RenderStack, confirm the band responds to Threshold and the first Directional Light.</li>
+<li>Select <strong>Default Deferred</strong> in the RenderStack Inspector. The opaque Material is Deferred-compatible and should be written to the GBuffer, then dispatched by its ShadingModel ID.</li>
+<li>Add <code>Unsupported [Deferred]</code> to <code>Learn Band</code>, reimport <code>learn_band_surface.frag</code>, and check again. The built-in Deferred pipeline omits that pair's GBuffer variant and draws the opaque object through <code>DeferredForwardFallbackPass</code>, which uses Forward+ lighting. Transparent surfaces also use the transparent Forward+ pass.</li>
+<li>Remove that declaration only when the model can be reconstructed from the listed fields. The compiler checks syntax and declarations; it cannot infer that a tangent-frame-dependent or extra-data-dependent result is semantically wrong. Such a model may compile and render incorrect Deferred pixels.</li>
+</ol>
+<p>A valid <code>Unsupported [Deferred]</code> declaration does not produce a warning: fallback is an expected built-in route. The current Material Inspector also has no per-material "Deferred fallback" status. Use the controlled toggle above, a clear Console, and the active RenderStack pipeline as the reproducible evidence. Compile errors are actionable diagnostics; a semantic mismatch that still compiles remains the ShadingModel author's responsibility.</p>
+<p>Deferred substitutes the stored shading normal for <code>geometricNormalWS</code>, synthesizes a tangent, and reports <code>frontFacing = true</code>. It does not preserve the original tangent frame, a separate geometric normal, face orientation, geometry-pass derivative behavior, or model data beyond the two shading scalars. Declare the restriction for models that need any of those inputs:</p>
+<pre><code class="language-glsl">ShadingModelInfo {
+    Name &quot;Six Way Smoke&quot;
+    Imports [&quot;Lighting&quot;]
+    Requires [Lighting]
+    Unsupported [Deferred]
+}
+</code></pre>
+<p>A custom pipeline must provide a compatible fallback for an unsupported model or reject that route. If a selected model is missing, malformed, or fails GLSL compilation, the linked artifact is not published; the renderer retains its last-known-good program when one exists and reports the failure in the Console.</p>
+<div class="learn-note"><strong>Current API boundary.</strong><p>`ShadingModelInfo` has no Capabilities list and the compiler does not prove semantic Deferred compatibility. `Unsupported [Deferred]` is the author's explicit opt-out from the canonical GBuffer path.</p></div>
+
+<h2 id="design-boundary">Keep the boundary clean</h2>
+<table>
+<thead>
+<tr>
+<th>Owner</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.vert</code></td>
+<td>Vertex position and authored varyings</td>
+</tr>
+<tr>
+<td><code>.frag</code></td>
+<td>Material properties, texture sampling, and <code>SurfaceData</code> assembly</td>
+</tr>
+<tr>
+<td><code>.shadingmodel</code></td>
+<td>The <code>SurfaceData</code> and light interaction exposed through <code>shading()</code></td>
+</tr>
+<tr>
+<td><code>.glsl</code></td>
+<td>Reusable functions and constants with no pass-routing policy</td>
+</tr>
+<tr>
+<td>Pipeline adapter</td>
+<td>Generated Forward/Forward+ calls, GBuffer packing, Deferred reconstruction and dispatch, requirements, and fallbacks</td>
+</tr>
+<tr>
+<td>RenderPipeline / RenderEffect</td>
+<td>Queue domains, pass order, graph resources, and whole-image effects</td>
+</tr>
+</tbody>
+</table>
+<p>These boundaries keep lighting code readable and leave route decisions with the code that owns the render graph. The next chapter moves from per-object shading to whole-image effects.</p>
+<p><strong>Evidence note.</strong> File discovery and reload behavior above follow the current <code>InxShaderLoader</code> and runtime reload path. The GBuffer fields and fallback behavior follow the current Deferred templates, deferred lighting stage, material pass planner, and built-in <code>default_deferred_pipeline.py</code>. The WebP at the top remains a visual style reference because its source configuration and revision are absent from this workspace.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">自定义渲染 · 第 4 章</span></p>
+<h1 id="shadingmodel-glsl">ShadingModel 与 GLSL 函数库</h1>
+<p><code>.frag</code> 组装 <code>SurfaceData</code>，<code>.shadingmodel</code> 定义表面对光照的响应，<code>.glsl</code> 保存可复用函数。渲染路径适配器把这些契约接到 Forward、Forward+ 与满足条件的 Deferred 路径。</p>
+<p>PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的美术光照都属于 ShadingModel。每个模型都使用下文展示的固定 <code>shading()</code> 入口。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
+
+<div class="learn-note"><strong>第一次阅读的完成点。</strong><p>按完整示例创建三份文件，把新的片元阶段选到一个 Material 上，并确认受光 Cube 的外观发生变化且 Console 没有错误。做到这里即可先进入下一章；导入诊断和 Deferred 边界留给结果异常或模型继续扩展时查阅。</p></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/real-render-styles.webp" alt="展示两种对比鲜明人物渲染外观的风格参考图" loading="lazy" decoding="async">
+  <figcaption>本图只作为风格参考。工作区含有这份 WebP，但缺少可复现它的 Scene、Material、ShadingModel、RenderStack 配置、源码版本与捕获记录。</figcaption>
+</figure>
+
+<h2 id="complete-example_1">构建完整的三文件模型</h2>
+<p>在当前项目中创建以下目录与文件：</p>
+<pre><code class="language-text">Assets/Shaders/LearnBand/
+  learn_band_math.glsl
+  learn_band.shadingmodel
+  learn_band_surface.frag
+</code></pre>
+<p>Project 面板目前可以创建 <strong>片段着色器 (.frag)</strong> 与 <strong>顶点着色器 (.vert)</strong> 资产，没有 <code>.glsl</code> 或 <code>.shadingmodel</code> 的创建命令。请用外部编辑器或已配置的文本编辑器创建这两个 UTF-8 文本文件，再放入 <code>Assets</code>。这是当前编写入口的明确限制；修改扩展名或自造资产类型无法让加载器识别它们。</p>
+<p>把以下可复用函数写入 <code>learn_band_math.glsl</code>：</p>
+<pre><code class="language-glsl">ShaderInfo {
+    Name &quot;Learn Band Math&quot;
+}
+
+float learnBand(float ndl, float threshold) {
+    return mix(0.25, 1.0, step(threshold, ndl));
+}
+</code></pre>
+<p>把光照入口写入 <code>learn_band.shadingmodel</code>：</p>
+<pre><code class="language-glsl">ShadingModelInfo {
+    Name &quot;Learn Band&quot;
+    Imports [&quot;Lighting&quot;, &quot;Learn Band Math&quot;]
+    Requires [Lighting]
+}
+
+void shading(in SurfaceData s, out vec4 color) {
+    ShadingContext ctx = GetShadingContext();
+    vec3 N = normalize(s.normalWS);
+    Light mainLight = getMainLight(ctx.positionWS, N, ctx.viewDepth);
+    float ndl = max(dot(N, mainLight.direction), 0.0);
+    float band = learnBand(ndl, clamp(s.shadingParam0, 0.0, 1.0));
+    vec3 radiance = mainLight.color
+                  * mainLight.attenuation
+                  * mainLight.shadow;
+    color = vec4(s.albedo * radiance * band + s.emission, s.alpha);
+}
+</code></pre>
+<p>把面向 Material 的 Surface 写入 <code>learn_band_surface.frag</code>：</p>
+<pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name &quot;Learn Band Surface&quot;
+    ShadingModel &quot;Learn Band&quot;
+    Surface Opaque
+    Queue 2000
+    Properties {
+        Color baseColor = [0.9, 0.3, 0.08, 1.0]
+        Float threshold = 0.55 Range(0.0, 1.0)
+        Texture2D mainTexture = white
+    }
+}
+
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    vec4 texel = sampleAlbedoAlpha(mainTexture);
+    s.albedo = texel.rgb * getVertexColor() * material.baseColor.rgb;
+    s.alpha = texel.a * material.baseColor.a;
+    s.shadingParam0 = material.threshold;
+}
+</code></pre>
+<p>这三个文件的准确依赖图如下：</p>
+<pre><code class="language-text">Material -&gt; Standard + Learn Band Surface
+Learn Band Surface --ShadingModel--&gt; Learn Band
+Learn Band --Imports--&gt; Lighting
+Learn Band --Imports--&gt; Learn Band Math
+</code></pre>
+<p>按以下步骤完成端到端运行：</p>
+<ol>
+<li>等 Project 面板发现三个文件，再选择或重新导入 <code>learn_band_surface.frag</code>。Console 中不应出现 Shader Import、解析、链接或 Pipeline 编译错误。</li>
+<li>创建 <strong>Material (.mat)</strong>，在 Inspector 中把 <strong>Vertex</strong> 设为 <code>Standard</code>，把 <strong>Fragment</strong> 设为 <code>Learn Band Surface</code>。</li>
+<li>创建 <strong>3D Object &gt; Cube</strong>，把 Material 赋给 <strong>MeshRenderer &gt; Materials &gt; Element 0</strong>，并确保场景中有启用的 Camera 与 Directional Light。</li>
+<li>在 <code>0.2</code> 到 <code>0.8</code> 之间调整 <strong>Threshold</strong>。硬边光照色阶应随之移动，纹理与 Base Color 仍由 Material 管理。</li>
+</ol>
+<p>这个示例有意限定光源范围。<code>getMainLight()</code> 只计算第一盏方向光，并包含它的衰减与阴影项。其它方向光、点光、聚光灯、面光源、环境探针和间接光都不会贡献结果。当前没有能自动升级为完整光源支持的声明。若模型需要覆盖这些光源，请采用内置 <code>PBR</code> 与 <code>Toon</code> 模型中的遍历方式。</p>
+<h2 id="discovery-diagnostics_1">放置、发现与诊断</h2>
+<p>加载器会递归扫描依赖 <code>.frag</code> 所在目录与内置 Shader 根目录，识别 <code>.vert</code>、<code>.frag</code>、<code>.glsl</code> 和 <code>.shadingmodel</code>，同时排除 <code>_templates</code> 目录。<code>Name</code> 是区分大小写的精确 ID。Fragment 目录树中的项目声明优先于内置回退。请避免项目内 ID 重复：递归发现过程没有专用的重名诊断，后发现的声明可能覆盖先发现的声明。</p>
+<p>运行时重载目前只接受 <code>.vert</code> 与 <code>.frag</code> 资产。修改 <code>learn_band_math.glsl</code> 或 <code>learn_band.shadingmodel</code> 后，请保存、触碰或重新导入 <code>learn_band_surface.frag</code>；重启 Editor 也会重建发现结果。受此限制，只保存依赖文件时，画面可能继续显示旧 GPU Program，直到依赖它的根阶段发生重载。</p>
+<p>调试像素之前，先按此故障矩阵检查：</p>
+<table>
+<thead>
+<tr>
+<th>复现方式</th>
+<th>预期诊断与行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>把 <code>Learn Band Math</code> 改成不存在的 ID，再重新导入 <code>.frag</code></td>
+<td>生成源码中出现 <code>shader import not found</code>，随后可能报告 <code>learnBand</code> 未解析；新 Program 会被拒绝。</td>
+</tr>
+<tr>
+<td>删除 <code>Imports ["Lighting", ...]</code>，保留 <code>Requires [Lighting]</code></td>
+<td>光照声明与辅助函数缺失，<code>Light</code>、<code>getMainLight</code> 等符号编译失败。</td>
+</tr>
+<tr>
+<td>保留 Import，删除 <code>Requires [Lighting]</code></td>
+<td>光照函数库已经链接，相机局部资源没有绑定或注入；相关变体编译失败。</td>
+</tr>
+<tr>
+<td>在函数库中加入非法 GLSL，再重新导入 <code>.frag</code></td>
+<td>Console 报告依赖根 <code>.frag</code> 的编译失败，并继续使用上一份有效 Program。</td>
+</tr>
+</tbody>
+</table>
+<p>Import 会递归展开，循环导入会被抑制，最大嵌套深度为 16。当前生成的 Shader 诊断不会为导入文本增加源文件 <code>#line</code> 映射，因此编译器行号可能指向展开后的源码或根文件。请先处理第一条 Import 错误，检查其中点名的函数库，修复后重新导入根 <code>.frag</code>。画面仍显示旧结果只能证明上一份有效版本继续工作；Console 清空后再故意修改 Threshold，才能证明新 Program 已经生效。</p>
+<h2 id="requirements_1">依赖与 Deferred 限制</h2>
+<p><code>Imports ["Lighting"]</code> 链接声明与辅助函数，<code>Requires [Lighting]</code> 要求编译器与管线契约提供相机局部光照数据。本例同时需要两者，这两个字段都不会选择渲染路径。</p>
+<p>有效模型包含 <code>void shading(in SurfaceData s, out vec4 color)</code> 且没有声明 <code>Unsupported [Deferred]</code> 时，编译器会赋予它 Deferred 候选资格。标准 GBuffer 保存 <code>albedo</code>、编码后的世界空间法线、<code>smoothness</code>、<code>metallic</code>、<code>occlusion</code>、<code>specularHighlights</code>、<code>emission</code>、<code>alpha</code>、<code>shadingParam0</code> 和 <code>shadingParam1</code>，同时记录物体光照层掩码与 ShadingModel ID。Deferred 从深度重建世界空间位置，再按该 ID 分派 <code>shading()</code>。</p>
+<p><code>Learn Band</code> 满足候选条件，因为自定义阈值可以装入 <code>shadingParam0</code>，其余输入来自已保存的 Surface 字段或重建上下文。请显式测试这条边界：</p>
+<ol>
+<li>不挂 RenderStack，或者在 RenderStack 中选择 <strong>Default Forward</strong>，确认色阶会响应 Threshold 与第一盏 Directional Light。</li>
+<li>在 RenderStack Inspector 中选择 <strong>Default Deferred</strong>。这个不透明 Material 具备 Deferred 兼容性，应写入 GBuffer，再按 ShadingModel ID 分派。</li>
+<li>给 <code>Learn Band</code> 加上 <code>Unsupported [Deferred]</code>，重新导入 <code>learn_band_surface.frag</code>，然后再次检查。内置 Deferred 管线会省略这一组合的 GBuffer 变体，并通过使用 Forward+ 光照的 <code>DeferredForwardFallbackPass</code> 绘制该不透明物体。透明表面也会进入透明 Forward+ Pass。</li>
+<li>只有模型确实能从上述字段重建时，才移除该声明。编译器会检查语法与声明，无法推断依赖切线框架或额外数据的结果在语义上有误。这类模型可能编译成功，却产生错误的 Deferred 像素。</li>
+</ol>
+<p>有效的 <code>Unsupported [Deferred]</code> 声明不会产生 Warning，Fallback 属于内置管线的预期路径。当前 Material Inspector 也没有逐材质的“Deferred Fallback”状态。请用上述受控切换、保持清空的 Console 与活动 RenderStack 管线作为可复现证据。编译错误属于可行动诊断；仍可通过编译的语义不匹配由 ShadingModel 作者负责判断。</p>
+<p>Deferred 会用已保存的着色法线填充 <code>geometricNormalWS</code>，生成替代 Tangent，并固定报告 <code>frontFacing = true</code>。原始切线框架、独立几何法线、正反面信息、几何 Pass 的导数行为，以及两个 Shading Scalar 之外的模型数据都不会保留。依赖这些输入的模型应声明限制：</p>
+<pre><code class="language-glsl">ShadingModelInfo {
+    Name &quot;Six Way Smoke&quot;
+    Imports [&quot;Lighting&quot;]
+    Requires [Lighting]
+    Unsupported [Deferred]
+}
+</code></pre>
+<p>自定义管线需要为不支持的模型提供兼容回退，也可以拒绝该路径。选中的模型缺失、格式错误或 GLSL 编译失败时，链接后的新产物不会发布；若已有上一份有效 Program，渲染器会继续使用它，并在 Console 报告失败。</p>
+<div class="learn-note"><strong>当前 API 边界。</strong><p>`ShadingModelInfo` 没有 Capabilities 列表，编译器也不会证明 Deferred 语义兼容性。`Unsupported [Deferred]` 是作者退出标准 GBuffer 路径的显式声明。</p></div>
+
+<h2 id="design-boundary_1">保持边界清晰</h2>
+<table>
+<thead>
+<tr>
+<th>归属</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.vert</code></td>
+<td>顶点位置与自定义 Varying</td>
+</tr>
+<tr>
+<td><code>.frag</code></td>
+<td>Material 属性、纹理采样与 <code>SurfaceData</code> 组装</td>
+</tr>
+<tr>
+<td><code>.shadingmodel</code></td>
+<td>通过 <code>shading()</code> 定义 Surface 与光照的交互</td>
+</tr>
+<tr>
+<td><code>.glsl</code></td>
+<td>不携带 Pass 路由策略的可复用函数和常量</td>
+</tr>
+<tr>
+<td>管线适配器</td>
+<td>生成 Forward/Forward+ 调用、GBuffer 打包、Deferred 重建与分派、依赖满足和回退</td>
+</tr>
+<tr>
+<td>RenderPipeline / RenderEffect</td>
+<td>Queue 域、Pass 顺序、图资源与整图效果</td>
+</tr>
+</tbody>
+</table>
+<p>这套边界让光照代码保持易读，也让路由决策留在真正拥有 RenderGraph 的代码里。下一章将从逐物体着色转向整图效果。</p>
+<p><strong>证据说明。</strong> 上述文件发现与重载行为取自当前 <code>InxShaderLoader</code> 和运行时重载路径。GBuffer 字段与回退行为取自当前 Deferred 模板、Deferred Lighting 阶段、Material Pass 规划器与内置 <code>default_deferred_pipeline.py</code>。页首 WebP 缺少源配置与版本记录，因此只保留为视觉风格参考。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="fragment-materials.html">← Fragment stages, surfaces, and materials</a><span class="learn-course-home">Chapter 4 of 8</span><a href="render-effects.html">Reusable RenderEffect assets →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="fragment-materials.html">← 片元阶段、Surface 与材质</a><span class="learn-course-home">第 4 章，共 8 章</span><a href="render-effects.html">可复用的 RenderEffect 资源 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Compose timed behavior with generator coroutines, scaled and real time, fixed updates, predicates, cancellation, and nested waits.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-coroutines.html">
+    <title>Coroutines and multi-frame sequences · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 8/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 8/8</span></span><a href="gameplay-coroutines.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay · Chapter 8</span></p>
+<h1 id="coroutines-and-multi-frame-sequences">Coroutines and multi-frame sequences</h1>
+<p>Some gameplay reactions have a clear order but span several frames: wait, hand work to physics, watch a condition, then finish an effect. Infernux coroutines let an <code>InxComponent</code> write that order as a Python generator. A yielded instruction pauses only that generator while the rest of the scene continues to update.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#coroutine-model">Coroutine model</a><a href="#editor-setup">Editor setup</a><a href="#complete-tour">Complete tour</a><a href="#wait-semantics">Wait semantics</a><a href="#handles-cancellation">Handles and cancellation</a><a href="#lifetime">Lifetime rules</a><a href="#verify">Verify the result</a><a href="#common-errors">Common errors</a><a href="#next">Where to go next</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-coroutines.webp" alt="timeline showing one coroutine waiting across update and fixed-update phases while other gameplay continues" loading="lazy" decoding="async">
+  <figcaption>A coroutine preserves sequence order across frames; it does not block Update, physics, or other coroutines.</figcaption>
+</figure>
+
+<h2 id="coroutine-model">The generator model</h2>
+<p>A coroutine method contains <code>yield</code>, so calling it creates a generator. Pass that generator object to <code>start_coroutine()</code>:</p>
+<pre><code class="language-python">def start(self):
+    self._handle = self.start_coroutine(self.flash())
+
+def flash(self):
+    Debug.log(&quot;flash starts&quot;)
+    yield WaitForSeconds(0.5)
+    Debug.log(&quot;flash ends&quot;)
+</code></pre>
+<p><code>start_coroutine()</code> runs the generator immediately until its first <code>yield</code>. In the example, <code>flash starts</code> is logged inside <code>start()</code>. The returned <code>Coroutine</code> handle represents the scheduled continuation. Its <code>is_finished</code> property becomes <code>True</code> after normal completion or cancellation.</p>
+<p>The scheduler is cooperative and belongs to the component. A coroutine must yield for other phases to advance it; it should not contain a long blocking loop, <code>time.sleep()</code>, file wait, or busy polling.</p>
+<h2 id="editor-setup">Prepare the Editor</h2>
+<ol>
+<li>Create an empty GameObject named <code>CoroutineLab</code>.</li>
+<li>Create <code>Assets/Scripts/coroutine_tour.py</code> and paste the complete component below.</li>
+<li>Attach <code>CoroutineTour</code> to <code>CoroutineLab</code>.</li>
+<li>Open <strong>Console</strong>, clear old messages, and enter Play mode.</li>
+</ol>
+<p>The example needs no Collider or Rigidbody. <code>WaitForFixedUpdate()</code> waits for the engine's next fixed-update phase even when this component does not override <code>fixed_update()</code>.</p>
+<h2 id="complete-tour">Run every wait type</h2>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.coroutine import (
+    WaitForEndOfFrame,
+    WaitForFixedUpdate,
+    WaitForFrames,
+    WaitForSeconds,
+    WaitForSecondsRealtime,
+    WaitUntil,
+    WaitWhile,
+)
+from Infernux.debug import Debug
+
+
+class CoroutineTour(InxComponent):
+    def awake(self):
+        self._sequence_handle = None
+        self._gate_open = False
+        self._busy = False
+
+    def start(self):
+        self._sequence_handle = self.start_coroutine(self.run_sequence())
+
+    def run_sequence(self):
+        Debug.log(&quot;1. sequence started immediately&quot;, self)
+
+        yield None
+        Debug.log(&quot;2. one update frame passed&quot;, self)
+
+        yield WaitForFrames(2)
+        Debug.log(&quot;3. two more update frames passed&quot;, self)
+
+        yield WaitForSeconds(0.5)
+        Debug.log(&quot;4. 0.5 scaled seconds passed&quot;, self)
+
+        yield WaitForSecondsRealtime(0.25)
+        Debug.log(&quot;5. 0.25 real seconds passed&quot;, self)
+
+        yield WaitForFixedUpdate()
+        Debug.log(&quot;6. resumed in fixed update&quot;, self)
+
+        yield WaitForEndOfFrame(2)
+        Debug.log(&quot;7. two late-update phases passed&quot;, self)
+
+        self._gate_open = False
+        self.start_coroutine(self.open_gate_later())
+        yield WaitUntil(lambda: self._gate_open)
+        Debug.log(&quot;8. WaitUntil observed an open gate&quot;, self)
+
+        self._busy = True
+        self.start_coroutine(self.clear_busy_later())
+        yield WaitWhile(lambda: self._busy)
+        Debug.log(&quot;9. WaitWhile observed idle state&quot;, self)
+
+        child = self.start_coroutine(self.child_sequence())
+        yield child
+        Debug.log(&quot;10. child finished; parent finished&quot;, self)
+
+    def open_gate_later(self):
+        yield WaitForSeconds(0.2)
+        self._gate_open = True
+
+    def clear_busy_later(self):
+        yield WaitForFrames(2)
+        self._busy = False
+
+    def child_sequence(self):
+        Debug.log(&quot;child started immediately&quot;, self)
+        yield WaitForSeconds(0.2)
+        Debug.log(&quot;child completed&quot;, self)
+
+    def cancel_sequence(self):
+        &quot;&quot;&quot;May be bound to a UI Button.&quot;&quot;&quot;
+        handle = self._sequence_handle
+        if handle is not None and not handle.is_finished:
+            self.stop_coroutine(handle)
+
+    def cancel_everything(self):
+        &quot;&quot;&quot;Stops the parent and every helper owned by this component.&quot;&quot;&quot;
+        self.stop_all_coroutines()
+</code></pre>
+<p>The helper generators make the predicates change without input. In a game, those flags can be set by animation callbacks, collision events, UI actions, loading completion, or another component.</p>
+<h2 id="wait-semantics">Complete waiting semantics</h2>
+<p>Each yielded value selects the phase that will check the coroutine next.</p>
+<table>
+<thead>
+<tr>
+<th>Yielded value</th>
+<th>Resume rule</th>
+<th>Check phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>yield None</code> or bare <code>yield</code></td>
+<td>Wait one update frame.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForFrames(n)</code></td>
+<td>Resume after exactly <code>n</code> update-phase checks. <code>n</code> must be an integer of at least 1; <code>bool</code> is rejected.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForSeconds(seconds)</code></td>
+<td>Accumulate scaled <code>delta_time</code> until it reaches <code>seconds</code>.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForSecondsRealtime(seconds)</code></td>
+<td>Resume on the first update check at or after its wall-clock target.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForFixedUpdate()</code></td>
+<td>Resume on the next fixed-update scheduler pass.</td>
+<td><code>fixed_update</code></td>
+</tr>
+<tr>
+<td><code>WaitForEndOfFrame(n)</code></td>
+<td>Resume after <code>n</code> late-update scheduler passes. <code>n</code> has the same integer validation as <code>WaitForFrames</code>.</td>
+<td><code>late_update</code></td>
+</tr>
+<tr>
+<td><code>WaitUntil(predicate)</code></td>
+<td>Call <code>predicate()</code> on update checks and resume when its result is truthy.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitWhile(predicate)</code></td>
+<td>Call <code>predicate()</code> on update checks and resume when its result becomes falsy.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td>a <code>Coroutine</code> handle</td>
+<td>Resume after that handle is finished, including when it was stopped.</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td>any unsupported value</td>
+<td>Current runtime treats it like a one-update-frame wait.</td>
+<td><code>update</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>WaitForSeconds</code> receives scaled delta time. With <code>Time.time_scale == 0</code>, its elapsed value does not grow. <code>WaitForSecondsRealtime</code> uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.</p>
+<p><code>WaitForEndOfFrame</code> means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.</p>
+<p>Zero or negative values are accepted by the two seconds-based instructions and become ready at the next update check. Frame-based instructions reject values below 1. For clear intent, use <code>yield None</code> when you want one frame.</p>
+<p>Wait instructions carry mutable elapsed, target, or remaining state. Create a fresh <code>WaitForSeconds</code>, <code>WaitForSecondsRealtime</code>, <code>WaitForFrames</code>, or <code>WaitForEndOfFrame</code> for each wait instead of caching one instance across coroutines.</p>
+<h2 id="handles-cancellation">Handles, children, and cancellation</h2>
+<p>The component API has three operations:</p>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>start_coroutine(generator)</code></td>
+<td>Starts immediately, returns a <code>Coroutine</code> handle.</td>
+</tr>
+<tr>
+<td><code>stop_coroutine(handle)</code></td>
+<td>Stops that handle and closes its generator.</td>
+</tr>
+<tr>
+<td><code>stop_all_coroutines()</code></td>
+<td>Stops and closes every coroutine owned by this component.</td>
+</tr>
+</tbody>
+</table>
+<p>To wait for a child, start it and yield the returned handle:</p>
+<pre><code class="language-python">child = self.start_coroutine(self.child_sequence())
+yield child
+</code></pre>
+<p>Yielding <code>self.child_sequence()</code> directly produces an unsupported generator value. The current fallback waits one update frame and never schedules that generator. Always use <code>start_coroutine()</code> when the child needs independent scheduling and a handle.</p>
+<p>Stopping a generator marks its handle finished and calls <code>close()</code>. Put essential generator-local cleanup in <code>finally</code>:</p>
+<pre><code class="language-python">def temporary_state(self):
+    self._busy = True
+    try:
+        yield WaitForSeconds(5.0)
+    finally:
+        self._busy = False
+</code></pre>
+<p>The public handle also exposes <code>creation_epoch</code>, <code>creation_epoch_id</code>, and <code>is_legacy</code> for runtime-reload diagnostics. Gameplay flow normally needs only <code>is_finished</code>.</p>
+<p>Stopping only the parent does not automatically stop helper coroutines that were started separately. Use <code>stop_all_coroutines()</code> when the whole component-owned sequence should end together, or retain and stop each helper handle explicitly.</p>
+<h2 id="lifetime">Component lifetime rules</h2>
+<ul>
+<li>Disabling an <code>InxComponent</code> does not stop its Unity-style coroutines. Call a stop method in <code>on_disable()</code> when your design requires that behavior.</li>
+<li>Deactivating the owning GameObject stops all of its component's coroutines and discards that component scheduler.</li>
+<li>A completed or stopped coroutine stays represented by its handle with <code>is_finished == True</code>.</li>
+<li>Starting a generator that completes before its first useful wait returns an already-finished handle.</li>
+<li>An exception raised while advancing coroutine body code ends that coroutine and is routed to the Editor Console with the component as context.</li>
+</ul>
+<p>These rules make cancellation explicit at the component boundary and prevent a deactivated object from retaining scheduled gameplay work.</p>
+<h2 id="verify">Verify the result</h2>
+<ol>
+<li>Enter Play mode and watch Console. Message 1 should appear immediately during <code>start()</code>; messages 2–10 should remain in numeric order.</li>
+<li>Confirm that messages 2 and 3 are separated by update frames, then observe the scaled-time and real-time delays.</li>
+<li>Message 6 should follow a fixed-update pass. Message 7 should appear after two late-update passes.</li>
+<li>The gate and busy helpers should allow messages 8 and 9 to appear without input.</li>
+<li><code>child started immediately</code> should appear before its delay, followed by <code>child completed</code>, then parent message 10 on a later update check.</li>
+<li>Bind a UI Button to <code>cancel_sequence()</code> and press it before completion. The parent handle should finish with no later parent messages. Run again and bind <code>cancel_everything()</code> to stop parent and helpers together.</li>
+</ol>
+<p>To inspect a handle during development, log <code>self._sequence_handle.is_finished</code>. Remove per-frame diagnostic logging after the check so Console remains useful.</p>
+<h2 id="common-errors">Common errors</h2>
+<ul>
+<li><strong>Passing the method instead of its generator</strong>: call <code>self.start_coroutine(self.run_sequence())</code>, including the final parentheses.</li>
+<li><strong>Using <code>time.sleep()</code></strong>: it blocks the thread and freezes other engine work. Yield <code>WaitForSecondsRealtime()</code> for a wall-clock delay.</li>
+<li><strong>Expecting an exact timestamp</strong>: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.</li>
+<li><strong>Expecting <code>WaitForSeconds</code> during pause</strong>: scaled delta time is zero when the time scale is zero. Use realtime waiting only when paused gameplay should still advance that sequence.</li>
+<li><strong>Treating <code>WaitForEndOfFrame</code> as post-render capture</strong>: it maps to late update in the current scheduler.</li>
+<li><strong>Reusing one wait instance</strong>: elapsed and remaining fields belong to that object. Construct a new instruction at each <code>yield</code>.</li>
+<li><strong>Yielding a generator directly</strong>: start it first and yield its <code>Coroutine</code> handle.</li>
+<li><strong>Cancelling the parent and leaving helpers active</strong>: retain helper handles or stop all component-owned coroutines.</li>
+<li><strong>Assuming component disable cancels work</strong>: add explicit <code>on_disable()</code> cleanup when that is the intended lifetime.</li>
+<li><strong>Writing a loop with no <code>yield</code></strong>: the generator never returns control to the scheduler and can stall the frame.</li>
+</ul>
+<h2 id="next">Where to go next</h2>
+<p>You now have the complete gameplay foundation: components, authored fields, input, runtime object lifetime, physics callbacks, UI and scene flow, audio signals, and multi-frame sequences. Combine them by keeping immediate state transitions in events and moving readable, cancellable follow-up sequences into coroutines.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">游戏玩法 · 第 8 章</span></p>
+<h1 id="_1">协程与跨帧流程</h1>
+<p>一些游戏反应有明确顺序，同时会跨越多个帧：等待、把工作交给物理阶段、观察条件，再结束效果。Infernux 协程允许 <code>InxComponent</code> 用 Python 生成器表达这段顺序。等待指令只暂停当前生成器，场景中的其他更新会继续运行。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-coroutine-model">协程模型</a><a href="#zh-editor-setup">编辑器设置</a><a href="#zh-complete-tour">完整演练</a><a href="#zh-wait-semantics">等待语义</a><a href="#zh-handles-cancellation">句柄与取消</a><a href="#zh-lifetime">生命周期</a><a href="#zh-verify">验证结果</a><a href="#zh-common-errors">常见错误</a><a href="#zh-next">后续实践</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-coroutines.webp" alt="协程跨越更新与固定更新阶段等待，同时其他游戏逻辑继续运行的时间线" loading="lazy" decoding="async">
+  <figcaption>协程把跨帧步骤保持为可读顺序，同时允许 Update、物理和其他协程继续运行。</figcaption>
+</figure>
+
+<h2 id="zh-coroutine-model">生成器模型</h2>
+<p>协程方法包含 <code>yield</code>，调用后会创建生成器。把这个生成器对象传给 <code>start_coroutine()</code>：</p>
+<pre><code class="language-python">def start(self):
+    self._handle = self.start_coroutine(self.flash())
+
+def flash(self):
+    Debug.log(&quot;flash starts&quot;)
+    yield WaitForSeconds(0.5)
+    Debug.log(&quot;flash ends&quot;)
+</code></pre>
+<p><code>start_coroutine()</code> 会立即运行生成器，直到遇到第一个 <code>yield</code>。上例中的 <code>flash starts</code> 会在 <code>start()</code> 内记录。返回的 <code>Coroutine</code> 句柄代表后续调度；正常结束或取消后，<code>is_finished</code> 都会变成 <code>True</code>。</p>
+<p>调度器采用协作式执行，每个组件各自持有。协程需要主动 <code>yield</code>，调度器才能在后续阶段继续推进。协程中不应放入耗时阻塞循环、<code>time.sleep()</code>、同步文件等待或忙轮询。</p>
+<h2 id="zh-editor-setup">准备编辑器</h2>
+<ol>
+<li>创建名为 <code>CoroutineLab</code> 的空 GameObject。</li>
+<li>创建 <code>Assets/Scripts/coroutine_tour.py</code>，粘贴下面的完整组件。</li>
+<li>把 <code>CoroutineTour</code> 挂到 <code>CoroutineLab</code>。</li>
+<li>打开 <strong>Console</strong>，清除旧消息，再进入 Play 模式。</li>
+</ol>
+<p>示例不需要 Collider 或 Rigidbody。即使组件没有重写 <code>fixed_update()</code>，<code>WaitForFixedUpdate()</code> 仍会等待引擎的下一个固定更新阶段。</p>
+<h2 id="zh-complete-tour">运行全部等待类型</h2>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.coroutine import (
+    WaitForEndOfFrame,
+    WaitForFixedUpdate,
+    WaitForFrames,
+    WaitForSeconds,
+    WaitForSecondsRealtime,
+    WaitUntil,
+    WaitWhile,
+)
+from Infernux.debug import Debug
+
+
+class CoroutineTour(InxComponent):
+    def awake(self):
+        self._sequence_handle = None
+        self._gate_open = False
+        self._busy = False
+
+    def start(self):
+        self._sequence_handle = self.start_coroutine(self.run_sequence())
+
+    def run_sequence(self):
+        Debug.log(&quot;1. sequence started immediately&quot;, self)
+
+        yield None
+        Debug.log(&quot;2. one update frame passed&quot;, self)
+
+        yield WaitForFrames(2)
+        Debug.log(&quot;3. two more update frames passed&quot;, self)
+
+        yield WaitForSeconds(0.5)
+        Debug.log(&quot;4. 0.5 scaled seconds passed&quot;, self)
+
+        yield WaitForSecondsRealtime(0.25)
+        Debug.log(&quot;5. 0.25 real seconds passed&quot;, self)
+
+        yield WaitForFixedUpdate()
+        Debug.log(&quot;6. resumed in fixed update&quot;, self)
+
+        yield WaitForEndOfFrame(2)
+        Debug.log(&quot;7. two late-update phases passed&quot;, self)
+
+        self._gate_open = False
+        self.start_coroutine(self.open_gate_later())
+        yield WaitUntil(lambda: self._gate_open)
+        Debug.log(&quot;8. WaitUntil observed an open gate&quot;, self)
+
+        self._busy = True
+        self.start_coroutine(self.clear_busy_later())
+        yield WaitWhile(lambda: self._busy)
+        Debug.log(&quot;9. WaitWhile observed idle state&quot;, self)
+
+        child = self.start_coroutine(self.child_sequence())
+        yield child
+        Debug.log(&quot;10. child finished; parent finished&quot;, self)
+
+    def open_gate_later(self):
+        yield WaitForSeconds(0.2)
+        self._gate_open = True
+
+    def clear_busy_later(self):
+        yield WaitForFrames(2)
+        self._busy = False
+
+    def child_sequence(self):
+        Debug.log(&quot;child started immediately&quot;, self)
+        yield WaitForSeconds(0.2)
+        Debug.log(&quot;child completed&quot;, self)
+
+    def cancel_sequence(self):
+        &quot;&quot;&quot;可绑定到 UI Button。&quot;&quot;&quot;
+        handle = self._sequence_handle
+        if handle is not None and not handle.is_finished:
+            self.stop_coroutine(handle)
+
+    def cancel_everything(self):
+        &quot;&quot;&quot;停止此组件持有的父流程和全部辅助流程。&quot;&quot;&quot;
+        self.stop_all_coroutines()
+</code></pre>
+<p>辅助生成器会自动改变条件，无需输入。实际项目中的标志可以由动画回调、碰撞事件、UI 操作、加载完成信号或其他组件设置。</p>
+<h2 id="zh-wait-semantics">完整等待语义</h2>
+<p>每个 <code>yield</code> 值都会决定调度器下一次检查协程的阶段。</p>
+<table>
+<thead>
+<tr>
+<th><code>yield</code> 值</th>
+<th>恢复规则</th>
+<th>检查阶段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>yield None</code> 或单独 <code>yield</code></td>
+<td>等待一个更新帧。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForFrames(n)</code></td>
+<td>经过恰好 <code>n</code> 次更新阶段检查后恢复。<code>n</code> 必须是至少为 1 的整数，<code>bool</code> 会被拒绝。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForSeconds(seconds)</code></td>
+<td>累加缩放后的 <code>delta_time</code>，达到 <code>seconds</code> 后恢复。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForSecondsRealtime(seconds)</code></td>
+<td>墙钟时间达到目标后，在首次更新检查时恢复。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitForFixedUpdate()</code></td>
+<td>在下一次固定更新调度中恢复。</td>
+<td><code>fixed_update</code></td>
+</tr>
+<tr>
+<td><code>WaitForEndOfFrame(n)</code></td>
+<td>经过 <code>n</code> 次后期更新调度后恢复。<code>n</code> 与 <code>WaitForFrames</code> 使用相同的整数校验。</td>
+<td><code>late_update</code></td>
+</tr>
+<tr>
+<td><code>WaitUntil(predicate)</code></td>
+<td>每次更新检查都调用 <code>predicate()</code>，结果为真时恢复。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>WaitWhile(predicate)</code></td>
+<td>每次更新检查都调用 <code>predicate()</code>，结果变为假时恢复。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td><code>Coroutine</code> 句柄</td>
+<td>句柄结束后恢复，被停止的句柄也算结束。</td>
+<td><code>update</code></td>
+</tr>
+<tr>
+<td>任意不支持的值</td>
+<td>当前运行时把它当作等待一个更新帧。</td>
+<td><code>update</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>WaitForSeconds</code> 接收缩放后的增量时间。<code>Time.time_scale == 0</code> 时，它的累计值不会增长。<code>WaitForSecondsRealtime</code> 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 <code>yield</code> 前即时创建。</p>
+<p><code>WaitForEndOfFrame</code> 对应当前协程调度器的 <code>late_update</code> 阶段，不承诺渲染、画面呈现或截图已经完成。</p>
+<p>两种秒数等待允许 0 和负数，并会在下一次更新检查时就绪。帧数等待会拒绝小于 1 的值。需要明确等待一帧时，使用 <code>yield None</code>。</p>
+<p>等待指令会保存累计时间、目标时间或剩余次数。每次等待都应创建新的 <code>WaitForSeconds</code>、<code>WaitForSecondsRealtime</code>、<code>WaitForFrames</code> 或 <code>WaitForEndOfFrame</code>，避免跨协程缓存同一实例。</p>
+<h2 id="zh-handles-cancellation">句柄、子流程与取消</h2>
+<p>组件提供三个协程操作：</p>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>start_coroutine(generator)</code></td>
+<td>立即启动生成器，返回 <code>Coroutine</code> 句柄。</td>
+</tr>
+<tr>
+<td><code>stop_coroutine(handle)</code></td>
+<td>停止指定句柄并关闭它的生成器。</td>
+</tr>
+<tr>
+<td><code>stop_all_coroutines()</code></td>
+<td>停止并关闭此组件持有的全部协程。</td>
+</tr>
+</tbody>
+</table>
+<p>等待子流程时，先启动它，再 <code>yield</code> 返回的句柄：</p>
+<pre><code class="language-python">child = self.start_coroutine(self.child_sequence())
+yield child
+</code></pre>
+<p>直接 <code>yield self.child_sequence()</code> 会产生调度器不支持的生成器值。当前回退行为只等待一个更新帧，该生成器不会被调度。需要独立调度和句柄时，必须调用 <code>start_coroutine()</code>。</p>
+<p>停止操作会把句柄标记为完成，并调用生成器的 <code>close()</code>。生成器内部的重要清理可放在 <code>finally</code> 中：</p>
+<pre><code class="language-python">def temporary_state(self):
+    self._busy = True
+    try:
+        yield WaitForSeconds(5.0)
+    finally:
+        self._busy = False
+</code></pre>
+<p>公开句柄还提供 <code>creation_epoch</code>、<code>creation_epoch_id</code> 与 <code>is_legacy</code>，供运行时重载诊断使用。一般游戏流程只需检查 <code>is_finished</code>。</p>
+<p>只停止父流程不会自动停止那些单独启动的辅助协程。整个组件流程需要一起结束时，可调用 <code>stop_all_coroutines()</code>；也可以保存每个辅助句柄并逐一停止。</p>
+<h2 id="zh-lifetime">组件生命周期规则</h2>
+<ul>
+<li>禁用 <code>InxComponent</code> 不会停止其 Unity 风格协程。设计需要同步停止时，可在 <code>on_disable()</code> 中调用停止方法。</li>
+<li>停用所属 GameObject 会停止该组件的全部协程，并丢弃该组件调度器。</li>
+<li>协程正常完成或被停止后，原句柄仍可使用，且 <code>is_finished == True</code>。</li>
+<li>生成器在首次有效等待前就结束时，<code>start_coroutine()</code> 会返回已经完成的句柄。</li>
+<li>推进协程主体时出现异常，会结束该协程，并以组件为上下文写入 Editor Console。</li>
+</ul>
+<p>这些规则让取消行为清晰地落在组件边界，也能防止已停用对象继续保留游戏调度工作。</p>
+<h2 id="zh-verify">验证结果</h2>
+<ol>
+<li>进入 Play 模式并观察 Console。消息 1 应在 <code>start()</code> 内立即出现，消息 2–10 应保持数字顺序。</li>
+<li>确认消息 2 与消息 3 之间隔着更新帧，再观察缩放时间和真实时间延时。</li>
+<li>消息 6 应出现在一次固定更新之后。消息 7 应在两次后期更新之后出现。</li>
+<li>gate 与 busy 辅助流程应在没有输入的情况下让消息 8 和 9 出现。</li>
+<li><code>child started immediately</code> 应先出现，延时后出现 <code>child completed</code>，父流程消息 10 再于后续更新检查中出现。</li>
+<li>把 UI Button 绑定到 <code>cancel_sequence()</code>，在流程完成前点击。父句柄应结束，后续父流程消息不再出现。重新运行，再把按钮绑定到 <code>cancel_everything()</code>，可同时停止父流程与辅助流程。</li>
+</ol>
+<p>开发期间可记录 <code>self._sequence_handle.is_finished</code> 检查句柄。验证后删除逐帧诊断日志，让 Console 保持清晰。</p>
+<h2 id="zh-common-errors">常见错误</h2>
+<ul>
+<li><strong>传入方法本身</strong>：应写成 <code>self.start_coroutine(self.run_sequence())</code>，末尾括号不能省略。</li>
+<li><strong>使用 <code>time.sleep()</code></strong>：它会阻塞线程并冻结其他引擎工作。墙钟延时请 <code>yield WaitForSecondsRealtime()</code>。</li>
+<li><strong>期待精确时间点</strong>：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。</li>
+<li><strong>暂停后仍等待 <code>WaitForSeconds</code></strong>：时间缩放为 0 时，缩放增量也为 0。暂停期间仍需推进的流程可使用实时等待。</li>
+<li><strong>把 <code>WaitForEndOfFrame</code> 当成渲染后截图点</strong>：当前调度器把它映射到后期更新。</li>
+<li><strong>复用同一个等待实例</strong>：累计值和剩余次数保存在对象中。每个 <code>yield</code> 都应构造新指令。</li>
+<li><strong>直接 <code>yield</code> 生成器</strong>：先启动生成器，再 <code>yield</code> 它的 <code>Coroutine</code> 句柄。</li>
+<li><strong>取消父流程后留下辅助流程</strong>：保存辅助句柄，或停止此组件的全部协程。</li>
+<li><strong>认为禁用组件会自动取消</strong>：需要这种生命周期时，在 <code>on_disable()</code> 中明确清理。</li>
+<li><strong>循环中没有 <code>yield</code></strong>：生成器无法把控制权交回调度器，可能卡住当前帧。</li>
+</ul>
+<h2 id="zh-next">后续实践</h2>
+<p>至此，你已经具备完整的游戏玩法基础：组件、可编辑字段、输入、运行时对象生命周期、物理回调、UI 与场景流程、音频信号，以及跨帧顺序。即时状态变化可保留在事件中，后续多步反应则适合整理成可读、可取消的协程。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="gameplay-audio-events.html">← Audio and gameplay signals</a><span class="learn-course-home">Chapter 8 of 8</span><span aria-hidden="true"></span></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="gameplay-audio-events.html">← 音频与游戏信号</a><span class="learn-course-home">第 8 章，共 8 章</span><span aria-hidden="true"></span></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

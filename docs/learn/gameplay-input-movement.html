@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Read keyboard and mouse state, use delta time correctly, and move an object without frame-rate-dependent behavior.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-input-movement.html">
+    <title>Input, time, and movement · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 3/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 3/8</span></span><a href="gameplay-input-movement.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay · Chapter 3</span></p>
+<h1 id="input-time-and-movement">Input, time, and movement</h1>
+<p>Movement begins with three small contracts: <code>Input</code> reports state for the current frame, <code>update(delta_time)</code> supplies the frame duration in seconds, and <code>Transform</code> stores where the GameObject is. This chapter combines them into a keyboard-controlled object whose speed stays stable when the frame rate changes.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#build-the-mover">Build the mover</a><a href="#read-input-state">Read input state</a><a href="#use-delta-time">Use delta time</a><a href="#choose-transform-space">Choose Transform space</a><a href="#input-movement-errors">Common errors</a><a href="#verify-input-movement">Verify the result</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-input-movement.webp" alt="A GameObject moving across a scene from keyboard input over several frames" loading="lazy" decoding="async">
+  <figcaption>Input chooses a direction each frame; delta time turns speed into a frame distance; Transform applies the result.</figcaption>
+</figure>
+
+<h2 id="build-the-mover">Build a keyboard mover</h2>
+<p><strong>Prerequisites.</strong> Continue from Chapter 2 with an open project, a saved scene, and the Hierarchy, Project, Inspector, Game, and Console panels visible. The scene needs an enabled Camera that can see the origin.</p>
+<ol>
+<li>In <strong>Hierarchy</strong>, right-click empty space and choose <strong>Create 3D Object &gt; Cube</strong>. Rename it <code>Player</code> and set its Transform position to <code>(0, 0, 0)</code>.</li>
+<li>In <strong>Project</strong>, open an <code>Assets</code> folder, right-click empty space, and choose <strong>Create &gt; Script (.py)</strong>. Name the script <code>KeyboardMover</code>.</li>
+<li>Open <code>KeyboardMover.py</code> and replace its contents with the code below.</li>
+<li>Return to the editor and wait for script import to finish. Select <code>Player</code>, click <strong>Add Component</strong> in the Inspector, and add <code>KeyboardMover</code>.</li>
+<li>Leave <strong>Speed</strong> at <code>4</code>, save the scene, and keep the Game panel visible.</li>
+</ol>
+<pre><code class="language-python">from math import sqrt
+
+from Infernux import InxComponent, Vector3, serialized_field
+from Infernux.input import Input, KeyCode
+
+
+class KeyboardMover(InxComponent):
+    speed: float = serialized_field(default=4.0, range=(0.0, 20.0))
+
+    def update(self, delta_time: float):
+        x = 0.0
+        z = 0.0
+
+        if Input.get_key(KeyCode.A) or Input.get_key(KeyCode.LEFT_ARROW):
+            x -= 1.0
+        if Input.get_key(KeyCode.D) or Input.get_key(KeyCode.RIGHT_ARROW):
+            x += 1.0
+        if Input.get_key(KeyCode.S) or Input.get_key(KeyCode.DOWN_ARROW):
+            z -= 1.0
+        if Input.get_key(KeyCode.W) or Input.get_key(KeyCode.UP_ARROW):
+            z += 1.0
+
+        length_squared = x * x + z * z
+        if length_squared &gt; 1.0:
+            inverse_length = 1.0 / sqrt(length_squared)
+            x *= inverse_length
+            z *= inverse_length
+
+        frame_distance = self.speed * delta_time
+        position = self.transform.position
+        self.transform.position = Vector3(
+            position.x + x * frame_distance,
+            position.y,
+            position.z + z * frame_distance,
+        )
+</code></pre>
+<p>Enter Play mode, click inside the <strong>Game</strong> panel to give it game-input focus, then hold WASD or the arrow keys. The normalization block keeps diagonal movement at the same maximum speed as movement along one axis.</p>
+<h2 id="read-input-state">Read held, pressed, and released state</h2>
+<p><code>Input</code> is a static API. Call its methods on the class; do not create an <code>Input()</code> instance. A key can be a <code>KeyCode</code> integer constant or a string name such as <code>"space"</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Query</th>
+<th>Result during a press</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Input.get_key(KeyCode.W)</code></td>
+<td><code>True</code> on every frame while held</td>
+<td>Continuous movement</td>
+</tr>
+<tr>
+<td><code>Input.get_key_down(KeyCode.SPACE)</code></td>
+<td><code>True</code> on the transition frame</td>
+<td>Jump, fire, open</td>
+</tr>
+<tr>
+<td><code>Input.get_key_up(KeyCode.SPACE)</code></td>
+<td><code>True</code> on the release frame</td>
+<td>Charge release, stop drag</td>
+</tr>
+</tbody>
+</table>
+<p>The built-in virtual axes are also current public API. <code>Input.get_axis("Horizontal")</code> reads A/D and Left/Right; <code>Input.get_axis("Vertical")</code> reads S/W and Down/Up. Values are <code>-1.0</code>, <code>0.0</code>, or <code>1.0</code>, and <code>get_axis_raw()</code> is currently an alias with the same unsmoothed behavior.</p>
+<p>Mouse state follows the same frame model. This component logs the Game-viewport position on the first frame of each left click:</p>
+<pre><code class="language-python">from Infernux import Debug, InxComponent
+from Infernux.input import Input
+
+
+class ClickProbe(InxComponent):
+    def update(self, delta_time: float):
+        if Input.get_mouse_button_down(0):
+            x, y = Input.game_mouse_position
+            Debug.log(f&quot;Game click: ({x:.0f}, {y:.0f})&quot;)
+</code></pre>
+<p>Button indices are <code>0</code> for left, <code>1</code> for right, and <code>2</code> for middle. <code>Input.mouse_position</code> uses window pixels; <code>Input.game_mouse_position</code> is relative to the top-left of the rendered Game image. Both are class properties, so they have no parentheses.</p>
+<div class="learn-note"><strong>Focus is part of the contract.</strong><p>In the editor, gameplay queries return idle values when the Game view does not accept game input. Click the Game panel after entering Play mode before diagnosing a keyboard or mouse script.</p></div>
+
+<h2 id="use-delta-time">Turn speed into frame distance</h2>
+<p><code>speed</code> is measured in world units per second. Multiplying it by the current frame duration produces the distance for one update:</p>
+<pre><code class="language-text">frame distance = units per second × seconds this frame
+</code></pre>
+<p>At 4 units per second, a <code>0.025</code> second frame moves <code>0.1</code> units. Four such frames still cover <code>0.4</code> units. Faster frames produce smaller individual steps and more of them, so distance over the same elapsed time stays consistent.</p>
+<p>The current lifecycle contract distinguishes two time values:</p>
+<ul>
+<li>The <code>delta_time</code> argument passed to <code>update()</code> and <code>late_update()</code> is the raw, unscaled frame delta from the engine.</li>
+<li><code>Time.delta_time</code> is the clamped, scaled delta and follows <code>Time.time_scale</code>.</li>
+</ul>
+<p>The mover above uses the callback argument, so it continues to use unscaled frame time. For movement that should pause when <code>Time.time_scale</code> becomes <code>0</code>, import <code>Time</code> from <code>Infernux</code> and use <code>Time.delta_time</code> for <code>frame_distance</code>:</p>
+<pre><code class="language-python">from Infernux import Time
+
+frame_distance = self.speed * Time.delta_time
+</code></pre>
+<p>Use one time source for one calculation. Multiplying by both values applies frame duration twice.</p>
+<h2 id="choose-transform-space">Choose world or local Transform space</h2>
+<p>Every <code>InxComponent</code> exposes <code>self.transform</code>, a shortcut to <code>self.game_object.transform</code>.</p>
+<ul>
+<li><code>transform.position</code> is world-space position.</li>
+<li><code>transform.local_position</code> is position relative to the parent.</li>
+<li><code>transform.forward</code>, <code>right</code>, and <code>up</code> are read-only world-space direction vectors.</li>
+<li><code>transform.local_forward</code>, <code>local_right</code>, and <code>local_up</code> are their local-space counterparts.</li>
+</ul>
+<p>The tutorial writes a fresh <code>Vector3</code> back to <code>position</code>, making the complete state change visible in one assignment. If <code>Player</code> is parented below a moving platform, world-space movement still follows the world X/Z axes. Change the read and write to <code>local_position</code> when the parent's coordinate system should define the motion.</p>
+<h2 id="input-movement-errors">Common errors</h2>
+<p><strong>The object does not move.</strong> Enter Play mode, click the Game panel, confirm that <code>KeyboardMover</code> is enabled on <code>Player</code>, and read the Console for import or callback errors.</p>
+<p><strong>Movement happens only once per press.</strong> Continuous movement needs <code>get_key()</code>. <code>get_key_down()</code> reports one transition frame.</p>
+<p><strong>Movement changes with frame rate.</strong> Confirm that the displacement is multiplied by exactly one delta-time value. A fixed amount added in every <code>update()</code> is measured in units per frame.</p>
+<p><strong>Diagonal movement is too fast.</strong> Normalize the two input components when their squared length exceeds <code>1</code>, as the complete example does.</p>
+<p><strong>A child moves along unexpected axes.</strong> Decide whether the design needs world <code>position</code> or parent-relative <code>local_position</code>, then use that space consistently for both the read and write.</p>
+<p><strong><code>KeyCode.UpArrow</code> fails.</strong> Public constants use uppercase snake case, such as <code>KeyCode.UP_ARROW</code>, <code>KeyCode.LEFT_SHIFT</code>, and <code>KeyCode.SPACE</code>. Import them from <code>Infernux.input</code>.</p>
+<h2 id="verify-input-movement">Verify the result</h2>
+<p>The chapter passes when all of these checks succeed:</p>
+<ol>
+<li>Holding W, A, S, D, or an arrow key moves <code>Player</code> continuously after the Game view receives focus.</li>
+<li>Holding two perpendicular keys produces no visible diagonal speed boost.</li>
+<li>Raising <strong>Speed</strong> in the Inspector increases distance per second without changing the script.</li>
+<li>The Transform values change during Play mode and return to the authored scene values after leaving Play mode.</li>
+<li>Adding <code>ClickProbe</code> to any GameObject produces one Console line per left-button press, with coordinates relative to the Game image.</li>
+</ol>
+<p>You now have a frame-rate-independent control loop and a clear choice between world and local movement. <a href="gameplay-prefabs-runtime.html">Chapter 4: Prefabs and runtime object lifetime</a> uses the same one-frame input events to create and remove scene objects during Play mode.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">Gameplay · 第 3 章</span></p>
+<h1 id="_1">输入、时间与移动</h1>
+<p>移动建立在三个小契约上：<code>Input</code> 给出当前帧的输入状态，<code>update(delta_time)</code> 提供以秒为单位的帧时长，<code>Transform</code> 保存 GameObject 的位置。本章会把它们组合成键盘控制组件，让移动速度在帧率变化时保持稳定。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#build-the-mover_1">制作移动组件</a><a href="#read-input-state_1">读取输入状态</a><a href="#use-delta-time_1">使用 delta time</a><a href="#choose-transform-space_1">选择 Transform 空间</a><a href="#input-movement-errors_1">常见错误</a><a href="#verify-input-movement_1">验证结果</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-input-movement.webp" alt="GameObject 根据键盘输入连续多帧穿过场景" loading="lazy" decoding="async">
+  <figcaption>每帧由输入选择方向，delta time 把速度换算为本帧距离，Transform 再应用结果。</figcaption>
+</figure>
+
+<h2 id="build-the-mover_1">制作键盘移动组件</h2>
+<p><strong>准备条件。</strong> 从第 2 章的项目继续，打开一份已保存场景，并显示 Hierarchy、Project、Inspector、Game 与 Console 面板。场景中需要一台能看到原点的已启用 Camera。</p>
+<ol>
+<li>在 <strong>Hierarchy</strong> 空白处右键，选择 <strong>创建 3D 对象 &gt; Cube</strong>。把它命名为 <code>Player</code>，Transform 位置设为 <code>(0, 0, 0)</code>。</li>
+<li>在 <strong>Project</strong> 中打开一个 <code>Assets</code> 目录，在空白处右键，选择 <strong>创建 &gt; 脚本 (.py)</strong>，命名为 <code>KeyboardMover</code>。</li>
+<li>打开 <code>KeyboardMover.py</code>，用下面的代码替换文件内容。</li>
+<li>回到编辑器，等待脚本导入完成。选中 <code>Player</code>，在 Inspector 中点击 <strong>添加组件</strong>，加入 <code>KeyboardMover</code>。</li>
+<li>保持 <strong>Speed</strong> 为 <code>4</code>，保存场景，并让 Game 面板保持可见。</li>
+</ol>
+<pre><code class="language-python">from math import sqrt
+
+from Infernux import InxComponent, Vector3, serialized_field
+from Infernux.input import Input, KeyCode
+
+
+class KeyboardMover(InxComponent):
+    speed: float = serialized_field(default=4.0, range=(0.0, 20.0))
+
+    def update(self, delta_time: float):
+        x = 0.0
+        z = 0.0
+
+        if Input.get_key(KeyCode.A) or Input.get_key(KeyCode.LEFT_ARROW):
+            x -= 1.0
+        if Input.get_key(KeyCode.D) or Input.get_key(KeyCode.RIGHT_ARROW):
+            x += 1.0
+        if Input.get_key(KeyCode.S) or Input.get_key(KeyCode.DOWN_ARROW):
+            z -= 1.0
+        if Input.get_key(KeyCode.W) or Input.get_key(KeyCode.UP_ARROW):
+            z += 1.0
+
+        length_squared = x * x + z * z
+        if length_squared &gt; 1.0:
+            inverse_length = 1.0 / sqrt(length_squared)
+            x *= inverse_length
+            z *= inverse_length
+
+        frame_distance = self.speed * delta_time
+        position = self.transform.position
+        self.transform.position = Vector3(
+            position.x + x * frame_distance,
+            position.y,
+            position.z + z * frame_distance,
+        )
+</code></pre>
+<p>进入 Play 模式，在 <strong>Game</strong> 面板内单击一次，让游戏输入获得焦点，然后按住 WASD 或方向键。归一化代码会让斜向移动与单轴移动保持相同的最高速度。</p>
+<h2 id="read-input-state_1">读取按住、按下与松开状态</h2>
+<p><code>Input</code> 是静态 API，直接调用类方法即可，无需创建 <code>Input()</code> 实例。按键参数可以使用 <code>KeyCode</code> 整数常量，也可以使用 <code>"space"</code> 这类字符串名称。</p>
+<table>
+<thead>
+<tr>
+<th>查询</th>
+<th>一次按键过程中的结果</th>
+<th>常见用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Input.get_key(KeyCode.W)</code></td>
+<td>按住期间每帧都是 <code>True</code></td>
+<td>连续移动</td>
+</tr>
+<tr>
+<td><code>Input.get_key_down(KeyCode.SPACE)</code></td>
+<td>状态切换为按下的那一帧是 <code>True</code></td>
+<td>跳跃、开火、打开</td>
+</tr>
+<tr>
+<td><code>Input.get_key_up(KeyCode.SPACE)</code></td>
+<td>松开的那一帧是 <code>True</code></td>
+<td>释放蓄力、结束拖动</td>
+</tr>
+</tbody>
+</table>
+<p>内置虚拟轴也属于当前公共 API。<code>Input.get_axis("Horizontal")</code> 读取 A/D 与左右方向键，<code>Input.get_axis("Vertical")</code> 读取 S/W 与上下方向键。结果为 <code>-1.0</code>、<code>0.0</code> 或 <code>1.0</code>；当前 <code>get_axis_raw()</code> 是同一套无平滑行为的别名。</p>
+<p>鼠标状态也遵循逐帧模型。下面的组件会在每次按下鼠标左键的第一帧记录 Game 视口坐标：</p>
+<pre><code class="language-python">from Infernux import Debug, InxComponent
+from Infernux.input import Input
+
+
+class ClickProbe(InxComponent):
+    def update(self, delta_time: float):
+        if Input.get_mouse_button_down(0):
+            x, y = Input.game_mouse_position
+            Debug.log(f&quot;Game click: ({x:.0f}, {y:.0f})&quot;)
+</code></pre>
+<p>鼠标按键编号 <code>0</code>、<code>1</code>、<code>2</code> 依次代表左键、右键与中键。<code>Input.mouse_position</code> 使用窗口像素坐标；<code>Input.game_mouse_position</code> 以 Game 图像左上角为原点。两者都是类属性，访问时不加括号。</p>
+<div class="learn-note"><strong>焦点也是输入契约的一部分。</strong><p>编辑器中的 Game 视图未接收游戏输入时，游戏查询会返回空闲值。进入 Play 模式后先单击 Game 面板，再排查键盘或鼠标脚本。</p></div>
+
+<h2 id="use-delta-time_1">把速度换算为本帧距离</h2>
+<p><code>speed</code> 的单位是“世界单位/秒”。它乘以当前帧时长，就得到一次更新应走的距离：</p>
+<pre><code class="language-text">本帧距离 = 每秒单位数 × 本帧秒数
+</code></pre>
+<p>速度为每秒 4 个单位时，时长 <code>0.025</code> 秒的一帧移动 <code>0.1</code> 个单位。连续四帧仍会移动 <code>0.4</code> 个单位。帧越快，单步距离越短、步数越多，因此同样的经过时间会得到稳定距离。</p>
+<p>当前生命周期契约区分两种时间值：</p>
+<ul>
+<li>传给 <code>update()</code> 与 <code>late_update()</code> 的 <code>delta_time</code> 参数，是引擎提供的原始、未缩放帧间隔。</li>
+<li><code>Time.delta_time</code> 是经过上限约束和时间缩放的帧间隔，会跟随 <code>Time.time_scale</code>。</li>
+</ul>
+<p>上面的移动组件使用回调参数，所以它采用未缩放帧时间。移动需要在 <code>Time.time_scale</code> 变为 <code>0</code> 时暂停时，从 <code>Infernux</code> 导入 <code>Time</code>，并用 <code>Time.delta_time</code> 计算 <code>frame_distance</code>：</p>
+<pre><code class="language-python">from Infernux import Time
+
+frame_distance = self.speed * Time.delta_time
+</code></pre>
+<p>一次计算只选一种时间来源。同时乘上两个值会重复应用帧时长。</p>
+<h2 id="choose-transform-space_1">选择世界空间或局部空间</h2>
+<p>每个 <code>InxComponent</code> 都提供 <code>self.transform</code>，它是 <code>self.game_object.transform</code> 的快捷入口。</p>
+<ul>
+<li><code>transform.position</code> 是世界空间位置。</li>
+<li><code>transform.local_position</code> 是相对父级的位置。</li>
+<li><code>transform.forward</code>、<code>right</code>、<code>up</code> 是只读的世界空间方向。</li>
+<li><code>transform.local_forward</code>、<code>local_right</code>、<code>local_up</code> 是对应的局部空间方向。</li>
+</ul>
+<p>教程代码会构造新的 <code>Vector3</code> 并写回 <code>position</code>，一次赋值就能看清完整状态变化。<code>Player</code> 位于移动平台之下时，世界空间移动仍沿世界 X/Z 轴进行。设计需要沿父级坐标移动时，把读取与写入一起改成 <code>local_position</code>。</p>
+<h2 id="input-movement-errors_1">常见错误</h2>
+<p><strong>物体没有移动。</strong> 进入 Play 模式，单击 Game 面板，确认 <code>Player</code> 上的 <code>KeyboardMover</code> 已启用，再查看 Console 是否有导入错误或回调错误。</p>
+<p><strong>每次按键只移动一下。</strong> 连续移动要用 <code>get_key()</code>。<code>get_key_down()</code> 只报告状态切换的那一帧。</p>
+<p><strong>移动速度随帧率改变。</strong> 确认位移只乘了一次 delta time。每次 <code>update()</code> 都增加固定值时，单位会变成“每帧单位数”。</p>
+<p><strong>斜向移动太快。</strong> 两个输入分量的平方和大于 <code>1</code> 时进行归一化，完整示例已经包含这段处理。</p>
+<p><strong>子物体沿意外方向移动。</strong> 先决定使用世界空间 <code>position</code>，还是父级相对的 <code>local_position</code>，读取与写入必须使用同一空间。</p>
+<p><strong><code>KeyCode.UpArrow</code> 报错。</strong> 公共常量采用全大写蛇形命名，例如 <code>KeyCode.UP_ARROW</code>、<code>KeyCode.LEFT_SHIFT</code> 与 <code>KeyCode.SPACE</code>，并从 <code>Infernux.input</code> 导入。</p>
+<h2 id="verify-input-movement_1">验证结果</h2>
+<p>下面各项都满足时，本章练习通过：</p>
+<ol>
+<li>Game 视图获得焦点后，按住 W、A、S、D 或方向键会让 <code>Player</code> 连续移动。</li>
+<li>同时按住两个垂直方向的按键时，没有明显的斜向加速。</li>
+<li>在 Inspector 中提高 <strong>Speed</strong>，每秒移动距离随之增加，无需修改脚本。</li>
+<li>Play 模式中 Transform 数值持续变化，退出 Play 模式后恢复为场景编写值。</li>
+<li>把 <code>ClickProbe</code> 加到任意 GameObject 后，每次按下鼠标左键，Console 都会新增一行相对 Game 图像的坐标。</li>
+</ol>
+<p>现在你已经拥有与帧率无关的控制循环，也能明确选择世界空间或局部空间。<a href="gameplay-prefabs-runtime.html">第 4 章：Prefab 与运行时对象生命周期</a>会继续使用单帧输入事件，在 Play 模式中创建和移除场景对象。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="gameplay-components-fields.html">← GameObjects, components, and authored fields</a><span class="learn-course-home">Chapter 3 of 8</span><a href="gameplay-prefabs-runtime.html">Prefabs and runtime object lifetime →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="gameplay-components-fields.html">← GameObject、组件与可编辑字段</a><span class="learn-course-home">第 3 章，共 8 章</span><a href="gameplay-prefabs-runtime.html">Prefab 与运行时对象生命周期 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

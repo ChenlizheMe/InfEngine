@@ -1,0 +1,90 @@
+[
+  {
+    "slug": "gameplay-first-component",
+    "number": 1,
+    "title_en": "Create and run your first component",
+    "title_zh": "创建并运行第一个组件",
+    "summary_en": "Create a Python component, attach it to a GameObject, enter Play mode, and verify the lifecycle through the Console.",
+    "summary_zh": "创建 Python 组件，将它挂到 GameObject，进入 Play 模式，并通过 Console 验证生命周期。",
+    "tags": ["basics", "python", "editor"],
+    "labels_en": ["Basics", "Python", "Editor"],
+    "labels_zh": ["基础", "Python", "编辑器"]
+  },
+  {
+    "slug": "gameplay-components-fields",
+    "number": 2,
+    "title_en": "GameObjects, components, and authored fields",
+    "title_zh": "GameObject、组件与可编辑字段",
+    "summary_en": "Understand the component model, lifecycle order, serialized fields, Inspector constraints, and scene references.",
+    "summary_zh": "理解组件模型、生命周期顺序、序列化字段、Inspector 约束与场景引用。",
+    "tags": ["basics", "python", "editor"],
+    "labels_en": ["Basics", "Python", "Editor"],
+    "labels_zh": ["基础", "Python", "编辑器"]
+  },
+  {
+    "slug": "gameplay-input-movement",
+    "number": 3,
+    "title_en": "Input, time, and movement",
+    "title_zh": "输入、时间与移动",
+    "summary_en": "Read keyboard and mouse state, use delta time correctly, and move an object without frame-rate-dependent behavior.",
+    "summary_zh": "读取键鼠状态，正确使用 delta time，并让物体移动不再依赖帧率。",
+    "tags": ["basics", "python", "input"],
+    "labels_en": ["Basics", "Python", "Input"],
+    "labels_zh": ["基础", "Python", "输入"]
+  },
+  {
+    "slug": "gameplay-prefabs-runtime",
+    "number": 4,
+    "title_en": "Prefabs and runtime object lifetime",
+    "title_zh": "Prefab 与运行时对象生命周期",
+    "summary_en": "Instantiate authored objects, choose parent and world-space behavior, keep references, and destroy instances safely.",
+    "summary_zh": "实例化已编辑好的对象，选择父级与世界空间语义，保存引用并安全销毁实例。",
+    "tags": ["python", "prefab", "scene"],
+    "labels_en": ["Python", "Prefab", "Scene"],
+    "labels_zh": ["Python", "Prefab", "场景"]
+  },
+  {
+    "slug": "gameplay-physics-events",
+    "number": 5,
+    "title_en": "Physics and collision callbacks",
+    "title_zh": "物理与碰撞回调",
+    "summary_en": "Choose colliders and rigid bodies, place motion in fixed_update, and respond to collision and trigger phases.",
+    "summary_zh": "选择 Collider 与 Rigidbody，在 fixed_update 中处理物理运动，并响应碰撞和 Trigger 的各个阶段。",
+    "tags": ["python", "physics", "events"],
+    "labels_en": ["Python", "Physics", "Events"],
+    "labels_zh": ["Python", "物理", "事件"]
+  },
+  {
+    "slug": "gameplay-ui-scenes",
+    "number": 6,
+    "title_en": "UI actions and scene flow",
+    "title_zh": "UI 操作与场景流程",
+    "summary_en": "Bind a UI button to a component method, update interface state, and move between authored scenes.",
+    "summary_zh": "把 UI Button 绑定到组件方法，更新界面状态，并在已编辑的场景之间切换。",
+    "tags": ["python", "ui", "scene"],
+    "labels_en": ["Python", "UI", "Scene"],
+    "labels_zh": ["Python", "UI", "场景"]
+  },
+  {
+    "slug": "gameplay-audio-events",
+    "number": 7,
+    "title_en": "Audio and gameplay signals",
+    "title_zh": "音频与游戏信号",
+    "summary_en": "Drive AudioSource from gameplay state and keep one-off reactions separate from per-frame polling.",
+    "summary_zh": "根据游戏状态驱动 AudioSource，并把一次性反应与逐帧轮询分开组织。",
+    "tags": ["python", "audio", "events"],
+    "labels_en": ["Python", "Audio", "Events"],
+    "labels_zh": ["Python", "音频", "事件"]
+  },
+  {
+    "slug": "gameplay-coroutines",
+    "number": 8,
+    "title_en": "Coroutines and multi-frame sequences",
+    "title_zh": "协程与跨帧流程",
+    "summary_en": "Compose timed behavior with generator coroutines, scaled and real time, fixed updates, predicates, cancellation, and nested waits.",
+    "summary_zh": "使用生成器协程组织定时行为，并掌握缩放时间、真实时间、固定更新、条件等待、取消与嵌套等待。",
+    "tags": ["python", "advanced", "coroutine"],
+    "labels_en": ["Python", "Advanced", "Coroutine"],
+    "labels_zh": ["Python", "进阶", "协程"]
+  }
+]

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Bind a UI button to a component method, update interface state, and move between authored scenes.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-ui-scenes.html">
+    <title>UI actions and scene flow · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 6/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 6/8</span></span><a href="gameplay-ui-scenes.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay Foundations · Chapter 6</span></p>
+<h1 id="ui-actions-and-scene-flow">UI actions and scene flow</h1>
+<p>A menu Button can call a public method on an attached Python component. That method can validate the action, record a useful message, and ask <code>Infernux.scene.SceneManager</code> to load another authored scene from the build list.</p>
+<p>This chapter builds a two-scene loop: <code>MainMenu.scene</code> contains a Play Button, and <code>Level01.scene</code> contains a Return Button. Both use persistent <strong>On Click ()</strong> bindings configured in the Inspector.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#prepare-scenes">Prepare two scenes</a><a href="#scene-actions-component">Write the scene actions</a><a href="#bind-button">Bind the Button</a><a href="#build-list">Configure Build Settings</a><a href="#verify-ui-scenes">Verify the flow</a><a href="#ui-scene-errors">Common errors</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-ui-scenes.webp" alt="Infernux menu and level scenes connected by UI Button component method bindings" loading="lazy" decoding="async">
+  <figcaption>Each Button stores a target GameObject, Python component name, and public method name; the method requests the next scene.</figcaption>
+</figure>
+
+<h2 id="prepare-scenes">Prepare two authored scenes</h2>
+<p>Create an <code>Assets/Scenes</code> folder, then prepare these saved scene assets:</p>
+<ol>
+<li>Save the first scene as <code>Assets/Scenes/MainMenu.scene</code>.</li>
+<li>In Hierarchy, create <strong>UI &gt; Canvas</strong>.</li>
+<li>Create <strong>UI &gt; Button</strong> as a child of the Canvas. Rename its GameObject to <code>PlayButton</code> and set its <code>UIButton</code> label to <code>Play</code>.</li>
+<li>Create an empty GameObject named <code>SceneFlow</code>. It will own the component that the Button calls.</li>
+<li>Save the scene.</li>
+<li>Create a second scene and save it as <code>Assets/Scenes/Level01.scene</code>.</li>
+<li>Add a Canvas, a child Button named <code>ReturnButton</code> with label <code>Return to menu</code>, and an empty <code>SceneFlow</code> GameObject. Save again.</li>
+</ol>
+<p>A Button created through <strong>UI &gt; Button</strong> already has a <code>UIButton</code> component. Its <code>interactable</code> state, visual transition settings, label, fill, and persistent <strong>On Click ()</strong> list are available in the Inspector.</p>
+<h2 id="scene-actions-component">Write the scene actions component</h2>
+<p>Create <code>Assets/Scripts/scene_actions.py</code> with this complete component:</p>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.debug import Debug
+from Infernux.scene import SceneManager
+
+
+class SceneActions(InxComponent):
+    def load_level_one(self):
+        if SceneManager.load_scene(&quot;Level01&quot;):
+            Debug.log(&quot;Level01 scene load accepted.&quot;)
+        else:
+            Debug.log_error(&quot;Could not request Level01. Check Build Settings.&quot;)
+
+    def load_main_menu(self):
+        if SceneManager.load_scene(&quot;MainMenu&quot;):
+            Debug.log(&quot;MainMenu scene load accepted.&quot;)
+        else:
+            Debug.log_error(&quot;Could not request MainMenu. Check Build Settings.&quot;)
+</code></pre>
+<p>Attach <code>SceneActions</code> to the <code>SceneFlow</code> GameObject in both scenes. The two method names are public, take no arguments, and therefore appear in the Button method picker.</p>
+<p><code>SceneManager.load_scene(...)</code> accepts a build index or a string resolved against the build list. A bare name such as <code>"Level01"</code> matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so <code>True</code> does not mean that the new scene has already completed loading inside the current method call.</p>
+<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>Infernux.scene</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
+
+<h2 id="bind-button">Bind a Button to a component method</h2>
+<p>Configure the Play Button first:</p>
+<ol>
+<li>Open <code>MainMenu.scene</code> and select <code>PlayButton</code> in Hierarchy.</li>
+<li>In the <code>UIButton</code> Inspector, expand <strong>On Click ()</strong> and use its add control to create one entry.</li>
+<li>Drag the <code>SceneFlow</code> GameObject from Hierarchy into the entry's <strong>Target</strong> field, or choose it with the object picker.</li>
+<li>In <strong>Component</strong>, choose <code>SceneActions</code>.</li>
+<li>In <strong>Method</strong>, choose <code>load_level_one</code>.</li>
+<li>Save <code>MainMenu.scene</code>.</li>
+</ol>
+<p>Repeat the process in <code>Level01.scene</code> for <code>ReturnButton</code>, choosing the local <code>SceneFlow</code>, <code>SceneActions</code>, and <code>load_main_menu</code>.</p>
+<p>The persistent entry is serialized with the scene as a target GameObject reference plus component and method names. The component list contains Python components attached to the selected target. The method list contains public callable methods and excludes lifecycle methods such as <code>start</code>, <code>update</code>, and <code>on_destroy</code>.</p>
+<p>For events that need authored arguments, the same Inspector can reflect positional parameters typed as <code>bool</code>, <code>int</code>, <code>float</code>, <code>str</code>, GameObject, or component references. This chapter keeps both callbacks parameterless so the scene transition remains easy to verify.</p>
+<h3 id="runtime-subscription-when-the-target-is-discovered-in-code">Runtime subscription when the target is discovered in code</h3>
+<p>Persistent Inspector binding is the best fit for authored menus. A component may also subscribe a zero-argument listener at runtime through the public <code>UIEvent</code> API:</p>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.lib import GameObject
+from Infernux.ui import UIButton
+
+
+class RuntimeButtonBinding(InxComponent):
+    def start(self):
+        button_object = GameObject.find(&quot;PlayButton&quot;)
+        if button_object is None:
+            return
+
+        button = button_object.get_component(UIButton)
+        if button is not None:
+            button.on_click.add_listener(self.handle_click)
+
+    def handle_click(self):
+        print(&quot;PlayButton clicked&quot;)
+</code></pre>
+<p>Use one binding route for one action. If the same method is present in <strong>On Click ()</strong> and added with <code>add_listener</code>, one click invokes it twice.</p>
+<h2 id="build-list">Add both scenes to Build Settings</h2>
+<p><code>SceneManager</code> resolves only scenes listed for the build. Add both assets before testing:</p>
+<ol>
+<li>Open <code>MainMenu.scene</code>.</li>
+<li>Open <strong>Window &gt; Build Settings</strong>.</li>
+<li>In <strong>Scenes In Build</strong>, choose <strong>Add Open Scene</strong>. Keep <code>MainMenu.scene</code> at index <code>0</code>.</li>
+<li>Open <code>Level01.scene</code>, return to Build Settings, and choose <strong>Add Open Scene</strong> again. Keep <code>Level01.scene</code> at index <code>1</code>.</li>
+<li>Save both scenes after their Button bindings are complete.</li>
+</ol>
+<p>The string calls in <code>SceneActions</code> continue to work if the list order changes because they resolve by scene filename. Build-index loading is also public: <code>SceneManager.load_scene(1)</code> requests the scene currently stored at index <code>1</code>.</p>
+<h2 id="verify-ui-scenes">Verify the scene loop</h2>
+<ol>
+<li>Open <code>MainMenu.scene</code>, clear the Console, and enter Play mode.</li>
+<li>Move the pointer over <code>PlayButton</code>; its configured highlighted and pressed states should respond when the Button is interactable.</li>
+<li>Click <code>Play</code>. Confirm the Console reports <code>Level01 scene load accepted.</code> and the Game view changes to <code>Level01</code> after the deferred scene replacement completes.</li>
+<li>Click <code>Return to menu</code>. Confirm the Console reports <code>MainMenu scene load accepted.</code> and the menu scene becomes active again.</li>
+<li>Stop Play mode. The editor returns to its authored scene state.</li>
+</ol>
+<p>For an explicit API check, temporarily change <code>"Level01"</code> to <code>"MissingScene"</code>. The click should log the component's error, <code>load_scene</code> should return <code>False</code>, and the active scene should remain unchanged. Restore the valid name after the test.</p>
+<h2 id="ui-scene-errors">Common errors</h2>
+<p><strong>The Button changes color but no method runs.</strong> Open <strong>On Click ()</strong> and confirm that Target, Component, and Method are all set. The target must be the GameObject that actually owns <code>SceneActions</code>.</p>
+<p><strong><code>SceneActions</code> does not appear in the Component menu.</strong> Attach the script component to the selected target GameObject, allow the script to reload without import errors, then reselect the target in the event entry.</p>
+<p><strong>The callback method does not appear.</strong> Use a public method name without a leading underscore. Lifecycle methods are filtered from the picker. Save the script and confirm the Console has no compilation or import error.</p>
+<p><strong>Clicking logs “scene not found in build list.”</strong> Add the saved <code>.scene</code> asset through <strong>Window &gt; Build Settings</strong>. The bare string must match its filename; <code>"Level01"</code> resolves <code>Level01.scene</code>.</p>
+<p><strong>The click runs twice.</strong> Check for both a persistent <strong>On Click ()</strong> entry and a runtime <code>on_click.add_listener(...)</code> subscription for the same action. Keep one registration.</p>
+<p><strong>The Button never receives pointer input.</strong> Confirm the Button and Canvas are enabled, <code>interactable</code> is enabled, the Button lies inside the Canvas, and no frontmost UI element configured as a raycast target covers it.</p>
+<p><strong>Code after <code>load_scene</code> assumes the new scene is active.</strong> Treat a <code>True</code> return as an accepted request. Put new-scene setup in components belonging to the destination scene, using their <code>awake</code> and <code>start</code> callbacks.</p>
+<h2 id="next-chapter">Next chapter</h2>
+<p>You now have a complete authored action path: pointer click, serialized component method, accepted scene request, and destination lifecycle. <a href="gameplay-audio-events.html">Audio and gameplay signals</a> uses the same event-oriented structure to trigger one-off sound while keeping continuous state updates separate.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">玩法基础 · 第 6 章</span></p>
+<h1 id="ui">UI 操作与场景流程</h1>
+<p>菜单 Button 可以调用 Python 组件的公开方法。这个方法可以检查操作、记录结果，再通过 <code>Infernux.scene.SceneManager</code> 请求加载 Build Settings 中的另一个场景。</p>
+<p>本章会完成一个双场景循环：<code>MainMenu.scene</code> 提供 Play Button，<code>Level01.scene</code> 提供 Return Button。两个按钮都通过 Inspector 中的持久化 <strong>On Click ()</strong> 完成绑定。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#prepare-scenes_1">准备两个场景</a><a href="#scene-actions-component_1">编写场景操作</a><a href="#bind-button_1">绑定 Button</a><a href="#build-list_1">配置 Build Settings</a><a href="#verify-ui-scenes_1">验证流程</a><a href="#ui-scene-errors_1">常见错误</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-ui-scenes.webp" alt="通过 UI Button 组件方法绑定连接的 Infernux 菜单与关卡场景" loading="lazy" decoding="async">
+  <figcaption>每个 Button 会保存目标 GameObject、Python 组件名和公开方法名；该方法负责发起场景请求。</figcaption>
+</figure>
+
+<h2 id="prepare-scenes_1">准备两个场景</h2>
+<p>创建 <code>Assets/Scenes</code> 文件夹，再准备以下场景资产：</p>
+<ol>
+<li>把第一个场景保存为 <code>Assets/Scenes/MainMenu.scene</code>。</li>
+<li>在 Hierarchy 中创建 <strong>UI &gt; Canvas</strong>。</li>
+<li>在 Canvas 下创建 <strong>UI &gt; Button</strong>。把 GameObject 重命名为 <code>PlayButton</code>，并把 <code>UIButton</code> 的 label 设为 <code>Play</code>。</li>
+<li>创建空 GameObject，命名为 <code>SceneFlow</code>。它将承载 Button 要调用的组件。</li>
+<li>保存场景。</li>
+<li>创建第二个场景，保存为 <code>Assets/Scenes/Level01.scene</code>。</li>
+<li>添加 Canvas、子级 Button 和空的 <code>SceneFlow</code>。把 Button 命名为 <code>ReturnButton</code>，label 设为 <code>Return to menu</code>，然后保存场景。</li>
+</ol>
+<p>通过 <strong>UI &gt; Button</strong> 创建的对象已经带有 <code>UIButton</code>。Inspector 中可以设置 <code>interactable</code>、视觉过渡、label、填充和持久化 <strong>On Click ()</strong> 列表。</p>
+<h2 id="scene-actions-component_1">编写场景操作组件</h2>
+<p>创建 <code>Assets/Scripts/scene_actions.py</code>，写入以下完整组件：</p>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.debug import Debug
+from Infernux.scene import SceneManager
+
+
+class SceneActions(InxComponent):
+    def load_level_one(self):
+        if SceneManager.load_scene(&quot;Level01&quot;):
+            Debug.log(&quot;Level01 scene load accepted.&quot;)
+        else:
+            Debug.log_error(&quot;Could not request Level01. Check Build Settings.&quot;)
+
+    def load_main_menu(self):
+        if SceneManager.load_scene(&quot;MainMenu&quot;):
+            Debug.log(&quot;MainMenu scene load accepted.&quot;)
+        else:
+            Debug.log_error(&quot;Could not request MainMenu. Check Build Settings.&quot;)
+</code></pre>
+<p>在两个场景的 <code>SceneFlow</code> 上都挂载 <code>SceneActions</code>。这两个方法是无参数公开方法，因此会出现在 Button 的方法选择器中。</p>
+<p><code>SceneManager.load_scene(...)</code> 接受 Build Index，也接受按构建列表解析的字符串。<code>"Level01"</code> 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 <code>True</code> 时，新场景仍可能处于待切换状态。</p>
+<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>Infernux.scene</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
+
+<h2 id="bind-button_1">把 Button 绑定到组件方法</h2>
+<p>先配置 Play Button：</p>
+<ol>
+<li>打开 <code>MainMenu.scene</code>，在 Hierarchy 中选中 <code>PlayButton</code>。</li>
+<li>在 <code>UIButton</code> Inspector 中展开 <strong>On Click ()</strong>，使用添加控件创建一条记录。</li>
+<li>把 Hierarchy 中的 <code>SceneFlow</code> 拖到该记录的 <strong>Target</strong> 字段，也可以使用对象选择器。</li>
+<li>在 <strong>Component</strong> 中选择 <code>SceneActions</code>。</li>
+<li>在 <strong>Method</strong> 中选择 <code>load_level_one</code>。</li>
+<li>保存 <code>MainMenu.scene</code>。</li>
+</ol>
+<p>在 <code>Level01.scene</code> 中重复以上步骤。为 <code>ReturnButton</code> 选择当前场景的 <code>SceneFlow</code>、<code>SceneActions</code> 与 <code>load_main_menu</code>。</p>
+<p>持久化记录会随场景保存，其中包含目标 GameObject 引用、组件名和方法名。Component 列表会显示目标物体上的 Python 组件；Method 列表会显示公开可调用方法，并过滤 <code>start</code>、<code>update</code>、<code>on_destroy</code> 等生命周期方法。</p>
+<p>当事件需要可编辑参数时，Inspector 还能反射带位置参数的方法，支持 <code>bool</code>、<code>int</code>、<code>float</code>、<code>str</code>、GameObject 与组件引用。本章使用无参数回调，验证场景切换会更直接。</p>
+<h3 id="_1">在代码中发现目标后订阅</h3>
+<p>持久化 Inspector 绑定很适合已编辑好的菜单。组件也可以通过公开 <code>UIEvent</code> API 在运行时订阅无参数 Listener：</p>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.lib import GameObject
+from Infernux.ui import UIButton
+
+
+class RuntimeButtonBinding(InxComponent):
+    def start(self):
+        button_object = GameObject.find(&quot;PlayButton&quot;)
+        if button_object is None:
+            return
+
+        button = button_object.get_component(UIButton)
+        if button is not None:
+            button.on_click.add_listener(self.handle_click)
+
+    def handle_click(self):
+        print(&quot;PlayButton clicked&quot;)
+</code></pre>
+<p>一项操作保留一种绑定方式即可。如果同一方法既存在于 <strong>On Click ()</strong>，又通过 <code>add_listener</code> 添加，一次点击会调用两次。</p>
+<h2 id="build-list_1">把两个场景加入 Build Settings</h2>
+<p><code>SceneManager</code> 只解析构建列表中的场景。测试前完成以下设置：</p>
+<ol>
+<li>打开 <code>MainMenu.scene</code>。</li>
+<li>打开 <strong>Window &gt; Build Settings</strong>。</li>
+<li>在 <strong>Scenes In Build</strong> 中选择 <strong>Add Open Scene</strong>，让 <code>MainMenu.scene</code> 保持在索引 <code>0</code>。</li>
+<li>打开 <code>Level01.scene</code>，回到 Build Settings，再次选择 <strong>Add Open Scene</strong>，让 <code>Level01.scene</code> 保持在索引 <code>1</code>。</li>
+<li>完成 Button 绑定后，再保存两个场景。</li>
+</ol>
+<p><code>SceneActions</code> 使用场景文件名解析，因此调整列表顺序后仍可工作。Build Index 加载也是公开 API：<code>SceneManager.load_scene(1)</code> 会请求当前位于索引 <code>1</code> 的场景。</p>
+<h2 id="verify-ui-scenes_1">验证场景循环</h2>
+<ol>
+<li>打开 <code>MainMenu.scene</code>，清空 Console，进入 Play 模式。</li>
+<li>把指针移到 <code>PlayButton</code> 上。<code>interactable</code> 开启时，Button 应按当前配置显示 Highlighted 与 Pressed 状态。</li>
+<li>点击 <code>Play</code>。确认 Console 显示 <code>Level01 scene load accepted.</code>，延迟场景替换完成后，Game 视图切换到 <code>Level01</code>。</li>
+<li>点击 <code>Return to menu</code>。确认 Console 显示 <code>MainMenu scene load accepted.</code>，菜单场景再次成为活动场景。</li>
+<li>停止 Play 模式。编辑器恢复到已编辑的场景状态。</li>
+</ol>
+<p>还可以把 <code>"Level01"</code> 暂时改为 <code>"MissingScene"</code> 做一次明确检查。点击后，组件应记录错误，<code>load_scene</code> 返回 <code>False</code>，活动场景保持不变。检查完成后恢复有效名称。</p>
+<h2 id="ui-scene-errors_1">常见错误</h2>
+<p><strong>Button 有颜色反馈，方法没有运行。</strong> 展开 <strong>On Click ()</strong>，确认 Target、Component、Method 都已设置。Target 必须指向真正挂有 <code>SceneActions</code> 的 GameObject。</p>
+<p><strong>Component 菜单中没有 <code>SceneActions</code>。</strong> 先把脚本组件挂到目标 GameObject，等待脚本无错误重载，再在事件记录中重新选择目标。</p>
+<p><strong>方法没有出现在列表中。</strong> 使用不以下划线开头的公开方法名。生命周期方法会被选择器过滤。保存脚本，并确认 Console 没有编译或导入错误。</p>
+<p><strong>点击后提示场景不在构建列表。</strong> 通过 <strong>Window &gt; Build Settings</strong> 添加已保存的 <code>.scene</code> 资产。裸字符串要与文件名一致；<code>"Level01"</code> 会解析 <code>Level01.scene</code>。</p>
+<p><strong>一次点击运行两次。</strong> 检查同一操作是否同时存在持久化 <strong>On Click ()</strong> 记录和运行时 <code>on_click.add_listener(...)</code> 订阅，保留一处注册。</p>
+<p><strong>Button 收不到指针输入。</strong> 确认 Button 与 Canvas 已启用、<code>interactable</code> 已开启、Button 位于 Canvas 内，并检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。</p>
+<p><strong><code>load_scene</code> 后的代码立即使用新场景。</strong> <code>True</code> 表示请求已接受。新场景初始化应放在目标场景组件的 <code>awake</code> 与 <code>start</code> 中。</p>
+<h2 id="_2">下一章</h2>
+<p>现在已经形成完整的用户操作路径：指针点击、持久化组件方法、场景请求与目标场景生命周期。下一章 <a href="gameplay-audio-events.html">音频与游戏信号</a> 会沿用事件驱动结构触发一次性声音，并把持续状态更新单独管理。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="gameplay-physics-events.html">← Physics and collision callbacks</a><span class="learn-course-home">Chapter 6 of 8</span><a href="gameplay-audio-events.html">Audio and gameplay signals →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="gameplay-physics-events.html">← 物理与碰撞回调</a><span class="learn-course-home">第 6 章，共 8 章</span><a href="gameplay-audio-events.html">音频与游戏信号 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

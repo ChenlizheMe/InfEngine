@@ -108,7 +108,8 @@
         if (status !== "all") params.set("status", status);
         if (language) params.set("lang", language);
         const queryString = params.toString();
-        return "/wiki/site/en/api/index.html";
+        const base = language === "zh" ? "/wiki/site/zh/api/index.html" : "/wiki/site/en/api/index.html";
+        return queryString ? `${base}?${queryString}` : base;
     }
 
     const copyByLanguage = {

@@ -3,6 +3,7 @@
 
     const activePanel = () => document.querySelector("[data-page-language]:not([hidden])");
     let activeTag = "all";
+    let searchQuery = "";
 
     function language() {
         return document.documentElement.lang?.toLowerCase().startsWith("zh") ? "zh" : "en";
@@ -11,7 +12,7 @@
     function applyFilters() {
         const panel = activePanel();
         if (!panel) return;
-        const query = (panel.querySelector("[data-learn-search]")?.value || "").trim().toLocaleLowerCase();
+        const query = searchQuery.trim().toLocaleLowerCase();
         let visible = 0;
         for (const entry of panel.querySelectorAll("[data-learn-entry]")) {
             const tags = (entry.dataset.tags || "").split(/\s+/).filter(Boolean);
@@ -26,12 +27,22 @@
     }
 
     document.addEventListener("DOMContentLoaded", () => {
-        document.querySelector("[data-learn-search]")?.addEventListener("input", applyFilters);
+        document.querySelectorAll("[data-learn-search]").forEach((input) => {
+            const updateSearch = () => {
+                searchQuery = input.value || "";
+                document.querySelectorAll("[data-learn-search]").forEach((candidate) => {
+                    if (candidate !== input) candidate.value = searchQuery;
+                });
+                applyFilters();
+            };
+            input.addEventListener("input", updateSearch);
+            input.addEventListener("search", updateSearch);
+        });
         document.querySelectorAll("[data-learn-tag]").forEach((button) => {
             button.addEventListener("click", () => {
                 activeTag = button.dataset.learnTag || "all";
                 document.querySelectorAll("[data-learn-tag]").forEach((candidate) => {
-                    const selected = candidate === button;
+                    const selected = candidate.dataset.learnTag === activeTag;
                     candidate.classList.toggle("is-active", selected);
                     candidate.setAttribute("aria-pressed", String(selected));
                 });

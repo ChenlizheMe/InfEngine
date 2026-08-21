@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Create a Python component, attach it to a GameObject, enter Play mode, and verify the lifecycle through the Console.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-first-component.html">
+    <title>Create and run your first component · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 1/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 1/8</span></span><a href="gameplay-first-component.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay Scripting · Chapter 1</span></p>
+<h1 id="create-and-run-your-first-component">Create and run your first component</h1>
+<p>Infernux gameplay code lives in Python classes derived from <code>InxComponent</code>. An instance is attached to a <code>GameObject</code>, receives lifecycle callbacks from the scene, and can reach its owner's <code>Transform</code> through <code>self.transform</code>.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#create-the-script">Create the script</a><a href="#attach-and-run">Attach and run</a><a href="#component-model">GameObject and component</a><a href="#lifecycle">Lifecycle</a><a href="#troubleshooting">Common errors</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-first-component.webp" alt="A Python component attached to a GameObject and reporting lifecycle events to the Console" loading="lazy" decoding="async">
+  <figcaption>A script becomes scene behavior after an <code>InxComponent</code> instance is attached to a <code>GameObject</code>.</figcaption>
+</figure>
+
+<h2 id="create-the-script">Create the script</h2>
+<p>Open a project with the <strong>Project</strong>, <strong>Hierarchy</strong>, <strong>Inspector</strong>, <strong>Game</strong>, and <strong>Console</strong> panels visible. In the Project panel, open <code>Assets</code>, right-click empty space, choose <strong>Script (.py)</strong>, and name the asset <code>HelloComponent</code>. Script names must be valid Python identifiers; the editor adds <code>.py</code> when needed.</p>
+<p>Open <code>HelloComponent.py</code> and replace its contents with this complete component:</p>
+<pre><code class="language-python">from Infernux import Debug
+from Infernux.components import InxComponent
+
+
+class HelloComponent(InxComponent):
+    _elapsed_seconds = 0.0
+    _reported_first_second = False
+
+    def awake(self) -&gt; None:
+        Debug.log(f&quot;Awake: {self.game_object.name}&quot;, self)
+
+    def on_enable(self) -&gt; None:
+        Debug.log(&quot;OnEnable&quot;, self)
+
+    def start(self) -&gt; None:
+        Debug.log(&quot;Start&quot;, self)
+
+    def update(self, delta_time: float) -&gt; None:
+        self._elapsed_seconds += delta_time
+        if not self._reported_first_second and self._elapsed_seconds &gt;= 1.0:
+            self._reported_first_second = True
+            Debug.log(&quot;Update has run for one second&quot;, self)
+
+    def on_disable(self) -&gt; None:
+        Debug.log(&quot;OnDisable&quot;, self)
+
+    def on_destroy(self) -&gt; None:
+        Debug.log(&quot;OnDestroy&quot;, self)
+</code></pre>
+<p>Private names beginning with <code>_</code> stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an <code>__init__</code> method: <code>InxComponent</code> owns construction and raises <code>TypeError</code> when a subclass overrides it. Use <code>awake</code> or <code>start</code> for setup.</p>
+<h2 id="attach-and-run">Attach and run</h2>
+<ol>
+<li>Create or select any active object in <strong>Hierarchy</strong> and rename it <code>HelloObject</code>.</li>
+<li>In its Inspector, click <strong>Add Component</strong>, search for <code>HelloComponent</code>, and add it. The component appears in the object's component list.</li>
+<li>Save the scene, clear the Console, and enter <strong>Play</strong> mode.</li>
+<li>Wait one second. The Console should show <code>Awake: HelloObject</code>, <code>OnEnable</code>, <code>Start</code>, and <code>Update has run for one second</code> in that order for this component.</li>
+<li>While still playing, disable the component checkbox and enable it again. <code>OnDisable</code> and another <code>OnEnable</code> should appear; <code>Start</code> remains a one-time callback.</li>
+<li>Stop Play mode. Teardown can add <code>OnDisable</code> and <code>OnDestroy</code> entries.</li>
+</ol>
+<p>The exercise passes when there are no import or lifecycle exceptions, the one-second message appears only once per component instance, and enable-state changes produce the matching callbacks.</p>
+<h2 id="component-model">GameObject and component</h2>
+<p>A <code>GameObject</code> supplies scene identity, hierarchy, active state, tag, layer, and an always-present <code>Transform</code>. Components supply behavior or data. Several components can share one owner.</p>
+<p>Inside a live <code>InxComponent</code>:</p>
+<ul>
+<li><code>self.game_object</code> returns the owning <code>GameObject</code>.</li>
+<li><code>self.transform</code> is the owner's <code>Transform</code> shortcut.</li>
+<li><code>self.enabled</code> controls this component's enabled state.</li>
+<li><code>self.game_object.get_component(SomeType)</code> returns the first matching component or <code>None</code>.</li>
+</ul>
+<p>These owner properties are available during normal bound lifecycle use. Accessing them on a detached or destroyed component raises a runtime error, so cleanup should retain only the data it needs.</p>
+<h2 id="lifecycle">Lifecycle at a glance</h2>
+<p>When a scene starts, Infernux first runs <code>awake</code> and <code>on_enable</code> across active objects, then runs <code>start</code> on enabled components. Per-frame execution follows with <code>update(delta_time)</code> and then <code>late_update(delta_time)</code>. <code>fixed_update(fixed_delta_time)</code> runs on the fixed simulation step and belongs to physics work.</p>
+<table>
+<thead>
+<tr>
+<th>Callback</th>
+<th>Use it for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>awake()</code></td>
+<td>One-time local setup</td>
+</tr>
+<tr>
+<td><code>on_enable()</code> / <code>on_disable()</code></td>
+<td>Subscribe and unsubscribe active behavior</td>
+</tr>
+<tr>
+<td><code>start()</code></td>
+<td>Setup that expects other active components to have completed <code>awake</code></td>
+</tr>
+<tr>
+<td><code>update(delta_time)</code></td>
+<td>Frame-driven gameplay</td>
+</tr>
+<tr>
+<td><code>fixed_update(fixed_delta_time)</code></td>
+<td>Fixed-step physics logic</td>
+</tr>
+<tr>
+<td><code>late_update(delta_time)</code></td>
+<td>Work that follows regular updates, such as camera follow</td>
+</tr>
+<tr>
+<td><code>on_destroy()</code></td>
+<td>Final cleanup</td>
+</tr>
+</tbody>
+</table>
+<p>An inactive GameObject defers <code>awake</code> until it first becomes active. <code>start</code> runs once, immediately before that component's first simulation update. Regular <code>update</code> callbacks run in Play mode unless the component explicitly uses the separate edit-mode decorator.</p>
+<h2 id="troubleshooting">Common errors</h2>
+<ul>
+<li><strong>The script is absent from Add Component.</strong> Save the file, confirm the class derives from <code>InxComponent</code>, and inspect the Console for an import or syntax error.</li>
+<li><strong>Creation reports an invalid script name.</strong> Use a Python identifier such as <code>HelloComponent</code>; spaces, hyphens, and a leading digit are invalid.</li>
+<li><strong>Class creation fails around <code>__init__</code>.</strong> Remove the override and move setup to <code>awake</code> or <code>start</code>.</li>
+<li><strong>The Console fills every frame.</strong> Keep routine logging out of an unconditional <code>update</code>; the example uses a guard so it reports once.</li>
+<li><strong>No lifecycle messages appear.</strong> Confirm Play mode is active, the GameObject is active in the hierarchy, and the component checkbox is enabled.</li>
+<li><strong>A callback receives the wrong arguments.</strong> Use the exact signatures shown above. <code>update</code>, <code>fixed_update</code>, and <code>late_update</code> each receive one time value; the other callbacks shown receive none.</li>
+</ul>
+<h2 id="next-chapter">Next chapter</h2>
+<p><a href="gameplay-components-fields.html">GameObjects, components, and authored fields</a> adds saved Inspector values, scene references, and component constraints to this working lifecycle baseline.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">玩法脚本 · 第 1 章</span></p>
+<h1 id="_1">创建并运行第一个组件</h1>
+<p>Infernux 的玩法代码写在继承 <code>InxComponent</code> 的 Python 类中。组件实例挂到 <code>GameObject</code> 后，会接收场景发出的生命周期回调，也能通过 <code>self.transform</code> 访问所属物体的 <code>Transform</code>。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#create-the-script_1">创建脚本</a><a href="#attach-and-run_1">挂载并运行</a><a href="#component-model_1">GameObject 与组件</a><a href="#lifecycle_1">生命周期</a><a href="#troubleshooting_1">常见错误</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-first-component.webp" alt="Python 组件挂到 GameObject，并把生命周期事件输出到 Console" loading="lazy" decoding="async">
+  <figcaption><code>InxComponent</code> 实例挂到 <code>GameObject</code> 后，脚本就会参与场景运行。</figcaption>
+</figure>
+
+<h2 id="create-the-script_1">创建脚本</h2>
+<p>打开一个项目，并显示 <strong>Project</strong>、<strong>Hierarchy</strong>、<strong>Inspector</strong>、<strong>Game</strong> 与 <strong>Console</strong> 面板。在 Project 中进入 <code>Assets</code>，右键空白处，选择 <strong>脚本 (.py)</strong>，命名为 <code>HelloComponent</code>。脚本名必须是有效的 Python 标识符；需要时编辑器会自动补上 <code>.py</code>。</p>
+<p>打开 <code>HelloComponent.py</code>，把内容替换为下面这份完整组件：</p>
+<pre><code class="language-python">from Infernux import Debug
+from Infernux.components import InxComponent
+
+
+class HelloComponent(InxComponent):
+    _elapsed_seconds = 0.0
+    _reported_first_second = False
+
+    def awake(self) -&gt; None:
+        Debug.log(f&quot;Awake: {self.game_object.name}&quot;, self)
+
+    def on_enable(self) -&gt; None:
+        Debug.log(&quot;OnEnable&quot;, self)
+
+    def start(self) -&gt; None:
+        Debug.log(&quot;Start&quot;, self)
+
+    def update(self, delta_time: float) -&gt; None:
+        self._elapsed_seconds += delta_time
+        if not self._reported_first_second and self._elapsed_seconds &gt;= 1.0:
+            self._reported_first_second = True
+            Debug.log(&quot;Update has run for one second&quot;, self)
+
+    def on_disable(self) -&gt; None:
+        Debug.log(&quot;OnDisable&quot;, self)
+
+    def on_destroy(self) -&gt; None:
+        Debug.log(&quot;OnDestroy&quot;, self)
+</code></pre>
+<p>以 <code>_</code> 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 <code>__init__</code>：组件构造由 <code>InxComponent</code> 管理，子类覆写它时会抛出 <code>TypeError</code>。初始化工作放进 <code>awake</code> 或 <code>start</code>。</p>
+<h2 id="attach-and-run_1">挂载并运行</h2>
+<ol>
+<li>在 <strong>Hierarchy</strong> 中创建或选择一个启用的物体，命名为 <code>HelloObject</code>。</li>
+<li>在 Inspector 底部点击 <strong>Add Component</strong>，搜索 <code>HelloComponent</code> 并添加。组件会出现在该物体的组件列表中。</li>
+<li>保存场景，清空 Console，然后进入 <strong>Play</strong> 模式。</li>
+<li>等待一秒。该组件应依次输出 <code>Awake: HelloObject</code>、<code>OnEnable</code>、<code>Start</code> 和 <code>Update has run for one second</code>。</li>
+<li>保持运行，关闭组件标题旁的启用复选框，再重新打开。Console 应新增 <code>OnDisable</code> 和一次 <code>OnEnable</code>；<code>Start</code> 只执行一次。</li>
+<li>停止 Play。销毁流程可能继续输出 <code>OnDisable</code> 与 <code>OnDestroy</code>。</li>
+</ol>
+<p>没有导入或生命周期异常、一秒提示对每个组件实例只出现一次、切换启用状态能得到对应回调，就算验证通过。</p>
+<h2 id="component-model_1">GameObject 与组件</h2>
+<p><code>GameObject</code> 提供场景身份、层级、活动状态、Tag、Layer，以及始终存在的 <code>Transform</code>。组件负责行为或数据；一个物体可以同时拥有多个组件。</p>
+<p>在正常运行且已挂载的 <code>InxComponent</code> 中：</p>
+<ul>
+<li><code>self.game_object</code> 返回所属 <code>GameObject</code>。</li>
+<li><code>self.transform</code> 是所属物体 <code>Transform</code> 的快捷入口。</li>
+<li><code>self.enabled</code> 控制当前组件的启用状态。</li>
+<li><code>self.game_object.get_component(SomeType)</code> 返回第一个匹配组件；找不到时返回 <code>None</code>。</li>
+</ul>
+<p>组件脱离物体或已经销毁后，所属物体属性将不可用。清理逻辑只应使用自己确实需要的数据。</p>
+<h2 id="lifecycle_1">生命周期速览</h2>
+<p>场景启动时，Infernux 会先在活动物体上完成 <code>awake</code> 与 <code>on_enable</code>，再为启用的组件调用 <code>start</code>。随后进入逐帧执行：<code>update(delta_time)</code> 完成后运行 <code>late_update(delta_time)</code>。<code>fixed_update(fixed_delta_time)</code> 按固定模拟步长运行，适合物理逻辑。</p>
+<table>
+<thead>
+<tr>
+<th>回调</th>
+<th>适合处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>awake()</code></td>
+<td>一次性的本地初始化</td>
+</tr>
+<tr>
+<td><code>on_enable()</code> / <code>on_disable()</code></td>
+<td>订阅与取消订阅活动行为</td>
+</tr>
+<tr>
+<td><code>start()</code></td>
+<td>依赖其他活动组件已完成 <code>awake</code> 的初始化</td>
+</tr>
+<tr>
+<td><code>update(delta_time)</code></td>
+<td>按帧推进的玩法逻辑</td>
+</tr>
+<tr>
+<td><code>fixed_update(fixed_delta_time)</code></td>
+<td>固定步长物理逻辑</td>
+</tr>
+<tr>
+<td><code>late_update(delta_time)</code></td>
+<td>跟随常规更新的工作，例如相机跟随</td>
+</tr>
+<tr>
+<td><code>on_destroy()</code></td>
+<td>最终清理</td>
+</tr>
+</tbody>
+</table>
+<p>非活动 GameObject 会把 <code>awake</code> 推迟到第一次激活。<code>start</code> 只运行一次，位置在该组件第一次模拟更新之前。普通 <code>update</code> 只在 Play 模式运行；编辑模式更新由单独的编辑模式装饰器控制。</p>
+<h2 id="troubleshooting_1">常见错误</h2>
+<ul>
+<li><strong>Add Component 找不到脚本。</strong> 保存文件，确认类继承 <code>InxComponent</code>，再查看 Console 中的导入或语法错误。</li>
+<li><strong>创建脚本时提示名称无效。</strong> 使用 <code>HelloComponent</code> 这类 Python 标识符；空格、连字符和开头数字都不合法。</li>
+<li><strong>类创建在 <code>__init__</code> 附近失败。</strong> 删除该覆写，把初始化移到 <code>awake</code> 或 <code>start</code>。</li>
+<li><strong>Console 每帧刷屏。</strong> 避免在无条件 <code>update</code> 中持续输出；示例用布尔标记确保只报告一次。</li>
+<li><strong>看不到生命周期消息。</strong> 检查 Play 模式、GameObject 的层级活动状态和组件启用复选框。</li>
+<li><strong>回调参数错误。</strong> 使用示例中的准确签名。<code>update</code>、<code>fixed_update</code>、<code>late_update</code> 各接收一个时间值；本章列出的其余回调不接收参数。</li>
+</ul>
+<h2 id="_2">下一章</h2>
+<p><a href="gameplay-components-fields.html">GameObject、组件与可编辑字段</a>会在这条已跑通的生命周期基线上加入 Inspector 保存值、场景引用和组件约束。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><span aria-hidden="true"></span><span class="learn-course-home">Chapter 1 of 8</span><a href="gameplay-components-fields.html">GameObjects, components, and authored fields →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><span aria-hidden="true"></span><span class="learn-course-home">第 1 章，共 8 章</span><a href="gameplay-components-fields.html">GameObject、组件与可编辑字段 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

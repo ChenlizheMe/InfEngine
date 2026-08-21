@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Place effects on one queue route, one layer, a whole stage, the scene composite, Camera UI, or final Screen UI.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/renderstack-mount-points.html">
+    <title>RenderStack mount points and effect scope · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="rendering.html"><span data-page-language="en">Author the rendering pipeline</span><span data-page-language="zh" lang="zh-CN" hidden>编写自定义渲染</span></a><span class="learn-chapter-position"><span data-page-language="en">Rendering course · 6/8</span><span data-page-language="zh" lang="zh-CN" hidden>渲染课程 · 6/8</span></span><a href="renderstack-mount-points.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Custom Rendering · Chapter 6</span></p>
+<h1 id="renderstack-mount-points-and-effect-scope">RenderStack mount points and effect scope</h1>
+<p>The same <code>.effect</code> can process a queue route, a combined layer, or the completed scene. Its shader stays the same; the image and resources at the mount point change.</p>
+<p>This chapter starts with the Editor workflow available today. Pipeline authoring syntax comes later.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#stack-workflow">Editor workflow</a><a href="#terms-authority">Terms and authority</a><a href="#scope">Four scopes</a><a href="#composition">Composition and overflow</a><a href="#repeat-mounts">Repeated mounts</a><a href="#verification">Failure and reload checks</a><a href="#frame-tail">The standard frame tail</a></div>
+
+<div class="learn-note"><strong>First-pass finish line.</strong><p>Mount one known-good Effect in one declared Slot, move it to a second Slot, and compare the Game view. That exercise establishes the Stage/Slot mental model. Route and Layer scope, repeated mounts, orphan recovery, and the standard frame tail explain the more specialized cases afterward.</p></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/real-voxel-continent.webp" alt="real Infernux render of a voxel continent with depth of field and color treatment" loading="lazy" decoding="async">
+  <figcaption>An Infernux frame used as a visual reference for layered rendering. The image alone does not establish its scene revision, mounted assets, or MSAA value; the reproducible Scope Probe below supplies the behavioral evidence for this chapter.</figcaption>
+</figure>
+
+<h2 id="stack-workflow">Start in the Editor</h2>
+<ol>
+<li>Create or open a scene that contains a <strong>RenderStack</strong> component, then select its GameObject.</li>
+<li>Choose the active pipeline from the RenderStack Inspector. Its serialized settings appear under the pipeline selector.</li>
+<li>Read the <strong>Effect Stages</strong> section. Each list comes from an <code>EffectStage</code> declared by that pipeline.</li>
+<li>Drag a <code>.effect</code> or <code>.effectgroup</code> asset from the Project panel into the intended list. The picker accepts both file types.</li>
+<li>Reorder the list to change execution order inside that stage. A slot also carries its own enabled state.</li>
+<li>Expand a mounted item to edit parameters inline. A direct <code>.effect</code> mount edits the shared source values; an effect projected from a group edits that group entry's override.</li>
+</ol>
+<p>The Inspector shows only declared Effect Stages. Internal render passes, layers, composites, temporary images, and injection points stay out of this view. This is the complete current built-in set:</p>
+<table>
+<thead>
+<tr>
+<th>Pipeline</th>
+<th>Effect Stages in topology order</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default Forward</td>
+<td><code>after_opaque</code>, <code>after_sky</code>, <code>after_transparent</code>, <code>after_camera_ui</code>, <code>final</code>, <code>after_screen_ui</code></td>
+<td><code>after_opaque</code> is Stage; the other five are Composite</td>
+</tr>
+<tr>
+<td>Default Forward+</td>
+<td><code>after_opaque</code>, <code>after_sky</code>, <code>after_transparent</code>, <code>after_camera_ui</code>, <code>final</code>, <code>after_screen_ui</code></td>
+<td>Same scopes as Default Forward</td>
+</tr>
+<tr>
+<td>Default Deferred</td>
+<td><code>after_gbuffer</code>, <code>after_opaque</code>, <code>after_sky</code>, <code>after_transparent</code>, <code>after_camera_ui</code>, <code>final</code>, <code>after_screen_ui</code></td>
+<td><code>after_gbuffer</code> and <code>after_opaque</code> are Stage; the other five are Composite</td>
+</tr>
+</tbody>
+</table>
+<figure class="learn-figure">
+  <img src="../assets/learn/renderstack-inspector.webp" alt="partial web-style RenderStack panel showing four representative mount point lists" loading="lazy" decoding="async">
+  <figcaption>A partial web-style illustration with four representative lists. It omits built-in stages such as `after_sky`, `after_transparent`, and Deferred's `after_gbuffer`; the table above is complete. The drawing does not reproduce the native Inspector pixel for pixel.</figcaption>
+</figure>
+
+<p>Parameter edits normally update GPU parameter blocks. Slot order, group structure, enabled topology, and fields declared in <code>topology_parameters</code> invalidate the graph. A failed individual effect is rolled back and listed in <strong>Effect Compile Errors</strong> with its Stage/Slot path; the rebuilt graph can continue without that effect. A broader topology failure keeps the last valid graph and last valid Inspector topology in the Editor. In a packaged Player, a pipeline build failure does not substitute Default Forward.</p>
+<h2 id="terms-authority">Five terms, four sources of authority</h2>
+<p>These names describe different records:</p>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Concrete meaning</th>
+<th>Authority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>injection_point</code></td>
+<td>A named RenderGraph boundary used by the older external <code>RenderPass</code> path. <code>before_post_process</code> and <code>after_post_process</code> are standard examples.</td>
+<td>The pipeline places it in topology. A <code>FullScreenEffect.injection_point</code> class value does not mount a <code>.effect</code> asset.</td>
+</tr>
+<tr>
+<td><code>EffectStage</code></td>
+<td>A pipeline declaration with <code>stable_id</code>, scope, resource inputs/outputs, and capabilities.</td>
+<td>The active pipeline decides which stages exist, their cross-stage order, and the image owned by each one.</td>
+</tr>
+<tr>
+<td>mount point</td>
+<td>The user-facing name for an attachment location. In current RenderStack authoring, one mount point is represented by one <code>EffectStage</code>.</td>
+<td>Its <code>stable_id</code> is the scene-to-pipeline contract.</td>
+</tr>
+<tr>
+<td>slot</td>
+<td>One serialized <code>EffectSlot</code>: <code>slot_id</code>, <code>stage_id</code>, asset reference, and enabled state.</td>
+<td>The scene RenderStack owns the ordered slot list for each declared stage.</td>
+</tr>
+<tr>
+<td><code>.effectgroup</code> entry</td>
+<td>One enabled reference with <code>entry_id</code> and optional overrides. Entries may reference effects or nested groups.</td>
+<td>The group document owns entry order within its slot.</td>
+</tr>
+</tbody>
+</table>
+<p>The resulting order has a simple hierarchy:</p>
+<ol>
+<li>The active pipeline topology orders <code>EffectStage</code> declarations.</li>
+<li>RenderStack slot order controls effects inside one stage.</li>
+<li>A group expands at its slot position and preserves entry order recursively.</li>
+<li>Each feature appends its own passes in <code>setup_passes()</code> order.</li>
+</ol>
+<p><code>default_order</code> and the effect class's <code>injection_point</code> do not take part in these four steps. They remain metadata inherited from <code>RenderPass</code>. Dragging an asset to <code>final</code> makes <code>final</code> its actual location, even when the class says <code>before_post_process</code>.</p>
+<p>RenderStack rejects a new slot for an undeclared stage. If a pipeline change removes a stage used by saved slots, those slots are preserved as orphans under <strong>Missing Effect Stages</strong>. The current Inspector has no remap button. Given the affected <code>stack</code> component in an Editor script, the public repair call is <code>stack.remap_orphan_effect_stage("old_stage", "new_stage")</code>; it moves every orphan with the old ID, preserves their order and <code>slot_id</code>, invalidates the graph, and returns the moved count. The target must exist in the active pipeline. Save the scene after the call.</p>
+<h2 id="scope">Four effect scopes</h2>
+<p><code>EffectScope</code> states which image set a stage owns:</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Image received</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Route</td>
+<td>One queue selection rendered through one path</td>
+<td>Pixelate a selected render queue</td>
+</tr>
+<tr>
+<td>Layer</td>
+<td>The combined result of several routes in one layer</td>
+<td>Outline Forward and Deferred contributions together</td>
+</tr>
+<tr>
+<td>Stage</td>
+<td>Everything accumulated in one opaque or transparent domain</td>
+<td>Apply fog after all opaque geometry</td>
+</tr>
+<tr>
+<td>Composite</td>
+<td>The scene accumulated at that pipeline position</td>
+<td>Grade scene color after sky and transparency</td>
+</tr>
+</tbody>
+</table>
+<p>The scope belongs to the <code>EffectStage</code>; it is absent from the <code>.effect</code> asset and from the slot. This lets one reusable asset work at several scopes when their resource contracts and route policies are compatible.</p>
+<p>The stage contract supplies a local semantic resource bus. Its <code>inputs</code> decide whether <code>color</code>, <code>depth</code>, <code>normal</code>, <code>motion</code>, or another handle reaches the effect. The renderer also gathers <code>requires ∪ modifies</code> from enabled assets early enough to request optional geometry buffers. Both sides must agree: requesting <code>motion</code> can make the pipeline produce it, while mounting at a stage that does not expose <code>motion</code> still fails the local contract.</p>
+<p>Stable IDs are asset-facing API. A pipeline author can refactor internal pass names and temporary textures while keeping <code>after_opaque</code> or <code>final</code> stable. Renaming a stage changes the scene contract and leaves old slots orphaned until they are remapped.</p>
+<p>Here is one minimal high-level pipeline that exposes all four scopes through current public calls:</p>
+<pre><code class="language-python">from Infernux.renderstack import Queue, RenderPipeline
+
+
+class ScopeProbePipeline(RenderPipeline):
+    name = &quot;Scope Probe&quot;
+
+    def define(self, pipeline):
+        pipeline.frame(hdr=True)
+        with pipeline.opaque() as opaque:
+            with opaque.layer(&quot;Selected Objects&quot;) as selected:
+                selected.forward(Queue(1000, 1099)).effects(
+                    &quot;route_probe&quot;, label=&quot;Route Probe&quot;
+                )
+                selected.forward(Queue(1100, 1199))
+                selected.effects(&quot;layer_probe&quot;, label=&quot;Layer Probe&quot;)
+            opaque.otherwise().forward()
+            opaque.effects(&quot;opaque_probe&quot;, label=&quot;Opaque Stage Probe&quot;)
+        pipeline.effects(&quot;scene_probe&quot;, label=&quot;Scene Composite Probe&quot;)
+        pipeline.screen_ui()
+</code></pre>
+<p>Save this Python file under <code>Assets</code>, select <strong>Scope Probe</strong>, and place test objects in Material Queues <code>1000</code>, <code>1100</code>, and <code>1200</code>. Mount the Edge Fade asset from the previous chapter in one probe list at a time:</p>
+<table>
+<thead>
+<tr>
+<th>Mount</th>
+<th>Observable input and result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>route_probe</code></td>
+<td>Only the Forward route for Queue <code>1000..1099</code> is processed before returning to its layer. Queue <code>1100</code> and <code>1200</code> stay unchanged.</td>
+</tr>
+<tr>
+<td><code>layer_probe</code></td>
+<td>The combined Queue <code>1000..1199</code> layer is processed once. Queue <code>1200</code>, drawn by <code>otherwise()</code>, stays unchanged.</td>
+</tr>
+<tr>
+<td><code>opaque_probe</code></td>
+<td>The opaque domain's accumulated result is processed after the selected layer and the <code>otherwise()</code> route, so all three queues change.</td>
+</tr>
+<tr>
+<td><code>scene_probe</code></td>
+<td>The scene composite available at that pipeline position is processed. In this sample it follows opaque work and precedes the standard Screen UI tail.</td>
+</tr>
+</tbody>
+</table>
+<p>Enable one probe Slot at a time for the first check. Enabling all four intentionally runs four separate copies of the effect and compounds the visual result.</p>
+<h2 id="composition">Composition, masks, and overflow</h2>
+<p>An isolated route often needs pixels outside its geometry silhouette. Gaussian blur, glow, displacement, and outlines can expand the contribution. Clipping the processed image back to its original mask removes that overflow. Compositing without depth can place it over nearer geometry.</p>
+<p>The mount scope and route policy handle this together:</p>
+<ul>
+<li><code>MASK_AND_MODIFY</code> suits changes confined to selected existing pixels.</li>
+<li><code>ISOLATE_AND_COMPOSITE</code> suits an isolated contribution that may grow and must return through depth/alpha composition.</li>
+<li><code>ADDITIVE_EXTRACT</code> suits light-like energy added to the parent image.</li>
+<li><code>INLINE</code> uses the current contribution directly.</li>
+<li>A layer-scoped stage lets several routes become one image before processing.</li>
+</ul>
+<p>Two overlapping isolated effects still require a pipeline decision. They can run and composite in route order, join a layer first, or move to a later stage. The active pipeline topology records that choice; slot order only settles effects that already share one stage.</p>
+<p>Reproduce overflow and policy conflict with the Scope Probe pipeline:</p>
+<ol>
+<li>Create the built-in Bloom asset from <strong>Create &gt; Render Effect &gt; Bloom</strong>, mount it at <code>route_probe</code>, and use a bright Queue <code>1000</code> object whose silhouette overlaps a nearer Queue <code>1200</code> object. Bloom uses <code>ADDITIVE_EXTRACT</code>; its light can extend beyond the isolated silhouette and returns through the route's composition policy. Check both the halo outside the source mask and the nearer object's occlusion.</li>
+<li>Mount Edge Fade beside Bloom in the same <code>route_probe</code>. Edge Fade uses <code>MASK_AND_MODIFY</code>, a color-replacement policy. The route-policy merge rejects additive extraction mixed with color replacement and reports the affected Stage in the graph-build diagnostic. Move one asset to <code>layer_probe</code> or a later Composite stage, or remove it, then confirm the graph rebuilds.</li>
+<li>For a custom <code>creates</code> resource, mount two effects that both call <code>bus.set()</code> with the same semantic. Current ResourceBus behavior is ordered replacement: the later Slot/Group entry wins, with no duplicate-name diagnostic. Rename one semantic when both results must remain available.</li>
+</ol>
+<h2 id="repeat-mounts">Mounting one asset more than once</h2>
+<p>One <code>.effect</code> asset can appear in several Slots and scopes. Direct mounts resolve to the shared loaded source document, so an Inspector parameter edit changes every direct mount. Each mount still creates a separate feature instance, pass chain, parameter-block namespace, and execution cost. Runtime binding IDs use <code>&lt;stage_id&gt;/&lt;slot_id&gt;/&lt;source_index&gt;</code>, so the same asset mounted at <code>route_probe</code> and <code>scene_probe</code> is diagnosed independently.</p>
+<p>A group entry's override belongs to the <code>.effectgroup</code> document. Mounting that group twice reuses its effective group values in both places; editing the projected value changes the entry override for every mount of that group. <code>entry_id</code> values must be unique inside one group, while separate groups may reuse an ID. Runtime Stage diagnostics identify the owning Stage, Slot, and flattened source index; they do not use <code>entry_id</code> as a globally unique address.</p>
+<p>Execution remains deterministic: pipeline Stage order, then Slot order, then recursive group order, then each feature's emitted Pass order. Reusing an asset never deduplicates execution.</p>
+<h2 id="verification">Orphans, failures, and save/reload evidence</h2>
+<p>Use these checks after editing a RenderStack:</p>
+<ol>
+<li><strong>Orphan:</strong> Mount Edge Fade at <code>route_probe</code>, save the scene, rename the declaration to <code>route_probe_v2</code>, and save the Python file. <strong>Missing Effect Stages</strong> should list <code>route_probe</code> and its asset reference. The old Slot remains serialized and does not execute. Call <code>stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")</code>, expect <code>1</code>, then save the scene and confirm the warning clears.</li>
+<li><strong>Per-effect failure:</strong> Add <code>requires = {"color", "missing_probe"}</code> to a copy of Edge Fade and put <code>if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")</code> at the start of its <code>setup_passes()</code>. Mount it at <code>route_probe</code>. <strong>Effect Compile Errors</strong> should include <code>&lt;stage&gt;/&lt;slot&gt;</code> and <code>missing_probe</code>. Passes and bus publications made by that failing effect are removed; other Slots can remain visible. The explicit check matters because declarations describe the contract and custom implementations still own their bus validation.</li>
+<li><strong>Last valid topology:</strong> Begin with a visible valid graph, then temporarily declare a duplicate <code>scene_probe</code> stable ID and save. The Editor logs <code>Pipeline topology is invalid</code> and continues showing the last valid Inspector topology/render graph. Remove the duplicate and save again; invalidation allows a fresh build. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.</li>
+<li><strong>Save/reload:</strong> Put two differently named assets in <code>scene_probe</code>, record their top-to-bottom order and enabled states, save the scene, close it, and reopen it. The Inspector must restore the same order and state. For source-control evidence, the scene's serialized <code>effect_slots</code> records each <code>slot_id</code>, <code>stage_id</code>, GUID/path reference, and enabled value. Asset parameter values remain in their separate <code>.effect</code> or <code>.effectgroup</code> documents.</li>
+</ol>
+<h2 id="frame-tail">The built-in frame tail</h2>
+<p>The built-in pipelines use this exact order:</p>
+<ol>
+<li><code>_ScreenUI_Camera</code> draws Camera Overlay canvases into scene color.</li>
+<li><code>after_camera_ui</code> exposes an <code>EffectStage</code>.</li>
+<li><code>before_post_process</code> marks a legacy injection point.</li>
+<li><code>final</code> exposes the final post-processing <code>EffectStage</code>.</li>
+<li><code>after_post_process</code> marks a legacy injection point.</li>
+<li><code>_DisplayEncode</code> clamps linear RGB to <code>[0,1]</code>, converts it to sRGB, optionally applies Camera dithering, and writes <code>_display_encode</code>; <code>_DisplayEncode_Commit</code> copies that encoded result back to scene color.</li>
+<li><code>_ScreenUI_Overlay</code> draws Screen Overlay canvases over the encoded image.</li>
+<li><code>after_screen_ui</code> exposes the complete display-space image as an <code>EffectStage</code>.</li>
+</ol>
+<p>The named points have distinct color and UI semantics:</p>
+<ul>
+<li><strong><code>after_camera_ui</code></strong> receives linear scene color after Camera Overlay UI has joined it. Effects mounted here include that UI, and the later <code>final</code> chain can still process the result.</li>
+<li><strong><code>final</code></strong> starts before display encoding. It is an ordered mount list with no built-in tone-mapping pass. The built-in Tone Mapping asset is optional. When mounted here, it compresses linear HDR to linear LDR; place HDR effects before its Slot and linear-LDR effects after it.</li>
+<li><strong>Display encoding</strong> performs the one linear-to-sRGB conversion. With no tone mapper mounted, values above <code>1.0</code> are clipped here. Tone mapping and display encoding are separate operations.</li>
+<li><strong>Screen UI</strong> is a draw pass after display encoding, not an Effect Stage. Screen Overlay menus and HUD elements therefore avoid the scene's bloom, grading, and tone mapping by default.</li>
+<li><strong><code>after_screen_ui</code></strong> receives encoded scene color plus Screen UI. No second display-encode pass follows it. Effects mounted here must operate in display space and preserve an encoded <code>[0,1]</code> result for presentation.</li>
+</ul>
+<p>The continuous frame tail is:</p>
+<pre><code class="language-text">Camera UI -&gt; after_camera_ui -&gt; before_post_process -&gt; final
+          -&gt; after_post_process -&gt; Display Encode + Commit
+          -&gt; Screen UI -&gt; after_screen_ui -&gt; graph output -&gt; presentation
+</code></pre>
+<p>A Tone Mapping <code>.effect</code> appears only when the user mounts that asset inside <code>final</code>:</p>
+<pre><code class="language-text">final: [HDR effects] -&gt; [Tone Mapping .effect, optional] -&gt; [linear-LDR effects]
+</code></pre>
+<p>RenderStack finalization guarantees display encoding, Screen UI overlay, and <code>after_screen_ui</code> when a custom pipeline omits that terminal section. <code>after_camera_ui</code> and <code>final</code> remain pipeline-declared stages; all built-in pipelines declare both.</p>
+<p>This distinction also explains why <code>before_post_process</code> and <code>after_post_process</code> are absent from the current Effect Stages Inspector: they are injection points. Asset authors mount post-processing effects into <code>final</code> and arrange the chain with slots or an <code>.effectgroup</code>.</p>
+<p><strong>Evidence note.</strong> The stage set and frame tail above follow <code>default_forward_pipeline.py</code>, <code>default_forward_plus_pipeline.py</code>, <code>default_deferred_pipeline.py</code>, <code>graph.py::screen_ui_section</code>, <code>display_encode.frag</code>, and <code>render_stack.py</code> in the current tree. The Scope Probe calls match <code>pipeline_dsl.py</code>; orphan identity and diagnostics match <code>EffectSlot</code>, <code>remap_orphan_effect_stage()</code>, and <code>compile_effect_slots()</code>.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">自定义渲染 · 第 6 章</span></p>
+<h1 id="renderstack">RenderStack 挂载点与效果作用域</h1>
+<p>同一份 <code>.effect</code> 可以处理一条 Queue Route、合并后的 Layer，也可以处理完整场景。Shader 本身保持不变，挂载点提供的图像与资源会发生变化。</p>
+<p>本章从当前已经存在的 Editor 工作流讲起，管线编写语法留到后续章节。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#stack-workflow_1">Editor 工作流</a><a href="#terms-authority_1">术语与权威</a><a href="#scope_1">四种作用域</a><a href="#composition_1">合成与外溢</a><a href="#repeat-mounts_1">重复挂载</a><a href="#verification_1">失败与重载检查</a><a href="#frame-tail_1">标准帧尾</a></div>
+
+<div class="learn-note"><strong>第一次阅读的完成点。</strong><p>把一份已经验证可用的 Effect 挂到一个管线声明的 Slot，再移动到另一个 Slot，对照 Game 画面。这个练习先建立 Stage 与 Slot 的基本认识；Route/Layer 作用域、重复挂载、孤儿恢复和标准帧尾用于解释后面的特殊场景。</p></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/real-voxel-continent.webp" alt="带景深与色彩处理的 Infernux 体素大陆真实画面" loading="lazy" decoding="async">
+  <figcaption>这张 Infernux 画面用于展示分层渲染的视觉参考。单张图片无法确定其场景 Revision、挂载资产或 MSAA 数值；本章后面的 Scope Probe 才提供可复现的行为证据。</figcaption>
+</figure>
+
+<h2 id="stack-workflow_1">先在 Editor 中挂载</h2>
+<ol>
+<li>创建或打开带有 <strong>RenderStack</strong> 组件的场景，然后选中该 GameObject。</li>
+<li>在 RenderStack Inspector 中选择活动管线。管线的序列化设置会显示在选择器下方。</li>
+<li>查看 <strong>Effect Stages</strong> 区域。每个列表都来自该管线声明的一个 <code>EffectStage</code>。</li>
+<li>从 Project 面板把 <code>.effect</code> 或 <code>.effectgroup</code> 拖进目标列表。资产选择器支持这两种文件。</li>
+<li>调整列表顺序，就能改变同一阶段内的执行顺序。每个 Slot 也有自己的启用状态。</li>
+<li>展开挂载项，可以内联编辑参数。直接挂载的 <code>.effect</code> 会修改共享 Source 数值；从 Group 展开的 Effect 会修改该 Group 条目的 Override。</li>
+</ol>
+<p>Inspector 只显示管线声明的 Effect Stage。内部 Render Pass、Layer、Composite、临时图像和 injection point 都不会进入这个视图。当前内置 Stage 的完整集合如下：</p>
+<table>
+<thead>
+<tr>
+<th>管线</th>
+<th>按拓扑顺序排列的 Effect Stage</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default Forward</td>
+<td><code>after_opaque</code>、<code>after_sky</code>、<code>after_transparent</code>、<code>after_camera_ui</code>、<code>final</code>、<code>after_screen_ui</code></td>
+<td><code>after_opaque</code> 是 Stage，其余五个是 Composite</td>
+</tr>
+<tr>
+<td>Default Forward+</td>
+<td><code>after_opaque</code>、<code>after_sky</code>、<code>after_transparent</code>、<code>after_camera_ui</code>、<code>final</code>、<code>after_screen_ui</code></td>
+<td>Scope 与 Default Forward 相同</td>
+</tr>
+<tr>
+<td>Default Deferred</td>
+<td><code>after_gbuffer</code>、<code>after_opaque</code>、<code>after_sky</code>、<code>after_transparent</code>、<code>after_camera_ui</code>、<code>final</code>、<code>after_screen_ui</code></td>
+<td><code>after_gbuffer</code> 与 <code>after_opaque</code> 是 Stage，其余五个是 Composite</td>
+</tr>
+</tbody>
+</table>
+<figure class="learn-figure">
+  <img src="../assets/learn/renderstack-inspector.webp" alt="展示四个代表性挂载点列表的 RenderStack 局部网页式面板图" loading="lazy" decoding="async">
+  <figcaption>这张网页式局部示意图只画了四个代表性列表，省略了 `after_sky`、`after_transparent` 和 Deferred 的 `after_gbuffer` 等内置 Stage；上表才是完整集合。当前原生 Inspector 的像素布局与图中不同。</figcaption>
+</figure>
+
+<p>普通参数修改通常只更新 GPU 参数块。Slot 顺序、EffectGroup 结构、影响拓扑的启用状态，以及列入 <code>topology_parameters</code> 的字段会让图失效并触发重建。单个 Effect 失败时，其修改会回滚，<strong>Effect Compile Errors</strong> 按 Stage/Slot 路径显示错误，新图可以跳过该 Effect 后继续完成。更大范围的拓扑失败时，Editor 保留上一份有效渲染图和 Inspector 拓扑。打包 Player 遇到管线构建失败时不会替换为 Default Forward。</p>
+<h2 id="terms-authority_1">五个术语，四层权威</h2>
+<p>这些名称对应不同的数据：</p>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>具体含义</th>
+<th>权威来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>injection_point</code></td>
+<td>RenderGraph 中供旧式外部 <code>RenderPass</code> 使用的命名边界。标准例子有 <code>before_post_process</code> 与 <code>after_post_process</code>。</td>
+<td>管线决定它在拓扑中的位置。<code>FullScreenEffect.injection_point</code> 类字段无法替 <code>.effect</code> 完成挂载。</td>
+</tr>
+<tr>
+<td><code>EffectStage</code></td>
+<td>管线声明，包含 <code>stable_id</code>、Scope、资源输入/输出和 Capability。</td>
+<td>活动管线决定有哪些 Stage、Stage 之间的顺序，以及各 Stage 拥有哪张图。</td>
+</tr>
+<tr>
+<td>mount point</td>
+<td>面向用户的“可挂载位置”概念。当前 RenderStack 中，一个 mount point 由一个 <code>EffectStage</code> 表示。</td>
+<td><code>stable_id</code> 是场景与管线之间的契约。</td>
+</tr>
+<tr>
+<td>slot</td>
+<td>一条序列化 <code>EffectSlot</code>，包含 <code>slot_id</code>、<code>stage_id</code>、资产引用与启用状态。</td>
+<td>场景 RenderStack 拥有每个已声明 Stage 的有序 Slot 列表。</td>
+</tr>
+<tr>
+<td><code>.effectgroup</code> 条目</td>
+<td>一条带 <code>entry_id</code>、启用状态和可选 Override 的引用，可以继续引用 Effect 或嵌套 Group。</td>
+<td>Group 文档决定该 Slot 内的条目顺序。</td>
+</tr>
+</tbody>
+</table>
+<p>最终顺序按以下层级确定：</p>
+<ol>
+<li>活动管线拓扑排列各个 <code>EffectStage</code>。</li>
+<li>RenderStack Slot 顺序排列同一 Stage 内的 Effect。</li>
+<li>EffectGroup 在自己的 Slot 位置展开，并递归保留条目顺序。</li>
+<li>每个 Feature 按 <code>setup_passes()</code> 的调用顺序加入内部 Pass。</li>
+</ol>
+<p><code>default_order</code> 与 Effect 类的 <code>injection_point</code> 不参与这四步。它们是从 <code>RenderPass</code> 继承下来的元数据。把资产拖进 <code>final</code> 后，它的实际位置就是 <code>final</code>，即使类字段写着 <code>before_post_process</code>。</p>
+<p>RenderStack 会拒绝向未声明 Stage 新增 Slot。管线变化导致旧 Stage 消失后，相关 Slot 会作为 Orphan 保留，并显示在 <strong>Missing Effect Stages</strong> 下。当前 Inspector 没有 Remap 按钮。在 Editor 脚本中已经持有相关 <code>stack</code> 组件时，可以调用公开修复入口 <code>stack.remap_orphan_effect_stage("old_stage", "new_stage")</code>。它会移动使用旧 ID 的全部 Orphan，保留顺序与 <code>slot_id</code>，让图失效并返回移动数量。目标 Stage 必须存在于活动管线中；调用后请保存场景。</p>
+<h2 id="scope_1">四种效果作用域</h2>
+<p><code>EffectScope</code> 说明 Stage 拥有哪一组图像：</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Effect 收到的图像</th>
+<th>常见用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Route</td>
+<td>一段 Queue 通过一条路径得到的结果</td>
+<td>只像素化选定 Render Queue</td>
+</tr>
+<tr>
+<td>Layer</td>
+<td>同一 Layer 内多条 Route 的合并结果</td>
+<td>一起描边 Forward 与 Deferred 贡献</td>
+</tr>
+<tr>
+<td>Stage</td>
+<td>某个不透明域或透明域当前累计的全部内容</td>
+<td>所有不透明物体之后加雾</td>
+</tr>
+<tr>
+<td>Composite</td>
+<td>管线运行到该位置时累计的场景</td>
+<td>天空与透明物之后统一调色</td>
+</tr>
+</tbody>
+</table>
+<p>Scope 属于 <code>EffectStage</code>，不会写进 <code>.effect</code> 资产或 Slot。同一份可复用资产只要满足资源契约和 Route Policy，就可以用于多个 Scope。</p>
+<p>Stage 契约会建立局部语义 Resource Bus。它的 <code>inputs</code> 决定 <code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code> 等 Handle 能否到达 Effect。渲染器也会提前汇总启用资产的 <code>requires ∪ modifies</code>，以便请求可选几何 Buffer。两边必须一致：请求 <code>motion</code> 可以促使管线生成它；挂到没有暴露 <code>motion</code> 的 Stage 时，局部契约仍会失败。</p>
+<p>稳定 ID 属于面向资产的 API。管线作者可以重构内部 Pass 名称与临时纹理，同时保持 <code>after_opaque</code> 或 <code>final</code> 不变。重命名 Stage 会改变场景契约，旧 Slot 将保持 Orphan 状态，直到完成 Remap。</p>
+<p>下面这条最小高层管线通过当前公开调用暴露四种 Scope：</p>
+<pre><code class="language-python">from Infernux.renderstack import Queue, RenderPipeline
+
+
+class ScopeProbePipeline(RenderPipeline):
+    name = &quot;Scope Probe&quot;
+
+    def define(self, pipeline):
+        pipeline.frame(hdr=True)
+        with pipeline.opaque() as opaque:
+            with opaque.layer(&quot;Selected Objects&quot;) as selected:
+                selected.forward(Queue(1000, 1099)).effects(
+                    &quot;route_probe&quot;, label=&quot;Route Probe&quot;
+                )
+                selected.forward(Queue(1100, 1199))
+                selected.effects(&quot;layer_probe&quot;, label=&quot;Layer Probe&quot;)
+            opaque.otherwise().forward()
+            opaque.effects(&quot;opaque_probe&quot;, label=&quot;Opaque Stage Probe&quot;)
+        pipeline.effects(&quot;scene_probe&quot;, label=&quot;Scene Composite Probe&quot;)
+        pipeline.screen_ui()
+</code></pre>
+<p>把这份 Python 文件保存到 <code>Assets</code>，选择 <strong>Scope Probe</strong>，再让测试物体分别使用 Material Queue <code>1000</code>、<code>1100</code>、<code>1200</code>。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：</p>
+<table>
+<thead>
+<tr>
+<th>挂载位置</th>
+<th>可观察的输入与结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>route_probe</code></td>
+<td>只处理 Queue <code>1000..1099</code> 的 Forward Route，然后把结果送回所属 Layer。Queue <code>1100</code> 与 <code>1200</code> 保持原样。</td>
+</tr>
+<tr>
+<td><code>layer_probe</code></td>
+<td>Queue <code>1000..1199</code> 的 Layer 合并后只处理一次。由 <code>otherwise()</code> 绘制的 Queue <code>1200</code> 保持原样。</td>
+</tr>
+<tr>
+<td><code>opaque_probe</code></td>
+<td>在 Selected Layer 与 <code>otherwise()</code> Route 完成后处理不透明 Domain 累计结果，三个 Queue 都会变化。</td>
+</tr>
+<tr>
+<td><code>scene_probe</code></td>
+<td>处理管线运行到该位置时可用的场景 Composite。本例中它位于不透明工作之后、标准 Screen UI 帧尾之前。</td>
+</tr>
+</tbody>
+</table>
+<p>第一次验收时每次只启用一个 Probe Slot。四个全部启用会执行四份独立 Effect，并叠加视觉结果。</p>
+<h2 id="composition_1">合成、Mask 与外溢</h2>
+<p>隔离 Route 的效果经常需要原始几何轮廓之外的像素。高斯模糊、Glow、位移和描边都会扩张贡献。把处理结果裁回原始 Mask 会丢掉外溢；合成时忽略深度，又可能盖住更近的几何体。</p>
+<p>挂载 Scope 与 Route Policy 需要共同处理这个问题：</p>
+<ul>
+<li><code>MASK_AND_MODIFY</code> 适合只改变已选像素的效果。</li>
+<li><code>ISOLATE_AND_COMPOSITE</code> 适合可能向外扩张、需要通过深度与 Alpha 合回去的隔离贡献。</li>
+<li><code>ADDITIVE_EXTRACT</code> 适合加到父图像上的光能。</li>
+<li><code>INLINE</code> 直接使用当前贡献。</li>
+<li>Layer Scope 可以先把多条 Route 合成一张图，再统一处理。</li>
+</ul>
+<p>两个互相遮挡的隔离效果仍需要管线做出选择：按 Route 顺序处理并合成，先并入 Layer，或移动到更后的 Stage。活动管线拓扑记录这项选择；Slot 顺序只处理已经位于同一 Stage 的 Effect。</p>
+<p>可以用 Scope Probe 管线复现外溢与 Policy 冲突：</p>
+<ol>
+<li>通过 <strong>Create &gt; Render Effect &gt; Bloom</strong> 创建内置 Bloom，把它挂到 <code>route_probe</code>。让一个明亮的 Queue <code>1000</code> 物体轮廓与更近的 Queue <code>1200</code> 物体重叠。Bloom 使用 <code>ADDITIVE_EXTRACT</code>；光晕可以超出隔离轮廓，再通过 Route 的合成 Policy 返回父图。检查 Source Mask 外的光晕，也要检查近处物体的遮挡。</li>
+<li>在同一 <code>route_probe</code> 中把 Edge Fade 放到 Bloom 旁边。Edge Fade 使用颜色替换型 <code>MASK_AND_MODIFY</code>。Route Policy 合并会拒绝 Additive Extract 与颜色替换混用，并在图构建诊断中列出相关 Stage。把其中一个资产移到 <code>layer_probe</code> 或更后的 Composite Stage，或将其移除，然后确认图可以重建。</li>
+<li>对于自定义 <code>creates</code> 资源，可以挂入两个都会用同一语义调用 <code>bus.set()</code> 的 Effect。当前 ResourceBus 按顺序替换，后面的 Slot/Group 条目生效，也不会出现同名诊断。两份结果都需要保留时，请重命名其中一个语义。</li>
+</ol>
+<h2 id="repeat-mounts_1">同一资产多次挂载</h2>
+<p>同一份 <code>.effect</code> 资产可以出现在多个 Slot 与 Scope 中。直接挂载会解析到共享的已加载 Source 文档，因此 Inspector 参数修改会影响每个直接挂载。每次挂载仍会建立独立 Feature 实例、Pass 链、参数块命名空间，并产生独立执行成本。运行时 Binding ID 使用 <code>&lt;stage_id&gt;/&lt;slot_id&gt;/&lt;source_index&gt;</code>，所以同一资产挂在 <code>route_probe</code> 与 <code>scene_probe</code> 时可以分别定位诊断。</p>
+<p>Group 条目的 Override 属于 <code>.effectgroup</code> 文档。同一 Group 挂载两次时，两处会使用相同的 Group 有效值；修改展开值会更新该条目的 Override，并影响这个 Group 的所有挂载。<code>entry_id</code> 只要求在一份 Group 内唯一，不同 Group 可以复用同一 ID。运行时 Stage 诊断使用所属 Stage、Slot 与展开后的 Source Index 定位，不会把 <code>entry_id</code> 当成全局唯一地址。</p>
+<p>执行顺序始终由管线 Stage 顺序、Slot 顺序、递归 Group 顺序、Feature 生成 Pass 的顺序共同确定。重复引用资产不会合并执行。</p>
+<h2 id="verification_1">Orphan、失败与保存重载证据</h2>
+<p>修改 RenderStack 后可以完成以下检查：</p>
+<ol>
+<li><strong>Orphan：</strong> 在 <code>route_probe</code> 挂入 Edge Fade，保存场景，把声明改名为 <code>route_probe_v2</code>，再保存 Python 文件。<strong>Missing Effect Stages</strong> 应列出 <code>route_probe</code> 及其资产引用。旧 Slot 继续序列化，但不会执行。调用 <code>stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")</code>，预期返回 <code>1</code>；保存场景并确认警告消失。</li>
+<li><strong>单 Effect 失败：</strong> 复制一份 Edge Fade，添加 <code>requires = {"color", "missing_probe"}</code>，并在 <code>setup_passes()</code> 开头加入 <code>if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")</code>。把它挂到 <code>route_probe</code>。<strong>Effect Compile Errors</strong> 应包含 <code>&lt;stage&gt;/&lt;slot&gt;</code> 与 <code>missing_probe</code>。该 Effect 生成的 Pass 与 Bus 发布都会移除，其它 Slot 可以继续显示结果。这里需要显式检查，因为声明负责描述契约，自定义实现仍要负责 Bus 校验。</li>
+<li><strong>上一份有效拓扑：</strong> 先让有效图显示在画面中，再临时重复声明一个 <code>scene_probe</code> 稳定 ID 并保存。Editor 会记录 <code>Pipeline topology is invalid</code>，继续显示上一份有效 Inspector 拓扑与渲染图。删除重复声明并再次保存后，失效机制允许重新构建。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。</li>
+<li><strong>保存与重载：</strong> 在 <code>scene_probe</code> 放入两个名称不同的资产，记下从上到下的顺序与启用状态，保存场景，关闭后重新打开。Inspector 应恢复相同顺序与状态。需要源码管理证据时，可以检查场景序列化字段 <code>effect_slots</code>：每项记录 <code>slot_id</code>、<code>stage_id</code>、GUID/路径引用与启用值。资产参数仍保存在各自的 <code>.effect</code> 或 <code>.effectgroup</code> 文档中。</li>
+</ol>
+<h2 id="frame-tail_1">内置管线的帧尾</h2>
+<p>内置管线采用以下准确顺序：</p>
+<ol>
+<li><code>_ScreenUI_Camera</code> 把 Camera Overlay Canvas 画入场景颜色。</li>
+<li><code>after_camera_ui</code> 暴露一个 <code>EffectStage</code>。</li>
+<li><code>before_post_process</code> 标记旧式 injection point。</li>
+<li><code>final</code> 暴露最终后处理 <code>EffectStage</code>。</li>
+<li><code>after_post_process</code> 标记旧式 injection point。</li>
+<li><code>_DisplayEncode</code> 把线性 RGB 限制到 <code>[0,1]</code>，转换为 sRGB，可选应用 Camera Dithering，然后写入 <code>_display_encode</code>；<code>_DisplayEncode_Commit</code> 再把编码结果复制回场景颜色。</li>
+<li><code>_ScreenUI_Overlay</code> 把 Screen Overlay Canvas 画在编码后的图像上。</li>
+<li><code>after_screen_ui</code> 把完整的显示空间图像暴露为 <code>EffectStage</code>。</li>
+</ol>
+<p>这些命名位置有各自的颜色与 UI 语义：</p>
+<ul>
+<li><strong><code>after_camera_ui</code></strong> 接收 Camera Overlay UI 已经加入的线性场景颜色。挂在这里的 Effect 会处理这部分 UI，后续 <code>final</code> 链也会继续处理结果。</li>
+<li><strong><code>final</code></strong> 位于显示编码之前。它只是一份有序挂载列表，不含内置 Tone Mapping Pass。内置 Tone Mapping 资产属于可选项；挂到这里后，它会把线性 HDR 压缩成线性 LDR。请通过 Slot 或 Group 顺序把 HDR Effect 放在它前面，把线性 LDR Effect 放在后面。</li>
+<li><strong>显示编码</strong> 负责全帧唯一一次 linear-to-sRGB 转换。没有挂 Tone Mapping 时，超过 <code>1.0</code> 的数值会在这里被裁掉。Tone Mapping 与显示编码是两项独立操作。</li>
+<li><strong>Screen UI</strong> 是显示编码后的 Draw Pass，不属于 Effect Stage。Screen Overlay 菜单和 HUD 默认不会经过场景 Bloom、调色与 Tone Mapping。</li>
+<li><strong><code>after_screen_ui</code></strong> 接收编码后的场景颜色与 Screen UI。它后面没有第二次显示编码。挂在这里的 Effect 必须按显示空间工作，并为 Present 保持编码后的 <code>[0,1]</code> 结果。</li>
+</ul>
+<p>连续帧尾如下：</p>
+<pre><code class="language-text">Camera UI -&gt; after_camera_ui -&gt; before_post_process -&gt; final
+          -&gt; after_post_process -&gt; Display Encode + Commit
+          -&gt; Screen UI -&gt; after_screen_ui -&gt; graph output -&gt; presentation
+</code></pre>
+<p>只有用户把 Tone Mapping <code>.effect</code> 资产挂入 <code>final</code> 后，它才会出现在链中：</p>
+<pre><code class="language-text">final: [HDR effects] -&gt; [Tone Mapping .effect, optional] -&gt; [linear-LDR effects]
+</code></pre>
+<p>自定义管线遗漏终端段时，RenderStack Finalization 会保证显示编码、Screen UI Overlay 与 <code>after_screen_ui</code> 存在。<code>after_camera_ui</code> 和 <code>final</code> 仍由管线声明；全部内置管线都会声明这两个 Stage。</p>
+<p>这也解释了当前 Effect Stages Inspector 中看不到 <code>before_post_process</code> 与 <code>after_post_process</code> 的原因：它们属于 injection point。资产作者把后处理 Effect 挂进 <code>final</code>，再通过 Slot 或 <code>.effectgroup</code> 排列执行链。</p>
+<p><strong>证据说明。</strong> 上述 Stage 集合与帧尾来自当前源码中的 <code>default_forward_pipeline.py</code>、<code>default_forward_plus_pipeline.py</code>、<code>default_deferred_pipeline.py</code>、<code>graph.py::screen_ui_section</code>、<code>display_encode.frag</code> 与 <code>render_stack.py</code>。Scope Probe 的调用与 <code>pipeline_dsl.py</code> 一致；Orphan 身份和诊断规则对应 <code>EffectSlot</code>、<code>remap_orphan_effect_stage()</code> 与 <code>compile_effect_slots()</code>。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="render-effects.html">← Reusable RenderEffect assets</a><span class="learn-course-home">Chapter 6 of 8</span><a href="custom-render-pipelines.html">Build a custom render pipeline →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="render-effects.html">← 可复用的 RenderEffect 资源</a><span class="learn-course-home">第 6 章，共 8 章</span><a href="custom-render-pipelines.html">编写自定义渲染管线 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

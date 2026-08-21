@@ -13,6 +13,26 @@ let serviceWorkerReloadRequested = false;
 let serviceWorkerReloaded = false;
 let serviceWorkerControllerBound = false;
 let serviceWorkerUpdateState = "ready";
+const SERVICE_WORKER_UPDATE_DISMISSED_KEY = "infernux.site-update.dismissed-for-session";
+
+// A reader who chooses Later should not meet the same waiting update again on
+// every chapter navigation. The next browser session may announce it again.
+function serviceWorkerUpdateDismissedForSession() {
+    try {
+        return globalThis.sessionStorage?.getItem(SERVICE_WORKER_UPDATE_DISMISSED_KEY) === "true";
+    } catch (_) {
+        return false;
+    }
+}
+
+function rememberServiceWorkerUpdateDismissal(dismissed) {
+    try {
+        if (dismissed) globalThis.sessionStorage?.setItem(SERVICE_WORKER_UPDATE_DISMISSED_KEY, "true");
+        else globalThis.sessionStorage?.removeItem(SERVICE_WORKER_UPDATE_DISMISSED_KEY);
+    } catch (_) {
+        // Storage can be unavailable in privacy-restricted browsing contexts.
+    }
+}
 
 function serviceWorkerUpdateCopy() {
     const zh = document.documentElement.lang?.toLowerCase().startsWith("zh");
@@ -98,7 +118,7 @@ function renderServiceWorkerUpdateNotice() {
 }
 
 function showServiceWorkerUpdate(registration, worker = registration?.waiting) {
-    if (!worker || worker === dismissedServiceWorkerUpdate) return;
+    if (!worker || worker === dismissedServiceWorkerUpdate || serviceWorkerUpdateDismissedForSession()) return;
     serviceWorkerUpdateRegistration = registration;
     serviceWorkerUpdateWorker = worker;
     serviceWorkerUpdateState = "ready";
@@ -109,6 +129,7 @@ function showServiceWorkerUpdate(registration, worker = registration?.waiting) {
 
 function dismissServiceWorkerUpdate() {
     dismissedServiceWorkerUpdate = serviceWorkerUpdateWorker;
+    rememberServiceWorkerUpdateDismissal(true);
     const notice = document.getElementById("site-update-notice");
     if (notice) notice.hidden = true;
 }
@@ -117,6 +138,7 @@ function applyServiceWorkerUpdate() {
     const worker = serviceWorkerUpdateRegistration?.waiting || serviceWorkerUpdateWorker;
     if (!worker || serviceWorkerUpdateState === "applying") return;
     serviceWorkerReloadRequested = true;
+    rememberServiceWorkerUpdateDismissal(false);
     serviceWorkerUpdateState = "applying";
     renderServiceWorkerUpdateNotice();
     worker.postMessage("SKIP_WAITING");

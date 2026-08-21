@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Instantiate authored objects, choose parent and world-space behavior, keep references, and destroy instances safely.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-prefabs-runtime.html">
+    <title>Prefabs and runtime object lifetime · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 4/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 4/8</span></span><a href="gameplay-prefabs-runtime.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay · Chapter 4</span></p>
+<h1 id="prefabs-and-runtime-object-lifetime">Prefabs and runtime object lifetime</h1>
+<p>A Prefab stores an authored GameObject hierarchy as an asset. <code>Instantiate</code> turns that asset, or an existing scene GameObject, into a new live hierarchy. <code>Destroy</code> ends the lifetime of a live GameObject. This chapter builds a small spawner and makes the parent-space rules explicit.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#author-a-prefab">Author a Prefab</a><a href="#build-runtime-spawner">Build the spawner</a><a href="#instantiate-semantics">Instantiate semantics</a><a href="#parent-space-semantics">Parent and space</a><a href="#destroy-semantics">Destroy semantics</a><a href="#prefab-runtime-errors">Common errors</a><a href="#verify-prefab-runtime">Verify the result</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-prefabs-runtime.webp" alt="A Prefab asset creating several runtime instances under a spawn root" loading="lazy" decoding="async">
+  <figcaption>One authored Prefab can produce independent runtime hierarchies, each with its own parent and lifetime.</figcaption>
+</figure>
+
+<h2 id="author-a-prefab">Author a Prefab asset</h2>
+<p><strong>Prerequisites.</strong> Continue from Chapter 3 with a saved scene and the Hierarchy, Project, Inspector, Game, and Console panels visible. The scene needs an enabled Camera that can see the origin.</p>
+<ol>
+<li>In <strong>Project</strong>, open the <code>Assets</code> folder where the Prefab should be stored.</li>
+<li>In <strong>Hierarchy</strong>, create a Cube and rename it <code>SpawnedCube</code>. Set its local position to <code>(0, 0, 0)</code> and choose a visible scale and material.</li>
+<li>Add any child objects that should be cloned with it. <code>Instantiate</code> copies the complete hierarchy and its components.</li>
+<li>Right-click <code>SpawnedCube</code> in Hierarchy and choose <strong>Save as Prefab</strong>. The editor creates a <code>.prefab</code> asset in the current Project folder and links the source hierarchy to it.</li>
+<li>Confirm that the Prefab appears in Project, then delete the source <code>SpawnedCube</code> from the scene. The asset remains available for runtime creation.</li>
+<li>Create an Empty GameObject in Hierarchy, rename it <code>SpawnRoot</code>, and set its position to <code>(0, 0, 0)</code>.</li>
+</ol>
+<div class="learn-note"><strong>Asset reference and scene object have different jobs.</strong><p><code>PrefabRef</code> stores a Prefab GUID and path hint. It does not identify a live scene object, and its current <code>resolve()</code> result is always <code>None</code>. Call <code>Instantiate</code> or <code>PrefabRef.instantiate()</code> to create a live GameObject.</p></div>
+
+<h2 id="build-runtime-spawner">Build a runtime spawner</h2>
+<ol>
+<li>In Project, right-click the target folder and choose <strong>Create &gt; Script (.py)</strong>. Name it <code>PrefabSpawner</code>.</li>
+<li>Replace the generated script with the complete component below.</li>
+<li>Return to the editor, select <code>SpawnRoot</code>, click <strong>Add Component</strong>, and add <code>PrefabSpawner</code>.</li>
+<li>Drag the <code>.prefab</code> asset from Project onto the component's <strong>Prefab</strong> field in Inspector. A Project asset dropped on this <code>GAME_OBJECT</code> field becomes a <code>PrefabRef</code>.</li>
+<li>Save the scene.</li>
+</ol>
+<pre><code class="language-python">from Infernux import (
+    Debug,
+    Destroy,
+    FieldType,
+    InxComponent,
+    Instantiate,
+    PrefabRef,
+    Vector3,
+    serialized_field,
+)
+from Infernux.input import Input, KeyCode
+
+
+class PrefabSpawner(InxComponent):
+    prefab: PrefabRef = serialized_field(
+        default=PrefabRef(),
+        field_type=FieldType.GAME_OBJECT,
+        tooltip=&quot;Prefab created when Space is pressed&quot;,
+    )
+
+    def start(self):
+        self._last_instance = None
+
+    def update(self, delta_time: float):
+        if Input.get_key_down(KeyCode.SPACE):
+            self.spawn()
+
+        if Input.get_key_down(KeyCode.DELETE):
+            self.destroy_last()
+
+    def spawn(self):
+        if not self.prefab:
+            Debug.log_warning(&quot;PrefabSpawner needs a Prefab asset&quot;)
+            return
+
+        instance = Instantiate(self.prefab, parent=self.game_object)
+        if instance is None:
+            Debug.log_error(&quot;Prefab instantiation failed&quot;)
+            return
+
+        instance.transform.local_position = Vector3(0.0, 0.0, 2.0)
+        self._last_instance = instance
+        Debug.log(f&quot;Spawned {instance.name}&quot;)
+
+    def destroy_last(self):
+        if self._last_instance is None:
+            return
+
+        Destroy(self._last_instance)
+        self._last_instance = None
+        Debug.log(&quot;Destroyed the last spawned instance&quot;)
+</code></pre>
+<p>Enter Play mode and click the Game panel. Each Space press creates a fresh Prefab instance under <code>SpawnRoot</code>. Delete removes the most recently created instance. Earlier instances remain because the component stores only the latest returned GameObject.</p>
+<h2 id="instantiate-semantics">What Instantiate accepts and returns</h2>
+<p>The public <code>Instantiate(original, *args, **kwargs)</code> dispatcher currently supports these sources:</p>
+<ul>
+<li>A <code>GameObject</code>, producing a deep copy of its hierarchy and components.</li>
+<li>A <code>GameObjectRef</code>, after resolving its live scene object.</li>
+<li>A <code>PrefabRef</code>, by loading the referenced <code>.prefab</code> asset.</li>
+<li>A Python <code>Material</code> or native <code>InxMaterial</code>, producing a material clone. Parent and Transform overloads do not apply to materials.</li>
+</ul>
+<p>For GameObject and Prefab sources, the scalar overload returns the new root <code>GameObject</code>, or <code>None</code> when no instance can be created. Check that result before accessing <code>name</code>, <code>transform</code>, or components.</p>
+<p><code>Instantiate</code> also restores Python components on the copied hierarchy. Each instance receives its own component objects and runtime state; the source hierarchy stays unchanged.</p>
+<h2 id="parent-space-semantics">Choose parent and Transform space</h2>
+<p>The current scalar overloads provide three useful placement patterns:</p>
+<pre><code class="language-python">from Infernux import Instantiate, Vector3, quatf
+
+# No parent argument: create at the scene root and preserve source world TRS.
+root_instance = Instantiate(prefab)
+
+# A parent argument: preserve source local TRS under this parent.
+local_instance = Instantiate(prefab, parent=spawn_root)
+
+# Parent plus True: keep source world TRS while adopting the parent.
+world_instance = Instantiate(prefab, spawn_root, True)
+
+# Position and rotation are world-space values; the parent is optional.
+placed_instance = Instantiate(
+    prefab,
+    Vector3(5.0, 0.0, 2.0),
+    quatf(),
+    spawn_root,
+)
+</code></pre>
+<p><code>parent</code> may be a <code>GameObject</code>, <code>Transform</code>, <code>GameObjectRef</code>, or <code>None</code>. The explicit boolean is named <code>instantiate_in_world_space</code> when passed by keyword.</p>
+<table>
+<thead>
+<tr>
+<th>Call shape</th>
+<th>Parent result</th>
+<th>Transform result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Instantiate(source)</code></td>
+<td>Scene root</td>
+<td>Preserve source world transform</td>
+</tr>
+<tr>
+<td><code>Instantiate(source, parent=target)</code></td>
+<td>Child of <code>target</code></td>
+<td>Preserve source local transform</td>
+</tr>
+<tr>
+<td><code>Instantiate(source, target, True)</code></td>
+<td>Child of <code>target</code></td>
+<td>Preserve source world transform</td>
+</tr>
+<tr>
+<td><code>Instantiate(source, position, rotation, target)</code></td>
+<td>Child of <code>target</code></td>
+<td>Apply the supplied world position and rotation</td>
+</tr>
+</tbody>
+</table>
+<p>This distinction becomes visible when the source or target parent is translated, rotated, or scaled. The tutorial intentionally uses <code>parent=self.game_object</code>, then assigns <code>local_position</code>, so every spawned Cube appears two local Z units from <code>SpawnRoot</code>.</p>
+<p>An explicit <code>parent=None</code> uses the parent-overload path and preserves local TRS. Omitting the parent argument preserves world TRS. They can produce different positions when cloning a scene GameObject that already has a parent.</p>
+<p>After creation, hierarchy changes use matching APIs:</p>
+<pre><code class="language-python"># GameObject API: parent is a GameObject.
+instance.set_parent(spawn_root, world_position_stays=True)
+
+# Transform API: parent is a Transform.
+instance.transform.set_parent(
+    spawn_root.transform,
+    world_position_stays=False,
+)
+</code></pre>
+<p><code>world_position_stays=True</code> keeps the current world transform while calculating new local values. <code>False</code> keeps the current local values and lets the new parent determine the resulting world transform.</p>
+<h2 id="destroy-semantics">End an instance lifetime with Destroy</h2>
+<p>The top-level <code>Destroy</code> function currently accepts a live <code>GameObject</code> only:</p>
+<pre><code class="language-python">Destroy(instance)
+</code></pre>
+<p>Destruction enters the scene's pending-destroy flow. Treat the object and all descendants as unavailable after requesting destruction, clear references you own, and let lifecycle cleanup run. Active Python components receive their disable and destroy cleanup as the pending operation is processed.</p>
+<p>The <code>delay</code> parameter exists in the current signature, but delayed destruction has not been implemented. <code>Destroy(instance, 3.0)</code> does not schedule a three-second lifetime. For timed cleanup, track elapsed time in a component or use the coroutine timing APIs introduced later in the course.</p>
+<p><code>Destroy(component)</code> raises <code>TypeError</code>. A Python component can remove itself with its <code>destroy()</code> method; that is a separate component-lifetime operation.</p>
+<h2 id="prefab-runtime-errors">Common errors</h2>
+<p><strong>Space creates nothing.</strong> Click the Game panel, confirm that the Prefab field is assigned, and inspect the Console. <code>Instantiate</code> returns <code>None</code> when the Prefab asset cannot be found or no live source can be resolved.</p>
+<p><strong>The field contains a scene object.</strong> A <code>GAME_OBJECT</code> Inspector field accepts both Hierarchy objects and Project Prefabs. Drag the <code>.prefab</code> asset from Project when the script should store a <code>PrefabRef</code>.</p>
+<p><strong>Calling <code>prefab.resolve()</code> gives <code>None</code>.</strong> That is the current <code>PrefabRef</code> contract. Use <code>Instantiate(prefab)</code> to create a scene object.</p>
+<p><strong>The instance jumps after parenting.</strong> Select the intended rule explicitly: preserve local TRS with <code>parent=target</code>, or preserve world TRS with <code>target, True</code>. Follow-up <code>set_parent()</code> calls use <code>world_position_stays</code> for the same choice.</p>
+<p><strong>A destroyed reference is used again.</strong> Set owned references to <code>None</code> immediately after <code>Destroy</code>, as the spawner does. Store every returned instance in a list when the design needs to manage more than the latest one.</p>
+<p><strong>Delayed destruction does not wait.</strong> The current <code>delay</code> argument is reserved. Implement the timer in gameplay code before calling <code>Destroy(instance)</code>.</p>
+<h2 id="verify-prefab-runtime">Verify the result</h2>
+<p>The chapter passes when all of these checks succeed:</p>
+<ol>
+<li><code>SpawnRoot</code> shows an assigned Prefab asset in the Inspector before Play mode.</li>
+<li>Each Space press adds one independent <code>SpawnedCube</code> hierarchy below <code>SpawnRoot</code> during Play mode.</li>
+<li>Every new root has local position <code>(0, 0, 2)</code>, so moving or rotating <code>SpawnRoot</code> changes where its children appear.</li>
+<li>Delete removes the latest spawned hierarchy and writes one cleanup line to Console.</li>
+<li>Leaving Play mode removes all runtime-created instances and restores the authored scene.</li>
+</ol>
+<p>You can now turn authored hierarchies into controlled runtime objects and choose their coordinate-space behavior deliberately. <a href="gameplay-physics-events.html">Chapter 5: Physics and collision callbacks</a> adds colliders, rigid bodies, fixed-step motion, and contact events to these instances.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">Gameplay · 第 4 章</span></p>
+<h1 id="prefab">Prefab 与运行时对象生命周期</h1>
+<p>Prefab 会把编写好的 GameObject 层级保存成资产。<code>Instantiate</code> 可以根据该资产或现有场景 GameObject 创建新的活动层级，<code>Destroy</code> 则结束活动 GameObject 的生命周期。本章会制作一个小型生成器，并明确 parent 参数的空间规则。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#author-a-prefab_1">编写 Prefab</a><a href="#build-runtime-spawner_1">制作运行时生成器</a><a href="#instantiate-semantics_1">Instantiate 语义</a><a href="#parent-space-semantics_1">父级与空间</a><a href="#destroy-semantics_1">Destroy 语义</a><a href="#prefab-runtime-errors_1">常见错误</a><a href="#verify-prefab-runtime_1">验证结果</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-prefabs-runtime.webp" alt="一个 Prefab 资产在生成根节点下创建多个运行时实例" loading="lazy" decoding="async">
+  <figcaption>一份编写好的 Prefab 可以生成多个独立运行时层级，每个层级都有自己的父级与生命周期。</figcaption>
+</figure>
+
+<h2 id="author-a-prefab_1">编写 Prefab 资产</h2>
+<p><strong>准备条件。</strong> 从第 3 章的已保存场景继续，并显示 Hierarchy、Project、Inspector、Game 与 Console 面板。场景中需要一台能看到原点的已启用 Camera。</p>
+<ol>
+<li>在 <strong>Project</strong> 中打开准备保存 Prefab 的 <code>Assets</code> 目录。</li>
+<li>在 <strong>Hierarchy</strong> 中创建 Cube，命名为 <code>SpawnedCube</code>，把局部位置设为 <code>(0, 0, 0)</code>，再选择容易看清的缩放与材质。</li>
+<li>按需添加需要一起复制的子物体。<code>Instantiate</code> 会复制完整层级及其组件。</li>
+<li>在 Hierarchy 中右键单击 <code>SpawnedCube</code>，选择 <strong>保存为预制体</strong>。编辑器会在 Project 当前目录创建 <code>.prefab</code> 资产，并把源层级链接到该资产。</li>
+<li>确认 Prefab 已出现在 Project 中，然后从场景删除源 <code>SpawnedCube</code>。该资产仍可用于运行时创建。</li>
+<li>在 Hierarchy 中创建空 GameObject，命名为 <code>SpawnRoot</code>，位置设为 <code>(0, 0, 0)</code>。</li>
+</ol>
+<div class="learn-note"><strong>资产引用与场景对象职责不同。</strong><p><code>PrefabRef</code> 保存 Prefab GUID 与路径提示，不指向活动场景对象；当前 <code>resolve()</code> 固定返回 <code>None</code>。请调用 <code>Instantiate</code> 或 <code>PrefabRef.instantiate()</code> 创建活动 GameObject。</p></div>
+
+<h2 id="build-runtime-spawner_1">制作运行时生成器</h2>
+<ol>
+<li>在 Project 中右键单击目标目录，选择 <strong>创建 &gt; 脚本 (.py)</strong>，命名为 <code>PrefabSpawner</code>。</li>
+<li>用下面的完整组件替换生成的脚本。</li>
+<li>回到编辑器，选中 <code>SpawnRoot</code>，点击 <strong>添加组件</strong>，加入 <code>PrefabSpawner</code>。</li>
+<li>从 Project 把 <code>.prefab</code> 资产拖到 Inspector 中该组件的 <strong>Prefab</strong> 字段。Project 资产放入这个 <code>GAME_OBJECT</code> 字段后会成为 <code>PrefabRef</code>。</li>
+<li>保存场景。</li>
+</ol>
+<pre><code class="language-python">from Infernux import (
+    Debug,
+    Destroy,
+    FieldType,
+    InxComponent,
+    Instantiate,
+    PrefabRef,
+    Vector3,
+    serialized_field,
+)
+from Infernux.input import Input, KeyCode
+
+
+class PrefabSpawner(InxComponent):
+    prefab: PrefabRef = serialized_field(
+        default=PrefabRef(),
+        field_type=FieldType.GAME_OBJECT,
+        tooltip=&quot;Prefab created when Space is pressed&quot;,
+    )
+
+    def start(self):
+        self._last_instance = None
+
+    def update(self, delta_time: float):
+        if Input.get_key_down(KeyCode.SPACE):
+            self.spawn()
+
+        if Input.get_key_down(KeyCode.DELETE):
+            self.destroy_last()
+
+    def spawn(self):
+        if not self.prefab:
+            Debug.log_warning(&quot;PrefabSpawner needs a Prefab asset&quot;)
+            return
+
+        instance = Instantiate(self.prefab, parent=self.game_object)
+        if instance is None:
+            Debug.log_error(&quot;Prefab instantiation failed&quot;)
+            return
+
+        instance.transform.local_position = Vector3(0.0, 0.0, 2.0)
+        self._last_instance = instance
+        Debug.log(f&quot;Spawned {instance.name}&quot;)
+
+    def destroy_last(self):
+        if self._last_instance is None:
+            return
+
+        Destroy(self._last_instance)
+        self._last_instance = None
+        Debug.log(&quot;Destroyed the last spawned instance&quot;)
+</code></pre>
+<p>进入 Play 模式并单击 Game 面板。每次按下空格键，<code>SpawnRoot</code> 下都会出现一个新的 Prefab 实例。Delete 会移除最近创建的实例；更早的实例会保留，因为组件只保存了最后一次返回的 GameObject。</p>
+<h2 id="instantiate-semantics_1">Instantiate 接受什么、返回什么</h2>
+<p>公共入口 <code>Instantiate(original, *args, **kwargs)</code> 当前支持以下来源：</p>
+<ul>
+<li><code>GameObject</code>：深拷贝它的层级与组件。</li>
+<li><code>GameObjectRef</code>：先解析对应的活动场景对象。</li>
+<li><code>PrefabRef</code>：加载引用的 <code>.prefab</code> 资产。</li>
+<li>Python <code>Material</code> 或原生 <code>InxMaterial</code>：创建材质克隆；parent 与 Transform 重载不适用于材质。</li>
+</ul>
+<p>来源为 GameObject 或 Prefab 时，标量重载会返回新根节点 <code>GameObject</code>；无法创建时返回 <code>None</code>。访问 <code>name</code>、<code>transform</code> 或组件前应先检查结果。</p>
+<p><code>Instantiate</code> 还会恢复复制层级中的 Python 组件。每个实例都有独立的组件对象与运行时状态，源层级保持原值。</p>
+<h2 id="parent-space-semantics_1">选择父级与 Transform 空间</h2>
+<p>当前标量重载提供三种常用放置方式：</p>
+<pre><code class="language-python">from Infernux import Instantiate, Vector3, quatf
+
+# 省略 parent：创建在场景根级，并保留源对象的世界 TRS。
+root_instance = Instantiate(prefab)
+
+# 传入 parent：挂到该父级下，并保留源对象的局部 TRS。
+local_instance = Instantiate(prefab, parent=spawn_root)
+
+# parent 加 True：挂到父级下，同时保留源对象的世界 TRS。
+world_instance = Instantiate(prefab, spawn_root, True)
+
+# position 与 rotation 使用世界空间；parent 可省略。
+placed_instance = Instantiate(
+    prefab,
+    Vector3(5.0, 0.0, 2.0),
+    quatf(),
+    spawn_root,
+)
+</code></pre>
+<p><code>parent</code> 可以是 <code>GameObject</code>、<code>Transform</code>、<code>GameObjectRef</code> 或 <code>None</code>。使用关键字传递时，显式布尔参数名为 <code>instantiate_in_world_space</code>。</p>
+<table>
+<thead>
+<tr>
+<th>调用形式</th>
+<th>父级结果</th>
+<th>Transform 结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Instantiate(source)</code></td>
+<td>场景根级</td>
+<td>保留源对象世界变换</td>
+</tr>
+<tr>
+<td><code>Instantiate(source, parent=target)</code></td>
+<td>成为 <code>target</code> 的子节点</td>
+<td>保留源对象局部变换</td>
+</tr>
+<tr>
+<td><code>Instantiate(source, target, True)</code></td>
+<td>成为 <code>target</code> 的子节点</td>
+<td>保留源对象世界变换</td>
+</tr>
+<tr>
+<td><code>Instantiate(source, position, rotation, target)</code></td>
+<td>成为 <code>target</code> 的子节点</td>
+<td>应用给定世界位置与旋转</td>
+</tr>
+</tbody>
+</table>
+<p>源对象或目标父级存在平移、旋转、缩放时，这个区别会清楚呈现。教程特意使用 <code>parent=self.game_object</code>，随后设置 <code>local_position</code>，因此每个 Cube 都出现在 <code>SpawnRoot</code> 的局部 Z 轴前方 2 个单位处。</p>
+<p>显式传入 <code>parent=None</code> 会进入 parent 重载并保留局部 TRS；省略 parent 参数则保留世界 TRS。复制一个已经有父级的场景 GameObject 时，两种写法可能得到不同位置。</p>
+<p>创建后调整层级，可以使用对应 API：</p>
+<pre><code class="language-python"># GameObject API：parent 参数使用 GameObject。
+instance.set_parent(spawn_root, world_position_stays=True)
+
+# Transform API：parent 参数使用 Transform。
+instance.transform.set_parent(
+    spawn_root.transform,
+    world_position_stays=False,
+)
+</code></pre>
+<p><code>world_position_stays=True</code> 会保持当前世界变换，并计算新的局部值。设为 <code>False</code> 会保持当前局部值，再由新父级决定最终世界变换。</p>
+<h2 id="destroy-semantics_1">用 Destroy 结束实例生命周期</h2>
+<p>顶层 <code>Destroy</code> 函数当前只接受活动 <code>GameObject</code>：</p>
+<pre><code class="language-python">Destroy(instance)
+</code></pre>
+<p>销毁请求会进入场景的待处理销毁流程。发出请求后，应把该对象及其所有后代视为不可再用，清空自己保存的引用，并让生命周期清理继续执行。活动 Python 组件会在处理待销毁操作时收到停用与销毁清理。</p>
+<p>当前签名包含 <code>delay</code> 参数，但延迟销毁尚未实现。<code>Destroy(instance, 3.0)</code> 不会安排三秒生命周期。需要定时清理时，可以在组件中累计时间，或使用课程后面介绍的协程计时 API。</p>
+<p><code>Destroy(component)</code> 会抛出 <code>TypeError</code>。Python 组件可以调用自身的 <code>destroy()</code> 方法移除自己，这是另一种组件生命周期操作。</p>
+<h2 id="prefab-runtime-errors_1">常见错误</h2>
+<p><strong>按空格键没有创建对象。</strong> 单击 Game 面板，确认 Prefab 字段已赋值，再检查 Console。找不到 Prefab 资产，或无法解析活动源对象时，<code>Instantiate</code> 会返回 <code>None</code>。</p>
+<p><strong>字段里保存了场景对象。</strong> Inspector 的 <code>GAME_OBJECT</code> 字段同时接受 Hierarchy 对象与 Project Prefab。脚本需要保存 <code>PrefabRef</code> 时，应从 Project 拖入 <code>.prefab</code> 资产。</p>
+<p><strong>调用 <code>prefab.resolve()</code> 得到 <code>None</code>。</strong> 这符合当前 <code>PrefabRef</code> 契约。请用 <code>Instantiate(prefab)</code> 创建场景对象。</p>
+<p><strong>设置父级后实例跳到别处。</strong> 明确选择空间规则：用 <code>parent=target</code> 保留局部 TRS，或用 <code>target, True</code> 保留世界 TRS。后续 <code>set_parent()</code> 则通过 <code>world_position_stays</code> 做同样选择。</p>
+<p><strong>销毁后又使用旧引用。</strong> 调用 <code>Destroy</code> 后立刻把自己保存的引用设为 <code>None</code>，示例生成器已经这样处理。需要管理多个实例时，应保存每次返回值到列表。</p>
+<p><strong>延迟销毁没有等待。</strong> 当前 <code>delay</code> 参数仅作预留。请先在游戏逻辑中完成计时，再调用 <code>Destroy(instance)</code>。</p>
+<h2 id="verify-prefab-runtime_1">验证结果</h2>
+<p>下面各项都满足时，本章练习通过：</p>
+<ol>
+<li>进入 Play 模式前，<code>SpawnRoot</code> 的 Inspector 已显示所赋值的 Prefab 资产。</li>
+<li>Play 模式中每按一次空格键，<code>SpawnRoot</code> 下都会增加一套独立的 <code>SpawnedCube</code> 层级。</li>
+<li>每个新根节点的局部位置都是 <code>(0, 0, 2)</code>；移动或旋转 <code>SpawnRoot</code> 会改变子节点的最终位置。</li>
+<li>按 Delete 会移除最近生成的层级，Console 同时写入一行清理记录。</li>
+<li>退出 Play 模式后，所有运行时创建的实例消失，场景恢复为编写状态。</li>
+</ol>
+<p>现在你可以把编写好的层级转为受控运行时对象，也能主动选择它们的坐标空间行为。<a href="gameplay-physics-events.html">第 5 章：物理与碰撞回调</a>会为这些实例添加 Collider、Rigidbody、固定步长运动与接触事件。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="gameplay-input-movement.html">← Input, time, and movement</a><span class="learn-course-home">Chapter 4 of 8</span><a href="gameplay-physics-events.html">Physics and collision callbacks →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="gameplay-input-movement.html">← 输入、时间与移动</a><span class="learn-course-home">第 4 章，共 8 章</span><a href="gameplay-physics-events.html">物理与碰撞回调 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

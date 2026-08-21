@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Choose colliders and rigid bodies, place motion in fixed_update, and respond to collision and trigger phases.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-physics-events.html">
+    <title>Physics and collision callbacks · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 5/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 5/8</span></span><a href="gameplay-physics-events.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay Foundations · Chapter 5</span></p>
+<h1 id="physics-and-collision-callbacks">Physics and collision callbacks</h1>
+<p>Physics becomes predictable when shape, motion, and reaction each have one clear owner. A <code>Collider</code> supplies the shape, a <code>Rigidbody</code> supplies simulated motion, <code>fixed_update</code> supplies fixed-step gameplay input, and collision or Trigger callbacks report changes in contact state.</p>
+<p>In this chapter you will build a rolling probe that lands on a floor, moves through a Trigger volume, and reports every callback phase in the Console.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#physics-parts">Collider and Rigidbody roles</a><a href="#build-physics-scene">Build the test scene</a><a href="#physics-probe-script">Write the component</a><a href="#collision-trigger-phases">Read the callbacks</a><a href="#verify-physics">Verify the result</a><a href="#physics-errors">Common errors</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-physics-events.webp" alt="Infernux physics test scene with a moving body, floor collider, and trigger volume" loading="lazy" decoding="async">
+  <figcaption>A dynamic body first makes solid contact with the floor, then crosses a non-solid Trigger volume.</figcaption>
+</figure>
+
+<h2 id="physics-parts">Collider and Rigidbody roles</h2>
+<p>A GameObject can participate in this exercise in three ways:</p>
+<table>
+<thead>
+<tr>
+<th>Object</th>
+<th>Components</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Floor</td>
+<td><code>BoxCollider</code></td>
+<td>A stationary solid shape</td>
+</tr>
+<tr>
+<td>Probe</td>
+<td><code>SphereCollider</code>, <code>Rigidbody</code>, <code>PhysicsProbe</code></td>
+<td>A gravity-driven body that receives forces and callbacks</td>
+</tr>
+<tr>
+<td>Sensor</td>
+<td><code>BoxCollider</code> with <strong>Is Trigger</strong> enabled</td>
+<td>An overlap volume with no solid contact response</td>
+</tr>
+</tbody>
+</table>
+<p><code>Collider</code> is the shared base for concrete shapes such as <code>BoxCollider</code> and <code>SphereCollider</code>. Its public <code>center</code> property offsets the shape in local space, and <code>is_trigger</code> selects solid contact or Trigger behavior. Shape-specific properties live on each concrete collider; for example, <code>BoxCollider.size</code> controls its full local-space size.</p>
+<p><code>Rigidbody</code> adds mass, gravity, drag, constraints, velocity, forces, and kinematic movement. A dynamic body has <code>is_kinematic</code> disabled. A kinematic body is script-driven and can use <code>move_position(...)</code> or <code>move_rotation(...)</code> during fixed steps.</p>
+<div class="learn-note"><strong>Use the physics clock.</strong><p><code>fixed_update(self, fixed_delta_time)</code> runs on the fixed physics step, whose default is 50 Hz. Apply continuous forces and kinematic movement there. Frame-rate presentation and ordinary per-frame input polling can remain in <code>update</code>.</p></div>
+
+<h2 id="build-physics-scene">Build the test scene</h2>
+<p>Start from a scene with a Camera that can see the origin, then create these objects:</p>
+<ol>
+<li>Create a <strong>Cube</strong> named <code>Ground</code>. Set Position to <code>(0, -0.5, 0)</code> and Scale to <code>(12, 1, 4)</code>. The primitive already has a <code>BoxCollider</code>; leave its <strong>Is Trigger</strong> disabled and do not add a Rigidbody.</li>
+<li>Create a <strong>Sphere</strong> named <code>Probe</code>. Set Position to <code>(-4, 2, 0)</code>. The primitive already has a <code>SphereCollider</code>; use <strong>Add Component</strong> to add only <code>Rigidbody</code>. Keep <strong>Use Gravity</strong> enabled and <strong>Is Kinematic</strong> disabled. Enable the Rigidbody's <strong>Freeze Position Z</strong> and all three <strong>Freeze Rotation</strong> controls so the example stays on one line.</li>
+<li>Create another <strong>Cube</strong> named <code>Sensor</code>. Set Position to <code>(2, 0.75, 0)</code> and Scale to <code>(1, 1.5, 4)</code>. On its existing <code>BoxCollider</code>, enable <strong>Is Trigger</strong>. You may disable its MeshRenderer after placing it so it behaves as an invisible gameplay volume.</li>
+<li>Save the scene before entering Play mode.</li>
+</ol>
+<p>The floor and sensor do not need a Rigidbody for this setup. The moving <code>Probe</code> supplies the active Rigidbody for both interactions.</p>
+<h2 id="physics-probe-script">Write the component</h2>
+<p>Create <code>Assets/Scripts/physics_probe.py</code> with the following complete component:</p>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.components.builtin import Rigidbody
+from Infernux.debug import Debug
+from Infernux.math import Vector3
+
+
+class PhysicsProbe(InxComponent):
+    def awake(self):
+        self._body = None
+        self._collision_stay_steps = 0
+        self._trigger_stay_steps = 0
+
+    def start(self):
+        self._body = self.game_object.get_component(Rigidbody)
+        if self._body is None:
+            Debug.log_error(&quot;PhysicsProbe requires a Rigidbody.&quot;, self.game_object)
+
+    def fixed_update(self, fixed_delta_time):
+        if self._body is None:
+            return
+
+        # add_force defaults to ForceMode.Force.
+        self._body.add_force(Vector3(3.0, 0.0, 0.0))
+
+    def on_collision_enter(self, collision):
+        self._collision_stay_steps = 0
+        Debug.log(
+            f&quot;collision enter: {collision.game_object.name} &quot;
+            f&quot;at {collision.contact_point}&quot;
+        )
+
+    def on_collision_stay(self, collision):
+        self._collision_stay_steps += 1
+        if self._collision_stay_steps == 1:
+            Debug.log(
+                f&quot;collision stay: {collision.game_object.name}; &quot;
+                f&quot;normal={collision.contact_normal}; &quot;
+                f&quot;relative velocity={collision.relative_velocity}&quot;
+            )
+
+    def on_collision_exit(self, collision):
+        Debug.log(f&quot;collision exit: {collision.game_object.name}&quot;)
+
+    def on_trigger_enter(self, other):
+        self._trigger_stay_steps = 0
+        Debug.log(f&quot;trigger enter: {other.game_object.name}&quot;)
+
+    def on_trigger_stay(self, other):
+        self._trigger_stay_steps += 1
+        if self._trigger_stay_steps == 1:
+            Debug.log(f&quot;trigger stay: {other.game_object.name}&quot;)
+
+    def on_trigger_exit(self, other):
+        Debug.log(f&quot;trigger exit: {other.game_object.name}&quot;)
+</code></pre>
+<p>Return to the editor, select <code>Probe</code>, choose <strong>Add Component</strong>, and attach <code>PhysicsProbe</code>. The component stores its Rigidbody reference in <code>start</code>; Infernux components manage their own initialization, so gameplay scripts use <code>awake</code> or <code>start</code> instead of defining <code>__init__</code>.</p>
+<p>The <code>fixed_delta_time</code> parameter is available when a calculation needs the duration of one fixed step. <code>add_force</code> already applies a force through the physics solver, so this example does not multiply the force vector by <code>fixed_delta_time</code>.</p>
+<h2 id="collision-trigger-phases">Read the callbacks</h2>
+<p>Solid contacts receive a <code>CollisionInfo</code> value:</p>
+<table>
+<thead>
+<tr>
+<th>Callback</th>
+<th>When it runs</th>
+<th>Available data used above</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>on_collision_enter(collision)</code></td>
+<td>Contact begins</td>
+<td><code>game_object</code>, <code>collider</code>, <code>contact_point</code>, <code>contact_normal</code>, <code>relative_velocity</code></td>
+</tr>
+<tr>
+<td><code>on_collision_stay(collision)</code></td>
+<td>Each fixed step while contact remains</td>
+<td>The same <code>CollisionInfo</code> fields</td>
+</tr>
+<tr>
+<td><code>on_collision_exit(collision)</code></td>
+<td>Contact ends</td>
+<td>The other collider and GameObject remain identifiable</td>
+</tr>
+</tbody>
+</table>
+<p>Trigger overlaps receive the other <code>Collider</code> directly:</p>
+<table>
+<thead>
+<tr>
+<th>Callback</th>
+<th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>on_trigger_enter(other)</code></td>
+<td>The other collider enters the Trigger</td>
+</tr>
+<tr>
+<td><code>on_trigger_stay(other)</code></td>
+<td>Each fixed step while the overlap remains</td>
+</tr>
+<tr>
+<td><code>on_trigger_exit(other)</code></td>
+<td>The other collider leaves the Trigger</td>
+</tr>
+</tbody>
+</table>
+<p>The two parameter types are intentionally different. Contact points and normals belong to <code>CollisionInfo</code>; Trigger callbacks use <code>other.game_object</code> when they need the overlapping object. The current public <code>CollisionInfo</code> has no <code>impulse</code> property.</p>
+<p><code>Stay</code> callbacks can run many times. The example counts them and logs only the first stay step for each interaction, keeping the Console readable while still proving that the phase occurred.</p>
+<h2 id="verify-physics">Verify the result</h2>
+<ol>
+<li>Clear the Console and enter Play mode.</li>
+<li>Watch <code>Probe</code> fall onto <code>Ground</code>, then accelerate along positive X.</li>
+<li>Confirm the Console reports <code>collision enter: Ground</code>, one <code>collision stay: Ground</code>, then <code>trigger enter: Sensor</code>, one <code>trigger stay: Sensor</code>, and <code>trigger exit: Sensor</code>.</li>
+<li>Stop Play mode and confirm the authored Transform values return.</li>
+</ol>
+<p>The exact timing depends on the starting position and Rigidbody settings. The phase order is the important result: Enter precedes Stay, and Exit appears only after separation. The Probe can remain in contact with the long floor while its Trigger overlap begins and ends.</p>
+<p>For a second check, disable <strong>Is Trigger</strong> on <code>Sensor</code> and play again. The Probe should receive collision callbacks for <code>Sensor</code> and be physically blocked by it. Restore <strong>Is Trigger</strong> when the comparison is complete.</p>
+<h2 id="physics-errors">Common errors</h2>
+<p><strong>The Probe falls through the floor.</strong> Confirm that both objects have concrete colliders, the collider shapes cover the visible meshes, and the involved layers are allowed to interact in the Physics Layer Matrix.</p>
+<p><strong>No callback appears.</strong> Confirm that <code>PhysicsProbe</code> is enabled on <code>Probe</code>, Play mode is running, and <code>Probe</code> has an enabled Rigidbody. Also check that the objects actually overlap; selecting a collider shows its shape gizmo.</p>
+<p><strong>Only Trigger callbacks appear.</strong> Inspect <strong>Is Trigger</strong> on every collider. A Trigger overlap follows the <code>on_trigger_*</code> path and does not create solid contact.</p>
+<p><strong>The Console floods with Stay messages.</strong> <code>on_collision_stay</code> and <code>on_trigger_stay</code> run on fixed steps while the relationship remains active. Count, throttle, or use the phase to maintain state instead of logging every call.</p>
+<p><strong>Motion changes with rendering frame rate.</strong> Apply continuous force in <code>fixed_update</code>. For a kinematic Rigidbody, call <code>move_position</code> or <code>move_rotation</code> from the same fixed-step callback.</p>
+<p><strong><code>collision.impulse</code> raises an attribute error.</strong> The current <code>CollisionInfo</code> API exposes <code>collider</code>, <code>game_object</code>, <code>contact_point</code>, <code>contact_normal</code>, and <code>relative_velocity</code>. Use only those documented fields.</p>
+<h2 id="next-chapter">Next chapter</h2>
+<p>The Probe now turns low-level physics transitions into clean gameplay events. In <a href="gameplay-ui-scenes.html">UI actions and scene flow</a>, you will expose a public component method to a Button and use it to request a safe runtime scene change.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">玩法基础 · 第 5 章</span></p>
+<h1 id="_1">物理与碰撞回调</h1>
+<p>把形状、运动和响应分开管理后，物理逻辑会更容易检查。<code>Collider</code> 提供形状，<code>Rigidbody</code> 提供模拟运动，<code>fixed_update</code> 接收固定步玩法输入，碰撞与 Trigger 回调负责报告接触状态变化。</p>
+<p>本章会搭建一个物理探针：它先落到地面，再穿过 Trigger 区域，并把每个回调阶段写入 Console。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#physics-parts_1">Collider 与 Rigidbody</a><a href="#build-physics-scene_1">搭建测试场景</a><a href="#physics-probe-script_1">编写组件</a><a href="#collision-trigger-phases_1">理解回调阶段</a><a href="#verify-physics_1">验证结果</a><a href="#physics-errors_1">常见错误</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-physics-events.webp" alt="Infernux 物理测试场景，包含运动刚体、地面 Collider 与 Trigger 区域" loading="lazy" decoding="async">
+  <figcaption>动态刚体先与地面发生实体接触，随后穿过不产生阻挡的 Trigger 区域。</figcaption>
+</figure>
+
+<h2 id="physics-parts_1">Collider 与 Rigidbody 各自负责什么</h2>
+<p>本练习包含三类物体：</p>
+<table>
+<thead>
+<tr>
+<th>物体</th>
+<th>组件</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Floor</td>
+<td><code>BoxCollider</code></td>
+<td>固定的实体形状</td>
+</tr>
+<tr>
+<td>Probe</td>
+<td><code>SphereCollider</code>、<code>Rigidbody</code>、<code>PhysicsProbe</code></td>
+<td>受重力与力影响，并接收回调</td>
+</tr>
+<tr>
+<td>Sensor</td>
+<td>启用 <strong>Is Trigger</strong> 的 <code>BoxCollider</code></td>
+<td>可穿过的重叠区域</td>
+</tr>
+</tbody>
+</table>
+<p><code>Collider</code> 是 <code>BoxCollider</code>、<code>SphereCollider</code> 等具体形状的公共基类。<code>center</code> 会在局部空间偏移碰撞形状，<code>is_trigger</code> 用于选择实体接触或 Trigger 行为。具体形状还有自己的属性，例如 <code>BoxCollider.size</code> 表示局部空间中的完整尺寸。</p>
+<p><code>Rigidbody</code> 提供质量、重力、阻力、约束、速度、力和运动接口。关闭 <code>is_kinematic</code> 后，刚体由物理模拟驱动。启用运动学模式后，可以在固定步中调用 <code>move_position(...)</code> 或 <code>move_rotation(...)</code>。</p>
+<div class="learn-note"><strong>使用物理时钟。</strong><p><code>fixed_update(self, fixed_delta_time)</code> 按固定物理步运行，默认频率为 50 Hz。连续施力与运动学移动适合放在这里。逐帧显示逻辑和普通输入轮询可以留在 <code>update</code>。</p></div>
+
+<h2 id="build-physics-scene_1">搭建测试场景</h2>
+<p>先准备一个能看见原点的 Camera，再创建以下物体：</p>
+<ol>
+<li>创建 <strong>Cube</strong>，命名为 <code>Ground</code>。把 Position 设为 <code>(0, -0.5, 0)</code>，Scale 设为 <code>(12, 1, 4)</code>。该基础几何体已经带有 <code>BoxCollider</code>；保持 <strong>Is Trigger</strong> 关闭，不添加 Rigidbody。</li>
+<li>创建 <strong>Sphere</strong>，命名为 <code>Probe</code>。把 Position 设为 <code>(-4, 2, 0)</code>。该基础几何体已经带有 <code>SphereCollider</code>；通过 <strong>Add Component</strong> 只添加 <code>Rigidbody</code>。保持 <strong>Use Gravity</strong> 开启、<strong>Is Kinematic</strong> 关闭。开启 Rigidbody 的 <strong>Freeze Position Z</strong> 和三个 <strong>Freeze Rotation</strong>，让运动稳定在一条直线上。</li>
+<li>再创建一个 <strong>Cube</strong>，命名为 <code>Sensor</code>。把 Position 设为 <code>(2, 0.75, 0)</code>，Scale 设为 <code>(1, 1.5, 4)</code>。在已有的 <code>BoxCollider</code> 上开启 <strong>Is Trigger</strong>。定位完成后可以关闭它的 MeshRenderer，把它作为不可见的玩法区域。</li>
+<li>进入 Play 模式前保存场景。</li>
+</ol>
+<p>这个场景中的地面与 Sensor 无需 Rigidbody。移动的 <code>Probe</code> 为两次交互提供活动刚体。</p>
+<h2 id="physics-probe-script_1">编写物理组件</h2>
+<p>创建 <code>Assets/Scripts/physics_probe.py</code>，写入以下完整组件：</p>
+<pre><code class="language-python">from Infernux.components import InxComponent
+from Infernux.components.builtin import Rigidbody
+from Infernux.debug import Debug
+from Infernux.math import Vector3
+
+
+class PhysicsProbe(InxComponent):
+    def awake(self):
+        self._body = None
+        self._collision_stay_steps = 0
+        self._trigger_stay_steps = 0
+
+    def start(self):
+        self._body = self.game_object.get_component(Rigidbody)
+        if self._body is None:
+            Debug.log_error(&quot;PhysicsProbe requires a Rigidbody.&quot;, self.game_object)
+
+    def fixed_update(self, fixed_delta_time):
+        if self._body is None:
+            return
+
+        # add_force 默认使用 ForceMode.Force。
+        self._body.add_force(Vector3(3.0, 0.0, 0.0))
+
+    def on_collision_enter(self, collision):
+        self._collision_stay_steps = 0
+        Debug.log(
+            f&quot;collision enter: {collision.game_object.name} &quot;
+            f&quot;at {collision.contact_point}&quot;
+        )
+
+    def on_collision_stay(self, collision):
+        self._collision_stay_steps += 1
+        if self._collision_stay_steps == 1:
+            Debug.log(
+                f&quot;collision stay: {collision.game_object.name}; &quot;
+                f&quot;normal={collision.contact_normal}; &quot;
+                f&quot;relative velocity={collision.relative_velocity}&quot;
+            )
+
+    def on_collision_exit(self, collision):
+        Debug.log(f&quot;collision exit: {collision.game_object.name}&quot;)
+
+    def on_trigger_enter(self, other):
+        self._trigger_stay_steps = 0
+        Debug.log(f&quot;trigger enter: {other.game_object.name}&quot;)
+
+    def on_trigger_stay(self, other):
+        self._trigger_stay_steps += 1
+        if self._trigger_stay_steps == 1:
+            Debug.log(f&quot;trigger stay: {other.game_object.name}&quot;)
+
+    def on_trigger_exit(self, other):
+        Debug.log(f&quot;trigger exit: {other.game_object.name}&quot;)
+</code></pre>
+<p>回到编辑器，选中 <code>Probe</code>，通过 <strong>Add Component</strong> 挂载 <code>PhysicsProbe</code>。组件在 <code>start</code> 中保存 Rigidbody 引用。Infernux 会管理组件初始化，因此玩法组件应使用 <code>awake</code> 或 <code>start</code>，不要定义 <code>__init__</code>。</p>
+<p>需要固定步时长时，可以读取 <code>fixed_delta_time</code>。<code>add_force</code> 会把力交给物理解算器，本例无需再用 <code>fixed_delta_time</code> 乘以力向量。</p>
+<h2 id="collision-trigger-phases_1">理解六个回调阶段</h2>
+<p>实体接触会收到 <code>CollisionInfo</code>：</p>
+<table>
+<thead>
+<tr>
+<th>回调</th>
+<th>调用时机</th>
+<th>本例使用的数据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>on_collision_enter(collision)</code></td>
+<td>接触开始</td>
+<td><code>game_object</code>、<code>collider</code>、<code>contact_point</code>、<code>contact_normal</code>、<code>relative_velocity</code></td>
+</tr>
+<tr>
+<td><code>on_collision_stay(collision)</code></td>
+<td>保持接触期间的每个固定步</td>
+<td>同一组 <code>CollisionInfo</code> 字段</td>
+</tr>
+<tr>
+<td><code>on_collision_exit(collision)</code></td>
+<td>接触结束</td>
+<td>仍可识别另一 Collider 与 GameObject</td>
+</tr>
+</tbody>
+</table>
+<p>Trigger 重叠会直接收到另一个 <code>Collider</code>：</p>
+<table>
+<thead>
+<tr>
+<th>回调</th>
+<th>调用时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>on_trigger_enter(other)</code></td>
+<td>另一个 Collider 进入 Trigger</td>
+</tr>
+<tr>
+<td><code>on_trigger_stay(other)</code></td>
+<td>保持重叠期间的每个固定步</td>
+</tr>
+<tr>
+<td><code>on_trigger_exit(other)</code></td>
+<td>另一个 Collider 离开 Trigger</td>
+</tr>
+</tbody>
+</table>
+<p>这两组参数类型不同。接触点与法线位于 <code>CollisionInfo</code>；Trigger 回调可以通过 <code>other.game_object</code> 取得重叠物体。当前公开的 <code>CollisionInfo</code> 没有 <code>impulse</code> 属性。</p>
+<p><code>Stay</code> 回调可能连续运行很多次。本例只记录每次交互的第一个 Stay 固定步，既能验证阶段，又能保持 Console 清晰。</p>
+<h2 id="verify-physics_1">验证结果</h2>
+<ol>
+<li>清空 Console，进入 Play 模式。</li>
+<li>观察 <code>Probe</code> 落到 <code>Ground</code>，随后沿 X 正方向加速。</li>
+<li>确认 Console 依次出现 <code>collision enter: Ground</code>、一条 <code>collision stay: Ground</code>、<code>trigger enter: Sensor</code>、一条 <code>trigger stay: Sensor</code> 和 <code>trigger exit: Sensor</code>。</li>
+<li>停止 Play 模式，确认编辑状态下的 Transform 数值恢复。</li>
+</ol>
+<p>具体时间会随初始位置和 Rigidbody 设置变化。验证重点是阶段顺序：Enter 先出现，保持关系后出现 Stay，分离后才出现 Exit。Probe 可以持续接触长地面，同时完成一次 Trigger 进入与离开。</p>
+<p>还可以关闭 <code>Sensor</code> 的 <strong>Is Trigger</strong> 再运行一次。此时 Probe 会收到针对 <code>Sensor</code> 的碰撞回调，并被它挡住。完成对照后恢复 <strong>Is Trigger</strong>。</p>
+<h2 id="physics-errors_1">常见错误</h2>
+<p><strong>Probe 穿过地面。</strong> 确认两个物体都有具体 Collider，碰撞形状覆盖可见 Mesh，并检查 Physics Layer Matrix 是否允许相关 Layer 交互。</p>
+<p><strong>没有任何回调。</strong> 确认 <code>PhysicsProbe</code> 已启用并挂在 <code>Probe</code> 上，当前处于 Play 模式，<code>Probe</code> 具有启用的 Rigidbody。还要检查物体是否真的相交；选中 Collider 可以查看它的形状 Gizmo。</p>
+<p><strong>只出现 Trigger 回调。</strong> 检查每个 Collider 的 <strong>Is Trigger</strong>。Trigger 重叠只走 <code>on_trigger_*</code> 路径，也不会产生实体阻挡。</p>
+<p><strong>Console 被 Stay 消息占满。</strong> <code>on_collision_stay</code> 与 <code>on_trigger_stay</code> 会在关系保持期间按固定步运行。可以计数、限频，或用它维护状态。</p>
+<p><strong>运动随渲染帧率变化。</strong> 把连续施力放进 <code>fixed_update</code>。运动学 Rigidbody 可在同一回调中调用 <code>move_position</code> 或 <code>move_rotation</code>。</p>
+<p><strong>访问 <code>collision.impulse</code> 报错。</strong> 当前 <code>CollisionInfo</code> 提供 <code>collider</code>、<code>game_object</code>、<code>contact_point</code>、<code>contact_normal</code> 与 <code>relative_velocity</code>，请使用这些公开字段。</p>
+<h2 id="_2">下一章</h2>
+<p>现在，Probe 已经把底层物理变化整理成清晰的玩法事件。下一章 <a href="gameplay-ui-scenes.html">UI 操作与场景流程</a> 会把组件的公开方法交给 Button，并通过它发起安全的运行时场景切换。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="gameplay-prefabs-runtime.html">← Prefabs and runtime object lifetime</a><span class="learn-course-home">Chapter 5 of 8</span><a href="gameplay-ui-scenes.html">UI actions and scene flow →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="gameplay-prefabs-runtime.html">← Prefab 与运行时对象生命周期</a><span class="learn-course-home">第 5 章，共 8 章</span><a href="gameplay-ui-scenes.html">UI 操作与场景流程 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

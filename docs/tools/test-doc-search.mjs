@@ -21,7 +21,11 @@ assert.equal(model.sources.api, true);
 assert.equal(model.sources.docs, false);
 assert.equal(model.items.length, apiIndex.symbols.length);
 assert.ok(search(model, { query: "Camera", language: "en", layer: "api" }).total > 0);
-assert.equal(buildWikiSearchUrl({ query: "Camera" }), "/wiki/site/en/api/index.html");
+assert.equal(buildWikiSearchUrl({ query: "Camera" }), "/wiki/site/en/api/index.html?q=Camera");
+assert.equal(
+    buildWikiSearchUrl({ query: "相机", language: "zh-CN", status: "stable" }),
+    "/wiki/site/zh/api/index.html?q=%E7%9B%B8%E6%9C%BA&status=stable&lang=zh"
+);
 assert.doesNotMatch(source, /fetch\(["']\/docs-index\.json/, "search should not request the removed guide index");
 assert.doesNotMatch(source, /\["learn"|\["manual"|\["architecture"/, "search filters should expose API only");
 
