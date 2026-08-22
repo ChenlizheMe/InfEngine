@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -44,25 +44,26 @@
 </figure>
 
 <h2 id="first-surface">A first surface</h2>
-<pre><code class="language-glsl">#version 450
+<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
-ShaderInfo {
-    Name &quot;Painted Unlit&quot;
-    ShadingModel Unlit
-    Queue 2000
-    Properties {
-        Color baseColor = [1.0, 1.0, 1.0, 1.0]
-        Texture2D mainTexture = white
-    }
-}
+<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Painted</span><span class="w"> </span><span class="n">Unlit</span><span class="err">"</span>
+<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="n">Unlit</span>
+<span class="w">    </span><span class="n">Queue</span><span class="w"> </span><span class="mi">2000</span>
+<span class="w">    </span><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
+<span class="w">        </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">mainTexture</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
 
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texel = sampleAlbedoAlpha(mainTexture);
-    s.albedo = texel.rgb * getVertexColor() * material.baseColor.rgb;
-    s.alpha = texel.a * material.baseColor.a;
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">mainTexture</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">getVertexColor</span><span class="p">()</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">rgb</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">a</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><code>ShaderInfo</code> declares the material contract. <code>surface()</code> fills that contract for one fragment. <code>InitSurfaceData()</code> supplies the defaults; a simple unlit material only writes the fields it owns.</p>
 <p>The Material stores parameter values. Compiled shader state stays with the rendering system. Switching a compatible fragment shader changes the property schema and GPU program while preserving the engine's resource lifetime rules. A failed compile keeps the previous valid pipeline active and reports the source failure once.</p>
 <h2 id="material-workflow">From shader to a visible mesh</h2>
@@ -131,21 +132,22 @@ void surface(out SurfaceData s) {
 </table>
 <h2 id="properties">Material properties</h2>
 <p>Properties become typed Material fields and Inspector controls. This is the property block from the built-in <code>lit.frag</code>:</p>
-<pre><code class="language-glsl">Properties {
-    Color baseColor = [1.0, 1.0, 1.0, 1.0]
-    Float metallic = 0.0
-    Float smoothness = 0.5
-    Float ambientOcclusion = 1.0
-    Color emissionColor = [0.0, 0.0, 0.0, 0.0] HDR
-    Float normalScale = 1.0
-    Float specularHighlights = 1.0
-    Texture2D texSampler = white
-    Texture2D metallicMap = white
-    Texture2D smoothnessMap = white
-    Texture2D aoMap = white
-    Texture2D normalMap = normal
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">smoothness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">ambientOcclusion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span>
+<span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">emissionColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">]</span><span class="w"> </span><span class="n">HDR</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">normalScale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">specularHighlights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">texSampler</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">metallicMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">smoothnessMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">aoMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">normalMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">normal</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><code>Range(min, max)</code> is optional UI metadata for a bounded float; the built-in Lit declaration leaves these floats unannotated. <code>HDR</code> allows a color above display white. <code>Internal</code> keeps an engine-managed property out of the ordinary Material UI.</p>
 <p>Texture defaults such as <code>white</code> and <code>normal</code> keep the material valid before users assign project assets. The renderer manages texture bindings; users do not declare descriptor sets.</p>
 <p>Color space comes from the texture asset import settings and the property type. Select an image in the Project panel to edit <strong>Import Settings</strong>. Use <strong>Texture Type: Default</strong> with <strong>sRGB</strong> enabled for albedo and ordinary color. Use <strong>Texture Type: Data</strong> for metallic, smoothness, AO, height, masks, and packed channels. Use <strong>Texture Type: Normal Map</strong> for tangent-space normals. Selecting Data or Normal Map forces sRGB off and disables the checkbox. With <strong>Compression: Auto</strong>, Normal Map resolves to BC5 and Data resolves to no block compression.</p>
@@ -155,19 +157,20 @@ void surface(out SurfaceData s) {
 <p>Material values can be edited live. The in-memory object updates immediately, previews observe that state, and persistence is scheduled separately so disk I/O does not become the interaction model.</p>
 <h2 id="render-state">Render state and Material Queue</h2>
 <p>Render state belongs beside the fragment contract:</p>
-<pre><code class="language-glsl">ShaderInfo {
-    Name &quot;Transparent Unlit&quot;
-    ShadingModel Unlit
-    Surface Transparent
-    Queue 3000
-    Cull Back
-    DepthWrite Off
-    DepthTest Less_Equal
-    Blend Alpha
-    CastShadows Off
-    ReceiveShadows Off
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Transparent</span><span class="w"> </span><span class="n">Unlit</span><span class="err">"</span>
+<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="n">Unlit</span>
+<span class="w">    </span><span class="n">Surface</span><span class="w"> </span><span class="n">Transparent</span>
+<span class="w">    </span><span class="n">Queue</span><span class="w"> </span><span class="mi">3000</span>
+<span class="w">    </span><span class="n">Cull</span><span class="w"> </span><span class="n">Back</span>
+<span class="w">    </span><span class="n">DepthWrite</span><span class="w"> </span><span class="n">Off</span>
+<span class="w">    </span><span class="n">DepthTest</span><span class="w"> </span><span class="n">Less_Equal</span>
+<span class="w">    </span><span class="n">Blend</span><span class="w"> </span><span class="n">Alpha</span>
+<span class="w">    </span><span class="n">CastShadows</span><span class="w"> </span><span class="n">Off</span>
+<span class="w">    </span><span class="n">ReceiveShadows</span><span class="w"> </span><span class="n">Off</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>These fields affect different problems:</p>
 <table>
 <thead>
@@ -282,19 +285,20 @@ void surface(out SurfaceData s) {
 <p>The zero <code>normalWS</code> has a specific job. Leave it untouched when the material has no authored normal. The generated pipeline adapter calls <code>ResolveSurfaceNormal()</code> after <code>surface()</code>, replacing the sentinel with the interpolated geometric normal and normalizing authored world-space normals. Normalizing the zero value inside <code>surface()</code> would destroy that signal.</p>
 <p>Surface code uses the following spaces: <code>v_WorldPos</code>, <code>v_Normal</code>, and <code>v_Tangent</code> are world-space values; <code>v_Tangent.w</code> carries the bitangent sign; <code>v_TexCoord</code> is the primary mesh UV; and <code>v_ViewDepth</code> is linear eye-space depth. <code>sampleNormal()</code> decodes a tangent-space normal map through the world-space TBN basis and returns a world-space normal. Assign world-space data to <code>s.normalWS</code>.</p>
 <p>The Lit fragment stage in Infernux follows the same shape:</p>
-<pre><code class="language-glsl">void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texColor = sampleAlbedoAlpha(texSampler);
-    s.albedo = texColor.rgb * getVertexColor() * material.baseColor.rgb;
-    s.metallic = sampleGrayscale(metallicMap) * material.metallic;
-    s.smoothness = sampleGrayscale(smoothnessMap) * material.smoothness;
-    s.occlusion = sampleGrayscale(aoMap) * material.ambientOcclusion;
-    s.normalWS = sampleNormal(normalMap, material.normalScale);
-    s.emission = material.emissionColor.rgb * material.emissionColor.a;
-    s.alpha = texColor.a * material.baseColor.a;
-    s.specularHighlights = material.specularHighlights;
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">texSampler</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texColor</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">getVertexColor</span><span class="p">()</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">rgb</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleGrayscale</span><span class="p">(</span><span class="n">metallicMap</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">metallic</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">smoothness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleGrayscale</span><span class="p">(</span><span class="n">smoothnessMap</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">smoothness</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">occlusion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleGrayscale</span><span class="p">(</span><span class="n">aoMap</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">ambientOcclusion</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">normalWS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleNormal</span><span class="p">(</span><span class="n">normalMap</span><span class="p">,</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">normalScale</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">emission</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">emissionColor</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">emissionColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texColor</span><span class="p">.</span><span class="n">a</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">specularHighlights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">specularHighlights</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>This function only assembles the surface. The ShadingModel owns the surface-light interaction. Generated pipeline adapters own Forward and Forward+ invocation, GBuffer packing, Deferred dispatch, and alpha clipping.</p>
 <div class="learn-warning"><strong>Alpha alone leaves render state unchanged.</strong><p>`s.alpha` supplies coverage to clipping or blending. Queue selects the route, depth state controls visibility, `AlphaClip` can discard, and `Blend` controls composition. Check all four when a surface disappears or stays opaque.</p></div>
 
@@ -311,25 +315,26 @@ void surface(out SurfaceData s) {
 </figure>
 
 <h2 id="first-surface_1">第一份 Surface</h2>
-<pre><code class="language-glsl">#version 450
+<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
-ShaderInfo {
-    Name &quot;Painted Unlit&quot;
-    ShadingModel Unlit
-    Queue 2000
-    Properties {
-        Color baseColor = [1.0, 1.0, 1.0, 1.0]
-        Texture2D mainTexture = white
-    }
-}
+<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Painted</span><span class="w"> </span><span class="n">Unlit</span><span class="err">"</span>
+<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="n">Unlit</span>
+<span class="w">    </span><span class="n">Queue</span><span class="w"> </span><span class="mi">2000</span>
+<span class="w">    </span><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
+<span class="w">        </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">mainTexture</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
 
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texel = sampleAlbedoAlpha(mainTexture);
-    s.albedo = texel.rgb * getVertexColor() * material.baseColor.rgb;
-    s.alpha = texel.a * material.baseColor.a;
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">mainTexture</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">getVertexColor</span><span class="p">()</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">rgb</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">a</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><code>ShaderInfo</code> 声明材质契约，<code>surface()</code> 为一个片元填写这份契约。<code>InitSurfaceData()</code> 提供默认值；简单的无光照材质只需改动自己拥有的字段。</p>
 <p>Material 保存参数值，编译后的 Shader 状态由渲染系统管理。切换兼容的 Frag 会改变属性 Schema 与 GPU 程序，同时继续遵循引擎的资源生命周期。编译失败时，上一份有效 Pipeline 会保留，源文件错误只清晰报告一次。</p>
 <h2 id="material-workflow_1">从 Shader 到可见 Mesh</h2>
@@ -398,21 +403,22 @@ void surface(out SurfaceData s) {
 </table>
 <h2 id="properties_1">材质属性</h2>
 <p>Properties 会成为有类型的 Material 字段和 Inspector 控件。下面就是内置 <code>lit.frag</code> 的属性块：</p>
-<pre><code class="language-glsl">Properties {
-    Color baseColor = [1.0, 1.0, 1.0, 1.0]
-    Float metallic = 0.0
-    Float smoothness = 0.5
-    Float ambientOcclusion = 1.0
-    Color emissionColor = [0.0, 0.0, 0.0, 0.0] HDR
-    Float normalScale = 1.0
-    Float specularHighlights = 1.0
-    Texture2D texSampler = white
-    Texture2D metallicMap = white
-    Texture2D smoothnessMap = white
-    Texture2D aoMap = white
-    Texture2D normalMap = normal
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">smoothness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">ambientOcclusion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span>
+<span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">emissionColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">]</span><span class="w"> </span><span class="n">HDR</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">normalScale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span>
+<span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">specularHighlights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">texSampler</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">metallicMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">smoothnessMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">aoMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">normalMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">normal</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><code>Range(min, max)</code> 是可选的浮点数 UI 约束；内置 Lit 的这些 Float 没有添加该标记。<code>HDR</code> 允许颜色超过显示白，<code>Internal</code> 会隐藏由引擎管理的属性。</p>
 <p><code>white</code>、<code>normal</code> 等贴图默认值，让材质在用户尚未分配项目资源时仍然有效。纹理由渲染器绑定，用户不需要声明描述符 Set。</p>
 <p>颜色空间由贴图资产导入设置和属性类型决定。在 Project 面板选中图片即可编辑 <strong>导入设置</strong>。Albedo 与普通颜色使用 <strong>贴图类型：默认</strong>，并启用 <strong>sRGB</strong>。金属度、光滑度、AO、高度、Mask 和打包通道使用 <strong>贴图类型：数据</strong>。切线空间法线使用 <strong>贴图类型：法线贴图</strong>。选择数据或法线贴图会强制关闭 sRGB 并禁用该复选框。采用 <strong>压缩：自动</strong> 时，法线贴图会解析为 BC5，数据贴图会解析为无块压缩。</p>
@@ -422,19 +428,20 @@ void surface(out SurfaceData s) {
 <p>Material 参数可以实时编辑：内存对象立即改变，预览直接观察这份状态，落盘则被单独调度，文件 I/O 不会成为交互模型本身。</p>
 <h2 id="render-state_1">渲染状态与 Material Queue</h2>
 <p>渲染状态和片元契约放在一起：</p>
-<pre><code class="language-glsl">ShaderInfo {
-    Name &quot;Transparent Unlit&quot;
-    ShadingModel Unlit
-    Surface Transparent
-    Queue 3000
-    Cull Back
-    DepthWrite Off
-    DepthTest Less_Equal
-    Blend Alpha
-    CastShadows Off
-    ReceiveShadows Off
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Transparent</span><span class="w"> </span><span class="n">Unlit</span><span class="err">"</span>
+<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="n">Unlit</span>
+<span class="w">    </span><span class="n">Surface</span><span class="w"> </span><span class="n">Transparent</span>
+<span class="w">    </span><span class="n">Queue</span><span class="w"> </span><span class="mi">3000</span>
+<span class="w">    </span><span class="n">Cull</span><span class="w"> </span><span class="n">Back</span>
+<span class="w">    </span><span class="n">DepthWrite</span><span class="w"> </span><span class="n">Off</span>
+<span class="w">    </span><span class="n">DepthTest</span><span class="w"> </span><span class="n">Less_Equal</span>
+<span class="w">    </span><span class="n">Blend</span><span class="w"> </span><span class="n">Alpha</span>
+<span class="w">    </span><span class="n">CastShadows</span><span class="w"> </span><span class="n">Off</span>
+<span class="w">    </span><span class="n">ReceiveShadows</span><span class="w"> </span><span class="n">Off</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>这些字段分别解决不同问题：</p>
 <table>
 <thead>
@@ -549,19 +556,20 @@ void surface(out SurfaceData s) {
 <p>零向量 <code>normalWS</code> 有明确用途。材质没有编写法线时，应保留这个值。管线适配器会在 <code>surface()</code> 之后调用 <code>ResolveSurfaceNormal()</code>，把哨兵替换为插值后的几何法线，并归一化用户写入的世界空间法线。不要在 <code>surface()</code> 内归一化这个零向量，否则哨兵信息会丢失。</p>
 <p>Surface 代码使用的空间如下：<code>v_WorldPos</code>、<code>v_Normal</code>、<code>v_Tangent</code> 都在世界空间，<code>v_Tangent.w</code> 保存副切线方向符号；<code>v_TexCoord</code> 是主 UV；<code>v_ViewDepth</code> 是线性眼空间深度。<code>sampleNormal()</code> 使用世界空间 TBN 基底解码切线空间法线贴图，返回世界空间法线。写入 <code>s.normalWS</code> 的自定义法线也必须处于世界空间。</p>
 <p>Infernux 的 Lit Frag 也遵循同样的形状：</p>
-<pre><code class="language-glsl">void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texColor = sampleAlbedoAlpha(texSampler);
-    s.albedo = texColor.rgb * getVertexColor() * material.baseColor.rgb;
-    s.metallic = sampleGrayscale(metallicMap) * material.metallic;
-    s.smoothness = sampleGrayscale(smoothnessMap) * material.smoothness;
-    s.occlusion = sampleGrayscale(aoMap) * material.ambientOcclusion;
-    s.normalWS = sampleNormal(normalMap, material.normalScale);
-    s.emission = material.emissionColor.rgb * material.emissionColor.a;
-    s.alpha = texColor.a * material.baseColor.a;
-    s.specularHighlights = material.specularHighlights;
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">texSampler</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texColor</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">getVertexColor</span><span class="p">()</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">rgb</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleGrayscale</span><span class="p">(</span><span class="n">metallicMap</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">metallic</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">smoothness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleGrayscale</span><span class="p">(</span><span class="n">smoothnessMap</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">smoothness</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">occlusion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleGrayscale</span><span class="p">(</span><span class="n">aoMap</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">ambientOcclusion</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">normalWS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleNormal</span><span class="p">(</span><span class="n">normalMap</span><span class="p">,</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">normalScale</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">emission</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">emissionColor</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">emissionColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texColor</span><span class="p">.</span><span class="n">a</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">specularHighlights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">specularHighlights</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>这个函数只组装 Surface。ShadingModel 负责定义表面与光照的交互；生成的管线适配器负责 Forward 和 Forward+ 调用、GBuffer 打包、Deferred 分派与 Alpha Clip。</p>
 <div class="learn-warning"><strong>单独填写 Alpha 不会改变渲染状态。</strong><p>`s.alpha` 为裁剪或混合提供覆盖率。Queue 选择路径，深度状态控制可见性，`AlphaClip` 可以丢弃片元，`Blend` 决定合成方式。表面消失或始终不透明时，应同时检查这四项。</p></div>
 

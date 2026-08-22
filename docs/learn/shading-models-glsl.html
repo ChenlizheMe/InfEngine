@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -47,69 +47,74 @@
 
 <h2 id="complete-example">Build a complete three-file model</h2>
 <p>Create this folder under the current project:</p>
-<pre><code class="language-text">Assets/Shaders/LearnBand/
+<div class="highlight"><pre><span></span><code>Assets/Shaders/LearnBand/
   learn_band_math.glsl
   learn_band.shadingmodel
   learn_band_surface.frag
-</code></pre>
+</code></pre></div>
+
 <p>The Project panel currently creates <strong>Fragment Shader (.frag)</strong> and <strong>Vertex Shader (.vert)</strong> assets, but it has no creation command for <code>.glsl</code> or <code>.shadingmodel</code>. Create those two UTF-8 text files with an external or configured text editor and place them under <code>Assets</code>. This is the current authoring limitation; changing their extension or inventing another asset type will not make them discoverable.</p>
 <p>Put this reusable function in <code>learn_band_math.glsl</code>:</p>
-<pre><code class="language-glsl">ShaderInfo {
-    Name &quot;Learn Band Math&quot;
-}
+<div class="highlight"><pre><span></span><code><span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="w"> </span><span class="n">Math</span><span class="err">"</span>
+<span class="p">}</span>
 
-float learnBand(float ndl, float threshold) {
-    return mix(0.25, 1.0, step(threshold, ndl));
-}
-</code></pre>
+<span class="kt">float</span><span class="w"> </span><span class="n">learnBand</span><span class="p">(</span><span class="kt">float</span><span class="w"> </span><span class="n">ndl</span><span class="p">,</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="n">threshold</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">mix</span><span class="p">(</span><span class="mf">0.25</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="n">step</span><span class="p">(</span><span class="n">threshold</span><span class="p">,</span><span class="w"> </span><span class="n">ndl</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>Put the lighting entry in <code>learn_band.shadingmodel</code>:</p>
-<pre><code class="language-glsl">ShadingModelInfo {
-    Name &quot;Learn Band&quot;
-    Imports [&quot;Lighting&quot;, &quot;Learn Band Math&quot;]
-    Requires [Lighting]
-}
+<div class="highlight"><pre><span></span><code><span class="n">ShadingModelInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Imports</span><span class="w"> </span><span class="p">[</span><span class="err">"</span><span class="n">Lighting</span><span class="err">"</span><span class="p">,</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="w"> </span><span class="n">Math</span><span class="err">"</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Requires</span><span class="w"> </span><span class="p">[</span><span class="n">Lighting</span><span class="p">]</span>
+<span class="p">}</span>
 
-void shading(in SurfaceData s, out vec4 color) {
-    ShadingContext ctx = GetShadingContext();
-    vec3 N = normalize(s.normalWS);
-    Light mainLight = getMainLight(ctx.positionWS, N, ctx.viewDepth);
-    float ndl = max(dot(N, mainLight.direction), 0.0);
-    float band = learnBand(ndl, clamp(s.shadingParam0, 0.0, 1.0));
-    vec3 radiance = mainLight.color
-                  * mainLight.attenuation
-                  * mainLight.shadow;
-    color = vec4(s.albedo * radiance * band + s.emission, s.alpha);
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">shading</span><span class="p">(</span><span class="k">in</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">,</span><span class="w"> </span><span class="k">out</span><span class="w"> </span><span class="kt">vec4</span><span class="w"> </span><span class="n">color</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">ShadingContext</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GetShadingContext</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec3</span><span class="w"> </span><span class="n">N</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">normalize</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">normalWS</span><span class="p">);</span>
+<span class="w">    </span><span class="n">Light</span><span class="w"> </span><span class="n">mainLight</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">getMainLight</span><span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">positionWS</span><span class="p">,</span><span class="w"> </span><span class="n">N</span><span class="p">,</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">viewDepth</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">ndl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">max</span><span class="p">(</span><span class="n">dot</span><span class="p">(</span><span class="n">N</span><span class="p">,</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">direction</span><span class="p">),</span><span class="w"> </span><span class="mf">0.0</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">band</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">learnBand</span><span class="p">(</span><span class="n">ndl</span><span class="p">,</span><span class="w"> </span><span class="n">clamp</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">shadingParam0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">));</span>
+<span class="w">    </span><span class="kt">vec3</span><span class="w"> </span><span class="n">radiance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">color</span>
+<span class="w">                  </span><span class="o">*</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">attenuation</span>
+<span class="w">                  </span><span class="o">*</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">shadow</span><span class="p">;</span>
+<span class="w">    </span><span class="n">color</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kt">vec4</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">radiance</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">band</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">emission</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>Put the Material-facing surface in <code>learn_band_surface.frag</code>:</p>
-<pre><code class="language-glsl">#version 450
+<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
-ShaderInfo {
-    Name &quot;Learn Band Surface&quot;
-    ShadingModel &quot;Learn Band&quot;
-    Surface Opaque
-    Queue 2000
-    Properties {
-        Color baseColor = [0.9, 0.3, 0.08, 1.0]
-        Float threshold = 0.55 Range(0.0, 1.0)
-        Texture2D mainTexture = white
-    }
-}
+<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="w"> </span><span class="n">Surface</span><span class="err">"</span>
+<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Surface</span><span class="w"> </span><span class="n">Opaque</span>
+<span class="w">    </span><span class="n">Queue</span><span class="w"> </span><span class="mi">2000</span>
+<span class="w">    </span><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">0.9</span><span class="p">,</span><span class="w"> </span><span class="mf">0.3</span><span class="p">,</span><span class="w"> </span><span class="mf">0.08</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
+<span class="w">        </span><span class="n">Float</span><span class="w"> </span><span class="n">threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.55</span><span class="w"> </span><span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">)</span>
+<span class="w">        </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">mainTexture</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
 
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texel = sampleAlbedoAlpha(mainTexture);
-    s.albedo = texel.rgb * getVertexColor() * material.baseColor.rgb;
-    s.alpha = texel.a * material.baseColor.a;
-    s.shadingParam0 = material.threshold;
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">mainTexture</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">getVertexColor</span><span class="p">()</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">rgb</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">a</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">shadingParam0</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">threshold</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>The dependency graph for these exact files is:</p>
-<pre><code class="language-text">Material -&gt; Standard + Learn Band Surface
+<div class="highlight"><pre><span></span><code>Material -&gt; Standard + Learn Band Surface
 Learn Band Surface --ShadingModel--&gt; Learn Band
 Learn Band --Imports--&gt; Lighting
 Learn Band --Imports--&gt; Learn Band Math
-</code></pre>
+</code></pre></div>
+
 <p>To run it end to end:</p>
 <ol>
 <li>Let the Project panel discover the three files, then select or reimport <code>learn_band_surface.frag</code>. The Console must have no shader import, parse, link, or pipeline compile error.</li>
@@ -171,13 +176,14 @@ Learn Band --Imports--&gt; Learn Band Math
 </ol>
 <p>A valid <code>Unsupported [Deferred]</code> declaration does not produce a warning: fallback is an expected built-in route. The current Material Inspector also has no per-material "Deferred fallback" status. Use the controlled toggle above, a clear Console, and the active RenderStack pipeline as the reproducible evidence. Compile errors are actionable diagnostics; a semantic mismatch that still compiles remains the ShadingModel author's responsibility.</p>
 <p>Deferred substitutes the stored shading normal for <code>geometricNormalWS</code>, synthesizes a tangent, and reports <code>frontFacing = true</code>. It does not preserve the original tangent frame, a separate geometric normal, face orientation, geometry-pass derivative behavior, or model data beyond the two shading scalars. Declare the restriction for models that need any of those inputs:</p>
-<pre><code class="language-glsl">ShadingModelInfo {
-    Name &quot;SixWaySmoke&quot;
-    Imports [&quot;Lighting&quot;]
-    Requires [Lighting]
-    Unsupported [Deferred]
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">ShadingModelInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">SixWaySmoke</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Imports</span><span class="w"> </span><span class="p">[</span><span class="err">"</span><span class="n">Lighting</span><span class="err">"</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Requires</span><span class="w"> </span><span class="p">[</span><span class="n">Lighting</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Unsupported</span><span class="w"> </span><span class="p">[</span><span class="n">Deferred</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>A custom pipeline must provide a compatible fallback for an unsupported model or reject that route. If a selected model is missing, malformed, or fails GLSL compilation, the linked artifact is not published; the renderer retains its last-known-good program when one exists and reports the failure in the Console.</p>
 <div class="learn-note"><strong>Current API boundary.</strong><p>`ShadingModelInfo` has no Capabilities list and the compiler does not prove semantic Deferred compatibility. `Unsupported [Deferred]` is the author's explicit opt-out from the canonical GBuffer path.</p></div>
 
@@ -233,69 +239,74 @@ Learn Band --Imports--&gt; Learn Band Math
 
 <h2 id="complete-example_1">构建完整的三文件模型</h2>
 <p>在当前项目中创建以下目录与文件：</p>
-<pre><code class="language-text">Assets/Shaders/LearnBand/
+<div class="highlight"><pre><span></span><code>Assets/Shaders/LearnBand/
   learn_band_math.glsl
   learn_band.shadingmodel
   learn_band_surface.frag
-</code></pre>
+</code></pre></div>
+
 <p>Project 面板目前可以创建 <strong>片段着色器 (.frag)</strong> 与 <strong>顶点着色器 (.vert)</strong> 资产，没有 <code>.glsl</code> 或 <code>.shadingmodel</code> 的创建命令。请用外部编辑器或已配置的文本编辑器创建这两个 UTF-8 文本文件，再放入 <code>Assets</code>。这是当前编写入口的明确限制；修改扩展名或自造资产类型无法让加载器识别它们。</p>
 <p>把以下可复用函数写入 <code>learn_band_math.glsl</code>：</p>
-<pre><code class="language-glsl">ShaderInfo {
-    Name &quot;Learn Band Math&quot;
-}
+<div class="highlight"><pre><span></span><code><span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="w"> </span><span class="n">Math</span><span class="err">"</span>
+<span class="p">}</span>
 
-float learnBand(float ndl, float threshold) {
-    return mix(0.25, 1.0, step(threshold, ndl));
-}
-</code></pre>
+<span class="kt">float</span><span class="w"> </span><span class="n">learnBand</span><span class="p">(</span><span class="kt">float</span><span class="w"> </span><span class="n">ndl</span><span class="p">,</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="n">threshold</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">mix</span><span class="p">(</span><span class="mf">0.25</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="n">step</span><span class="p">(</span><span class="n">threshold</span><span class="p">,</span><span class="w"> </span><span class="n">ndl</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>把光照入口写入 <code>learn_band.shadingmodel</code>：</p>
-<pre><code class="language-glsl">ShadingModelInfo {
-    Name &quot;Learn Band&quot;
-    Imports [&quot;Lighting&quot;, &quot;Learn Band Math&quot;]
-    Requires [Lighting]
-}
+<div class="highlight"><pre><span></span><code><span class="n">ShadingModelInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Imports</span><span class="w"> </span><span class="p">[</span><span class="err">"</span><span class="n">Lighting</span><span class="err">"</span><span class="p">,</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="w"> </span><span class="n">Math</span><span class="err">"</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Requires</span><span class="w"> </span><span class="p">[</span><span class="n">Lighting</span><span class="p">]</span>
+<span class="p">}</span>
 
-void shading(in SurfaceData s, out vec4 color) {
-    ShadingContext ctx = GetShadingContext();
-    vec3 N = normalize(s.normalWS);
-    Light mainLight = getMainLight(ctx.positionWS, N, ctx.viewDepth);
-    float ndl = max(dot(N, mainLight.direction), 0.0);
-    float band = learnBand(ndl, clamp(s.shadingParam0, 0.0, 1.0));
-    vec3 radiance = mainLight.color
-                  * mainLight.attenuation
-                  * mainLight.shadow;
-    color = vec4(s.albedo * radiance * band + s.emission, s.alpha);
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">shading</span><span class="p">(</span><span class="k">in</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">,</span><span class="w"> </span><span class="k">out</span><span class="w"> </span><span class="kt">vec4</span><span class="w"> </span><span class="n">color</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">ShadingContext</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GetShadingContext</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec3</span><span class="w"> </span><span class="n">N</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">normalize</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">normalWS</span><span class="p">);</span>
+<span class="w">    </span><span class="n">Light</span><span class="w"> </span><span class="n">mainLight</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">getMainLight</span><span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">positionWS</span><span class="p">,</span><span class="w"> </span><span class="n">N</span><span class="p">,</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">viewDepth</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">ndl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">max</span><span class="p">(</span><span class="n">dot</span><span class="p">(</span><span class="n">N</span><span class="p">,</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">direction</span><span class="p">),</span><span class="w"> </span><span class="mf">0.0</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">band</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">learnBand</span><span class="p">(</span><span class="n">ndl</span><span class="p">,</span><span class="w"> </span><span class="n">clamp</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">shadingParam0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">));</span>
+<span class="w">    </span><span class="kt">vec3</span><span class="w"> </span><span class="n">radiance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">color</span>
+<span class="w">                  </span><span class="o">*</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">attenuation</span>
+<span class="w">                  </span><span class="o">*</span><span class="w"> </span><span class="n">mainLight</span><span class="p">.</span><span class="n">shadow</span><span class="p">;</span>
+<span class="w">    </span><span class="n">color</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kt">vec4</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">radiance</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">band</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">emission</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>把面向 Material 的 Surface 写入 <code>learn_band_surface.frag</code>：</p>
-<pre><code class="language-glsl">#version 450
+<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
-ShaderInfo {
-    Name &quot;Learn Band Surface&quot;
-    ShadingModel &quot;Learn Band&quot;
-    Surface Opaque
-    Queue 2000
-    Properties {
-        Color baseColor = [0.9, 0.3, 0.08, 1.0]
-        Float threshold = 0.55 Range(0.0, 1.0)
-        Texture2D mainTexture = white
-    }
-}
+<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="w"> </span><span class="n">Surface</span><span class="err">"</span>
+<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Band</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Surface</span><span class="w"> </span><span class="n">Opaque</span>
+<span class="w">    </span><span class="n">Queue</span><span class="w"> </span><span class="mi">2000</span>
+<span class="w">    </span><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">0.9</span><span class="p">,</span><span class="w"> </span><span class="mf">0.3</span><span class="p">,</span><span class="w"> </span><span class="mf">0.08</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
+<span class="w">        </span><span class="n">Float</span><span class="w"> </span><span class="n">threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.55</span><span class="w"> </span><span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">)</span>
+<span class="w">        </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">mainTexture</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">white</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
 
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texel = sampleAlbedoAlpha(mainTexture);
-    s.albedo = texel.rgb * getVertexColor() * material.baseColor.rgb;
-    s.alpha = texel.a * material.baseColor.a;
-    s.shadingParam0 = material.threshold;
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">mainTexture</span><span class="p">);</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">getVertexColor</span><span class="p">()</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">rgb</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">alpha</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texel</span><span class="p">.</span><span class="n">a</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">baseColor</span><span class="p">.</span><span class="n">a</span><span class="p">;</span>
+<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">shadingParam0</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">material</span><span class="p">.</span><span class="n">threshold</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>这三个文件的准确依赖图如下：</p>
-<pre><code class="language-text">Material -&gt; Standard + Learn Band Surface
+<div class="highlight"><pre><span></span><code>Material -&gt; Standard + Learn Band Surface
 Learn Band Surface --ShadingModel--&gt; Learn Band
 Learn Band --Imports--&gt; Lighting
 Learn Band --Imports--&gt; Learn Band Math
-</code></pre>
+</code></pre></div>
+
 <p>按以下步骤完成端到端运行：</p>
 <ol>
 <li>等 Project 面板发现三个文件，再选择或重新导入 <code>learn_band_surface.frag</code>。Console 中不应出现 Shader Import、解析、链接或 Pipeline 编译错误。</li>
@@ -357,13 +368,14 @@ Learn Band --Imports--&gt; Learn Band Math
 </ol>
 <p>有效的 <code>Unsupported [Deferred]</code> 声明不会产生 Warning，Fallback 属于内置管线的预期路径。当前 Material Inspector 也没有逐材质的“Deferred Fallback”状态。请用上述受控切换、保持清空的 Console 与活动 RenderStack 管线作为可复现证据。编译错误属于可行动诊断；仍可通过编译的语义不匹配由 ShadingModel 作者负责判断。</p>
 <p>Deferred 会用已保存的着色法线填充 <code>geometricNormalWS</code>，生成替代 Tangent，并固定报告 <code>frontFacing = true</code>。原始切线框架、独立几何法线、正反面信息、几何 Pass 的导数行为，以及两个 Shading Scalar 之外的模型数据都不会保留。依赖这些输入的模型应声明限制：</p>
-<pre><code class="language-glsl">ShadingModelInfo {
-    Name &quot;SixWaySmoke&quot;
-    Imports [&quot;Lighting&quot;]
-    Requires [Lighting]
-    Unsupported [Deferred]
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">ShadingModelInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">SixWaySmoke</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Imports</span><span class="w"> </span><span class="p">[</span><span class="err">"</span><span class="n">Lighting</span><span class="err">"</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Requires</span><span class="w"> </span><span class="p">[</span><span class="n">Lighting</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Unsupported</span><span class="w"> </span><span class="p">[</span><span class="n">Deferred</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>自定义管线需要为不支持的模型提供兼容回退，也可以拒绝该路径。选中的模型缺失、格式错误或 GLSL 编译失败时，链接后的新产物不会发布；若已有上一份有效 Program，渲染器会继续使用它，并在 Console 报告失败。</p>
 <div class="learn-note"><strong>当前 API 边界。</strong><p>`ShadingModelInfo` 没有 Capabilities 列表，编译器也不会证明 Deferred 语义兼容性。`Unsupported [Deferred]` 是作者退出标准 GBuffer 路径的显式声明。</p></div>
 

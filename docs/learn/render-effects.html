@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -51,89 +51,92 @@
 </figure>
 
 <h2 id="fullscreen-shader">Start with a fullscreen shader</h2>
-<pre><code class="language-glsl">#version 450
+<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
-ShaderInfo {
-    Name &quot;Edge Fade&quot;
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources {
-        Texture2D _SourceTex
-    }
-    PushConstants pc {
-        Float intensity
-    }
-    Inputs {
-        Float2 inUV
-    }
-    Outputs {
-        Float4 outColor
-    }
-}
+<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Edge</span><span class="w"> </span><span class="n">Fade</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Hidden</span><span class="w"> </span><span class="n">On</span>
+<span class="w">    </span><span class="n">Capabilities</span><span class="w"> </span><span class="p">[</span><span class="n">Fullscreen</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Resources</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">_SourceTex</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">PushConstants</span><span class="w"> </span><span class="n">pc</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Float</span><span class="w"> </span><span class="n">intensity</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">Inputs</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Float2</span><span class="w"> </span><span class="n">inUV</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">Outputs</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Float4</span><span class="w"> </span><span class="n">outColor</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
 
-void main() {
-    vec4 source = texture(_SourceTex, inUV);
-    vec2 centered = inUV * 2.0 - 1.0;
-    float edge = smoothstep(0.25, 1.0, dot(centered, centered));
-    source.rgb *= 1.0 - edge * pc.intensity;
-    outColor = source;
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texture</span><span class="p">(</span><span class="n">_SourceTex</span><span class="p">,</span><span class="w"> </span><span class="n">inUV</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">vec2</span><span class="w"> </span><span class="n">centered</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">inUV</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">1.0</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">edge</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">smoothstep</span><span class="p">(</span><span class="mf">0.25</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="n">dot</span><span class="p">(</span><span class="n">centered</span><span class="p">,</span><span class="w"> </span><span class="n">centered</span><span class="p">));</span>
+<span class="w">    </span><span class="n">source</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*=</span><span class="w"> </span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">edge</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">pc</span><span class="p">.</span><span class="n">intensity</span><span class="p">;</span>
+<span class="w">    </span><span class="n">outColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">source</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><code>Capabilities [Fullscreen]</code> selects the fullscreen geometry contract. <code>Resources</code> and <code>PushConstants</code> describe bindings without hand-written Vulkan layouts. <code>Hidden On</code> keeps this implementation shader out of ordinary Material selection.</p>
 <p><code>fullscreen_quad("Edge Fade")</code> records one fragment-shader ID. At runtime, <code>FullscreenRenderer</code> always pairs it with the engine-owned vertex shader whose <code>ShaderInfo Name</code> is <code>Fullscreen Triangle</code>. Keep that built-in ID in <code>get_shader_list()</code> as shown below, but do not add a path for it to the asset: there is no project <code>Fullscreen Triangle</code> file to reference. List only the project fragment shader in the <code>.effect</code> asset's <code>dependencies</code>. Such a shader may have no Material owner available to preload it before graph compilation.</p>
 <h2 id="effect-class">Register the effect feature</h2>
 <p>A one-pass color transform can derive from <code>FullScreenEffect</code>:</p>
-<pre><code class="language-python">from Infernux.components.fields import serialized_field
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import (
-    FullScreenEffect,
-    RoutePolicy,
-    render_effect_feature,
-)
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">FullScreenEffect</span><span class="p">,</span>
+    <span class="n">RoutePolicy</span><span class="p">,</span>
+    <span class="n">render_effect_feature</span><span class="p">,</span>
+<span class="p">)</span>
 
 
-@render_effect_feature(
-    &quot;game.post.edge_fade&quot;,
-    route_policy=RoutePolicy.MASK_AND_MODIFY,
-)
-class EdgeFadeEffect(FullScreenEffect):
-    name = &quot;Edge Fade&quot;
-    menu_path = &quot;Post-processing/Edge Fade&quot;
-    injection_point = &quot;before_post_process&quot;
-    default_order = 200
-    modifies = {&quot;color&quot;}
+<span class="nd">@render_effect_feature</span><span class="p">(</span>
+    <span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
+    <span class="n">route_policy</span><span class="o">=</span><span class="n">RoutePolicy</span><span class="o">.</span><span class="n">MASK_AND_MODIFY</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EdgeFadeEffect</span><span class="p">(</span><span class="n">FullScreenEffect</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Edge Fade"</span>
+    <span class="n">menu_path</span> <span class="o">=</span> <span class="s2">"Post-processing/Edge Fade"</span>
+    <span class="n">injection_point</span> <span class="o">=</span> <span class="s2">"before_post_process"</span>
+    <span class="n">default_order</span> <span class="o">=</span> <span class="mi">200</span>
+    <span class="n">modifies</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"color"</span><span class="p">}</span>
 
-    intensity: float = serialized_field(
-        default=0.35,
-        range=(0.0, 1.0),
-        slider=False,
-    )
+    <span class="n">intensity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">0.35</span><span class="p">,</span>
+        <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
+        <span class="n">slider</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    def get_shader_list(self):
-        return [&quot;Fullscreen Triangle&quot;, &quot;Edge Fade&quot;]
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_shader_list</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">[</span><span class="s2">"Fullscreen Triangle"</span><span class="p">,</span> <span class="s2">"Edge Fade"</span><span class="p">]</span>
 
-    def setup_passes(self, graph, bus):
-        self.apply_single_source_effect(
-            graph,
-            bus,
-            output_name=&quot;_edge_fade_out&quot;,
-            pass_name=&quot;EdgeFade_Apply&quot;,
-            shader_name=&quot;Edge Fade&quot;,
-            format=Format.RGBA16_SFLOAT,
-            params={&quot;intensity&quot;: float(self.intensity)},
-        )
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">setup_passes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">bus</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">apply_single_source_effect</span><span class="p">(</span>
+            <span class="n">graph</span><span class="p">,</span>
+            <span class="n">bus</span><span class="p">,</span>
+            <span class="n">output_name</span><span class="o">=</span><span class="s2">"_edge_fade_out"</span><span class="p">,</span>
+            <span class="n">pass_name</span><span class="o">=</span><span class="s2">"EdgeFade_Apply"</span><span class="p">,</span>
+            <span class="n">shader_name</span><span class="o">=</span><span class="s2">"Edge Fade"</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"intensity"</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">intensity</span><span class="p">)},</span>
+        <span class="p">)</span>
+</code></pre></div>
+
 <p><code>setup_passes()</code> reads handles from the stage-local resource bus, adds graph passes, then publishes changed handles back to that bus. <code>apply_single_source_effect()</code> implements the common color-in, temporary-target, color-out pattern. A multi-pass effect can build its own texture and pass chain.</p>
 <p>The class still defines <code>injection_point</code> and <code>default_order</code> because <code>FullScreenEffect</code> inherits the older <code>RenderPass</code> contract. RenderStack asset mounting ignores both values when it chooses a stage and orders slots. For <code>.effect</code> assets, the pipeline's <code>EffectStage</code> and the scene's slot order have final authority. These two class values remain compatibility metadata and a useful conventional hint.</p>
 <h2 id="discovery-path">From source file to mounted effect</h2>
 <p>Use this minimal project layout; all three authored files live below <code>Assets</code>:</p>
-<pre><code class="language-text">Assets/
+<div class="highlight"><pre><span></span><code>Assets/
   Rendering/
     edge_fade_effect.py
     Edge Fade.effect
   Shaders/
     edge_fade.frag
-</code></pre>
+</code></pre></div>
+
 <p>Then complete the path in this order:</p>
 <ol>
 <li>Save <code>Assets/Rendering/edge_fade_effect.py</code> with the registered class above and save <code>Assets/Shaders/edge_fade.frag</code> with the fullscreen shader. The scan root is the current project's <code>Assets</code> directory. Hidden directories and <code>__pycache__</code>, <code>build</code>, <code>dist</code>, <code>.venv</code>, <code>venv</code>, and <code>.runtime</code> are skipped; Python source candidates must mention <code>render_effect_feature</code> or <code>register_render_effect_feature</code>.</li>
@@ -144,20 +147,21 @@ class EdgeFadeEffect(FullScreenEffect):
 </ol>
 <p>Discovery, asset import, and graph compilation respond to data changes. They do not scan source every frame.</p>
 <h2 id="effect-asset">The <code>.effect</code> document</h2>
-<pre><code class="language-json">{
-  &quot;$schema&quot;: &quot;infernux.render_effect&quot;,
-  &quot;dependencies&quot;: [
-    {
-      &quot;guid&quot;: &quot;&quot;,
-      &quot;path_hint&quot;: &quot;Assets/Shaders/edge_fade.frag&quot;
-    }
-  ],
-  &quot;feature_type&quot;: &quot;game.post.edge_fade&quot;,
-  &quot;parameters&quot;: {
-    &quot;intensity&quot;: 0.35
-  }
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"dependencies"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Shaders/edge_fade.frag"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"feature_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"parameters"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"intensity"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.35</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>The parser is strict: these four top-level fields are the complete schema. Mount stage, scope, queue, enable state, and order live elsewhere. The same asset can be mounted more than once, including at different valid stages.</p>
 <p>Select a <code>.effect</code> in the Project panel to edit its typed parameters in the asset Inspector. The same parameters also appear inline when the asset is expanded under a RenderStack slot.</p>
 <figure class="learn-figure">
@@ -211,23 +215,24 @@ class EdgeFadeEffect(FullScreenEffect):
 <h2 id="groups-runtime">Effect groups, policy, and runtime edits</h2>
 <p>Before stacking groups, pin down the four records this course uses. A <strong>RenderEffect feature</strong> is a Python class registered with <code>render_effect_feature(type_id, ...)</code>; it owns <code>setup_passes()</code> and the parameter schema. A <strong><code>.effect</code> asset</strong> stores a <code>feature_type</code> plus concrete parameter values, and <code>RenderEffect</code> is its mutable runtime wrapper. An <strong><code>.effectgroup</code></strong> is an asset document whose entries reference effects or nested groups with optional overrides; when mounted, the group expands in place and has no separate runtime object. <strong>EffectStage</strong> and <strong>EffectSlot</strong> belong to the pipeline and the scene, and the next chapter covers them.</p>
 <p>An <code>.effectgroup</code> is an ordered list of <code>.effect</code> or nested <code>.effectgroup</code> references. Each entry has a stable <code>entry_id</code>, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source <code>.effect</code> value intact.</p>
-<pre><code class="language-json">{
-  &quot;$schema&quot;: &quot;infernux.render_effect_group&quot;,
-  &quot;entries&quot;: [
-    {
-      &quot;entry_id&quot;: &quot;edge_fade&quot;,
-      &quot;asset&quot;: {
-        &quot;guid&quot;: &quot;&quot;,
-        &quot;path_hint&quot;: &quot;Assets/Rendering/Edge Fade.effect&quot;
-      },
-      &quot;enabled&quot;: true,
-      &quot;overrides&quot;: {
-        &quot;intensity&quot;: 0.6
-      }
-    }
-  ]
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect_group"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"entries"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"entry_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"edge_fade"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"asset"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Rendering/Edge Fade.effect"</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"overrides"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"intensity"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.6</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>When mounted, a group expands in place. Final execution order is:</p>
 <ol>
 <li>RenderStack slot order at that <code>EffectStage</code>.</li>
@@ -288,89 +293,92 @@ class EdgeFadeEffect(FullScreenEffect):
 </figure>
 
 <h2 id="fullscreen-shader_1">从全屏 Shader 开始</h2>
-<pre><code class="language-glsl">#version 450
+<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
-ShaderInfo {
-    Name &quot;Edge Fade&quot;
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources {
-        Texture2D _SourceTex
-    }
-    PushConstants pc {
-        Float intensity
-    }
-    Inputs {
-        Float2 inUV
-    }
-    Outputs {
-        Float4 outColor
-    }
-}
+<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Edge</span><span class="w"> </span><span class="n">Fade</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Hidden</span><span class="w"> </span><span class="n">On</span>
+<span class="w">    </span><span class="n">Capabilities</span><span class="w"> </span><span class="p">[</span><span class="n">Fullscreen</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Resources</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Texture2D</span><span class="w"> </span><span class="n">_SourceTex</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">PushConstants</span><span class="w"> </span><span class="n">pc</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Float</span><span class="w"> </span><span class="n">intensity</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">Inputs</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Float2</span><span class="w"> </span><span class="n">inUV</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">Outputs</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Float4</span><span class="w"> </span><span class="n">outColor</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
 
-void main() {
-    vec4 source = texture(_SourceTex, inUV);
-    vec2 centered = inUV * 2.0 - 1.0;
-    float edge = smoothstep(0.25, 1.0, dot(centered, centered));
-    source.rgb *= 1.0 - edge * pc.intensity;
-    outColor = source;
-}
-</code></pre>
+<span class="kt">void</span><span class="w"> </span><span class="n">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">texture</span><span class="p">(</span><span class="n">_SourceTex</span><span class="p">,</span><span class="w"> </span><span class="n">inUV</span><span class="p">);</span>
+<span class="w">    </span><span class="kt">vec2</span><span class="w"> </span><span class="n">centered</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">inUV</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">1.0</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">edge</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">smoothstep</span><span class="p">(</span><span class="mf">0.25</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="n">dot</span><span class="p">(</span><span class="n">centered</span><span class="p">,</span><span class="w"> </span><span class="n">centered</span><span class="p">));</span>
+<span class="w">    </span><span class="n">source</span><span class="p">.</span><span class="n">rgb</span><span class="w"> </span><span class="o">*=</span><span class="w"> </span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">edge</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">pc</span><span class="p">.</span><span class="n">intensity</span><span class="p">;</span>
+<span class="w">    </span><span class="n">outColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">source</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><code>Capabilities [Fullscreen]</code> 选择全屏几何契约。<code>Resources</code> 与 <code>PushConstants</code> 描述绑定，无需手写 Vulkan layout。<code>Hidden On</code> 会让这份实现 Shader 避开普通 Material 选择列表。</p>
 <p><code>fullscreen_quad("Edge Fade")</code> 记录一个 Fragment Shader ID。运行时的 <code>FullscreenRenderer</code> 始终把它与引擎内置 Vertex Shader <code>Fullscreen Triangle</code> 配对；这个名称来自它的 <code>ShaderInfo Name</code>。请像下面的示例一样把内置 ID 留在 <code>get_shader_list()</code> 中，但不要给它添加资产路径，因为项目中没有可引用的 <code>Fullscreen Triangle</code> 文件。<code>.effect</code> 的 <code>dependencies</code> 只需列出项目自定义 Fragment Shader。它通常没有 Material 作为所有者，材质系统也就无法保证在图编译前完成预加载。</p>
 <h2 id="effect-class_1">注册 Effect Feature</h2>
 <p>单 Pass 颜色变换可以继承 <code>FullScreenEffect</code>：</p>
-<pre><code class="language-python">from Infernux.components.fields import serialized_field
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import (
-    FullScreenEffect,
-    RoutePolicy,
-    render_effect_feature,
-)
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">FullScreenEffect</span><span class="p">,</span>
+    <span class="n">RoutePolicy</span><span class="p">,</span>
+    <span class="n">render_effect_feature</span><span class="p">,</span>
+<span class="p">)</span>
 
 
-@render_effect_feature(
-    &quot;game.post.edge_fade&quot;,
-    route_policy=RoutePolicy.MASK_AND_MODIFY,
-)
-class EdgeFadeEffect(FullScreenEffect):
-    name = &quot;Edge Fade&quot;
-    menu_path = &quot;Post-processing/Edge Fade&quot;
-    injection_point = &quot;before_post_process&quot;
-    default_order = 200
-    modifies = {&quot;color&quot;}
+<span class="nd">@render_effect_feature</span><span class="p">(</span>
+    <span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
+    <span class="n">route_policy</span><span class="o">=</span><span class="n">RoutePolicy</span><span class="o">.</span><span class="n">MASK_AND_MODIFY</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EdgeFadeEffect</span><span class="p">(</span><span class="n">FullScreenEffect</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Edge Fade"</span>
+    <span class="n">menu_path</span> <span class="o">=</span> <span class="s2">"Post-processing/Edge Fade"</span>
+    <span class="n">injection_point</span> <span class="o">=</span> <span class="s2">"before_post_process"</span>
+    <span class="n">default_order</span> <span class="o">=</span> <span class="mi">200</span>
+    <span class="n">modifies</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"color"</span><span class="p">}</span>
 
-    intensity: float = serialized_field(
-        default=0.35,
-        range=(0.0, 1.0),
-        slider=False,
-    )
+    <span class="n">intensity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">0.35</span><span class="p">,</span>
+        <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
+        <span class="n">slider</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    def get_shader_list(self):
-        return [&quot;Fullscreen Triangle&quot;, &quot;Edge Fade&quot;]
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_shader_list</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">[</span><span class="s2">"Fullscreen Triangle"</span><span class="p">,</span> <span class="s2">"Edge Fade"</span><span class="p">]</span>
 
-    def setup_passes(self, graph, bus):
-        self.apply_single_source_effect(
-            graph,
-            bus,
-            output_name=&quot;_edge_fade_out&quot;,
-            pass_name=&quot;EdgeFade_Apply&quot;,
-            shader_name=&quot;Edge Fade&quot;,
-            format=Format.RGBA16_SFLOAT,
-            params={&quot;intensity&quot;: float(self.intensity)},
-        )
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">setup_passes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">bus</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">apply_single_source_effect</span><span class="p">(</span>
+            <span class="n">graph</span><span class="p">,</span>
+            <span class="n">bus</span><span class="p">,</span>
+            <span class="n">output_name</span><span class="o">=</span><span class="s2">"_edge_fade_out"</span><span class="p">,</span>
+            <span class="n">pass_name</span><span class="o">=</span><span class="s2">"EdgeFade_Apply"</span><span class="p">,</span>
+            <span class="n">shader_name</span><span class="o">=</span><span class="s2">"Edge Fade"</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"intensity"</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">intensity</span><span class="p">)},</span>
+        <span class="p">)</span>
+</code></pre></div>
+
 <p><code>setup_passes()</code> 从当前阶段的局部 Resource Bus 读取 Handle，向图中加入 Pass，再把变更后的 Handle 发布回 Bus。<code>apply_single_source_effect()</code> 封装常见的“读颜色、写临时纹理、发布新颜色”流程；多 Pass 效果可以自行建立纹理链与 Pass 链。</p>
 <p>类里仍有 <code>injection_point</code> 和 <code>default_order</code>，因为 <code>FullScreenEffect</code> 继承了旧的 <code>RenderPass</code> 契约。RenderStack 挂载 Effect 资产时会忽略这两个值，不用它们选阶段，也不用它们排列 Slot。对于 <code>.effect</code> 资产，管线的 <code>EffectStage</code> 与场景的 Slot 顺序拥有最终权威。这两个类字段继续承担兼容元数据和约定提示的作用。</p>
 <h2 id="discovery-path_1">从源码到挂载</h2>
 <p>先建立下面的最小项目布局，三个编写文件都位于 <code>Assets</code> 下：</p>
-<pre><code class="language-text">Assets/
+<div class="highlight"><pre><span></span><code>Assets/
   Rendering/
     edge_fade_effect.py
     Edge Fade.effect
   Shaders/
     edge_fade.frag
-</code></pre>
+</code></pre></div>
+
 <p>然后按以下顺序完成接入：</p>
 <ol>
 <li>把上面的注册类保存到 <code>Assets/Rendering/edge_fade_effect.py</code>，把全屏 Shader 保存到 <code>Assets/Shaders/edge_fade.frag</code>。扫描根目录是当前项目的 <code>Assets</code>。隐藏目录以及 <code>__pycache__</code>、<code>build</code>、<code>dist</code>、<code>.venv</code>、<code>venv</code>、<code>.runtime</code> 会被跳过；Python 源码候选文件必须出现 <code>render_effect_feature</code> 或 <code>register_render_effect_feature</code>。</li>
@@ -381,20 +389,21 @@ class EdgeFadeEffect(FullScreenEffect):
 </ol>
 <p>发现、资产导入与图编译由数据变化触发，运行时不会每帧扫描源码。</p>
 <h2 id="effect-asset_1"><code>.effect</code> 文档</h2>
-<pre><code class="language-json">{
-  &quot;$schema&quot;: &quot;infernux.render_effect&quot;,
-  &quot;dependencies&quot;: [
-    {
-      &quot;guid&quot;: &quot;&quot;,
-      &quot;path_hint&quot;: &quot;Assets/Shaders/edge_fade.frag&quot;
-    }
-  ],
-  &quot;feature_type&quot;: &quot;game.post.edge_fade&quot;,
-  &quot;parameters&quot;: {
-    &quot;intensity&quot;: 0.35
-  }
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"dependencies"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Shaders/edge_fade.frag"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"feature_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"parameters"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"intensity"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.35</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>解析器采用严格 Schema，顶层只有这四个字段。挂载阶段、作用域、Queue、启用状态和顺序由其它数据负责。同一资产可以被挂载多次，也可以出现在不同的有效阶段。</p>
 <p>在 Project 面板中选中 <code>.effect</code>，可以在资产 Inspector 编辑带类型的参数。展开 RenderStack Slot 后，同样的参数也会内联显示。</p>
 <figure class="learn-figure">
@@ -448,23 +457,24 @@ class EdgeFadeEffect(FullScreenEffect):
 <h2 id="groups-runtime_1">EffectGroup、Policy 与运行时修改</h2>
 <p>在叠加 Group 之前，先固定本课程用到的四类记录。<strong>RenderEffect Feature</strong> 是注册了 <code>render_effect_feature(type_id, ...)</code> 的 Python 类，它拥有 <code>setup_passes()</code> 和参数 Schema。<strong><code>.effect</code> 资产</strong>保存 <code>feature_type</code> 与具体参数值，<code>RenderEffect</code> 是它的可变运行时包装。<strong><code>.effectgroup</code></strong> 是资产文档，条目引用 Effect 或嵌套 Group，可以带 Override；挂载时 Group 就地展开，没有独立的运行时对象。<strong>EffectStage</strong> 与 <strong>EffectSlot</strong> 属于管线与场景，下一章介绍。</p>
 <p><code>.effectgroup</code> 是一份有序的 <code>.effect</code> 或嵌套 <code>.effectgroup</code> 引用列表。每项有稳定的 <code>entry_id</code>、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 <code>.effect</code> 数值保持不变。</p>
-<pre><code class="language-json">{
-  &quot;$schema&quot;: &quot;infernux.render_effect_group&quot;,
-  &quot;entries&quot;: [
-    {
-      &quot;entry_id&quot;: &quot;edge_fade&quot;,
-      &quot;asset&quot;: {
-        &quot;guid&quot;: &quot;&quot;,
-        &quot;path_hint&quot;: &quot;Assets/Rendering/Edge Fade.effect&quot;
-      },
-      &quot;enabled&quot;: true,
-      &quot;overrides&quot;: {
-        &quot;intensity&quot;: 0.6
-      }
-    }
-  ]
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect_group"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"entries"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"entry_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"edge_fade"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"asset"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Rendering/Edge Fade.effect"</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"overrides"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"intensity"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.6</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>挂载后，EffectGroup 会在所在位置展开。最终执行顺序是：</p>
 <ol>
 <li>该 <code>EffectStage</code> 中的 RenderStack Slot 顺序。</li>

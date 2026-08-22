@@ -19,7 +19,15 @@ LANGUAGE_MARKER = "<!-- language:zh -->"
 def render_markdown(source: str) -> str:
     return markdown.markdown(
         source.strip(),
-        extensions=["fenced_code", "tables", "attr_list", "toc"],
+        extensions=["fenced_code", "codehilite", "tables", "attr_list", "toc"],
+        extension_configs={
+            "codehilite": {
+                "css_class": "highlight",
+                "guess_lang": False,
+                "linenums": False,
+                "use_pygments": True,
+            },
+        },
         output_format="html5",
     )
 
@@ -56,7 +64,7 @@ def page_shell(course: dict, chapter: dict, previous: dict | None, following: di
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -176,7 +184,7 @@ def course_index_shell(course: dict, chapters: list[dict]) -> str:
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
