@@ -16,7 +16,7 @@
 
 | 签名 | 描述 |
 |------|------|
-| `Coroutine.__init__(generator: Generator, owner: Any = ...) → None` |  |
+| `Coroutine.__init__(generator: Generator, owner: Any = ..., creation_epoch: Any = ...) → None` |  |
 
 <!-- USER CONTENT START --> constructors
 
@@ -27,6 +27,9 @@
 | 名称 | 类型 | 描述 |
 |------|------|------|
 | is_finished | `bool` | Returns True if the coroutine has completed. *(只读)* |
+| creation_epoch | `Any` |  *(只读)* |
+| creation_epoch_id | `int` |  *(只读)* |
+| is_legacy | `bool` |  *(只读)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -35,7 +38,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.2.9 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.3.4 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

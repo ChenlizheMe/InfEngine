@@ -14,10 +14,11 @@ void VulkanFrameSubmission::Reset(uint32_t firstWorkItemId)
 
 uint32_t VulkanFrameSubmission::AddWork(rhi::DeviceId device, rhi::QueueRole queue, rhi::SubmissionDomain domain,
                                         rhi::RenderViewId view, rhi::PipelineStage waitStages,
-                                        std::vector<uint32_t> dependencies, Recorder recorder)
+                                        std::vector<uint32_t> dependencies, Recorder recorder,
+                                        std::string diagnosticName)
 {
-    const uint32_t workItem =
-        m_composer.AddWork(device, queue, domain, view, waitStages, std::move(dependencies), true);
+    const uint32_t workItem = m_composer.AddWork(device, queue, domain, view, waitStages, std::move(dependencies), true,
+                                                 std::move(diagnosticName));
     if (recorder)
         m_recorders.emplace(workItem, std::move(recorder));
     if (queue != rhi::QueueRole::Count)

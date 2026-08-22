@@ -21,6 +21,7 @@ struct RenderProxyStructuralData
 {
     uint64_t objectId = 0;
     uint32_t layerMask = 1u;
+    bool isStatic = false;
     RenderProxyHandle identity;
     std::shared_ptr<InxMaterial> renderMaterial;
     int32_t renderQueue = 2000;
@@ -56,6 +57,7 @@ struct RenderViewData
     glm::vec3 forward{0.0f, 0.0f, 1.0f};
     glm::vec3 up{0.0f, 1.0f, 0.0f};
     uint32_t cullingMask = 0xFFFFFFFFu;
+    uint64_t cameraId = 0;
     bool valid = false;
 };
 
@@ -90,6 +92,11 @@ class RenderWorldFrame final
         return m_structuralRevision;
     }
 
+    [[nodiscard]] uint64_t TransformRevision() const noexcept
+    {
+        return m_transformRevision;
+    }
+
     [[nodiscard]] uint64_t FrameRevision() const noexcept
     {
         return m_frameRevision;
@@ -109,6 +116,7 @@ class RenderWorldFrame final
     RenderViewData m_primaryView;
     uint64_t m_worldId = 0;
     uint64_t m_structuralRevision = 0;
+    uint64_t m_transformRevision = 0;
     uint64_t m_frameRevision = 0;
 };
 
@@ -136,6 +144,7 @@ class RenderWorldSnapshot final
         frame.m_primaryView = {};
         frame.m_worldId = 0;
         frame.m_structuralRevision = 0;
+        frame.m_transformRevision = 0;
         Publish();
     }
 

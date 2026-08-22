@@ -20,6 +20,12 @@ Example:
 from typing import Type, Union, Callable
 
 
+def _refresh_component_registration(component_type: Type) -> None:
+    from .registry import register_component_type
+
+    register_component_type(component_type)
+
+
 def require_component(*component_types: Type) -> Callable:
     """
     Decorator to declare that a component requires other component types.
@@ -36,15 +42,18 @@ def require_component(*component_types: Type) -> Callable:
             pass
     """
     def decorator(cls):
-        # Initialize or extend the _require_components_ list
-        if not hasattr(cls, '_require_components_'):
-            cls._require_components_ = []
-        
+        # Copy inherited requirements before extending them. Mutating the
+        # inherited list would silently contaminate the base class and sibling
+        # component registrations.
+        cls._require_components_ = list(
+            getattr(cls, '_require_components_', ()) or ()
+        )
+
         # Add all specified types (avoid duplicates)
         for comp_type in component_types:
             if comp_type not in cls._require_components_:
                 cls._require_components_.append(comp_type)
-        
+        _refresh_component_registration(cls)
         return cls
     return decorator
 
@@ -65,6 +74,7 @@ def disallow_multiple(cls: Type = None) -> Union[Type, Callable]:
     """
     def apply(cls):
         cls._disallow_multiple_ = True
+        _refresh_component_registration(cls)
         return cls
     
     # Support both @disallow_multiple and @disallow_multiple()

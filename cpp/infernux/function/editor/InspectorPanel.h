@@ -9,6 +9,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
@@ -67,11 +68,27 @@ class InspectorPanel : public EditorPanel
 
     void SetDetailFile(const std::string &filePath, const std::string &category);
 
-    // ── Selection callbacks (wrap Python SelectionManager) ───────────
+    /// Project the authoritative component selection into the native view.
+    /// Component IDs are scene-unique and are only used for header styling.
+    void SetSelectedComponentIds(const std::vector<uint64_t> &componentIds);
+    void ClearSelectedComponents();
+
+    // ── Selection callbacks (project typed SelectionService) ─────────
 
     std::function<bool()> isMultiSelection;
     std::function<std::vector<uint64_t>()> getSelectedIds;
     std::function<uint64_t()> getValueGeneration;
+
+    struct RevisionSnapshot
+    {
+        uint64_t target = 0;
+        uint64_t schema = 0;
+        uint64_t value = 0;
+        uint64_t preview = 0;
+    };
+    /// One immutable revision packet is captured at the start of a visible
+    /// Inspector frame. The fallback generation remains for older hosts.
+    std::function<RevisionSnapshot()> getRevisionSnapshot;
 
     // ── Object info callbacks ────────────────────────────────────────
 
@@ -84,11 +101,9 @@ class InspectorPanel : public EditorPanel
         int layer = 0;
         std::string prefabGuid;
         bool hideTransform = false;
+        uint64_t transformComponentId = 0;
     };
     std::function<ObjectInfo(uint64_t)> getObjectInfo;
-
-    /// Set object property: (objId, propName, newValueStr)
-    std::function<void(uint64_t, const std::string &, const std::string &)> setObjectProperty;
 
     // ── Transform callbacks ──────────────────────────────────────────
 
@@ -99,7 +114,6 @@ class InspectorPanel : public EditorPanel
         float sx = 1, sy = 1, sz = 1; // local scale
     };
     std::function<TransformData(uint64_t)> getTransformData;
-    std::function<void(uint64_t, const TransformData &)> setTransformData;
 
     // ── Component enumeration callbacks ──────────────────────────────
 
@@ -123,13 +137,13 @@ class InspectorPanel : public EditorPanel
     /// Return and reset Python-side component body profile metrics.
     std::function<std::unordered_map<std::string, double>()> consumeComponentBodyProfile;
 
+    /// Publish a real component-header selection gesture. The two ID arrays
+    /// are parallel and contain one entry per selected object/component.
+    std::function<void(const std::vector<uint64_t> &, const std::vector<uint64_t> &, bool)> onComponentSelectionChanged;
+
     /// Render a component right-click context menu.
     /// Returns true if an action consumed the frame (caller should bail).
     std::function<bool(InxGUIContext *, uint64_t, const std::string &, uint64_t, bool)> renderComponentContextMenu;
-
-    // ── Component enabled toggle ─────────────────────────────────────
-
-    std::function<void(uint64_t, uint64_t, bool, bool)> setComponentEnabled;
 
     // ── Add Component callbacks ──────────────────────────────────────
 
@@ -141,12 +155,6 @@ class InspectorPanel : public EditorPanel
         std::string scriptPath; // only for scripts
     };
     std::function<std::vector<AddComponentEntry>()> getAddComponentEntries;
-    std::function<void(const std::string &, bool, const std::string &)>
-        addComponent; // (typeName/path, isNative, scriptPath)
-
-    // ── Remove Component callback ────────────────────────────────────
-
-    std::function<bool(uint64_t, const std::string &, uint64_t, bool)> removeComponent;
 
     // ── Asset / File preview callbacks ───────────────────────────────
 
@@ -169,13 +177,6 @@ class InspectorPanel : public EditorPanel
         bool isTransformReadonly = false;
     };
     std::function<PrefabInfo(uint64_t)> getPrefabInfo;
-    std::function<void(uint64_t, const std::string &)> prefabAction; // (objId, "select"|"open"|"apply"|"revert")
-
-    // ── Undo callbacks ───────────────────────────────────────────────
-
-    std::function<void()> undoBeginFrame;
-    std::function<void(bool)> undoEndFrame; // (anyItemActive)
-    std::function<void()> undoInvalidateAll;
 
     // ── Tag & Layer info ─────────────────────────────────────────────
 
@@ -187,12 +188,6 @@ class InspectorPanel : public EditorPanel
     std::function<std::string(const std::string &)> translate;
 
     // ── Script drop on PropertiesModule ──────────────────────────────
-
-    std::function<void(const std::string &)> handleScriptDrop;
-
-    // ── Window manager integration ───────────────────────────────────
-
-    std::function<void(const std::string &)> openWindow;
 
     std::unordered_map<std::string, double> ConsumeSubTimings() override;
 
@@ -210,6 +205,7 @@ class InspectorPanel : public EditorPanel
     uint64_t m_selectedObjectId = 0;
     std::string m_selectedFile;
     std::string m_assetCategory;
+    std::unordered_set<uint64_t> m_selectedComponentIds;
 
     // ── Splitter state ───────────────────────────────────────────────
     float m_propertiesRatio = EditorTheme::INSPECTOR_DEFAULT_RATIO;
@@ -226,6 +222,8 @@ class InspectorPanel : public EditorPanel
     char m_addCompSearch[256] = {};
     std::vector<AddComponentEntry> m_addCompEntries;
     bool m_addCompNeedsFocus = false;
+    bool m_addCompPopupOpen = false;
+    bool m_addCompCloseRequested = false;
 
     // ── Timing ───────────────────────────────────────────────────────
     float m_frameTimeNow = 0.0f;
@@ -242,9 +240,17 @@ class InspectorPanel : public EditorPanel
     uint64_t m_cachedComponentListObjId = 0;
     std::vector<ComponentInfo> m_cachedComponents;
     std::unordered_map<uint64_t, float> m_cachedComponentBodyHeights;
-    uint64_t m_cachedValueGeneration = 0;
-    float m_cachedValueRefreshTime = 0.0f;
-    static constexpr float VALUE_CACHE_TTL = 0.20f;
+    RevisionSnapshot m_frameRevisions;
+    bool m_revisionSnapshotErrorReported = false;
+    uint64_t m_cachedObjectTargetRevision = 0;
+    uint64_t m_cachedObjectValueRevision = 0;
+    uint64_t m_cachedComponentTargetRevision = 0;
+    uint64_t m_cachedComponentSchemaRevision = 0;
+    uint64_t m_cachedTransformObjId = 0;
+    uint64_t m_cachedTransformValueRevision = 0;
+    TransformData m_cachedTransformData;
+    std::array<std::string, 3> m_transformGestureIds;
+    uint64_t m_transformGestureSerial = 0;
 
     struct CommonComponent
     {
@@ -256,19 +262,20 @@ class InspectorPanel : public EditorPanel
     {
         TransformData first;
         std::array<bool, 9> mixed{};
+        std::vector<uint64_t> componentIds;
     };
 
     bool m_cachedMultiComponentsValid = false;
     std::vector<uint64_t> m_cachedMultiComponentIds;
     std::vector<CommonComponent> m_cachedMultiCommonComponents;
-    uint64_t m_cachedMultiComponentValueGeneration = 0;
-    float m_cachedMultiComponentRefreshTime = 0.0f;
+    uint64_t m_cachedMultiComponentTargetRevision = 0;
+    uint64_t m_cachedMultiComponentSchemaRevision = 0;
 
     bool m_cachedMultiTransformValid = false;
     std::vector<uint64_t> m_cachedMultiTransformIds;
     MultiTransformSnapshot m_cachedMultiTransformSnapshot;
-    uint64_t m_cachedMultiTransformValueGeneration = 0;
-    float m_cachedMultiTransformRefreshTime = 0.0f;
+    uint64_t m_cachedMultiTransformTargetRevision = 0;
+    uint64_t m_cachedMultiTransformValueRevision = 0;
 
     // ── Cached icon IDs ──────────────────────────────────────────────
     uint64_t m_cachedTransformIconId = 0;
@@ -289,15 +296,27 @@ class InspectorPanel : public EditorPanel
     void RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info);
     void RenderTransform(InxGUIContext *ctx, uint64_t objId);
     void RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids);
+    std::string UpdateTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);
+    void FinishTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);
     void RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, const PrefabInfo &pinfo);
 
+    struct ComponentHeaderResult
+    {
+        bool open = false;
+        bool enabled = true;
+        bool selectionRequested = false;
+    };
+
+    [[nodiscard]] bool IsComponentSelected(uint64_t componentId) const;
+    [[nodiscard]] bool AreComponentsSelected(const std::vector<uint64_t> &componentIds) const;
+
     /// Render one component header (icon + enabled + collapsing).
-    /// Returns (headerOpen, newEnabled).
-    std::pair<bool, bool> RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
-                                                const std::string &headerId, uint64_t iconId, bool showEnabled,
-                                                bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
-                                                const std::string &semanticId = "",
-                                                const std::string &contextPopupId = "");
+    ComponentHeaderResult
+    RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName, const std::string &headerId, uint64_t iconId,
+                          bool showEnabled, bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
+                          const std::string &semanticId = "", const std::string &contextPopupId = "",
+                          bool selected = false, const std::vector<uint64_t> &dragObjectIds = {},
+                          const std::vector<uint64_t> &dragComponentIds = {}, bool allowComponentReorder = true);
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 
@@ -305,6 +324,9 @@ class InspectorPanel : public EditorPanel
     void RenderAddComponentPopup(InxGUIContext *ctx);
 
     void RefreshTagLayerCache();
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "",
+                              const std::string &source = "context_menu") const;
+    bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
 };
 
 } // namespace infernux

@@ -58,6 +58,8 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
     const bool noDepth = HasCapability(fragment, "NoDepth") || HasCapability(fragment, "NoDepthPass");
     const bool noPicking = HasCapability(fragment, "NoPicking");
     const bool noMotion = HasCapability(vertex, "NoMotionVectors") || HasCapability(fragment, "NoMotionVectors");
+    const bool noNormal = HasCapability(fragment, "NoNormal") || HasCapability(fragment, "NoNormalPass");
+    const bool noBaseColor = HasCapability(fragment, "NoBaseColor") || HasCapability(fragment, "NoBaseColorPass");
 
     if (interfaceArtifact.domain == ShaderProgramDomain::ParticleSprite) {
         Add(plan, ShaderCompileTarget::Forward, true, "particle sprite materials require a Forward variant");
@@ -72,6 +74,10 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
         Add(plan, ShaderCompileTarget::Motion, !noMotion,
             noMotion ? "the particle shader explicitly disables motion vectors"
                      : "particle sprite outputs publish a camera-specific Motion variant");
+        Add(plan, ShaderCompileTarget::Normal, false,
+            "particle sprites do not participate in the opaque world-normal buffer");
+        Add(plan, ShaderCompileTarget::BaseColor, false,
+            "particle sprites do not participate in the opaque base-color buffer");
         return plan;
     }
 
@@ -100,6 +106,14 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
     Add(plan, ShaderCompileTarget::Motion, !noMotion,
         noMotion ? "the shader explicitly disables motion vectors"
                  : "object transforms and vertex deformation may contribute motion vectors");
+    Add(plan, ShaderCompileTarget::Normal, !transparent && !noNormal,
+        transparent ? "transparent surfaces do not enter the opaque normal buffer"
+                    : (noNormal ? "the shader explicitly disables normal variants"
+                                : "opaque geometry publishes world normals for screen-space effects"));
+    Add(plan, ShaderCompileTarget::BaseColor, !transparent && !noBaseColor,
+        transparent ? "transparent surfaces do not enter the opaque base-color buffer"
+                    : (noBaseColor ? "the shader explicitly disables base-color variants"
+                                   : "opaque geometry publishes linear albedo and alpha for the Geometry Stage"));
     return plan;
 }
 

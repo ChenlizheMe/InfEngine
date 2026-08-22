@@ -20,12 +20,16 @@ Usage in a user script::
 from __future__ import annotations
 
 from Infernux.components import serialized_field, list_field, add_component_menu
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from Infernux.debug import Debug
 from .enums import TextAlignH, TextAlignV
 from .ui_selectable import UISelectable
 from .ui_event import UIEvent
-from .ui_event_entry import UIEventEntry, materialize_event_arguments, _get_serializable_raw_field
+from .ui_event_entry import (
+    UIEventEntry,
+    _UIEventRuntimeBinding,
+    _get_serializable_raw_field,
+)
 
 
 @add_component_menu("UI/Button")
@@ -81,7 +85,7 @@ class UIButton(UISelectable):
         group="Fill",
     )
     background_color: list = serialized_field(
-        default=[0.22, 0.56, 0.92, 1.0], field_type=FieldType.COLOR,
+        default=[0.922, 0.341, 0.341, 1.0], field_type=FieldType.COLOR,
         hdr=True, tooltip="Background fill colour (RGBA)", group="Fill",
     )
 
@@ -100,6 +104,11 @@ class UIButton(UISelectable):
     def _init_button_state(self):
         if not hasattr(self, "_on_click"):
             self._on_click: UIEvent = UIEvent()
+        if not hasattr(self, "_persistent_click_bindings"):
+            # Runtime-only cache.  It is intentionally aligned with the
+            # serialized entry list and is discarded whenever authoring state
+            # changes or an owner becomes invalid.
+            self._persistent_click_bindings: list = []
 
     @property
     def on_click(self) -> UIEvent:
@@ -123,9 +132,14 @@ class UIButton(UISelectable):
 
     def _dispatch_persistent_entries(self):
         """Resolve and invoke each on_click_entries binding."""
+        self._init_button_state()
         entries = list(self.on_click_entries or [])
         results = []
         self._last_persistent_dispatch = results
+        if len(self._persistent_click_bindings) > len(entries):
+            del self._persistent_click_bindings[len(entries):]
+        while len(self._persistent_click_bindings) < len(entries):
+            self._persistent_click_bindings.append(None)
         if not entries:
             return
         for index, entry in enumerate(entries):
@@ -138,11 +152,13 @@ class UIButton(UISelectable):
             results.append(result)
             target_ref = _get_serializable_raw_field(entry, "target")
             if target_ref is None:
+                self._persistent_click_bindings[index] = None
                 result["status"] = "missing_target"
                 self._log_dispatch_failure(result)
                 continue
             go = target_ref.resolve() if hasattr(target_ref, "resolve") else target_ref
             if go is None:
+                self._persistent_click_bindings[index] = None
                 result["status"] = "unresolved_target"
                 self._log_dispatch_failure(result)
                 continue
@@ -151,21 +167,54 @@ class UIButton(UISelectable):
             comp_name = getattr(entry, "component_name", "") or ""
             method_name = getattr(entry, "method_name", "") or ""
             if not comp_name or not method_name:
+                self._persistent_click_bindings[index] = None
                 result["status"] = "incomplete_binding"
                 self._log_dispatch_failure(result)
                 continue
             comp = self._resolve_component(go, comp_name)
             if comp is None:
+                self._persistent_click_bindings[index] = None
                 result["status"] = "missing_component"
                 self._log_dispatch_failure(result)
                 continue
-            fn = getattr(comp, method_name, None)
-            if not callable(fn):
-                result["status"] = "missing_method"
-                self._log_dispatch_failure(result)
-                continue
+            binding = self._persistent_click_bindings[index]
+            if not isinstance(binding, _UIEventRuntimeBinding) or not binding.matches(
+                entry,
+                go,
+                comp,
+            ):
+                try:
+                    binding = _UIEventRuntimeBinding.create(entry, comp, go)
+                except Exception as exc:
+                    self._persistent_click_bindings[index] = None
+                    result["status"] = (
+                        "missing_method"
+                        if isinstance(exc, ValueError)
+                        and "method" in str(exc).lower()
+                        else "invalid_binding"
+                    )
+                    result["error"] = f"{type(exc).__name__}: {exc}"
+                    self._log_dispatch_failure(result)
+                    continue
+                self._persistent_click_bindings[index] = binding
             try:
-                fn(*materialize_event_arguments(entry, comp))
+                invocation = binding.invoke(entry)
+                if invocation.status in {
+                    "owner_unavailable",
+                    "owner_invalid",
+                    "method_missing",
+                    "signature_mismatch",
+                }:
+                    self._persistent_click_bindings[index] = None
+                    result["status"] = invocation.status
+                    result["error"] = invocation.message
+                    self._log_dispatch_failure(result)
+                    continue
+                if invocation.status not in {"resolved", "legacy_pinned"}:
+                    result["status"] = invocation.status
+                    result["error"] = invocation.message
+                    self._log_dispatch_failure(result)
+                    continue
                 result["status"] = "invoked"
             except Exception as exc:
                 result["status"] = "exception"
@@ -174,6 +223,13 @@ class UIButton(UISelectable):
                     f"UIButton persistent event failed for "
                     f"{result['target_name']}.{comp_name}.{method_name}: {exc}"
                 )
+
+    def on_validate(self):
+        """Invalidate transient event bindings after serialized edits."""
+        self._persistent_click_bindings = []
+        parent_validate = getattr(super(), "on_validate", None)
+        if callable(parent_validate):
+            parent_validate()
 
     @staticmethod
     def _log_dispatch_failure(result: dict) -> None:

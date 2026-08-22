@@ -22,6 +22,7 @@ class CollisionDetectionMode(IntEnum):
     """Collision detection algorithm used by the rigidbody."""
     Discrete = 0
     Continuous = 1
+    ContinuousDynamic = 2
 
 class RigidbodyInterpolation(IntEnum):
     """Interpolation mode for rigidbody movement smoothing."""

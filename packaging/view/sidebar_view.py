@@ -186,5 +186,8 @@ class SidebarView(QWidget):
             btn.style().polish(btn)
         self.page_changed.emit(index)
 
+    def select_page(self, index: int) -> None:
+        self._switch_page(index)
+
     def _toggle_theme(self, state):
         apply_theme(self.window(), bool(state))

@@ -23,7 +23,7 @@ from Infernux.ui.enums import TextResizeMode
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
-from Infernux.ui.ui_canvas_utils import collect_canvases_with_go
+from Infernux.ui.ui_canvas_utils import collect_runtime_canvases_with_go
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .editor_icons import EditorIcons
@@ -39,25 +39,42 @@ class UIEditorCanvasOps:
     """UIEditorCanvasOps method group for UIEditorPanel."""
 
     def _get_all_canvases(self):
-        """Return list of (GameObject, UICanvas) for every Canvas in the scene."""
+        """Return every Canvas in the active and persistent runtime scenes."""
         from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if scene is None:
+        scene_manager = SceneManager.instance()
+        scene = scene_manager.get_active_scene()
+        persistent_getter = getattr(
+            scene_manager,
+            "get_runtime_persistent_scene",
+            None,
+        )
+        persistent_scene = persistent_getter() if callable(persistent_getter) else None
+        if scene is None and persistent_scene is None:
             return []
-        return collect_canvases_with_go(scene)
+        # A Canvas can move into the persistent Scene during the first Play
+        # frames without changing the active Scene identity. Retry a cached
+        # empty snapshot briefly so opening UI Editor during that transfer
+        # cannot pin the workspace to "no canvas".
+        return collect_runtime_canvases_with_go(
+            scene,
+            persistent_scene,
+            allow_stale_empty=True,
+        )
 
     def _get_active_canvas(self):
         """Return (go, UICanvas) for the first canvas, or (None, None)."""
         canvases = self._get_all_canvases()
         if not canvases:
             return None, None
-        # If hierarchy has a selected object, prefer canvas that is ancestor
-        if self._hierarchy_panel:
-            sel_id = getattr(self._hierarchy_panel, '_selected_object_id', 0)
-            if sel_id:
-                for go, canvas in canvases:
-                    if self._is_descendant_of(sel_id, go):
-                        return go, canvas
+        # SelectionService is the only selection authority. The UI Editor must
+        # never infer semantic state from another panel's rendering cache.
+        from Infernux.engine.interaction import SelectionService
+
+        selected_id = SelectionService.instance().primary_scene_object_id()
+        if selected_id:
+            for go, canvas in canvases:
+                if self._is_descendant_of(selected_id, go):
+                    return go, canvas
         return canvases[0]
 
     def _get_focused_canvas(self, all_canvases=None):
@@ -69,10 +86,9 @@ class UIEditorCanvasOps:
         for go, canvas in all_canvases:
             if go.id == self._focused_canvas_id:
                 return go, canvas
-        # Fallback to first canvas
-        go, canvas = all_canvases[0]
-        self._focused_canvas_id = go.id
-        return go, canvas
+        # A query must never mutate editor state. The first canvas is only a
+        # presentation fallback until a user action establishes focus.
+        return all_canvases[0]
 
     def _find_canvas_for_object(self, go, all_canvases=None):
         """Return the owning canvas pair for *go*, or (None, None)."""
@@ -89,7 +105,11 @@ class UIEditorCanvasOps:
         """Set the focused canvas to the one that owns *go*."""
         canvas_go, canvas = self._find_canvas_for_object(go, all_canvases)
         if canvas_go is not None:
-            self._focused_canvas_id = canvas_go.id
+            self._set_focused_canvas_id(
+                canvas_go.id,
+                record_history=False,
+                description="Focus UI Canvas",
+            )
         return canvas_go, canvas
 
     def _ensure_canvas_layout(self, all_canvases):

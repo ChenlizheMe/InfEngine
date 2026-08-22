@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "notifications": [
+    {
+      "id": "python-3.12.8-certificate-revocation",
+      "hub_versions": ["0.2.10"],
+      "level": "warning",
+      "title": {
+        "en": "Python runtime update required",
+        "zh": "需要更新 Python 运行环境"
+      },
+      "message": {
+        "en": "The Windows signing certificate used by Python 3.12.8 was revoked, so Windows may refuse to install or run that runtime. This Hub build now uses an isolated Python 3.12.13 archive.\n\nOpen Installs and repair Python 3.12 to replace the Hub-managed runtime. Existing project runtimes created with Python 3.12.8 are separate copies and are not modified automatically.",
+        "zh": "Python 3.12.8 使用的 Windows 签名证书已被撤销，Windows 可能会拒绝安装或运行该版本。当前 Hub 已改用隔离的 Python 3.12.13 归档。\n\n请打开“安装”页面并修复 Python 3.12，以替换 Hub 管理的运行环境。已有项目中由 Python 3.12.8 创建的运行环境是独立副本，不会被自动修改。"
+      },
+      "action": {
+        "kind": "open_installs",
+        "label": {
+          "en": "Open Installs",
+          "zh": "打开安装页面"
+        }
+      }
+    }
+  ]
+}

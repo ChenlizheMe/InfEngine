@@ -1,8 +1,11 @@
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 
+#include <atomic>
 #include <cassert>
 #include <stdexcept>
+#include <thread>
 #include <utility>
+#include <vector>
 
 using infernux::GpuRetirementQueue;
 
@@ -56,5 +59,20 @@ int main()
     assert(stats.retired == 3);
     assert(stats.pending == 0);
     assert(stats.highWatermark >= 1);
+
+    GpuRetirementQueue concurrent;
+    concurrent.BindSerialSource([] { return 21; });
+    std::atomic<int> concurrentRetired{0};
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 32; ++index) {
+        workers.emplace_back(
+            [&] { concurrent.Retire([&] { concurrentRetired.fetch_add(1, std::memory_order_relaxed); }); });
+    }
+    for (auto &worker : workers)
+        worker.join();
+    assert(concurrent.PendingCount() == 32);
+    assert(concurrent.Collect(20) == 0);
+    assert(concurrent.Collect(21) == 32);
+    assert(concurrentRetired.load(std::memory_order_relaxed) == 32);
     return 0;
 }

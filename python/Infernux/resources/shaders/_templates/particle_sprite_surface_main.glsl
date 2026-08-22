@@ -16,6 +16,7 @@ void main() {
     SurfaceData s = InitSurfaceData();
     s.normalWS = normalize(v_Normal);
 ${SURFACE_CALL}
+    s.normalWS = ResolveSurfaceNormal(s.normalWS, v_Normal);
     float postSurfaceCoverage = v_ParticleAlpha;
     if (particleView.camera_up.w > 0.5) {
         ivec2 depthSize = textureSize(_InxParticleSceneDepth, 0);

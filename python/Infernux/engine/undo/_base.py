@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy as _copy
 import time as _time
+import uuid as _uuid
 from abc import ABC, abstractmethod
 from typing import Any, Callable, List, Optional
 
@@ -13,11 +14,16 @@ class UndoCommand(ABC):
 
     supports_redo: bool = True
     marks_dirty: bool = True
+    separates_history: bool = False
+    preserves_explicit_context: bool = False
     _is_property_edit: bool = False
+    before_selection_snapshot = None
+    after_selection_snapshot = None
 
     def __init__(self, description: str = ""):
         self.description: str = description
         self.timestamp: float = _time.time()
+        self.operation_id: str = _uuid.uuid4().hex
 
     @abstractmethod
     def execute(self) -> None: ...
@@ -27,6 +33,22 @@ class UndoCommand(ABC):
 
     def redo(self) -> None:
         self.execute()
+
+    def dispose(self) -> None:
+        """Release resources retained only for future replay.
+
+        The global action journal calls this exactly once after an action is
+        permanently removed from history. Most actions own no external
+        resources; asset transactions use it to remove disk-backed snapshots.
+        """
+        pass
+
+    def bind_operation_id(self, operation_id: str) -> None:
+        """Bind this command to the identity of its enclosing user action."""
+        value = str(operation_id or "").strip()
+        if not value:
+            raise ValueError("undo command operation id must not be empty")
+        self.operation_id = value
 
     def can_merge(self, other: UndoCommand) -> bool:
         return False
@@ -44,18 +66,70 @@ class CompoundCommand(UndoCommand):
         super().__init__(description or "Compound")
         self._commands = list(commands)
         self.marks_dirty = any(c.marks_dirty for c in self._commands)
+        self.preserves_explicit_context = bool(self._commands) and all(
+            command.preserves_explicit_context for command in self._commands
+        )
+        before_selection = next(
+            (
+                command.before_selection_snapshot
+                for command in self._commands
+                if command.before_selection_snapshot is not None
+            ),
+            None,
+        )
+        after_selection = next(
+            (
+                command.after_selection_snapshot
+                for command in reversed(self._commands)
+                if command.after_selection_snapshot is not None
+            ),
+            None,
+        )
+        if before_selection is not None and after_selection is not None:
+            self.before_selection_snapshot = before_selection
+            self.after_selection_snapshot = after_selection
 
     def execute(self) -> None:
-        for cmd in self._commands:
-            cmd.execute()
+        applied: list[UndoCommand] = []
+        try:
+            for cmd in self._commands:
+                cmd.execute()
+                applied.append(cmd)
+        except Exception:
+            for cmd in reversed(applied):
+                cmd.undo()
+            raise
 
     def undo(self) -> None:
-        for cmd in reversed(self._commands):
-            cmd.undo()
+        undone: list[UndoCommand] = []
+        try:
+            for cmd in reversed(self._commands):
+                cmd.undo()
+                undone.append(cmd)
+        except Exception:
+            for cmd in reversed(undone):
+                cmd.redo()
+            raise
 
     def redo(self) -> None:
-        for cmd in self._commands:
-            cmd.redo()
+        applied: list[UndoCommand] = []
+        try:
+            for cmd in self._commands:
+                cmd.redo()
+                applied.append(cmd)
+        except Exception:
+            for cmd in reversed(applied):
+                cmd.undo()
+            raise
+
+    def dispose(self) -> None:
+        for command in self._commands:
+            command.dispose()
+
+    def bind_operation_id(self, operation_id: str) -> None:
+        super().bind_operation_id(operation_id)
+        for command in self._commands:
+            command.bind_operation_id(self.operation_id)
 
 
 class LambdaCommand(UndoCommand):
@@ -137,7 +211,7 @@ def _snapshot_value(val: Any) -> Any:
 
     # RGBA colour fields: material ptype-7 ``[r,g,b,a]`` lists.
     try:
-        from Infernux.components.serialized_field import is_rgba_storage, snapshot_rgba
+        from Infernux.components.fields import is_rgba_storage, snapshot_rgba
         if is_rgba_storage(val):
             return snapshot_rgba(val)
     except Exception:

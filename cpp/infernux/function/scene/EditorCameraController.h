@@ -64,7 +64,7 @@ class EditorCameraController
     // Settings
     // ========================================================================
 
-    float rotationSpeed = 0.05f; // Degrees per pixel
+    float rotationSpeed = 0.15f; // Degrees per pixel
     float panSpeed = 1.0f;       // Unity-style pan multiplier
     float zoomSpeed = 1.0f;      // Units per scroll step
     float moveSpeed = 5.0f;      // Units per second

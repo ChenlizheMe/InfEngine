@@ -34,11 +34,9 @@ from .theme import Theme, ImGuiCol
 
 # ── Sub-module imports (re-exported for backward compatibility) ──
 from ._inspector_undo import (  # noqa: F401
-    _notify_scene_modified, _is_python_component_entry,
+    _is_python_component_entry,
     _record_property, _record_material_slot, _record_generic_component,
-    _record_add_component, _get_component_ids, _get_native_component_documents,
-    _record_add_component_compound,
-    _record_builtin_property, _TrackVolumeCommand, _record_track_volume,
+    _record_builtin_property, _record_track_volume,
 )
 from ._inspector_references import (  # noqa: F401
     _tooltip_and_info, _asset_guid_from_path, _resolve_guid_and_path,
@@ -49,8 +47,8 @@ from ._inspector_references import (  # noqa: F401
     _apply_reference_drop, _apply_gameobject_or_prefab_drop,
     _apply_builtin_audio_clip_drop,
     _game_object_has_required_component, _create_component_ref_from_go,
-    _picker_scene_gameobjects, _picker_assets,
-    render_object_field,
+    _picker_scene_gameobjects,
+    render_asset_reference_field, render_object_field,
 )
 from ._inspector_list_field import (  # noqa: F401
     _make_list_default_element, _infer_list_element_type,
@@ -87,72 +85,212 @@ _PY_COMPONENT_RENDERERS: dict = {}  # type_name -> render_fn(ctx, py_comp)
 _PY_COMPONENT_EXTRA_RENDERERS: dict = {}  # appended after generic serialized fields
 _COMPONENT_EXTRA_RENDERERS: dict = {}  # type_name -> render_fn(ctx, comp) appended after generic
 _COMPONENT_VALUE_CACHE: dict = {}
-_COMPONENT_VALUE_CACHE_TTL_S = 0.20
+_RUNTIME_VISIBLE_VALUE_POLL_S = 1.0 / 60.0
 _COMPONENT_VALUE_CACHE_MAX = 1024
+_PY_FIELDS_CACHE: dict = {}
 
 
 def _get_component_cache_id(comp) -> int:
-    return getattr(comp, 'component_id', None) or id(comp)
+    try:
+        state = object.__getattribute__(comp, "__dict__")
+    except (AttributeError, TypeError):
+        state = {}
+    for key in ("_component_id", "component_id"):
+        try:
+            value = int(state.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    descriptor = vars(type(comp)).get("component_id")
+    if isinstance(descriptor, property):
+        return id(comp)
+    try:
+        return int(getattr(comp, "component_id", 0) or id(comp))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return id(comp)
+
+
+def _component_is_passively_retired(comp) -> bool:
+    """Check retirement markers without invoking lifecycle-aware properties."""
+    try:
+        state = object.__getattribute__(comp, "__dict__")
+    except (AttributeError, TypeError):
+        return False
+    if bool(state.get("_is_destroyed", False)):
+        return True
+    return bool(
+        state.get("_is_builtin_component_wrapper", False)
+        and state.get("_cpp_component") is None
+    )
 
 
 def _begin_component_value_cache(kind: str, comp):
-    """Return (cache_entry, refresh_values) for a component scalar-value cache."""
-    in_play = _is_in_play_mode()
+    """Return cache state driven by schema/value revisions.
 
-    key = (kind, _get_component_cache_id(comp))
+    The Play-mode poll is a temporary visible-body fallback until every runtime
+    writer publishes through RuntimeChangeJournal.  Edit mode has no TTL and an
+    unchanged component performs no serialized-field getter calls.
+    """
+    from .inspector_snapshot import InspectorSnapshotService
+
+    in_play = _is_in_play_mode()
     now = _time.monotonic()
+    service = InspectorSnapshotService.instance()
+    snapshot = service.component_snapshot(comp)
+    key = (kind, snapshot.target, _get_component_cache_id(comp))
+    wrapper_token = id(comp)
+    native_generation = int(getattr(comp, "_native_generation", 0) or 0)
     entry = _COMPONENT_VALUE_CACHE.get(key)
     missing = entry is None
+    schema_changed = (
+        not missing
+        and entry.get("schema_revision", -1) != snapshot.schema_revision
+    )
+    wrapper_changed = (
+        not missing
+        and (
+            entry.get("wrapper_token") != wrapper_token
+            or entry.get("native_generation") != native_generation
+        )
+    )
+    value_changed = (
+        not missing
+        and entry.get("value_revision", -1) != snapshot.value_revision
+    )
+    runtime_poll = (
+        in_play
+        and not missing
+        and (now - entry.get("refreshed_at", 0.0))
+        >= _RUNTIME_VISIBLE_VALUE_POLL_S
+    )
 
-    if in_play:
-        # In play mode the undo system doesn't fire so generation never bumps.
-        # Rely solely on TTL-based expiry – values refresh ~5 times/sec,
-        # and the builtin plan is reused between refreshes.
-        generation = entry.get("generation", -1) if entry else -1
-        generation_changed = False
-    else:
-        generation = _inspector_support.get_inspector_value_generation()
-        generation_changed = False if missing else entry.get("generation") != generation
-
-    ttl_expired = False if missing else (now - entry.get("refreshed_at", 0.0)) >= _COMPONENT_VALUE_CACHE_TTL_S
-    refresh_values = missing or generation_changed or ttl_expired
-    if refresh_values:
-        if missing:
-            _record_profile_count(f"{kind}Cache_missMissing_count")
-        if generation_changed:
-            _record_profile_count(f"{kind}Cache_missGeneration_count")
-        if ttl_expired:
-            _record_profile_count(f"{kind}Cache_missTtl_count")
+    if missing:
+        _record_profile_count(f"{kind}Cache_missMissing_count")
         entry = {
-            "generation": generation,
+            "schema_revision": snapshot.schema_revision,
+            "value_revision": snapshot.value_revision,
             "refreshed_at": now,
             "values": {},
+            "field_revisions": {},
+            "wrapper_token": wrapper_token,
+            "native_generation": native_generation,
         }
         if len(_COMPONENT_VALUE_CACHE) >= _COMPONENT_VALUE_CACHE_MAX:
             _COMPONENT_VALUE_CACHE.clear()
         _COMPONENT_VALUE_CACHE[key] = entry
+    elif schema_changed or wrapper_changed:
+        _record_profile_count(
+            f"{kind}Cache_missSchema_count"
+            if schema_changed
+            else f"{kind}Cache_missWrapper_count"
+        )
+        entry["values"] = {}
+        entry["field_revisions"] = {}
+        entry.pop("builtin_plan", None)
+        entry.pop("py_plan", None)
+    elif value_changed:
+        _record_profile_count(f"{kind}Cache_missValue_count")
+    elif runtime_poll:
+        _record_profile_count(f"{kind}Cache_missRuntimePoll_count")
+        entry["values"] = {}
+        entry["field_revisions"] = {}
     else:
         _record_profile_count(f"{kind}Cache_hit_count")
-    return entry, refresh_values
+
+    rebuild_plan = (
+        missing or schema_changed or wrapper_changed or value_changed or runtime_poll
+    )
+    refresh_all_values = missing or schema_changed or wrapper_changed or runtime_poll
+    entry["schema_revision"] = snapshot.schema_revision
+    entry["value_revision"] = snapshot.value_revision
+    entry["wrapper_token"] = wrapper_token
+    entry["native_generation"] = native_generation
+    # Play stop keeps authored IDs but replaces the Python wrapper.  A lambda
+    # captured on the retired instance looks up InspectorTarget.none() and
+    # misses live field invalidation, so the next draw replays the pre-edit
+    # value and writes it back into C++.
+    entry["field_revision"] = lambda field_id, _service=service, _comp=comp: (
+        _service.field_revision(_comp, str(field_id))
+    )
+    if rebuild_plan:
+        entry["refreshed_at"] = now
+    return entry, rebuild_plan, refresh_all_values
 
 
 def _get_cached_component_value(cache_entry, refresh_values: bool, field_key, getter):
     values = cache_entry["values"]
-    if refresh_values or field_key not in values:
+    field_revisions = cache_entry.setdefault("field_revisions", {})
+    revision_getter = cache_entry.get("field_revision")
+    field_revision = revision_getter(field_key) if revision_getter else 0
+    if (
+        refresh_values
+        or field_key not in values
+        or field_revisions.get(field_key, -1) != field_revision
+    ):
         values[field_key] = getter()
+        field_revisions[field_key] = field_revision
     return values[field_key]
 
 
 def _invalidate_component_value_cache(cache_entry) -> None:
-    cache_entry["generation"] = _inspector_support.get_inspector_value_generation()
     cache_entry["refreshed_at"] = _time.monotonic()
     cache_entry["values"] = {}
+    cache_entry["field_revisions"] = {}
 
 
 def _invalidate_component_render_cache(cache_entry) -> None:
-    _invalidate_component_value_cache(cache_entry)
+    # A committed field edit already publishes its exact field revision.
+    # Rebuild only descriptors that embed the old value; retain sibling values
+    # so the next frame does not cross Python/native getters unnecessarily.
     cache_entry.pop("builtin_plan", None)
     cache_entry.pop("py_plan", None)
+
+
+def clear_component_value_cache() -> None:
+    """Drop every Builtin/Python Inspector value plan after a scene rebuild."""
+    _COMPONENT_VALUE_CACHE.clear()
+
+
+def _pack_builtin_batch_widget_value(meta, enum_members, current):
+    """Encode one cached CppProperty value for ``render_property_batch_plan_values``."""
+    from Infernux.components.fields import FieldType
+
+    field_type = meta.field_type
+    if field_type == FieldType.FLOAT:
+        return float(current or 0.0)
+    if field_type == FieldType.INT:
+        return int(current or 0)
+    if field_type == FieldType.BOOL:
+        return bool(current)
+    if field_type == FieldType.STRING:
+        return str(current or "")
+    if field_type == FieldType.ENUM:
+        if enum_members:
+            return _find_enum_index(enum_members, current)
+        try:
+            return int(current)
+        except (TypeError, ValueError):
+            return 0
+    if field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
+        count = 2 if field_type == FieldType.VEC2 else 3 if field_type == FieldType.VEC3 else 4
+        axes = ("x", "y", "z", "w")
+        packed = []
+        for index in range(count):
+            if current is None:
+                packed.append(0.0)
+                continue
+            try:
+                packed.append(float(getattr(current, axes[index])))
+                continue
+            except (AttributeError, TypeError, ValueError):
+                pass
+            try:
+                packed.append(float(current[index]))
+            except (TypeError, ValueError, IndexError):
+                packed.append(0.0)
+        return packed
+    return current
 
 
 _PROFILE_ENABLED = _inspector_support.is_inspector_profile_enabled()
@@ -176,7 +314,7 @@ def _record_profile_count(bucket: str, amount: float = 1.0) -> None:
 
 def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields, cache_entry, refresh_values):
     """Build a cached render plan for a BuiltinComponent inspector body."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     ops = []
     batch_descs = []
@@ -240,6 +378,7 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
                 "py_name": py_name,
                 "cpp_attr": cpp_attr,
                 "display_name": display_name,
+                "current": current,
             })
             continue
 
@@ -257,7 +396,7 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
         hdr = meta.header or ""
         spc = meta.space if meta.space and meta.space > 0 else 0.0
         desc = build_scalar_desc(
-            f"##{py_name}", pretty_field_name(py_name), meta, current,
+            f"##{py_name}", _serialized_field_label(py_name, meta), meta, current,
             header_text=hdr, space_before=spc,
             semantic_id=(inspector_component_semantic_id(comp, py_name)
                          if capture_semantics else ""),
@@ -304,30 +443,63 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
         kind = op["kind"]
 
         if kind == "batch":
-            changes = ctx.render_property_batch_plan(op["plan"], lw)
+            values = []
+            for _py_name, cpp_attr, meta, _old_value, enum_members in op["info"]:
+                current = _get_cached_component_value(
+                    cache_entry,
+                    False,
+                    cpp_attr,
+                    lambda _attr=cpp_attr: getattr(comp, _attr),
+                )
+                values.append(
+                    _pack_builtin_batch_widget_value(meta, enum_members, current)
+                )
+            renderer = getattr(ctx, "render_property_batch_plan_values", None)
+            if callable(renderer):
+                changes = renderer(op["plan"], values, lw)
+            else:
+                changes = ctx.render_property_batch_plan(op["plan"], lw)
             if changes:
                 _apply_batch_changes_builtin(comp, changes, op["info"])
                 edited = True
             continue
 
         if kind == "readonly":
-            ctx.label(f"{op['py_name']}: {op['current']}")
+            current = _get_cached_component_value(
+                cache_entry,
+                False,
+                op.get("cpp_attr", op["py_name"]),
+                lambda _attr=op.get("cpp_attr", op["py_name"]): getattr(comp, _attr, op["current"]),
+            )
+            ctx.label(f"{op['py_name']}: {current}")
             continue
 
         if kind == "asset_clip":
+            from Infernux.engine.ui._inspector_references import (
+                _apply_builtin_audio_clip_drop,
+                _resolve_asset_disk_path,
+            )
+
+            current_clip = op["current"]
+            clip_path = _resolve_asset_disk_path(current_clip)
             field_label(ctx, pretty_field_name(op["py_name"]), lw)
-            render_object_field(
+            render_asset_reference_field(
                 ctx,
                 f"audio_clip_{op['py_name']}",
                 op["display_name"],
                 "AudioClip",
+                asset_type="AudioClip",
                 accept_drag_type="AUDIO_FILE",
-                on_drop_callback=lambda payload, _comp=comp, _attr=op["cpp_attr"]: _apply_builtin_audio_clip_drop(_comp, _attr, payload),
+                on_assign=lambda payload, _comp=comp, _attr=op["cpp_attr"]: _apply_builtin_audio_clip_drop(_comp, _attr, payload),
+                on_clear=lambda _comp=comp, _attr=op["cpp_attr"], _old=current_clip: _record_builtin_property(_comp, _attr, _old, None, f"Clear {_attr}"),
+                ping_path=clip_path or None,
+                has_value=current_clip is not None,
+                reference_value=current_clip,
             )
             continue
 
         if kind == "asset_reference":
-            from Infernux.components.serialized_field import FieldType
+            from Infernux.components.fields import FieldType
 
             _render_asset_reference_field(
                 ctx, comp, op["py_name"], op["meta"], op["current"],
@@ -341,15 +513,21 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
                 ctx.label(op["header"])
             if op["space"] > 0:
                 ctx.dummy(0, op["space"])
+            current = _get_cached_component_value(
+                cache_entry,
+                False,
+                op["cpp_attr"],
+                lambda _attr=op["cpp_attr"]: getattr(comp, _attr),
+            )
             new_value = render_serialized_field(
-                ctx, f"##{op['py_name']}", pretty_field_name(op["py_name"]),
-                op["meta"], op["current"], lw,
+                ctx, f"##{op['py_name']}", _serialized_field_label(op["py_name"], op["meta"]),
+                op["meta"], current, lw,
             )
             record_inspector_component_item(
                 ctx, comp, op["py_name"], "inspector_field", pretty_field_name(op["py_name"]),
             )
-            if has_field_changed(op["meta"].field_type, op["current"], new_value):
-                _record_builtin_property(comp, op["cpp_attr"], op["current"], new_value,
+            if has_field_changed(op["meta"].field_type, current, new_value):
+                _record_builtin_property(comp, op["cpp_attr"], current, new_value,
                                          f"Set {op['py_name']}")
                 edited = True
 
@@ -406,6 +584,9 @@ def render_component(ctx: InxGUIContext, comp):
     BuiltinComponent subclasses into their Python wrapper and renders via
     the same ``render_py_component`` path that user scripts use, and
     finally falls back to the generic serialize-based renderer."""
+    if _component_is_passively_retired(comp):
+        return
+
     # 1. Central full-replacement renderers (e.g. Transform)
     renderer = _COMPONENT_RENDERERS.get(comp.type_name)
     if renderer:
@@ -534,7 +715,7 @@ def _render_multi_rows(ctx: InxGUIContext, rows):
 
 
 def _multi_enum_members(metadata):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     if metadata.field_type != FieldType.ENUM:
         return None
     enum_cls = metadata.enum_type
@@ -560,29 +741,46 @@ def _render_multi_batch(ctx: InxGUIContext, descriptors, label_width, apply_chan
 
 def _apply_multi_builtin_change(wrapped, token, metadata, new_value):
     py_name, cpp_attr = token
-    for comp in wrapped:
-        try:
-            old_value = getattr(comp, cpp_attr)
-        except Exception:
-            continue
-        if has_field_changed(metadata.field_type, old_value, new_value):
-            _record_builtin_property(comp, cpp_attr, old_value, new_value, f"Set {py_name}")
+    from Infernux.engine.interaction import make_attribute_property_transaction
+
+    transaction = make_attribute_property_transaction(
+        tuple(wrapped),
+        cpp_attr,
+        property_path=f"{type(wrapped[0]).__name__}.{cpp_attr}",
+        value_type=str(metadata.field_type),
+        description=f"Set {py_name}",
+        read_only=bool(getattr(metadata, "readonly", False)),
+        equivalent=lambda old, new: not has_field_changed(
+            metadata.field_type, old, new
+        ),
+    )
+    transaction.commit_or_raise(new_value)
+
+
+def _commit_python_component_field(comps, field_name, metadata, new_value):
+    from Infernux.engine.interaction import (
+        make_python_component_property_transaction,
+    )
+
+    transaction = make_python_component_property_transaction(
+        tuple(comps),
+        field_name,
+        value_type=str(metadata.field_type),
+        description=f"Set {field_name}",
+        read_only=bool(metadata.readonly),
+        equivalent=lambda old, new: not has_field_changed(
+            metadata.field_type, old, new
+        ),
+    )
+    return transaction.commit_or_raise(new_value)
 
 
 def _apply_multi_py_change(comps, field_name, metadata, new_value):
-    for comp in comps:
-        try:
-            old_value = getattr(comp, field_name, metadata.default)
-        except Exception:
-            old_value = metadata.default
-        if has_field_changed(metadata.field_type, old_value, new_value) and not metadata.readonly:
-            _record_property(comp, field_name, old_value, new_value, f"Set {field_name}")
-            if hasattr(comp, '_call_on_validate'):
-                comp._call_on_validate()
+    _commit_python_component_field(comps, field_name, metadata, new_value)
 
 
 def _metadata_for_json_value(value):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     field_type = None
     current = value
     if isinstance(value, bool):
@@ -623,7 +821,7 @@ def _metadata_for_json_value(value):
 
 
 def _json_value_from_batch(metadata, new_value):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     if metadata.field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
         count = 2 if metadata.field_type == FieldType.VEC2 else 3 if metadata.field_type == FieldType.VEC3 else 4
         return [float(new_value[i]) for i in range(count)]
@@ -632,17 +830,18 @@ def _json_value_from_batch(metadata, new_value):
 
 def _apply_multi_json_change(comps, key, metadata, new_value):
     json_value = _json_value_from_batch(metadata, new_value)
-    for comp in comps:
-        try:
-            original_document = comp.serialize_document()
-            data = dict(original_document)
-        except Exception:
-            continue
-        old_value = data.get(key)
-        if _multi_value_equal(old_value, json_value):
-            continue
-        data[key] = json_value
-        _record_generic_component(comp, original_document, data)
+    from Infernux.engine.interaction import (
+        make_native_document_property_transaction,
+    )
+
+    transaction = make_native_document_property_transaction(
+        tuple(comps),
+        key,
+        value_type=str(metadata.field_type),
+        description=f"Set {key}",
+        equivalent=_multi_value_equal,
+    )
+    transaction.commit_or_raise(json_value)
 
 
 def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
@@ -657,7 +856,7 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
         return
 
     from Infernux.components.builtin_component import BuiltinComponent
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     first = comps[0]
     wrapper_cls = BuiltinComponent._builtin_registry.get(getattr(first, "type_name", "")) if is_native else None
@@ -673,7 +872,7 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
             except Exception:
                 wrapped.append(comp)
         props = _collect_cpp_properties(wrapper_cls)
-        labels = [pretty_field_name(name) for name, _ in props]
+        labels = [_serialized_field_label(name, prop.metadata) for name, prop in props]
         lw = max_label_w(ctx, labels) if labels else 0.0
         descriptors = []
         rows = []
@@ -697,14 +896,14 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
             mixed = not _all_multi_values_equal(values)
             if meta.readonly:
                 display = _format_multi_value(values[0]) if not mixed else "--"
-                rows.append((pretty_field_name(py_name), display))
+                rows.append((_serialized_field_label(py_name, meta), display))
                 continue
             desc = build_scalar_desc(
-                f"##multi_{py_name}", pretty_field_name(py_name), meta, values[0], mixed=mixed,
+                f"##multi_{py_name}", _serialized_field_label(py_name, meta), meta, values[0], mixed=mixed,
             )
             if desc is None:
                 display = _format_multi_value(values[0]) if not mixed else "--"
-                rows.append((pretty_field_name(py_name), display))
+                rows.append((_serialized_field_label(py_name, meta), display))
                 continue
             descriptors.append((desc, meta, _multi_enum_members(meta), (py_name, cpp_prop.cpp_attr)))
         _render_multi_batch(
@@ -874,7 +1073,7 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
     Args:
         skip_fields: Optional set of Python attribute names to skip.
     """
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.components.builtin_component import BuiltinComponent
 
     # Ensure we have a Python wrapper for correct CppProperty behavior
@@ -889,12 +1088,12 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
         render_cpp_component_generic(ctx, comp)
         return
 
-    labels = [pretty_field_name(name) for name, _ in props]
+    labels = [_serialized_field_label(name, prop.metadata) for name, prop in props]
     lw = max_label_w(ctx, labels)
-    cache_entry, refresh_values = _begin_component_value_cache("builtin", comp)
+    cache_entry, rebuild_plan, refresh_values = _begin_component_value_cache("builtin", comp)
     skip_key = tuple(sorted(skip_fields)) if skip_fields else ()
     capture_semantics = semantic_capture_enabled(ctx)
-    plan = None if refresh_values else cache_entry.get("builtin_plan")
+    plan = None if rebuild_plan else cache_entry.get("builtin_plan")
     if (plan is None or plan.get("skip_fields") != skip_key
             or plan.get("semantic_capture", False) != capture_semantics):
         if plan is None:
@@ -925,7 +1124,7 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
 
 def _convert_batch_value(field_type, raw_value, enum_members):
     """Convert a raw value from C++ batch renderer to the correct Python type."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     if field_type == FieldType.VEC2:
         from Infernux.lib import Vector2
         return Vector2(raw_value[0], raw_value[1])
@@ -940,7 +1139,7 @@ def _convert_batch_value(field_type, raw_value, enum_members):
         if 0 <= idx < len(enum_members):
             return enum_members[idx]
     if field_type == FieldType.COLOR:
-        from Infernux.components.serialized_field import normalize_rgba
+        from Infernux.components.fields import normalize_rgba
         return normalize_rgba([
             raw_value[0], raw_value[1], raw_value[2], raw_value[3],
         ])
@@ -963,13 +1162,8 @@ def _apply_batch_changes_py(py_comp, changes: dict, batch_info: list):
         field_name, meta, old_value, enum_members = batch_info[idx]
         new_value = _convert_batch_value(meta.field_type, raw_value, enum_members)
         if has_field_changed(meta.field_type, old_value, new_value) and not meta.readonly:
-            from ._inspector_undo import _record_python_component_document_edit
-            _record_python_component_document_edit(
-                py_comp,
-                lambda _name=field_name, _value=new_value: setattr(py_comp, _name, _value),
-                f"Set {field_name}",
-                edit_key=field_name,
-                validate=True,
+            _commit_python_component_field(
+                (py_comp,), field_name, meta, new_value
             )
 
 
@@ -1035,10 +1229,6 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
         _record_generic_component(comp, original_document, data)
 
 
-# ── Asset-type reference field configuration ──
-_ASSET_REF_CONFIG = None  # lazy-initialized (needs FieldType import)
-
-
 def _try_custom_py_renderer(ctx, py_comp):
     """Try custom on_inspector_gui override or registered renderer. Returns True if handled."""
     on_gui = getattr(type(py_comp), 'on_inspector_gui', None)
@@ -1066,15 +1256,17 @@ def _try_custom_py_renderer(ctx, py_comp):
 
 def _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_values, _REF_TYPES):
     """Get the current value for a Python component field."""
+    if metadata.field_type in _REF_TYPES:
+        from Infernux.components.fields import get_raw_field_value
+
+        getter = lambda: get_raw_field_value(py_comp, field_name)
+    else:
+        getter = lambda: getattr(py_comp, field_name, metadata.default)
     try:
-        if metadata.field_type in _REF_TYPES:
-            from Infernux.components.serialized_field import get_raw_field_value
-            return get_raw_field_value(py_comp, field_name)
         return _get_cached_component_value(
-            cache_entry, refresh_values, field_name,
-            lambda _fn=field_name, _default=metadata.default: getattr(py_comp, _fn, _default),
+            cache_entry, refresh_values, field_name, getter,
         )
-    except RuntimeError:
+    except (AttributeError, ReferenceError, RuntimeError):
         return metadata.default
 
 
@@ -1089,11 +1281,11 @@ def _serialized_field_label(field_name, metadata) -> str:
 
 def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, flush_fn):
     """Render a non-scalar field (list, serializable object, component ref, etc.). Returns True if handled."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     ft = metadata.field_type
     if ft == FieldType.LIST:
         flush_fn()
-        from Infernux.components.serialized_field import get_raw_field_value
+        from Infernux.components.fields import get_raw_field_value
         _raw_list = get_raw_field_value(py_comp, field_name)
         _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
         _tooltip_and_info(ctx, metadata)
@@ -1113,7 +1305,7 @@ def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value
         _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
         _tooltip_and_info(ctx, metadata)
         return True
-    if ft in _get_asset_ref_config():
+    if ft == FieldType.ASSET or ft in _get_asset_ref_config():
         flush_fn()
         _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
         _tooltip_and_info(ctx, metadata)
@@ -1123,6 +1315,9 @@ def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value
 
 def render_py_component(ctx: InxGUIContext, py_comp):
     """Render a Python InxComponent's serialized fields."""
+    if _component_is_passively_retired(py_comp):
+        return
+
     from .inspector_declarative import get_inspector_model, render_inspector_model
 
     declarative_model = get_inspector_model(py_comp)
@@ -1132,14 +1327,26 @@ def render_py_component(ctx: InxGUIContext, py_comp):
     if _try_custom_py_renderer(ctx, py_comp):
         return
 
-    from Infernux.components.serialized_field import get_serialized_fields, FieldType
+    from Infernux.components.fields import get_serialized_fields, FieldType
 
-    fields = get_serialized_fields(py_comp.__class__)
-    lw = max_label_w(
-        ctx,
-        [_serialized_field_label(name, metadata) for name, metadata in fields.items()],
-    ) if fields else 0.0
-    cache_entry, refresh_values = _begin_component_value_cache("py", py_comp)
+    cache_entry, rebuild_plan, refresh_values = _begin_component_value_cache("py", py_comp)
+    fields_key = (py_comp.__class__, cache_entry["schema_revision"])
+    fields = _PY_FIELDS_CACHE.get(fields_key)
+    if fields is None:
+        fields = get_serialized_fields(py_comp.__class__)
+        if len(_PY_FIELDS_CACHE) >= 256:
+            _PY_FIELDS_CACHE.clear()
+        _PY_FIELDS_CACHE[fields_key] = fields
+    layout = cache_entry.get("py_layout")
+    if rebuild_plan or layout is None:
+        layout = {
+            "label_width": max_label_w(
+                ctx,
+                [_serialized_field_label(name, metadata) for name, metadata in fields.items()],
+            ) if fields else 0.0,
+        }
+        cache_entry["py_layout"] = layout
+    lw = layout["label_width"]
     capture_semantics = semantic_capture_enabled(ctx)
     _record_profile_count("bodyPyGenericTotal_count")
     _py_generic_t0 = _profile_start()
@@ -1157,8 +1364,6 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         _record_profile_timing("bodyPyGenericBatch", _batch_t0)
         if changes:
             _apply_batch_changes_py(py_comp, changes, batch_info)
-            _invalidate_component_value_cache(cache_entry)
-            refresh_values = True
         batch_descs = []
         batch_info = []
 
@@ -1239,16 +1444,9 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 ctx, py_comp, field_name, "inspector_field", _serialized_field_label(field_name, metadata),
             )
             if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
-                from ._inspector_undo import _record_python_component_document_edit
-                _record_python_component_document_edit(
-                    py_comp,
-                    lambda _name=field_name, _value=new_value: setattr(py_comp, _name, _value),
-                    f"Set {field_name}",
-                    edit_key=field_name,
-                    validate=True,
+                _commit_python_component_field(
+                    (py_comp,), field_name, metadata, new_value
                 )
-                _invalidate_component_value_cache(cache_entry)
-                refresh_values = True
             _tooltip_and_info(ctx, metadata)
 
         if desc is not None and metadata.info_text:

@@ -123,6 +123,24 @@ def test_data_path_uses_active_project_root(monkeypatch, tmp_path):
     assert Application.data_path() == str(tmp_path.resolve())
 
 
+def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
+    from Infernux.engine.project_context import set_project_root
+
+    asset = tmp_path / "Assets" / "Data" / "cache.npy"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"cache")
+    outside = tmp_path / "Library" / "cache.npy"
+    outside.parent.mkdir()
+    outside.write_bytes(b"cache")
+    set_project_root(str(tmp_path))
+    try:
+        assert Application.asset_path("Assets/Data/cache.npy") == str(asset.resolve())
+        with pytest.raises(FileNotFoundError, match="not available"):
+            Application.asset_path(str(outside))
+    finally:
+        set_project_root(None)
+
+
 def test_persistent_data_path_uses_project_root_in_editor(monkeypatch, tmp_path):
     engine = _Engine()
     Application._bind_engine(engine, "editor")

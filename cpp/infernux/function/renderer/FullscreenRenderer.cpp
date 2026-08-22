@@ -8,6 +8,7 @@
 #include "vk/VulkanRhiDevice.h"
 
 #include <algorithm>
+#include <array>
 #include <core/error/InxError.h>
 #include <unordered_map>
 #include <vector>
@@ -49,7 +50,8 @@ VkSamplerCreateInfo MakeSamplerCreateInfo(VkFilter filter, VkSamplerMipmapMode m
 bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const noexcept
 {
     return shaderName == other.shaderName && renderTargetLayout == other.renderTargetLayout &&
-           samples == other.samples && colorFormat == other.colorFormat && inputTextureCount == other.inputTextureCount;
+           samples == other.samples && colorFormat == other.colorFormat &&
+           inputTextureCount == other.inputTextureCount && useDynamicRendering == other.useDynamicRendering;
 }
 
 size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) const noexcept
@@ -60,6 +62,7 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(static_cast<size_t>(key.samples));
     combine(static_cast<size_t>(key.colorFormat));
     combine(key.inputTextureCount);
+    combine(key.useDynamicRendering ? 1U : 0U);
     return hash;
 }
 
@@ -150,8 +153,9 @@ struct FullscreenRenderer::Impl
     NativePipelineEntry CreatePipeline(const FullscreenPipelineKey &key)
     {
         NativePipelineEntry entry;
-        const VkRenderPass renderPass = rhiDevice ? rhiDevice->Resolve(key.renderTargetLayout) : VK_NULL_HANDLE;
-        if (!core || renderPass == VK_NULL_HANDLE)
+        const VkRenderPass renderPass =
+            rhiDevice && !key.useDynamicRendering ? rhiDevice->Resolve(key.renderTargetLayout) : VK_NULL_HANDLE;
+        if (!core || (!key.useDynamicRendering && renderPass == VK_NULL_HANDLE))
             return entry;
 
         std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -202,10 +206,17 @@ struct FullscreenRenderer::Impl
             return {};
         }
 
-        VkShaderModule vertex = core->GetShaderModule(key.shaderName, "vertex");
-        if (vertex == VK_NULL_HANDLE)
+        // Fullscreen effects name their fragment program only. Their vertex
+        // stage is the engine's fixed fullscreen triangle; probing for a
+        // same-named vertex asset first produces false missing-shader warnings
+        // and makes packed pipelines depend on an asset that cannot exist.
+        VkShaderModule vertex = VK_NULL_HANDLE;
+        if (core->EnsureShaderAvailable("Fullscreen Triangle", "vertex"))
             vertex = core->GetShaderModule("Fullscreen Triangle", "vertex");
-        const VkShaderModule fragment = core->GetShaderModule(key.shaderName, "fragment");
+        VkShaderModule fragment = VK_NULL_HANDLE;
+        if (core->EnsureShaderAvailable(key.shaderName, "fragment")) {
+            fragment = core->GetShaderModule(key.shaderName, "fragment");
+        }
         if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE) {
             INXLOG_ERROR("FullscreenRenderer: missing shader modules for '", key.shaderName, "'");
             DestroyPipeline(entry);
@@ -250,7 +261,22 @@ struct FullscreenRenderer::Impl
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState.dynamicState;
         pipelineInfo.layout = entry.layout;
-        pipelineInfo.renderPass = renderPass;
+        std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
+        VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
+        if (key.useDynamicRendering) {
+            rhi::GraphicsRenderingSignature signature;
+            signature.colorFormatCount = 1;
+            signature.colorFormats[0] = key.colorFormat;
+            signature.samples = key.samples;
+            if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
+                INXLOG_ERROR("FullscreenRenderer: invalid Dynamic Rendering signature for '", key.shaderName, "'");
+                DestroyPipeline(entry);
+                return {};
+            }
+            pipelineInfo.pNext = &dynamicRenderingInfo;
+        }
+        pipelineInfo.renderPass = key.useDynamicRendering ? VK_NULL_HANDLE : renderPass;
+        pipelineInfo.subpass = 0;
 
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &entry.pipeline) !=
             VK_SUCCESS) {

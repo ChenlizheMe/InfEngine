@@ -38,6 +38,7 @@ bool VulkanSubmissionExecutor::Initialize(VkDeviceContext &device, VulkanQueueMa
     m_queues = &queues;
     m_device = device.GetDevice();
     m_frames.resize((std::max)(frameSlotCount, 1u));
+    m_frameDiagnostics.resize(m_frames.size());
     for (FrameState &frame : m_frames) {
         if (!CreatePools(frame)) {
             Destroy();
@@ -88,6 +89,7 @@ void VulkanSubmissionExecutor::Destroy() noexcept
         }
     }
     m_frames.clear();
+    m_frameDiagnostics.clear();
     m_laneTimelines.clear();
     m_device = VK_NULL_HANDLE;
     m_queues = nullptr;
@@ -263,8 +265,64 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     tickets.reserve(plan.batches.size() + (needsTerminalJoin ? 1u : 0u));
     commands.reserve(plan.batches.size());
 
-    for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
-        const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
+    FrameDiagnostic &diagnostic = m_frameDiagnostics[frameSlot];
+    diagnostic = {};
+    diagnostic.previousTimeline = sync.previousFrameTimeline;
+    diagnostic.previousTimelineValue = sync.previousFrameTimelineValue;
+    diagnostic.uploadTimeline = sync.uploadTimeline;
+    diagnostic.uploadTimelineValue = sync.uploadTimelineValue;
+    diagnostic.batchRoles.reserve(plan.batches.size());
+    diagnostic.batchLanes.reserve(plan.batches.size());
+    diagnostic.batchSignalValues.reserve(plan.batches.size());
+    diagnostic.batchQueuePredecessors.reserve(plan.batches.size());
+    diagnostic.batchWaits.reserve(plan.batches.size());
+    diagnostic.batchNames.reserve(plan.batches.size());
+
+    try {
+        for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
+            const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
+            VkCommandBuffer commandBuffer = AcquireCommandBuffer(frame, batch.queue);
+            if (commandBuffer == VK_NULL_HANDLE) {
+                CancelReservations(tickets, 0);
+                return output;
+            }
+            commands.push_back(commandBuffer);
+
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+                CancelReservations(tickets, 0);
+                return output;
+            }
+
+            vkdebug::DescriptorRecordingScope descriptorRecording(
+                &m_deviceContext->GetRhiDevice().GetDescriptorManager(), sync.completionEpoch);
+            if (!recorder(static_cast<uint32_t>(batchIndex), commandBuffer) ||
+                vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+                return output;
+            }
+            const uint32_t lane = m_queues->GetSnapshot(batch.queue).nativeLane;
+            if (lane < m_laneTimelines.size())
+                signalValues[batchIndex] = m_laneTimelines[lane].nextValue++;
+            diagnostic.batchRoles.push_back(batch.queue);
+            diagnostic.batchLanes.push_back(lane);
+            diagnostic.batchSignalValues.push_back(signalValues[batchIndex]);
+            diagnostic.batchQueuePredecessors.push_back(batch.queuePredecessor);
+            diagnostic.batchWaits.push_back(batch.waitsFor);
+            diagnostic.batchNames.push_back(batch.diagnosticName);
+        }
+    } catch (...) {
+        throw;
+    }
+
+    // Recording may publish asynchronous resource uploads. Reserve frame
+    // submissions only after every recorder has finished so those uploads
+    // are ordered before any batch that waits on the upload timeline. If a
+    // transfer role aliases a compute lane, reserving first would put the
+    // consumer ahead of its producer and create a same-queue timeline
+    // deadlock during generation-prime particle work.
+    for (const rhi::SubmissionBatch &batch : plan.batches) {
         if (batch.device != m_deviceContext->GetDeviceId()) {
             INXLOG_ERROR("VulkanSubmissionExecutor rejected a batch for another device");
             CancelReservations(tickets, 0);
@@ -287,42 +345,6 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     }
     output.completionTicket = tickets.back();
 
-    try {
-        for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
-            const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
-            VkCommandBuffer commandBuffer = AcquireCommandBuffer(frame, batch.queue);
-            if (commandBuffer == VK_NULL_HANDLE) {
-                CancelReservations(tickets, 0);
-                return output;
-            }
-            commands.push_back(commandBuffer);
-
-            VkCommandBufferBeginInfo beginInfo{};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-                CancelReservations(tickets, 0);
-                return output;
-            }
-
-            const rhi::SubmissionTicket ticket = tickets[batchIndex];
-            m_deviceContext->GetRhiDevice().SetRecordingSubmissionSerial(sync.completionEpoch);
-            vkdebug::DescriptorRecordingScope descriptorRecording(
-                &m_deviceContext->GetRhiDevice().GetDescriptorManager(), sync.completionEpoch);
-            if (!recorder(static_cast<uint32_t>(batchIndex), commandBuffer) ||
-                vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-                CancelReservations(tickets, 0);
-                return output;
-            }
-            const uint32_t lane = m_queues->GetSnapshot(batch.queue).nativeLane;
-            if (lane < m_laneTimelines.size())
-                signalValues[batchIndex] = m_laneTimelines[lane].nextValue++;
-        }
-    } catch (...) {
-        CancelReservations(tickets, 0);
-        throw;
-    }
-
     size_t firstGraphicsBatch = plan.batches.size();
     size_t lastGraphicsBatch = plan.batches.size();
     for (size_t index = 0; index < plan.batches.size(); ++index) {
@@ -332,6 +354,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             lastGraphicsBatch = index;
         }
     }
+    const size_t previousFrameWaitBatch = sync.previousFrameWaitAtFirstBatch ? 0 : firstGraphicsBatch;
     std::vector<bool> laneSubmitted((std::max)(m_laneTimelines.size(), static_cast<size_t>(4)), false);
 
     for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
@@ -346,7 +369,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             waitStages.push_back(sync.imageAvailableStages);
             waitValues.push_back(0);
         }
-        if (batchIndex == firstGraphicsBatch && sync.previousFrameTimeline != VK_NULL_HANDLE &&
+        if (batchIndex == previousFrameWaitBatch && sync.previousFrameTimeline != VK_NULL_HANDLE &&
             sync.previousFrameTimelineValue != 0) {
             waits.push_back(sync.previousFrameTimeline);
             waitStages.push_back(sync.previousFrameStages);
@@ -519,7 +542,74 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     }
 
     output.result = VK_SUCCESS;
+    diagnostic.completionTimeline = output.completionTimeline;
+    diagnostic.completionTimelineValue = output.completionTimelineValue;
     return output;
+}
+
+void VulkanSubmissionExecutor::LogFrameWaitDiagnostics(uint32_t frameSlot, uint32_t elapsedMilliseconds) const noexcept
+{
+    if (m_device == VK_NULL_HANDLE || frameSlot >= m_frameDiagnostics.size())
+        return;
+
+    const FrameDiagnostic &diagnostic = m_frameDiagnostics[frameSlot];
+    const auto counterValue = [this](VkSemaphore semaphore) noexcept {
+        uint64_t value = 0;
+        if (semaphore == VK_NULL_HANDLE || vkGetSemaphoreCounterValue(m_device, semaphore, &value) != VK_SUCCESS)
+            return uint64_t{0};
+        return value;
+    };
+
+    std::vector<uint64_t> laneCurrent(m_laneTimelines.size(), 0);
+    std::string lanes;
+    for (size_t lane = 0; lane < m_laneTimelines.size(); ++lane) {
+        laneCurrent[lane] = counterValue(m_laneTimelines[lane].semaphore);
+        if (!lanes.empty())
+            lanes += ',';
+        lanes += std::to_string(lane) + "=" + std::to_string(laneCurrent[lane]) + "/" +
+                 std::to_string(m_laneTimelines[lane].nextValue > 0 ? m_laneTimelines[lane].nextValue - 1 : 0);
+    }
+
+    std::string batches;
+    for (size_t index = 0; index < diagnostic.batchRoles.size(); ++index) {
+        if (!batches.empty())
+            batches += ',';
+        const uint32_t lane = diagnostic.batchLanes[index];
+        const bool completed = lane < laneCurrent.size() && laneCurrent[lane] >= diagnostic.batchSignalValues[index];
+        batches += std::to_string(index) + ":r" + std::to_string(static_cast<uint32_t>(diagnostic.batchRoles[index])) +
+                   "/l" + std::to_string(lane) + "=" + std::to_string(diagnostic.batchSignalValues[index]) +
+                   (completed ? ":done" : ":pending");
+        if (index < diagnostic.batchNames.size() && !diagnostic.batchNames[index].empty())
+            batches += ":name='" + diagnostic.batchNames[index] + "'";
+        if (index < diagnostic.batchQueuePredecessors.size() &&
+            diagnostic.batchQueuePredecessors[index] != rhi::InvalidSubmissionBatchIndex)
+            batches += ":qprev=" + std::to_string(diagnostic.batchQueuePredecessors[index]);
+        if (index < diagnostic.batchWaits.size() && !diagnostic.batchWaits[index].empty()) {
+            batches += ":wait=[";
+            bool firstWait = true;
+            for (const auto &wait : diagnostic.batchWaits[index]) {
+                if (!firstWait)
+                    batches += '|';
+                firstWait = false;
+                batches += "b" + std::to_string(wait.sourceBatch);
+                if (wait.sourceBatch < diagnostic.batchSignalValues.size() &&
+                    wait.sourceBatch < diagnostic.batchLanes.size()) {
+                    const uint32_t sourceLane = diagnostic.batchLanes[wait.sourceBatch];
+                    batches += "/l" + std::to_string(sourceLane) + "=" +
+                               std::to_string(diagnostic.batchSignalValues[wait.sourceBatch]);
+                    if (sourceLane < laneCurrent.size())
+                        batches += "/current" + std::to_string(laneCurrent[sourceLane]);
+                }
+            }
+            batches += ']';
+        }
+    }
+
+    INXLOG_ERROR("VulkanSubmissionExecutor: frame slot ", frameSlot, " stalled for ", elapsedMilliseconds,
+                 " ms; lanes(current/submitted)=[", lanes, "] batches=[", batches,
+                 "] previous=", counterValue(diagnostic.previousTimeline), '/', diagnostic.previousTimelineValue,
+                 " upload=", counterValue(diagnostic.uploadTimeline), '/', diagnostic.uploadTimelineValue,
+                 " completion=", counterValue(diagnostic.completionTimeline), '/', diagnostic.completionTimelineValue);
 }
 
 void VulkanSubmissionExecutor::CompleteFrame(uint32_t frameSlot) noexcept

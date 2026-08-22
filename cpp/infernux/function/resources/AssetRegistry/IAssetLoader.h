@@ -93,6 +93,15 @@ class IAssetLoader
         return false;
     }
 
+    /// Load transient data needed to publish a runtime resource. The returned
+    /// payload must never be inserted into AssetRegistry; the consumer owns it
+    /// only until it has copied the data into its native staging resource.
+    virtual RuntimeAssetPayload LoadStaging(const std::string & /*filePath*/, const std::string & /*guid*/,
+                                            AssetDatabase * /*adb*/)
+    {
+        return nullptr;
+    }
+
     /// @brief Reload an already-loaded asset in-place.
     /// @return true on success.
     virtual bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
@@ -103,6 +112,9 @@ class IAssetLoader
     [[nodiscard]] virtual size_t EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const = 0;
 
     /// @brief Return GUIDs of assets this asset depends on.
+    ///
+    /// Durable dependency identity is GUID-only. Implementations must never
+    /// derive an edge from a path, path_hint, filename, or search result.
     virtual std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) = 0;
 
     /// @brief Create metadata from the source bytes already read by AssetDatabase.

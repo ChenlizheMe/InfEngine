@@ -261,6 +261,21 @@ inline std::string FilesystemPathKey(const std::string &path)
     return FoldFilesystemPathCase(ResolveFilesystemPath(path));
 }
 
+/**
+ * @brief Return a stable key for a filesystem-backed asset or virtual subresource.
+ *
+ * Project assets may append an engine-owned ``::kind:id`` suffix to a real
+ * filesystem path. Only the backing path participates in filesystem
+ * normalization; the virtual identity remains exact and case-sensitive.
+ */
+inline std::string AssetPathKey(const std::string &path)
+{
+    const auto virtualSuffix = path.find("::");
+    if (virtualSuffix == std::string::npos)
+        return FilesystemPathKey(path);
+    return FilesystemPathKey(path.substr(0, virtualSuffix)) + path.substr(virtualSuffix);
+}
+
 inline std::string LexicalFilesystemPathKey(const std::string &path)
 {
     return FoldFilesystemPathCase(NormalizeFilesystemPathLexically(path));

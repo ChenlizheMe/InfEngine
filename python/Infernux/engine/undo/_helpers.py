@@ -12,24 +12,31 @@ def _get_active_scene():
     return SceneManager.instance().get_active_scene()
 
 
+def _safe_attr(target: Any, name: str, default=None):
+    try:
+        return getattr(target, name, default)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return default
+
+
 def _game_object_id_of(target: Any) -> int:
-    goid = getattr(target, 'game_object_id', None) or 0
+    goid = _safe_attr(target, 'game_object_id') or 0
     if not goid:
-        go = getattr(target, 'game_object', None)
+        go = _safe_attr(target, 'game_object')
         if go is not None:
-            goid = getattr(go, 'id', 0) or 0
+            goid = _safe_attr(go, 'id', 0) or 0
     if not goid:
-        goid = getattr(target, 'id', 0) or 0
+        goid = _safe_attr(target, 'id', 0) or 0
     return goid
 
 
 def _comp_type_name_of(target: Any) -> str:
-    tn = getattr(target, 'type_name', None)
+    tn = _safe_attr(target, 'type_name')
     if tn:
         return str(tn)
-    if (getattr(target, 'id', 0)
-            and not getattr(target, 'component_id', 0)
-            and getattr(target, 'game_object', None) is None):
+    if (_safe_attr(target, 'id', 0)
+            and not _safe_attr(target, 'component_id', 0)
+            and _safe_attr(target, 'game_object') is None):
         return "GameObject"
     return type(target).__name__
 
@@ -105,17 +112,6 @@ def _find_live_native_component(obj, type_name: str):
     return None
 
 
-def _get_current_selection_ids() -> List[int]:
-    try:
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        sel = SelectionManager.instance()
-        if sel:
-            return sel.get_ids()
-    except Exception as exc:
-        Debug.log_suppressed("undo._get_current_selection_ids", exc)
-    return []
-
-
 def _bump_inspector_structure():
     try:
         from Infernux.engine.ui.inspector_support import bump_component_structure_version
@@ -125,10 +121,25 @@ def _bump_inspector_structure():
         pass
 
 
-def _bump_inspector_values():
+def _inspector_snapshot_revision() -> int:
+    try:
+        from Infernux.engine.ui.inspector_snapshot import InspectorSnapshotService
+
+        return InspectorSnapshotService.instance().revision()
+    except ImportError:
+        return 0
+
+
+def _bump_inspector_values(snapshot_baseline: int | None = None):
     try:
         from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
-        bump_inspector_value_generation()
+        from Infernux.engine.ui.inspector_snapshot import InspectorSnapshotService
+
+        publish_snapshot = (
+            snapshot_baseline is None
+            or InspectorSnapshotService.instance().revision() == snapshot_baseline
+        )
+        bump_inspector_value_generation(publish_snapshot=publish_snapshot)
     except ImportError:
         # Inspector module not available (e.g. headless / player mode) — no-op.
         pass

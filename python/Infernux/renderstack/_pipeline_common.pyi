@@ -10,6 +10,8 @@ DEPTH_TEXTURE: str
 SHADOW_MAP_TEXTURE: str
 MOTION_TEXTURE: str
 MOTION_MSAA_TEXTURE: str
+NORMAL_TEXTURE: str
+NORMAL_MSAA_TEXTURE: str
 BEFORE_POST_PROCESS_POINT: str
 AFTER_POST_PROCESS_POINT: str
 
@@ -18,7 +20,6 @@ GBUFFER_NORMAL_TEXTURE: str
 GBUFFER_MATERIAL_TEXTURE: str
 GBUFFER_EMISSION_TEXTURE: str
 
-SCENE_RESOURCES: set[str]
 POST_PROCESS_RESOURCES: set[str]
 GBUFFER_RESOURCES: set[str]
 
@@ -30,6 +31,7 @@ DEFERRED_LIGHTING_SHADER: str
 
 def opaque_queue_range() -> tuple[int, int]: ...
 def transparent_queue_range() -> tuple[int, int]: ...
+def result_resources(result) -> set[str]: ...
 def shadow_caster_queue_range() -> tuple[int, int]: ...
 def create_main_scene_targets(
     graph: RenderGraph,
@@ -64,11 +66,29 @@ def add_transparent_pass(
 def add_motion_vector_pass(
     graph: RenderGraph,
     *,
-    name: str,
+    source: str,
+    depth,
     queue_range: tuple[int, int],
     clear: bool = ...,
     sort_mode: str = ...,
     msaa_samples: int = ...,
-) -> None: ...
-def add_standard_post_process_section(graph: RenderGraph, *, enable_screen_ui: bool) -> None: ...
+) -> object | None: ...
+def add_normal_buffer_pass(
+    graph: RenderGraph,
+    *,
+    source: str,
+    depth,
+    queue_range: tuple[int, int] | None = ...,
+    msaa_samples: int = ...,
+) -> object | None: ...
+def add_base_color_buffer_pass(
+    graph: RenderGraph,
+    *,
+    source: str,
+    depth,
+    queue_range: tuple[int, int],
+    msaa_samples: int = ...,
+) -> object: ...
+def add_standard_post_process_section(graph: RenderGraph, result=...) -> None: ...
 def ensure_standard_post_process_points(graph: RenderGraph) -> None: ...
+def ensure_standard_screen_ui_tail(graph: RenderGraph) -> None: ...

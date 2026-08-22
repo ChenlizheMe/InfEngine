@@ -12,6 +12,7 @@
 #pragma once
 
 #include "InxRenderStruct.h"
+#include "rhi/RhiDescriptors.h"
 #include "rhi/RhiHandles.h"
 #include "vk/VkDescriptorManager.h"
 #include <cstdint>
@@ -148,8 +149,11 @@ class OutlineRenderer
     // Rendering
     // ========================================================================
 
-    /// @brief Build pipelines against the graph-owned compatible render passes.
-    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass);
+    /// @brief Build pipelines against the graph's compiled attachment contracts.
+    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass,
+                              VkSampleCountFlagBits compositeSamples,
+                              const rhi::GraphicsRenderingSignature &maskSignature,
+                              const rhi::GraphicsRenderingSignature &compositeSignature);
 
     /// @brief Record selected-object draws inside the active graph mask pass.
     void RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls,
@@ -199,9 +203,15 @@ class OutlineRenderer
     // Vulkan Resources (owned)
     // ========================================================================
 
-    // Non-owning graph render-pass compatibility handles.
+    // Non-owning graph render-pass compatibility handles. They are null when
+    // the graph compiled the pass with Dynamic Rendering.
     VkRenderPass m_outlineMaskRenderPass = VK_NULL_HANDLE;
     VkRenderPass m_outlineCompositeRenderPass = VK_NULL_HANDLE;
+    VkSampleCountFlagBits m_outlineCompositeSamples = VK_SAMPLE_COUNT_1_BIT;
+    bool m_outlineMaskUsesDynamicRendering = false;
+    bool m_outlineCompositeUsesDynamicRendering = false;
+    rhi::GraphicsRenderingSignature m_outlineMaskRenderingSignature;
+    rhi::GraphicsRenderingSignature m_outlineCompositeRenderingSignature;
 
     // Mask pipeline (renders selected object as white silhouette)
     VkPipeline m_outlineMaskPipeline = VK_NULL_HANDLE;
@@ -267,6 +277,7 @@ class OutlineRenderer
     glm::vec4 m_outlineColor{1.0f, 0.5f, 0.0f, 1.0f}; // Bright orange
     float m_outlinePixelWidth = 3.0f;
     bool m_resourcesReady = false;
+    bool m_missingShadersReported = false;
 };
 
 } // namespace infernux

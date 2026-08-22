@@ -54,18 +54,23 @@ def register_editor_tools(mcp) -> None:
             from Infernux.engine.deferred_task import DeferredTaskRunner
             from Infernux.engine.play_mode import PlayModeManager
             from Infernux.engine.scene_manager import SceneFileManager
-            from Infernux.engine.ui.selection_manager import SelectionManager
+            from Infernux.engine.interaction import SelectionService
 
             pmm = PlayModeManager.instance()
             sfm = SceneFileManager.instance()
-            sel = SelectionManager.instance()
+            selection = SelectionService.instance()
             runner = DeferredTaskRunner.instance()
             return {
                 "play_state": getattr(getattr(pmm, "state", None), "name", "edit").lower() if pmm else "edit",
                 "deferred_task_busy": bool(getattr(runner, "is_busy", False)),
-                "selected_ids": sel.get_ids() if sel else [],
+                "deferred_task_name": str(getattr(runner, "active_task_name", "") or ""),
+                "deferred_step_label": str(getattr(runner, "active_step_label", "") or ""),
+                "selected_ids": list(selection.scene_object_ids()),
                 "scene_dirty": bool(sfm.is_dirty) if sfm else False,
                 "is_prefab_mode": bool(getattr(sfm, "is_prefab_mode", False)) if sfm else False,
+                "play_mode_transition_ms": (
+                    pmm.last_transition_timings_ms if pmm else {}
+                ),
                 "scene_status": scene_status(),
             }
 
@@ -76,7 +81,6 @@ def register_editor_tools(mcp) -> None:
         """Focus an open docked panel without moving or resizing the Editor window."""
 
         def _focus():
-            from Infernux.engine.ui.closable_panel import ClosablePanel
             from Infernux.engine.ui.window_manager import WindowManager
 
             target_id = str(panel_id).strip()
@@ -86,7 +90,6 @@ def register_editor_tools(mcp) -> None:
             if manager is None:
                 raise RuntimeError("WindowManager is not available.")
             manager.focus_window(target_id)
-            ClosablePanel.focus_panel_by_id(target_id)
             return {
                 "panel_id": target_id,
                 "focus_requested": True,
@@ -102,41 +105,25 @@ def register_editor_tools(mcp) -> None:
         """Save the focused document, falling back to the active scene."""
 
         def _save():
-            from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
-            from Infernux.engine.project_context import is_panel_dirty
-            from Infernux.engine.scene_manager import SceneFileManager
-            from Infernux.engine.ui.closable_panel import ClosablePanel
-            from Infernux.engine.ui.window_manager import WindowManager
+            from Infernux.engine.interaction import EditorInteractionCore
 
-            window_manager = WindowManager.instance()
-            scene_manager = SceneFileManager.instance()
-            if window_manager is None or scene_manager is None:
-                raise RuntimeError("Editor save services are not available.")
-
-            panel_id = str(ClosablePanel.get_active_panel_id() or "")
-            panel = window_manager.get_window_instance(panel_id) if panel_id else None
-            handler = getattr(panel, "handle_save_command", None)
-            document_target = bool(panel_id and callable(handler))
-            dirty_before = (
-                bool(is_panel_dirty(panel_id))
-                if document_target
-                else bool(scene_manager.is_dirty)
-            )
-
-            BootstrapWiringMixin._save_focused_document(window_manager, scene_manager)
-
-            dirty_after = (
-                bool(is_panel_dirty(panel_id))
-                if document_target
-                else bool(scene_manager.is_dirty)
-            )
+            core = EditorInteractionCore.instance()
+            if core is None:
+                raise RuntimeError("Editor save service is not available.")
+            saved = core.saving.save_focused()
+            document = core.documents.get(saved.document_id)
+            dirty_after = bool(document.is_dirty) if document else saved.dirty_before
             return {
-                "target": "document" if document_target else "scene",
-                "panel_id": panel_id if document_target else "",
-                "dirty_before": dirty_before,
+                "target": saved.target,
+                "panel_id": saved.panel_id,
+                "document_id": saved.document_id,
+                "dirty_before": saved.dirty_before,
                 "dirty_after": dirty_after,
-                "saved": not dirty_after,
-                "save_as_required": bool(dirty_after),
+                "accepted": saved.accepted,
+                "status": saved.result.status.value,
+                "saved": saved.result.status.value in {"applied", "no_op"},
+                "save_as_required": bool(dirty_after and not document.resource_path) if document else False,
+                "message": saved.result.message,
             }
 
         return main_thread("editor_save_focused", _save)
@@ -146,7 +133,10 @@ def register_editor_tools(mcp) -> None:
         """Save one open document panel without taking keyboard focus."""
 
         def _save():
-            from Infernux.engine.project_context import is_panel_dirty
+            from Infernux.engine.interaction import (
+                ContinuousEditService,
+                DocumentRegistry,
+            )
             from Infernux.engine.ui.window_manager import WindowManager
 
             target_id = str(panel_id).strip()
@@ -158,23 +148,32 @@ def register_editor_tools(mcp) -> None:
             panel = window_manager.get_window_instance(target_id)
             if panel is None or not window_manager.is_window_open(target_id):
                 raise RuntimeError(f"Editor document panel is not open: {target_id!r}")
-            handler = getattr(panel, "handle_save_command", None)
-            if not callable(handler):
+            registry = DocumentRegistry.instance()
+            document = registry.document_for_view(target_id)
+            if document is None:
                 raise RuntimeError(
                     f"Editor panel does not own a savable document: {target_id!r}"
                 )
 
-            dirty_before = bool(is_panel_dirty(target_id))
-            handled = bool(handler(save_as=False))
-            dirty_after = bool(is_panel_dirty(target_id))
+            dirty_before = document.is_dirty
+            ContinuousEditService.instance().commit_document(document.document_id)
+            result = registry.request_save(document.document_id)
+            dirty_after = document.is_dirty
+            status = result.status.value
             return {
                 "target": "document",
                 "panel_id": target_id,
-                "handled": handled,
+                "document_id": document.document_id,
+                "handled": result.accepted,
                 "dirty_before": dirty_before,
                 "dirty_after": dirty_after,
-                "saved": handled and not dirty_after,
-                "save_as_required": handled and dirty_after,
+                "status": status,
+                "saved": status in {"applied", "no_op"}
+                or (result.accepted and not dirty_after),
+                "save_as_required": bool(
+                    result.accepted and dirty_after and not document.resource_path
+                ),
+                "message": result.message,
             }
 
         return main_thread(
@@ -277,7 +276,10 @@ def register_editor_tools(mcp) -> None:
             if pmm.state.name.lower() != "paused":
                 raise RuntimeError("editor_step requires paused Play Mode. Call editor_pause after editor_play before stepping.")
             pmm.step_frame()
-            return {"state": pmm.state.name.lower()}
+            return {
+                "state": pmm.state.name.lower(),
+                "step_sequence": int(pmm.step_sequence),
+            }
 
         return main_thread("editor_step", _step)
 
@@ -286,23 +288,25 @@ def register_editor_tools(mcp) -> None:
         """Set the current editor selection."""
 
         def _select():
-            from Infernux.engine.ui.event_bus import EditorEvent, EditorEventBus
-            from Infernux.engine.ui.selection_manager import SelectionManager
-            from Infernux.lib import SceneManager
+            from Infernux.engine.interaction import SelectionService
 
-            sel = SelectionManager.instance()
+            selection = SelectionService.instance()
             ids = [int(i) for i in (object_ids or []) if int(i) > 0]
             if primary_id:
-                sel.select(int(primary_id))
+                selection.select_scene_object(
+                    int(primary_id),
+                    owner_id="automation",
+                    reason="mcp_editor_select",
+                )
             elif ids:
-                sel.box_select(ids)
+                selection.replace_scene_objects(
+                    ids,
+                    owner_id="automation",
+                    reason="mcp_editor_select",
+                )
             else:
-                sel.clear()
-            selected_ids = sel.get_ids()
-            primary = int(sel.get_primary() or 0)
-            scene = SceneManager.instance().get_active_scene()
-            selected = scene.find_by_id(primary) if scene is not None and primary else None
-            EditorEventBus.instance().emit(EditorEvent.SELECTION_CHANGED, selected)
+                selection.clear(reason="mcp_editor_select")
+            selected_ids = list(selection.scene_object_ids())
             return {"selected_ids": selected_ids}
 
         return main_thread("editor_select", _select, arguments={"object_ids": object_ids or [], "primary_id": primary_id})

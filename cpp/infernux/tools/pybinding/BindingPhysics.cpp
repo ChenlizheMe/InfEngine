@@ -2,8 +2,10 @@
  * @file BindingPhysics.cpp
  * @brief Python bindings for physics collider components, PhysicsWorld, and raycast API.
  *
- * Registers BoxCollider, SphereCollider, CapsuleCollider, RaycastHit, and
- * a "Physics" static class with Raycast/RaycastAll methods.
+ * Registers BoxCollider, SphereCollider, CapsuleCollider, CylinderCollider,
+ * RaycastHit, and
+ * a "Physics" static
+ * class with Raycast/RaycastAll methods.
  */
 
 // Jolt types are no longer exposed in collider headers — no Jolt include needed here
@@ -15,6 +17,7 @@
 #include "function/scene/CapsuleCollider.h"
 #include "function/scene/Collider.h"
 #include "function/scene/Component.h"
+#include "function/scene/CylinderCollider.h"
 #include "function/scene/GameObject.h"
 #include "function/scene/MeshCollider.h"
 #include "function/scene/Rigidbody.h"
@@ -209,6 +212,20 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def("deserialize", &CapsuleCollider::Deserialize, "json_str"_a);
 
     // ====================================================================
+    // CylinderCollider
+    // ====================================================================
+    py::class_<CylinderCollider, Collider>(m, "CylinderCollider")
+        .def(py::init<>())
+        .def_property("radius", &CylinderCollider::GetRadius, &CylinderCollider::SetRadius,
+                      "Radius of the cylinder collider")
+        .def_property("height", &CylinderCollider::GetHeight, &CylinderCollider::SetHeight,
+                      "Total height of the cylinder")
+        .def_property("direction", &CylinderCollider::GetDirection, &CylinderCollider::SetDirection,
+                      "Direction axis: 0=X, 1=Y, 2=Z")
+        .def("serialize", &CylinderCollider::Serialize)
+        .def("deserialize", &CylinderCollider::Deserialize, "json_str"_a);
+
+    // ====================================================================
     // MeshCollider
     // ====================================================================
     py::class_<MeshCollider, Collider>(m, "MeshCollider")
@@ -288,6 +305,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     py::enum_<CollisionDetectionMode>(m, "CollisionDetectionMode")
         .value("Discrete", CollisionDetectionMode::Discrete)
         .value("Continuous", CollisionDetectionMode::Continuous)
+        .value("ContinuousDynamic", CollisionDetectionMode::ContinuousDynamic)
         .export_values();
 
     py::enum_<RigidbodyInterpolation>(m, "RigidbodyInterpolation")

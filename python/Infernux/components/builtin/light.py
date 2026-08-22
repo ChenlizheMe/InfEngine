@@ -24,8 +24,8 @@ from __future__ import annotations
 import math
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
-from Infernux.gizmos.gizmos import ICON_KIND_LIGHT
+from Infernux.components.fields import FieldType
+from Infernux.components._gizmo_ids import ICON_KIND_LIGHT
 
 
 _DIRECTIONAL_LIGHT = 0

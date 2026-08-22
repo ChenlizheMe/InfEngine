@@ -53,7 +53,9 @@ Pythonic wrapper around C++ InxMaterial.
 | Method | Description |
 |------|------|
 | `to_dict() → dict` | Return the material document without encoding JSON text. |
+| `serialize_document() → dict` |  |
 | `apply_dict(document: dict) → bool` | Transactionally apply a material document. |
+| `deserialize_document(document: dict) → bool` |  |
 | `dispose() → None` | Release the underlying native material resources. |
 | `clone() → Material` | Create a deep copy of this material, including shader state and properties. |
 | `set_shader(shader_name: str) → None` | Set the shader used by this material. |
@@ -114,7 +116,7 @@ Pythonic wrapper around C++ InxMaterial.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

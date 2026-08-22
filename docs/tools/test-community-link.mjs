@@ -5,6 +5,12 @@ import path from "node:path";
 const root = path.resolve(".");
 const docsRoot = path.join(root, "docs");
 const communityUrl = "https://infernux-engine.discourse.group/";
+const learningCourses = JSON.parse(
+    await readFile(path.join(docsRoot, "learn", "learning-courses.json"), "utf8")
+);
+const learningChapters = (await Promise.all(learningCourses.map(async (course) => JSON.parse(
+    await readFile(path.join(docsRoot, "learn", course.manifest), "utf8")
+)))).flat();
 
 async function exists(target) {
     return stat(target).then(() => true).catch(() => false);
@@ -22,8 +28,8 @@ for (const relative of [
     "roadmap.html",
     "download.html",
     "404.html",
-    path.join("learn", "shaders.html"),
-    path.join("learn", "renderstack-post-processing.html"),
+    ...learningCourses.map((course) => path.join("learn", `${course.slug}.html`)),
+    ...learningChapters.map((chapter) => path.join("learn", `${chapter.slug}.html`)),
     path.join("wiki", "theme", "main.html"),
 ]) {
     const source = await readFile(path.join(docsRoot, relative), "utf8");

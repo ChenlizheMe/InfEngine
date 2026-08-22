@@ -16,7 +16,7 @@ A handle to a running coroutine.
 
 | Signature | Description |
 |------|------|
-| `Coroutine.__init__(generator: Generator, owner: Any = ...) → None` |  |
+| `Coroutine.__init__(generator: Generator, owner: Any = ..., creation_epoch: Any = ...) → None` |  |
 
 <!-- USER CONTENT START --> constructors
 
@@ -27,6 +27,9 @@ A handle to a running coroutine.
 | Name | Type | Description |
 |------|------|------|
 | is_finished | `bool` | Returns True if the coroutine has completed. *(read-only)* |
+| creation_epoch | `Any` |  *(read-only)* |
+| creation_epoch_id | `int` |  *(read-only)* |
+| is_legacy | `bool` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -35,7 +38,7 @@ A handle to a running coroutine.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

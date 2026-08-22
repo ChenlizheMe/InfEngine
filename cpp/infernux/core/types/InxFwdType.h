@@ -13,7 +13,7 @@ enum class ResourceType
     Mesh,
     Material, // Material (.mat) - JSON file with vert + frag shader paths
     Script,   // Python script (.py) - for component scripts and editor tools
-    Audio,    // Audio (.wav) - audio clip for playback via AudioSource
+    Audio,    // Decoded audio clip (.wav/.ogg/.mp3/.flac) for AudioSource
     DefaultText,
     DefaultBinary,
     PhysicMaterial, // Physics surface material (.physicMaterial)

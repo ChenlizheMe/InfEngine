@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any, Callable, Optional
 
 from Infernux.debug import Debug
@@ -98,7 +99,7 @@ class GenericComponentCommand(UndoCommand):
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, comp: Any, old_document: dict, new_document: dict,
-                 description: str = ""):
+                 description: str = "", *, mergeable: bool = True):
         super().__init__(description or f"Edit {getattr(comp, 'type_name', 'Component')}")
         self._comp = comp
         self._old_document = copy.deepcopy(old_document)
@@ -106,6 +107,7 @@ class GenericComponentCommand(UndoCommand):
         self._comp_id: int = getattr(comp, "component_id", id(comp))
         self._game_object_id: int = _game_object_id_of(comp)
         self._comp_type_name: str = _comp_type_name_of(comp)
+        self._mergeable = bool(mergeable)
 
     def _live(self):
         return _resolve_target(self._comp, self._game_object_id, self._comp_type_name)
@@ -136,7 +138,9 @@ class GenericComponentCommand(UndoCommand):
     def can_merge(self, other: UndoCommand) -> bool:
         if not isinstance(other, GenericComponentCommand):
             return False
-        return (self._comp_id == other._comp_id
+        return (self._mergeable
+                and other._mergeable
+                and self._comp_id == other._comp_id
                 and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW)
 
     def merge(self, other: GenericComponentCommand) -> None:
@@ -274,9 +278,30 @@ class MaterialDocumentCommand(UndoCommand):
             if fp:
                 try:
                     from Infernux.core.assets import AssetManager
-                    AssetManager.on_material_saved(fp)
+
+                    serialize = getattr(self._material, "serialize", None)
+                    material_json = serialize() if callable(serialize) else ""
+                    if not isinstance(material_json, str) or not material_json:
+                        material_json = json.dumps(
+                            document,
+                            ensure_ascii=False,
+                            allow_nan=False,
+                            separators=(",", ":"),
+                        )
+                    # save() only submits durability. The restored material is
+                    # already the authoritative live value, so publish its
+                    # preview revision without evicting/reloading the cache.
+                    # note_asset_edit deduplicates a snapshot already emitted
+                    # by set_material_save_snapshot.
+                    AssetManager.note_asset_edit(
+                        fp,
+                        material_json=material_json,
+                    )
                 except Exception as exc:
-                    Debug.log_suppressed("undo._property_commands.AssetManager.on_material_saved", exc)
+                    Debug.log_suppressed(
+                        "undo._property_commands.AssetManager.note_asset_edit",
+                        exc,
+                    )
         if self._refresh_callback:
             self._refresh_callback(self._material)
 
@@ -397,4 +422,65 @@ class SetMaterialSlotCommand(UndoCommand):
 
     def merge(self, other: SetMaterialSlotCommand) -> None:
         self._new_guid = other._new_guid
+        self.timestamp = other.timestamp
+
+
+class SceneEnvironmentCommand(UndoCommand):
+    """Apply one environment delta to the scene document owning the action."""
+
+    _is_property_edit = True
+    MERGE_WINDOW: float = 0.3
+
+    def __init__(self, old_values: dict, new_values: dict,
+                 description: str = "Edit Environment"):
+        super().__init__(description)
+        self._old_values = copy.deepcopy(old_values)
+        self._new_values = copy.deepcopy(new_values)
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        sfm = SceneFileManager.instance()
+        document_id = sfm.document_id if sfm is not None else ""
+        locator = DocumentRegistry.instance().locate(document_id) if document_id else None
+        self._scene_stable_id = locator.stable_id if locator is not None else ""
+
+    def _scene(self):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.scene_manager import SceneFileManager
+        from Infernux.lib import SceneManager
+
+        sfm = SceneFileManager.instance()
+        document_id = sfm.document_id if sfm is not None else ""
+        locator = DocumentRegistry.instance().locate(document_id) if document_id else None
+        if not self._scene_stable_id or locator is None:
+            raise RuntimeError("environment command has no live scene document")
+        if locator.stable_id != self._scene_stable_id:
+            raise RuntimeError("environment command resolved to a different scene document")
+        scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            raise RuntimeError("environment command has no active scene")
+        return scene
+
+    def _apply(self, values: dict) -> None:
+        self._scene().set_environment(copy.deepcopy(values))
+
+    def execute(self) -> None:
+        self._apply(self._new_values)
+
+    def undo(self) -> None:
+        self._apply(self._old_values)
+
+    def redo(self) -> None:
+        self._apply(self._new_values)
+
+    def can_merge(self, other: UndoCommand) -> bool:
+        return (
+            isinstance(other, SceneEnvironmentCommand)
+            and self._scene_stable_id == other._scene_stable_id
+            and tuple(sorted(self._new_values)) == tuple(sorted(other._new_values))
+            and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
+        )
+
+    def merge(self, other: SceneEnvironmentCommand) -> None:
+        self._new_values = copy.deepcopy(other._new_values)
         self.timestamp = other.timestamp

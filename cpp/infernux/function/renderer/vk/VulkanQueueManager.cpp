@@ -263,7 +263,7 @@ void VulkanQueueManager::MarkCompleted(rhi::SubmissionTicket ticket) noexcept
     queue.completed = (std::max)(queue.completed, ticket.serial);
 }
 
-bool VulkanQueueManager::WaitForGraphicsFrameSlot(uint32_t frameSlot) noexcept
+bool VulkanQueueManager::WaitForGraphicsFrameSlot(uint32_t frameSlot, const FrameWaitDiagnostic &diagnostic) noexcept
 {
     VkDevice device = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -278,6 +278,9 @@ bool VulkanQueueManager::WaitForGraphicsFrameSlot(uint32_t frameSlot) noexcept
         return false;
 
     constexpr uint64_t kPollTimeoutNs = 50'000'000;
+    constexpr uint32_t kInitialDiagnosticPolls = 20;
+    constexpr uint32_t kRepeatedDiagnosticPolls = 100;
+    uint32_t timeoutPolls = 0;
     while (true) {
         const VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, kPollTimeoutNs);
         if (result == VK_SUCCESS)
@@ -286,6 +289,28 @@ bool VulkanQueueManager::WaitForGraphicsFrameSlot(uint32_t frameSlot) noexcept
             INXLOG_ERROR("VulkanQueueManager: graphics frame fence wait failed with VkResult ",
                          static_cast<int>(result));
             return false;
+        }
+        ++timeoutPolls;
+        if (timeoutPolls == kInitialDiagnosticPolls ||
+            (timeoutPolls > kInitialDiagnosticPolls &&
+             (timeoutPolls - kInitialDiagnosticPolls) % kRepeatedDiagnosticPolls == 0)) {
+            FrameSlotState state{};
+            {
+                std::lock_guard lock(m_mutex);
+                if (frameSlot < m_graphicsFrameSlots.size())
+                    state = m_graphicsFrameSlots[frameSlot];
+            }
+            INXLOG_ERROR("VulkanQueueManager: graphics frame slot ", frameSlot, " has not completed after ",
+                         timeoutPolls * 50, " ms; completion_epoch=", state.completionEpoch,
+                         " terminal_role=", static_cast<uint32_t>(state.terminalTicket.queue),
+                         " terminal_serial=", state.terminalTicket.serial);
+            if (diagnostic) {
+                try {
+                    diagnostic(timeoutPolls * 50);
+                } catch (...) {
+                    INXLOG_ERROR("VulkanQueueManager: frame wait diagnostic callback failed");
+                }
+            }
         }
         SDL_PumpEvents();
     }

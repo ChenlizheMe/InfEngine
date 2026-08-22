@@ -2,9 +2,11 @@
 
 #include "Infernux.h"
 
+#include <core/threading/JobSystem.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
+#include <function/renderer/gui/InxTextLayout.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <platform/filesystem/InxPath.h>
 
@@ -100,6 +102,42 @@ static std::string ResolveRealAssetPath(const std::string &path)
     return path;
 }
 
+static std::string AssetSelectionPathKey(const std::string &path)
+{
+    return infernux::AssetPathKey(path);
+}
+
+static std::string MakeAssetOpenCommandArgument(const std::string &kind, const std::string &path)
+{
+    return kind + "\t" + path;
+}
+
+static std::string MakePrefabSaveAsCommandArgument(uint64_t objectId, const std::string &directory)
+{
+    return std::to_string(objectId) + "\t" + directory;
+}
+
+static std::string MakeAssetRenameCommandArgument(const std::string &sourcePath, const std::string &newName)
+{
+    return sourcePath + "\t" + newName;
+}
+
+static std::string MakeAssetImportCommandArgument(const std::vector<std::string> &paths, const std::string &destination)
+{
+    return nlohmann::json{{"paths", paths}, {"destination", destination}}.dump();
+}
+
+static std::string MakeAssetTransferCommandArgument(const std::vector<std::string> &paths,
+                                                    const std::string &destination)
+{
+    return nlohmann::json{{"paths", paths}, {"destination", destination}}.dump();
+}
+
+static std::string MakeTreeExpandedCommandArgument(const std::string &itemId, bool expanded)
+{
+    return itemId + "\t" + (expanded ? "1" : "0");
+}
+
 #ifdef INX_PLATFORM_WINDOWS
 static std::string Utf8FromWidePath(const std::wstring &wpath)
 {
@@ -141,17 +179,12 @@ static constexpr int kKeyLeftCtrl = ImGuiKey_LeftCtrl;
 static constexpr int kKeyRightCtrl = ImGuiKey_RightCtrl;
 static constexpr int kKeyLeftShift = ImGuiKey_LeftShift;
 static constexpr int kKeyRightShift = ImGuiKey_RightShift;
-static constexpr int kKeyF2 = ImGuiKey_F2;
-static constexpr int kKeyDelete = ImGuiKey_Delete;
 static constexpr int kKeyEnter = ImGuiKey_Enter;
-static constexpr int kKeyEscape = ImGuiKey_Escape;
-static constexpr int kKeyC = ImGuiKey_C;
-static constexpr int kKeyV = ImGuiKey_V;
-static constexpr int kKeyX = ImGuiKey_X;
-static constexpr int kKeyN = ImGuiKey_N;
 
 namespace infernux
 {
+
+static std::vector<std::string> GetOSClipboardFiles();
 
 namespace
 {
@@ -254,7 +287,6 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             {".hlsl", "shader_hlsl"},
             {".glsl", "shader_glsl"},
             {".shadingmodel", "shadingmodel"},
-            {".wav", "audio"},
             {".ttf", "font"},
             {".otf", "font"},
             {".txt", "text"},
@@ -300,7 +332,6 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
             {".frag", {"SHADER_FILE", "Shader"}},
             {".glsl", {"SHADER_FILE", "Shader"}},
             {".hlsl", {"SHADER_FILE", "Shader"}},
-            {".wav", {"AUDIO_FILE", "Audio"}},
             {".ttf", {"FONT_FILE", "Font"}},
             {".otf", {"FONT_FILE", "Font"}},
             {".scene", {"SCENE_FILE", "Scene"}},
@@ -489,25 +520,37 @@ void ProjectPanel::ClampNavigationPath()
         return;
     }
 
-    if (m_navHasSubfolders) {
-        const std::string cur = FilesystemPathKey(m_currentPath);
-        if (cur == FilesystemPathKey(m_rootPath) || GetPathDepthFromRoot(m_currentPath) < 1)
-            m_currentPath = m_preferredNavPath.empty() ? m_rootPath : m_preferredNavPath;
-    }
     UpdateNavigationCache();
 }
 
 void ProjectPanel::UpdateNavigationCache()
 {
     if (m_rootPath.empty() || m_currentPath.empty()) {
+        m_currentPathKey.clear();
         m_canNavigateUp = false;
         return;
     }
     const std::string current = FilesystemPathKey(m_currentPath);
-    const std::string root = FilesystemPathKey(m_rootPath);
-    const std::string floor = GetMinimumBrowsePath();
-    const bool withinRoot = IsFilesystemPathWithin(current, root);
-    m_canNavigateUp = withinRoot && current != floor;
+    m_currentPathKey = current;
+    std::string floor = GetMinimumBrowsePath();
+    // Navigation covers the whole worktree, while Up stops at the current
+    // top-level branch. Assets therefore remains its own floor; a generated
+    // resource under Library can still climb back to Library without exposing
+    // paths above the project or unexpectedly jumping into Assets.
+    if (floor.empty() || !IsFilesystemPathWithin(current, floor)) {
+        floor = FilesystemPathKey(m_rootPath);
+        std::string relative;
+        if (infernux::TryMakeRelativeFilesystemPath(m_currentPath, m_rootPath, relative, true) && relative != ".") {
+            for (const auto &part : infernux::ToFsPath(relative)) {
+                const std::string name = infernux::FromFsPath(part);
+                if (name.empty() || name == ".")
+                    continue;
+                floor = FilesystemPathKey(infernux::FromFsPath(infernux::ToFsPath(m_rootPath) / part));
+                break;
+            }
+        }
+    }
+    m_canNavigateUp = IsFilesystemPathWithin(current, floor) && current != floor;
 }
 
 void ProjectPanel::AssignCurrentPath(const std::string &path)
@@ -542,14 +585,37 @@ ProjectPanel::ProjectPanel() : EditorPanel("Project", "project")
 std::unordered_map<std::string, double> ProjectPanel::ConsumeSubTimings()
 {
     std::unordered_map<std::string, double> result{
-        {"breadcrumb", m_subBreadcrumb},   {"fileGrid", m_subFileGrid}, {"folderTree", m_subFolderTree},
-        {"gridContext", m_subGridContext}, {"gridData", m_subGridData}, {"gridItems", m_subGridItems},
-        {"gridTail", m_subGridTail},       {"preIcons", m_subPreIcons}, {"preOther", m_subPreOther},
-        {"prePreview", m_subPrePreview},   {"tail", m_subTail},
+        {"breadcrumb", m_subBreadcrumb},
+        {"fileGrid", m_subFileGrid},
+        {"folderTree", m_subFolderTree},
+        {"gridContext", m_subGridContext},
+        {"gridData", m_subGridData},
+        {"gridItems", m_subGridItems},
+        {"gridTail", m_subGridTail},
+        {"preIcons", m_subPreIcons},
+        {"preOther", m_subPreOther},
+        {"prePreview", m_subPrePreview},
+        {"tail", m_subTail},
+        {"dirSnapshotBuilds", static_cast<double>(m_dirSnapshotBuilds)},
+        {"folderTreeRebuilds", static_cast<double>(m_folderTreeRebuilds)},
+        {"projectItemsRebuilds", static_cast<double>(m_projectItemsRebuilds)},
+        {"previewScheduleAttempts", static_cast<double>(m_previewScheduleAttempts)},
+        {"folderRowsSubmitted", static_cast<double>(m_folderRowsSubmitted)},
+        {"folderRowsVisible", static_cast<double>(m_folderRowsVisible)},
+        {"gridItemsSubmitted", static_cast<double>(m_gridItemsSubmitted)},
+        {"gridItemsVisible", static_cast<double>(m_gridItemsVisible)},
     };
     m_subPreIcons = m_subPrePreview = m_subPreOther = 0.0;
     m_subBreadcrumb = m_subFolderTree = m_subFileGrid = m_subTail = 0.0;
     m_subGridContext = m_subGridData = m_subGridItems = m_subGridTail = 0.0;
+    m_dirSnapshotBuilds = 0;
+    m_folderTreeRebuilds = 0;
+    m_projectItemsRebuilds = 0;
+    m_previewScheduleAttempts = 0;
+    m_folderRowsSubmitted = 0;
+    m_folderRowsVisible = 0;
+    m_gridItemsSubmitted = 0;
+    m_gridItemsVisible = 0;
     return result;
 }
 
@@ -580,14 +646,17 @@ void ProjectPanel::SetRootPath(const std::string &path)
     m_navHasSubfolders = false;
     m_searchIndexGeneration = UINT64_MAX;
     m_searchIndexRoot.clear();
-    m_searchIndex.clear();
-    m_lastSearchGeneration = UINT64_MAX;
+    m_searchIndex.reset();
+    ResetAsyncSearch();
+    m_folderTreeProjection.Clear();
+    m_folderTreeProjection.SetExpanded(path, true);
     InvalidateDirCache();
 
     std::error_code ec;
     fs::path assetsPath = fs::u8path(path) / "Assets";
     if (fs::is_directory(assetsPath, ec)) {
         m_preferredNavPath = infernux::FromFsPath(assetsPath);
+        m_folderTreeProjection.SetExpanded(m_preferredNavPath, true);
         m_navHasSubfolders = true;
         m_currentPath = m_preferredNavPath;
         UpdateNavigationCache();
@@ -636,8 +705,8 @@ void ProjectPanel::SetAssetDatabase(AssetDatabase *adb)
         return;
     m_assetDatabase = adb;
     m_searchIndexGeneration = UINT64_MAX;
-    m_searchIndex.clear();
-    m_lastSearchGeneration = UINT64_MAX;
+    m_searchIndex.reset();
+    ResetAsyncSearch();
     InvalidateDirCache();
 }
 void ProjectPanel::SetIconsDirectory(const std::string &dir)
@@ -656,50 +725,105 @@ void ProjectPanel::SetIconsDirectory(const std::string &dir)
     m_typeIconsLoaded = false;
 }
 
-void ProjectPanel::SetCurrentPath(const std::string &path)
+bool ProjectPanel::CanNavigateToPath(const std::string &path) const
 {
     std::error_code ec;
     if (path.empty() || !fs::is_directory(fs::u8path(path), ec))
-        return;
+        return false;
     if (!m_rootPath.empty() && !IsFilesystemPathWithin(path, m_rootPath))
-        return;
-    if (m_navHasSubfolders) {
-        if (GetPathDepthFromRoot(path) < 1)
-            return;
-        if (FilesystemPathKey(path) == FilesystemPathKey(m_rootPath))
-            return;
-    }
-    AssignCurrentPath(path);
+        return false;
+    return true;
 }
 
-void ProjectPanel::ClearSelection()
+bool ProjectPanel::SetCurrentPath(const std::string &path)
+{
+    if (!CanNavigateToPath(path))
+        return false;
+    AssignCurrentPath(path);
+    return FilesystemPathKey(m_currentPath) == FilesystemPathKey(path);
+}
+
+std::vector<std::string> ProjectPanel::GetFolderExpandedPaths() const
+{
+    std::vector<std::string> paths(m_folderTreeProjection.ExpandedIds().begin(),
+                                   m_folderTreeProjection.ExpandedIds().end());
+    std::sort(paths.begin(), paths.end());
+    return paths;
+}
+
+void ProjectPanel::SetFolderExpandedPaths(const std::vector<std::string> &paths)
+{
+    m_folderTreeProjection.ReplaceExpanded(std::unordered_set<std::string>(paths.begin(), paths.end()));
+}
+
+std::vector<std::string> ProjectPanel::GetModelExpandedPaths() const
+{
+    std::vector<std::string> paths(m_modelTreeProjection.ExpandedIds().begin(),
+                                   m_modelTreeProjection.ExpandedIds().end());
+    std::sort(paths.begin(), paths.end());
+    return paths;
+}
+
+void ProjectPanel::SetModelExpandedPaths(const std::vector<std::string> &paths)
+{
+    if (m_modelTreeProjection.ReplaceExpanded(std::unordered_set<std::string>(paths.begin(), paths.end())))
+        m_pendingAugmentedCacheInvalidation = true;
+}
+
+void ProjectPanel::ClearSelection(bool notify)
 {
     if (!m_selectedFile.empty() || !m_selectedFiles.empty()) {
         m_selectedFile.clear();
         m_selectedFiles.clear();
         m_selectedSet.clear();
-        NotifySelectionChanged();
+        if (notify)
+            NotifySelectionChanged();
     }
 }
 
-void ProjectPanel::SetSelectedFile(const std::string &path)
+void ProjectPanel::SetSelectedFile(const std::string &path, bool notify)
 {
     if (path.empty()) {
-        ClearSelection();
+        ClearSelection(notify);
+        return;
+    }
+    SetSelectedFiles({path}, path, notify);
+}
+
+void ProjectPanel::SetSelectedFiles(const std::vector<std::string> &paths, const std::string &primary, bool notify)
+{
+    std::vector<std::string> selected;
+    std::unordered_set<std::string> keys;
+    selected.reserve(paths.size());
+    for (const auto &path : paths) {
+        const std::string key = AssetSelectionPathKey(path);
+        const std::string backingPath = ResolveRealAssetPath(path);
+        std::error_code ec;
+        if (path.empty() || key.empty() || keys.find(key) != keys.end() || !fs::exists(fs::u8path(backingPath), ec))
+            continue;
+        // FileManager can reveal generated project resources such as imported
+        // built-in shaders under Library.  Keep selection inside the project
+        // worktree, but do not confuse that boundary with the Assets-only
+        // authoring picker policy.
+        if (!m_rootPath.empty() && !IsFilesystemPathWithin(backingPath, m_rootPath))
+            continue;
+        keys.insert(key);
+        selected.push_back(path);
+    }
+    if (selected.empty()) {
+        ClearSelection(notify);
         return;
     }
 
-    std::error_code ec;
-    fs::path selectedPath = fs::u8path(path);
-    fs::path parent = selectedPath.parent_path();
-    if (!parent.empty() && fs::is_directory(parent, ec))
-        SetCurrentPath(infernux::FromFsPath(parent));
+    auto primaryIt = std::find_if(selected.begin(), selected.end(), [&primary](const std::string &path) {
+        return !primary.empty() && AssetSelectionPathKey(path) == AssetSelectionPathKey(primary);
+    });
+    m_selectedFile = primaryIt != selected.end() ? *primaryIt : selected.back();
+    m_selectedFiles = std::move(selected);
+    m_selectedSet = std::move(keys);
 
-    m_selectedFile = path;
-    m_selectedFiles = {path};
-    m_selectedSet.clear();
-    m_selectedSet.insert(path);
-    NotifySelectionChanged();
+    if (notify)
+        NotifySelectionChanged();
 }
 
 void ProjectPanel::InvalidateMaterialThumbnail(const std::string &filePath)
@@ -715,6 +839,17 @@ void ProjectPanel::InvalidateMaterialThumbnail(const std::string &filePath)
     }
     for (auto &path : mtimeToRemove)
         m_materialMtimeCache.erase(path);
+
+    // A material can be edited in memory before its file timestamp advances.
+    // Drop the passive Project result so the next visible frame adopts the
+    // current published texture from the shared preview state.
+    for (auto it = m_materialPreviewResults.begin(); it != m_materialPreviewResults.end();) {
+        const std::string resourcePath = it->first.rfind("mat|", 0) == 0 ? it->first.substr(4) : it->first;
+        if (FilesystemPathKey(ResolveRealAssetPath(resourcePath)) == normTarget)
+            it = m_materialPreviewResults.erase(it);
+        else
+            ++it;
+    }
 }
 
 void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
@@ -722,6 +857,11 @@ void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
     if (filePath.empty())
         return;
     auto normTarget = FilesystemPathKey(filePath);
+
+    // The live ImGui texture may keep its resource key while its dimensions
+    // change after a reimport. Drop the dimension cache before the next draw;
+    // preview request scheduling remains owned by the existing generation path.
+    m_texturePreviewSizes.clear();
 
     std::vector<std::string> mtimeToRemove;
     for (auto &[path, _] : m_textureMtimeCache) {
@@ -738,18 +878,19 @@ void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
 
 void ProjectPanel::NotifySelectionChanged()
 {
-    if (!onFileSelected)
-        return;
-    if (m_selectedFiles.size() == 1)
-        onFileSelected(SelectionPathForInspector(m_selectedFiles[0]));
-    else
-        onFileSelected("");
+    PublishSelectionIntent(m_selectedFiles, m_selectedFile);
 }
 
-void ProjectPanel::NotifyEmptyAreaClicked()
+void ProjectPanel::PublishSelectionIntent(const std::vector<std::string> &paths, const std::string &primary) const
 {
-    if (onEmptyAreaClicked)
-        onEmptyAreaClicked();
+    std::vector<std::string> selectedPaths;
+    selectedPaths.reserve(paths.size());
+    for (const auto &path : paths)
+        selectedPaths.push_back(SelectionPathForInspector(path));
+
+    const std::string primaryPath = primary.empty() ? "" : SelectionPathForInspector(primary);
+    if (onSelectionChanged)
+        onSelectionChanged(selectedPaths, primaryPath);
 }
 
 std::vector<std::string> ProjectPanel::GetSelectedPaths() const
@@ -794,6 +935,17 @@ void ProjectPanel::ClearDirCachesNow()
     m_augmentedCache.clear();
     m_labelCache.clear();
     m_prefabTypeCache.clear();
+    m_texturePreviewContracts.clear();
+    m_texturePreviewRequests.clear();
+    m_materialPreviewResults.clear();
+    m_modelPreviewRequests.clear();
+    m_texturePreviewSizes.clear();
+    m_projectItemsCachePath.clear();
+    m_projectItemsCacheSource = ProjectItemsCacheSource::None;
+    m_projectItemsCacheDirectoryRevision = 0;
+    m_projectItemsCacheProjectionRevision = UINT64_MAX;
+    m_projectItemsCacheSnapshotMtime = 0;
+    ++m_directoryRevision;
 }
 
 ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
@@ -907,11 +1059,18 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
     snap.items.reserve(snap.dirs.size() + snap.files.size());
     snap.items.insert(snap.items.end(), snap.dirs.begin(), snap.dirs.end());
     snap.items.insert(snap.items.end(), snap.files.begin(), snap.files.end());
+    for (auto &item : snap.items)
+        item.selectionKey = AssetSelectionPathKey(item.path);
+    for (const auto &file : snap.files) {
+        if (IsModelExt(file.ext))
+            snap.modelPaths.push_back(file.path);
+    }
 
     // Update tree meta
     m_dirTreeMetaCache[path] = {!snap.dirs.empty()};
 
     auto &stored = m_dirCache[path] = std::move(snap);
+    ++m_dirSnapshotBuilds;
     return &stored;
 }
 
@@ -1029,13 +1188,10 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
         out.push_back(std::move(sub));
     }
 
-    // ── Embedded animation takes (one row per take; virtual id = model GUID when available) ──
-    std::string animVirtualBase = modelPath;
-    if (adb) {
-        std::string g = adb->GetGuidFromPath(modelPath);
-        if (!g.empty())
-            animVirtualBase = std::move(g);
-    }
+    // Embedded takes use the model path as their editor identity. Asset GUIDs
+    // remain persistence identities, but they are not filesystem paths and
+    // must never be fed back through Project selection/path projection.
+    const std::string &animVirtualBase = modelPath;
     std::vector<std::string> animNames = SplitCommaList(TryGetMetaString(meta.get(), "animation_names_csv"));
     int animCount = TryGetMetaInt(meta.get(), "animation_count", -1);
     if (!animNames.empty()) {
@@ -1085,22 +1241,44 @@ std::vector<ProjectPanel::FileItem> *ProjectPanel::GetProjectItems(const std::st
     if (!snapshot)
         return nullptr;
 
-    if (m_expandedModels.empty())
+    const uint64_t projectionRevision = m_modelTreeProjection.Revision();
+    if (m_projectItemsCacheSource != ProjectItemsCacheSource::None && m_projectItemsCachePath == path &&
+        m_projectItemsCacheDirectoryRevision == m_directoryRevision &&
+        m_projectItemsCacheProjectionRevision == projectionRevision &&
+        m_projectItemsCacheSnapshotMtime == snapshot->mtimeNs) {
+        if (m_projectItemsCacheSource == ProjectItemsCacheSource::Snapshot)
+            return &snapshot->items;
+        if (auto cached = m_augmentedCache.find(path); cached != m_augmentedCache.end())
+            return &cached->second.items;
+    }
+
+    ++m_projectItemsRebuilds;
+    m_projectItemsCachePath = path;
+    m_projectItemsCacheDirectoryRevision = m_directoryRevision;
+    m_projectItemsCacheProjectionRevision = projectionRevision;
+    m_projectItemsCacheSnapshotMtime = snapshot->mtimeNs;
+
+    if (m_modelTreeProjection.Empty()) {
+        m_projectItemsCacheSource = ProjectItemsCacheSource::Snapshot;
         return &snapshot->items;
+    }
 
     // Check if any expanded models in current items
     std::vector<std::string> expandedPaths;
-    for (auto &item : snapshot->items) {
-        if (item.type == FileItem::File && IsModelExt(item.ext) && m_expandedModels.count(item.path) > 0) {
-            expandedPaths.push_back(item.path);
-        }
+    expandedPaths.reserve(snapshot->modelPaths.size());
+    for (const auto &modelPath : snapshot->modelPaths) {
+        if (m_modelTreeProjection.IsExpanded(modelPath))
+            expandedPaths.push_back(modelPath);
     }
-    if (expandedPaths.empty())
+    if (expandedPaths.empty()) {
+        m_projectItemsCacheSource = ProjectItemsCacheSource::Snapshot;
         return &snapshot->items;
+    }
 
     auto cacheIt = m_augmentedCache.find(path);
     if (cacheIt != m_augmentedCache.end() && cacheIt->second.mtimeNs == snapshot->mtimeNs &&
         cacheIt->second.expandedPaths == expandedPaths) {
+        m_projectItemsCacheSource = ProjectItemsCacheSource::Augmented;
         return &cacheIt->second.items;
     }
 
@@ -1116,6 +1294,11 @@ std::vector<ProjectPanel::FileItem> *ProjectPanel::GetProjectItems(const std::st
         if (item.type == FileItem::File && IsModelExt(item.ext) && expandedSet.count(item.path) > 0)
             AppendModelSubAssets(cached.items, m_assetDatabase, item);
     }
+    for (auto &item : cached.items) {
+        if (item.selectionKey.empty())
+            item.selectionKey = AssetSelectionPathKey(item.path);
+    }
+    m_projectItemsCacheSource = ProjectItemsCacheSource::Augmented;
     return &cached.items;
 }
 
@@ -1183,35 +1366,50 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     if (filePath.empty() || !m_engine)
         return 0;
 
-    // Read the complete preview-affecting import contract from .meta.
-    bool nearest = false;
-    bool srgb = false;
-    int maxSize = 2048;
-    std::string textureFormat = "auto";
-    std::string textureType = "default";
-    if (m_assetDatabase) {
-        const auto meta = m_assetDatabase->GetMetaByPath(filePath);
-        if (meta) {
-            if (meta->HasKey("filter_mode")) {
-                std::string fm = meta->GetDataAs<std::string>("filter_mode");
-                nearest = (fm == "point" || fm == "nearest");
+    uint64_t texMtime = cachedMtimeNs;
+    // The directory catalog carries the source fingerprint, while the
+    // throttled mtime cache also includes the sidecar.  Use the latter as the
+    // contract key so an external import-setting edit invalidates immediately
+    // after the existing one-second filesystem validation window.
+    const uint64_t observedStamp = GetTextureMtimeNs(filePath);
+    if (observedStamp != 0)
+        texMtime = observedStamp;
+    if (texMtime == 0)
+        return 0;
+
+    const uint64_t catalogGeneration = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
+    auto &contract = m_texturePreviewContracts[filePath];
+    if (contract.catalogGeneration != catalogGeneration || contract.contentStamp != texMtime) {
+        contract = TexturePreviewContract{};
+        contract.catalogGeneration = catalogGeneration;
+        contract.contentStamp = texMtime;
+
+        // Read the complete preview-affecting import contract from .meta only
+        // when its directory/asset revision or content fingerprint changed.
+        if (m_assetDatabase) {
+            const auto meta = m_assetDatabase->GetMetaByPath(filePath);
+            if (meta) {
+                if (meta->HasKey("filter_mode")) {
+                    std::string fm = meta->GetDataAs<std::string>("filter_mode");
+                    contract.nearest = (fm == "point" || fm == "nearest");
+                }
+                if (meta->HasKey("srgb"))
+                    contract.srgb = meta->GetDataAs<bool>("srgb");
+                if (meta->HasKey("max_size"))
+                    contract.maxSize = meta->GetDataAs<int>("max_size");
+                if (meta->HasKey("texture_format"))
+                    contract.textureFormat = meta->GetDataAs<std::string>("texture_format");
+                if (meta->HasKey("texture_type"))
+                    contract.textureType = meta->GetDataAs<std::string>("texture_type");
             }
-            if (meta->HasKey("srgb"))
-                srgb = meta->GetDataAs<bool>("srgb");
-            if (meta->HasKey("max_size"))
-                maxSize = meta->GetDataAs<int>("max_size");
-            if (meta->HasKey("texture_format"))
-                textureFormat = meta->GetDataAs<std::string>("texture_format");
-            if (meta->HasKey("texture_type"))
-                textureType = meta->GetDataAs<std::string>("texture_type");
         }
     }
 
-    uint64_t texMtime = cachedMtimeNs;
-    if (texMtime == 0)
-        texMtime = GetTextureMtimeNs(filePath);
-    if (texMtime == 0)
-        return 0;
+    const bool nearest = contract.nearest;
+    const bool srgb = contract.srgb;
+    const int maxSize = contract.maxSize;
+    const std::string &textureFormat = contract.textureFormat;
+    const std::string &textureType = contract.textureType;
     // Import settings affect the generated pixels even when the source file
     // itself is unchanged. Fold only the settings used by this preview path
     // into the generation fingerprint.
@@ -1224,6 +1422,18 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
         return readyTexture;
     if (m_texturePreviewRequestsThisFrame >= kTexturePreviewRequestBudget)
         return 0;
+
+    uint64_t fingerprint = texMtime;
+    fingerprint ^= nearest ? UINT64_C(0x9e3779b97f4a7c15) : 0;
+    fingerprint ^= srgb ? UINT64_C(0xc2b2ae3d27d4eb4f) : 0;
+    fingerprint ^= std::hash<std::string>{}(textureFormat) + UINT64_C(0x517cc1b727220a95);
+    fingerprint ^= std::hash<std::string>{}(textureType) + UINT64_C(0x6eed0e9da4d94a4f);
+    auto &request = m_texturePreviewRequests[resourceKey];
+    if (request.fingerprint == fingerprint && m_previewFrameSerial - request.lastRequestFrame < 30)
+        return 0;
+    request.fingerprint = fingerprint;
+    request.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
     ++m_texturePreviewRequestsThisFrame;
     // pump=false: PreRender already pumped once this frame.
     auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
@@ -1246,7 +1456,36 @@ uint64_t ProjectPanel::GetMaterialThumbnail(const std::string &filePath, uint64_
         return m_engine->GetMaterialPreviewTextureId(resourceKey);
     }
 
-    return m_engine->QueryOrScheduleMaterialPreview(resourceKey, filePath, "", mtimeNs);
+    auto &result = m_materialPreviewResults[resourceKey];
+    const uint64_t publishedTexture = m_engine->GetMaterialPreviewTextureId(resourceKey);
+    const bool previewReady = publishedTexture != 0 && m_engine->IsMaterialPreviewReady(resourceKey);
+    if (result.fingerprint == mtimeNs && publishedTexture == result.textureId) {
+        // Stable ready state: stay on the read-only lookup path and avoid
+        // re-entering QueryOrScheduleMaterialPreview on every UI build.
+        if (previewReady)
+            return publishedTexture;
+        if (m_previewFrameSerial - result.lastRequestFrame < 30)
+            return publishedTexture;
+    }
+    if (result.fingerprint == mtimeNs && previewReady && publishedTexture != 0 &&
+        publishedTexture != result.textureId) {
+        // Inspector authoring may publish a new live texture without changing
+        // the disk mtime. Adopt it immediately without scheduling a duplicate.
+        result.textureId = publishedTexture;
+        result.lastRequestFrame = m_previewFrameSerial;
+        return publishedTexture;
+    }
+
+    // Material authoring can publish an in-memory JSON generation before the
+    // asynchronous file mtime changes. Always enter the engine's existing
+    // generation/in-flight deduplication path so Project and Prefab previews
+    // observe that revision immediately.
+    const uint64_t textureId = m_engine->QueryOrScheduleMaterialPreview(resourceKey, filePath, "", mtimeNs);
+    result.fingerprint = mtimeNs;
+    result.textureId = textureId;
+    result.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
+    return textureId;
 }
 
 uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
@@ -1265,7 +1504,29 @@ uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
         return 0; // parent model file missing/unreadable
 
     const std::string resourceKey = std::string("mat|") + item.path;
-    return m_engine->QueryOrScheduleMaterialPreview(resourceKey, item.path, "", stamp);
+    auto &result = m_materialPreviewResults[resourceKey];
+    const uint64_t publishedTexture = m_engine->GetMaterialPreviewTextureId(resourceKey);
+    const bool previewReady = publishedTexture != 0 && m_engine->IsMaterialPreviewReady(resourceKey);
+    if (result.fingerprint == stamp && publishedTexture == result.textureId) {
+        if (previewReady)
+            return publishedTexture;
+        if (m_previewFrameSerial - result.lastRequestFrame < 30)
+            return publishedTexture;
+    }
+    if (result.fingerprint == stamp && previewReady && publishedTexture != 0 && publishedTexture != result.textureId) {
+        result.textureId = publishedTexture;
+        result.lastRequestFrame = m_previewFrameSerial;
+        return publishedTexture;
+    }
+    // The shared preview state owns generation and pending-request coalescing.
+    // Do not add a UI-frame throttle here: embedded/material authoring may
+    // advance independently of the backing file timestamp.
+    const uint64_t textureId = m_engine->QueryOrScheduleMaterialPreview(resourceKey, item.path, "", stamp);
+    result.fingerprint = stamp;
+    result.textureId = textureId;
+    result.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
+    return textureId;
 }
 
 uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t cachedMtimeNs)
@@ -1297,6 +1558,13 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
         return readyTexture;
     if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
         return 0;
+
+    auto &request = m_modelPreviewRequests[resourceKey];
+    if (request.fingerprint == mtimeNs && m_previewFrameSerial - request.lastRequestFrame < 30)
+        return 0;
+    request.fingerprint = mtimeNs;
+    request.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
     ++m_modelPreviewRequestsThisFrame;
     return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath, mtimeNs);
 }
@@ -1527,8 +1795,8 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
     if (textW > maxTextW) {
         // Truncate with ASCII ellipsis
         std::string truncated = nameDisplay;
-        while (truncated.size() > 1) {
-            truncated.pop_back();
+        while (!truncated.empty()) {
+            infernux::textlayout::PopBackUtf8Codepoint(truncated);
             float tw = ctx->CalcTextWidth(std::string(truncated) + kEllipsisAscii);
             if (tw <= maxTextW) {
                 nameDisplay = truncated + kEllipsisAscii;
@@ -1536,7 +1804,7 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
                 break;
             }
         }
-        if (truncated.size() <= 1) {
+        if (truncated.empty()) {
             nameDisplay = kEllipsisAscii;
             textW = ctx->CalcTextWidth(nameDisplay);
         }
@@ -1593,7 +1861,10 @@ bool ProjectPanel::IsShift(InxGUIContext *ctx) const
 void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
 {
     double now = m_frameTimeNow;
-    bool doubleClicked = (m_lastClickedFile == item.path && (now - m_lastClickTime) < 0.4);
+    const bool nativeDoubleClick = ctx->IsMouseDoubleClicked(0);
+    const bool repeatedClick =
+        AssetSelectionPathKey(m_lastClickedFile) == AssetSelectionPathKey(item.path) && (now - m_lastClickTime) < 0.4;
+    const bool doubleClicked = nativeDoubleClick || repeatedClick;
     m_lastClickedFile = item.path;
     m_lastClickTime = now;
 
@@ -1601,160 +1872,121 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
     bool shift = IsShift(ctx);
 
     if (ctrl && !doubleClicked) {
-        auto it = std::find(m_selectedFiles.begin(), m_selectedFiles.end(), item.path);
-        if (it != m_selectedFiles.end()) {
-            m_selectedFiles.erase(it);
-            m_selectedFile = m_selectedFiles.empty() ? "" : m_selectedFiles.back();
-        } else {
-            m_selectedFiles.push_back(item.path);
-            m_selectedFile = item.path;
-        }
-        m_selectedSet.clear();
-        m_selectedSet.insert(m_selectedFiles.begin(), m_selectedFiles.end());
-        NotifySelectionChanged();
+        std::vector<std::string> proposed = m_selectedFiles;
+        const std::string itemKey = AssetSelectionPathKey(item.path);
+        auto it = std::find_if(proposed.begin(), proposed.end(),
+                               [&itemKey](const std::string &path) { return AssetSelectionPathKey(path) == itemKey; });
+        if (it != proposed.end())
+            proposed.erase(it);
+        else
+            proposed.push_back(item.path);
+        PublishSelectionIntent(proposed, proposed.empty() ? "" : proposed.back());
         return;
     }
 
     if (shift && !doubleClicked && !m_selectedFile.empty() && m_visibleItems) {
         int anchorIdx = -1, targetIdx = -1;
+        const std::string anchorKey = AssetSelectionPathKey(m_selectedFile);
+        const std::string targetKey = AssetSelectionPathKey(item.path);
         for (int i = 0; i < static_cast<int>(m_visibleItems->size()); ++i) {
             auto &vi = (*m_visibleItems)[i];
-            if (vi.path == m_selectedFile)
+            const std::string visibleKey = AssetSelectionPathKey(vi.path);
+            if (visibleKey == anchorKey)
                 anchorIdx = i;
-            if (vi.path == item.path)
+            if (visibleKey == targetKey)
                 targetIdx = i;
         }
         if (anchorIdx >= 0 && targetIdx >= 0) {
             int lo = std::min(anchorIdx, targetIdx);
             int hi = std::max(anchorIdx, targetIdx);
-            m_selectedFiles.clear();
+            std::vector<std::string> proposed;
+            proposed.reserve(static_cast<size_t>(hi - lo + 1));
             for (int i = lo; i <= hi; ++i)
-                m_selectedFiles.push_back((*m_visibleItems)[i].path);
-            m_selectedSet.clear();
-            m_selectedSet.insert(m_selectedFiles.begin(), m_selectedFiles.end());
-            NotifySelectionChanged();
+                proposed.push_back((*m_visibleItems)[i].path);
+            PublishSelectionIntent(proposed, item.path);
             return;
         }
     }
 
     // Normal single select
-    m_selectedFiles = {item.path};
-    m_selectedFile = item.path;
-    m_selectedSet = {item.path};
-    NotifySelectionChanged();
+    PublishSelectionIntent({item.path}, item.path);
 
     if (item.type == FileItem::Dir) {
         if (doubleClicked) {
-            AssignCurrentPath(item.path);
-            m_lastClickedFile.clear();
+            if (RequestDirectoryNavigation(item.path))
+                m_lastClickedFile.clear();
         }
     } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial) {
         // Sub-assets: select only
     } else if (doubleClicked) {
-        if (IsModelExt(item.ext)) {
-            if (openFile)
-                openFile(item.path);
-        } else if (item.ext == ".scene") {
-            if (openScene)
-                openScene(item.path);
+        std::string openKind = "system";
+        if (item.ext == ".scene") {
+            openKind = "scene";
         } else if (item.ext == ".prefab") {
-            if (openPrefabMode)
-                openPrefabMode(item.path);
+            openKind = "prefab";
         } else if (item.ext == ".animclip2d") {
-            if (openAnimClip)
-                openAnimClip(item.path);
+            openKind = "animation_clip";
         } else if (item.ext == ".animclip3d") {
             // 3D clips are edited via the Inspector (Python asset_details_renderer).
+            return;
         } else if (item.ext == ".animfsm") {
-            if (openAnimFsm)
-                openAnimFsm(item.path);
+            openKind = "animation_fsm";
         } else if (item.ext == ".particlegraph") {
-            if (openParticleGraph)
-                openParticleGraph(item.path);
+            openKind = "particle_graph";
         } else if (item.ext == ".animtimeline") {
-            if (openAnimTimeline)
-                openAnimTimeline(item.path);
+            openKind = "timeline";
         } else if (item.ext == ".timelinefsm") {
-            if (openTimelineFsm)
-                openTimelineFsm(item.path);
-        } else {
-            if (openFile)
-                openFile(item.path);
+            openKind = "timeline_fsm";
         }
+        ExecuteEditorCommand("asset.open", MakeAssetOpenCommandArgument(openKind, item.path), "pointer");
     }
 }
 
-void ProjectPanel::HandleKeyboardShortcuts(InxGUIContext *ctx)
+bool ProjectPanel::HasSelectedAssets() const
 {
-    if (!m_renamingPath.empty())
-        return;
-    // From FileGrid child: RootAndChildWindows still treats FolderTree focus as
-    // Project focus, so F2 works with a file selected even if the tree has KB focus.
-    if (!ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
-        return;
-    // WantTextInput is global and may remain set for a frame after another field
-    // loses focus. Only suppress shortcuts while an editor is actually active.
-    if (ctx->WantTextInput() && ctx->IsAnyItemActive())
-        return;
+    return !GetSelectedPaths().empty();
+}
 
-    bool ctrl = IsCtrl(ctx);
-    bool shift = IsShift(ctx);
-    const bool renamePressed = ctx->IsKeyPressed(kKeyF2);
+bool ProjectPanel::CanRenameSelectedAsset(const std::string &path) const
+{
+    const std::string target = path.empty() ? m_selectedFile : path;
+    if (target.empty() || IsVirtualSubAssetPath(target))
+        return false;
+    // An explicit command target is authoritative. Creation commands reach
+    // this function before the native grid has necessarily consumed the new
+    // global selection, so an older local selection must not reject rename.
+    if (!path.empty())
+        return true;
+    const auto selected = GetSelectedPaths();
+    return selected.size() == 1 && FilesystemPathKey(selected.front()) == FilesystemPathKey(target);
+}
 
-    // Ctrl+Shift+N: create new folder (no selection required)
-    if (ctrl && shift && ctx->IsKeyPressed(kKeyN)) {
-        CreateAndRename("NewFolder", "", [this](const std::string &name) {
-            if (createFolder)
-                return createFolder(m_currentPath, name);
-            return std::make_pair(false, std::string("No callback"));
-        });
-        return;
+bool ProjectPanel::BeginRenameSelectedAsset(const std::string &path)
+{
+    const std::string target = path.empty() ? m_selectedFile : path;
+    if (!CanRenameSelectedAsset(path))
+        return false;
+    if (!path.empty()) {
+        PublishSelectionIntent({target}, target);
     }
+    BeginRename(target);
+    return true;
+}
 
-    // Early out: avoid GetSelectedPaths() syscalls when no key is pressed
-    const bool copyPressed = ctrl && ctx->IsKeyPressed(kKeyC);
-    const bool cutPressed = ctrl && ctx->IsKeyPressed(kKeyX);
-    const bool pastePressed = ctrl && ctx->IsKeyPressed(kKeyV);
-    if ((copyPressed || cutPressed || pastePressed) && isHierarchySelectionEmpty && !isHierarchySelectionEmpty())
-        return;
+bool ProjectPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument,
+                                        const std::string &source) const
+{
+    return executeCommand && executeCommand(commandId, source, argument);
+}
 
-    const bool deletePressed = ctx->IsKeyPressed(kKeyDelete);
-    bool anyRelevantKey = renamePressed || deletePressed || copyPressed || cutPressed || pastePressed;
-    if (!anyRelevantKey)
-        return;
+bool ProjectPanel::RequestDirectoryNavigation(const std::string &path, const std::string &source) const
+{
+    return ExecuteEditorCommand("project.navigate_directory", path, source);
+}
 
-    // Rename uses the logical selection rather than a fresh filesystem-filtered
-    // snapshot. Atomic asset saves can make the selected path briefly disappear.
-    if (renamePressed) {
-        const bool singleSelection =
-            m_selectedFiles.size() == 1 && !m_selectedFile.empty() && !IsVirtualSubAssetPath(m_selectedFile);
-        if (singleSelection)
-            BeginRename(m_selectedFile);
-        return;
-    }
-
-    auto selected = GetSelectedPaths();
-    bool hasSel = !selected.empty();
-
-    if (hasSel) {
-        if (deletePressed) {
-            if (deleteItems)
-                deleteItems(selected);
-            m_pendingCacheInvalidation = true;
-            m_selectedFile.clear();
-            m_selectedFiles.clear();
-            m_selectedSet.clear();
-            NotifySelectionChanged();
-        } else if (copyPressed)
-            ClipboardCopy(selected);
-        else if (cutPressed)
-            ClipboardCut(selected);
-        else if (pastePressed)
-            ClipboardPaste();
-    } else {
-        if (pastePressed)
-            ClipboardPaste();
-    }
+bool ProjectPanel::RequestAssetLocation(const std::string &path, const std::string &source) const
+{
+    return ExecuteEditorCommand("project.locate_asset", path, source);
 }
 
 void ProjectPanel::HandleExternalFileDrops()
@@ -1766,61 +1998,14 @@ void ProjectPanel::HandleExternalFileDrops()
 
 void ProjectPanel::ReceiveDroppedFiles(const std::vector<std::string> &paths)
 {
+    ImportExternalAssetBatch(paths, "drag_drop");
+}
+
+bool ProjectPanel::ImportExternalAssetBatch(const std::vector<std::string> &paths, const std::string &source)
+{
     if (paths.empty() || m_currentPath.empty())
-        return;
-
-    std::error_code ec;
-    std::vector<std::string> copiedPaths;
-
-    for (auto &src : paths) {
-        if (src.empty() || !fs::exists(fs::u8path(src), ec))
-            continue;
-
-        auto name = FromFsPath(fs::u8path(src).filename());
-        auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
-
-        // If destination already exists, use unique name
-        if (fs::exists(fs::u8path(dst), ec)) {
-            if (!getUniqueName)
-                continue;
-            auto stem = FromFsPath(fs::u8path(name).stem());
-            auto ext = FromFsPath(fs::u8path(name).extension());
-            if (fs::is_directory(fs::u8path(src), ec)) {
-                ext = "";
-                stem = name;
-            }
-            auto uniqueName = getUniqueName(m_currentPath, stem, ext);
-            dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(uniqueName + ext));
-        }
-
-        try {
-            if (copyItemToPath) {
-                auto result = copyItemToPath(src, dst);
-                if (!result.empty())
-                    copiedPaths.push_back(result);
-            } else if (fs::is_directory(fs::u8path(src), ec)) {
-                fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
-                if (!ec)
-                    copiedPaths.push_back(dst);
-            } else {
-                fs::copy_file(fs::u8path(src), fs::u8path(dst), ec);
-                if (!ec)
-                    copiedPaths.push_back(dst);
-            }
-        } catch (...) {
-            continue;
-        }
-    }
-
-    if (copiedPaths.empty())
-        return;
-
-    m_pendingCacheInvalidation = true;
-    m_selectedFiles = copiedPaths;
-    m_selectedFile = copiedPaths.back();
-    m_selectedSet.clear();
-    m_selectedSet.insert(copiedPaths.begin(), copiedPaths.end());
-    NotifySelectionChanged();
+        return false;
+    return ExecuteEditorCommand("asset.import_external", MakeAssetImportCommandArgument(paths, m_currentPath), source);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1847,11 +2032,15 @@ void ProjectPanel::BeginRename(const std::string &path)
     m_renameBuf[sizeof(m_renameBuf) - 1] = '\0';
     m_renameFocusRequested = true;
     m_renameSkipDeactivateFrames = 2;
+    BeginTransientInteraction("rename", "inline_rename", 100, [this]() {
+        CancelRename();
+        return true;
+    });
 }
 
 void ProjectPanel::CommitRename()
 {
-    if (m_renamingPath.empty() || !doRename) {
+    if (m_renamingPath.empty()) {
         CancelRename();
         return;
     }
@@ -1862,52 +2051,22 @@ void ProjectPanel::CommitRename()
         return;
     }
 
-    std::string newPath = doRename(m_renamingPath, newName);
-    if (!newPath.empty()) {
-        // doRename → AssetManager.move_asset also calls InvalidateDirCache(); keep
-        // the pending flag so the grid finishes this frame on stable pointers.
+    if (ExecuteEditorCommand("asset.rename", MakeAssetRenameCommandArgument(m_renamingPath, newName), "inline_edit")) {
+        // The command publishes one AssetRelocationChange. SelectionService
+        // remaps selection and the Project relocation projection remaps the
+        // current directory. Do not derive either result a second time here.
         m_pendingCacheInvalidation = true;
-        if (m_selectedFile == m_renamingPath) {
-            m_selectedFile = newPath;
-            m_selectedFiles = {newPath};
-            m_selectedSet = {newPath};
-        }
-        if (m_currentPath == m_renamingPath)
-            AssignCurrentPath(newPath);
     }
     m_renamingPath.clear();
     m_renameSkipDeactivateFrames = 0;
+    EndTransientInteraction("rename");
 }
 
 void ProjectPanel::CancelRename()
 {
     m_renamingPath.clear();
     m_renameSkipDeactivateFrames = 0;
-}
-
-void ProjectPanel::CreateAndRename(const std::string &baseName, const std::string &extension,
-                                   std::function<std::pair<bool, std::string>(const std::string &)> createFn)
-{
-    if (!getUniqueName || !createFn)
-        return;
-
-    std::string name = getUniqueName(m_currentPath, baseName, extension);
-    auto [ok, result] = createFn(name);
-    if (!ok)
-        return;
-
-    std::string fileName = name;
-    if (!extension.empty() && fileName.find(extension) == std::string::npos)
-        fileName += extension;
-    auto newPath = infernux::FromFsPath(fs::u8path(m_currentPath) / fileName);
-
-    m_selectedFile = newPath;
-    m_selectedFiles = {newPath};
-    m_selectedSet = {newPath};
-    NotifySelectionChanged();
-
-    BeginRename(newPath);
-    InvalidateDirCache();
+    EndTransientInteraction("rename");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1915,7 +2074,7 @@ void ProjectPanel::CreateAndRename(const std::string &baseName, const std::strin
 // ════════════════════════════════════════════════════════════════════
 
 /// Retrieve file paths from the OS clipboard (CF_HDROP on Windows).
-static std::vector<std::string> GetOSClipboardFiles()
+std::vector<std::string> ProjectPanel::GetOSClipboardFiles() const
 {
     std::vector<std::string> result;
 #ifdef INX_PLATFORM_WINDOWS
@@ -1941,122 +2100,6 @@ static std::vector<std::string> GetOSClipboardFiles()
     CloseClipboard();
 #endif
     return result;
-}
-
-void ProjectPanel::ClipboardCopy(const std::vector<std::string> &paths)
-{
-    m_clipboardPaths.clear();
-    std::error_code ec;
-    for (auto &p : paths)
-        if (!p.empty() && fs::exists(fs::u8path(p), ec))
-            m_clipboardPaths.push_back(p);
-    m_clipboardIsCut = false;
-}
-
-void ProjectPanel::ClipboardCut(const std::vector<std::string> &paths)
-{
-    m_clipboardPaths.clear();
-    std::error_code ec;
-    for (auto &p : paths)
-        if (!p.empty() && fs::exists(fs::u8path(p), ec))
-            m_clipboardPaths.push_back(p);
-    m_clipboardIsCut = true;
-}
-
-bool ProjectPanel::HasClipboardItems() const
-{
-    std::error_code ec;
-    for (auto &p : m_clipboardPaths)
-        if (fs::exists(fs::u8path(p), ec))
-            return true;
-    return false;
-}
-
-void ProjectPanel::ClipboardPaste()
-{
-    std::error_code ec;
-    std::vector<std::string> sources;
-    bool isCut = m_clipboardIsCut;
-
-    // Try internal clipboard first
-    for (auto &p : m_clipboardPaths)
-        if (fs::exists(fs::u8path(p), ec))
-            sources.push_back(p);
-
-    // Fall back to OS clipboard (always copy, never cut)
-    if (sources.empty()) {
-        sources = GetOSClipboardFiles();
-        isCut = false;
-    }
-
-    if (sources.empty()) {
-        m_clipboardPaths.clear();
-        return;
-    }
-
-    std::vector<std::string> pastedPaths;
-    for (auto &src : sources) {
-        auto name = FromFsPath(fs::u8path(src).filename());
-        auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
-        bool samePath = (FilesystemPathKey(src) == FilesystemPathKey(dst));
-
-        if (samePath && isCut)
-            continue;
-
-        if (samePath || fs::exists(fs::u8path(dst), ec)) {
-            if (!getUniqueName)
-                continue;
-            auto stem = FromFsPath(fs::u8path(name).stem());
-            auto ext = FromFsPath(fs::u8path(name).extension());
-            if (fs::is_directory(fs::u8path(src), ec)) {
-                ext = "";
-                stem = name;
-            }
-            auto uniqueName = getUniqueName(m_currentPath, stem, ext);
-            dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(uniqueName + ext));
-        }
-
-        try {
-            if (isCut) {
-                if (moveItemToDirectory) {
-                    auto result = moveItemToDirectory(src, m_currentPath);
-                    if (!result.empty())
-                        pastedPaths.push_back(result);
-                } else {
-                    fs::rename(fs::u8path(src), fs::u8path(dst), ec);
-                    if (!ec)
-                        pastedPaths.push_back(dst);
-                }
-            } else if (copyItemToPath) {
-                auto result = copyItemToPath(src, dst);
-                if (!result.empty())
-                    pastedPaths.push_back(result);
-            } else if (fs::is_directory(fs::u8path(src), ec)) {
-                fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
-                if (!ec)
-                    pastedPaths.push_back(dst);
-            } else {
-                fs::copy_file(fs::u8path(src), fs::u8path(dst), ec);
-                if (!ec)
-                    pastedPaths.push_back(dst);
-            }
-        } catch (...) {
-            continue;
-        }
-    }
-
-    if (pastedPaths.empty())
-        return;
-
-    if (isCut)
-        m_clipboardPaths.clear();
-
-    m_pendingCacheInvalidation = true;
-    m_selectedFiles = pastedPaths;
-    m_selectedFile = pastedPaths.back();
-    m_selectedSet.clear();
-    m_selectedSet.insert(pastedPaths.begin(), pastedPaths.end());
-    NotifySelectionChanged();
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2168,27 +2211,7 @@ void ProjectPanel::MoveProjectItemsToFolder(const std::string &targetDir, const 
     if (sources.empty())
         return;
 
-    std::vector<std::string> movedPaths;
-    for (auto &source : sources) {
-        if (fs::is_directory(fs::u8path(source), ec) && IsFilesystemPathWithin(targetDir, source))
-            continue; // Can't move folder into itself
-
-        if (moveItemToDirectory) {
-            auto newPath = moveItemToDirectory(source, targetDir);
-            if (!newPath.empty())
-                movedPaths.push_back(newPath);
-        }
-    }
-
-    if (movedPaths.empty())
-        return;
-
-    m_pendingCacheInvalidation = true;
-    m_selectedFiles = movedPaths;
-    m_selectedFile = movedPaths.back();
-    m_selectedSet.clear();
-    m_selectedSet.insert(movedPaths.begin(), movedPaths.end());
-    NotifySelectionChanged();
+    ExecuteEditorCommand("asset.transfer", MakeAssetTransferCommandArgument(sources, targetDir), "drag_drop");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2210,6 +2233,7 @@ void ProjectPanel::PreRender(InxGUIContext *ctx)
 void ProjectPanel::VisiblePreRender(InxGUIContext *ctx)
 {
     const auto preStart = std::chrono::steady_clock::now();
+    ++m_previewFrameSerial;
     const auto iconsStart = std::chrono::steady_clock::now();
     EnsureTypeIconsLoaded();
     const auto previewStart = std::chrono::steady_clock::now();
@@ -2242,6 +2266,8 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     if (m_pendingAugmentedCacheInvalidation) {
         m_pendingAugmentedCacheInvalidation = false;
         m_augmentedCache.clear();
+        m_projectItemsCacheSource = ProjectItemsCacheSource::None;
+        m_projectItemsCachePath.clear();
     }
 
     const auto breadcrumbStart = std::chrono::steady_clock::now();
@@ -2249,7 +2275,7 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     ctx->Separator();
     const auto folderStart = std::chrono::steady_clock::now();
 
-    const bool searchActive = m_searchBuf[0] != '\0';
+    const bool searchActive = m_search.IsActive();
 
     // Left panel: folder tree (200px)
     if (ctx->BeginChild("FolderTree", 200, 0, false)) {
@@ -2274,16 +2300,6 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     ctx->PopStyleColor(1); // Border
     ctx->PopStyleVar(1);   // WindowPadding
     const auto tailStart = std::chrono::steady_clock::now();
-
-    // Focus after children so FileGrid/FolderTree clicks count as Project focus.
-    {
-        bool focused = ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-        if (focused != m_wasFocused) {
-            m_wasFocused = focused;
-            if (onProjectPanelFocused)
-                onProjectPanelFocused(focused);
-        }
-    }
 
     bool hasSelection = !m_selectedFile.empty() || !m_selectedFiles.empty();
     bool clickedOutsideProject = hasSelection &&
@@ -2330,7 +2346,7 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     if (ctx->CalcTextSizeA(pathLabel).first > pathBudget && pathLabel.size() > 4) {
         // Keep the trailing folders readable when the Path row is tight.
         while (pathLabel.size() > 1 && ctx->CalcTextSizeA(std::string("...") + pathLabel).first > pathBudget) {
-            pathLabel.erase(pathLabel.begin());
+            infernux::textlayout::EraseFirstUtf8Codepoint(pathLabel);
         }
         pathLabel = "..." + pathLabel;
     }
@@ -2341,258 +2357,444 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     if (remain > searchW)
         ctx->SetCursorPosX(ctx->GetCursorPosX() + (remain - searchW));
     ctx->SetNextItemWidth(searchW);
+    if (m_focusSearchNextFrame) {
+        ctx->SetKeyboardFocusHere();
+        m_focusSearchNextFrame = false;
+    }
     ctx->InputTextWithHint("##project_search", Tr("project.search_hint"), m_searchBuf, sizeof(m_searchBuf));
+    ctx->RecordSemanticItem("text_input", Tr("project.search_hint"), true, "project.search", std::nullopt, std::nullopt,
+                            std::string(m_searchBuf));
+    (void)m_search.SetQuery(m_searchBuf);
     UpdateSearchResults();
 }
 
-namespace
+void ProjectPanel::ResetAsyncSearch()
 {
-std::string ToLowerAsciiCopy(std::string value)
-{
-    for (char &ch : value) {
-        if (ch >= 'A' && ch <= 'Z')
-            ch = static_cast<char>(ch + ('a' - 'A'));
-    }
-    return value;
+    ++m_searchRequestSerial;
+    m_searchAsyncState->desiredSerial.store(m_searchRequestSerial, std::memory_order_release);
+    m_searchDesiredToken = {};
+    m_searchResultToken = {};
+    m_searchResults.clear();
+    m_searchBusy = false;
 }
-} // namespace
 
-void ProjectPanel::RebuildSearchIndex(uint64_t generation)
+void ProjectPanel::PollSearchCompletion()
 {
+    std::unique_ptr<SearchAsyncCompletion> completion;
+    {
+        std::lock_guard lock(m_searchAsyncState->mutex);
+        completion = std::move(m_searchAsyncState->completion);
+    }
+    if (!completion)
+        return;
+
+    m_searchJobInFlight = false;
+    if (completion->requestSerial != m_searchRequestSerial)
+        return;
+    if (completion->cancelled)
+        return;
+    if (!completion->error.empty()) {
+        INXLOG_ERROR("Project search worker failed: ", completion->error);
+        if (completion->token == m_searchDesiredToken)
+            m_searchResultToken = completion->token;
+        m_searchBusy = false;
+        return;
+    }
+
+    const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
     const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
-    if (generation == m_searchIndexGeneration && folderRoot == m_searchIndexRoot)
-        return;
-
-    m_searchIndexGeneration = generation;
-    m_searchIndexRoot = folderRoot;
-    m_searchIndex.clear();
-    if (!m_assetDatabase)
-        return;
-
-    std::unordered_set<std::string> folderPaths;
-    const fs::path rootPath = fs::u8path(folderRoot);
-    const auto guids = m_assetDatabase->GetAllGuids();
-    m_searchIndex.reserve(guids.size());
-
-    for (const auto &guid : guids) {
-        const std::string path = m_assetDatabase->GetPathFromGuid(guid);
-        if (path.empty())
-            continue;
-        const std::string name = infernux::FromFsPath(fs::u8path(path).filename());
-        if (!ShouldShow(name))
-            continue;
-
-        std::string rel = path;
-        std::string relativePath;
-        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
-            rel = std::move(relativePath);
-
-        FileItem item;
-        item.type = FileItem::File;
-        item.name = name;
-        item.path = path;
-        item.ext = infernux::FromFsPath(fs::u8path(path).extension());
-        if (!item.ext.empty() && item.ext.front() == '.')
-            item.ext.erase(item.ext.begin());
-
-        SearchIndexEntry indexed;
-        indexed.item = std::move(item);
-        indexed.sortKey = ToLowerAsciiCopy(name);
-        indexed.searchKey = indexed.sortKey + "\n" + ToLowerAsciiCopy(rel);
-        m_searchIndex.push_back(std::move(indexed));
-
-        // Folder hits are derived from catalogued asset paths. This avoids the
-        // previous recursive directory walk on every search edit while still
-        // indexing every non-empty project folder and all of its ancestors.
-        fs::path parent = fs::u8path(path).parent_path();
-        while (!folderRoot.empty() && !parent.empty()) {
-            const std::string parentString = infernux::FromFsPath(parent);
-            std::string ignored;
-            if (!infernux::TryMakeRelativeFilesystemPath(parentString, folderRoot, ignored, true))
-                break;
-            if (parent == rootPath)
-                break;
-            folderPaths.insert(parentString);
-            const fs::path next = parent.parent_path();
-            if (next == parent)
-                break;
-            parent = next;
-        }
+    if (completion->index && completion->indexGeneration == generation && completion->indexRoot == folderRoot) {
+        m_searchIndexGeneration = completion->indexGeneration;
+        m_searchIndexRoot = completion->indexRoot;
+        m_searchIndex = std::move(completion->index);
     }
 
-    for (const std::string &path : folderPaths) {
-        FileItem item;
-        item.type = FileItem::Dir;
-        item.path = path;
-        item.name = infernux::FromFsPath(fs::u8path(path).filename());
-        if (!ShouldShow(item.name))
-            continue;
+    if (completion->token != m_searchDesiredToken)
+        return;
+    m_searchResults = std::move(completion->results);
+    m_searchResultToken = completion->token;
+    m_searchBusy = false;
+}
 
-        std::string rel = path;
-        std::string relativePath;
-        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
-            rel = std::move(relativePath);
-
-        SearchIndexEntry indexed;
-        indexed.item = std::move(item);
-        indexed.sortKey = ToLowerAsciiCopy(indexed.item.name);
-        indexed.searchKey = indexed.sortKey + "\n" + ToLowerAsciiCopy(rel);
-        m_searchIndex.push_back(std::move(indexed));
+void ProjectPanel::ScheduleSearch(const EditorSearchToken &token, uint64_t generation, const std::string &folderRoot)
+{
+    if (m_searchJobInFlight || !m_assetDatabase)
+        return;
+    if (!JobSystem::IsAvailable()) {
+        m_searchResultToken = token;
+        m_searchBusy = false;
+        return;
     }
 
-    std::sort(m_searchIndex.begin(), m_searchIndex.end(), [](const SearchIndexEntry &a, const SearchIndexEntry &b) {
-        if (a.item.type != b.item.type)
-            return a.item.type < b.item.type;
-        if (a.sortKey != b.sortKey)
-            return a.sortKey < b.sortKey;
-        return a.item.path < b.item.path;
-    });
+    const uint64_t requestSerial = m_searchRequestSerial;
+    const std::string normalizedQuery = m_search.NormalizedQuery();
+    const std::string projectRoot = m_rootPath;
+    const auto cachedIndex = m_searchIndex && m_searchIndexGeneration == generation && m_searchIndexRoot == folderRoot
+                                 ? m_searchIndex
+                                 : nullptr;
+    const auto catalog =
+        cachedIndex ? std::shared_ptr<const AssetCatalogSnapshot>{} : m_assetDatabase->GetCatalogSnapshot();
+    const auto asyncState = m_searchAsyncState;
+
+    try {
+        JobSystem::Get().Schedule(
+            [asyncState, cachedIndex, catalog, token, generation, folderRoot, projectRoot, normalizedQuery,
+             requestSerial]() {
+                auto completion = std::make_unique<SearchAsyncCompletion>();
+                completion->requestSerial = requestSerial;
+                completion->token = token;
+                completion->indexGeneration = generation;
+                completion->indexRoot = folderRoot;
+                try {
+                    const auto cancelled = [&]() {
+                        return asyncState->desiredSerial.load(std::memory_order_acquire) != requestSerial;
+                    };
+                    completion->cancelled = cancelled();
+                    std::shared_ptr<const std::vector<SearchIndexEntry>> index = cachedIndex;
+                    if (!completion->cancelled && !index) {
+                        auto built = std::make_shared<std::vector<SearchIndexEntry>>();
+                        std::unordered_set<std::string> folderPaths;
+                        const fs::path rootPath = fs::u8path(folderRoot);
+                        if (catalog) {
+                            size_t assetCount = 0;
+                            for (const auto &[directory, entries] : catalog->GetDirectories()) {
+                                if (cancelled()) {
+                                    completion->cancelled = true;
+                                    break;
+                                }
+                                (void)directory;
+                                assetCount += entries.size();
+                            }
+                            built->reserve(assetCount);
+
+                            size_t visitedAssets = 0;
+                            for (const auto &[directory, entries] : catalog->GetDirectories()) {
+                                if (completion->cancelled)
+                                    break;
+                                (void)directory;
+                                for (const AssetCatalogEntry &entry : entries) {
+                                    if ((++visitedAssets & 0xffu) == 0u && cancelled()) {
+                                        completion->cancelled = true;
+                                        break;
+                                    }
+                                    const std::string &path = entry.path;
+                                    if (path.empty() || !ProjectPanel::ShouldShow(entry.name))
+                                        continue;
+
+                                    std::string rel = path;
+                                    std::string relativePath;
+                                    if (!projectRoot.empty() &&
+                                        infernux::TryMakeRelativeFilesystemPath(path, projectRoot, relativePath, true))
+                                        rel = std::move(relativePath);
+
+                                    FileItem item;
+                                    item.type = FileItem::File;
+                                    item.name = entry.name;
+                                    item.path = path;
+                                    item.ext = infernux::FromFsPath(fs::u8path(path).extension());
+                                    if (!item.ext.empty() && item.ext.front() == '.')
+                                        item.ext.erase(item.ext.begin());
+                                    item.resourceType = entry.resourceType;
+
+                                    SearchIndexEntry indexed;
+                                    indexed.item = std::move(item);
+                                    indexed.sortKey = EditorSearchModel::Normalize(entry.name);
+                                    indexed.searchKey = indexed.sortKey + "\n" + EditorSearchModel::Normalize(rel);
+                                    built->push_back(std::move(indexed));
+
+                                    fs::path parent = fs::u8path(path).parent_path();
+                                    while (!folderRoot.empty() && !parent.empty()) {
+                                        const std::string parentString = infernux::FromFsPath(parent);
+                                        std::string ignored;
+                                        if (!infernux::TryMakeRelativeFilesystemPath(parentString, folderRoot, ignored,
+                                                                                     true))
+                                            break;
+                                        if (parent == rootPath)
+                                            break;
+                                        folderPaths.insert(parentString);
+                                        const fs::path next = parent.parent_path();
+                                        if (next == parent)
+                                            break;
+                                        parent = next;
+                                    }
+                                }
+                            }
+                        }
+
+                        size_t visitedFolders = 0;
+                        for (const std::string &path : folderPaths) {
+                            if ((++visitedFolders & 0xffu) == 0u && cancelled()) {
+                                completion->cancelled = true;
+                                break;
+                            }
+                            FileItem item;
+                            item.type = FileItem::Dir;
+                            item.path = path;
+                            item.name = infernux::FromFsPath(fs::u8path(path).filename());
+                            if (!ProjectPanel::ShouldShow(item.name))
+                                continue;
+
+                            std::string rel = path;
+                            std::string relativePath;
+                            if (!projectRoot.empty() &&
+                                infernux::TryMakeRelativeFilesystemPath(path, projectRoot, relativePath, true))
+                                rel = std::move(relativePath);
+
+                            SearchIndexEntry indexed;
+                            indexed.item = std::move(item);
+                            indexed.sortKey = EditorSearchModel::Normalize(indexed.item.name);
+                            indexed.searchKey = indexed.sortKey + "\n" + EditorSearchModel::Normalize(rel);
+                            built->push_back(std::move(indexed));
+                        }
+
+                        if (!completion->cancelled) {
+                            std::sort(built->begin(), built->end(),
+                                      [](const SearchIndexEntry &left, const SearchIndexEntry &right) {
+                                          if (left.item.type != right.item.type)
+                                              return left.item.type < right.item.type;
+                                          if (left.sortKey != right.sortKey)
+                                              return left.sortKey < right.sortKey;
+                                          return left.item.path < right.item.path;
+                                      });
+                            completion->cancelled = cancelled();
+                        }
+                        if (!completion->cancelled)
+                            index = std::move(built);
+                    }
+
+                    if (!completion->cancelled)
+                        completion->index = index;
+                    completion->results.reserve((std::min)(kMaxSearchResults, index ? index->size() : size_t{0}));
+                    size_t visitedMatches = 0;
+                    if (!completion->cancelled && index) {
+                        for (const SearchIndexEntry &indexed : *index) {
+                            if ((++visitedMatches & 0xffu) == 0u && cancelled()) {
+                                completion->cancelled = true;
+                                completion->results.clear();
+                                break;
+                            }
+                            if (indexed.searchKey.find(normalizedQuery) == std::string::npos)
+                                continue;
+                            completion->results.push_back(indexed.item);
+                            if (completion->results.size() == kMaxSearchResults)
+                                break;
+                        }
+                        if (cancelled()) {
+                            completion->cancelled = true;
+                            completion->results.clear();
+                        }
+                    }
+                } catch (const std::exception &exception) {
+                    completion->error = exception.what();
+                } catch (...) {
+                    completion->error = "unknown exception";
+                }
+
+                std::lock_guard lock(asyncState->mutex);
+                if (!asyncState->completion || asyncState->completion->requestSerial <= completion->requestSerial)
+                    asyncState->completion = std::move(completion);
+            },
+            JobDomain::Asset, JobPriority::Low);
+        m_searchJobInFlight = true;
+        m_searchBusy = true;
+    } catch (const std::exception &exception) {
+        INXLOG_ERROR("Could not schedule Project search: ", exception.what());
+        m_searchBusy = false;
+    }
 }
 
 void ProjectPanel::UpdateSearchResults()
 {
-    const std::string query(m_searchBuf);
     const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
     const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
-    if (query == m_lastSearchQuery && generation == m_lastSearchGeneration && folderRoot == m_searchIndexRoot)
-        return;
-
-    m_lastSearchQuery = query;
-    m_lastSearchGeneration = generation;
-    m_searchResults.clear();
-    if (query.empty()) {
+    const EditorSearchToken token = m_search.MakeToken(generation, folderRoot);
+    if (token != m_searchDesiredToken) {
+        ++m_searchRequestSerial;
+        m_searchAsyncState->desiredSerial.store(m_searchRequestSerial, std::memory_order_release);
+        m_searchDesiredToken = token;
+        m_searchResults.clear();
+        m_searchBusy = m_search.IsActive();
+    }
+    PollSearchCompletion();
+    if (!m_search.IsActive()) {
+        m_searchResultToken = token;
         m_searchIndexRoot = folderRoot;
+        m_searchBusy = false;
         return;
     }
-
-    RebuildSearchIndex(generation);
-    const std::string queryLower = ToLowerAsciiCopy(query);
-    m_searchResults.reserve((std::min)(kMaxSearchResults, m_searchIndex.size()));
-    for (const auto &indexed : m_searchIndex) {
-        if (indexed.searchKey.find(queryLower) == std::string::npos)
-            continue;
-        m_searchResults.push_back(indexed.item);
-        if (m_searchResults.size() == kMaxSearchResults)
-            break;
-    }
+    if (token == m_searchResultToken)
+        return;
+    ScheduleSearch(token, generation, folderRoot);
 }
 
 void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
 {
     if (m_searchResults.empty()) {
-        ctx->Label(Tr("project.search_no_results"));
+        ctx->Label(Tr(m_searchBusy ? "project.searching" : "project.search_no_results"));
         return;
     }
 
     FileItem activatedItem;
     bool hasActivatedItem = false;
-    for (const auto &item : m_searchResults) {
-        std::string rel = item.path;
-        if (!m_rootPath.empty()) {
-            std::string tmp;
-            if (infernux::TryMakeRelativeFilesystemPath(item.path, m_rootPath, tmp, true))
-                rel = std::move(tmp);
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(m_searchResults.size()));
+    while (!hasActivatedItem && clipper.Step()) {
+        for (int itemIndex = clipper.DisplayStart; itemIndex < clipper.DisplayEnd; ++itemIndex) {
+            const FileItem &item = m_searchResults[static_cast<size_t>(itemIndex)];
+            std::string rel = item.path;
+            if (!m_rootPath.empty()) {
+                std::string tmp;
+                if (infernux::TryMakeRelativeFilesystemPath(item.path, m_rootPath, tmp, true))
+                    rel = std::move(tmp);
+            }
+
+            const std::string kind =
+                (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
+            // Show "Name — relative/path" so users can tell duplicates apart.
+            const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
+            if (!ctx->Selectable(label, false))
+                continue;
+
+            // Keep a stable copy. Clearing m_searchResults while item still refers to
+            // one of its elements leaves a dangling reference and made activation
+            // intermittently navigate to an invalid path.
+            activatedItem = item;
+            hasActivatedItem = true;
+            break;
         }
-
-        const std::string kind =
-            (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
-        // Show "Name — relative/path" so users can tell duplicates apart.
-        const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
-        if (!ctx->Selectable(label, false))
-            continue;
-
-        // Keep a stable copy. Clearing m_searchResults while item still refers to
-        // one of its elements leaves a dangling reference and made activation
-        // intermittently navigate to an invalid path.
-        activatedItem = item;
-        hasActivatedItem = true;
-        break;
     }
 
     if (!hasActivatedItem)
         return;
 
-    // Selecting a hit ends search mode and jumps File Manager to that location.
+    // Search activation is an explicit navigation intent. Only leave search
+    // mode after the global interaction core accepts the target.
+    const bool accepted = activatedItem.type == FileItem::Dir ? RequestDirectoryNavigation(activatedItem.path)
+                                                              : RequestAssetLocation(activatedItem.path);
+    if (!accepted)
+        return;
     m_searchBuf[0] = '\0';
-    m_lastSearchQuery.clear();
-    m_searchResults.clear();
-    if (activatedItem.type == FileItem::Dir)
-        SetCurrentPath(activatedItem.path);
-    else
-        SetSelectedFile(activatedItem.path);
+    (void)m_search.Clear();
+    ResetAsyncSearch();
 }
 
 // ════════════════════════════════════════════════════════════════════
 // Folder tree
 // ════════════════════════════════════════════════════════════════════
 
+void ProjectPanel::RebuildFolderTreeRows()
+{
+    ++m_folderTreeRebuilds;
+    m_folderTreeRows.clear();
+    m_folderTreeRowsDirectoryRevision = m_directoryRevision;
+    m_folderTreeRowsProjectionRevision = m_folderTreeProjection.Revision();
+    m_folderTreeAppliedProjectionRevision = UINT64_MAX;
+
+    if (m_rootPath.empty())
+        return;
+
+    auto *rootSnapshot = GetDirSnapshot(m_rootPath);
+    if (!rootSnapshot)
+        return;
+
+    const auto rootName = infernux::FromFsPath(fs::u8path(m_rootPath).filename());
+    m_folderTreeRows.push_back({m_rootPath, rootName, rootName + "###" + m_rootPath, FilesystemPathKey(m_rootPath),
+                                "project.folder.root", 0, !rootSnapshot->dirs.empty(), true,
+                                m_folderTreeProjection.IsExpanded(m_rootPath)});
+
+    std::function<void(const std::string &, DirSnapshot *, int)> appendChildren;
+    appendChildren = [&](const std::string &parentPath, DirSnapshot *parentSnapshot, int depth) {
+        if (!parentSnapshot || !m_folderTreeProjection.IsExpanded(parentPath))
+            return;
+
+        for (const auto &directory : parentSnapshot->dirs) {
+            auto *meta = GetDirTreeMeta(directory.path);
+            const bool hasSubdirs = meta != nullptr && meta->hasSubdirs;
+            m_folderTreeRows.push_back({directory.path, directory.name, directory.name + "###" + directory.path,
+                                        FilesystemPathKey(directory.path), MakeProjectFolderSemanticId(directory.path),
+                                        depth, hasSubdirs, false, m_folderTreeProjection.IsExpanded(directory.path)});
+            if (hasSubdirs && m_folderTreeProjection.IsExpanded(directory.path))
+                appendChildren(directory.path, GetDirSnapshot(directory.path), depth + 1);
+        }
+    };
+    appendChildren(m_rootPath, rootSnapshot, 1);
+}
+
 void ProjectPanel::RenderFolderTree(InxGUIContext *ctx)
 {
-    auto *rootSnap = m_rootPath.empty() ? nullptr : GetDirSnapshot(m_rootPath);
-    if (rootSnap) {
-        auto projectName = infernux::FromFsPath(fs::u8path(m_rootPath).filename());
-        int rootFlags =
-            ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding;
-        if (m_currentPath == m_rootPath)
-            rootFlags |= ImGuiTreeNodeFlags_Selected;
+    if (m_folderTreeRowsDirectoryRevision != m_directoryRevision ||
+        m_folderTreeRowsProjectionRevision != m_folderTreeProjection.Revision())
+        RebuildFolderTreeRows();
 
-        ctx->SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-        bool nodeOpen = ctx->TreeNodeEx((projectName + "###" + m_rootPath).c_str(), rootFlags);
-        if (InxGUISemantics::IsCaptureEnabled())
-            ctx->RecordSemanticItem("project_folder", projectName, true, "project.folder.root");
-        if (ctx->IsItemClicked()) {
-            if (m_navHasSubfolders)
-                AssignCurrentPath(m_preferredNavPath);
-            else
-                AssignCurrentPath(m_rootPath);
-        }
-        if (nodeOpen) {
-            RenderFolderTreeRecursive(ctx, m_rootPath, rootSnap);
-            ctx->TreePop();
-        }
-    } else {
+    if (m_folderTreeRows.empty()) {
         ctx->Label(Tr("project.no_project_path"));
+    } else {
+        const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
+        const float baseX = ctx->GetCursorPosX();
+        const float indent = ImGui::GetStyle().IndentSpacing;
+        const std::string &currentPathKey = m_currentPathKey;
+        const uint64_t projectionRevision = m_folderTreeRowsProjectionRevision;
+        const bool syncExpandedState = m_folderTreeAppliedProjectionRevision != projectionRevision;
+        auto renderRow = [&](int index) {
+            const auto &row = m_folderTreeRows[static_cast<size_t>(index)];
+            ++m_folderRowsSubmitted;
+            int flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
+                        ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            const bool selected = currentPathKey == row.pathKey;
+            if (selected)
+                flags |= ImGuiTreeNodeFlags_Selected;
+            if (!row.hasSubdirs)
+                flags |= ImGuiTreeNodeFlags_Leaf;
+
+            if (row.hasSubdirs && syncExpandedState)
+                ctx->SetNextItemOpen(row.expanded, ImGuiCond_Always);
+            ctx->SetCursorPosX(baseX + static_cast<float>(row.depth) * indent);
+
+            // TreeNodeEx on the context wrapper performs a second semantic
+            // capture check for every row. The Project panel already knows
+            // whether capture is active, so use the native call on the hot
+            // path and explicitly preserve the wrapper's generic semantic
+            // record when capture is requested.
+            const bool open = ImGui::TreeNodeEx(row.imguiId.c_str(), static_cast<ImGuiTreeNodeFlags>(flags));
+            const bool toggledOpen = row.hasSubdirs && ImGui::IsItemToggledOpen();
+            if (captureSemantics) {
+                ctx->RecordSemanticItem("tree_node", row.imguiId);
+                ctx->RecordSemanticItem("project_folder", row.name, true, row.semanticId, selected);
+            }
+            if (toggledOpen) {
+                ExecuteEditorCommand("project.set_folder_expanded", MakeTreeExpandedCommandArgument(row.path, open),
+                                     "pointer");
+            } else if (ctx->IsItemClicked()) {
+                RequestDirectoryNavigation(row.path);
+            }
+        };
+
+        // ImGuiListClipper has a fixed setup cost. A small tree is already
+        // fully visible in normal panel sizes, so submit it directly; larger
+        // projects retain the clipped path and its scrolling behavior.
+        constexpr size_t kFolderTreeClipperThreshold = 32;
+        if (m_folderTreeRows.size() <= kFolderTreeClipperThreshold) {
+            m_folderRowsVisible += static_cast<uint64_t>(m_folderTreeRows.size());
+            for (int index = 0; index < static_cast<int>(m_folderTreeRows.size()); ++index)
+                renderRow(index);
+        } else {
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(m_folderTreeRows.size()));
+            while (clipper.Step()) {
+                m_folderRowsVisible += static_cast<uint64_t>(std::max(clipper.DisplayEnd - clipper.DisplayStart, 0));
+                for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index)
+                    renderRow(index);
+            }
+            clipper.End();
+        }
+        m_folderTreeAppliedProjectionRevision = projectionRevision;
     }
 
     float remainH = ctx->GetContentRegionAvailHeight();
     if (remainH > 4.0f) {
         ctx->InvisibleButton("##folder_tree_empty_area", ctx->GetContentRegionAvailWidth(), remainH);
-        if (ctx->IsItemClicked(0)) {
-            ClearSelection();
-            NotifyEmptyAreaClicked();
-        }
-    }
-}
-
-void ProjectPanel::RenderFolderTreeRecursive(InxGUIContext *ctx, const std::string &path, DirSnapshot *snapshot)
-{
-    if (!snapshot)
-        snapshot = GetDirSnapshot(path);
-    if (!snapshot)
-        return;
-
-    for (auto &d : snapshot->dirs) {
-        int flags =
-            ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding;
-        if (m_currentPath == d.path)
-            flags |= ImGuiTreeNodeFlags_Selected;
-
-        auto *meta = GetDirTreeMeta(d.path);
-        bool hasSubdirs = meta && meta->hasSubdirs;
-        if (!hasSubdirs)
-            flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
-        ImGui::PushID(d.path.c_str());
-        bool open = ctx->TreeNodeEx(d.name.c_str(), flags);
-        if (InxGUISemantics::IsCaptureEnabled())
-            ctx->RecordSemanticItem("project_folder", d.name, true, MakeProjectFolderSemanticId(d.path));
-        if (ctx->IsItemClicked())
-            AssignCurrentPath(d.path);
-        if (hasSubdirs && open) {
-            RenderFolderTreeRecursive(ctx, d.path);
-            ctx->TreePop();
-        }
-        ImGui::PopID();
+        if (ctx->IsItemClicked(0))
+            PublishSelectionIntent({}, "");
     }
 }
 
@@ -2602,10 +2804,23 @@ void ProjectPanel::RenderFolderTreeRecursive(InxGUIContext *ctx, const std::stri
 
 void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
 {
-    const auto contextStart = std::chrono::steady_clock::now();
-    RenderContextMenu(ctx);
     const auto dataStart = std::chrono::steady_clock::now();
-    m_subGridContext += std::chrono::duration<double, std::milli>(dataStart - contextStart).count();
+    std::string requestedContextTarget;
+    bool requestedBackgroundContext = false;
+    bool contextMenuRendered = false;
+
+    // A popup owns an independent ImGui lifecycle once it has opened.  Asset
+    // snapshots may legitimately be unavailable for a frame while the
+    // asynchronous directory model changes, and navigation deliberately
+    // returns early after replacing that model.  Neither event may skip an
+    // already-open context menu or make its command payload/focus flicker.
+    if (ImGui::IsPopupOpen("ProjectContextMenu")) {
+        const auto contextStart = std::chrono::steady_clock::now();
+        RenderContextMenu(ctx);
+        m_subGridContext +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - contextStart).count();
+        contextMenuRendered = true;
+    }
 
     auto *snapshot = m_currentPath.empty() ? nullptr : GetDirSnapshot(m_currentPath);
     if (!snapshot) {
@@ -2629,7 +2844,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
         if (ctx->Selectable("[..]", false)) {
             const std::string parent =
                 infernux::FromFsPath(infernux::ToFsPath(infernux::ResolveFilesystemPath(m_currentPath)).parent_path());
-            AssignCurrentPath(parent);
+            if (!RequestDirectoryNavigation(parent))
+                return;
             // The snapshot and item pointers above belong to the previous
             // directory. Do not continue rendering this frame with a new path
             // and stale grid data; the next frame will acquire one coherent
@@ -2646,19 +2862,17 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     int cols = std::max(static_cast<int>(avail_w / CELL_WIDTH), 1);
     float rowHeight = iconSize + GetGridTextLineHeight(ctx) + GRID_PADDING + 8.0f;
 
-    if (items->empty() && m_currentPath == m_rootPath) {
+    if (items->empty() && FilesystemPathKey(m_currentPath) == FilesystemPathKey(m_rootPath)) {
         ctx->Label(Tr("project.empty_folder"));
         ctx->Label(Tr("project.right_click_hint"));
     }
-
-    // Keyboard shortcuts (same frame as grid so F2 can open inline rename immediately)
-    HandleKeyboardShortcuts(ctx);
 
     // Virtual scrolling
     float gridStartX = ctx->GetCursorPosX();
     float gridStartY = ctx->GetCursorPosY();
     int itemCount = static_cast<int>(items->size());
     auto range = GetVisibleGridRange(ctx, itemCount, cols, rowHeight, gridStartY);
+    m_gridItemsVisible += static_cast<uint64_t>(std::max(range.endIndex - range.startIndex, 0));
     const ImGuiPayload *dragPayload = ImGui::GetDragDropPayload();
     bool hasDragPayload = (dragPayload != nullptr);
     bool hasHierarchyDragPayload = hasDragPayload && dragPayload->IsDataType(DRAG_TYPE_HIERARCHY_GO);
@@ -2730,8 +2944,16 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
 
         for (int i = range.startIndex; i < range.endIndex; ++i) {
             auto &item = (*items)[i];
+            ++m_gridItemsSubmitted;
             ctx->TableNextColumn();
             ImGui::PushID(i);
+
+            std::string fallbackSelectionKey;
+            const std::string *selectionKey = &item.selectionKey;
+            if (selectionKey->empty()) {
+                fallbackSelectionKey = AssetSelectionPathKey(item.path);
+                selectionKey = &fallbackSelectionKey;
+            }
 
             const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh);
             const std::string itemSemanticId = captureSemantics ? MakeProjectItemSemanticId(item) : std::string{};
@@ -2758,7 +2980,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             // Expanded model on this row: draw the left portion of the inline strip so it
             // bridges into the first sub-asset cell on the same row.
             const bool isModelFile = (item.type == FileItem::File && IsModelExt(item.ext));
-            if (isModelFile && m_expandedModels.count(item.path) > 0) {
+            if (isModelFile && m_modelTreeProjection.IsExpanded(item.path)) {
                 const bool nextIsSubSameRow = (i + 1 < itemCount) && isSubAssetItem((*items)[i + 1]) &&
                                               (*items)[i + 1].parentPath == item.path && ((i + 1) % cols) != 0;
                 if (nextIsSubSameRow) {
@@ -2798,7 +3020,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 ImGui::TablePopBackgroundChannel();
             }
 
-            bool isSelected = m_selectedSet.count(item.path) > 0;
+            const bool isSelected = m_selectedSet.find(*selectionKey) != m_selectedSet.end();
             // Record cell start position for full-cell drop overlay later
             // ── Resolve display texture (inline for speed) ──
             uint64_t displayTexId = 0;
@@ -2847,7 +3069,19 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 } else if (item.type == FileItem::File) {
                     if (IsImageExt(item.ext) && m_engine) {
                         const std::string resourceKey = std::string("tex|") + item.path;
-                        auto [readyW, readyH] = m_engine->GetTexturePreviewSize(resourceKey);
+                        int readyW = 0;
+                        int readyH = 0;
+                        const auto sizeIt = m_texturePreviewSizes.find(resourceKey);
+                        if (sizeIt != m_texturePreviewSizes.end() && sizeIt->second.textureId == displayTexId) {
+                            readyW = sizeIt->second.width;
+                            readyH = sizeIt->second.height;
+                        } else {
+                            const auto readySize = m_engine->GetTexturePreviewSize(resourceKey);
+                            readyW = readySize.first;
+                            readyH = readySize.second;
+                            m_texturePreviewSizes.insert_or_assign(
+                                resourceKey, TexturePreviewSizeCacheEntry{displayTexId, readyW, readyH});
+                        }
                         srcW = readyW;
                         srcH = readyH;
                     } else if (IsMaterialExt(item.ext)) {
@@ -2863,7 +3097,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 // InvisibleButton for hit-testing; AddImage for drawing
                 ImGui::InvisibleButton("##ic", ImVec2(thumbW, iconSize));
                 if (captureSemantics)
-                    ctx->RecordSemanticItem("project_item", item.name, true, itemSemanticId);
+                    ctx->RecordSemanticItem("project_item", item.name, true, itemSemanticId, isSelected);
                 const bool thumbHovered = ImGui::IsItemHovered();
                 const bool thumbClicked =
                     thumbHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !hasDragPayload;
@@ -2885,7 +3119,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 if (isModelFile) {
                     ImGui::SameLine(0.0f, 0.0f);
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
-                    const bool ex = m_expandedModels.count(item.path) > 0;
+                    const bool ex = m_modelTreeProjection.IsExpanded(item.path);
                     uint64_t expandTex = 0;
                     if (ex) {
                         auto eit = m_typeIconCache.find("model_expand_open");
@@ -2928,11 +3162,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                                                 itemSemanticId + ".expand", ex);
                     }
                     if (expandClicked) {
-                        if (ex)
-                            m_expandedModels.erase(item.path);
-                        else
-                            m_expandedModels.insert(item.path);
-                        m_pendingAugmentedCacheInvalidation = true;
+                        ExecuteEditorCommand("project.set_model_expanded",
+                                             MakeTreeExpandedCommandArgument(item.path, !ex), "pointer");
                     }
                     ImGui::PopStyleVar();
                 }
@@ -2942,12 +3173,10 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 if (thumbClicked && !hasDragPayload)
                     HandleItemClick(item, ctx);
                 if (thumbRmb) {
-                    m_selectedFile = item.path;
-                    if (m_selectedSet.count(item.path) == 0) {
-                        m_selectedFiles = {item.path};
-                        m_selectedSet = {item.path};
-                    }
-                    NotifySelectionChanged();
+                    const bool alreadySelected = m_selectedSet.find(*selectionKey) != m_selectedSet.end();
+                    PublishSelectionIntent(alreadySelected ? m_selectedFiles : std::vector<std::string>{item.path},
+                                           item.path);
+                    requestedContextTarget = item.path;
                 }
             } else {
                 // No icon texture for this type → centered "[TAG]" placeholder, but
@@ -2956,7 +3185,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 const char *tag = (item.type != FileItem::Dir) ? GetFileTypeTag(item.name) : "[DIR]";
                 ImGui::InvisibleButton("##ic", ImVec2(iconSize, iconSize));
                 if (captureSemantics)
-                    ctx->RecordSemanticItem("project_item", item.name, true, itemSemanticId);
+                    ctx->RecordSemanticItem("project_item", item.name, true, itemSemanticId, isSelected);
                 const bool thumbHovered = ImGui::IsItemHovered();
                 const bool thumbClicked =
                     thumbHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !hasDragPayload;
@@ -2969,12 +3198,10 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 if (thumbClicked && !hasDragPayload)
                     HandleItemClick(item, ctx);
                 if (thumbRmb) {
-                    m_selectedFile = item.path;
-                    if (m_selectedSet.count(item.path) == 0) {
-                        m_selectedFiles = {item.path};
-                        m_selectedSet = {item.path};
-                    }
-                    NotifySelectionChanged();
+                    const bool alreadySelected = m_selectedSet.find(*selectionKey) != m_selectedSet.end();
+                    PublishSelectionIntent(alreadySelected ? m_selectedFiles : std::vector<std::string>{item.path},
+                                           item.path);
+                    requestedContextTarget = item.path;
                 }
             }
 
@@ -3012,8 +3239,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
         if (ImGui::BeginDragDropTargetCustom(win->InnerRect, win->ID)) {
             uint64_t objId = 0;
             if (ctx->AcceptDragDropPayload(DRAG_TYPE_HIERARCHY_GO, &objId)) {
-                if (createPrefabFromHierarchy)
-                    createPrefabFromHierarchy(objId, m_currentPath);
+                ExecuteEditorCommand("prefab.save_as", MakePrefabSaveAsCommandArgument(objId, m_currentPath),
+                                     "drag_drop");
             }
             ImGui::EndDragDropTarget();
         }
@@ -3032,15 +3259,15 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
         if (hasHierarchyDragPayload && ctx->BeginDragDropTarget()) {
             uint64_t objId = 0;
             if (ctx->AcceptDragDropPayload(DRAG_TYPE_HIERARCHY_GO, &objId)) {
-                if (createPrefabFromHierarchy)
-                    createPrefabFromHierarchy(objId, m_currentPath);
+                ExecuteEditorCommand("prefab.save_as", MakePrefabSaveAsCommandArgument(objId, m_currentPath),
+                                     "drag_drop");
             }
             ctx->EndDragDropTarget();
         }
-        if (ctx->IsItemClicked(0)) {
-            ClearSelection();
-            NotifyEmptyAreaClicked();
-        }
+        if (ctx->IsItemClicked(0))
+            PublishSelectionIntent({}, "");
+        if (ctx->IsItemClicked(1))
+            requestedBackgroundContext = true;
     } else if (captureSemantics && semanticBackgroundMax.x > semanticBackgroundMin.x &&
                semanticBackgroundMax.y > semanticBackgroundMin.y) {
         ctx->RecordSemanticRect("project_background", "File Grid Background", semanticBackgroundMin.x,
@@ -3050,6 +3277,25 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     }
     m_subGridTail +=
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gridTailStart).count();
+
+    requestedBackgroundContext =
+        requestedBackgroundContext ||
+        (requestedContextTarget.empty() && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+         ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsAnyItemHovered());
+    if (!requestedContextTarget.empty() || requestedBackgroundContext) {
+        m_contextTargetPath = requestedContextTarget;
+        m_contextRevealPath =
+            requestedContextTarget.empty() ? m_currentPath : ResolveRealAssetPath(requestedContextTarget);
+        m_contextCurrentPath = m_currentPath;
+        ctx->OpenPopup("ProjectContextMenu");
+    }
+
+    if (!contextMenuRendered) {
+        const auto contextStart = std::chrono::steady_clock::now();
+        RenderContextMenu(ctx);
+        m_subGridContext +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - contextStart).count();
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -3058,152 +3304,16 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
 
 void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
 {
-    if (!ctx->BeginPopupContextWindow("ProjectContextMenu", 1))
+    if (!ctx->BeginPopup("ProjectContextMenu")) {
+        if (!ImGui::IsPopupOpen("ProjectContextMenu")) {
+            m_contextTargetPath.clear();
+            m_contextRevealPath.clear();
+            m_contextCurrentPath.clear();
+        }
         return;
-
-    if (ctx->BeginMenu(Tr("project.create_menu"))) {
-        if (ctx->Selectable(Tr("project.create_folder"), false)) {
-            CreateAndRename("NewFolder", "", [this](const std::string &name) {
-                if (createFolder)
-                    return createFolder(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_script"), false)) {
-            CreateAndRename("NewComponent", ".py", [this](const std::string &name) {
-                if (createScript)
-                    return createScript(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_vert_shader"), false)) {
-            CreateAndRename("NewShader", ".vert", [this](const std::string &name) {
-                if (createShader)
-                    return createShader(m_currentPath, name, "vert");
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        if (ctx->Selectable(Tr("project.create_frag_shader"), false)) {
-            CreateAndRename("NewShader", ".frag", [this](const std::string &name) {
-                if (createShader)
-                    return createShader(m_currentPath, name, "frag");
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_material"), false)) {
-            CreateAndRename("NewMaterial", ".mat", [this](const std::string &name) {
-                if (createMaterial)
-                    return createMaterial(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        if (ctx->Selectable(Tr("project.create_physic_material"), false)) {
-            CreateAndRename("NewPhysicMaterial", ".physicMaterial", [this](const std::string &name) {
-                if (createPhysicMaterial)
-                    return createPhysicMaterial(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_scene"), false)) {
-            CreateAndRename("NewScene", ".scene", [this](const std::string &name) {
-                if (createScene)
-                    return createScene(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_particlegraph"), false)) {
-            CreateAndRename("NewParticleGraph", ".particlegraph", [this](const std::string &name) {
-                if (createParticleGraph)
-                    return createParticleGraph(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        if (ctx->BeginMenu(Tr("project.create_render_effect"))) {
-            auto effectItem = [this, ctx](const char *labelKey, const char *baseName, const char *featureType) {
-                if (!ctx->Selectable(Tr(labelKey), false))
-                    return;
-                CreateAndRename(baseName, ".effect", [this, featureType](const std::string &name) {
-                    if (createRenderEffect)
-                        return createRenderEffect(m_currentPath, name, featureType);
-                    return std::make_pair(false, std::string("No callback"));
-                });
-            };
-            effectItem("project.effect_bloom", "NewBloom", "infernux.post.bloom");
-            effectItem("project.effect_tonemapping", "NewToneMapping", "infernux.post.tonemapping");
-            effectItem("project.effect_color_adjustments", "NewColorAdjustments", "infernux.post.color_adjustments");
-            effectItem("project.effect_chromatic_aberration", "NewChromaticAberration",
-                       "infernux.post.chromatic_aberration");
-            effectItem("project.effect_film_grain", "NewFilmGrain", "infernux.post.film_grain");
-            effectItem("project.effect_motion_blur", "NewMotionBlur", "infernux.post.motion_blur");
-            effectItem("project.effect_temporal_aa", "NewTemporalAA", "infernux.post.temporal_aa");
-            effectItem("project.effect_sharpen", "NewSharpen", "infernux.post.sharpen");
-            effectItem("project.effect_vignette", "NewVignette", "infernux.post.vignette");
-            effectItem("project.effect_white_balance", "NewWhiteBalance", "infernux.post.white_balance");
-            ctx->Separator();
-            effectItem("project.effect_pixelation", "NewPixelation", "infernux.route.pixelation");
-            ctx->EndMenu();
-        }
-        if (ctx->Selectable(Tr("project.create_render_effect_group"), false)) {
-            CreateAndRename("NewRenderEffectGroup", ".effectgroup", [this](const std::string &name) {
-                if (createRenderEffectGroup)
-                    return createRenderEffectGroup(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
-        ctx->EndMenu();
     }
-
-    std::error_code ec;
-    const std::string selectedReal = m_selectedFile.empty() ? std::string() : ResolveRealAssetPath(m_selectedFile);
-    if (!m_selectedFile.empty() && !selectedReal.empty() && fs::exists(fs::u8path(selectedReal), ec)) {
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.reveal_in_explorer"), false)) {
-            if (revealInExplorer)
-                revealInExplorer(selectedReal);
-        }
-        ctx->Separator();
-        auto selectedPaths = GetSelectedPaths();
-        if (ctx->Selectable(Tr("project.copy"), false))
-            ClipboardCopy(selectedPaths);
-        if (ctx->Selectable(Tr("project.cut"), false))
-            ClipboardCut(selectedPaths);
-        if (HasClipboardItems()) {
-            if (ctx->Selectable(Tr("project.paste"), false))
-                ClipboardPaste();
-        }
-        ctx->Separator();
-        bool canRename = (selectedPaths.size() == 1) && !IsVirtualSubAssetPath(m_selectedFile);
-        if (!canRename)
-            ctx->BeginDisabled();
-        const std::string renameLabel = Tr("project.rename");
-        if (ctx->Selectable(renameLabel, false))
-            BeginRename(m_selectedFile);
-        ctx->RecordSemanticItem("menu_item", renameLabel, canRename, "project.context.rename");
-        if (!canRename)
-            ctx->EndDisabled();
-        const std::string deleteLabel = Tr("project.delete");
-        if (ctx->Selectable(deleteLabel, false)) {
-            if (deleteItems)
-                deleteItems(selectedPaths);
-        }
-        ctx->RecordSemanticItem("menu_item", deleteLabel, true, "project.context.delete");
-    } else {
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.reveal_in_explorer"), false)) {
-            if (revealInExplorer)
-                revealInExplorer(m_currentPath);
-        }
-        if (HasClipboardItems()) {
-            if (ctx->Selectable(Tr("project.paste"), false))
-                ClipboardPaste();
-        }
-    }
-
+    if (renderContextMenu)
+        renderContextMenu(ctx, m_contextTargetPath, m_contextRevealPath, m_contextCurrentPath);
     ctx->EndPopup();
 }
 
@@ -3295,11 +3405,6 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
         if (item.ext == ".py" && isParticleScript) {
             pType = "PARTICLE_GRAPH_FILE";
             labelPfx = "Particle Script";
-        } else if (item.ext == ".py" && validateScriptComponent) {
-            if (!validateScriptComponent(item.path)) {
-                pType = DRAG_TYPE_PROJECT_ITEM;
-                labelPfx = "Item (script file not attachable)";
-            }
         }
 
         ctx->SetDragDropPayload(pType, item.path);
@@ -3332,8 +3437,7 @@ void ProjectPanel::RenderFolderDropTarget(InxGUIContext *ctx, const std::string 
         bool handled = false;
         uint64_t objId = 0;
         if (ctx->AcceptDragDropPayload(DRAG_TYPE_HIERARCHY_GO, &objId)) {
-            if (createPrefabFromHierarchy)
-                createPrefabFromHierarchy(objId, folderPath);
+            ExecuteEditorCommand("prefab.save_as", MakePrefabSaveAsCommandArgument(objId, folderPath), "drag_drop");
             handled = true;
         }
         if (!handled) {
@@ -3353,7 +3457,7 @@ void ProjectPanel::RenderFolderDropTarget(InxGUIContext *ctx, const std::string 
 
 void ProjectPanel::RenderItemLabel(InxGUIContext *ctx, const FileItem &item, float iconSize, float cellStartX)
 {
-    if (m_renamingPath == item.path) {
+    if (!m_renamingPath.empty() && FilesystemPathKey(m_renamingPath) == FilesystemPathKey(item.path)) {
         if (m_renameFocusRequested) {
             ctx->SetKeyboardFocusHere();
             m_renameFocusRequested = false;
@@ -3369,8 +3473,6 @@ void ProjectPanel::RenderItemLabel(InxGUIContext *ctx, const FileItem &item, flo
 
         if (ctx->IsKeyPressed(kKeyEnter))
             CommitRename();
-        else if (ctx->IsKeyPressed(kKeyEscape))
-            CancelRename();
         else if (m_renameSkipDeactivateFrames == 0 && ctx->IsItemDeactivated())
             CommitRename();
     } else {

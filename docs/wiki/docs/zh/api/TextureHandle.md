@@ -16,7 +16,7 @@
 
 | 签名 | 描述 |
 |------|------|
-| `TextureHandle.__init__(name: str, format: Format, is_camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ...) → None` |  |
+| `TextureHandle.__init__(name: str, format: Format, is_camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: int = ...) → None` |  |
 
 <!-- USER CONTENT START --> constructors
 
@@ -31,6 +31,7 @@
 | is_camera_target | `bool` |  |
 | size | `Optional[Tuple[int, int]]` |  |
 | size_divisor | `int` |  |
+| samples | `int` |  |
 | is_depth | `bool` | Returns True if this texture uses a depth format. *(只读)* |
 
 <!-- USER CONTENT START --> properties
@@ -52,7 +53,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.2.9 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.3.4 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

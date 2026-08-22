@@ -1,9 +1,6 @@
 """
 Build Settings — Unity-style floating window for managing game builds.
 
-NOT a dockable panel.  Rendered by MenuBarPanel each frame when visible;
-never registered through WindowManager / engine.register_gui().
-
 Features:
   * Scene list (drag-drop from Project panel or "Add Open Scene")
   * Output directory picker
@@ -13,13 +10,25 @@ Features:
 """
 
 import os
-import json
 import sys
 import threading
-from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
+import copy
+from collections import deque
+from Infernux.engine.path_utils import (
+    is_path_within,
+    portable_path,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from typing import Dict, List, Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.build_settings import (
+    BUILD_SETTINGS_FILE,
+    build_settings_path as _settings_path,
+    load_build_settings,
+)
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.game_builder import (
@@ -27,6 +36,16 @@ from Infernux.engine.game_builder import (
     GameBuilder,
 )
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import (
+    BoundPanelCommand,
+    PanelCommandAdapter,
+    PanelCommandSpec,
+    PanelInteractionDescriptor,
+    ensure_project_settings_document,
+    normalize_build_settings,
+)
+from .editor_panel import FloatingEditorPanel
+from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from ._dialogs import pick_folder_dialog, pick_file_dialog
 
@@ -34,8 +53,6 @@ from ._dialogs import pick_folder_dialog, pick_file_dialog
 # ---------------------------------------------------------------------------
 # Persistence helpers
 # ---------------------------------------------------------------------------
-
-BUILD_SETTINGS_FILE = "BuildSettings.json"
 
 _VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga"}
@@ -45,37 +62,6 @@ _DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
 
 
-def _settings_path(project_path: Optional[str] = None) -> Optional[str]:
-    root = project_path or get_project_root()
-    if not root:
-        return None
-    return os.path.join(root, "ProjectSettings", BUILD_SETTINGS_FILE)
-
-
-def load_build_settings(project_path: Optional[str] = None) -> dict:
-    """Load BuildSettings.json."""
-    path = _settings_path(project_path)
-    if not path or not os.path.isfile(path):
-        return {"scenes": []}
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError, ValueError):
-        data = {"scenes": []}
-    if "scenes" not in data:
-        data["scenes"] = []
-    return data
-
-
-def save_build_settings(settings: dict, project_path: Optional[str] = None):
-    path = _settings_path(project_path)
-    if not path:
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    from Infernux.core.document_store import write_document_text
-    write_document_text(path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
-
-
 # ---------------------------------------------------------------------------
 # Drag-drop type & style constants
 # ---------------------------------------------------------------------------
@@ -83,15 +69,63 @@ def save_build_settings(settings: dict, project_path: Optional[str] = None):
 DRAG_DROP_SCENE = "SCENE_FILE"
 DRAG_DROP_REORDER = "BUILD_REORDER"
 _DRAG_TARGET_COLOR = Theme.DRAG_DROP_TARGET
-_WIN_FLAGS = Theme.WINDOW_FLAGS_DIALOG
 
 
-class BuildSettingsPanel:
-    """Standalone floating Build Settings window."""
+def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:
+    required = (
+        "can_start_build",
+        "command_start_build",
+        "can_cancel_build",
+        "command_cancel_build",
+    )
+    missing = tuple(name for name in required if not callable(getattr(panel, name, None)))
+    if missing:
+        raise TypeError(f"build settings interaction contract is missing: {missing}")
+    return PanelCommandAdapter(
+        {
+            "build.start": BoundPanelCommand(
+                lambda _context: panel.command_start_build(run_after=False),
+                lambda _context: panel.can_start_build(),
+            ),
+            "build.start_and_run": BoundPanelCommand(
+                lambda _context: panel.command_start_build(run_after=True),
+                lambda _context: panel.can_start_build(),
+            ),
+            "build.cancel": BoundPanelCommand(
+                lambda _context: panel.command_cancel_build(),
+                lambda _context: panel.can_cancel_build(),
+            ),
+        }
+    )
+
+
+_BUILD_SETTINGS_INTERACTION = PanelInteractionDescriptor(
+    document_backed=True,
+    commands=(
+        PanelCommandSpec("build.start"),
+        PanelCommandSpec("build.start_and_run"),
+        PanelCommandSpec("build.cancel"),
+    ),
+    adapter_factory=_bind_build_settings_panel,
+)
+
+
+@editor_panel(
+    "Build Settings",
+    type_id="build_settings",
+    title_key="menu.build_settings",
+    menu_path="",
+    interaction=_BUILD_SETTINGS_INTERACTION,
+)
+class BuildSettingsPanel(FloatingEditorPanel):
+    """Build Settings utility surface hosted by the global panel lifecycle."""
 
     def __init__(self):
-        self._visible: bool = False
-        self._first_open: bool = True
+        super().__init__(
+            title="Build Settings",
+            window_id="build_settings",
+            size=(980.0, 720.0),
+        )
         self._game_name: str = ""
         self._scenes: List[str] = []
         self._output_dir: str = ""
@@ -101,6 +135,9 @@ class BuildSettingsPanel:
         self._window_height: int = 720
         self._window_resizable: bool = True
         self._splash_items: List[Dict] = []
+        self._settings_controller = None
+        self._pending_settings_edits = deque()
+        self._pending_settings_edits_lock = threading.Lock()
         self._load()
 
         # Build state
@@ -112,22 +149,46 @@ class BuildSettingsPanel:
         self._build_output_dir: Optional[str] = None
         self._cancel_event: threading.Event = threading.Event()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def on_enable(self) -> None:
+        self._bind_project_settings_document()
 
-    def open(self):
-        self._visible = True
-        self._first_open = True
-        self._load()
-        self._prune_missing_splash()
+    def _document_controller_for_registry(self):
+        """Claim a persisted settings document with its real shared controller.
 
-    def close(self):
-        self._visible = False
+        Generic panel restoration runs before ``on_enable``.  Returning the
+        panel there used to register a Project Settings document with a panel
+        controller, after which the real controller quite correctly rejected
+        the incompatible binding and the editor failed during startup.
+        """
+        root = get_project_root()
+        if not root:
+            return self
+        controller = ensure_project_settings_document(root)
+        self._settings_controller = controller
+        return controller
 
-    @property
-    def is_open(self) -> bool:
-        return self._visible
+    def on_disable(self) -> None:
+        if self._settings_controller is not None:
+            self._settings_controller.remove_listener(
+                self._apply_project_settings_document
+            )
+
+    def _bind_project_settings_document(self) -> None:
+        root = get_project_root()
+        if not root:
+            raise RuntimeError("Build Settings requires an active project")
+        controller = ensure_project_settings_document(
+            root,
+            view_id=self.window_id,
+        )
+        if self._settings_controller is not None and self._settings_controller is not controller:
+            self._settings_controller.remove_listener(
+                self._apply_project_settings_document
+            )
+        self._settings_controller = controller
+        controller.add_listener(self._apply_project_settings_document)
+        self.bind_document(controller.document_id)
+        self._apply_project_settings_document(controller.capture_document())
 
     def get_scene_list(self) -> List[str]:
         return list(self._scenes)
@@ -137,7 +198,17 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _load(self):
-        data = load_build_settings()
+        data = (
+            self._settings_controller.section("build")
+            if self._settings_controller is not None
+            else normalize_build_settings(load_build_settings())
+        )
+        self._apply_build_settings(data)
+
+    def _apply_project_settings_document(self, document: dict) -> None:
+        self._apply_build_settings(document["build"])
+
+    def _apply_build_settings(self, data: dict) -> None:
         self._game_name = data.get("game_name", "")
         self._scenes = list(data.get("scenes", []))
         self._output_dir = data.get("output_dir", "")
@@ -155,18 +226,8 @@ class BuildSettingsPanel:
         self._enable_jit = data.get("enable_jit", False)
         self._splash_items = list(data.get("splash_items", []))
 
-    def _prune_missing_splash(self):
-        """Remove splash items whose source files no longer exist."""
-        before = len(self._splash_items)
-        self._splash_items = [
-            it for it in self._splash_items
-            if os.path.isfile(it.get("path", ""))
-        ]
-        if len(self._splash_items) < before:
-            self._save()
-
-    def _save(self):
-        save_build_settings({
+    def _capture_build_settings(self) -> dict:
+        return normalize_build_settings({
             "game_name": self._game_name,
             "scenes": self._scenes,
             "output_dir": self._output_dir,
@@ -181,48 +242,111 @@ class BuildSettingsPanel:
             "splash_items": self._splash_items,
         })
 
+    def _save(self):
+        controller = self._settings_controller
+        if controller is None:
+            raise RuntimeError("Build Settings is not bound to Project Settings")
+        following = self._capture_build_settings()
+        previous = controller.section("build")
+        changed_fields = sorted(
+            key for key in following if following[key] != previous.get(key)
+        )
+        if not changed_fields:
+            return False
+        self.publish_interaction_ownership(reason="project_settings_edit")
+        field_key = "+".join(changed_fields)
+        return controller.apply_section(
+            "build",
+            following,
+            edit_key=f"project_settings.build.{field_key}",
+            description="Edit Build Settings",
+            view_id=self.window_id,
+        )
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
 
-    def render(self, ctx):
-        if not self._visible:
-            return
+    def on_render_content(self, ctx):
+        self._drain_pending_settings_edits()
+        self._render_body(ctx)
 
-        x0, y0, dw, dh = ctx.get_main_viewport_bounds()
-        cx = x0 + (dw - 980) * 0.5
-        cy = y0 + (dh - 720) * 0.5
-        ctx.set_next_window_pos(cx, cy, Theme.COND_ALWAYS, 0.0, 0.0)
-        ctx.set_next_window_size(980, 720, Theme.COND_ALWAYS)
+    def _enqueue_settings_edit(self, callback) -> None:
+        with self._pending_settings_edits_lock:
+            self._pending_settings_edits.append(callback)
 
-        visible, still_open = ctx.begin_window_closable(
-            t("menu.build_settings") + "###build_settings", self._visible, _WIN_FLAGS
-        )
-
-        if not still_open:
-            self._visible = False
-            from .closable_panel import ClosablePanel
-            active = ClosablePanel.get_active_panel_id()
-            if active:
-                ClosablePanel.focus_panel_by_id(active)
-            ctx.end_window()
-            return
-
-        if visible:
-            self._render_body(ctx)
-
-        ctx.end_window()
+    def _drain_pending_settings_edits(self) -> None:
+        with self._pending_settings_edits_lock:
+            callbacks = tuple(self._pending_settings_edits)
+            self._pending_settings_edits.clear()
+        for callback in callbacks:
+            callback()
 
     # ------------------------------------------------------------------
 
+    def _is_preflight_active(self) -> bool:
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+        return bool(BuildPreflightProgressService.instance().is_active)
+
+    def _footer_reserve_height(self) -> float:
+        if self._building:
+            return 56.0 if self._is_preflight_active() else 96.0
+        if self._build_error:
+            return 176.0
+        if self._build_cancelled or self._build_output_dir:
+            return 72.0
+        return 52.0
+
+    def _render_wrapped_message(self, ctx, message: str, *, color=None, height: Optional[float] = None) -> None:
+        if color is not None:
+            ctx.push_style_color(ImGuiCol.Text, *color)
+        writer = getattr(ctx, "text_wrapped", None)
+        if height is not None:
+            if ctx.begin_child("##build_status_message", 0, float(height), True):
+                if callable(writer):
+                    writer(str(message))
+                else:
+                    ctx.label(str(message))
+            ctx.end_child()
+        elif callable(writer):
+            writer(str(message))
+        else:
+            ctx.label(str(message))
+        if color is not None:
+            ctx.pop_style_color(1)
+
+    def _render_action_row(self, ctx, buttons) -> None:
+        gap = 8.0
+        widths = [float(width) for _label, _callback, width, _semantic_id, _enabled in buttons]
+        total = sum(widths) + gap * max(0, len(buttons) - 1)
+        avail = float(ctx.get_content_region_avail_width())
+        get_x = getattr(ctx, "get_cursor_pos_x", None)
+        set_x = getattr(ctx, "set_cursor_pos_x", None)
+        if callable(get_x) and callable(set_x) and avail > total:
+            set_x(float(get_x()) + avail - total)
+        for index, (label, callback, width, semantic_id, enabled) in enumerate(buttons):
+            if index:
+                ctx.same_line(0, gap)
+            ctx.button(label, callback, width=float(width), height=30)
+            ctx.record_semantic_item(
+                "button",
+                str(label).split("##", 1)[0].strip(),
+                enabled,
+                semantic_id,
+            )
+
     def _render_body(self, ctx):
         ctx.dummy(0.0, 4.0)
-        # Reserve ~80px at the bottom for build controls
-        child_h = max(0, ctx.get_content_region_avail_height() - 80)
-        
+        child_h = max(0, ctx.get_content_region_avail_height() - self._footer_reserve_height())
+        # The worker can complete between BeginDisabled and EndDisabled.
+        # Keep the pair governed by one immutable decision for this frame.
+        building_this_frame = self._building
+         
         ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
         ctx.push_style_var_float(ImGuiStyleVar.ChildBorderSize, 0.0)
-        if self._building:
+        if building_this_frame:
             ctx.begin_disabled(True)
         if ctx.begin_child("##build_body", 0, child_h, False):
             self._render_output_section(ctx)
@@ -233,7 +357,7 @@ class BuildSettingsPanel:
             ctx.separator()
             self._render_scene_section(ctx)
         ctx.end_child()
-        if self._building:
+        if building_this_frame:
             ctx.end_disabled()
         ctx.pop_style_var(1)
         ctx.pop_style_color(1)
@@ -360,8 +484,9 @@ class BuildSettingsPanel:
             try:
                 folder = pick_folder_dialog("Choose Output Directory")
                 if folder:
-                    self._output_dir = folder
-                    self._save()
+                    self._enqueue_settings_edit(
+                        lambda value=folder: self._accept_output_dir(value)
+                    )
             except Exception as exc:
                 Debug.log_warning(f"Build Settings output directory browse failed: {exc}")
         threading.Thread(target=_do, daemon=True).start()
@@ -378,11 +503,20 @@ class BuildSettingsPanel:
                     ext = os.path.splitext(path)[1].lower()
                     if ext not in _ICON_EXTS:
                         raise ValueError("Unsupported icon format")
-                    self._icon_path = resolved_path(path)
-                    self._save()
+                    self._enqueue_settings_edit(
+                        lambda value=resolved_path(path): self._accept_icon_path(value)
+                    )
             except Exception as exc:
                 Debug.log_warning(f"Build Settings icon picker failed: {exc}")
         threading.Thread(target=_do, daemon=True).start()
+
+    def _accept_output_dir(self, path: str) -> None:
+        self._output_dir = str(path)
+        self._save()
+
+    def _accept_icon_path(self, path: str) -> None:
+        self._icon_path = str(path)
+        self._save()
 
     def _clear_icon_path(self):
         if not self._icon_path:
@@ -466,9 +600,16 @@ class BuildSettingsPanel:
             fname = os.path.basename(item.get("path", "<none>"))
             item_type = item.get("type", "image")
             badge = "[IMG]" if item_type == "image" else "[VID]"
+            source_exists = os.path.isfile(item.get("path", ""))
 
             # ── Row 1: name ──
+            if not source_exists:
+                ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.label(f"  {i + 1}. {badge}  {fname}")
+            if not source_exists:
+                ctx.same_line(0, 8)
+                ctx.label(t("build.source_missing"))
+                ctx.pop_style_color(1)
             if ctx.is_item_hovered():
                 ctx.set_tooltip(item.get("path", ""))
 
@@ -559,17 +700,23 @@ class BuildSettingsPanel:
                 if path:
                     ext = os.path.splitext(path)[1].lower()
                     itype = "video" if ext in _VIDEO_EXTS else "image"
-                    self._splash_items.append({
+                    item = {
                         "type": itype,
                         "path": resolved_path(path),
                         "duration": 3.0 if itype == "image" else 0.0,
                         "fade_in": 0.5,
                         "fade_out": 0.5,
-                    })
-                    self._save()
+                    }
+                    self._enqueue_settings_edit(
+                        lambda value=item: self._accept_splash_item(value)
+                    )
             except Exception as exc:
                 Debug.log_warning(f"Build Settings splash picker failed: {exc}")
         threading.Thread(target=_do, daemon=True).start()
+
+    def _accept_splash_item(self, item: dict) -> None:
+        self._splash_items.append(copy.deepcopy(item))
+        self._save()
 
     # ------------------------------------------------------------------
     # SCENE LIST
@@ -607,13 +754,16 @@ class BuildSettingsPanel:
 
             name = os.path.splitext(os.path.basename(scene_path))[0]
             root = get_project_root() or ""
+            absolute_scene = resolved_path(
+                scene_path
+                if os.path.isabs(scene_path) or not root
+                else os.path.join(root, scene_path)
+            )
             try:
-                rel = relative_path(scene_path, root) if root else scene_path
+                rel = relative_path(absolute_scene, root) if root else scene_path
             except ValueError:
                 # Windows cannot compute a relative path across drive letters.
-                # A copied project can temporarily retain absolute build-scene
-                # paths from its source project, so keep the panel renderable.
-                rel = resolved_path(scene_path)
+                rel = absolute_scene
 
             ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
             
@@ -713,13 +863,6 @@ class BuildSettingsPanel:
                 "build_settings.status",
                 string_value="building",
             )
-            ctx.record_semantic_item(
-                "status",
-                "Build progress",
-                False,
-                "build_settings.progress",
-                numeric_value=float(self._build_progress),
-            )
             progress_message = self._build_message or t("build.building")
             ctx.record_semantic_item(
                 "status",
@@ -728,19 +871,51 @@ class BuildSettingsPanel:
                 "build_settings.progress_message",
                 string_value=progress_message,
             )
-            ctx.label(progress_message)
-            ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
+            # Preflight already owns the only visible slider. Drawing another
+            # bar in this window stacks an outer track on the inner modal.
+            if not self._is_preflight_active():
+                ctx.record_semantic_item(
+                    "status",
+                    "Build progress",
+                    False,
+                    "build_settings.progress",
+                    numeric_value=float(self._build_progress),
+                )
+                self._render_wrapped_message(ctx, progress_message)
+                ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
+            else:
+                self._render_wrapped_message(ctx, progress_message)
             cancel_label = t("build.cancel")
-            ctx.button("  " + cancel_label + "  ##cancel_build", self._cancel_build, width=120, height=30)
-            ctx.record_semantic_item("button", cancel_label, True, "build_settings.cancel")
+            can_cancel = self.can_cancel_build()
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        "  " + cancel_label + "  ##cancel_build",
+                        lambda: self._execute_build_command("build.cancel"),
+                        120.0,
+                        "build_settings.cancel",
+                        can_cancel,
+                    ),
+                ),
+            )
         elif self._build_cancelled:
             ctx.record_semantic_item(
                 "status", "Cancelled", False, "build_settings.status", string_value="cancelled"
             )
-            ctx.label(t("build.cancelled"))
-            ctx.same_line()
-            ctx.button("OK##dismiss_cancelled", self._dismiss_build_cancelled)
-            ctx.record_semantic_item("button", "OK", True, "build_settings.cancelled.dismiss")
+            self._render_wrapped_message(ctx, t("build.cancelled"))
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        "OK##dismiss_cancelled",
+                        self._dismiss_build_cancelled,
+                        80.0,
+                        "build_settings.cancelled.dismiss",
+                        True,
+                    ),
+                ),
+            )
         elif self._build_error:
             ctx.record_semantic_item(
                 "status", "Failed", False, "build_settings.status", string_value="failed"
@@ -752,12 +927,24 @@ class BuildSettingsPanel:
                 "build_settings.error",
                 string_value=str(self._build_error),
             )
-            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
-            ctx.label(t("build.failed").format(err=self._build_error))
-            ctx.pop_style_color(1)
-            ctx.same_line()
-            ctx.button("OK##dismiss_err", self._dismiss_build_error)
-            ctx.record_semantic_item("button", "OK", True, "build_settings.error.dismiss")
+            self._render_wrapped_message(
+                ctx,
+                t("build.failed").format(err=self._build_error),
+                color=Theme.ERROR_TEXT,
+                height=110.0,
+            )
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        "OK##dismiss_err",
+                        self._dismiss_build_error,
+                        80.0,
+                        "build_settings.error.dismiss",
+                        True,
+                    ),
+                ),
+            )
         elif self._build_output_dir:
             ctx.record_semantic_item(
                 "status", "Succeeded", False, "build_settings.status", string_value="succeeded"
@@ -769,10 +956,11 @@ class BuildSettingsPanel:
                 "build_settings.result.output_dir",
                 string_value=str(self._build_output_dir),
             )
-            ctx.push_style_color(ImGuiCol.Text, *Theme.SUCCESS_TEXT)
-            ctx.label(t("build.succeeded").format(path=os.path.basename(self._build_output_dir) + "/"))
-            ctx.pop_style_color(1)
-            ctx.same_line()
+            self._render_wrapped_message(
+                ctx,
+                t("build.succeeded").format(path=os.path.basename(self._build_output_dir) + "/"),
+                color=Theme.SUCCESS_TEXT,
+            )
 
             def _open_folder():
                 import subprocess as _sp
@@ -785,18 +973,30 @@ class BuildSettingsPanel:
                     _sp.Popen(["xdg-open", self._build_output_dir])
 
             open_folder_label = t("build.open_folder")
-            ctx.button(open_folder_label, _open_folder)
-            ctx.record_semantic_item(
-                "button", open_folder_label, True, "build_settings.result.open_folder"
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        open_folder_label,
+                        _open_folder,
+                        140.0,
+                        "build_settings.result.open_folder",
+                        True,
+                    ),
+                    (
+                        "OK##dismiss_ok",
+                        self._dismiss_build_result,
+                        80.0,
+                        "build_settings.result.dismiss",
+                        True,
+                    ),
+                ),
             )
-            ctx.same_line()
-            ctx.button("OK##dismiss_ok", self._dismiss_build_result)
-            ctx.record_semantic_item("button", "OK", True, "build_settings.result.dismiss")
         else:
             ctx.record_semantic_item(
                 "status", "Ready", False, "build_settings.status", string_value="ready"
             )
-            can_build = len(self._scenes) > 0 and bool(self._output_dir)
+            can_build = self.can_start_build()
 
             if not can_build:
                 ctx.push_style_color(ImGuiCol.Button, *Theme.BTN_DISABLED)
@@ -807,12 +1007,12 @@ class BuildSettingsPanel:
             ctx.same_line(max(ctx.get_window_width() - 360, 200))
 
             ctx.button("  " + t("build.build") + "  ",
-                        self._start_build if can_build else lambda: None,
+                        lambda: self._execute_build_command("build.start") if can_build else None,
                         width=140, height=36)
             ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
             ctx.same_line(0, 16)
             ctx.button("  " + t("build.build_and_run") + "  ",
-                        self._start_build_and_run if can_build else lambda: None,
+                        lambda: self._execute_build_command("build.start_and_run") if can_build else None,
                         width=160, height=36)
             ctx.record_semantic_item(
                 "button", t("build.build_and_run"), can_build, "build_settings.build_and_run"
@@ -853,8 +1053,42 @@ class BuildSettingsPanel:
             enable_jit=self._enable_jit,
         )
 
-    def _cancel_build(self):
+    def _execute_build_command(self, command_id: str) -> bool:
+        from Infernux.engine.interaction import CommandSource
+
+        return self.execute_owned_command(command_id, source=CommandSource.TOOLBAR)
+
+    def can_cancel_build(self) -> bool:
+        if not self._building:
+            return False
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+        return bool(
+            BuildPreflightProgressService.instance().is_active
+            or not self._cancel_event.is_set()
+        )
+
+    def command_cancel_build(self) -> bool:
+        if not self.can_cancel_build():
+            return False
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+        preflight = BuildPreflightProgressService.instance()
+        if preflight.is_active:
+            preflight.cancel()
+            return True
         self._cancel_event.set()
+        return True
+
+    def can_start_build(self) -> bool:
+        return bool(not self._building and self._scenes and self._output_dir)
+
+    def command_start_build(self, *, run_after: bool) -> bool:
+        if not self.can_start_build():
+            return False
+        return self._do_build(run_after=bool(run_after))
 
     def _format_output_directory_error(self, exc: BuildOutputDirectoryError) -> str:
         if exc.reason == "required":
@@ -883,24 +1117,156 @@ class BuildSettingsPanel:
         self._build_message = message
         self._build_progress = fraction
         from Infernux.engine.ui.engine_status import EngineStatus
+        # The Build Settings window owns the only determinate slider.
+        # The status bar keeps a text pulse so the editor is not frozen-looking
+        # when the utility window is behind another panel.
         EngineStatus.set(
             message or "Building player...",
-            fraction,
+            -1.0,
+            kind="activity",
             source="build",
             priority=20,
         )
         if self._cancel_event.is_set():
             raise BuildCancelled()
 
-    def _start_build(self):
-        self._do_build(run_after=False)
+    def _prepare_asset_catalog_for_build(self) -> str:
+        """Publish a durable asset catalog before the worker reads the project.
 
-    def _start_build_and_run(self):
-        self._do_build(run_after=True)
+        Asset writes intentionally invalidate ``Library/AssetIndex.json`` until
+        the native database has observed the new disk state.  Build startup is
+        an ownership boundary: finish coalesced writes and rebuild the derived
+        catalog on the editor thread before handing immutable inputs to the
+        background builder.
+        """
+        from Infernux.core.assets import AssetManager
+        from Infernux.renderstack.discovery import discover_effect_features
 
-    def _do_build(self, *, run_after: bool):
+        AssetManager.flush_all_asset_writes()
+        discover_effect_features()
+        database = self.services.asset_database
+        if database is None:
+            raise RuntimeError("The editor asset database is unavailable")
+        database.refresh()
+        project_root = get_project_root()
+        if not project_root:
+            raise RuntimeError("No project root found")
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+
+        try:
+            ParticleArtifactRegistry.ensure_project_compiled(
+                project_root,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Particle artifact compile failed: {exc}") from exc
+        database.flush_derived_index()
+        index_path = str(getattr(database, "asset_index_path", "") or "")
+        if not index_path or not os.path.isfile(index_path):
+            raise RuntimeError(
+                "The editor could not publish the current Library/AssetIndex.json"
+            )
+        return index_path
+
+    def _bind_published_player_catalog(self, catalog):
+        """Freeze the preflight AssetIndex even if the live file vanished.
+
+        Document transactions treat ``Library/AssetIndex.json`` as a derived
+        artifact and delete it after source writes. Preflight can therefore
+        publish a valid catalog that is gone by the time the worker starts.
+        """
+        builder = self._make_builder()
+        entries = None
+        index_path = ""
+        if isinstance(catalog, dict):
+            index_path = str(catalog.get("path") or "")
+            raw_entries = catalog.get("entries")
+            if isinstance(raw_entries, list):
+                entries = raw_entries
+        else:
+            index_path = str(catalog or "")
+        if entries is None:
+            if not index_path or not os.path.isfile(index_path):
+                database = getattr(self.services, "asset_database", None)
+                if database is not None:
+                    database.flush_derived_index()
+                    index_path = str(getattr(database, "asset_index_path", "") or "")
+            if not index_path or not os.path.isfile(index_path):
+                raise RuntimeError(
+                    "Library/AssetIndex.json is missing after Player catalog "
+                    "preflight. Save pending assets and try again."
+                )
+            from Infernux.engine.runtime_artifact_catalog import load_asset_index
+
+            entries = load_asset_index(builder.project_path)
+        builder.freeze_asset_index_entries(entries)
+        return builder
+
+    def _begin_asset_catalog_for_build(self):
+        """Begin durable writes without blocking the build button callback."""
+        from Infernux.core.assets import AssetManager
+
+        AssetManager.begin_asset_write_flush()
+        return {"database": None, "catalog_started": False, "stage": "writes"}
+
+    def _poll_asset_catalog_for_build(self, state):
+        """Advance durability and the worker-backed scan between frames."""
+        from Infernux.core.assets import AssetManager
+        from Infernux.renderstack.discovery import discover_effect_features
+
+        if not AssetManager.asset_writes_idle():
+            state["stage"] = "writes"
+            return None
+        database = state.get("database")
+        if database is None:
+            # Feature discovery has to import Python provider modules on the
+            # editor thread, but it now occurs after the modal was presented
+            # and never competes with a synchronous filesystem flush.
+            discover_effect_features()
+            database = self.services.asset_database
+            if database is None:
+                raise RuntimeError("The editor asset database is unavailable")
+            database.begin_refresh()
+            state["database"] = database
+            state["catalog_started"] = True
+            state["stage"] = "scan"
+            return None
+        if database.refresh_pending and not database.try_commit_refresh():
+            state["stage"] = "scan"
+            return None
+        state["stage"] = "index"
+        database.flush_derived_index()
+        index_path = str(getattr(database, "asset_index_path", "") or "")
+        if not index_path or not os.path.isfile(index_path):
+            raise RuntimeError(
+                "The editor could not publish the current Library/AssetIndex.json"
+            )
+        from Infernux.engine.runtime_artifact_catalog import load_asset_index
+
+        project_root = get_project_root()
+        if not project_root:
+            raise RuntimeError("No project root found")
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+
+        try:
+            ParticleArtifactRegistry.ensure_project_compiled(
+                project_root,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Particle artifact compile failed: {exc}") from exc
+        database.flush_derived_index()
+        # Snapshot now. A later document transaction can invalidate
+        # AssetIndex.json before the worker starts; the frozen entries are
+        # the published catalog, not the live file.
+        return {
+            "path": index_path,
+            "entries": load_asset_index(project_root),
+        }
+
+    def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
-            return
+            return False
         self._building = True
         self._build_progress = 0.0
         self._build_message = "Starting build..."
@@ -911,7 +1277,8 @@ class BuildSettingsPanel:
         from Infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.set(
             self._build_message,
-            self._build_progress,
+            -1.0,
+            kind="activity",
             source="build",
             priority=20,
         )
@@ -926,76 +1293,117 @@ class BuildSettingsPanel:
                 source="build",
                 priority=20,
             )
-            return
+            return False
 
-        try:
-            builder = self._make_builder()
-            builder._validate_output_directory()
-        except BuildOutputDirectoryError as exc:
+        def _fail_preflight(exc: Exception) -> bool:
             self._building = False
-            self._show_output_directory_error(exc)
+            if isinstance(exc, BuildOutputDirectoryError):
+                self._show_output_directory_error(exc)
+            else:
+                self._build_error = str(exc)
             EngineStatus.flash(
-                self._build_error or "Build output directory is unavailable",
+                self._build_error or "Build preparation failed",
                 0.0,
                 duration=3.0,
+                kind="error",
                 source="build",
                 priority=20,
             )
-            return
+            return False
 
-        def _run():
+        def _start_worker(builder):
+            def _run():
+                try:
+                    result = builder.build(
+                        on_progress=self._on_build_progress,
+                        cancel_event=self._cancel_event,
+                    )
+                    self._build_output_dir = result
+
+                    if run_after:
+                        import subprocess
+                        exe_name = f"{builder.project_name}.exe"
+                        launcher = os.path.join(result, exe_name)
+                        if os.path.isfile(launcher):
+                            subprocess.Popen([launcher], cwd=result)
+                except BuildCancelled:
+                    self._build_cancelled = True
+                except BuildOutputDirectoryError as exc:
+                    self._show_output_directory_error(exc)
+                except Exception as exc:
+                    log_path = os.path.join(builder.project_path, "Logs", "build.log")
+                    if os.path.isfile(log_path):
+                        self._build_error = f"{exc}\n\nSee: {log_path}"
+                    else:
+                        self._build_error = str(exc)
+                finally:
+                    self._building = False
+                    if self._build_cancelled:
+                        EngineStatus.flash(
+                            "Build cancelled",
+                            -1.0,
+                            duration=2.0,
+                            kind="warning",
+                            source="build",
+                            priority=20,
+                        )
+                    elif self._build_error:
+                        EngineStatus.flash(
+                            "Build failed",
+                            0.0,
+                            duration=3.0,
+                            source="build",
+                            priority=20,
+                        )
+                    else:
+                        EngineStatus.flash(
+                            "Build completed",
+                            1.0,
+                            duration=2.0,
+                            source="build",
+                            priority=20,
+                        )
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        def _prepare_and_start(catalog):
             try:
-                result = builder.build(
-                    on_progress=self._on_build_progress,
-                    cancel_event=self._cancel_event,
-                )
-                self._build_output_dir = result
-
-                if run_after:
-                    import subprocess
-                    exe_name = f"{builder.project_name}.exe"
-                    launcher = os.path.join(result, exe_name)
-                    if os.path.isfile(launcher):
-                        subprocess.Popen([launcher], cwd=result)
-            except BuildCancelled:
-                self._build_cancelled = True
-            except BuildOutputDirectoryError as exc:
-                self._show_output_directory_error(exc)
+                builder = self._bind_published_player_catalog(catalog)
+                builder._validate_output_directory()
             except Exception as exc:
-                log_path = os.path.join(builder.project_path, "Logs", "build.log")
-                if os.path.isfile(log_path):
-                    self._build_error = f"{exc}\n\nSee: {log_path}"
-                else:
-                    self._build_error = str(exc)
-            finally:
-                self._building = False
-                if self._build_cancelled:
-                    EngineStatus.flash(
-                        "Build cancelled",
-                        -1.0,
-                        duration=2.0,
-                        kind="warning",
-                        source="build",
-                        priority=20,
-                    )
-                elif self._build_error:
-                    EngineStatus.flash(
-                        "Build failed",
-                        0.0,
-                        duration=3.0,
-                        source="build",
-                        priority=20,
-                    )
-                else:
-                    EngineStatus.flash(
-                        "Build completed",
-                        1.0,
-                        duration=2.0,
-                        source="build",
-                        priority=20,
-                    )
+                return _fail_preflight(exc)
+            _start_worker(builder)
+            return True
 
-        threading.Thread(target=_run, daemon=True).start()
+        # A modal is deliberately presented before catalog work begins.  It
+        # makes the build boundary explicit and blocks unrelated authoring
+        # commands while the immutable Player catalog is being created.
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+
+        def _complete_preflight(ok: bool, result: object, message: str) -> None:
+            if not ok:
+                self._building = False
+                self._build_cancelled = message == "Build preparation cancelled"
+                if not self._build_cancelled:
+                    self._build_error = message or "Build preparation failed"
+                return
+            if result in (None, "", {}):
+                _fail_preflight(RuntimeError("The asset catalog was not published"))
+                return
+            _prepare_and_start(result)
+
+        if not BuildPreflightProgressService.instance().begin(
+            begin_scan=self._begin_asset_catalog_for_build,
+            poll_scan=self._poll_asset_catalog_for_build,
+            complete=_complete_preflight,
+        ):
+            self._building = False
+            self._build_error = "Another editor transaction is already running"
+            EngineStatus.flash(self._build_error, 0.0, duration=2.5, kind="warning")
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Internal
@@ -1005,9 +1413,20 @@ class BuildSettingsPanel:
         abs_path = resolved_path(path)
         if not abs_path.lower().endswith(".scene"):
             return
+        root = get_project_root()
+        assets_root = resolved_path(os.path.join(root, "Assets")) if root else ""
+        if not root or not is_path_within(abs_path, assets_root, allow_root=False):
+            Debug.log_warning(
+                f"Build scene must be inside the project Assets folder: {path}"
+            )
+            return
+        stored_path = relative_path(abs_path, root).replace("\\", "/")
         for existing in self._scenes:
-            if same_path(existing, abs_path):
+            existing_path = resolved_path(
+                existing if os.path.isabs(existing) else os.path.join(root, existing)
+            )
+            if same_path(existing_path, abs_path):
                 return
-        self._scenes.append(abs_path)
+        self._scenes.append(stored_path)
         self._save()
         Debug.log_internal(f"Added scene to build list: {os.path.basename(path)}")

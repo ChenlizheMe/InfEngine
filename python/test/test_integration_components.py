@@ -268,19 +268,18 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         assert texture.pixel_width == 4
         assert texture.pixel_height == 2
         assert texture.mip_count == 3
-        assert texture.cpu_byte_size == 24
+        assert not hasattr(texture, "cpu_byte_size")
         assert texture.pixel_storage == "block_compressed"
         assert texture.pixel_format == "bc1_rgba_srgb"
 
         registry.invalidate_asset(guid)
         source.write_bytes(source_bytes)
         artifact.write_bytes(b"corrupt texture artifact")
-        fallback = registry.begin_load_texture_by_guid(guid)
+        rejected = registry.begin_load_texture_by_guid(guid)
         deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not registry.try_commit_asset_load(fallback):
-            time.sleep(0.001)
-        assert fallback.committed is True
-        assert registry.get_texture_asset(guid).cpu_byte_size == 24
+        with pytest.raises((RuntimeError, ValueError), match="texture artifact"):
+            while time.monotonic() < deadline and not registry.try_commit_asset_load(rejected):
+                time.sleep(0.001)
     finally:
         registry.invalidate_asset(guid)
         if asset_database.contains_path(str(source)):
@@ -307,18 +306,17 @@ def test_asset_registry_cpu_residency_budget_respects_live_and_explicit_pins(eng
     assert first is not None and second is not None
     first_record = registry.get_asset_residency(guids[0])
     second_record = registry.get_asset_residency(guids[1])
-    assert first_record.cpu_bytes > first.cpu_byte_size
-    assert second_record.cpu_bytes > second.cpu_byte_size
+    assert first_record.cpu_bytes > 0
+    assert second_record.cpu_bytes > 0
 
     larger_payload = b"P6\n4 2\n255\n" + bytes(range(24))
     sources[0].write_bytes(larger_payload)
     assert asset_database.reimport_asset(str(sources[0]))
     assert registry.reload_asset(guids[0]) is True
     updated_first_record = registry.get_asset_residency(guids[0])
-    assert first.cpu_byte_size == 24
     assert first.pixel_format == "bc1_rgba_srgb"
     assert updated_first_record.runtime_version == first_record.runtime_version + 1
-    assert updated_first_record.cpu_bytes > first_record.cpu_bytes
+    assert updated_first_record.cpu_bytes == first_record.cpu_bytes
     first_record = updated_first_record
     assert registry.total_cpu_bytes == baseline_cpu_bytes + first_record.cpu_bytes + second_record.cpu_bytes
 
@@ -474,6 +472,193 @@ class TestComponentLifecycle:
         assert go.get_component("ProbeComponent") is probe
         assert go.get_components(ProbeComponent) == [probe]
 
+    def test_python_component_constraints_are_enforced_from_registry(self, scene):
+        from Infernux.components.decorators import disallow_multiple, require_component
+
+        class RegistryDependency(InxComponent):
+            pass
+
+        @disallow_multiple
+        @require_component(RegistryDependency)
+        class RegistryConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("PythonComponentConstraints")
+        consumer = go.add_component(RegistryConsumer)
+        dependency = go.get_component(RegistryDependency)
+        assert consumer is not None
+        assert dependency is not None
+        assert go.add_component(RegistryConsumer) is None
+        assert go.get_components(RegistryConsumer) == [consumer]
+        assert go.remove_component(dependency) is False
+        assert go.get_component(RegistryDependency) is dependency
+
+    def test_native_renderer_constraints_are_enforced_by_game_object(self, scene):
+        go = scene.create_game_object("NativeRendererConstraints")
+        renderer = go.add_component("MeshRenderer")
+
+        assert renderer is not None
+        assert go.add_component("MeshRenderer") is None
+        assert go.add_component("SpriteRenderer") is None
+        assert go.add_component("SkinnedMeshRenderer") is None
+        matching_ids = [
+            int(component.component_id) for component in go.get_components()
+            if getattr(component, "type_name", "") == "MeshRenderer"
+        ]
+        assert matching_ids == [int(renderer.component_id)]
+
+    def test_python_constraints_reject_native_components_in_both_orders(self, scene):
+        class NativeExclusivePythonComponent(InxComponent):
+            _incompatible_components_ = ("MeshRenderer",)
+
+        mesh_first = scene.create_game_object("NativeFirst")
+        assert mesh_first.add_component("MeshRenderer") is not None
+        assert mesh_first.add_component(NativeExclusivePythonComponent) is None
+
+        python_first = scene.create_game_object("PythonFirst")
+        component = python_first.add_component(NativeExclusivePythonComponent)
+        assert component is not None
+        assert python_first.add_component("MeshRenderer") is None
+
+    def test_failed_python_attachment_rolls_back_auto_added_dependencies(self, scene):
+        from Infernux.components.decorators import require_component
+
+        class AutoDependency(InxComponent):
+            pass
+
+        @require_component(AutoDependency)
+        class RejectedConsumer(InxComponent):
+            _incompatible_components_ = ("MeshRenderer",)
+
+        go = scene.create_game_object("AtomicPythonAttachment")
+        assert go.add_component("MeshRenderer") is not None
+
+        assert go.add_component(RejectedConsumer) is None
+        assert go.get_component(RejectedConsumer) is None
+        assert go.get_component(AutoDependency) is None
+
+    def test_python_exclusive_group_is_enforced_by_native_attachment_core(self, scene):
+        class FirstOwner(InxComponent):
+            _component_exclusive_groups_ = ("test-owner",)
+
+        class SecondOwner(InxComponent):
+            _component_exclusive_groups_ = ("test-owner",)
+
+        go = scene.create_game_object("PythonExclusiveGroup")
+        first = go.add_component(FirstOwner)
+
+        assert first is not None
+        assert go.add_component(SecondOwner) is None
+        assert go.get_component(FirstOwner) is first
+        assert go.get_component(SecondOwner) is None
+
+    def test_python_require_component_uses_stable_type_identity(self, scene):
+        from Infernux.components.decorators import require_component
+
+        FirstDependency = type(
+            "SharedDependency",
+            (InxComponent,),
+            {"__module__": "tests.constraint_identity.first"},
+        )
+        RequiredDependency = type(
+            "SharedDependency",
+            (InxComponent,),
+            {"__module__": "tests.constraint_identity.required"},
+        )
+
+        @require_component(RequiredDependency)
+        class StableIdentityConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("StableConstraintIdentity")
+        first = go.add_component(FirstDependency)
+        consumer = go.add_component(StableIdentityConsumer)
+        required = go.get_component(RequiredDependency)
+
+        assert first is not None
+        assert consumer is not None
+        assert required is not None
+        assert go.remove_component(required) is False
+        assert go.get_component(RequiredDependency) is required
+
+    def test_python_satisfied_type_alias_is_used_by_add_and_remove(self, scene):
+        from Infernux.components.decorators import require_component
+
+        class CapabilityProvider(InxComponent):
+            _component_satisfied_types_ = ("TestCapability",)
+
+        @require_component("TestCapability")
+        class CapabilityConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("ConstraintAlias")
+        provider = go.add_component(CapabilityProvider)
+        consumer = go.add_component(CapabilityConsumer)
+
+        assert provider is not None
+        assert consumer is not None
+        assert go.remove_component(provider) is False
+
+    def test_prepared_python_attachment_honors_existing_exact_type_incompatibility(self, scene):
+        class ExactCandidate(InxComponent):
+            pass
+
+        class ExistingBlocker(InxComponent):
+            _incompatible_components_ = (ExactCandidate,)
+
+        go = scene.create_game_object("ExactIncompatibility")
+        assert go.add_component(ExistingBlocker) is not None
+
+        candidate = ExactCandidate()
+        with pytest.raises(ValueError, match="incompatible"):
+            go._attach_prepared_py_component(candidate, 1)
+
+        assert go.get_component(ExactCandidate) is None
+
+    def test_prepared_python_component_requires_valid_complete_set_before_activation(self, scene):
+        from Infernux.components.decorators import require_component
+
+        class PreparedDependency(InxComponent):
+            pass
+
+        @require_component(PreparedDependency)
+        class PreparedConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("PreparedConstraintGate")
+        component = PreparedConsumer()
+        assert go._attach_prepared_py_component(component, 0) is component
+
+        with pytest.raises(ValueError, match="requires missing component"):
+            go._activate_prepared_py_component(component._cpp_component)
+
+        assert go._remove_prepared_py_component(component._cpp_component) is True
+        assert go.get_component(PreparedConsumer) is None
+
+    def test_prepared_rollback_api_cannot_remove_published_python_component(self, scene):
+        class PublishedComponent(InxComponent):
+            pass
+
+        go = scene.create_game_object("PublishedComponentGate")
+        component = go.add_component(PublishedComponent)
+
+        assert component is not None
+        assert go._remove_prepared_py_component(component._cpp_component) is False
+        assert go.get_component(PublishedComponent) is component
+
+    def test_python_component_is_bound_before_reset(self, scene):
+        observed = []
+
+        class ResetBindingProbe(InxComponent):
+            def reset(self):
+                observed.append((self.game_object, self._cpp_component))
+
+        go = scene.create_game_object("ResetBinding")
+        component = go.add_component(ResetBindingProbe)
+
+        assert component is not None
+        assert observed == [(go, component._cpp_component)]
+
     def test_add_and_get_builtin_component_by_class(self, scene):
         go = scene.create_game_object("CamGO")
         cam = go.add_component(CameraComponent)
@@ -612,12 +797,10 @@ class TestComponentLifecycle:
         assert second_mesh.convex is True
 
     def test_undo_adding_dynamic_rigidbody_restores_mesh_collider_convex(self, scene):
-        from Infernux.engine.ui._inspector_undo import (
-            _get_component_ids,
-            _get_native_component_documents,
-            _record_add_component_compound,
+        from Infernux.engine.undo import (
+            AddComponentTransactionCommand,
+            UndoManager,
         )
-        from Infernux.engine.undo import UndoManager
 
         previous_manager = UndoManager.instance()
         manager = UndoManager()
@@ -625,16 +808,8 @@ class TestComponentLifecycle:
             owner = scene.create_primitive(PrimitiveType.Cube, "UndoDynamicMesh")
             mesh = owner.add_component("MeshCollider")
             assert mesh.convex is False
-            before_documents = _get_native_component_documents(owner)
-            before_ids = _get_component_ids(owner)
-
-            rigidbody = owner.add_component("Rigidbody")
-            _record_add_component_compound(
-                owner,
-                "Rigidbody",
-                rigidbody,
-                before_ids,
-                before_documents=before_documents,
+            assert manager.execute(
+                AddComponentTransactionCommand(owner.id, "Rigidbody")
             )
             assert mesh.convex is True
 
@@ -645,6 +820,91 @@ class TestComponentLifecycle:
             manager.redo()
             assert owner.get_component("Rigidbody") is not None
             assert mesh.convex is True
+        finally:
+            UndoManager._instance = previous_manager
+
+    def test_native_component_clipboard_uses_global_payload_and_precise_undo(self, scene):
+        from Infernux.engine.bootstrap_inspector._wire import (
+            _component_clipboard_data,
+            _paste_native_component_as_new,
+            _paste_native_component_values,
+            _publish_component_clipboard,
+        )
+        from Infernux.engine.interaction import ClipboardDomain, ClipboardService
+        from Infernux.engine.undo import UndoManager
+
+        source = scene.create_game_object("ClipboardSource").add_component("BoxCollider")
+        source.size = Vector3(2.0, 3.0, 4.0)
+        source.center = Vector3(0.25, 0.5, 0.75)
+        assert _publish_component_clipboard(source, "BoxCollider", True)
+
+        clipboard = ClipboardService.instance().peek(ClipboardDomain.COMPONENT)
+        assert clipboard is not None
+        assert clipboard.source_owner_id == "inspector"
+        data = _component_clipboard_data()
+        assert data is not None
+        assert "component_id" not in data["document"]
+
+        previous_manager = UndoManager.instance()
+        manager = UndoManager()
+        try:
+            target_owner = scene.create_game_object("ClipboardValuesTarget")
+            target = target_owner.add_component("BoxCollider")
+            original = target.serialize_document()
+
+            assert _paste_native_component_values(target, data["document"])
+            assert target.serialize_document()["size"] == pytest.approx([2.0, 3.0, 4.0])
+            assert target.component_id == original["component_id"]
+            manager.undo()
+            assert target.serialize_document() == original
+            manager.redo()
+            assert target.serialize_document()["center"] == pytest.approx([0.25, 0.5, 0.75])
+
+            new_owner = scene.create_game_object("ClipboardNewTarget")
+            assert _paste_native_component_as_new(
+                new_owner,
+                "BoxCollider",
+                data["document"],
+            )
+            pasted = new_owner.get_component("BoxCollider")
+            assert pasted is not None
+            pasted_id = pasted.component_id
+            assert pasted.serialize_document()["size"] == pytest.approx([2.0, 3.0, 4.0])
+
+            manager.undo()
+            assert new_owner.get_component("BoxCollider") is None
+            manager.redo()
+            restored = new_owner.get_component("BoxCollider")
+            assert restored is not None
+            assert restored.component_id == pasted_id
+            assert restored.serialize_document()["size"] == pytest.approx([2.0, 3.0, 4.0])
+        finally:
+            UndoManager._instance = previous_manager
+
+    def test_failed_native_component_paste_rolls_back_without_history(self, scene):
+        from Infernux.engine.bootstrap_inspector._wire import (
+            _paste_native_component_as_new,
+        )
+        from Infernux.engine.undo import UndoManager
+
+        source = scene.create_game_object("InvalidClipboardSource").add_component(
+            "BoxCollider"
+        )
+        invalid_document = source.serialize_document()
+        invalid_document.pop("component_id", None)
+        invalid_document["size"] = [0.0, 1.0, 1.0]
+        owner = scene.create_game_object("InvalidClipboardTarget")
+
+        previous_manager = UndoManager.instance()
+        manager = UndoManager()
+        try:
+            assert not _paste_native_component_as_new(
+                owner,
+                "BoxCollider",
+                invalid_document,
+            )
+            assert owner.get_component("BoxCollider") is None
+            assert not manager.can_undo
         finally:
             UndoManager._instance = previous_manager
 
@@ -690,7 +950,7 @@ class TestComponentLifecycle:
         assert go.get_component("Transform") is not None
 
     @pytest.mark.parametrize("comp_type", [
-        "Rigidbody", "BoxCollider", "SphereCollider", "CapsuleCollider",
+        "Rigidbody", "BoxCollider", "SphereCollider", "CapsuleCollider", "CylinderCollider",
         "MeshCollider", "MeshRenderer", "Light", "Camera",
         "AudioSource", "AudioListener",
     ])
@@ -971,6 +1231,35 @@ class TestComponentLifecycle:
         assert pipeline._find_render_stack(ctx) is stack
         assert RenderStack.instance() is stack
 
+    def test_renderstack_pipeline_rejects_live_stack_owned_by_previous_scene(self, scene):
+        previous_owner = scene.create_game_object("PreviousSceneRenderStack")
+        previous_stack = previous_owner.add_component(RenderStack)
+
+        manager = SceneManager.instance()
+        next_scene = manager.create_scene("renderstack_next_scene")
+        next_owner = next_scene.create_game_object("NextSceneRenderStack")
+        next_stack = next_owner.add_component(RenderStack)
+        manager.set_active_scene(next_scene)
+
+        class _Context:
+            pass
+
+        ctx = _Context()
+        ctx.scene = next_scene
+        pipeline = RenderStackPipeline()
+
+        # Retained scene transactions can leave the old component completely
+        # live for a short period.  Scene ownership, not liveness, decides
+        # which graph is allowed to render.
+        RenderStack._active_instance = previous_stack
+        assert previous_stack.is_valid
+        assert previous_owner.is_active_in_hierarchy()
+        assert pipeline._find_render_stack(ctx) is next_stack
+        assert RenderStack.instance(next_scene) is next_stack
+
+        manager.set_active_scene(scene)
+        manager.unload_scene(next_scene)
+
     def test_renderstack_active_instance_survives_play_mode_document_rebuild(self, scene):
         from Infernux.engine.play_mode import PlayModeManager
 
@@ -1055,6 +1344,24 @@ class TestColliders:
         assert cc.radius == pytest.approx(1.0)
         assert cc.height == pytest.approx(3.0)
 
+    def test_cylinder_collider_properties_and_round_trip(self, scene):
+        go = scene.create_game_object("YC")
+        cylinder = go.add_component("CylinderCollider")
+        cylinder.radius = 1.25
+        cylinder.height = 4.0
+        cylinder.direction = 2
+
+        assert cylinder.radius == pytest.approx(1.25)
+        assert cylinder.height == pytest.approx(4.0)
+        assert cylinder.direction == 2
+
+        document = cylinder.serialize_document()
+        assert document["type"] == "CylinderCollider"
+        assert document["radius"] == pytest.approx(1.25)
+        assert document["height"] == pytest.approx(4.0)
+        assert document["direction"] == 2
+        assert cylinder.deserialize_document(document) is True
+
     def test_collider_is_trigger(self, scene):
         go = scene.create_game_object("T")
         bc = go.add_component("BoxCollider")
@@ -1078,6 +1385,11 @@ class TestColliders:
     def test_physic_material_inspector_edit_is_undoable_and_republishes(self):
         from types import SimpleNamespace
         from Infernux.core.physic_material import PhysicMaterial
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            DocumentRegistry,
+            ensure_editable_resource_document,
+        )
         from Infernux.engine.ui.asset_details_renderer import _apply_physic_material_edit
         from Infernux.engine.undo import UndoManager
 
@@ -1085,14 +1397,32 @@ class TestColliders:
             def __init__(self):
                 self.published = []
 
+            def refresh_binding(self, _category, _file_path):
+                pass
+
             def schedule_rw_save(self, resource):
                 self.published.append(resource.serialize_document())
 
         previous_manager = UndoManager.instance()
+        previous_registry = DocumentRegistry._instance
+        DocumentRegistry()
         manager = UndoManager()
         material = PhysicMaterial()
         execution_layer = _ExecutionLayer()
-        state = SimpleNamespace(settings=material, exec_layer=execution_layer)
+        controller = ensure_editable_resource_document(
+            category="physic_material",
+            document_kind=DocumentKind.PHYSIC_MATERIAL,
+            file_path="Assets/Test.physicmat",
+            resource=material,
+            guid="physic-material-guid",
+            exec_layer=execution_layer,
+        )
+        state = SimpleNamespace(
+            settings=material,
+            exec_layer=execution_layer,
+            resource_controller=controller,
+            document_id=controller.document_id,
+        )
         try:
             assert _apply_physic_material_edit(state, "friction", 0.8)
             assert material.friction == pytest.approx(0.8)
@@ -1105,6 +1435,7 @@ class TestColliders:
             assert [entry["friction"] for entry in execution_layer.published] == pytest.approx([0.8, 0.4, 0.8])
         finally:
             UndoManager._instance = previous_manager
+            DocumentRegistry._instance = previous_registry
 
     def test_collider_rejects_invalid_material_combine(self, scene):
         material = InxPhysicMaterial()
@@ -1147,6 +1478,9 @@ class TestColliders:
             ("SphereCollider", "radius", 0.0),
             ("CapsuleCollider", "height", 0.5),
             ("CapsuleCollider", "direction", 3),
+            ("CylinderCollider", "radius", 0.0),
+            ("CylinderCollider", "height", 0.0),
+            ("CylinderCollider", "direction", 3),
         ],
     )
     def test_collider_setters_reject_invalid_values(self, scene, component_type, attribute, value):
@@ -1161,6 +1495,9 @@ class TestColliders:
             ("SphereCollider", "radius", -1.0),
             ("CapsuleCollider", "direction", 9),
             ("CapsuleCollider", "height", 0.5),
+            ("CylinderCollider", "radius", 0.0),
+            ("CylinderCollider", "height", 0.0),
+            ("CylinderCollider", "direction", 9),
             ("MeshCollider", "convex", "yes"),
             ("BoxCollider", "physic_material_guid", 7),
         ],
@@ -1258,11 +1595,11 @@ class TestColliders:
         assert AssetManager.delete_asset(str(asset_path), database=asset_database)
         asset_path.unlink(missing_ok=True)
         assert collider.physic_material.resolve() is None
-        assert collider.physic_material.guid == ""
-        assert collider.physic_material_guid == ""
+        assert collider.physic_material.guid == guid
+        assert collider.physic_material_guid == guid
         assert restored.physic_material.resolve() is None
-        assert restored.physic_material.guid == ""
-        assert restored.physic_material_guid == ""
+        assert restored.physic_material.guid == guid
+        assert restored.physic_material_guid == guid
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Camera
@@ -1275,6 +1612,8 @@ class TestCamera:
         assert cam.field_of_view == pytest.approx(60.0)
         assert cam.near_clip > 0
         assert cam.far_clip > cam.near_clip
+        assert cam.dithering is False
+        assert cam.stop_nans is False
 
     def test_camera_fov_round_trip(self, scene):
         go = scene.create_game_object("Cam")
@@ -1287,6 +1626,14 @@ class TestCamera:
         cam = go.add_component("Camera")
         cam.depth = 5
         assert cam.depth == pytest.approx(5)
+
+    def test_camera_output_controls_round_trip(self, scene):
+        go = scene.create_game_object("Cam")
+        cam = go.add_component("Camera")
+        cam.dithering = True
+        cam.stop_nans = True
+        assert cam.dithering is True
+        assert cam.stop_nans is True
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Light
@@ -1413,6 +1760,20 @@ class TestMaterial:
         with pytest.raises(ValueError, match="texture GUID does not exist"):
             material.set_texture("texSampler", "missing-texture-guid")
         assert material.get_texture("texSampler") == "white"
+
+    def test_material_deserialization_preserves_a_deleted_texture_reference(self, engine):
+        material = InxMaterial.create_default_unlit()
+        material.set_texture("texSampler", "white")
+        document = json.loads(material.serialize())
+        missing_guid = "52f6a608180f248634255ab26ccbd0a3"
+        document["properties"]["texSampler"]["guid"] = missing_guid
+
+        assert material.deserialize(json.dumps(document)) is True
+        assert material.get_texture("texSampler") == missing_guid
+        assert (
+            json.loads(material.serialize())["properties"]["texSampler"]["guid"]
+            == missing_guid
+        )
 
     def test_create_default_lit(self, engine):
         mat = InxMaterial.create_default_lit()
@@ -1554,23 +1915,47 @@ class TestComponentSerialization:
         assert renderer.deserialize_document(invalid) is False
         assert renderer.serialize_document() == original
 
-    @pytest.mark.parametrize("resource_kind", ["mesh", "material", "audio"])
-    def test_missing_native_resource_fails_without_component_mutation(self, scene, resource_kind):
+    def test_missing_audio_resource_preserves_its_guid(self, scene):
+        owner = scene.create_game_object("MissingAudioResource")
+        component = owner.add_component("AudioSource")
+        document = component.serialize_document()
+        document["tracks"][0]["clip_guid"] = "missing-audio-resource-guid"
+
+        assert component.deserialize_document(document) is True
+        assert component.serialize_document()["tracks"][0]["clip_guid"] == (
+            "missing-audio-resource-guid"
+        )
+        assert component.get_track_clip(0) is None
+
+    @pytest.mark.parametrize("resource_kind", ["mesh", "material"])
+    def test_missing_renderer_resource_preserves_its_guid(self, scene, resource_kind):
         owner = scene.create_game_object(f"Missing{resource_kind.title()}Resource")
-        component_type = "AudioSource" if resource_kind == "audio" else "MeshRenderer"
-        component = owner.add_component(component_type)
-        original = component.serialize_document()
-        invalid = json.loads(json.dumps(original))
+        renderer = owner.add_component("MeshRenderer")
+        document = renderer.serialize_document()
         missing_guid = f"missing-{resource_kind}-resource-guid"
         if resource_kind == "mesh":
-            invalid["meshAssetGuid"] = missing_guid
-        elif resource_kind == "material":
-            invalid["materials"] = [missing_guid]
+            document["meshAssetGuid"] = missing_guid
         else:
-            invalid["tracks"][0]["clip_guid"] = missing_guid
+            document["materials"] = [missing_guid]
 
-        assert component.deserialize_document(invalid) is False
-        assert component.serialize_document() == original
+        assert renderer.deserialize_document(document) is True
+        restored = renderer.serialize_document()
+        if resource_kind == "mesh":
+            assert restored["meshAssetGuid"] == missing_guid
+        else:
+            assert restored["materials"] == [missing_guid]
+
+    def test_missing_physic_material_preserves_its_guid(self, scene):
+        owner = scene.create_game_object("MissingPhysicMaterial")
+        collider = owner.add_component("BoxCollider")
+        document = collider.serialize_document()
+        document["physic_material_guid"] = "missing-physic-material-guid"
+
+        assert collider.deserialize_document(document) is True
+        assert (
+            collider.serialize_document()["physic_material_guid"]
+            == "missing-physic-material-guid"
+        )
 
     @pytest.mark.parametrize(
         "component_type",
@@ -1584,6 +1969,7 @@ class TestComponentSerialization:
             "BoxCollider",
             "SphereCollider",
             "CapsuleCollider",
+            "CylinderCollider",
             "MeshCollider",
             "MeshRenderer",
             "SkinnedMeshRenderer",

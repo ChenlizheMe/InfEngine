@@ -1,6 +1,7 @@
 #pragma once
 
 #include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkHandle.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -24,10 +25,10 @@ class AssetDatabase;
 /// @brief GPU-based mesh preview renderer.
 ///
 /// Renders an arbitrary InxMesh (with per-submesh materials) into a small
-/// offscreen framebuffer and reads back RGBA8 pixels for editor thumbnails.
+/// offscreen attachment set and reads back RGBA8 pixels for editor thumbnails.
 /// Camera is auto-fitted to the mesh AABB.
 ///
-/// Reuses the same render-pass format as GPUMaterialPreview so material
+/// Reuses the same attachment format as GPUMaterialPreview so material
 /// pipelines created for either previewer are compatible.
 class GPUMeshPreview
 {
@@ -75,9 +76,8 @@ class GPUMeshPreview
     void DestroyViewResources();
     void EnsureImGuiDisplayDescriptor();
     void DestroyImGuiDisplayDescriptor();
-    void CreateRenderPass();
-    void CreateFramebuffer(int size);
-    void DestroyFramebuffer();
+    void CreateAttachments(int size);
+    void DestroyAttachments();
     void PublishRenderView();
     void UnpublishRenderView();
 
@@ -85,13 +85,14 @@ class GPUMeshPreview
     rhi::RenderViewContext m_renderView;
     int m_currentSize = 0;
 
-    VkRenderPass m_renderPass = VK_NULL_HANDLE;
+    rhi::DynamicRenderingCommands m_dynamicRenderingCommands;
 
     vk::VkImageHandle m_msaaColor;
     vk::VkImageHandle m_resolveColor;
     vk::VkImageHandle m_depth;
-
-    VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
+    VkImageLayout m_msaaColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout m_resolveColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout m_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkDescriptorSet m_fallbackShadowDescSet = VK_NULL_HANDLE;
     vk::DescriptorLease m_fallbackShadowDescLease;

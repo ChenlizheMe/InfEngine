@@ -25,6 +25,7 @@ enum class GpuKernelStage : uint8_t
     Bootstrap,
     Init,
     Update,
+    UpdateRenderingFused,
     ContactPrepare,
     ContactSolve,
     ContactDispatch,
@@ -132,6 +133,7 @@ struct GpuEmitterDesc
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
     bool collisionEnabled = false;
+    bool supportsFusedUpdateRendering = false;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
     std::vector<GpuMeshInterfaceDesc> meshInterfaces;
     GpuVectorFieldLayoutDesc vectorFields;
@@ -165,6 +167,10 @@ struct GpuParticlePushConstants
     uint32_t simulationStep = 0;
     float deltaTime = 0.0f;
     uint32_t diagnosticFlags = 0;
+    uint32_t aliveReadSlot = 0;
+    uint32_t aliveWriteSlot = 1;
+    uint32_t useAliveList = 0;
+    uint32_t reserved = 0;
 };
 
 class ParticleGpuRuntime
@@ -172,6 +178,7 @@ class ParticleGpuRuntime
   public:
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t RenderInstanceStride = sizeof(GpuParticleRenderInstance);
+    static constexpr uint32_t VisibilityInstanceStride = sizeof(GpuParticleVisibilityInstance);
     static constexpr uint32_t BaseCounterWordCount = 13;
     static constexpr uint32_t EventCounterWordOffset = BaseCounterWordCount;
 
@@ -205,15 +212,18 @@ class ParticleGpuRuntime
     /// particle graph or re-uploading immutable geometry.
     [[nodiscard]] bool UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
 
-    void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                         rhi::BindGroupHandle graphSpawnGroup);
+    [[nodiscard]] bool RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                       rhi::BindGroupHandle graphSpawnGroup);
     void RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount, uint32_t spawnBaseId,
                             uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
                             rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle spawnMetadata,
                             uint64_t indirectOffset) const;
-    void RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
-                      float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
-                      bool collectCollisionDiagnostics = false) const;
+    [[nodiscard]] bool RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                    uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
+                                    bool collectCollisionDiagnostics = false) const;
+    [[nodiscard]] bool RecordUpdateRenderingFused(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                                  uint32_t simulationStep, float deltaTime,
+                                                  rhi::BindGroupHandle graphSpawnGroup) const;
     void RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                               rhi::BindGroupHandle graphSpawnGroup, bool resetAll = false) const;
     void RecordContactSolve(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
@@ -221,10 +231,15 @@ class ParticleGpuRuntime
     void RecordContactDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
                                float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
                                bool collectCollisionDiagnostics = false) const;
-    void RecordRenderReset(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle graphSpawnGroup,
-                           bool resetCollisionDiagnostics = false) const;
-    void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
-                         rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] bool RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
+                                         rhi::BindGroupHandle graphSpawnGroup, bool resetCollisionDiagnostics = false,
+                                         bool prepareAliveWrite = false) const;
+    [[nodiscard]] bool RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                       uint32_t simulationStep, rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] bool SupportsFusedUpdateRendering() const noexcept
+    {
+        return m_supportsFusedUpdateRendering;
+    }
     [[nodiscard]] bool HasContinuations() const noexcept;
     [[nodiscard]] const GpuParticleContinuationResources &ContinuationResources() const noexcept;
     [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
@@ -280,10 +295,18 @@ class ParticleGpuRuntime
     [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle CounterBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle VisibilityBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle SimulationControlBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle AliveIndexBuffer(uint32_t slot) const noexcept;
+    [[nodiscard]] rhi::BufferHandle AliveDispatchBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle AliveControlBuffer() const noexcept;
+    [[nodiscard]] uint32_t AliveReadSlot() const noexcept;
+    [[nodiscard]] uint32_t AliveWriteSlot() const noexcept;
+    [[nodiscard]] bool IsAliveListReady() const noexcept;
+    void PublishAliveWrite() noexcept;
     [[nodiscard]] rhi::BindingLayoutHandle GraphSpawnLayout() const noexcept
     {
         return m_graphSpawnLayout;
@@ -300,7 +323,7 @@ class ParticleGpuRuntime
                                       const ParticleGpuContactRuntime *previousContacts);
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     [[nodiscard]] bool UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms);
-    void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
+    bool Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
                 rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments = {},
                 uint64_t indirectOffset = 0) const;
@@ -311,6 +334,7 @@ class ParticleGpuRuntime
     uint32_t m_stateStride = 0;
     uint32_t m_eventTypeCount = 0;
     bool m_collisionEnabled = false;
+    bool m_supportsFusedUpdateRendering = false;
     mutable uint64_t m_contactPrepareRecordCalls = 0;
     mutable uint64_t m_contactSolveRecordCalls = 0;
     mutable uint64_t m_contactDispatchRecordCalls = 0;
@@ -327,10 +351,12 @@ class ParticleGpuRuntime
     rhi::BindingLayoutHandle m_collisionSceneLayout;
     rhi::BindGroupHandle m_collisionSceneGroup;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
+    GpuParticleTransforms m_cachedTransforms{};
+    bool m_hasCachedTransforms = false;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);
-static_assert(sizeof(GpuParticlePushConstants) == 32);
+static_assert(sizeof(GpuParticlePushConstants) == 48);
 static_assert(sizeof(GpuParticleSimulationControl) == 16);
 
 } // namespace infernux::particle

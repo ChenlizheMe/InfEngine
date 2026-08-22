@@ -147,6 +147,9 @@ def bump_component_structure_version() -> None:
     global _component_structure_version, _component_tracker_reset_version
     _component_structure_version += 1
     _component_tracker_reset_version += 1
+    from .inspector_snapshot import InspectorSnapshotService
+
+    InspectorSnapshotService.instance().invalidate_schema()
 
 
 def get_component_structure_version() -> int:
@@ -154,7 +157,7 @@ def get_component_structure_version() -> int:
     return _component_structure_version
 
 
-def bump_inspector_value_generation() -> int:
+def bump_inspector_value_generation(*, publish_snapshot: bool = True) -> int:
     """Increment and return the coarse inspector value generation.
 
     This is used by the native Inspector and Python field renderers to reuse
@@ -162,7 +165,27 @@ def bump_inspector_value_generation() -> int:
     """
     global _inspector_value_generation
     _inspector_value_generation += 1
+    if publish_snapshot:
+        from .inspector_snapshot import InspectorSnapshotService
+
+        InspectorSnapshotService.instance().invalidate_value()
     return _inspector_value_generation
+
+
+def invalidate_inspector_component_field(component, field_id: str) -> int:
+    """Precisely invalidate one serialized component field."""
+    from .inspector_snapshot import invalidate_component_field
+
+    return invalidate_component_field(component, field_id)
+
+
+def invalidate_inspector_preview(file_path: str, *, domain: str = "asset") -> int:
+    """Invalidate only the preview dependency of one asset target."""
+    from .inspector_snapshot import InspectorSnapshotService, InspectorTarget
+
+    return InspectorSnapshotService.instance().invalidate_preview(
+        InspectorTarget.asset(file_path), domain=domain
+    )
 
 
 def get_inspector_value_generation() -> int:
@@ -237,6 +260,8 @@ __all__ = [
     "ensure_material_file_path",
     "get_component_structure_version",
     "get_inspector_value_generation",
+    "invalidate_inspector_component_field",
+    "invalidate_inspector_preview",
     "is_inspector_profile_enabled",
     "prepare_component_icon_pixels",
     "record_inspector_profile_count",

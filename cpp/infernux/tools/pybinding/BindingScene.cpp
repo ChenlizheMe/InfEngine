@@ -18,6 +18,7 @@
 #include "function/scene/Camera.h"
 #include "function/scene/CapsuleCollider.h"
 #include "function/scene/ComponentFactory.h"
+#include "function/scene/CylinderCollider.h"
 #include "function/scene/GameObject.h"
 #include "function/scene/Light.h"
 #include "function/scene/MeshCollider.h"
@@ -41,6 +42,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <mutex>
 #include <pybind11/functional.h>
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <sstream>
@@ -138,6 +140,11 @@ class ScenePlayModeSnapshot
         PreflightSceneResourceDependencies(m_document);
     }
 
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> ResourceDependencies() const
+    {
+        return CollectSceneResourceDependencies(m_document);
+    }
+
     [[nodiscard]] std::shared_ptr<SceneCommitToken> CommitRetainingWorld(Scene &scene) const
     {
         return scene.CommitDocumentRetainingCurrentWorld(m_document);
@@ -163,6 +170,32 @@ static std::string ResolveComponentTypeName(py::object componentType)
         return py::str(componentType.attr("__name__")).cast<std::string>();
     }
     return {};
+}
+
+/// Match Python component types across body-reload generations.
+///
+/// ``isinstance`` remains the fast path for ordinary inheritance. A published
+/// script revision creates a new Python class object, however, so a caller may
+/// legitimately hold the previous class object while the live proxy owns the
+/// replacement. In that case the asset-stable component type GUID is the
+/// authoritative identity.
+static bool MatchesPythonComponentType(const PyComponentProxy &proxy, const py::object &component,
+                                       const py::object &requestedType, const std::string &requestedName)
+{
+    if (component.is_none())
+        return false;
+    if (py::isinstance<py::str>(requestedType))
+        return py::str(component.attr("__class__").attr("__name__")).cast<std::string>() == requestedName;
+    if (py::isinstance(component, requestedType))
+        return true;
+    if (!py::hasattr(requestedType, "_get_type_guid"))
+        return false;
+
+    const py::object value = requestedType.attr("_get_type_guid")();
+    if (value.is_none())
+        return false;
+    const std::string requestedGuid = value.cast<std::string>();
+    return !requestedGuid.empty() && requestedGuid == proxy.GetTypeGuid();
 }
 
 /**
@@ -268,6 +301,8 @@ static void AddPrimitiveCollider(GameObject &object, PrimitiveType type)
         object.AddComponent<CapsuleCollider>();
         break;
     case PrimitiveType::Cylinder:
+        object.AddComponent<CylinderCollider>();
+        break;
     case PrimitiveType::Plane:
     case PrimitiveType::Quad:
         object.AddComponent<MeshCollider>();
@@ -325,7 +360,7 @@ static GameObject *CreatePrimitiveObject(Scene *scene, PrimitiveType type, const
  * Returns a Python list of GameObjects.
  */
 static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, size_t count,
-                                            const std::string &namePrefix = "")
+                                            const std::string &namePrefix = "", bool withColliders = true)
 {
     const std::vector<Vertex> *vertices = nullptr;
     const std::vector<uint32_t> *indices = nullptr;
@@ -337,9 +372,11 @@ static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, si
     // Pre-allocate capacity to avoid incremental vector growth.
     scene->ReserveCapacity(count);
     TransformECSStore::Instance().Reserve(TransformECSStore::Instance().Capacity() + count);
-    Component::ReserveRegistry(count * 3);
+    Component::ReserveRegistry(count * (withColliders ? 3 : 2));
     SceneManager::Instance().ReserveRendererCapacity(count);
-    PhysicsECSStore::Instance().ReserveForBulkCreation(count);
+    if (withColliders) {
+        PhysicsECSStore::Instance().ReserveForBulkCreation(count);
+    }
 
     py::list result(count);
     for (size_t i = 0; i < count; ++i) {
@@ -349,12 +386,121 @@ static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, si
             MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
             if (renderer) {
                 renderer->SetSharedPrimitiveMesh(*vertices, *indices, defaultName);
-                AddPrimitiveCollider(*obj, type);
+                if (withColliders) {
+                    AddPrimitiveCollider(*obj, type);
+                }
             }
         }
         result[i] = py::cast(obj, py::return_value_policy::reference);
     }
     return result;
+}
+
+class RendererRegistryTransaction final
+{
+  public:
+    RendererRegistryTransaction()
+    {
+        SceneManager::Instance().BeginRendererRegistryTransaction();
+    }
+    ~RendererRegistryTransaction()
+    {
+        SceneManager::Instance().EndRendererRegistryTransaction();
+    }
+
+    RendererRegistryTransaction(const RendererRegistryTransaction &) = delete;
+    RendererRegistryTransaction &operator=(const RendererRegistryTransaction &) = delete;
+};
+
+using FloatArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
+
+static py::object InstantiateGameObjectsBatch(Scene &scene, GameObject *source, const FloatArray &positions,
+                                              const py::object &rotationsObject, const py::object &scalesObject,
+                                              GameObject *parent, bool instantiateInWorldSpace, bool returnObjects)
+{
+    if (!source)
+        throw std::invalid_argument("Instantiate batch requires a source GameObject");
+    if (source->GetScene() != &scene)
+        throw std::invalid_argument("Instantiate batch source belongs to another Scene");
+    if (positions.ndim() != 2 || positions.shape(1) != 3)
+        throw std::invalid_argument("Instantiate positions must have shape (N, 3)");
+
+    const py::ssize_t count = positions.shape(0);
+    FloatArray rotations;
+    FloatArray scales;
+    const bool hasRotations = !rotationsObject.is_none();
+    const bool hasScales = !scalesObject.is_none();
+    if (hasRotations) {
+        rotations = FloatArray::ensure(rotationsObject);
+        if (!rotations || rotations.ndim() != 2 || rotations.shape(0) != count || rotations.shape(1) != 4)
+            throw std::invalid_argument("Instantiate rotations must have shape (N, 4) in x, y, z, w order");
+    }
+    if (hasScales) {
+        scales = FloatArray::ensure(scalesObject);
+        if (!scales || scales.ndim() != 2 || scales.shape(0) != count || scales.shape(1) != 3)
+            throw std::invalid_argument("Instantiate scales must have shape (N, 3)");
+    }
+
+    const float *positionData = positions.data();
+    const float *rotationData = hasRotations ? rotations.data() : nullptr;
+    const float *scaleData = hasScales ? scales.data() : nullptr;
+
+    const size_t batchCount = static_cast<size_t>(count);
+    try {
+        scene.ReserveCapacity(batchCount);
+    } catch (const std::exception &exc) {
+        throw std::runtime_error("Instantiate batch Scene reserve failed for " + std::to_string(batchCount) +
+                                 " objects: " + exc.what());
+    }
+    try {
+        auto &transforms = TransformECSStore::Instance();
+        transforms.Reserve(transforms.Capacity() + batchCount);
+    } catch (const std::exception &exc) {
+        throw std::runtime_error("Instantiate batch Transform reserve failed for " + std::to_string(batchCount) +
+                                 " objects: " + exc.what());
+    }
+    try {
+        Component::ReserveRegistry(Component::GetInstanceCount() + batchCount * 3);
+    } catch (const std::exception &exc) {
+        throw std::runtime_error("Instantiate batch Component registry reserve failed for " +
+                                 std::to_string(batchCount) + " objects: " + exc.what());
+    }
+    try {
+        SceneManager::Instance().ReserveRendererCapacity(batchCount);
+    } catch (const std::exception &exc) {
+        throw std::runtime_error("Instantiate batch renderer registry reserve failed for " +
+                                 std::to_string(batchCount) + " objects: " + exc.what());
+    }
+
+    RendererRegistryTransaction transaction;
+    py::list result;
+    for (py::ssize_t index = 0; index < count; ++index) {
+        GameObject *created = nullptr;
+        try {
+            created = scene.InstantiateGameObject(source, parent, instantiateInWorldSpace);
+        } catch (const std::exception &exc) {
+            throw std::runtime_error("Instantiate batch clone failed at object " + std::to_string(index) + "/" +
+                                     std::to_string(count) + ": " + exc.what());
+        }
+        if (!created)
+            throw std::runtime_error("Instantiate batch failed while cloning source GameObject");
+        Transform *transform = created->GetTransform();
+        const float *position = positionData + index * 3;
+        transform->SetWorldPosition(glm::vec3(position[0], position[1], position[2]));
+        if (hasRotations) {
+            const float *rotation = rotationData + index * 4;
+            transform->SetWorldRotation(glm::quat(rotation[3], rotation[0], rotation[1], rotation[2]));
+        }
+        if (hasScales) {
+            const float *scale = scaleData + index * 3;
+            transform->SetLocalScale(glm::vec3(scale[0], scale[1], scale[2]));
+        }
+        if (returnObjects)
+            result.append(py::cast(created, py::return_value_policy::reference));
+    }
+    if (returnObjects)
+        return std::move(result);
+    return py::int_(count);
 }
 
 /**
@@ -462,6 +608,13 @@ static std::vector<std::string> GetAnimationTakeNames(const std::string &guid, c
 
 static bool ShouldUseSkinnedRenderer(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
 {
+    // The loaded mesh is authoritative. Freshly discovered model assets can be
+    // instantiated before the asynchronous importer has enriched their .meta
+    // file with animation_count/bone_count, while MeshLoader has already
+    // attached the validated skin companion data to the runtime mesh.
+    if (mesh && mesh->HasSkinnedData())
+        return true;
+
     const auto meta = GetModelMeta(guid, mesh);
     if (!meta)
         return false;
@@ -863,6 +1016,50 @@ void RegisterSceneBindings(py::module_ &m)
             },
             py::arg("type"), "Set the mesh to a built-in primitive (Cube, Sphere, Quad, etc.)")
         .def(
+            "set_inline_mesh_data",
+            [](MeshRenderer &mr, const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
+               const py::array_t<float, py::array::c_style | py::array::forcecast> &normals,
+               const py::array_t<float, py::array::c_style | py::array::forcecast> &uvs,
+               const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices,
+               const std::string &name) {
+                if (positions.ndim() != 2 || positions.shape(1) != 3)
+                    throw py::value_error("positions must have shape (N, 3)");
+                if (normals.ndim() != 2 || normals.shape(1) != 3 || normals.shape(0) != positions.shape(0))
+                    throw py::value_error("normals must have shape (N, 3) and match positions");
+                if (uvs.ndim() != 2 || uvs.shape(1) != 2 || uvs.shape(0) != positions.shape(0))
+                    throw py::value_error("uvs must have shape (N, 2) and match positions");
+                if (indices.ndim() != 1)
+                    throw py::value_error("indices must have shape (M,)");
+
+                const size_t vertexCount = static_cast<size_t>(positions.shape(0));
+                std::vector<Vertex> vertices(vertexCount);
+                const auto positionData = positions.unchecked<2>();
+                const auto normalData = normals.unchecked<2>();
+                const auto uvData = uvs.unchecked<2>();
+                for (size_t i = 0; i < vertexCount; ++i) {
+                    auto &vertex = vertices[i];
+                    const auto row = static_cast<py::ssize_t>(i);
+                    vertex.pos = {positionData(row, 0), positionData(row, 1), positionData(row, 2)};
+                    vertex.normal = {normalData(row, 0), normalData(row, 1), normalData(row, 2)};
+                    vertex.texCoord = {uvData(row, 0), uvData(row, 1)};
+                }
+
+                std::vector<uint32_t> encodedIndices(static_cast<size_t>(indices.shape(0)));
+                const auto indexData = indices.unchecked<1>();
+                for (size_t i = 0; i < encodedIndices.size(); ++i) {
+                    const uint32_t index = indexData(static_cast<py::ssize_t>(i));
+                    if (index >= vertexCount)
+                        throw py::value_error("indices contain a vertex index outside positions");
+                    encodedIndices[i] = index;
+                }
+
+                mr.SetMesh(std::move(vertices), std::move(encodedIndices));
+                mr.SetInlineMeshName(name.empty() ? "Procedural Mesh" : name);
+            },
+            py::arg("positions"), py::arg("normals"), py::arg("uvs"), py::arg("indices"),
+            py::arg("name") = "Procedural Mesh",
+            "Replace the inline mesh from contiguous NumPy arrays in one native upload")
+        .def(
             "set_mesh_asset_guid",
             [](MeshRenderer &mr, const std::string &guid) {
                 if (guid.empty()) {
@@ -1108,8 +1305,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def(py::init<>())
         .def_property("sprite_guid", &SpriteRenderer::GetSpriteGuid, &SpriteRenderer::SetSpriteGuid,
                       "Asset GUID of the sprite texture")
-        .def_property("frame_index", &SpriteRenderer::GetFrameIndex, &SpriteRenderer::SetFrameIndex,
-                      "Index of the sprite frame to display")
+        .def_property("frame_id", &SpriteRenderer::GetFrameId, &SpriteRenderer::SetFrameId,
+                      "Stable ID of the sprite frame to display")
         .def_property(
             "sprite_color",
             [](const SpriteRenderer &sr) -> py::tuple {
@@ -1190,6 +1387,12 @@ void RegisterSceneBindings(py::module_ &m)
         .def("get_py_component", &PyComponentProxy::GetPyComponent, "Get the underlying Python component")
         .def("get_py_type_name", &PyComponentProxy::GetPyTypeName, "Get the Python type name")
         .def("is_valid", &PyComponentProxy::IsValid, "Check if this proxy holds a valid Python component")
+        .def("set_coroutine_scheduler_active", &PyComponentProxy::SetCoroutineSchedulerActive,
+             "Update the native coroutine dispatch bit after a scheduler transition")
+        .def("refresh_python_lifecycle_dispatch", &PyComponentProxy::RefreshPythonLifecycleDispatch,
+             "Refresh cached Python lifecycle wrappers and native phase gates")
+        .def("_reset_lifecycle_for_play", &PyComponentProxy::ResetLifecycleForPlay,
+             "Internal Edit-to-Play lifecycle reset for a fresh Python mirror")
         .def_property_readonly("overrides_update", &PyComponentProxy::OverridesUpdate)
         .def_property_readonly("has_coroutine_scheduler", &PyComponentProxy::HasCoroutineScheduler)
         .def_property_readonly("update_dispatch_count", &PyComponentProxy::GetUpdateDispatchCount)
@@ -1242,6 +1445,10 @@ void RegisterSceneBindings(py::module_ &m)
             "background_color", [](const Camera &c) -> glm::vec4 { return c.GetBackgroundColor(); },
             [](Camera &c, const glm::vec4 &v) { c.SetBackgroundColor(v); },
             "Background color as vec4f (r, g, b, a) — used when clear_flags == SolidColor")
+        .def_property("dithering", &Camera::GetDithering, &Camera::SetDithering,
+                      "Apply display-space dithering before output quantization")
+        .def_property("stop_nans", &Camera::GetStopNaNs, &Camera::SetStopNaNs,
+                      "Replace non-finite output pixels before display encoding")
         // Screen dimensions (read-only, set by renderer)
         .def_property_readonly("pixel_width", &Camera::GetPixelWidth, "Render target width in pixels")
         .def_property_readonly("pixel_height", &Camera::GetPixelHeight, "Render target height in pixels")
@@ -1304,6 +1511,9 @@ void RegisterSceneBindings(py::module_ &m)
     registry.Register("CapsuleCollider", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<CapsuleCollider *>(c), py::return_value_policy::reference);
     });
+    registry.Register("CylinderCollider", [](Component *c) -> py::object {
+        return py::cast(dynamic_cast<CylinderCollider *>(c), py::return_value_policy::reference);
+    });
     registry.Register("MeshCollider", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<MeshCollider *>(c), py::return_value_policy::reference);
     });
@@ -1361,6 +1571,11 @@ void RegisterSceneBindings(py::module_ &m)
                 if (comp) {
                     return ComponentBindingRegistry::Instance().CastToPython(comp);
                 }
+                // A registered native type that was rejected by its component
+                // constraints must never fall through into Python attachment.
+                if (ComponentFactory::IsRegistered(typeName)) {
+                    return py::none();
+                }
                 // If native creation failed and the argument is a class (not a
                 // string), treat it as a Python InxComponent subclass:
                 // instantiate and delegate to add_py_component.
@@ -1379,6 +1594,10 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "remove_component", [](GameObject *obj, Component *component) { return obj->RemoveComponent(component); },
             py::arg("component"), "Remove a component instance (cannot remove Transform or required components)")
+        .def("can_add_component", &GameObject::CanAddComponentByTypeName, py::arg("type_name"),
+             "Check authoritative component registry constraints before adding a native component")
+        .def("get_add_component_blockers", &GameObject::GetAddComponentBlockers, py::arg("type_name"),
+             "Get authoritative registry reasons that reject adding a native component")
         .def(
             "can_remove_component",
             [](GameObject *obj, Component *component) { return obj->CanRemoveComponent(component); },
@@ -1403,6 +1622,16 @@ void RegisterSceneBindings(py::module_ &m)
                 return result;
             },
             "Get all components (including Transform)")
+        .def("get_component_order", &GameObject::GetComponentOrder,
+             "Get stable component IDs in serialized/Inspector order (Transform excluded)")
+        .def("set_component_order", &GameObject::SetComponentOrder, py::arg("component_ids"),
+             "Atomically reorder attached components using an exact stable-ID permutation")
+        .def(
+            "get_component_default_document",
+            [](const GameObject &obj, Component *component) {
+                return JsonToPython(obj.GetDefaultComponentDocument(component));
+            },
+            py::arg("component"), "Build a default document while preserving component identity")
         .def(
             "get_component",
             [](GameObject *obj, const std::string &typeName) -> py::object {
@@ -1472,6 +1701,15 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "add_py_component",
             [](GameObject *obj, py::object pyComponentInstance) -> py::object {
+                std::vector<Component *> autoAddedDependencies;
+                const auto rollbackDependencies = [&]() {
+                    for (auto it = autoAddedDependencies.rbegin(); it != autoAddedDependencies.rend(); ++it) {
+                        if (*it && (*it)->GetGameObject() == obj && !obj->RemoveComponent(*it))
+                            INXLOG_ERROR("[Binding] Failed to roll back auto-added component '", (*it)->GetTypeName(),
+                                         "'");
+                    }
+                    autoAddedDependencies.clear();
+                };
                 auto hasCppComponent = [&](const std::string &typeName) -> bool {
                     if (typeName == "Transform") {
                         return true;
@@ -1484,8 +1722,9 @@ void RegisterSceneBindings(py::module_ &m)
                     return false;
                 };
 
-                // Check for DisallowMultipleComponent
                 py::object pyType = pyComponentInstance.attr("__class__");
+                py::object constraints =
+                    py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
                 std::string cppTypeName;
                 if (py::hasattr(pyType, "_cpp_type_name")) {
                     try {
@@ -1495,14 +1734,7 @@ void RegisterSceneBindings(py::module_ &m)
                         cppTypeName.clear();
                     }
                 }
-                bool disallowMultiple = false;
-                if (py::hasattr(pyType, "_disallow_multiple_")) {
-                    try {
-                        disallowMultiple = pyType.attr("_disallow_multiple_").cast<bool>();
-                    } catch (...) {
-                        INXLOG_WARN("[Binding] Failed to read _disallow_multiple_ from component type");
-                    }
-                }
+                const bool disallowMultiple = !constraints.attr("allow_multiple").cast<bool>();
 
                 if (disallowMultiple) {
                     if (!cppTypeName.empty()) {
@@ -1529,105 +1761,63 @@ void RegisterSceneBindings(py::module_ &m)
                     }
                 }
 
-                // Check for RequireComponent
-                if (py::hasattr(pyType, "_require_components_")) {
-                    py::list requiredTypes = pyType.attr("_require_components_").cast<py::list>();
+                const py::tuple requiredTypes = constraints.attr("required_types").cast<py::tuple>();
+                bool dependencyFailed = false;
+                if (requiredTypes.size() > 0) {
                     for (auto reqType : requiredTypes) {
-                        bool found = false;
-
-                        if (py::isinstance<py::str>(reqType)) {
-                            std::string reqTypeName = reqType.cast<std::string>();
-                            if (hasCppComponent(reqTypeName)) {
+                        const std::string requiredToken = py::module_::import("Infernux.components.registry")
+                                                              .attr("component_constraint_type_id")(reqType)
+                                                              .cast<std::string>();
+                        bool found = obj->GetTransform()->IsComponentType(requiredToken);
+                        for (const auto &component : obj->GetAllComponents()) {
+                            if (component && component->IsComponentType(requiredToken)) {
                                 found = true;
-                            } else {
-                                found = (obj->AddComponentByTypeName(reqTypeName) != nullptr);
-                            }
-                            if (!found) {
-                                py::print("[Warning] Failed to auto-add required native component", reqTypeName);
-                            }
-                            continue;
-                        } else if (py::hasattr(reqType, "_cpp_type_name")) {
-                            std::string reqCppTypeName;
-                            try {
-                                reqCppTypeName = reqType.attr("_cpp_type_name").cast<std::string>();
-                            } catch (...) {
-                                INXLOG_WARN("[Binding] Failed to read _cpp_type_name from required component type");
-                                reqCppTypeName.clear();
-                            }
-
-                            if (!reqCppTypeName.empty()) {
-                                if (hasCppComponent(reqCppTypeName)) {
-                                    found = true;
-                                } else if (obj->AddComponentByTypeName(reqCppTypeName) != nullptr) {
-                                    found = true;
-                                }
-                            }
-
-                            if (!found && !reqCppTypeName.empty()) {
-                                py::print("[Warning] Failed to auto-add required native component", reqCppTypeName);
-                            }
-                            continue;
-                        }
-
-                        if (found) {
-                            continue;
-                        }
-
-                        for (const auto &comp : obj->GetAllComponents()) {
-                            if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
-                                py::object existingComp = proxy->GetPyComponent();
-                                if (!existingComp.is_none() && py::isinstance(existingComp, reqType)) {
-                                    found = true;
-                                    break;
-                                }
+                                break;
                             }
                         }
-                        if (!found) {
-                            std::string typeName = pyType.attr("__name__").cast<std::string>();
-                            std::string reqTypeName = py::hasattr(reqType, "__name__")
-                                                          ? reqType.attr("__name__").cast<std::string>()
-                                                          : std::string("Component");
-                            py::print("[Warning] Component", typeName, "requires", reqTypeName,
-                                      "- adding it automatically");
-                            // Auto-add the required component
+                        if (found)
+                            continue;
+
+                        std::string nativeTypeName;
+                        if (py::hasattr(reqType, "_cpp_type_name"))
+                            nativeTypeName = reqType.attr("_cpp_type_name").cast<std::string>();
+                        else if (py::isinstance<py::str>(reqType)) {
+                            const std::string declaredName = reqType.cast<std::string>();
+                            if (ComponentFactory::IsRegistered(declaredName))
+                                nativeTypeName = declaredName;
+                        }
+                        if (!nativeTypeName.empty()) {
+                            Component *required = obj->AddComponentByTypeName(nativeTypeName);
+                            found = required != nullptr;
+                            if (required)
+                                autoAddedDependencies.push_back(required);
+                        } else if (py::isinstance<py::type>(reqType)) {
                             py::object newReqComp = reqType();
                             auto reqProxy = std::make_unique<PyComponentProxy>(newReqComp);
                             Component *reqAdded = obj->AddExistingComponent(std::move(reqProxy));
-                            if (reqAdded && py::hasattr(newReqComp, "_bind_native_component")) {
-                                try {
-                                    newReqComp.attr("_bind_native_component")(
-                                        py::cast(reqAdded, py::return_value_policy::reference),
-                                        py::cast(obj, py::return_value_policy::reference));
-                                } catch (...) {
-                                    INXLOG_WARN("[Binding] Failed to bind required component to native proxy");
-                                }
-                            }
+                            found = reqAdded != nullptr;
+                            if (reqAdded)
+                                autoAddedDependencies.push_back(reqAdded);
+                        }
+                        if (!found) {
+                            py::print("[Warning] Failed to satisfy required component", requiredToken);
+                            dependencyFailed = true;
                         }
                     }
+                }
+                if (dependencyFailed) {
+                    rollbackDependencies();
+                    return py::none();
                 }
 
                 // Create a PyComponentProxy that wraps the Python component
                 auto proxy = std::make_unique<PyComponentProxy>(pyComponentInstance);
                 Component *added = obj->AddExistingComponent(std::move(proxy));
                 if (added) {
-                    // Immediately bind the native proxy and owning GameObject.
-                    // This makes the C++ proxy the lifecycle authority from the
-                    // moment the component is attached, even before Awake().
-                    try {
-                        if (py::hasattr(pyComponentInstance, "_bind_native_component")) {
-                            pyComponentInstance.attr("_bind_native_component")(
-                                py::cast(added, py::return_value_policy::reference),
-                                py::cast(obj, py::return_value_policy::reference));
-                        } else if (py::hasattr(pyComponentInstance, "_set_game_object")) {
-                            pyComponentInstance.attr("_set_game_object")(
-                                py::cast(obj, py::return_value_policy::reference));
-                        }
-                    } catch (...) {
-                        INXLOG_WARN("[Binding] Failed to bind newly added component to native proxy");
-                    }
                     // Return the original Python component
                     return pyComponentInstance;
                 }
+                rollbackDependencies();
                 return py::none();
             },
             py::arg("component_instance"), "Add a Python InxComponent instance to this GameObject")
@@ -1637,14 +1827,7 @@ void RegisterSceneBindings(py::module_ &m)
                 if (!py::hasattr(instance, "_bind_native_component"))
                     throw py::type_error("prepared Python component requires _bind_native_component");
                 auto proxy = std::make_unique<PyComponentProxy>(instance);
-                Component *added = obj->AddPreparedPythonComponent(std::move(proxy), componentIndex);
-                try {
-                    instance.attr("_bind_native_component")(py::cast(added, py::return_value_policy::reference),
-                                                            py::cast(obj, py::return_value_policy::reference));
-                } catch (...) {
-                    obj->RemovePreparedPythonComponent(added);
-                    throw;
-                }
+                obj->AddPreparedPythonComponent(std::move(proxy), componentIndex);
                 return instance;
             },
             py::arg("component_instance"), py::arg("component_index"),
@@ -1656,11 +1839,11 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "get_py_component",
             [](GameObject *obj, py::object componentType) -> py::object {
-                // Find a PyComponentProxy whose Python component is an instance of the given type
+                const std::string typeName = ResolveComponentTypeName(componentType);
                 for (const auto &comp : obj->GetAllComponents()) {
                     if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
                         py::object pyComp = proxy->GetPyComponent();
-                        if (!pyComp.is_none() && py::isinstance(pyComp, componentType)) {
+                        if (MatchesPythonComponentType(*proxy, pyComp, componentType, typeName)) {
                             return pyComp;
                         }
                     }
@@ -1728,8 +1911,6 @@ void RegisterSceneBindings(py::module_ &m)
                         oldComponent.attr("_invalidate_native_binding")();
                     }
 
-                    auto *newProxy = static_cast<PyComponentProxy *>(published);
-                    newProxy->RebindPythonMirror();
                     return newComponent;
                 }
                 return py::none();
@@ -1803,11 +1984,8 @@ void RegisterSceneBindings(py::module_ &m)
                             if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
                                 py::object pyComp = proxy->GetPyComponent();
                                 if (!pyComp.is_none()) {
-                                    bool match =
-                                        py::isinstance<py::str>(componentType)
-                                            ? (py::str(pyComp.attr("__class__").attr("__name__")).cast<std::string>() ==
-                                               typeName)
-                                            : py::isinstance(pyComp, componentType);
+                                    const bool match =
+                                        MatchesPythonComponentType(*proxy, pyComp, componentType, typeName);
                                     if (match)
                                         return pyComp;
                                 }
@@ -1859,11 +2037,8 @@ void RegisterSceneBindings(py::module_ &m)
                             if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
                                 py::object pyComp = proxy->GetPyComponent();
                                 if (!pyComp.is_none()) {
-                                    bool match =
-                                        py::isinstance<py::str>(componentType)
-                                            ? (py::str(pyComp.attr("__class__").attr("__name__")).cast<std::string>() ==
-                                               typeName)
-                                            : py::isinstance(pyComp, componentType);
+                                    const bool match =
+                                        MatchesPythonComponentType(*proxy, pyComp, componentType, typeName);
                                     if (match)
                                         return pyComp;
                                 }
@@ -1943,6 +2118,10 @@ void RegisterSceneBindings(py::module_ &m)
         "_preflight_scene_resource_dependencies",
         [](py::handle document) { PreflightSceneResourceDependencies(PythonToJson(document)); }, py::arg("document"),
         "Validate native Scene resource GUIDs and embedded resource documents on the owner thread");
+    m.def(
+        "_collect_scene_resource_dependencies",
+        [](py::handle document) { return CollectSceneResourceDependencies(PythonToJson(document)); },
+        py::arg("document"), "Return the typed transitive resource dependencies of a Scene document");
 
     // ========================================================================
     // Scene binding
@@ -1954,7 +2133,8 @@ void RegisterSceneBindings(py::module_ &m)
 
     py::class_<ScenePlayModeSnapshot, std::shared_ptr<ScenePlayModeSnapshot>>(m, "_ScenePlayModeSnapshot")
         .def("_python_component_records", &ScenePlayModeSnapshot::GetPythonComponentRecords)
-        .def("_preflight_resource_dependencies", &ScenePlayModeSnapshot::PreflightResourceDependencies);
+        .def("_preflight_resource_dependencies", &ScenePlayModeSnapshot::PreflightResourceDependencies)
+        .def("_resource_dependencies", &ScenePlayModeSnapshot::ResourceDependencies);
 
     py::class_<Scene>(m, "Scene")
         .def_property("name", &Scene::GetName, &Scene::SetName)
@@ -2026,10 +2206,10 @@ void RegisterSceneBindings(py::module_ &m)
             "Create a primitive GameObject (Cube, Sphere, Capsule, Cylinder, Plane)")
         .def(
             "create_primitives_batch",
-            [](Scene *scene, PrimitiveType type, size_t count, const std::string &namePrefix) {
-                return CreatePrimitiveObjectsBatch(scene, type, count, namePrefix);
+            [](Scene *scene, PrimitiveType type, size_t count, const std::string &namePrefix, bool withColliders) {
+                return CreatePrimitiveObjectsBatch(scene, type, count, namePrefix, withColliders);
             },
-            py::arg("type"), py::arg("count"), py::arg("name_prefix") = "",
+            py::arg("type"), py::arg("count"), py::arg("name_prefix") = "", py::arg("with_colliders") = true,
             "Batch-create N primitive GameObjects. Returns a list of GameObjects.")
         .def(
             "create_from_model",
@@ -2096,6 +2276,16 @@ void RegisterSceneBindings(py::module_ &m)
              py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
              "Internal native subtree clone; Python callers must preflight first")
         .def(
+            "_clone_game_objects",
+            [](Scene &scene, GameObject *source, const FloatArray &positions, const py::object &rotations,
+               const py::object &scales, GameObject *parent, bool instantiateInWorldSpace, bool returnObjects) {
+                return InstantiateGameObjectsBatch(scene, source, positions, rotations, scales, parent,
+                                                   instantiateInWorldSpace, returnObjects);
+            },
+            py::arg("source"), py::arg("positions"), py::arg("rotations") = py::none(), py::arg("scales") = py::none(),
+            py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = true, py::arg("return_objects") = true,
+            "Internal native bulk subtree clone used by the public Instantiate overload")
+        .def(
             "_instantiate_document",
             [](Scene &scene, py::handle document, GameObject *parent) {
                 return scene.InstantiateFromDocument(PythonToJson(document), parent);
@@ -2159,6 +2349,18 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // SceneManager binding (singleton - use nodelete to prevent pybind11 from deleting)
     // ========================================================================
+    py::enum_<SceneManager::RuntimeFrameBarrier>(m, "NativeRuntimeFrameBarrier")
+        .value("TRANSFORM_TO_PHYSICS", SceneManager::RuntimeFrameBarrier::TransformToPhysics)
+        .value("PHYSICS_SIMULATION", SceneManager::RuntimeFrameBarrier::PhysicsSimulation)
+        .value("PHYSICS_TO_TRANSFORM", SceneManager::RuntimeFrameBarrier::PhysicsToTransform)
+        .value("TRANSFORM_RESOLVE", SceneManager::RuntimeFrameBarrier::TransformResolve)
+        .value("FINAL_TRANSFORM_RESOLVE", SceneManager::RuntimeFrameBarrier::FinalTransformResolve)
+        .value("ANIMATION_TIMELINE", SceneManager::RuntimeFrameBarrier::AnimationTimeline)
+        .value("RENDER_EXTRACTION", SceneManager::RuntimeFrameBarrier::RenderExtraction)
+        .value("RENDER_GRAPH", SceneManager::RuntimeFrameBarrier::RenderGraph)
+        .value("SNAPSHOT_PUBLICATION", SceneManager::RuntimeFrameBarrier::SnapshotPublication)
+        .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
+
     py::class_<SceneManager, std::unique_ptr<SceneManager, py::nodelete>>(m, "SceneManager")
         .def_static("instance", &SceneManager::Instance, py::return_value_policy::reference,
                     "Get the singleton SceneManager instance")
@@ -2168,13 +2370,28 @@ void RegisterSceneBindings(py::module_ &m)
              "Unload and destroy a scene, removing all its GameObjects and physics bodies")
         .def("get_active_scene", &SceneManager::GetActiveScene, py::return_value_policy::reference,
              "Get the currently active scene")
+        .def("get_runtime_persistent_scene", &SceneManager::GetRuntimePersistentScene,
+             py::return_value_policy::reference, "Get the runtime-only DontDestroyOnLoad Scene, or None")
+        .def("find_runtime_object_by_id", &SceneManager::FindRuntimeObjectByID, py::return_value_policy::reference,
+             py::arg("id"), "Find an object in the active or DontDestroyOnLoad runtime Scene")
         .def("set_active_scene", &SceneManager::SetActiveScene, py::arg("scene"), "Set the active scene")
+        .def("prepare_active_scene_replacement", &SceneManager::PrepareActiveSceneReplacement,
+             "Move queued DontDestroyOnLoad roots before replacing the active Scene document")
         .def("mark_temporal_discontinuity", &SceneManager::MarkActiveSceneTemporalDiscontinuity,
              "Mark an explicit time jump in the active scene for temporal render effects")
         .def("get_scene", &SceneManager::GetScene, py::return_value_policy::reference, py::arg("name"),
              "Get a scene by name")
         .def_property_readonly("scene_count", &SceneManager::GetSceneCount, "Number of currently loaded scenes")
         .def("is_playing", &SceneManager::IsPlaying, "Check if in play mode")
+        .def("set_runtime_lifecycle_callbacks", &SceneManager::SetRuntimeLifecycleCallbacks, py::arg("begin_frame"),
+             py::arg("fixed_update"), py::arg("update"), py::arg("late_update"), py::arg("editor_update"),
+             py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")
+        .def("set_runtime_frame_barrier_callback", &SceneManager::SetRuntimeFrameBarrierCallback, py::arg("callback"),
+             "Install the native runtime frame barrier bridge")
+        .def("set_runtime_lifecycle_work_available", &SceneManager::SetRuntimeLifecycleWorkAvailable,
+             py::arg("available"), "Enable lifecycle bridge calls only while Python components exist")
+        .def("clear_runtime_lifecycle_callbacks", &SceneManager::ClearRuntimeLifecycleCallbacks,
+             "Remove the shared runtime lifecycle bridge")
         .def("play", &SceneManager::Play, "Enter play mode")
         .def("_start_active_scene_for_play", &SceneManager::StartActiveSceneForPlay,
              "Internal: publish a transactionally loaded Scene into the current play session")
@@ -2202,6 +2419,8 @@ void RegisterSceneBindings(py::module_ &m)
              "Number of active physics bodies considered for pose readback in the most recent simulation frame")
         .def("get_last_interpolation_candidate_count", &SceneManager::GetLastInterpolationCandidateCount,
              "Number of physics bodies considered for presentation interpolation in the most recent frame")
+        .def("get_global_transform_serial", &SceneManager::GetGlobalTransformSerial,
+             "Get the monotonic native Transform storage revision")
         .def(
             "get_last_frame_profile",
             [](const SceneManager &manager) {
@@ -2231,8 +2450,8 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // ComponentFactory — query registered native component types
     // ========================================================================
-    m.def("get_registered_component_types", &ComponentFactory::GetRegisteredTypeNames,
-          "Get list of all registered native component type names");
+    m.def("get_registered_component_types", &ComponentFactory::GetUserAddableTypeNames,
+          "Get user-addable registered native component type names");
 }
 
 } // namespace infernux

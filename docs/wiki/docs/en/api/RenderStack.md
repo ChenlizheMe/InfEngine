@@ -8,10 +8,7 @@ class in <b>Infernux.renderstack</b>
 
 ## Description
 
-Scene singleton component that manages render pipelines and injected passes.
-
-Runtime class also mixes in render-pass management and pipeline reload
-behavior; those public methods are mirrored in this stub.
+Scene singleton that binds reusable Effect assets to pipeline stages.
 
 <!-- USER CONTENT START --> description
 
@@ -22,11 +19,13 @@ behavior; those public methods are mirrored in this stub.
 | Name | Type | Description |
 |------|------|------|
 | pipeline_class_name | `str` |  |
-| mounted_passes_json | `str` |  |
 | pipeline_params_json | `str` |  |
+| effect_slots | `List[EffectSlot]` |  |
+| effect_binding_error | `str` |  *(read-only)* |
+| effect_compile_errors | `tuple[str, ...]` |  *(read-only)* |
+| effect_stages | `tuple[EffectStage, ...]` |  *(read-only)* |
+| orphan_effect_slots | `tuple[EffectSlot, ...]` |  *(read-only)* |
 | pipeline | `RenderPipeline` | The currently active render pipeline. *(read-only)* |
-| injection_points | `List[InjectionPoint]` | List of injection points defined by the pipeline. *(read-only)* |
-| pass_entries | `List[PassEntry]` | All mounted render pass entries. *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -36,14 +35,12 @@ behavior; those public methods are mirrored in this stub.
 
 | Method | Description |
 |------|------|
-| `on_inspector_gui(ctx: object) → None` | Render the custom editor inspector for this RenderStack. |
 | `set_pipeline(pipeline_class_name: str) → None` | Set the active render pipeline by class name. |
-| `add_pass(render_pass: RenderPass) → bool` | Add a render pass to the stack. |
-| `remove_pass(pass_name: str) → bool` | Remove a render pass by name. |
-| `set_pass_enabled(pass_name: str, enabled: bool) → None` | Enable or disable a render pass by name. |
-| `reorder_pass(pass_name: str, new_order: int) → None` | Change the execution order of a render pass. |
-| `move_pass_before(dragged_name: str, target_name: str) → None` | Move a render pass to execute before another pass. |
-| `get_passes_at(injection_point: str) → List[PassEntry]` | Get all pass entries at a specific injection point. |
+| `get_effect_stage_slots(stage_id: str) → tuple[EffectSlot, ...]` |  |
+| `set_effect_stage_slots(stage_id: str, slots: tuple[EffectSlot, ...]) → None` |  |
+| `add_effect_slot(stage_id: str, effect: Any = ..., enabled: bool = ...) → EffectSlot` |  |
+| `get_effect(stage_id: str, index: int = ...) → Optional[RenderEffect]` |  |
+| `remap_orphan_effect_stage(old_stage_id: str, new_stage_id: str) → int` |  |
 | `invalidate_graph() → None` | Mark the render graph as dirty, triggering a rebuild. |
 | `build_graph() → Any` | Build and return the render graph description. |
 | `render(context: Any, camera: Any) → None` | Execute the render stack for a camera. |
@@ -56,7 +53,7 @@ behavior; those public methods are mirrored in this stub.
 
 | Method | Description |
 |------|------|
-| `RenderStack.instance() → Optional[RenderStack]` | Return the current active RenderStack, or None. |
+| `RenderStack.instance(scene: Any = ...) → Optional[RenderStack]` | Return the current active RenderStack, or None. |
 | `static RenderStack.discover_pipelines() → Dict[str, type]` | Discover all available render pipeline classes. |
 
 <!-- USER CONTENT START --> static_methods
@@ -81,7 +78,7 @@ behavior; those public methods are mirrored in this stub.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

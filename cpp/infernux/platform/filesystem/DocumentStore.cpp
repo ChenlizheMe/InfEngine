@@ -74,6 +74,12 @@ std::string DocumentWriteTicket::GetStatusName() const
     return "invalid";
 }
 
+std::string DocumentWriteTicket::GetError() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_error;
+}
+
 void DocumentWriteTicket::Complete(Status status, std::string error, std::optional<DocumentFileState> fileState)
 {
     {
@@ -105,8 +111,24 @@ DocumentStore::DocumentStore(Writer writer, size_t workerCount)
         throw std::invalid_argument("DocumentStore requires at least one worker");
     if (!m_writer) {
         m_writer = [](const std::string &path, const std::string &content, const DocumentWriteOptions &options) {
+            AtomicWriteOptions atomicOptions;
+            atomicOptions.createBackup = options.createBackup;
+            // Preserve the complete caller-owned fingerprint. In particular,
+            // an empty commit chain has no store-owned baseline that may
+            // replace the expected content hash.
+            atomicOptions.expectedState = options.expectedFileState;
+            if (atomicOptions.expectedState.has_value()) {
+                const AtomicFileState current = CaptureAtomicFileState(path);
+                if (!(current == *atomicOptions.expectedState)) {
+                    throw std::runtime_error("atomic write failed for '" + path +
+                                             "': target changed outside the editor before atomic replace");
+                }
+            }
             std::string error;
-            if (!WriteTextFileAtomically(path, content, error, AtomicWriteOptions{options.createBackup}))
+            // AtomicFile repeats the full comparison immediately before the
+            // replace, closing the race between this early rejection and the
+            // final publication.
+            if (!WriteTextFileAtomically(path, content, error, std::move(atomicOptions)))
                 throw std::runtime_error("atomic write failed for '" + path + "': " + error);
         };
     }
@@ -215,6 +237,17 @@ DocumentPathMetrics DocumentStore::GetMetrics(const std::string &path) const
     return metrics;
 }
 
+DocumentFileState DocumentStore::CaptureFileState(const std::string &path) const
+{
+    return CaptureAtomicFileState(ResolvePath(path));
+}
+
+bool DocumentStore::IsIdle() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return IsIdleLocked(nullptr);
+}
+
 void DocumentStore::Flush()
 {
     std::unique_lock lock(m_mutex);
@@ -297,25 +330,52 @@ void DocumentStore::WorkerMain()
         std::string error;
         std::optional<DocumentFileState> fileState;
         try {
-            m_writer(request.path, request.content, request.options);
-            std::error_code stateError;
-            const auto filePath = ToFsPath(request.path);
-            const uintmax_t size = std::filesystem::file_size(filePath, stateError);
-            if (!stateError && size <= std::numeric_limits<uint64_t>::max()) {
-                const auto modified = std::filesystem::last_write_time(filePath, stateError);
-                if (!stateError)
-                    fileState = DocumentFileState{static_cast<uint64_t>(size),
-                                                  static_cast<int64_t>(modified.time_since_epoch().count())};
+            DocumentWriteOptions effectiveOptions = request.options;
+            {
+                std::lock_guard lock(m_mutex);
+                const auto committed = m_committedFileStates.find(request.key);
+                if (!request.options.commitChainToken.empty() && committed != m_committedFileStates.end() &&
+                    committed->second.commitChainToken == request.options.commitChainToken &&
+                    effectiveOptions.expectedFileState.has_value()) {
+                    // Preserve CAS semantics only across the explicit same
+                    // editor chain.  The caller's original baseline can be
+                    // older than the active write, but the last store-owned
+                    // commit is authoritative for this chain.
+                    effectiveOptions.expectedFileState = committed->second.fileState;
+                }
             }
+            m_writer(request.path, request.content, effectiveOptions);
+            fileState = CaptureAtomicFileState(request.path);
         } catch (const std::exception &exception) {
             error = exception.what();
         }
 
+        const bool succeeded = error.empty();
         {
             std::lock_guard lock(m_mutex);
+            if (succeeded && !request.options.commitChainToken.empty() && fileState.has_value()) {
+                // Keep the last durable state for the explicit document
+                // chain, independent of whether its successor was queued
+                // before or after this completion. A future request from the
+                // same chain still performs strict CAS against this complete
+                // state, so an intervening external edit is rejected.
+                m_committedFileStates.insert_or_assign(
+                    request.key, CommittedChainState{request.options.commitChainToken, *fileState});
+            } else if (succeeded) {
+                // An unchained writer is independent and invalidates any
+                // previous store-owned chain baseline for this path.
+                m_committedFileStates.erase(request.key);
+            }
+            // Complete the ticket while the path is still active.  This keeps
+            // Wait/Flush observers from seeing an idle path before its
+            // terminal status and committed fingerprint are published.
+            if (succeeded)
+                request.ticket->Complete(DocumentWriteTicket::Status::Succeeded, {}, fileState);
+            else
+                request.ticket->Complete(DocumentWriteTicket::Status::Failed, std::move(error));
             m_activePaths.erase(request.key);
             m_activeGenerations.erase(request.key);
-            if (error.empty())
+            if (succeeded)
                 m_succeededGenerations.insert_or_assign(request.key, request.ticket->GetGeneration());
             else
                 m_failedGenerations.insert_or_assign(request.key, request.ticket->GetGeneration());
@@ -326,11 +386,6 @@ void DocumentStore::WorkerMain()
             }
         }
         m_condition.notify_all();
-
-        if (error.empty())
-            request.ticket->Complete(DocumentWriteTicket::Status::Succeeded, {}, fileState);
-        else
-            request.ticket->Complete(DocumentWriteTicket::Status::Failed, std::move(error));
     }
 }
 

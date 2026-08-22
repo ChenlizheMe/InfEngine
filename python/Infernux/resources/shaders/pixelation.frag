@@ -57,12 +57,14 @@ void main() {
     vec2 cellMin = floor((sourcePixel - gridOffset) / cellSize) * cellSize + gridOffset;
     vec2 cellCenter = cellMin + cellSize * 0.5;
 
-    vec4 original = texture(_SourceTex, inUV);
+    float quantization = clamp(pc.intensity, 0.0, 1.0);
+    vec2 sampleCenter = mix(sourcePixel, cellCenter, quantization);
+    vec2 sampleExtent = cellSize * quantization;
     int samplingMode = int(clamp(round(pc.samplingMode), 0.0, 2.0));
     vec4 pixelated;
 
     if (samplingMode == 0) {
-        pixelated = sampleAtPixel(cellCenter, textureSizePx);
+        pixelated = sampleAtPixel(sampleCenter, textureSizePx);
     } else {
         vec3 premultipliedColor = vec3(0.0);
         float alphaSum = 0.0;
@@ -76,7 +78,7 @@ void main() {
             );
             for (int index = 0; index < 4; ++index) {
                 accumulateSample(
-                    sampleAtPixel(cellCenter + OFFSETS[index] * cellSize, textureSizePx),
+                    sampleAtPixel(sampleCenter + OFFSETS[index] * sampleExtent, textureSizePx),
                     premultipliedColor,
                     alphaSum,
                     maxAlpha,
@@ -88,7 +90,7 @@ void main() {
                 for (int x = -1; x <= 1; ++x) {
                     vec2 offset = vec2(float(x), float(y)) / 3.0;
                     accumulateSample(
-                        sampleAtPixel(cellCenter + offset * cellSize, textureSizePx),
+                        sampleAtPixel(sampleCenter + offset * sampleExtent, textureSizePx),
                         premultipliedColor,
                         alphaSum,
                         maxAlpha,
@@ -108,5 +110,8 @@ void main() {
         pixelated = vec4(reconstructedColor, reconstructedAlpha);
     }
 
-    outColor = mix(original, pixelated, clamp(pc.intensity, 0.0, 1.0));
+    // Pixelation is a replacement transform.  Intensity changes where the
+    // source is sampled; it never alpha/color-composites a second image over
+    // the original scene.
+    outColor = pixelated;
 }

@@ -4,6 +4,7 @@
 #include "GameObject.h"
 #include "MeshCollider.h"
 #include "SceneManager.h"
+#include <algorithm>
 #include <core/log/InxLog.h>
 #include <cstring>
 #include <function/resources/AssetDependencyGraph.h>
@@ -168,11 +169,11 @@ MeshRenderer::~MeshRenderer()
 
 void MeshRenderer::OnEnable()
 {
-    // Only register with the global renderer list if this object belongs to
-    // the active scene.  Objects living in utility scenes (e.g. the prefab
-    // template cache) must not pollute the active scene's render list.
+    // Only runtime-resident scenes contribute to the global renderer list.
+    // Utility scenes stay isolated, while DontDestroyOnLoad renderers can be
+    // disabled and re-enabled without disappearing from rendering.
     if (auto *go = GetGameObject())
-        if (go->GetScene() != SceneManager::Instance().GetActiveScene())
+        if (!SceneManager::Instance().IsRuntimeScene(go->GetScene()))
             return;
     SceneManager::Instance().RegisterMeshRenderer(this);
 }
@@ -301,7 +302,16 @@ void MeshRenderer::OnMeshAssetEvent(AssetEvent event)
         return;
 
     if (event == AssetEvent::Deleted) {
-        ClearMeshAsset();
+        m_meshAsset.Invalidate();
+        m_meshBufferDirty = true;
+        m_useInlineMesh = false;
+        m_inlineVertices.clear();
+        m_inlineIndices.clear();
+        m_sharedVertices = nullptr;
+        m_sharedIndices = nullptr;
+        m_localBoundsMin = glm::vec3(-0.5f);
+        m_localBoundsMax = glm::vec3(0.5f);
+        NotifyCollisionGeometryChanged(this);
         return;
     }
 
@@ -333,20 +343,20 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
 
     auto &ref = m_materials[slot];
     auto oldMat = ref.Get();
-    if (oldMat == material)
+    const std::string oldGuid = ref.GetGuid();
+    const std::string guid = material ? material->GetGuid() : "";
+    if (oldMat == material && oldGuid == guid)
         return;
 
     auto &graph = AssetDependencyGraph::Instance();
-    if (oldMat && !oldMat->GetGuid().empty())
-        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldMat->GetGuid());
+    if (!oldGuid.empty())
+        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
 
-    std::string guid = material ? material->GetGuid() : "";
     const uint64_t runtimeVersion = guid.empty() ? 0 : AssetRegistry::Instance().GetAssetVersion(guid);
     ref = AssetRef<InxMaterial>(guid, std::move(material), runtimeVersion);
 
-    auto newMat = ref.Get();
-    if (newMat && !newMat->GetGuid().empty())
-        graph.AddRuntimeDependency(GetInstanceGuid(), newMat->GetGuid());
+    if (!guid.empty())
+        graph.AddRuntimeDependency(GetInstanceGuid(), guid);
 
     NotifyRenderableStateChanged(this);
 }
@@ -357,17 +367,16 @@ void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
         m_materials.resize(slot + 1);
 
     auto &ref = m_materials[slot];
-    auto oldMat = ref.Get();
+    const std::string oldGuid = ref.GetGuid();
     auto &graph = AssetDependencyGraph::Instance();
-    if (oldMat && !oldMat->GetGuid().empty())
-        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldMat->GetGuid());
+    if (!oldGuid.empty() && oldGuid != guid)
+        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
 
     ref.SetGuid(guid);
     AssetRegistry::Instance().Resolve(ref, ResourceType::Material);
 
-    auto newMat = ref.Get();
-    if (newMat && !newMat->GetGuid().empty())
-        graph.AddRuntimeDependency(GetInstanceGuid(), newMat->GetGuid());
+    if (!guid.empty())
+        graph.AddRuntimeDependency(GetInstanceGuid(), guid);
 
     NotifyRenderableStateChanged(this);
 }
@@ -377,9 +386,8 @@ void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
     // Clear old dependency edges
     auto &graph = AssetDependencyGraph::Instance();
     for (auto &ref : m_materials) {
-        auto mat = ref.Get();
-        if (mat && !mat->GetGuid().empty())
-            graph.RemoveRuntimeDependency(GetInstanceGuid(), mat->GetGuid());
+        if (ref.HasGuid())
+            graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
     }
 
     m_materials.resize(guids.size());
@@ -387,9 +395,8 @@ void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
         m_materials[i].SetGuid(guids[i]);
         AssetRegistry::Instance().Resolve(m_materials[i], ResourceType::Material);
 
-        auto newMat = m_materials[i].Get();
-        if (newMat && !newMat->GetGuid().empty())
-            graph.AddRuntimeDependency(GetInstanceGuid(), newMat->GetGuid());
+        if (!guids[i].empty())
+            graph.AddRuntimeDependency(GetInstanceGuid(), guids[i]);
     }
 
     NotifyRenderableStateChanged(this);
@@ -403,9 +410,8 @@ void MeshRenderer::SetMaterialSlotCount(uint32_t count)
     // Remove dependency edges for slots being removed
     auto &graph = AssetDependencyGraph::Instance();
     for (uint32_t i = count; i < m_materials.size(); ++i) {
-        auto mat = m_materials[i].Get();
-        if (mat && !mat->GetGuid().empty())
-            graph.RemoveRuntimeDependency(GetInstanceGuid(), mat->GetGuid());
+        if (m_materials[i].HasGuid())
+            graph.RemoveRuntimeDependency(GetInstanceGuid(), m_materials[i].GetGuid());
     }
     m_materials.resize(count);
     NotifyRenderableStateChanged(this);
@@ -428,7 +434,32 @@ std::shared_ptr<InxMaterial> MeshRenderer::GetEffectiveMaterial(uint32_t slot) c
         auto err = registry.GetBuiltinMaterial("ErrorMaterial");
         return err ? err : registry.GetBuiltinMaterial("DefaultLit");
     }
+    if (slot < m_materials.size() && m_materials[slot].HasGuid()) {
+        auto &registry = AssetRegistry::Instance();
+        auto err = registry.GetBuiltinMaterial("ErrorMaterial");
+        return err ? err : registry.GetBuiltinMaterial("DefaultLit");
+    }
     return AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+}
+
+void MeshRenderer::OnMaterialAssetEvent(const std::string &guid, AssetEvent event)
+{
+    if (guid.empty() || (event != AssetEvent::Deleted && event != AssetEvent::Modified))
+        return;
+    bool changed = false;
+    for (auto &reference : m_materials) {
+        if (reference.GetGuid() != guid)
+            continue;
+        if (event == AssetEvent::Deleted) {
+            reference.Invalidate();
+        } else {
+            reference.MarkStale();
+            AssetRegistry::Instance().Resolve(reference, ResourceType::Material);
+        }
+        changed = true;
+    }
+    if (changed)
+        NotifyRenderableStateChanged(this);
 }
 
 std::string MeshRenderer::GetMaterialGuid(uint32_t slot) const
@@ -683,7 +714,7 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
                                               "meshPivotOffset", "inlineMeshName", "inlineMeshBuiltin",
                                               "inlineVertices",  "inlineIndices"};
     if (expectedType == "SpriteRenderer") {
-        required.insert(required.end(), {"frameIndex", "spriteColor", "flipX", "flipY"});
+        required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
     } else if (expectedType == "SkinnedMeshRenderer") {
         optional.push_back("activeTakeName");
@@ -794,13 +825,26 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     if (expectedType == "SkinnedMeshRenderer" && j.contains("activeTakeName"))
         RequireString(j, "activeTakeName", expectedType);
     if (expectedType == "SpriteRenderer") {
-        if (RequireInteger(j, "frameIndex", expectedType) < 0)
-            throw std::invalid_argument("SpriteRenderer.frameIndex must be non-negative");
+        const auto &frameId = RequireString(j, "frameId", expectedType);
+        if (!frameId.empty()) {
+            const bool valid =
+                frameId.size() == 32 && std::all_of(frameId.begin(), frameId.end(), [](unsigned char ch) {
+                    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+                });
+            if (!valid)
+                throw std::invalid_argument(
+                    "SpriteRenderer.frameId must be empty or a 32-character lowercase UUID hex string");
+        }
         RequireFiniteVector(j, "spriteColor", 4, expectedType);
         RequireBoolean(j, "flipX", expectedType);
         RequireBoolean(j, "flipY", expectedType);
-        if (j.contains("spriteGuid") && RequireString(j, "spriteGuid", expectedType).empty())
-            throw std::invalid_argument("SpriteRenderer.spriteGuid must not be empty");
+        if (j.contains("spriteGuid")) {
+            if (RequireString(j, "spriteGuid", expectedType).empty())
+                throw std::invalid_argument("SpriteRenderer.spriteGuid must not be empty");
+            if (frameId.empty())
+                throw std::invalid_argument(
+                    "SpriteRenderer.frameId must identify a persisted SpriteFrame when spriteGuid is set");
+        }
     }
 }
 
@@ -814,9 +858,8 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         std::shared_ptr<InxMesh> stagedMesh;
         if (!meshGuid.empty()) {
             stagedMesh = registry.LoadAsset<InxMesh>(meshGuid, ResourceType::Mesh);
-            if (!stagedMesh)
-                throw std::invalid_argument("meshAssetGuid cannot be resolved: " + meshGuid);
         }
+        const bool meshAssetResolved = static_cast<bool>(stagedMesh);
 
         const auto &materialsDocument = j["materials"];
         std::vector<AssetRef<InxMaterial>> stagedMaterials(materialsDocument.size());
@@ -827,10 +870,11 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
             if (slotDocument.is_string()) {
                 const std::string guid = slotDocument.get<std::string>();
                 auto material = registry.LoadAsset<InxMaterial>(guid, ResourceType::Material);
-                if (!material)
-                    throw std::invalid_argument("material GUID cannot be resolved: " + guid);
-                stagedMaterials[index] =
-                    AssetRef<InxMaterial>(guid, std::move(material), registry.GetAssetVersion(guid));
+                if (material)
+                    stagedMaterials[index] =
+                        AssetRef<InxMaterial>(guid, std::move(material), registry.GetAssetVersion(guid));
+                else
+                    stagedMaterials[index] = AssetRef<InxMaterial>(guid);
                 continue;
             }
 
@@ -854,6 +898,8 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         // Mesh asset GUID (model-file meshes managed by AssetRegistry)
         if (stagedMesh)
             SetMeshAsset(meshGuid, std::move(stagedMesh));
+        else if (!meshGuid.empty())
+            SetMeshAssetGuid(meshGuid);
         else
             ClearMeshAsset();
 
@@ -863,9 +909,8 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         // ================================================================
         auto &graph = AssetDependencyGraph::Instance();
         for (auto &ref : m_materials) {
-            auto mat = ref.Get();
-            if (mat && !mat->GetGuid().empty())
-                graph.RemoveRuntimeDependency(GetInstanceGuid(), mat->GetGuid());
+            if (ref.HasGuid())
+                graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
         }
         m_materials = std::move(stagedMaterials);
         for (const auto &reference : m_materials) {
@@ -892,16 +937,22 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
             m_meshPivotOffset.z = j["meshPivotOffset"][2].get<float>();
         }
 
-        // Bounds
-        if (j.contains("boundsMin") && j["boundsMin"].is_array() && j["boundsMin"].size() == 3) {
-            m_localBoundsMin.x = j["boundsMin"][0].get<float>();
-            m_localBoundsMin.y = j["boundsMin"][1].get<float>();
-            m_localBoundsMin.z = j["boundsMin"][2].get<float>();
-        }
-        if (j.contains("boundsMax") && j["boundsMax"].is_array() && j["boundsMax"].size() == 3) {
-            m_localBoundsMax.x = j["boundsMax"][0].get<float>();
-            m_localBoundsMax.y = j["boundsMax"][1].get<float>();
-            m_localBoundsMax.z = j["boundsMax"][2].get<float>();
+        // Persisted bounds are only a fallback for an unavailable external
+        // asset. Once the mesh is resident, its imported geometry is the
+        // authoritative source. Restoring an old cache here used to overwrite
+        // SetMeshAsset()'s exact bounds and could make a model selectable from
+        // almost anywhere in the Scene view.
+        if (!meshAssetResolved) {
+            if (j.contains("boundsMin") && j["boundsMin"].is_array() && j["boundsMin"].size() == 3) {
+                m_localBoundsMin.x = j["boundsMin"][0].get<float>();
+                m_localBoundsMin.y = j["boundsMin"][1].get<float>();
+                m_localBoundsMin.z = j["boundsMin"][2].get<float>();
+            }
+            if (j.contains("boundsMax") && j["boundsMax"].is_array() && j["boundsMax"].size() == 3) {
+                m_localBoundsMax.x = j["boundsMax"][0].get<float>();
+                m_localBoundsMax.y = j["boundsMax"][1].get<float>();
+                m_localBoundsMax.z = j["boundsMax"][2].get<float>();
+            }
         }
 
         // Inline mesh data (for primitives like cubes)

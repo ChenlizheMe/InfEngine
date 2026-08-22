@@ -145,13 +145,17 @@ def test_material_inspector_balances_style_scope_after_render_error(monkeypatch)
 def test_material_shader_object_field_forwards_stable_semantic_id(monkeypatch):
     calls = []
 
-    def render_object_field(*args, **kwargs):
+    def render_asset_reference_field(*args, **kwargs):
         calls.append((args, kwargs))
         return False
 
     from Infernux.engine.ui import inspector_components
 
-    monkeypatch.setattr(inspector_components, "render_object_field", render_object_field)
+    monkeypatch.setattr(
+        inspector_components,
+        "render_asset_reference_field",
+        render_asset_reference_field,
+    )
     inspector_material._render_obj_field(
         object(),
         "mat_frag",
@@ -264,6 +268,25 @@ def test_inspector_reads_structured_properties_without_meta(tmp_path):
         {"name": "glow", "type": "Color", "default": [0.1, 0.2, 0.3, 1.0], "hdr": True},
     ]
     assert inspector_shader_utils.is_shader_hidden(str(shader)) is False
+
+
+def test_inspector_preserves_internal_shader_property_metadata(tmp_path):
+    shader = tmp_path / "internal_property.frag"
+    shader.write_text(
+        'ShaderInfo {\n'
+        '    Name "Structured/InternalProperty"\n'
+        '    Properties {\n'
+        '        Float authored = 1.0\n'
+        '        Texture2D implementationMap = white Internal\n'
+        '    }\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    properties = inspector_shader_utils.parse_shader_properties(str(shader))
+
+    assert properties[0].get("internal", False) is False
+    assert properties[1]["internal"] is True
 
 
 def test_inspector_catalog_reads_structured_shader_without_meta(tmp_path):

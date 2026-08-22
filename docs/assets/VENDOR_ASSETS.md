@@ -14,17 +14,17 @@ Font license texts are preserved in `vendor-licenses/`. When any asset changes, 
 
 ## Project-authored visual assets
 
-`infernux-social-card-0.2.1.jpg` is the reviewed 1200×630 Open Graph/X card for release 0.2.1. It is an AI-assisted raster composition made on 2026-07-16 from the repository-owned `logo.png` and the real `demo.png` editor capture. The card is presentation artwork, not benchmark evidence; the homepage uses a byte-verified lossless WebP encoding of that capture as its evidence-linked screenshot. Its SHA-256 is `8c3a0500bf39b50c53e0ab97c1937c6a3bb61657b328bef18f420b962fae7594`. The site verifier locks its format, dimensions, release-scoped filename, and reviewed content hash.
+`infernux-social-card-0.3.4.jpg` is the reviewed 1200×630 Open Graph/X card for release 0.3.4. It is a center-cropped derivative of the real `demo.png` editor capture rather than separate promotional artwork. Its SHA-256 is `c1bb18887d484776433a14f43bf2d77dde6a9fe4f8eabc077e6fbb541c273159`. The site verifier locks its format, dimensions, release-scoped filename, and reviewed content hash.
 
-The repository keeps `demo.png` as the canonical review source used by both README files. The GitHub Pages homepage does not reference or deliver that PNG: it offers the release-scoped AVIF first and uses the byte-equivalent, lossless WebP as the `<img>` fallback and structured-data screenshot. This explicitly targets current Chrome, Edge, Firefox, and Safari rather than preserving a 354 KiB fallback for historical browsers.
+The repository keeps `demo.png` as the canonical 1920×1032 review source used by both README files. The GitHub Pages homepage does not reference or deliver that PNG: it offers the release-scoped AVIF first and uses a high-quality WebP as the `<img>` fallback and structured-data screenshot. This explicitly targets current Chrome, Edge, Firefox, and Safari while keeping the larger PNG outside the website delivery budget.
 
 | Local file | Encoding and review evidence | Bytes | SHA-256 |
 |---|---|---:|---|
-| `demo.png` | Original 1245×653 repository-owned editor capture | 362,447 | `e987d0ac1477896c97dae00b642df2ace4b6de06c59268528650252e831155bf` |
-| `demo-0.2.1.webp` | Sharp 0.34.5 / WebP 1.6.0 lossless; decoded MAE and maximum channel error are both zero | 193,060 | `bf5cdbc260331e75ccf1519b1cc582cb4764ae101ccdbda27feb3082d71b66df` |
-| `demo-0.2.1.avif` | Sharp 0.34.5 / AOM 3.13.1, quality 80, 4:4:4; decoded PSNR 47.03 dB, MAE 0.3971 and maximum channel error 20; visually reviewed against the PNG | 53,764 | `cf88c7f49c3da599003066d6059249de02a6c92cf288cd7bee2f07316a63e82d` |
+| `demo.png` | Original 1920×1032 repository-owned editor capture | 1,121,375 | `4be6e30abfd71f3e4a31593ce6e44817cffdb83ec170cee489a3b40b162d3d91` |
+| `demo-0.3.4.webp` | Pillow 12.2.0 WebP, quality 88; high-quality browser fallback | 151,802 | `10a141e9c795829ded555363d0866c1508403e19fb4fdc14401e1532f313384c` |
+| `demo-0.3.4.avif` | Pillow 12.2.0 AVIF, quality 80, 4:4:4; visually reviewed against the PNG | 136,520 | `4cbe016a9eedfefebb8d7a2bbd107e829ca706f045de2aa4d5c381c456efa9f5` |
 
-AVIF is preferred and lossless WebP is the final website fallback. The image gate still locks all three files so the optimized encodings remain provably tied to the original capture; it also verifies that both README files retain the PNG while the homepage contains no PNG reference. The performance budget counts the largest browser-delivered representation and separately excludes the repository-only review source, so neither hidden fallback weight nor unused evidence files distort the site budget.
+AVIF is preferred and high-quality WebP is the final website fallback. The image gate locks all three reviewed files by content hash; it also verifies that both README files retain the PNG while the homepage contains no PNG reference. The performance budget counts the largest browser-delivered representation and separately excludes the repository-only review source, so neither hidden fallback weight nor unused evidence files distort the site budget.
 
 ### Install and touch icons
 

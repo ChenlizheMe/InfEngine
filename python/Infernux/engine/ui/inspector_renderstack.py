@@ -22,34 +22,6 @@ if TYPE_CHECKING:
     from Infernux.renderstack.render_stack import RenderStack
 
 
-class _EffectStageSlotsAdapter:
-    """Expose one stage's slots as a normal undoable list property."""
-
-    def __init__(self, stack: "RenderStack", stage_id: str):
-        self._stack = stack
-        self._stage_id = stage_id
-
-    @property
-    def slots(self):
-        return list(self._stack.get_effect_stage_slots(self._stage_id))
-
-    @slots.setter
-    def slots(self, value) -> None:
-        self._stack.set_effect_stage_slots(self._stage_id, value)
-
-
-def _effect_stage_adapter(stack: "RenderStack", stage_id: str) -> _EffectStageSlotsAdapter:
-    adapters = getattr(stack, "_inspector_effect_stage_adapters", None)
-    if not isinstance(adapters, dict):
-        adapters = {}
-        stack._inspector_effect_stage_adapters = adapters
-    adapter = adapters.get(stage_id)
-    if adapter is None:
-        adapter = _EffectStageSlotsAdapter(stack, stage_id)
-        adapters[stage_id] = adapter
-    return adapter
-
-
 def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     """Build or reuse the data-only model consumed by the common Inspector."""
     from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
@@ -63,55 +35,57 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     pipeline_names = (default_pipeline_name,) + tuple(
         name for name in catalog_signature if name != default_pipeline_name
     )
-    cache_key = (id(topology), pipeline_names)
+    stage_signature = tuple(
+        (stage.stable_id, stage.display_name, stage.scope.value)
+        for stage in topology.effect_stages
+    )
+    cache_key = (
+        type(stack.pipeline).__module__,
+        type(stack.pipeline).__qualname__,
+        stage_signature,
+        pipeline_names,
+    )
     cached = getattr(stack, "_inspector_declarative_model", None)
     if isinstance(cached, tuple) and cached[0] == cache_key:
         return cached[1]
 
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
     from Infernux.renderstack.effect_slot import EffectSlot
 
     list_metadata = get_serialized_fields(type(stack))["effect_slots"]
     effect_metadata = get_serialized_fields(EffectSlot)["effect"]
 
     def current_pipeline_index() -> int:
-        current = stack.pipeline_class_name or default_pipeline_name
+        current = stack.pipeline_class_name
         return pipeline_names.index(current) if current in pipeline_names else 0
 
     def set_pipeline_index(index: int) -> None:
         selected = pipeline_names[int(index)]
-        new_pipeline = "" if selected == default_pipeline_name else selected
-        old_pipeline = stack.pipeline_class_name or ""
+        new_pipeline = selected
+        old_pipeline = stack.pipeline_class_name
         if new_pipeline == old_pipeline:
             return
-        from Infernux.engine.undo import RenderStackSetPipelineCommand, UndoManager
+        from Infernux.engine.interaction import CommandSource, submit_renderstack_command
 
-        manager = UndoManager.instance()
-        if manager and manager.enabled and not manager.is_executing:
-            manager.execute(RenderStackSetPipelineCommand(stack, old_pipeline, new_pipeline))
-        else:
-            stack.set_pipeline(new_pipeline)
+        submit_renderstack_command(
+            "renderstack.set_pipeline",
+            source=CommandSource.INLINE_EDIT,
+            stack=stack,
+            pipeline=new_pipeline,
+        )
 
     def pipeline_parameter_changed(target, field_name, old_value, new_value) -> None:
-        # Pipeline instances are not scene components themselves. Mirror their
-        # live values into the owning RenderStack immediately so dirty-state,
-        # save, undo and MCP inspection all observe the same value.
-        stack.sync_pipeline_parameters()
-        stack.invalidate_graph()
-        from Infernux.engine.undo import RenderStackFieldCommand, UndoManager
+        from Infernux.engine.interaction import CommandSource, submit_renderstack_command
 
-        manager = UndoManager.instance()
-        if manager and manager.enabled and not manager.is_executing:
-            manager.record(
-                RenderStackFieldCommand(
-                    stack,
-                    target,
-                    field_name,
-                    old_value,
-                    new_value,
-                    f"Set {format_display_name(field_name)}",
-                )
-            )
+        submit_renderstack_command(
+            "renderstack.set_parameter",
+            source=CommandSource.INLINE_EDIT,
+            stack=stack,
+            field=field_name,
+            value=new_value,
+            description=f"Set {format_display_name(field_name)}",
+            old_value=old_value,
+        )
 
     topology_controls = []
     stage_by_id = {stage.stable_id: stage for stage in topology.effect_stages}
@@ -124,8 +98,6 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
         stage = stage_by_id.get(label)
         if stage is None:
             continue
-        adapter = _effect_stage_adapter(stack, stage.stable_id)
-
         def make_drop(payload, *, _stage_id=stage.stable_id):
             from Infernux.renderstack.effect_slot import EffectSlot
             from ._inspector_references import _create_asset_ref_from_payload
@@ -150,18 +122,41 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                 widget_prefix=f"{_stage_id}_{widget_prefix}_{index}",
             )
 
+        def stage_slots_changed(
+            _target,
+            _field_name,
+            _old_slots,
+            new_slots,
+            *,
+            _stage_id=stage.stable_id,
+            _stage_name=stage.display_name,
+        ) -> None:
+            from Infernux.engine.interaction import CommandSource, submit_renderstack_command
+
+            submit_renderstack_command(
+                "renderstack.set_effect_slots",
+                source=CommandSource.INLINE_EDIT,
+                stack=stack,
+                stage_id=_stage_id,
+                slots=new_slots,
+                description=f"Edit {_stage_name} Effects",
+            )
+
         topology_controls.append(
             InspectorList(
                 key=f"stage_{stage.stable_id}",
                 label=stage.display_name,
-                target=adapter,
-                field_name="slots",
+                target=stack,
+                field_name=f"effect_slots_{stage.stable_id}",
                 metadata=list_metadata,
-                value=lambda _adapter=adapter: _adapter.slots,
+                value=lambda _stage_id=stage.stable_id: list(
+                    stack.get_effect_stage_slots(_stage_id)
+                ),
                 accept_drop="RENDER_EFFECT_FILE",
                 drop_factory=make_drop,
                 item_label=make_item_label,
                 item_renderer=render_item,
+                on_change=stage_slots_changed,
             )
         )
 
@@ -252,6 +247,7 @@ def _render_effect_assets(ctx, references, widget_prefix: str) -> None:
                 ctx,
                 effect,
                 widget_prefix=f"{widget_prefix}_{reference_index}_{effect_index}",
+                resource_controller=_resolve_effect_document_controller(effect),
             )
 
 
@@ -265,6 +261,10 @@ def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
     except (OSError, TypeError, ValueError):
         return
     for effect_index, effect in enumerate(effects):
+        group_controller = _resolve_effect_group_document_controller(effect)
+        bind_group_controller = getattr(effect, "bind_group_document_controller", None)
+        if group_controller is not None and callable(bind_group_controller):
+            bind_group_controller(group_controller)
         if len(effects) > 1 and not render_compact_section_header(
             ctx,
             f"{effect.name}##{widget_prefix}_{effect_index}",
@@ -275,7 +275,58 @@ def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
             ctx,
             effect,
             widget_prefix=f"{widget_prefix}_{effect_index}",
+            resource_controller=(
+                group_controller or _resolve_effect_document_controller(effect)
+            ),
         )
+
+
+def _resolve_effect_group_document_controller(effect):
+    """Bind an effective group projection to its owning group document."""
+    resource = getattr(effect, "group_resource", None)
+    file_path = str(getattr(resource, "file_path", "") or "")
+    if resource is None or not file_path:
+        return None
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        ensure_editable_resource_document,
+    )
+    from Infernux.renderstack.render_effect_compiler import (
+        publish_live_effect_group_document,
+    )
+
+    def publish(restored_resource) -> None:
+        publish_live_effect_group_document(file_path, restored_resource.to_asset())
+
+    return ensure_editable_resource_document(
+        category="render_effect",
+        document_kind=DocumentKind.RENDER_EFFECT,
+        file_path=file_path,
+        resource=resource,
+        guid=str(getattr(resource, "guid", "") or ""),
+        autosave_debounce_sec=0.5,
+        on_restored=publish,
+    )
+
+
+def _resolve_effect_document_controller(effect):
+    """Bind shared Effect edits to their document even when its file is not selected."""
+    file_path = str(getattr(effect, "file_path", "") or "")
+    if not file_path:
+        return None
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        ensure_editable_resource_document,
+    )
+
+    return ensure_editable_resource_document(
+        category="render_effect",
+        document_kind=DocumentKind.RENDER_EFFECT,
+        file_path=file_path,
+        resource=effect,
+        guid=str(getattr(effect, "guid", "") or ""),
+        autosave_debounce_sec=0.5,
+    )
 
 
 register_inline_asset_renderer("RenderEffect", _render_effect_assets)

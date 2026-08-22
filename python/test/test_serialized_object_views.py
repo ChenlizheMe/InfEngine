@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from Infernux.components import InxComponent, SerializableObject, serialized_field, FieldType
-from Infernux.components.serialized_field import get_raw_field_value
+from Infernux.components.fields import get_raw_field_value
 from Infernux.components.ref_wrappers import MaterialRef
 from Infernux.core import Material, Texture
 from Infernux.core.asset_ref import TextureRef

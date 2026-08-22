@@ -53,19 +53,19 @@ jobs:
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Configure debug preset
+      - name: Configure native test preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset debug
+          cmake --preset native-tests
 
-      - name: Build debug preset
+      - name: Build native test preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --build --preset debug
+          cmake --build --preset native-tests
 
       - name: Provide Vulkan loader for headless tests
         shell: pwsh
@@ -79,12 +79,19 @@ jobs:
           if (-not (Test-Path (Join-Path $runtimeBin "vulkan-1.dll"))) {
             throw "Vulkan runtime archive does not contain the expected x64 loader."
           }
-          Copy-Item -LiteralPath (Join-Path $runtimeBin "vulkan-1.dll") `
-            -Destination "python\Infernux\lib\vulkan-1.dll" -Force
+          $loader = Join-Path $runtimeBin "vulkan-1.dll"
+          $destinations = @("python\Infernux\lib\vulkan-1.dll")
+          Get-ChildItem "out\build-native-tests" -Recurse -Filter "InfernuxRuntime.dll" |
+            ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
+          foreach ($destination in ($destinations | Select-Object -Unique)) {
+            $parent = Split-Path -Parent $destination
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            Copy-Item -LiteralPath $loader -Destination $destination -Force
+          }
 
       - name: Run preset tests
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          ctest --preset debug -LE "performance|requires_vulkan_device" --timeout 120 --output-on-failure
+          ctest --preset native-tests -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure

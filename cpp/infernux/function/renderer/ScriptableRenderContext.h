@@ -44,6 +44,11 @@ struct CullingResults
 {
     RendererList visibleRenderers;
     RendererList shadowCasters;
+    const void *visibleListIdentity = nullptr;
+    const void *shadowListIdentity = nullptr;
+    uint64_t visibleListRevision = 0;
+    uint64_t shadowListRevision = 0;
+    std::shared_ptr<const void> renderWorldOwner;
     uint32_t lightCount = 0; ///< Number of visible lights (populated by Cull)
 
     [[nodiscard]] size_t visibleObjectCount() const
@@ -124,6 +129,13 @@ class ScriptableRenderContext
         double borrowedRendererListSubmits = 0.0;
         double ownedRendererListSubmits = 0.0;
         double materializedDrawCalls = 0.0;
+        double cachedSubmissionReuses = 0.0;
+        double submissionRejectEditorAppenders = 0.0;
+        double submissionRejectOwnedVisibleList = 0.0;
+        double submissionRejectOwnedShadowList = 0.0;
+        double submissionRejectMissingGraph = 0.0;
+        double submissionRejectPendingUploads = 0.0;
+        double submissionRejectSignature = 0.0;
     };
 
     [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();

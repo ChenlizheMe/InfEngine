@@ -136,6 +136,9 @@ bool ParticleGpuSurfaceBinding::Create(rhi::Device &device, std::shared_ptr<cons
     m_textureResolver = std::move(textureResolver);
     m_deletionQueue = deletionQueue;
     m_supportsSceneDepth = m_shaderProgram->usesParticleSceneDepthBinding;
+    m_usesBindlessTextures = m_shaderProgram->usesBindlessTextureABI;
+    if (m_usesBindlessTextures && !device.GetBindlessTextureTableBinding().IsValid())
+        return fail();
 
     rhi::BindingLayoutDesc layoutDesc;
     for (const auto &property : m_shaderProgram->properties) {
@@ -146,9 +149,27 @@ bool ParticleGpuSurfaceBinding::Create(rhi::Device &device, std::shared_ptr<cons
         if (binding < 2u || binding >= 14u || visibility == rhi::ShaderStage::None ||
             layoutDesc.entryCount >= rhi::BindingLayoutDesc::MaxEntries)
             return fail();
-        layoutDesc.entries[layoutDesc.entryCount++] = {binding, rhi::BindingType::CombinedTextureSampler, visibility,
+        if (!m_usesBindlessTextures) {
+            layoutDesc.entries[layoutDesc.entryCount++] = {binding, rhi::BindingType::CombinedTextureSampler,
+                                                           visibility, 1};
+        }
+        m_textures.push_back({binding, *property.textureSlot, visibility, property.name, property.textureDefault});
+    }
+    if (m_usesBindlessTextures) {
+        if (layoutDesc.entryCount >= rhi::BindingLayoutDesc::MaxEntries)
+            return fail();
+        layoutDesc.entries[layoutDesc.entryCount++] = {2, rhi::BindingType::UniformBuffer, rhi::ShaderStage::Fragment,
                                                        1};
-        m_textures.push_back({binding, visibility, property.name, property.textureDefault});
+        uint32_t textureCount = 1;
+        for (const auto &binding : m_textures)
+            textureCount = (std::max)(textureCount, binding.textureSlot + 1u);
+        rhi::BufferDesc indexBufferDesc;
+        indexBufferDesc.byteSize = (textureCount * sizeof(uint32_t) + 15u) & ~15ull;
+        indexBufferDesc.usage = rhi::BufferUsageFlags::Uniform;
+        indexBufferDesc.memory = rhi::BufferMemory::Upload;
+        m_textureIndexBuffer = device.CreateBuffer(indexBufferDesc);
+        if (!m_textureIndexBuffer.IsValid())
+            return fail();
     }
     if (m_shaderProgram->materialBufferSize > 0) {
         if (layoutDesc.entryCount >= rhi::BindingLayoutDesc::MaxEntries)
@@ -196,6 +217,7 @@ void ParticleGpuSurfaceBinding::Destroy() noexcept
         RetireBindGroup(m_group);
         RetireViewBindGroups();
         m_device->Release(m_materialBuffer);
+        m_device->Release(m_textureIndexBuffer);
         m_device->Release(m_layout);
     }
     m_device = nullptr;
@@ -209,11 +231,13 @@ void ParticleGpuSurfaceBinding::Destroy() noexcept
     m_group = {};
     m_viewGroups.clear();
     m_materialBuffer = {};
+    m_textureIndexBuffer = {};
     m_textures.clear();
     m_sceneDepthFallback = {};
     m_materialVersion = 0;
     m_materialVersionInitialized = false;
     m_usesTexture = false;
+    m_usesBindlessTextures = false;
     m_supportsSceneDepth = false;
 }
 
@@ -345,12 +369,18 @@ rhi::BindGroupHandle ParticleGpuSurfaceBinding::CreateBindGroup(const std::vecto
     if (m_materialBuffer.IsValid())
         groupDesc.buffers[groupDesc.bufferCount++] = {14, rhi::BindingType::UniformBuffer, m_materialBuffer, 0,
                                                       m_shaderProgram->materialBufferSize};
-    for (const auto &binding : textures) {
-        if (!binding.texture.IsValid() || !binding.sampler.IsValid() ||
-            groupDesc.textureCount >= rhi::BindGroupDesc::MaxTextureBindings)
+    if (m_usesBindlessTextures) {
+        if (!m_textureIndexBuffer.IsValid())
             return {};
-        groupDesc.textures[groupDesc.textureCount++] = {binding.binding, rhi::BindingType::CombinedTextureSampler,
-                                                        binding.texture, binding.sampler, false};
+        groupDesc.buffers[groupDesc.bufferCount++] = {2, rhi::BindingType::UniformBuffer, m_textureIndexBuffer, 0, 0};
+    } else {
+        for (const auto &binding : textures) {
+            if (!binding.texture.IsValid() || !binding.sampler.IsValid() ||
+                groupDesc.textureCount >= rhi::BindGroupDesc::MaxTextureBindings)
+                return {};
+            groupDesc.textures[groupDesc.textureCount++] = {binding.binding, rhi::BindingType::CombinedTextureSampler,
+                                                            binding.texture, binding.sampler, false};
+        }
     }
     if (!m_supportsSceneDepth)
         return m_device->CreateBindGroup(groupDesc);
@@ -367,6 +397,38 @@ rhi::BindGroupHandle ParticleGpuSurfaceBinding::CreateBindGroup(const std::vecto
     groupDesc.textures[groupDesc.textureCount++] = {15, rhi::BindingType::CombinedTextureSampler, depthTexture,
                                                     fallbackSampler, readsSceneDepth && sceneDepthIsDepth};
     return m_device->CreateBindGroup(groupDesc);
+}
+
+bool ParticleGpuSurfaceBinding::RefreshTextureIndexBuffer(const std::vector<TextureBindingState> &textures)
+{
+    if (!m_usesBindlessTextures)
+        return true;
+    if (!m_device || !m_textureIndexBuffer.IsValid())
+        return false;
+
+    uint32_t textureCount = 1;
+    for (const auto &binding : textures)
+        textureCount = (std::max)(textureCount, binding.textureSlot + 1u);
+    std::vector<uint32_t> indices(((textureCount * sizeof(uint32_t) + 15u) & ~15ull) / sizeof(uint32_t),
+                                  rhi::ResourceIndex::FallbackIndex);
+    for (const auto &binding : textures) {
+        if (binding.textureSlot < indices.size() && binding.resourceIndex.IsValid())
+            indices[binding.textureSlot] = binding.resourceIndex.index;
+    }
+    return m_device->WriteBuffer(m_textureIndexBuffer, 0, indices.data(), indices.size() * sizeof(uint32_t));
+}
+
+void ParticleGpuSurfaceBinding::MarkBindlessTexturesUsed() noexcept
+{
+    if (!m_device || !m_usesBindlessTextures)
+        return;
+    std::array<rhi::ResourceIndex, 12> resources{};
+    size_t count = 0;
+    for (const auto &binding : m_textures) {
+        if (binding.resourceIndex.IsValid() && count < resources.size())
+            resources[count++] = binding.resourceIndex;
+    }
+    m_device->MarkBindlessTexturesUsed(resources.data(), count);
 }
 
 bool ParticleGpuSurfaceBinding::RebuildBindGroup()
@@ -405,8 +467,10 @@ rhi::BindGroupHandle ParticleGpuSurfaceBinding::ResolveBindGroup(rhi::TextureVie
 
 bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
 {
-    if (!m_usesTexture)
-        return m_group.IsValid() || RebuildBindGroup();
+    if (!m_usesTexture) {
+        return (!m_usesBindlessTextures || RefreshTextureIndexBuffer(m_textures)) &&
+               (m_group.IsValid() || RebuildBindGroup());
+    }
     if (!m_textureResolver)
         return false;
 
@@ -465,6 +529,8 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
         binding.sampler = lease.sampler;
         binding.gpuSlot = std::move(lease.gpuSlot);
         binding.gpuView = std::move(lease.gpuView);
+        binding.resourceIndex =
+            m_usesBindlessTextures ? m_device->PublishBindlessTexture(binding.gpuView) : rhi::ResourceIndex{};
         binding.requestedGuid = textureGuid;
         binding.requestedVersion = binding.gpuView->GetRevision();
         binding.pending = pending;
@@ -474,14 +540,19 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
     if (changed.empty())
         return m_group.IsValid();
 
-    const auto group = CreateBindGroup(candidate);
-    if (!group.IsValid())
+    if (!RefreshTextureIndexBuffer(candidate))
         return m_group.IsValid();
-    RetireBindGroup(m_group);
-    RetireViewBindGroups();
+
+    if (!m_usesBindlessTextures || !m_group.IsValid()) {
+        const auto group = CreateBindGroup(candidate);
+        if (!group.IsValid())
+            return m_group.IsValid();
+        RetireBindGroup(m_group);
+        RetireViewBindGroups();
+        m_group = group;
+    }
     for (const size_t index : changed)
         RetireTexture(std::move(m_textures[index].gpuView));
-    m_group = group;
     m_textures = std::move(candidate);
     return true;
 }

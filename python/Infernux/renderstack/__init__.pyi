@@ -12,10 +12,17 @@ from Infernux.renderstack.render_effect_asset import RenderEffectGroupAsset as R
 from Infernux.renderstack.render_effect_asset import RenderEffectGroupEntry as RenderEffectGroupEntry
 from Infernux.renderstack.render_effect_compiler import RenderEffectArtifact as RenderEffectArtifact
 from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry as RenderEffectArtifactRegistry
+from Infernux.renderstack.render_effect_compiler import RenderEffectFeature as RenderEffectFeature
+from Infernux.renderstack.render_effect_compiler import RenderEffectCompileError as RenderEffectCompileError
+from Infernux.renderstack.render_effect_compiler import get_render_effect_feature as get_render_effect_feature
+from Infernux.renderstack.render_effect_compiler import render_effect_feature as render_effect_feature
+from Infernux.renderstack.render_effect_compiler import register_render_effect_feature as register_render_effect_feature
 from Infernux.renderstack.render_effect_asset import direct_effect_dependencies as direct_effect_dependencies
 from Infernux.renderstack.render_effect_asset import dump_render_effect_document as dump_render_effect_document
 from Infernux.renderstack.render_effect_asset import parse_render_effect_document as parse_render_effect_document
 from Infernux.renderstack.resource_bus import ResourceBus as ResourceBus
+from Infernux.renderstack.pass_result import BufferHandle as BufferHandle, PassResult as PassResult
+from Infernux.renderstack.geometry_buffers import GeometryBufferTopologyError as GeometryBufferTopologyError, GeometryStagePhase as GeometryStagePhase, geometry_buffer as geometry_buffer
 from Infernux.renderstack.render_pass import RenderPass as RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline as RenderPipeline
 from Infernux.renderstack.render_pipeline import RenderPipelineAsset as RenderPipelineAsset
@@ -28,7 +35,7 @@ from Infernux.renderstack.pipeline_dsl import compile_queue_segments as compile_
 from Infernux.renderstack.route_policy import RoutePolicy as RoutePolicy
 from Infernux.renderstack.route_policy import merge_route_policies as merge_route_policies
 from Infernux.renderstack.geometry_pass import GeometryPass as GeometryPass
-from Infernux.renderstack.fullscreen_effect import FullScreenEffect as FullScreenEffect
+from Infernux.renderstack.fullscreen_effect import EffectColorComposition as EffectColorComposition, FullScreenEffect as FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect as BloomEffect
 from Infernux.renderstack.pixelation_effect import PixelationEffect as PixelationEffect, PixelationSampling as PixelationSampling
 from Infernux.renderstack.tonemapping_effect import ToneMappingEffect as ToneMappingEffect
@@ -64,10 +71,20 @@ __all__ = [
     "RenderEffectGroupEntry",
     "RenderEffectArtifact",
     "RenderEffectArtifactRegistry",
+    "RenderEffectFeature",
+    "RenderEffectCompileError",
+    "get_render_effect_feature",
+    "render_effect_feature",
+    "register_render_effect_feature",
     "parse_render_effect_document",
     "dump_render_effect_document",
     "direct_effect_dependencies",
     "ResourceBus",
+    "BufferHandle",
+    "PassResult",
+    "GeometryBufferTopologyError",
+    "GeometryStagePhase",
+    "geometry_buffer",
     "RenderPass",
     "RenderPipeline",
     "RenderPipelineAsset",
@@ -81,6 +98,7 @@ __all__ = [
     "merge_route_policies",
     "GeometryPass",
     "FullScreenEffect",
+    "EffectColorComposition",
     "BloomEffect",
     "PixelationEffect",
     "PixelationSampling",

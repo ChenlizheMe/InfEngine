@@ -2,6 +2,7 @@
 
 ShaderInfo {
     Name "Lit"
+    Capabilities [BindlessTextures]
     ShadingModel PBR
     Queue 2000
     Properties {

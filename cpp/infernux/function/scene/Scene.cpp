@@ -4,6 +4,7 @@
 #include "ComponentRecord.h"
 #include "Light.h"
 #include "MeshRenderer.h"
+#include "PyComponentProxy.h"
 #include "SceneManager.h"
 #include "TransformECSStore.h"
 #include "core/threading/JobSystem.h"
@@ -399,6 +400,100 @@ void Scene::AttachRootObject(std::unique_ptr<GameObject> gameObject)
     ++m_structureVersion;
 }
 
+bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
+{
+    if (!gameObject || gameObject->GetParent() || gameObject->GetScene() != this || &destination == this)
+        return false;
+
+    auto rootIt =
+        std::find_if(m_rootObjects.begin(), m_rootObjects.end(),
+                     [gameObject](const std::unique_ptr<GameObject> &root) { return root.get() == gameObject; });
+    if (rootIt == m_rootObjects.end() || IsPendingDestroy(gameObject))
+        return false;
+
+    std::vector<GameObject *> objects;
+    std::vector<PyComponentProxy *> pythonComponents;
+    std::unordered_set<uint64_t> componentIds;
+    const auto collect = [&](const auto &self, GameObject *object) -> void {
+        if (!object)
+            return;
+        objects.push_back(object);
+        if (Transform *transform = object->GetTransform()) {
+            componentIds.insert(transform->GetComponentID());
+        }
+        for (const auto &owned : object->GetAllComponents()) {
+            if (!owned)
+                continue;
+            componentIds.insert(owned->GetComponentID());
+            if (auto *proxy = dynamic_cast<PyComponentProxy *>(owned.get()))
+                pythonComponents.push_back(proxy);
+        }
+        for (const auto &child : object->GetChildren())
+            self(self, child.get());
+    };
+    collect(collect, gameObject);
+
+    for (GameObject *object : objects) {
+        if (IsPendingDestroy(object))
+            return false;
+        const auto collision = destination.m_objectsById.find(object->GetID());
+        if (collision != destination.m_objectsById.end() && collision->second != object)
+            return false;
+    }
+
+    std::vector<uint64_t> migratedStarts;
+    migratedStarts.reserve(m_pendingStartComponentIds.size());
+    const auto retainedStarts =
+        std::remove_if(m_pendingStartComponentIds.begin(), m_pendingStartComponentIds.end(), [&](uint64_t id) {
+            if (componentIds.find(id) == componentIds.end())
+                return false;
+            m_pendingStartComponentIdSet.erase(id);
+            migratedStarts.push_back(id);
+            return true;
+        });
+    m_pendingStartComponentIds.erase(retainedStarts, m_pendingStartComponentIds.end());
+
+    Camera *migratedMainCamera = nullptr;
+    if (m_mainCamera) {
+        GameObject *owner = m_mainCamera->GetGameObject();
+        if (owner && std::find(objects.begin(), objects.end(), owner) != objects.end()) {
+            migratedMainCamera = m_mainCamera;
+            m_mainCamera = nullptr;
+        }
+    }
+
+    std::unique_ptr<GameObject> owned = std::move(*rootIt);
+    m_rootObjects.erase(rootIt);
+    for (GameObject *object : objects)
+        m_objectsById.erase(object->GetID());
+
+    owned->SetScene(&destination);
+    for (GameObject *object : objects)
+        destination.m_objectsById[object->GetID()] = object;
+    destination.m_rootObjects.push_back(std::move(owned));
+    if (!destination.m_mainCamera && migratedMainCamera)
+        destination.m_mainCamera = migratedMainCamera;
+    for (uint64_t id : migratedStarts) {
+        if (destination.m_pendingStartComponentIdSet.insert(id).second)
+            destination.m_pendingStartComponentIds.push_back(id);
+    }
+
+    ++m_structureVersion;
+    ++destination.m_structureVersion;
+
+    // Component and GameObject handles include the owning Scene world ID.
+    // Rebind the existing Python object to the same native proxy so the move
+    // does not turn an otherwise-live script component into a stale wrapper.
+    for (PyComponentProxy *proxy : pythonComponents) {
+        try {
+            proxy->RebindPythonMirror();
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("Failed to refresh persistent Python component binding: ", error.what());
+        }
+    }
+    return true;
+}
+
 void Scene::SetRootObjectSiblingIndex(GameObject *gameObject, int newIndex)
 {
     int currentIndex = -1;
@@ -558,6 +653,8 @@ void Scene::Start()
     m_isLoaded = true;
     m_hasStarted = true;
 
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
     // ---- Unity-correct 2-pass lifecycle ----
     // Pass 1: Awake + OnEnable on every object/component
     for (size_t i = 0; i < m_rootObjects.size(); ++i) {
@@ -620,15 +717,22 @@ void Scene::Update(float deltaTime)
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
 
+    // Keep one GIL ownership interval for the ordered phase. PyComponentProxy
+    // still owns the boundary guard, so direct native lifecycle calls remain
+    // safe, but the common path no longer transitions the interpreter lock
+    // once per component.
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
     // Flush deferred Start() calls for components that were added/enabled
     // during previous callbacks.
     ProcessPendingStarts();
 
-    // Snapshot root count so objects instantiated mid-frame are not updated
-    // until the next frame (Unity-style frame consistency).
-    const size_t rootCount = m_rootObjects.size();
-    for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {
-        UpdateObject(m_rootObjects[i].get(), deltaTime);
+    RebuildRuntimeLifecycleObjectCaches();
+    const size_t receiverCount = m_updateObjects.size();
+    for (size_t i = 0; i < receiverCount && i < m_updateObjects.size(); ++i) {
+        GameObject *object = m_updateObjects[i];
+        if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
+            object->Update(deltaTime);
     }
 }
 
@@ -639,9 +743,14 @@ void Scene::FixedUpdate(float fixedDeltaTime)
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
 
-    const size_t rootCount = m_rootObjects.size();
-    for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {
-        FixedUpdateObject(m_rootObjects[i].get(), fixedDeltaTime);
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
+    RebuildRuntimeLifecycleObjectCaches();
+    const size_t receiverCount = m_fixedUpdateObjects.size();
+    for (size_t i = 0; i < receiverCount && i < m_fixedUpdateObjects.size(); ++i) {
+        GameObject *object = m_fixedUpdateObjects[i];
+        if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
+            object->FixedUpdate(fixedDeltaTime);
     }
 }
 
@@ -657,6 +766,36 @@ void Scene::TraverseActiveObjects(GameObject *obj, float dt, void (GameObject::*
     for (size_t i = 0; i < childCount && i < children.size(); ++i) {
         TraverseActiveObjects(children[i].get(), dt, updateMethod);
     }
+}
+
+void Scene::CollectRuntimeLifecycleObjects(GameObject *obj)
+{
+    if (!obj)
+        return;
+
+    if (obj->m_hasUpdateReceivers)
+        m_updateObjects.push_back(obj);
+    if (obj->m_hasFixedUpdateReceivers)
+        m_fixedUpdateObjects.push_back(obj);
+    if (obj->m_hasLateUpdateReceivers)
+        m_lateUpdateObjects.push_back(obj);
+
+    const auto &children = obj->GetChildren();
+    for (const auto &child : children)
+        CollectRuntimeLifecycleObjects(child.get());
+}
+
+void Scene::RebuildRuntimeLifecycleObjectCaches()
+{
+    if (m_lifecycleObjectCacheVersion == m_structureVersion)
+        return;
+
+    m_updateObjects.clear();
+    m_fixedUpdateObjects.clear();
+    m_lateUpdateObjects.clear();
+    for (const auto &root : m_rootObjects)
+        CollectRuntimeLifecycleObjects(root.get());
+    m_lifecycleObjectCacheVersion = m_structureVersion;
 }
 
 void Scene::FixedUpdateObject(GameObject *obj, float fixedDeltaTime)
@@ -676,9 +815,14 @@ void Scene::LateUpdate(float deltaTime)
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
 
-    const size_t rootCount = m_rootObjects.size();
-    for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {
-        LateUpdateObject(m_rootObjects[i].get(), deltaTime);
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
+    RebuildRuntimeLifecycleObjectCaches();
+    const size_t receiverCount = m_lateUpdateObjects.size();
+    for (size_t i = 0; i < receiverCount && i < m_lateUpdateObjects.size(); ++i) {
+        GameObject *object = m_lateUpdateObjects[i];
+        if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
+            object->LateUpdate(deltaTime);
     }
 }
 
@@ -688,6 +832,8 @@ void Scene::EditorUpdate(float deltaTime)
         return;
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
+
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
 
     const size_t rootCount = m_rootObjects.size();
     for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {
@@ -826,6 +972,12 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
             INXLOG_ERROR("Scene object '", name, "' contains Transform in its components array");
             return fail();
         }
+        const auto constraintBlockers = obj->GetAttachmentBlockers(
+            "native:" + typeName, typeName, ComponentFactory::GetTypeConstraints(typeName), nullptr, false, false);
+        if (!constraintBlockers.empty()) {
+            INXLOG_ERROR("Scene object '", name, "' rejects component '", typeName, "': ", constraintBlockers.front());
+            return fail();
+        }
         bool supportsPrototype = typeName == "BoxCollider";
         if (typeName == "MeshRenderer") {
             supportsPrototype = true;
@@ -888,6 +1040,12 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         if (prototypeCache && supportsPrototype && !prototype)
             (*prototypeCache)[prototypeHash].push_back({&componentRecordDocument, comp.get()});
         obj->m_components.push_back(std::move(comp));
+    }
+
+    const auto componentSetBlockers = obj->GetComponentSetBlockers();
+    if (!componentSetBlockers.empty()) {
+        INXLOG_ERROR("Scene object '", name, "' has an invalid component set: ", componentSetBlockers.front());
+        return fail();
     }
 
     // Recurse children
@@ -1529,7 +1687,11 @@ void Scene::SetMainCamera(Camera *camera)
         if (!owner || owner->GetScene() != this)
             throw std::invalid_argument("Scene.main_camera must reference a Camera owned by this Scene");
     }
+    if (m_mainCamera == camera)
+        return;
+
     m_mainCamera = camera;
+    ++m_structureVersion;
 }
 
 Camera *Scene::FindGameCamera(Camera *editorCam)
@@ -1550,16 +1712,23 @@ Camera *Scene::FindGameCamera(Camera *editorCam)
 std::vector<Camera *> Scene::GetActiveGameCameras(Camera *editorCam) const
 {
     std::vector<Camera *> cameras;
-    const auto objects = FindObjectsWithComponent<Camera>();
-    cameras.reserve(objects.size());
-    for (GameObject *object : objects) {
-        if (!object || !object->IsActiveInHierarchy())
-            continue;
-        Camera *camera = object->GetComponent<Camera>();
-        if (!camera || !camera->IsEnabled() || camera == editorCam)
-            continue;
-        cameras.push_back(camera);
-    }
+    const auto appendSceneCameras = [&](const Scene &scene) {
+        const auto objects = scene.FindObjectsWithComponent<Camera>();
+        cameras.reserve(cameras.size() + objects.size());
+        for (GameObject *object : objects) {
+            if (!object || !object->IsActiveInHierarchy())
+                continue;
+            Camera *camera = object->GetComponent<Camera>();
+            if (!camera || !camera->IsEnabled() || camera == editorCam)
+                continue;
+            cameras.push_back(camera);
+        }
+    };
+    appendSceneCameras(*this);
+    const SceneManager &manager = SceneManager::Instance();
+    Scene *persistentScene = manager.GetRuntimePersistentScene();
+    if (this == manager.GetActiveScene() && persistentScene && persistentScene != this)
+        appendSceneCameras(*persistentScene);
     std::sort(cameras.begin(), cameras.end(), [](const Camera *lhs, const Camera *rhs) {
         if (lhs->GetDepth() != rhs->GetDepth())
             return lhs->GetDepth() < rhs->GetDepth();

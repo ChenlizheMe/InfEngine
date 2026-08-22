@@ -11,7 +11,9 @@ from Infernux.mcp import client as client_module
 from Infernux.mcp.client import create_loopback_client
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools import register_all_tools
-from Infernux.mcp.tools import api, common, material, project, runtime
+from Infernux.mcp.tools import api, common, material, project, runtime, scene
+from Infernux.mcp.tools import docs
+from Infernux.mcp.tools import session as session_tools
 
 
 class _FakeMcp:
@@ -158,6 +160,46 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
     assert "editor_ui_click" not in tools
 
 
+def test_developer_assist_exposes_public_animation_audio_and_external_import_tools(tmp_path):
+    tools = _registered_tools(tmp_path, "developer_assist")
+
+    assert {
+        "asset_import_external_binary",
+        "audio_source_inspect",
+        "audio_source_configure_track",
+        "audio_source_play",
+        "audio_source_pause",
+        "audio_source_stop",
+        "animation_timeline_create",
+        "animation_timeline_add_keyframe",
+        "timeline_fsm_create",
+        "timeline_fsm_add_state",
+    } <= tools
+
+
+def test_global_validation_does_not_expose_editor_authoring_mutations(tmp_path):
+    tools = _registered_tools(tmp_path, "global_validation")
+
+    assert not {
+        "asset_import_external_binary",
+        "audio_source_inspect",
+        "audio_source_configure_track",
+        "audio_source_play",
+        "audio_source_pause",
+        "audio_source_stop",
+        "animation_timeline_create",
+        "animation_timeline_add_keyframe",
+        "timeline_fsm_create",
+        "timeline_fsm_add_state",
+    } & tools
+
+
+def test_authoring_workflows_reference_only_registered_public_tools():
+    assert "animation_authoring" in docs.INTENT_RECOMMENDATIONS
+    assert "audio_source_configure_track" in docs.INTENT_RECOMMENDATIONS["audio_authoring"]["tools"]
+    assert "timeline_fsm_create" in docs.INTENT_RECOMMENDATIONS["animation_authoring"]["tools"]
+
+
 def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutation(tmp_path):
     tools = _registered_tools(tmp_path, "global_validation")
 
@@ -230,8 +272,15 @@ def test_global_validation_trace_records_final_runtime_response_once(tmp_path, m
     assert saved["steps"][0]["result"]["data"]["passed"] is False
 
 
-def test_developer_assist_attempt_traces_lint_clean_script_write(tmp_path):
+def test_developer_assist_attempt_traces_lint_clean_script_write(tmp_path, monkeypatch):
     fake = _registered_mcp(tmp_path, "developer_assist")
+    (tmp_path / "Assets" / "Racing").mkdir(parents=True)
+    monkeypatch.setattr(
+        session_tools,
+        "main_thread",
+        lambda _name, callback, **_kwargs: common.ok(callback()),
+    )
+    monkeypatch.setattr(common, "notify_asset_changed", lambda *_args: None)
 
     fake.tools["mcp_attempt_start"]("write public project behavior", "before-script-write")
     response = fake.tools["project_script_write"](
@@ -243,8 +292,57 @@ def test_developer_assist_attempt_traces_lint_clean_script_write(tmp_path):
     with open(tmp_path / stopped["data"]["trace_path"], "r", encoding="utf-8") as f:
         saved = json.load(f)
     assert response["ok"] is True
+    assert (tmp_path / "Assets" / "Racing" / "Hud.py").read_text(
+        encoding="utf-8"
+    ) == "from Infernux.components import Component\n"
     assert [step["tool"] for step in saved["steps"]] == ["project_script_write"]
     assert saved["context"]["mode"] == "developer_assist"
+
+
+def test_main_thread_runs_scene_guard_inside_queued_critical_operation(monkeypatch):
+    events = []
+
+    class Queue:
+        def run_sync(self, name, callback, *, timeout_ms):
+            events.append(("queue", name, timeout_ms))
+            return callback()
+
+    monkeypatch.setattr(MainThreadCommandQueue, "_instance", Queue())
+    monkeypatch.setattr(
+        common,
+        "_scene_guard_failure",
+        lambda name, _explain: events.append(("guard", name)) or None,
+    )
+
+    result = common.main_thread(
+        "transform_set",
+        lambda: events.append(("mutation", "transform_set")) or 42,
+    )
+
+    assert result["ok"] is True
+    assert result["data"] == 42
+    assert [event[0] for event in events] == ["queue", "guard", "mutation"]
+
+
+def test_main_thread_returns_guard_rejection_without_running_mutation(monkeypatch):
+    class Queue:
+        def run_sync(self, _name, callback, *, timeout_ms):
+            return callback()
+
+    rejected = common.fail("error.play_mode_active", "stop first")
+    monkeypatch.setattr(MainThreadCommandQueue, "_instance", Queue())
+    monkeypatch.setattr(common, "_scene_guard_failure", lambda *_args: rejected)
+    executed = []
+
+    result = common.main_thread("scene_clear_generated", lambda: executed.append(True))
+
+    assert result is rejected
+    assert executed == []
+
+
+def test_all_scene_structure_mutators_require_saved_edit_mode_scene():
+    assert common._requires_saved_scene_file("gameobject_create_from_model")
+    assert common._requires_saved_scene_file("scene_clear_generated")
 
 
 # Public API/client and project-asset contracts live here with profile policy
@@ -472,24 +570,46 @@ def test_project_build_scenes_set_validates_and_preserves_other_settings(tmp_pat
     )
     monkeypatch.setattr(project, "track_project_path_before_change", lambda *_args, **_kwargs: None)
 
+    class Controller:
+        def __init__(self):
+            self.build = json.loads(build_settings.read_text(encoding="utf-8"))
+            self.calls = []
+
+        def section(self, name):
+            assert name == "build"
+            return dict(self.build)
+
+        def apply_section(self, name, value, **kwargs):
+            assert name == "build"
+            self.build = dict(value)
+            self.calls.append((name, dict(value), kwargs))
+            return True
+
+    controller = Controller()
+    monkeypatch.setattr(project, "_project_settings_controller", lambda _path: controller)
+
     result = project._set_build_scenes(
         str(tmp_path),
         ["Assets/Scenes/Start.scene", "Assets/Scenes/VFX Gallery.scene"],
     )
 
-    saved = json.loads(build_settings.read_text(encoding="utf-8"))
     assert result["scenes"] == [
         "Assets/Scenes/Start.scene",
         "Assets/Scenes/VFX Gallery.scene",
     ]
     assert result["startup_scene"] == "Assets/Scenes/Start.scene"
     assert all(entry["exists"] and entry["valid_path"] for entry in result["entries"])
-    assert saved["game_name"] == "Gallery"
-    assert saved["lto"] is True
-    assert saved["scenes"] == [
+    assert controller.build["game_name"] == "Gallery"
+    assert controller.build["lto"] is True
+    assert controller.build["scenes"] == [
         "Assets/Scenes/Start.scene",
         "Assets/Scenes/VFX Gallery.scene",
     ]
+    assert controller.calls[0][2] == {
+        "edit_key": "project_settings.build.scenes",
+        "description": "Set Build Scenes",
+        "view_id": "build_settings",
+    }
 
     with pytest.raises(ValueError, match="Duplicate build scene"):
         project._set_build_scenes(
@@ -509,3 +629,14 @@ def test_asset_identity_uses_samefile_for_alias_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(project.os.path, "samefile", lambda first, second: {first, second} == {str(asset), alias})
 
     assert project._same_path(str(asset), alias) is True
+
+
+def test_scene_open_uses_typed_document_open_authority():
+    from pathlib import Path
+
+    source = Path(scene.__file__).read_text(encoding="utf-8")
+    start = source.index('    @mcp.tool(name="scene_open")')
+    end = source.index('    @mcp.tool(name="scene_new")', start)
+    implementation = source[start:end]
+    assert "core.document_open.open_resource(" in implementation
+    assert "sfm.open_scene(" not in implementation

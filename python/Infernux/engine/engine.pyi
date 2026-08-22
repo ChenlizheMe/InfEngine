@@ -40,16 +40,24 @@ class Engine:
     def register_gui(
         self, name: str, gui_object: InxGUIRenderable, *, priority: int = ...
     ) -> None:
-        """Register an ImGui renderable panel by name and presentation priority."""
+        """Register a passive ImGui renderable by name and presentation priority."""
         ...
     def unregister_gui(self, name: str) -> None:
         """Unregister an ImGui renderable panel."""
         ...
-    def select_docked_window(self, window_id: str) -> None:
+    def select_docked_window(
+        self, window_id: str, allow_during_modal: bool = False
+    ) -> None:
         """Select and focus a docked window by its stable ``window_id``."""
         ...
     def reset_imgui_layout(self) -> None:
         """Reset the ImGui docking layout to defaults."""
+        ...
+    def prepare_startup_refresh(self, on_progress: Any = ...) -> None:
+        """Finish the startup resource refresh before the window is shown."""
+        ...
+    def pump_events(self) -> bool:
+        """Pump the OS queue so a visible window stays responsive during load."""
         ...
     def show(self) -> None:
         """Show the engine window."""
@@ -176,6 +184,9 @@ class Engine:
     def get_play_mode_manager(self) -> PlayModeManager:
         """Get the PlayModeManager instance."""
         ...
+    def get_player_runtime(self) -> Any: ...
+    def get_runtime_execution_scheduler(self) -> Any: ...
+    def get_runtime_change_journal(self) -> Any: ...
 
     # Window management
     def get_display_scale(self) -> float:

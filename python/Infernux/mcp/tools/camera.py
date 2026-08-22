@@ -43,7 +43,10 @@ def register_camera_tools(mcp) -> None:
             _try_set_scene_main_camera(int(chosen["id"]))
             return {"camera": chosen, "created": chosen.get("reason") == "created"}
 
-        return main_thread("camera_ensure_main", _ensure)
+        return main_thread(
+            "camera_ensure_main",
+            lambda: _run_scene_user_action("Ensure Main Camera", _ensure),
+        )
 
     @mcp.tool(name="camera_set_main")
     def camera_set_main(object_id: int) -> dict:
@@ -56,7 +59,10 @@ def register_camera_tools(mcp) -> None:
             applied = _try_set_scene_main_camera(int(object_id))
             return {"object_id": int(object_id), "applied": applied}
 
-        return main_thread("camera_set_main", _set)
+        return main_thread(
+            "camera_set_main",
+            lambda: _run_scene_user_action("Set Main Camera", _set),
+        )
 
     @mcp.tool(name="camera_describe_view")
     def camera_describe_view(camera_id: int = 0) -> dict:
@@ -115,13 +121,12 @@ def register_camera_tools(mcp) -> None:
             bounds = _combined_bounds(targets)
             applied = _apply_frame(cam, comp, bounds, float(padding), str(mode or "move_or_zoom"))
             _try_set_scene_main_camera(int(cam.id))
-            _mark_scene_dirty()
             report = _visibility_report(cam, comp, targets, float(padding))
             return {"camera": _camera_snapshot(cam, comp), "targets": [_target_entry(obj) for obj in targets], "bounds": bounds, "applied": applied, "visibility": report}
 
         return main_thread(
             "camera_frame_targets",
-            _frame,
+            lambda: _run_scene_user_action("Frame Camera Targets", _frame),
             arguments={"camera_id": camera_id, "target_ids": target_ids or [], "target_query": target_query or {}, "padding": padding, "mode": mode},
         )
 
@@ -149,11 +154,14 @@ def register_camera_tools(mcp) -> None:
                 raise ValueError("camera_look_at requires target_id or position.")
             _look_at_position(cam, target_pos, float(distance or 0.0), float(height or 0.0))
             _try_set_scene_main_camera(int(cam.id))
-            _mark_scene_dirty()
             comp = _find_component(cam, "Camera")
             return {"camera": _camera_snapshot(cam, comp), "target_position": target_pos}
 
-        return main_thread("camera_look_at", _look_at, arguments={"camera_id": camera_id, "target_id": target_id, "position": position})
+        return main_thread(
+            "camera_look_at",
+            lambda: _run_scene_user_action("Aim Camera", _look_at),
+            arguments={"camera_id": camera_id, "target_id": target_id, "position": position},
+        )
 
     @mcp.tool(name="camera_attach_to_target")
     def camera_attach_to_target(
@@ -170,12 +178,14 @@ def register_camera_tools(mcp) -> None:
             target = _find_game_object(target_id)
             if _find_component(cam, "Camera") is None:
                 raise ValueError(f"GameObject {camera_id} does not have a Camera component.")
-            cam.set_parent(target, bool(world_position_stays))
-            if local_position is not None:
-                cam.transform.local_position = coerce_vector3(local_position)
-            if local_euler_angles is not None:
-                cam.transform.local_euler_angles = coerce_vector3(local_euler_angles)
-            _mark_scene_dirty()
+            _reparent_camera(
+                cam,
+                target,
+                world_position_stays=bool(world_position_stays),
+                local_position=local_position,
+                local_euler_angles=local_euler_angles,
+                description="Attach Camera",
+            )
             return {
                 "camera_id": int(cam.id),
                 "target_id": int(target.id),
@@ -183,7 +193,10 @@ def register_camera_tools(mcp) -> None:
                 "local_euler_angles": _vec(cam.transform.local_euler_angles),
             }
 
-        return main_thread("camera_attach_to_target", _attach)
+        return main_thread(
+            "camera_attach_to_target",
+            lambda: _run_scene_user_action("Attach Camera", _attach),
+        )
 
     @mcp.tool(name="camera_setup_third_person")
     def camera_setup_third_person(
@@ -202,17 +215,22 @@ def register_camera_tools(mcp) -> None:
                 ensured = _ensure_camera_object()
                 cam = _find_game_object(int(ensured["id"]))
             target = _find_game_object(target_id)
-            cam.set_parent(target, False)
-            cam.transform.local_position = coerce_vector3(local_position or {"x": 0.0, "y": 3.0, "z": -7.0})
-            cam.transform.local_euler_angles = coerce_vector3(local_euler_angles or {"x": 18.0, "y": 0.0, "z": 0.0})
+            _reparent_camera(
+                cam,
+                target,
+                world_position_stays=False,
+                local_position=local_position or {"x": 0.0, "y": 3.0, "z": -7.0},
+                local_euler_angles=local_euler_angles or {"x": 18.0, "y": 0.0, "z": 0.0},
+                description="Configure Third Person Camera",
+            )
             comp = _find_component(cam, "Camera")
             if comp is not None:
-                try:
-                    comp.field_of_view = float(field_of_view)
-                except Exception:
-                    pass
+                _set_camera_values(
+                    comp,
+                    {"field_of_view": float(field_of_view)},
+                    "Configure Third Person Camera",
+                )
             _try_set_scene_main_camera(int(cam.id))
-            _mark_scene_dirty()
             return {
                 "camera_id": int(cam.id),
                 "target_id": int(target.id),
@@ -221,7 +239,10 @@ def register_camera_tools(mcp) -> None:
                 "field_of_view": float(field_of_view),
             }
 
-        return main_thread("camera_setup_third_person", _setup)
+        return main_thread(
+            "camera_setup_third_person",
+            lambda: _run_scene_user_action("Configure Third Person Camera", _setup),
+        )
 
     @mcp.tool(name="camera_setup_2d_card_game")
     def camera_setup_2d_card_game(
@@ -238,17 +259,27 @@ def register_camera_tools(mcp) -> None:
             else:
                 ensured = _ensure_camera_object()
                 cam = _find_game_object(int(ensured["id"]))
-            cam.transform.position = coerce_vector3(position or {"x": 0.0, "y": 0.0, "z": 10.0})
-            cam.transform.euler_angles = coerce_vector3(euler_angles or {"x": 0.0, "y": 180.0, "z": 0.0})
+            _set_transform_values(
+                cam,
+                {
+                    "position": coerce_vector3(position or {"x": 0.0, "y": 0.0, "z": 10.0}),
+                    "euler_angles": coerce_vector3(euler_angles or {"x": 0.0, "y": 180.0, "z": 0.0}),
+                },
+                "Configure 2D Camera",
+            )
             comp = _find_component(cam, "Camera")
             if comp is not None:
-                for field, value in (("projection_mode", 1), ("orthographic_size", float(orthographic_size)), ("near_clip", 0.01), ("far_clip", 1000.0)):
-                    try:
-                        setattr(comp, field, value)
-                    except Exception:
-                        pass
+                _set_camera_values(
+                    comp,
+                    {
+                        "projection_mode": 1,
+                        "orthographic_size": float(orthographic_size),
+                        "near_clip": 0.01,
+                        "far_clip": 1000.0,
+                    },
+                    "Configure 2D Camera",
+                )
             _try_set_scene_main_camera(int(cam.id))
-            _mark_scene_dirty()
             return {
                 "camera_id": int(cam.id),
                 "position": _vec(cam.transform.position),
@@ -256,7 +287,10 @@ def register_camera_tools(mcp) -> None:
                 "orthographic_size": float(orthographic_size),
             }
 
-        return main_thread("camera_setup_2d_card_game", _setup)
+        return main_thread(
+            "camera_setup_2d_card_game",
+            lambda: _run_scene_user_action("Configure 2D Camera", _setup),
+        )
 
     @mcp.tool(name="lighting_ensure_default")
     def lighting_ensure_default() -> dict:
@@ -264,7 +298,7 @@ def register_camera_tools(mcp) -> None:
 
         def _ensure():
             from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-            from Infernux.lib import SceneManager, Vector3
+            from Infernux.lib import SceneManager
             scene = SceneManager.instance().get_active_scene()
             if not scene:
                 raise RuntimeError("No active scene.")
@@ -272,12 +306,12 @@ def register_camera_tools(mcp) -> None:
                 if _find_component(obj, "Light") is not None:
                     return {"light_id": int(obj.id), "created": False}
             created = HierarchyCreationService.instance().create("light.directional", name="Directional Light", select=False)
-            obj = scene.find_by_id(int(created["id"]))
-            if obj and obj.transform:
-                obj.transform.euler_angles = Vector3(50.0, -30.0, 0.0)
             return {"light_id": int(created["id"]), "created": True}
 
-        return main_thread("lighting_ensure_default", _ensure)
+        return main_thread(
+            "lighting_ensure_default",
+            lambda: _run_scene_user_action("Ensure Default Light", _ensure),
+        )
 
 
 def _find_cameras() -> list[dict]:
@@ -344,11 +378,110 @@ def _try_set_scene_main_camera(object_id: int) -> bool:
     comp = _find_component(obj, "Camera")
     if comp is None:
         return False
-    try:
-        scene.main_camera = comp
+    current = getattr(scene, "main_camera", None)
+    if _same_camera_component(current, comp):
         return True
-    except Exception:
+    from Infernux.engine.interaction import make_attribute_property_transaction
+
+    make_attribute_property_transaction(
+        (scene,),
+        "main_camera",
+        property_path="Scene.main_camera",
+        description="Set Main Camera",
+        equivalent=_same_camera_component,
+    ).commit_or_raise(comp)
+    return _same_camera_component(getattr(scene, "main_camera", None), comp)
+
+
+def _same_camera_component(left, right) -> bool:
+    if left is right:
+        return True
+    if left is None or right is None:
         return False
+    left_id = int(getattr(left, "component_id", 0) or 0)
+    right_id = int(getattr(right, "component_id", 0) or 0)
+    if left_id and right_id:
+        return left_id == right_id
+    left_owner = int(getattr(getattr(left, "game_object", None), "id", 0) or 0)
+    right_owner = int(getattr(getattr(right, "game_object", None), "id", 0) or 0)
+    return bool(left_owner and left_owner == right_owner)
+
+
+def _scene_object_service():
+    from Infernux.engine.interaction import EditorInteractionCore
+
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("EditorInteractionCore is unavailable.")
+    return core.scene_objects
+
+
+def _run_scene_user_action(description: str, callback):
+    with _scene_object_service().user_action(description):
+        return callback()
+
+
+def _set_transform_values(cam, values: dict[str, Any], description: str) -> None:
+    from Infernux.engine.interaction import make_attribute_property_transaction
+
+    transform = getattr(cam, "transform", None)
+    if transform is None:
+        raise RuntimeError(f"GameObject {int(cam.id)} has no Transform.")
+    for field, value in values.items():
+        make_attribute_property_transaction(
+            (transform,),
+            field,
+            property_path=f"Transform.{field}",
+            description=str(description),
+        ).commit_or_raise(value)
+
+
+def _set_camera_values(comp, values: dict[str, Any], description: str) -> None:
+    from Infernux.engine.interaction import make_attribute_property_transaction
+
+    for field, value in values.items():
+        make_attribute_property_transaction(
+            (comp,),
+            field,
+            property_path=f"Camera.{field}",
+            description=str(description),
+        ).commit_or_raise(value)
+
+
+def _reparent_camera(
+    cam,
+    target,
+    *,
+    world_position_stays: bool,
+    local_position,
+    local_euler_angles,
+    description: str,
+) -> None:
+    transform = cam.transform
+    previous_local = {
+        "local_position": transform.local_position,
+        "local_euler_angles": transform.local_euler_angles,
+        "local_scale": transform.local_scale,
+    }
+    current_parent = cam.get_parent()
+    if current_parent is not target and not _scene_object_service().move_hierarchy(
+        (int(cam.id),),
+        "parent",
+        int(target.id),
+    ):
+        raise RuntimeError(
+            f"Failed to parent camera {int(cam.id)} to GameObject {int(target.id)}."
+        )
+
+    values: dict[str, Any] = {}
+    if not world_position_stays:
+        values.update(previous_local)
+    if local_position is not None:
+        values["local_position"] = coerce_vector3(local_position)
+    if local_euler_angles is not None:
+        values["local_euler_angles"] = coerce_vector3(local_euler_angles)
+    if values:
+        _set_transform_values(cam, values, description)
 
 
 def _find_game_object(object_id: int):
@@ -496,13 +629,18 @@ def _apply_frame(cam, comp, bounds: dict[str, Any], padding: float, mode: str) -
         half_height = max(size[1] * 0.5, size[0] * 0.5 / max(float(getattr(comp, "aspect_ratio", 1.778) or 1.778), 0.1), 0.5)
         new_size = half_height * (1.0 + max(float(padding), 0.0) * 2.0)
         if mode in {"move", "move_or_zoom", "zoom"}:
-            try:
-                comp.orthographic_size = float(new_size)
-            except Exception:
-                pass
+            _set_camera_values(
+                comp,
+                {"orthographic_size": float(new_size)},
+                "Frame Camera Targets",
+            )
         old_pos = _vec(trans.position)
         if mode in {"move", "move_or_zoom"} and Vector3 is not None:
-            trans.position = Vector3(float(center[0]), float(center[1]), float(old_pos[2]))
+            _set_transform_values(
+                cam,
+                {"position": Vector3(float(center[0]), float(center[1]), float(old_pos[2]))},
+                "Frame Camera Targets",
+            )
         return {"mode": mode, "projection": "orthographic", "orthographic_size": float(getattr(comp, "orthographic_size", new_size)), "center": center}
 
     radius = max(max(size) * 0.5, 0.5)
@@ -526,8 +664,6 @@ def _look_at_position(cam, target_pos: list[float], distance: float = 0.0, heigh
             target_pos[1] + direction[1] * distance + float(height),
             target_pos[2] + direction[2] * distance,
         ]
-        from Infernux.lib import Vector3
-        trans.position = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
     dx = target_pos[0] - pos[0]
     dy = target_pos[1] - pos[1]
     dz = target_pos[2] - pos[2]
@@ -535,7 +671,10 @@ def _look_at_position(cam, target_pos: list[float], distance: float = 0.0, heigh
     flat = math.sqrt(dx * dx + dz * dz)
     pitch = -math.degrees(math.atan2(dy, max(flat, 0.0001)))
     from Infernux.lib import Vector3
-    trans.euler_angles = Vector3(float(pitch), float(yaw), 0.0)
+    values = {"euler_angles": Vector3(float(pitch), float(yaw), 0.0)}
+    if distance > 0.0:
+        values["position"] = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
+    _set_transform_values(cam, values, "Aim Camera")
 
 
 def _combined_bounds(objects: list[Any]) -> dict[str, Any]:
@@ -699,16 +838,6 @@ def _normalize(value: list[float]) -> list[float]:
     if length <= 0.0001:
         return [0.0, 0.0, 0.0]
     return [part / length for part in value]
-
-
-def _mark_scene_dirty() -> None:
-    try:
-        from Infernux.engine.scene_manager import SceneFileManager
-        sfm = SceneFileManager.instance()
-        if sfm:
-            sfm.mark_dirty()
-    except Exception:
-        pass
 
 
 def _vec(value) -> list[float]:

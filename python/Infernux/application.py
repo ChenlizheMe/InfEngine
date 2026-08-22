@@ -71,6 +71,16 @@ class Application:
         return Application.data_path()
 
     @staticmethod
+    def asset_path(path: str) -> str:
+        """Resolve an ``Assets/...`` reference in Editor or packaged Player."""
+        from Infernux.engine.project_context import resolve_asset_path
+
+        resolved = resolve_asset_path(path)
+        if not resolved:
+            raise FileNotFoundError(f"Project asset is not available at runtime: {path}")
+        return resolved
+
+    @staticmethod
     def renderer_state() -> dict[str, Any]:
         """Return stable renderer telemetry available in Editor and Player."""
         engine = Application._current_engine()

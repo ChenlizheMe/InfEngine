@@ -7,6 +7,7 @@ const docsRoot = path.resolve("docs");
 const outputFile = path.join(docsRoot, "sw.js");
 const check = process.argv.includes("--check");
 const maxPrecacheBytes = 768 * 1024;
+const learningCourses = JSON.parse(await readFile(path.join(docsRoot, "learn", "learning-courses.json"), "utf8"));
 
 async function namedRoutes(directory, pattern) {
     return (await readdir(path.join(docsRoot, directory), { withFileTypes: true }))
@@ -22,6 +23,7 @@ const shellPages = [
     "/index.html",
     "/start.html",
     "/learn.html",
+    ...learningCourses.map((course) => `/learn/${course.slug}.html`),
     "/roadmap.html",
     "/community.html",
     "/download.html",

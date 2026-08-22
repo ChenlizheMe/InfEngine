@@ -33,6 +33,7 @@ def test_python_filesystem_normalization_is_owned_by_path_utils():
     early_bootstrap = {
         source_root / "lib" / "__init__.py",
         source_root / "resources" / "__init__.py",
+        source_root / "test" / "bootstrap_import_test.py",
     }
     violations: list[str] = []
     for path in source_root.rglob("*.py"):

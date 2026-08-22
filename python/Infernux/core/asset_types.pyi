@@ -198,6 +198,9 @@ MESH_EXTENSIONS: FrozenSet[str]
 def read_meta_file(asset_path: str) -> Optional[Dict[str, Any]]:
     """Read and parse a .meta sidecar file for an asset."""
     ...
+def read_asset_metadata(asset_path: str, *, guid: str = "") -> Optional[Dict[str, Any]]:
+    """Read sidecar metadata or the compiled Player metadata record."""
+    ...
 def write_meta_fields(asset_path: str, updates: Dict[str, Any]) -> bool:
     """Write updated fields to an asset's .meta file."""
     ...

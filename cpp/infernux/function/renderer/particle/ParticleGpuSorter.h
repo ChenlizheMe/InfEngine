@@ -45,7 +45,7 @@ struct GpuParticleSortShaderSources
 struct GpuParticleSorterDesc
 {
     uint32_t capacity = 0;
-    rhi::BufferHandle instances;
+    rhi::BufferHandle visibility;
     rhi::BufferHandle indirectArguments;
     rhi::BufferHandle sourceIndices;
     rhi::BufferHandle dispatchArguments;
@@ -68,10 +68,15 @@ class ParticleGpuSorter
   public:
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t Radix = 16;
-    // Full 64-bit stable key sorting: depth primary (low 32b) + particle id (high 32b).
-    // 8-bitwise passes per u32 lane => 16 total passes.
-    static constexpr uint32_t PassCount = 16;
-    static constexpr uint32_t SmallSortCapacity = WorkgroupSize;
+    // Large particle sets use a deterministic 32-bit key: 24 ordered depth
+    // bits plus 8 stable particle-id bits. This preserves depth ordering far
+    // below visible precision while halving radix passes and key bandwidth.
+    // Small sets retain the full depth + particle-id tuple below.
+    static constexpr uint32_t PassCount = 8;
+    static constexpr uint32_t PackedKeyStride = sizeof(uint32_t);
+    // One 256-lane workgroup loads four entries per lane.  Keep this a
+    // power-of-two so the in-workgroup bitonic network has no partial stage.
+    static constexpr uint32_t SmallSortCapacity = WorkgroupSize * 4u;
 
     ParticleGpuSorter() = default;
     ~ParticleGpuSorter();
@@ -93,9 +98,9 @@ class ParticleGpuSorter
     {
         return m_blockCount;
     }
-    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
+    [[nodiscard]] rhi::BufferHandle VisibilityBuffer() const noexcept
     {
-        return m_instances;
+        return m_visibility;
     }
     [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept
     {
@@ -157,7 +162,7 @@ class ParticleGpuSorter
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
     uint32_t m_blockCount = 0;
-    rhi::BufferHandle m_instances;
+    rhi::BufferHandle m_visibility;
     rhi::BufferHandle m_indirectArguments;
     rhi::BufferHandle m_sourceIndices;
     rhi::BufferHandle m_dispatchArguments;

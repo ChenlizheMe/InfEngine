@@ -111,6 +111,7 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
     )
 
     _material_section_heights = {}
+    _material_render_error = {"fingerprint": ""}
 
     def _render_material_sections_live(ctx, obj_id):
         from Infernux.components.builtin_component import BuiltinComponent
@@ -129,18 +130,12 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         if not renderers:
             return
 
-        ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP * 1.5)
-        ctx.separator()
-        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT)
-        ctx.label(_t("inspector.material_overrides"))
-        ctx.pop_style_color(1)
-        ctx.separator()
         if not render_compact_section_header(
             ctx, "Materials##obj_mat_sections", level="primary", default_open=True
         ):
             return
 
-        _scene, scene_version, structure_version = current_scene_versions()
+        _scene, scene_version, structure_version = current_scene_versions(obj_id)
         if (
             mat_cache["object_id"] == obj_id
             and mat_cache["scene_version"] == scene_version
@@ -164,35 +159,37 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
 
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
         ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
-        for index, entry in enumerate(valid_entries):
-            title = entry["label"]
-            if multiple_renderers and owner_name:
-                title = f"{owner_name} / {title}"
-            if not render_compact_section_header(
-                ctx, f"{title}##mat_entry_{index}", level="secondary", default_open=True
-            ):
-                continue
-            lock_inline_material_body = (
-                entry.get("renderer_type") == "SpriteRenderer"
-                and entry["is_default"]
-            ) or bool(entry.get("is_embedded", False))
-            ctx.push_id(index)
-            try:
-                if lock_inline_material_body:
-                    ctx.begin_disabled(True)
+        try:
+            for index, entry in enumerate(valid_entries):
+                title = entry["label"]
+                if multiple_renderers and owner_name:
+                    title = f"{owner_name} / {title}"
+                if not render_compact_section_header(
+                    ctx, f"{title}##mat_entry_{index}", level="secondary", default_open=True
+                ):
+                    continue
+                lock_inline_material_body = (
+                    entry.get("renderer_type") == "SpriteRenderer"
+                    and entry["is_default"]
+                ) or bool(entry.get("is_embedded", False))
+                ctx.push_id(index)
                 try:
-                    mat_ui.render_inline_material_body(
-                        ctx, inline_material_adapter, entry["material"],
-                        cache_key=f"obj_mat_{obj_id}_{index}")
-                finally:
                     if lock_inline_material_body:
-                        ctx.end_disabled()
-            finally:
-                ctx.pop_id()
+                        ctx.begin_disabled(True)
+                    try:
+                        mat_ui.render_inline_material_body(
+                            ctx, inline_material_adapter, entry["material"],
+                            cache_key=f"obj_mat_{obj_id}_{index}")
+                    finally:
+                        if lock_inline_material_body:
+                            ctx.end_disabled()
+                finally:
+                    ctx.pop_id()
 
-            if index != len(valid_entries) - 1:
-                ctx.separator()
-        ctx.pop_style_var(2)
+                if index != len(valid_entries) - 1:
+                    ctx.separator()
+        finally:
+            ctx.pop_style_var(2)
 
         try:
             native = engine.get_native_engine()
@@ -210,7 +207,25 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
 
         start_y = ctx.get_cursor_pos_y()
         try:
-            _render_material_sections_live(ctx, obj_id)
+            try:
+                _render_material_sections_live(ctx, obj_id)
+                _material_render_error["fingerprint"] = ""
+            except Exception as exc:
+                # Python callbacks must never unwind through the native
+                # Inspector frame.  Besides losing the rest of the panel, an
+                # escaping exception prevents ImGui child recovery and can
+                # turn one missing optional module into an error every frame.
+                fingerprint = f"{type(exc).__name__}: {exc}"
+                if _material_render_error["fingerprint"] != fingerprint:
+                    Debug.log_error(
+                        "Inspector material section failed; the rest of the "
+                        f"Inspector remains available: {fingerprint}"
+                    )
+                    _material_render_error["fingerprint"] = fingerprint
+                try:
+                    ctx.text_wrapped("Material Inspector is temporarily unavailable.")
+                except Exception:
+                    pass
         finally:
             measured_height = max(0.0, ctx.get_cursor_pos_y() - start_y)
             if measured_height > 0.0:

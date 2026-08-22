@@ -160,11 +160,30 @@ class _TimeMeta(type):
         """Wall-clock seconds since the engine process launched."""
         return _time_mod.time() - cls._startup_time
 
+    @property
+    def shader_time(cls) -> float:
+        """Time uploaded to the global shader ``_Time.x`` value.
+
+        Use this when CPU simulation must reproduce animated vertex
+        displacement exactly. Outside a rendered engine session it falls back
+        to :attr:`realtime_since_startup`.
+        """
+        try:
+            from Infernux.application import Application
+
+            engine = Application._current_engine()
+            native = engine.get_native_engine() if engine is not None else None
+            if native is not None and hasattr(native, "get_shader_time_seconds"):
+                return float(native.get_shader_time_seconds())
+        except (ImportError, AttributeError, RuntimeError):
+            pass
+        return cls.realtime_since_startup
+
     # -- Safety clamp -------------------------------------------------------
 
     @property
     def maximum_delta_time(cls) -> float:
-        """Upper clamp for ``delta_time`` to prevent spiral-of-death (default 0.1 s)."""
+        """Upper clamp for ``delta_time`` (Unity-compatible default: 1/3 s)."""
         try:
             from Infernux.lib import SceneManager
             return float(SceneManager.instance().get_max_fixed_delta_time())
@@ -199,6 +218,7 @@ class Time(metaclass=_TimeMeta):
         Time.time_scale             # get / set  (0 = frozen, 1 = normal)
         Time.frame_count            # frame number since play started
         Time.realtime_since_startup # wall-clock since engine launch
+        Time.shader_time            # exact time used by animated shaders
     """
 
     # -- Internal state (written exclusively by the engine) -----------------
@@ -213,7 +233,8 @@ class Time(metaclass=_TimeMeta):
     _fixed_time: float = 0.0
     _fixed_unscaled_time: float = 0.0
     _startup_time: float = _time_mod.time()
-    _maximum_delta_time: float = 0.1
+    _maximum_delta_time: float = 1.0 / 3.0
+    _reset_delta_on_next_tick: bool = False
 
     # -- Engine hooks (called by PlayModeManager) ---------------------------
 
@@ -229,6 +250,7 @@ class Time(metaclass=_TimeMeta):
         cls._unscaled_time = 0.0
         cls._fixed_time = 0.0
         cls._fixed_unscaled_time = 0.0
+        cls._reset_delta_on_next_tick = False
         try:
             from Infernux.lib import SceneManager
             SceneManager.instance().time_scale = 1.0
@@ -238,6 +260,9 @@ class Time(metaclass=_TimeMeta):
     @classmethod
     def _tick(cls, raw_delta_time: float) -> None:
         """Advance one frame.  Called by ``PlayModeManager.tick()``."""
+        if cls._reset_delta_on_next_tick:
+            raw_delta_time = 0.0
+            cls._reset_delta_on_next_tick = False
         clamped = min(max(raw_delta_time, 0.0), cls.maximum_delta_time)
         time_scale = cls.time_scale
         cls._unscaled_delta_time = clamped
@@ -245,6 +270,14 @@ class Time(metaclass=_TimeMeta):
         cls._time += cls._delta_time
         cls._unscaled_time += clamped
         cls._frame_count += 1
+
+    @classmethod
+    def _reset_frame_delta(cls) -> None:
+        """Discard loading time before the first frame of a new scene."""
+        cls._delta_time = 0.0
+        cls._unscaled_delta_time = 0.0
+        cls._game_delta_time = 0.0
+        cls._reset_delta_on_next_tick = True
 
     @classmethod
     def _tick_fixed(cls, fixed_dt: float) -> None:

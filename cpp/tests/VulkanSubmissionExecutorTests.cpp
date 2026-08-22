@@ -1,4 +1,5 @@
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
+#include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkTypes.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
@@ -105,11 +106,13 @@ int main()
         [&](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
             assert(batchIndex == recorded);
             assert(commandBuffer != VK_NULL_HANDLE);
+            assert(vkdebug::GetDescriptorRecordingSubmissionSerial() == sync.completionEpoch);
             ++recorded;
             return true;
         },
         sync);
     assert(result.Succeeded());
+    assert(vkdebug::GetDescriptorRecordingSubmissionSerial() == rhi::InvalidSubmissionSerial);
     assert(queues.AssociateFrameSlot(0, result.completionTicket));
     assert(recorded == plan.batches.size());
     assert(queues.WaitForGraphicsFrameSlot(0));
@@ -213,13 +216,57 @@ int main()
         queues.CompleteCompletionEpoch(sync.completionEpoch);
         sync.previousFrameTimeline = VK_NULL_HANDLE;
         sync.previousFrameTimelineValue = 0;
+
+        // A graph-generation prime starts on Compute while preserving GPU
+        // resident state from the previous generation. Verify that the
+        // previous generation dependency gates that first Compute batch.
+        VkSemaphoreTypeCreateInfo gateType{};
+        gateType.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        gateType.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        gateType.initialValue = 0;
+        VkSemaphoreCreateInfo gateInfo{};
+        gateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        gateInfo.pNext = &gateType;
+        VkSemaphore generationGate = VK_NULL_HANDLE;
+        assert(vkCreateSemaphore(context.GetDevice(), &gateInfo, nullptr, &generationGate) == VK_SUCCESS);
+
+        assert(vkResetFences(context.GetDevice(), 1, &completionFence) == VK_SUCCESS);
+        sync.completionEpoch = queues.ReserveCompletionEpoch();
+        sync.previousFrameTimeline = generationGate;
+        sync.previousFrameTimelineValue = 1;
+        sync.previousFrameWaitAtFirstBatch = true;
+        const auto generationPrime = executor.Execute(
+            0, overlappedPlan, [](uint32_t, VkCommandBuffer commandBuffer) { return commandBuffer != VK_NULL_HANDLE; },
+            sync);
+        assert(generationPrime.Succeeded());
+        assert(vkWaitForFences(context.GetDevice(), 1, &completionFence, VK_TRUE, 1'000'000ull) == VK_TIMEOUT);
+
+        VkSemaphoreSignalInfo signalInfo{};
+        signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+        signalInfo.semaphore = generationGate;
+        signalInfo.value = 1;
+        assert(vkSignalSemaphore(context.GetDevice(), &signalInfo) == VK_SUCCESS);
+        assert(vkWaitForFences(context.GetDevice(), 1, &completionFence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS);
+        executor.CompleteFrame(0);
+        queues.CompleteCompletionEpoch(sync.completionEpoch);
+        vkDestroySemaphore(context.GetDevice(), generationGate, nullptr);
+        sync.previousFrameTimeline = VK_NULL_HANDLE;
+        sync.previousFrameTimelineValue = 0;
+        sync.previousFrameWaitAtFirstBatch = false;
     }
 
     rhi::SubmissionPlan failedPlan;
     assert(rhi::BuildSubmissionPlan({work.front()}, failedPlan, error));
     sync.completionEpoch = queues.ReserveCompletionEpoch();
-    const auto failed = executor.Execute(1, failedPlan, [](uint32_t, VkCommandBuffer) { return false; }, sync);
+    const auto failed = executor.Execute(
+        1, failedPlan,
+        [&](uint32_t, VkCommandBuffer) {
+            assert(vkdebug::GetDescriptorRecordingSubmissionSerial() == sync.completionEpoch);
+            return false;
+        },
+        sync);
     assert(!failed.Succeeded());
+    assert(vkdebug::GetDescriptorRecordingSubmissionSerial() == rhi::InvalidSubmissionSerial);
     queues.CompleteCompletionEpoch(sync.completionEpoch);
     const auto afterFailure = queues.Reserve(rhi::QueueRole::Graphics);
     assert(afterFailure.IsValid());

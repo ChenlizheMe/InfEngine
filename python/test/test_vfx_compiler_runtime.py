@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import struct
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,6 +20,7 @@ from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
 from Infernux.debug import Debug
+from Infernux.application import Application
 from Infernux.engine.undo import PythonComponentDocumentCommand
 from Infernux.graph import (
     AssetReference,
@@ -46,10 +48,147 @@ from Infernux.particle import (
     VectorField,
     default_event_graph,
 )
-from Infernux.lib import AssetRegistry
+from Infernux.lib import AssetRegistry, GameObject
 
 
 particle_system_module = importlib.import_module("Infernux.components.particle_system")
+
+
+def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
+    source = tmp_path / "Recovery.particlegraph"
+    source.write_text("{}", encoding="utf-8")
+    artifact = SimpleNamespace(
+        hir={},
+        kernel_ir={},
+        gpu_glsl={"emitters": []},
+        gpu_spirv={},
+        revision=1,
+        source_key=str(source),
+    )
+    calls = []
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: editor))
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "get",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "load_runtime_reference",
+        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("stale artifact"))),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "compile_path",
+        staticmethod(lambda path, **kwargs: calls.append((path, kwargs)) or artifact),
+    )
+    component = ParticleSystem()
+    monkeypatch.setattr(
+        component,
+        "_publish_gpu_particle_graph",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "decode_runtime_artifact",
+        staticmethod(
+            lambda _artifact: (
+                SimpleNamespace(parameters=(), emitters=()),
+                SimpleNamespace(emitters=()),
+                (),
+            )
+        ),
+    )
+    assert component._load_particle_graph_artifact(
+        ParticleGraphRef(path_hint=str(source))
+    ) is editor
+    return calls
+
+
+def test_editor_recovers_invalid_particle_artifact_from_authoring_source(
+    monkeypatch, tmp_path
+):
+    calls = _particle_artifact_load_probe(monkeypatch, tmp_path, editor=True)
+
+    assert len(calls) == 1
+    assert calls[0][0] == str(tmp_path / "Recovery.particlegraph")
+
+
+def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "PublishRecovery.particlegraph"
+    source.write_text("{}", encoding="utf-8")
+    stale_artifact = SimpleNamespace(
+        hir={},
+        kernel_ir={},
+        gpu_glsl={"emitters": []},
+        gpu_spirv={},
+        revision=1,
+        source_key=str(source),
+    )
+    rebuilt_artifact = SimpleNamespace(
+        hir={},
+        kernel_ir={},
+        gpu_glsl={"emitters": []},
+        gpu_spirv={},
+        revision=2,
+        source_key=str(source),
+    )
+    compile_calls = []
+    publish_calls = []
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "get",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "load_runtime_reference",
+        staticmethod(lambda *_args, **_kwargs: stale_artifact),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "compile_path",
+        staticmethod(
+            lambda path, **kwargs: compile_calls.append((path, kwargs))
+            or rebuilt_artifact
+        ),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "decode_runtime_artifact",
+        staticmethod(
+            lambda _artifact: (
+                SimpleNamespace(parameters=(), emitters=()),
+                SimpleNamespace(emitters=()),
+                (),
+            )
+        ),
+    )
+    component = ParticleSystem()
+
+    def publish(*_args, **_kwargs):
+        publish_calls.append(True)
+        if len(publish_calls) == 1:
+            raise RuntimeError("missing update_render_fusion")
+
+    monkeypatch.setattr(component, "_publish_gpu_particle_graph", publish)
+
+    assert component._load_particle_graph_artifact(
+        ParticleGraphRef(path_hint=str(source))
+    ) is True
+    assert len(compile_calls) == 1
+    assert len(publish_calls) == 2
+
+
+def test_player_rejects_invalid_particle_artifact_without_source_compilation(
+    monkeypatch, tmp_path
+):
+    calls = _particle_artifact_load_probe(monkeypatch, tmp_path, editor=False)
+
+    assert calls == []
 
 
 def test_particle_runtime_batch_ids_do_not_alias_reused_scene_ids(monkeypatch):
@@ -80,6 +219,34 @@ def test_inactive_particle_runtime_allocates_graph_identity_on_first_preview_acc
     assert component._batch_id > 0
     assert component._gpu_controllers == []
     assert component._gpu_emitter_ids == []
+
+
+def test_particle_override_sync_is_dirty_driven(monkeypatch):
+    component = ParticleSystem()
+    component._initialize_runtime_state(False)
+
+    module = particle_system_module
+    original_get_raw = module.get_raw_field_value
+    reads = []
+
+    def tracked_get_raw(owner, name):
+        reads.append(name)
+        return original_get_raw(owner, name)
+
+    monkeypatch.setattr(module, "get_raw_field_value", tracked_get_raw)
+    component._sync_serialized_instance_overrides()
+    assert reads == []
+
+    component._parameter_overrides_json = '{"density":0.5}'
+    component._sync_serialized_instance_overrides()
+
+    assert reads == [
+        "_parameter_overrides_json",
+        "_parameter_overrides_json",
+        "_emitter_overrides_json",
+    ]
+    assert component._instance_overrides_dirty is False
+    assert component._parameter_overrides == {"density": 0.5}
 
 
 def test_gpu_particle_default_material_state_matches_output_geometry(monkeypatch):
@@ -261,6 +428,10 @@ class _GpuParticleNative:
         self.program_batches.append((programs, removed, graph_instance_id))
         return ""
 
+    def _replace_gpu_particle_graphs(self, graphs):
+        self.program_batches.append(("graphs", graphs))
+        return ""
+
     def _begin_gpu_particle_batch(self, graph_instance_id, items):
         self.frames.append((graph_instance_id, items))
         return self.accept_batches
@@ -368,6 +539,40 @@ class _GpuParticleNative:
         }
 
 
+def test_particle_scene_publication_batches_graph_rebuilds_once():
+    native = _GpuParticleNative()
+
+    class _PublicationProbe:
+        def __init__(self):
+            self.playback_publications = 0
+
+        def _publish_native_playback_states(self):
+            self.playback_publications += 1
+
+    first = _PublicationProbe()
+    second = _PublicationProbe()
+    ParticleSystem._begin_native_publication_batch()
+    ParticleSystem._native_publication_batch.extend(
+        [
+            (native, first, 11, [{"id": 101}], []),
+            (native, second, 12, [{"id": 102}], [99]),
+        ]
+    )
+    ParticleSystem._end_native_publication_batch(commit=True)
+
+    assert native.program_batches == [
+        (
+            "graphs",
+            [
+                {"graph_instance_id": 11, "programs": [{"id": 101}], "remove_ids": []},
+                {"graph_instance_id": 12, "programs": [{"id": 102}], "remove_ids": [99]},
+            ],
+        )
+    ]
+    assert first.playback_publications == 1
+    assert second.playback_publications == 1
+
+
 def test_particle_system_exposes_graph_defined_event_schema_without_external_routes(
     scene, monkeypatch, tmp_path
 ):
@@ -436,8 +641,8 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
                 TypeRef(ValueType.F32),
                 0.25,
                 True,
-                "Smoke",
-                "Controls the smoke density.",
+                category="Smoke",
+                tooltip="Controls the smoke density.",
             ),
         ),
         emitters=(
@@ -469,6 +674,7 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
             "value": 0.75,
             "category": "Smoke",
             "tooltip": "Controls the smoke density.",
+            "hdr": False,
         }
     ]
     assert component.runtime_diagnostics()["parameters"][0]["value"] == 0.75
@@ -482,6 +688,171 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
     assert words[1:] == [0, 0, 0]
     with pytest.raises(TypeError, match="not vec3"):
         component.set_vector3("Density", 1.0, 2.0, 3.0)
+
+
+def _instantiate_particle_graph(tmp_path, name="InstantiateParameters"):
+    source = tmp_path / f"{name}.particlegraph"
+    ParticleGraphAsset(
+        stable_id=name.lower(),
+        parameters=(
+            ParticleParameter(
+                "smoke-density",
+                "Density",
+                TypeRef(ValueType.F32),
+                1.0,
+                True,
+            ),
+            ParticleParameter(
+                "impact-scale",
+                "ImpactScale",
+                TypeRef(ValueType.F32),
+                1.0,
+                True,
+            ),
+        ),
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="impact",
+                name="Impact",
+                settings=EmitterSettings(capacity=8),
+            ),
+        ),
+    ).save(str(source))
+    return source
+
+
+def test_particle_system_serialize_flushes_live_instance_overrides(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path, "SerializeFlush")
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("SerializeFlush").add_py_component(component)
+    component.awake()
+    component.start()
+    component.set_float("Density", 0.75)
+    component.set_emitter_options("Impact", play_on_start=False)
+    component._parameter_overrides["impact-scale"] = 0.2
+    component._emitter_overrides["impact"] = {
+        "enabled": True,
+        "play_on_start": False,
+    }
+
+    document = component._serialize_fields_document()
+
+    assert json.loads(document["_parameter_overrides_json"]) == {
+        "impact-scale": 0.2,
+        "smoke-density": 0.75,
+    }
+    assert json.loads(document["_emitter_overrides_json"]) == {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+
+
+def test_particle_system_keeps_instance_overrides_when_runtime_schema_is_empty(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path, "EmptySchema")
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("EmptySchema").add_py_component(component)
+    component.awake()
+    component._parameter_overrides = {"impact-scale": 0.2}
+    component._emitter_overrides = {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+    component._store_parameter_overrides()
+    component._store_emitter_overrides()
+
+    component._reconcile_parameter_overrides(())
+    component._reconcile_emitter_overrides(())
+
+    assert component._parameter_overrides == {"impact-scale": 0.2}
+    assert component._emitter_overrides == {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+    assert json.loads(component._parameter_overrides_json) == {"impact-scale": 0.2}
+
+
+def test_game_object_instantiate_copies_particle_instance_state(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path)
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("ImpactSparkTemplate")
+    game_object.add_py_component(component)
+    component.awake()
+    component.start()
+    component.play_on_awake = False
+    component.simulation_speed = 2.5
+    component.set_float("Density", 0.75)
+    component.set_float("ImpactScale", 0.2)
+    component.set_emitter_options("Impact", play_on_start=False)
+    component.stop()
+    game_object.active = False
+
+    parent = scene.create_game_object("ImpactSparkPool")
+    clone = GameObject.instantiate(
+        game_object,
+        parent=parent,
+        instantiate_in_world_space=False,
+    )
+
+    assert clone is not None
+    assert clone.get_parent() is parent
+    assert clone.active is False
+    restored = clone.get_py_component(ParticleSystem)
+    assert restored is not None
+    assert restored is not component
+    assert restored.play_on_awake is False
+    assert restored.simulation_speed == pytest.approx(2.5)
+    assert restored.get_float("Density") == pytest.approx(0.75)
+    assert restored.get_float("ImpactScale") == pytest.approx(0.2)
+    assert json.loads(restored._parameter_overrides_json) == {
+        "impact-scale": 0.2,
+        "smoke-density": 0.75,
+    }
+    assert json.loads(restored._emitter_overrides_json) == {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+    assert restored.emitter_instance_schema()[0]["play_on_start"] is False
+    assert getattr(restored, "_playing", False) is False
+
+    native.playing_updates.clear()
+    clone.active = True
+    restored.update(1.0 / 60.0)
+    assert restored.play_on_awake is False
+    assert restored._playing is False
+    assert not any(playing for _emitter_id, playing in native.playing_updates)
+
+
+def test_game_object_instantiate_copies_live_overrides_ahead_of_json(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path, "LiveAhead")
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("LiveAheadTemplate")
+    game_object.add_py_component(component)
+    component.awake()
+    component.start()
+    component.set_float("ImpactScale", 1.0)
+    component._parameter_overrides["impact-scale"] = 0.2
+
+    clone = GameObject.instantiate(game_object)
+    restored = clone.get_py_component(ParticleSystem)
+
+    assert restored.get_float("ImpactScale") == pytest.approx(0.2)
+    assert json.loads(restored._parameter_overrides_json) == {"impact-scale": 0.2}
 
 
 def test_particle_system_deserialize_repairs_missing_runtime_override_cache(
@@ -528,6 +899,7 @@ def test_particle_system_deserialize_repairs_missing_runtime_override_cache(
 def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emitters(
     scene, monkeypatch, tmp_path
 ):
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui._inspector_undo import (
         _record_python_component_document_edit,
     )
@@ -554,7 +926,7 @@ def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emi
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
-    manager._sync_dirty = lambda: None
+    core = EditorInteractionCore()
     try:
         _record_python_component_document_edit(
             component,
@@ -593,6 +965,7 @@ def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emi
         manager.redo()
         assert component.emitter_instance_schema()[0]["enabled"] is False
     finally:
+        core.shutdown()
         UndoManager._instance = previous_manager
 
 
@@ -774,6 +1147,7 @@ def test_particle_system_exposes_texture2d_as_a_typed_parameter(scene):
             "value": default.to_dict(),
             "category": "Smoke",
             "tooltip": "Smoke sprite sheet.",
+            "hdr": False,
         }
     ]
     component.set_texture("Smoke Texture", override)
@@ -784,6 +1158,41 @@ def test_particle_system_exposes_texture2d_as_a_typed_parameter(scene):
     assert component.reset_parameter("Smoke Texture")
     assert component.get_texture("smoke-texture") == default
     assert component._parameter_overrides_json == "{}"
+
+
+def test_particle_system_exposes_color_parameter_hdr(scene):
+    metadata = SimpleNamespace(
+        parameters=(
+            SimpleNamespace(
+                stable_id="paper-color",
+                name="Paper",
+                value_type=TypeRef(ValueType.COLOR),
+                default=[1.0, 1.0, 1.0, 1.0],
+                exposed=True,
+                category="",
+                tooltip="",
+                hdr=True,
+            ),
+        ),
+        emitters=(),
+    )
+    component = ParticleSystem()
+    scene.create_game_object("ColorParameter").add_py_component(component)
+    component.awake()
+    component._particle_metadata = metadata
+
+    assert component.exposed_parameter_schema() == [
+        {
+            "stable_id": "paper-color",
+            "name": "Paper",
+            "type": "color",
+            "default": [1.0, 1.0, 1.0, 1.0],
+            "value": [1.0, 1.0, 1.0, 1.0],
+            "category": "",
+            "tooltip": "",
+            "hdr": True,
+        }
+    ]
 
 
 def test_live_texture_parameter_rebuilds_binding_and_rolls_back_on_failure(
@@ -1214,6 +1623,7 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     assert native.program_batches[-1] == ([], published_gpu_ids, component._batch_id)
 
 
+
 def test_particle_system_keeps_event_queues_inside_each_gpu_emitter(
     scene, monkeypatch, tmp_path
 ):
@@ -1615,10 +2025,12 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
         str(vector_field_source), database=engine.get_asset_database()
     )
     assert reimported, reimported.error
-    for _ in range(4):
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
         component.update(0.0)
         if engine._gpu_particle_vector_field_generation(emitter_id, 0) > initial_generation:
             break
+        time.sleep(0.001)
 
     assert component._artifact_revision == initial_artifact_revision
     assert engine._gpu_particle_vector_field_generation(emitter_id, 0) == initial_generation + 1
@@ -1868,6 +2280,31 @@ def test_particle_system_play_consumes_saved_aot_without_source_compilation(
     assert native.program_batches
 
 
+def test_single_emitter_restart_resets_authoritative_graph_clock(
+    scene, monkeypatch, tmp_path
+):
+    source = tmp_path / "SingleBurstRestart.particlegraph"
+    ParticleGraphAsset(stable_id="single-burst-restart").save(str(source))
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("SingleBurstRestartProbe").add_py_component(component)
+
+    component.awake()
+    component.start()
+    component.update(2.0)
+    assert component._graph_simulation_time_ticks == 2_000_000_000
+
+    assert component.restart(0) is True
+    component.update(1.0 / 60.0)
+
+    assert component._graph_simulation_time_ticks == int(round(1_000_000_000.0 / 60.0))
+    assert native.frames[-1][1][0]["simulation_time_ticks"] == int(
+        round(1_000_000_000.0 / 60.0)
+    )
+
+
 def test_particle_preview_reuses_saved_aot_native_runtime_and_graph_clock(
     scene, monkeypatch, tmp_path
 ):
@@ -1977,7 +2414,7 @@ def test_particle_system_seek_replays_from_zero_and_preserves_pause_state(
     assert replay["force_simulation"] is False
     assert component._gpu_controllers[0].simulation_step == 4
 
-    assert component.reset("Seek Smoke") is True
+    assert component.reset_simulation("Seek Smoke") is True
     component.pause("Seek Smoke")
     component.update(0.0)
     reset_item = native.frames[-1][1][0]

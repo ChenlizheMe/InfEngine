@@ -1,7 +1,7 @@
 """SceneFileManager — scene load / save / new / prefab-mode lifecycle.
 
 Central authority for scene file operations: opening, saving, creating,
-prefab editing mode, save confirmation dialogs, and camera state
+prefab editing mode, document-aware close decisions, and camera state
 persistence.
 
 Example::
@@ -50,8 +50,6 @@ class SceneFileManager:
         """Mark the current scene as having unsaved changes."""
         ...
 
-    def clear_dirty(self) -> None: ...
-
     def set_on_scene_changed(self, cb: Callable[[], None]) -> None:
         """Register a callback fired after a new scene finishes loading.
 
@@ -68,7 +66,7 @@ class SceneFileManager:
         """
         ...
 
-    def save_scene_as(self) -> None:
+    def save_scene_as(self) -> bool:
         """Open a save-as dialog then save."""
         ...
 
@@ -79,6 +77,13 @@ class SceneFileManager:
             path: Absolute path to an ``.infscene`` file.
         """
         ...
+
+    def reload_from_resource(self, *, document_id: str, resource_path: str) -> object:
+        """Reload the current scene from its latest durable disk contents."""
+        ...
+    def request_external_reload(self, *, document_id: str, resource_path: str) -> object: ...
+    def poll_pending_writes(self) -> int: ...
+    def owns_document(self, document_id: str) -> bool: ...
 
     def new_scene(self) -> None:
         """Create a blank scene, prompting to save the current one first."""
@@ -92,18 +97,6 @@ class SceneFileManager:
         """Load the most recently opened scene, or create a default."""
         ...
 
-    def handle_shortcut(self, ctx: object) -> bool:
-        """Process Ctrl+S / Ctrl+Shift+S shortcuts.
-
-        Returns:
-            ``True`` if a shortcut was consumed.
-        """
-        ...
-
-    def poll_pending_save(self) -> None:
-        """Tick the save-confirmation popup state machine (per frame)."""
-        ...
-
     def poll_deferred_load(self) -> None:
         """Tick deferred scene open/new operations (per frame)."""
         ...
@@ -112,18 +105,16 @@ class SceneFileManager:
         """Human-readable name for the current scene (filename sans extension)."""
         ...
 
-    def render_confirmation_popup(self, ctx: object) -> None:
-        """Render the "Save changes?" confirmation modal if active."""
-        ...
-
-    def open_prefab_mode(self, prefab_path: str) -> None:
+    def open_prefab_mode(
+        self,
+        prefab_path: str,
+        preserve_undo_history: bool = False,
+    ) -> bool:
         """Enter prefab editing mode for *prefab_path*."""
         ...
-
-    def exit_prefab_mode(self) -> None:
+    def exit_prefab_mode(self) -> bool:
         """Leave prefab editing mode and return to the previous scene."""
         ...
-
     @property
     def is_prefab_mode(self) -> bool:
         """True when editing a prefab."""

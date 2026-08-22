@@ -47,9 +47,10 @@ class AssetRefBase:
     __slots__ = ("_guid", "_cached", "_path_hint")
 
     def __init__(self, guid: str = "", path_hint: str = ""):
-        self._guid = guid
+        from .asset_reference_types import canonical_asset_reference_identity
+
+        self._guid, self._path_hint = canonical_asset_reference_identity(guid, path_hint)
         self._cached = None
-        self._path_hint = path_hint  # optional human-readable path for display
 
     # ── GUID ───────────────────────────────────────────────────────────
 
@@ -65,7 +66,26 @@ class AssetRefBase:
 
     @property
     def path_hint(self) -> str:
-        """Best-effort human-readable path (may be stale)."""
+        """Current editor path when known, otherwise the serialized fallback."""
+        if self._guid:
+            try:
+                from Infernux.engine.interaction import AssetMutationService
+
+                mutations = AssetMutationService.instance()
+                if mutations is not None:
+                    resolved = mutations.resolve_path_hint(self._guid)
+                    if resolved:
+                        return resolved
+            except ImportError:
+                pass
+            database = _get_asset_database()
+            if database is not None:
+                try:
+                    resolved = str(database.get_path_from_guid(self._guid) or "")
+                except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+                    resolved = ""
+                if resolved:
+                    return resolved
         return self._path_hint
 
     @path_hint.setter
@@ -112,8 +132,9 @@ class AssetRefBase:
 
     @property
     def display_name(self) -> str:
-        if self._path_hint:
-            return os.path.basename(self._path_hint)
+        path_hint = self.path_hint
+        if path_hint:
+            return os.path.basename(path_hint)
         if self._guid:
             return f"GUID:{self._guid[:8]}…"
         return "None"
@@ -139,6 +160,34 @@ class AssetRefBase:
     def __repr__(self):
         cls_name = type(self).__name__
         return f"{cls_name}(guid='{self._guid}', path_hint='{self._path_hint}')"
+
+
+class GenericAssetRef(AssetRefBase):
+    """Typed reference for registered assets without a specialized wrapper."""
+
+    __slots__ = ("_asset_type",)
+
+    def __init__(self, asset_type: str, guid: str = "", path_hint: str = ""):
+        from .asset_reference_types import asset_type_registry
+
+        descriptor = asset_type_registry.require(asset_type)
+        super().__init__(guid=guid, path_hint=path_hint)
+        self._asset_type = descriptor.type_id
+
+    @property
+    def asset_type(self) -> str:
+        return self._asset_type
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+
+        if self._guid:
+            asset = AssetManager.load_by_guid(self._guid)
+            if asset is not None:
+                return asset
+        if self._path_hint:
+            return AssetManager.load(self._path_hint)
+        return None
 
 
 class TextureRef(AssetRefBase):
@@ -364,77 +413,26 @@ class AnimationTimelineRef(AssetRefBase):
 #   prefix      — short id prefix for the inspector widget
 # ---------------------------------------------------------------------------
 
-_ASSET_TYPE_REGISTRY: dict = {}
+_ASSET_REF_CLASSES: dict[str, type[AssetRefBase]] = {}
 
 
-def _ensure_registry():
-    """Populate the registry on first access (avoids import-time cycles)."""
-    if _ASSET_TYPE_REGISTRY:
+def _ensure_ref_classes():
+    """Populate Python reference bindings on first access."""
+    if _ASSET_REF_CLASSES:
         return
-    _ASSET_TYPE_REGISTRY.update({
-        "AudioClip": {
-            "ref_class":  AudioClipRef,
-            "drag_type":  "AUDIO_FILE",
-            "extensions": ("*.wav", "*.ogg"),
-            "display":    "AudioClip",
-            "prefix":     "aud",
-        },
-        "PhysicMaterial": {
-            "ref_class":  PhysicMaterialRef,
-            "drag_type":  "PHYSIC_MATERIAL_FILE",
-            "extensions": ("*.physicMaterial",),
-            "display":    "PhysicMaterial",
-            "prefix":     "pmat",
-        },
-        "AnimStateMachine": {
-            "ref_class":  AnimStateMachineRef,
-            "drag_type":  "ANIMFSM_FILE",
-            "extensions": ("*.animfsm",),
-            "display":    "AnimFSM",
-            "prefix":     "fsm",
-        },
-        "ParticleGraph": {
-            "ref_class":  ParticleGraphRef,
-            "drag_type":  "PARTICLE_GRAPH_FILE",
-            "extensions": ("*.particlegraph", "*.particle.py"),
-            "display":    "Particle Graph",
-            "prefix":     "particle",
-        },
-        "RenderEffect": {
-            "ref_class":  RenderEffectRef,
-            "drag_type":  "RENDER_EFFECT_FILE",
-            "extensions": ("*.effect", "*.effectgroup"),
-            "display":    "Render Effect / Group",
-            "prefix":     "effect",
-        },
-        "AnimationClip": {
-            "ref_class":  AnimationClipRef,
-            "drag_type":  "ANIMCLIP_FILE",
-            "extensions": ("*.animclip2d",),
-            "display":    "AnimClip2D",
-            "prefix":     "aclip",
-        },
-        "AnimationClip3D": {
-            "ref_class":  AnimationClip3DRef,
-            "drag_type":  "ANIMCLIP3D_FILE",
-            "extensions": ("*.animclip3d",),
-            "display":    "AnimClip3D",
-            "prefix":     "aclip3d",
-        },
-        "AnimationTimeline": {
-            "ref_class":  AnimationTimelineRef,
-            "drag_type":  "ANIMTIMELINE_FILE",
-            "extensions": ("*.animtimeline",),
-            "display":    "Timeline",
-            "prefix":     "atl",
-        },
-        "TimelineFSM": {
-            "ref_class":  TimelineFSMRef,
-            "drag_type":  "TIMELINEFSM_FILE",
-            "extensions": ("*.timelinefsm",),
-            "display":    "TimelineFSM",
-            "prefix":     "tlfsm",
-        },
+    _ASSET_REF_CLASSES.update({
+        "Material": MaterialRef,
+        "Texture": TextureRef,
+        "Shader": ShaderRef,
+        "AudioClip": AudioClipRef,
+        "PhysicMaterial": PhysicMaterialRef,
+        "AnimStateMachine": AnimStateMachineRef,
+        "ParticleGraph": ParticleGraphRef,
+        "RenderEffect": RenderEffectRef,
+        "AnimationClip": AnimationClipRef,
+        "AnimationClip3D": AnimationClip3DRef,
+        "AnimationTimeline": AnimationTimelineRef,
+        "TimelineFSM": TimelineFSMRef,
     })
 
 
@@ -445,34 +443,83 @@ def register_asset_type(asset_type: str, *, ref_class, drag_type: str, extension
     Call this early (e.g. in a plug-in's ``__init__``) to make the type
     available to serialization and the inspector.
     """
-    _ensure_registry()
-    _ASSET_TYPE_REGISTRY[asset_type] = {
-        "ref_class":  ref_class,
-        "drag_type":  drag_type,
-        "extensions": extensions,
-        "display":    display,
-        "prefix":     prefix,
-    }
+    from .asset_reference_types import AssetReferenceType, asset_type_registry
+
+    _ensure_ref_classes()
+    normalized_extensions = frozenset(
+        str(item).removeprefix("*").casefold() for item in extensions
+    )
+    asset_type_registry.register(
+        AssetReferenceType(
+            type_id=asset_type,
+            display_name=display,
+            extensions=normalized_extensions,
+            drag_types=(drag_type,),
+            widget_prefix=prefix,
+        ),
+        replace=asset_type_registry.get(asset_type) is not None,
+    )
+    _ASSET_REF_CLASSES[asset_type] = ref_class
 
 
 def get_asset_type_config(asset_type: str) -> Optional[dict]:
-    """Return the registry entry for *asset_type*, or ``None``."""
-    _ensure_registry()
-    return _ASSET_TYPE_REGISTRY.get(asset_type)
+    """Return a dynamic view over the single asset-type registry."""
+    from .asset_reference_types import asset_type_registry
+
+    _ensure_ref_classes()
+    descriptor = asset_type_registry.get(asset_type)
+    ref_class = _ASSET_REF_CLASSES.get(
+        descriptor.type_id if descriptor is not None else str(asset_type)
+    )
+    if descriptor is None or ref_class is None:
+        return None
+    return {
+        "ref_class": ref_class,
+        "drag_type": descriptor.drag_types[0],
+        "extensions": descriptor.patterns,
+        "display": descriptor.display_name,
+        "prefix": descriptor.widget_prefix,
+    }
 
 
 def get_all_asset_type_configs() -> dict:
-    """Return the full registry dict (asset_type → config)."""
-    _ensure_registry()
-    return _ASSET_TYPE_REGISTRY
+    """Return dynamic configs for all registered Python reference classes."""
+    _ensure_ref_classes()
+    return {
+        asset_type: get_asset_type_config(asset_type)
+        for asset_type in _ASSET_REF_CLASSES
+    }
+
+
+def create_asset_ref(
+    asset_type: str,
+    *,
+    guid: str = "",
+    path_hint: str = "",
+) -> AssetRefBase:
+    """Create the canonical specialized or generic reference for one type."""
+    from .asset_reference_types import asset_type_registry
+
+    _ensure_ref_classes()
+    descriptor = asset_type_registry.require(asset_type)
+    ref_class = _ASSET_REF_CLASSES.get(descriptor.type_id)
+    if ref_class is None:
+        return GenericAssetRef(
+            descriptor.type_id,
+            guid=guid,
+            path_hint=path_hint,
+        )
+    return ref_class(guid=guid, path_hint=path_hint)
 
 
 def get_asset_type_for_ref(ref) -> Optional[str]:
-    """Given an AssetRefBase instance, return its asset_type name."""
-    _ensure_registry()
-    ref_cls = type(ref)
-    for name, cfg in _ASSET_TYPE_REGISTRY.items():
-        if cfg["ref_class"] is ref_cls:
+    """Given an AssetRefBase instance or class, return its asset_type name."""
+    _ensure_ref_classes()
+    if isinstance(ref, GenericAssetRef):
+        return ref.asset_type
+    ref_cls = ref if isinstance(ref, type) else type(ref)
+    for name, registered_ref_class in _ASSET_REF_CLASSES.items():
+        if registered_ref_class is ref_cls:
             return name
     return None
 

@@ -43,10 +43,14 @@ template <typename T> static size_t FindKeySpan(const std::vector<std::pair<doub
 {
     if (keys.size() < 2)
         return 0;
-    for (size_t i = 0; i + 1 < keys.size(); ++i)
-        if (t < keys[i + 1].first)
-            return i;
-    return keys.size() - 2;
+
+    const auto upper =
+        std::upper_bound(keys.begin(), keys.end(), t, [](double time, const auto &key) { return time < key.first; });
+    if (upper == keys.begin())
+        return 0;
+    if (upper == keys.end())
+        return keys.size() - 2;
+    return static_cast<size_t>(std::distance(keys.begin(), upper) - 1);
 }
 
 static glm::vec3 SampleVec3(const std::vector<std::pair<double, glm::vec3>> &keys, double t, const glm::vec3 &fallback)

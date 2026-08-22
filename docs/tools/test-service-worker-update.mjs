@@ -93,7 +93,7 @@ function createWorker() {
     });
 }
 
-function runScenario({ controlled = true } = {}) {
+function runScenario({ controlled = true, sessionEntries = [] } = {}) {
     const registry = new Map();
     const documentListeners = new Map();
     const body = createElement("body", registry);
@@ -139,6 +139,7 @@ function runScenario({ controlled = true } = {}) {
         requestAnimationFrame(callback) { callback(); },
         scrollY: 0
     });
+    const sessionValues = new Map(sessionEntries);
     const sandbox = {
         __INFERNUX_SW_UPDATE_TEST__: true,
         CustomEvent: class {},
@@ -146,6 +147,11 @@ function runScenario({ controlled = true } = {}) {
         document,
         globalThis: null,
         localStorage: { getItem() { return null; }, setItem() {} },
+        sessionStorage: {
+            getItem(key) { return sessionValues.get(key) ?? null; },
+            removeItem(key) { sessionValues.delete(key); },
+            setItem(key, value) { sessionValues.set(key, String(value)); }
+        },
         navigator: { serviceWorker },
         setTimeout() {},
         window
@@ -158,6 +164,7 @@ function runScenario({ controlled = true } = {}) {
         document,
         documentListeners,
         getReloads: () => reloads,
+        sessionValues,
         serviceWorker
     };
 }
@@ -186,12 +193,15 @@ assert.equal(waitingScenario.serviceWorker.listenerCount("controllerchange"), 1)
 waitingScenario.api.dismissServiceWorkerUpdate();
 assert.equal(notice.hidden, true);
 waitingScenario.api.showServiceWorkerUpdate(registration, firstWorker);
-assert.equal(notice.hidden, true, "dismissal should suppress only the same waiting worker");
+assert.equal(notice.hidden, true, "dismissal should suppress the notice for the rest of this browsing session");
 
 const secondWorker = createWorker();
 registration.waiting = secondWorker;
 waitingScenario.api.showServiceWorkerUpdate(registration, secondWorker);
-assert.equal(notice.hidden, false, "a later worker version should be announced again");
+assert.equal(notice.hidden, true, "page navigation or a later worker must not repeat a dismissed notice in the same session");
+waitingScenario.sessionValues.clear();
+waitingScenario.api.showServiceWorkerUpdate(registration, secondWorker);
+assert.equal(notice.hidden, false, "a new browsing session may announce the waiting update");
 waitingScenario.document.documentElement.lang = "zh-CN";
 waitingScenario.api.renderServiceWorkerUpdateNotice();
 assert.equal(notice.getAttribute("aria-label"), "网站更新");

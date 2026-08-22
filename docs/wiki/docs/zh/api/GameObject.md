@@ -9,7 +9,7 @@
 场景层级中具有组件的游戏对象。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.2.9
+**状态：** Preview · **验证版本：** 0.3.4
 
 GameObject 拥有 Transform 与一组组件。注意 `active_self` 与派生状态 `active_in_hierarchy` 的区别，并优先按类型查找组件。
 <!-- USER CONTENT END -->
@@ -45,10 +45,15 @@ GameObject 拥有 Transform 与一组组件。注意 `active_self` 与派生状�
 | `compare_tag(tag: str) → bool` | 此 GameObject 的标签是否与给定标签匹配。 |
 | `get_transform() → Transform` | 获取 Transform 组件。 |
 | `add_component(component_type: Any) → Optional[Any]` | 通过类型或类型名称添加 C++ 组件。 |
+| `can_add_component(type_name: str) → bool` |  |
+| `get_add_component_blockers(type_name: str) → List[str]` |  |
 | `remove_component(component: Any) → bool` | 移除一个组件实例（无法移除 Transform）。 |
 | `can_remove_component(component: Any) → bool` |  |
 | `get_remove_component_blockers(component: Any) → List[str]` |  |
 | `get_components(component_type: Any = ...) → List[Any]` | 获取所有组件（包括 Transform）。 |
+| `get_component_order() → List[int]` |  |
+| `set_component_order(component_ids: List[int]) → bool` |  |
+| `get_component_default_document(component: Component) → Dict[str, Any]` |  |
 | `get_component(component_type: Any) → Optional[Any]` |  |
 | `get_cpp_component(type_name: str) → Optional[Component]` | 根据类型名称获取 C++ 组件。 |
 | `get_cpp_components(type_name: str) → List[Component]` | 获取指定类型名称的所有 C++ 组件。 |
@@ -56,6 +61,7 @@ GameObject 拥有 Transform 与一组组件。注意 `active_self` 与派生状�
 | `get_py_component(component_type: Any) → Any` | 获取指定类型的 Python 组件。 |
 | `get_py_components() → List[Any]` | 获取附加到此 GameObject 的所有 Python 组件。 |
 | `remove_py_component(component: Any) → bool` | 移除一个 Python 组件实例。 |
+| `replace_py_component(old_component: Any, new_component: Any) → Any` |  |
 | `get_parent() → Optional[GameObject]` | 获取父级 GameObject。 |
 | `set_parent(parent: Optional[GameObject], world_position_stays: bool = True) → None` | 设置父级 GameObject（None 表示根级）。 |
 | `get_children() → List[GameObject]` | 获取子 GameObject 列表。 |
@@ -82,7 +88,7 @@ GameObject 拥有 Transform 与一组组件。注意 `active_self` 与派生状�
 | `static GameObject.find(name: str) → Optional[GameObject]` |  |
 | `static GameObject.find_with_tag(tag: str) → Optional[GameObject]` |  |
 | `static GameObject.find_game_objects_with_tag(tag: str) → List[GameObject]` |  |
-| `static GameObject.instantiate(original: Any) → Optional[GameObject]` |  |
+| `static GameObject.instantiate(original: Any) → Any` |  |
 | `static GameObject.destroy(game_object: GameObject) → None` |  |
 
 <!-- USER CONTENT START --> static_methods

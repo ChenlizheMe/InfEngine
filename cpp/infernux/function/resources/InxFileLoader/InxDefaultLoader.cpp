@@ -1,5 +1,7 @@
 #include "InxDefaultLoader.hpp"
 
+#include <function/resources/AssetFormatRegistry.h>
+
 #include <algorithm>
 #include <core/log/InxLog.h>
 #include <filesystem>
@@ -101,7 +103,7 @@ std::string InxDefaultBinaryLoader::GetBinaryTypeFromExtension(const std::string
     } else if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".bmp" || ext == ".tiff" ||
                ext == ".ico" || ext == ".webp") {
         return "image";
-    } else if (ext == ".mp3" || ext == ".wav" || ext == ".ogg" || ext == ".flac" || ext == ".m4a" || ext == ".aac") {
+    } else if (asset_formats::Contains(asset_formats::kAudioExtensions, ext)) {
         return "audio";
     } else if (ext == ".mp4" || ext == ".avi" || ext == ".mkv" || ext == ".mov" || ext == ".wmv" || ext == ".flv" ||
                ext == ".webm") {

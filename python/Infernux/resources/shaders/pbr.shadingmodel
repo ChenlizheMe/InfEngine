@@ -45,6 +45,7 @@ void shading(in SurfaceData s, out vec4 color) {
                                    albedo, metallic,
                                    roughness, perceptualRoughness,
                                    F0, f90, energyCompensation,
+                                   s.specularHighlights,
                                    ctx.viewDepth, mainLight.shadow);
 
     // ---- Indirect diffuse: cosine-convolved irradiance (SH-style) ----

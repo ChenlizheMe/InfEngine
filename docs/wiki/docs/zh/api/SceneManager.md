@@ -31,7 +31,12 @@
 | `static SceneManager.get_scene_by_build_index(build_index: int) → Optional[str]` | Get a scene path by its build index. |
 | `static SceneManager.get_scene_at(index: int) → Optional[str]` | 按索引获取已加载的场景。 |
 | `static SceneManager.load_scene(scene: Union[int, str]) → bool` | 按名称或路径加载场景。 |
+| `static SceneManager.wait_for_load_scene(scene: Union[int, str]) → bool` | Prepare a scene asynchronously and switch when it is ready. |
+| `static SceneManager.prepare_scene(scene: Union[int, str]) → bool` | Prepare a scene asynchronously without publishing it. |
+| `static SceneManager.is_scene_prepared() → bool` | Return whether a held scene is ready to publish. |
+| `static SceneManager.activate_prepared_scene() → bool` | Publish the scene previously prepared by prepare_scene. |
 | `static SceneManager.process_pending_load() → None` | Process any pending scene load request. |
+| `static SceneManager.is_scene_load_pending() → bool` | Return whether a deferred runtime scene load is queued or executing. |
 | `static SceneManager.get_scene_count() → int` | 获取已加载的场景数量。 |
 | `static SceneManager.get_scene_name(build_index: int) → Optional[str]` | Get a scene name by build index. |
 | `static SceneManager.get_scene_path(build_index: int) → Optional[str]` | Get a scene file path by build index. |
@@ -46,7 +51,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.2.9 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.3.4 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

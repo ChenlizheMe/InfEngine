@@ -751,6 +751,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleSortShaderSources::Scan(),
         infernux::particle::GpuParticleSortShaderSources::Scatter(),
     };
+    if (!Require(sortSources[0].find("layout(local_size_x = 256)") != std::string_view::npos &&
+                     sortSources[0].find("shared uvec2 shared_keys[INX_SMALL_SORT_CAPACITY]") !=
+                         std::string_view::npos &&
+                     sortSources[0].find("INX_SMALL_SORT_VALUES_PER_LANE = 4u") != std::string_view::npos &&
+                     sortSources[0].find("for (uint k = 2u; k <= INX_SMALL_SORT_CAPACITY; k <<= 1u)") !=
+                         std::string_view::npos,
+                 "Small particle sort shader contract is not the 256-lane/1024-entry bitonic path"))
+        return false;
     std::array<std::vector<uint32_t>, 5> sortCode;
     for (size_t index = 0; index < sortSources.size(); ++index) {
         sortCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
@@ -816,6 +824,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleSpawnShaderSources::Advance(),
         infernux::particle::GpuParticleSpawnShaderSources::Prepare(),
     };
+    if (!Require(spawnSources[1].find("uint requested = playing ? pc.cpuSpawnCount : 0u;") != std::string_view::npos &&
+                     spawnSources[1].find("metadata[base + 0u] = accepted;") != std::string_view::npos &&
+                     spawnSources[1].find("metadata[base + 7u] = accepted;") != std::string_view::npos,
+                 "Particle spawn reset discarded the restart frame's fresh CPU burst"))
+        return false;
     std::array<std::vector<uint32_t>, 2> spawnCode;
     for (size_t index = 0; index < spawnSources.size(); ++index) {
         spawnCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
@@ -855,6 +868,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                             particleDeletionQueue, particleDrawRegistry, {}, {}, {}, sortProgram,
                                             cullProgram, boundsProgram, migrationProgram, spawnProgram),
                  "GPU particle system manager initialization failed"))
+        return false;
+    if (!Require(!particleSystems.HasPendingGpuWork(),
+                 "An initialized GPU particle manager without emitters must not publish frame compute work"))
+        return false;
+    particleSystems.AbortAsyncRecording();
+    if (!Require(!particleSystems.CanRecordPartitioned(),
+                 "An initialized GPU particle manager without emitters must not record partitioned compute") ||
+        !Require(!particleSystems.CanExecuteAsync(),
+                 "An initialized GPU particle manager without emitters must not enable async compute"))
+        return false;
+    if (!Require(!particleSystems.RequiresCollisionScene(),
+                 "An initialized GPU particle manager must not request collider extraction"))
         return false;
 
     infernux::particle::GpuParticleEmitterProgram managedProgram;
@@ -897,6 +922,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "GPU particle system was not published atomically"))
+        return false;
+    if (!Require(!particleSystems.RequiresCollisionScene(),
+                 "A collision-free GPU particle graph requested collider extraction"))
         return false;
     const uint64_t resetDiagnosticRequest = particleSystems.RequestDiagnostics(managedProgram.graphInstanceId, 60);
     if (!Require(resetDiagnosticRequest != 0 &&
@@ -1256,7 +1284,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuBounds particleBounds;
     infernux::particle::GpuParticleBoundsDesc particleBoundsDesc;
     particleBoundsDesc.capacity = particleRuntime.Capacity();
-    particleBoundsDesc.instances = particleRuntime.InstanceBuffer();
+    particleBoundsDesc.visibility = particleRuntime.VisibilityBuffer();
     particleBoundsDesc.sourceIndices = particleRuntime.RenderIndexBuffer();
     particleBoundsDesc.sourceIndirectArguments = particleRuntime.IndirectBuffer();
     particleBoundsDesc.simulationControl = particleRuntime.SimulationControlBuffer();
@@ -1267,7 +1295,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuParticleCullerDesc managedCullerDesc;
     managedCullerDesc.capacity = managedEntry.capacity;
     managedCullerDesc.vertexCount = 6;
-    managedCullerDesc.instances = managedEntry.instances;
+    managedCullerDesc.visibility = particleRuntime.VisibilityBuffer();
+    managedCullerDesc.ribbonInstances = managedEntry.instances;
     managedCullerDesc.sourceIndirectArguments = managedEntry.indirectArguments;
     managedCullerDesc.sourceIndices = particleRuntime.RenderIndexBuffer();
     managedCullerDesc.bounds = managedEntry.bounds;
@@ -1281,7 +1310,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuSorter managedViewSorter;
     infernux::particle::GpuParticleSorterDesc managedSorterDesc;
     managedSorterDesc.capacity = managedEntry.capacity;
-    managedSorterDesc.instances = managedEntry.instances;
+    managedSorterDesc.visibility = particleRuntime.VisibilityBuffer();
     managedSorterDesc.indirectArguments = managedViewCuller.DrawIndirectBuffer();
     managedSorterDesc.sourceIndices = managedViewCuller.VisibleIndexBuffer();
     managedSorterDesc.dispatchArguments = managedViewCuller.SortDispatchBuffer();
@@ -1390,6 +1419,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Particle RenderGraph attachment failed"))
         return false;
     if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))
+        return false;
+    if (!Require(!particleSpawnDomain.HasFramePending(),
+                 "Graph spawn-domain work was armed without an explicit frame mark"))
+        return false;
+    particleSpawnDomain.MarkFramePending();
+    if (!Require(particleSpawnDomain.HasFramePending() && particleSpawnDomain.ConsumeFramePending() &&
+                     !particleSpawnDomain.ConsumeFramePending(),
+                 "Graph spawn-domain frame mark was not consumed exactly once"))
+        return false;
+    // Re-arm the token that the actual RenderGraph execution below must consume.
+    particleSpawnDomain.MarkFramePending();
+    if (!Require(particleGraph.HasRenderResetPending(), "Rendering frame did not arm its RenderReset token"))
         return false;
     const auto particleOutputs = particleGraph.Outputs();
 
@@ -1611,6 +1652,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [](RenderContext &) {};
     });
 
+    const bool dynamicGeometryTest = resources.graph.SupportsDynamicRendering();
     resources.graph.AddPass("IndirectDraw", [&](PassBuilder &builder) {
         builder.Read(particleTexture);
         builder.ReadIndirectBuffer(copiedIndirectArguments);
@@ -1623,6 +1665,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         colorTarget = builder.WriteColor(colorTarget);
         builder.SetRenderArea(16, 16);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        builder.UseDynamicRendering(dynamicGeometryTest);
         auto managedRenderer = managedEntry.renderer;
         return [&, managedRenderer](RenderContext &context) {
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
@@ -1666,6 +1709,24 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
+    if (!Require(resources.graph.GetPassUsesDynamicRendering("IndirectDraw") == dynamicGeometryTest,
+                 "RenderGraph did not honor the Dynamic Rendering capability fallback"))
+        return false;
+    const auto indirectContract = resources.graph.GetPassRenderingContract("IndirectDraw");
+    if (!Require(indirectContract.found && !indirectContract.culled &&
+                     indirectContract.usesDynamicRendering == dynamicGeometryTest &&
+                     indirectContract.attachments.IsValid() && indirectContract.attachments.colorFormatCount == 1 &&
+                     indirectContract.attachments.colorFormats[0] == infernux::rhi::PixelFormat::RGBA8UNorm,
+                 "RenderGraph did not publish the compiled graphics attachment contract"))
+        return false;
+    if (dynamicGeometryTest) {
+        const auto signature = resources.graph.GetPassRenderingSignature("IndirectDraw");
+        if (!Require(resources.graph.GetPassRenderPass("IndirectDraw") == VK_NULL_HANDLE && signature.IsValid() &&
+                         signature.colorFormatCount == 1 &&
+                         signature.colorFormats[0] == infernux::rhi::PixelFormat::RGBA8UNorm,
+                     "Dynamic geometry pass did not publish its attachment signature"))
+            return false;
+    }
 
     infernux::rhi::BindingLayoutDesc sampledTextureLayoutDesc;
     sampledTextureLayoutDesc.entries[0] = {0, infernux::rhi::BindingType::CombinedTextureSampler,
@@ -1697,7 +1758,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    constexpr size_t sortGenerateIndex = 17;
+    constexpr size_t sortGenerateIndex = 18;
     constexpr size_t sortTailIndex = sortGenerateIndex + infernux::particle::ParticleGpuSorter::PassCount * 3;
     constexpr size_t expectedExecutionCount = sortTailIndex + 5;
     const auto finalRadixScatter =
@@ -1708,13 +1769,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         executionNames[2] == "CopyIndirectArguments" && executionNames[3] == "Particle/TestEmitter/Bootstrap" &&
         executionNames[4] == "Particle/TestEmitter/VisibilityPrepare" &&
         executionNames[5] == "Particle/TestEmitter/SpawnPrepare" && executionNames[6] == "Particle/TestEmitter/Init" &&
-        executionNames[7] == "Particle/TestEmitter/Update" && executionNames[8] == "Particle/TestEmitter/RenderReset" &&
-        executionNames[9] == "Particle/TestEmitter/Rendering" &&
-        executionNames[10] == "Particle/TestEmitter/BoundsReset" &&
-        executionNames[11] == "Particle/TestEmitter/BoundsReduce" &&
-        executionNames[12] == "ManagedParticleCull/Reset" && executionNames[13] == "ManagedParticleCull/Cull" &&
-        executionNames[14] == "ManagedParticleCull/Finalize" && executionNames[15] == "OffscreenParticleCull/Reset" &&
-        executionNames[16] == "OffscreenParticleCull/Cull" &&
+        executionNames[7] == "Particle/TestEmitter/AlivePrepareUpdate" &&
+        executionNames[8] == "Particle/TestEmitter/Update" && executionNames[9] == "Particle/TestEmitter/RenderReset" &&
+        executionNames[10] == "Particle/TestEmitter/Rendering" &&
+        executionNames[11] == "Particle/TestEmitter/BoundsReset" &&
+        executionNames[12] == "Particle/TestEmitter/BoundsReduce" &&
+        executionNames[13] == "ManagedParticleCull/Reset" && executionNames[14] == "ManagedParticleCull/Cull" &&
+        executionNames[15] == "ManagedParticleCull/Finalize" && executionNames[16] == "OffscreenParticleCull/Reset" &&
+        executionNames[17] == "OffscreenParticleCull/Cull" &&
         executionNames[sortGenerateIndex] == "ManagedParticleSort/Generate" &&
         executionNames[sortTailIndex] == finalRadixScatter && executionNames[sortTailIndex + 1] == "ParticleTexture" &&
         executionNames[sortTailIndex + 2] == "IndirectDraw" &&
@@ -1898,12 +1960,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         auto publication = std::make_shared<const infernux::rhi::TextureGpuView>(
             "compute-indirect-fixture", 1, infernux::rhi::TextureHandle{}, texture, sampler, 1, std::move(owner));
         auto slot = std::make_shared<infernux::rhi::TextureGpuViewSlot>("compute-indirect-fixture");
-        (void)slot->Publish(publication);
+        if (!slot->TryPublish(publication))
+            return infernux::particle::GpuBillboardTextureLease{};
         return infernux::particle::GpuBillboardTextureLease{infernux::particle::GpuBillboardTextureStatus::Ready,
                                                             texture, sampler, std::move(slot), std::move(publication)};
     };
     billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
+    billboardPass.renderingMode = dynamicGeometryTest ? infernux::MaterialPassRenderingMode::DynamicRendering
+                                                      : infernux::MaterialPassRenderingMode::LegacyRenderPass;
     billboardView.viewProjection[0] = 1.0f;
     billboardView.viewProjection[5] = 1.0f;
     billboardView.viewProjection[10] = 1.0f;
@@ -1994,10 +2059,20 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!Require(billboardRecorded, "Particle billboard renderer did not record its indirect draw"))
         return false;
-    if (!Require(!particleGraph.HasPendingFrame() && particleGraph.LastConsumedFrame() == 42,
-                 "Particle graph did not consume exactly one armed frame"))
+    if (!Require(!particleGraph.HasPendingFrame() && particleGraph.LastConsumedFrame() == 42 &&
+                     !particleSpawnDomain.HasFramePending() && !particleGraph.HasRenderResetPending(),
+                 "Particle graph did not consume exactly one armed frame and its RenderReset token"))
         return false;
     if (!Require(!particleGraph.BeginFrame(particleFrame), "Particle graph accepted the same engine frame twice"))
+        return false;
+    auto stopParticleFrame = particleFrame;
+    stopParticleFrame.frameIndex = 43;
+    stopParticleFrame.simulate = false;
+    stopParticleFrame.render = false;
+    if (!Require(particleGraph.BeginFrame(stopParticleFrame) && particleGraph.HasRenderResetPending() &&
+                     particleGraph.ConsumeRenderResetPending() && !particleGraph.ConsumeRenderResetPending() &&
+                     !particleGraph.HasRenderResetPending(),
+                 "Stopping particle rendering did not produce exactly one reset token"))
         return false;
     if (!Require(vkEndCommandBuffer(commandBuffer) == VK_SUCCESS, "Command buffer end failed"))
         return false;
@@ -2088,6 +2163,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle manager reused incompatible resident buffers during layout migration"))
         return false;
 
+    auto compatibleDuringMigration = managedProgram;
+    compatibleDuringMigration.artifactRevision = 5;
+    compatibleDuringMigration.migration.reset();
+    if (!Require(publishManagedGraph({compatibleDuringMigration}) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 5 &&
+                     particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
+                     particleDeletionQueue.PendingCount() == 5,
+                 "Compatible GPU particle publication dropped an unsubmitted migration transaction"))
+        return false;
+    managedProgram = std::move(compatibleDuringMigration);
+
     auto migrationFrame = managedFrame;
     migrationFrame.frameIndex = 44;
     migrationFrame.spawnCount = 0;
@@ -2097,15 +2183,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle manager rejected the migration boundary frame") ||
         !executeManagedFrame("GPU particle manager migration frame failed") ||
         !Require(particleDeletionQueue.PendingCount() == 5,
-                 "GPU particle manager did not retire the migration graph and source at the frame boundary"))
+                 "GPU particle manager retired migration resources while their command buffer was only recorded"))
         return false;
 
-    particleDeletionQueue.FlushAll();
     auto postMigrationFrame = migrationFrame;
     postMigrationFrame.frameIndex = 45;
     if (!Require(particleSystems.BeginFrame(managedProgram.id, postMigrationFrame, managedTransforms),
                  "GPU particle manager rejected the post-migration frame") ||
-        !executeManagedFrame("GPU particle manager post-migration graph failed") ||
+        !Require(particleDeletionQueue.PendingCount() == 6,
+                 "GPU particle manager did not defer migration retirement to the next frame boundary"))
+        return false;
+
+    particleDeletionQueue.FlushAll();
+    if (!executeManagedFrame("GPU particle manager post-migration graph failed") ||
         !Require(particleDeletionQueue.PendingCount() == 0,
                  "GPU particle manager retained migration resources after graph replacement"))
         return false;
@@ -2126,11 +2216,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError),
                  "Compatible GPU particle multi-emitter hot reload failed"))
         return false;
+    if (!Require(particleSystems.Size() == 2 && particleSystems.Contains(managedProgram.id) &&
+                     particleSystems.Contains(companionBatchProgram.id),
+                 "GPU particle companion test fixture contains unexpected emitters"))
+        return false;
 
     auto batchFrame = postMigrationFrame;
     batchFrame.frameIndex = 46;
+    batchFrame.spawnCount = 4;
+    batchFrame.simulate = true;
+    batchFrame.render = true;
     auto pausedCompanionFrame = batchFrame;
     pausedCompanionFrame.simulationStep = 7;
+    pausedCompanionFrame.spawnCount = 0;
     pausedCompanionFrame.simulate = false;
     pausedCompanionFrame.render = false;
     if (!Require(
@@ -2139,6 +2237,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                              {companionBatchProgram.id, {}, pausedCompanionFrame, managedTransforms}}),
             "GPU particle manager rejected a multi-emitter batch with a paused emitter") ||
         !executeManagedFrame("GPU particle multi-emitter frame failed"))
+        return false;
+    const auto pausedCompanionTelemetry = particleSystems.TelemetrySnapshot();
+    if (!Require(pausedCompanionTelemetry.scheduledSystemCount == 2 &&
+                     pausedCompanionTelemetry.simulatingSystemCount == 1 &&
+                     pausedCompanionTelemetry.renderingSystemCount == 1 &&
+                     pausedCompanionTelemetry.requestedSpawnCount == batchFrame.spawnCount,
+                 "Paused companion emitter was included in graph simulation or rendering work"))
         return false;
 
     if (!Require(particleSystems.Reset(managedProgram.id),
@@ -2150,20 +2255,38 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     prewarmStep0.simulationStep = 8;
     prewarmStep0.render = false;
     prewarmStep0.forceSimulation = true;
-    auto prewarmStep1 = prewarmStep0;
-    prewarmStep1.substepIndex = 1;
-    prewarmStep1.simulationStep = 9;
-    auto postPrewarmFrame = prewarmStep1;
-    postPrewarmFrame.substepIndex = 2;
-    postPrewarmFrame.simulationStep = 10;
+    std::vector<infernux::particle::GpuParticleFrameRequest> prewarmSteps;
+    // More than one compiled execution must spill across later submissions.
+    // Each submission consumes the alive list and indirect arguments produced
+    // by the preceding fixed step.
+    for (uint32_t step = 0; step < 17; ++step) {
+        auto request = prewarmStep0;
+        request.substepIndex = step;
+        request.simulationStep += step;
+        prewarmSteps.push_back(request);
+    }
+    auto postPrewarmFrame = prewarmSteps.back();
+    postPrewarmFrame.substepIndex = static_cast<uint32_t>(prewarmSteps.size());
+    ++postPrewarmFrame.simulationStep;
     postPrewarmFrame.render = true;
     postPrewarmFrame.forceSimulation = false;
-    const infernux::particle::GpuParticleBatchFrameItem prewarmBatchItem{
-        managedProgram.id, {prewarmStep0, prewarmStep1}, postPrewarmFrame, managedTransforms};
+    const infernux::particle::GpuParticleBatchFrameItem prewarmBatchItem{managedProgram.id, prewarmSteps,
+                                                                         postPrewarmFrame, managedTransforms};
     if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}) &&
-                     !particleSystems.CanExecuteAsync(),
-                 "GPU particle manager rejected or asynchronously split a fixed-step preroll sequence") ||
-        !executeManagedFrame("GPU particle preroll sequence failed") ||
+                     particleSystems.CanRecordPartitioned() && !particleSystems.CanExecuteAsync(),
+                 "GPU particle manager rejected or asynchronously overlapped a fixed-step preroll sequence"))
+        return false;
+    uint32_t prerollSubmissions = 0;
+    while (particleSystems.HasPendingGpuWork()) {
+        if (prerollSubmissions >= 18) {
+            (void)Require(false, "GPU particle preroll exceeded one compiled execution per submission");
+            return false;
+        }
+        if (!executeManagedFrame("GPU particle preroll bounded submission failed"))
+            return false;
+        ++prerollSubmissions;
+    }
+    if (!Require(prerollSubmissions > 1, "GPU particle preroll packed every fixed step into one submission") ||
         !Require(!particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}),
                  "GPU particle manager accepted an already consumed preroll sequence"))
         return false;
@@ -2421,6 +2544,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         builder.SetDepthTest(false);
         builder.SetRenderArea(32, 32);
+        if (outlineGraph.SupportsDynamicRendering())
+            builder.UseDynamicRendering();
         return [](RenderContext &) {};
     });
     outlineGraph.AddPass("__EditorOutlineComposite", [&](PassBuilder &builder) {
@@ -2428,6 +2553,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         outlinedScene = builder.WriteColor(outlineScene);
         builder.SetDepthTest(false);
         builder.SetRenderArea(32, 32);
+        if (outlineGraph.SupportsDynamicRendering())
+            builder.UseDynamicRendering();
         return [](RenderContext &) {};
     });
     outlineGraph.AddPresentPass("__SceneOutputExport", [&](PassBuilder &builder) {
@@ -2442,9 +2569,37 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                                                   "__SceneOutputExport"},
                  "Graph-owned outline mask/composite/export ordering is incorrect"))
         return false;
-    if (!Require(outlineGraph.GetPassRenderPass("__EditorOutlineMask") != VK_NULL_HANDLE &&
-                     outlineGraph.GetPassRenderPass("__EditorOutlineComposite") != VK_NULL_HANDLE,
-                 "Graph-owned outline passes did not publish compatible render-pass layouts"))
+    const auto outlineMaskContract = outlineGraph.GetPassRenderingContract("__EditorOutlineMask");
+    const auto outlineCompositeContract = outlineGraph.GetPassRenderingContract("__EditorOutlineComposite");
+    const bool outlineUsesDynamicRendering = outlineGraph.SupportsDynamicRendering();
+    const bool outlineMaskPathMatches = outlineUsesDynamicRendering
+                                            ? outlineGraph.GetPassRenderPass("__EditorOutlineMask") == VK_NULL_HANDLE &&
+                                                  outlineMaskContract.usesDynamicRendering
+                                            : outlineGraph.GetPassRenderPass("__EditorOutlineMask") != VK_NULL_HANDLE &&
+                                                  !outlineMaskContract.usesDynamicRendering;
+    const bool outlineCompositePathMatches =
+        outlineUsesDynamicRendering ? outlineGraph.GetPassRenderPass("__EditorOutlineComposite") == VK_NULL_HANDLE &&
+                                          outlineCompositeContract.usesDynamicRendering
+                                    : outlineGraph.GetPassRenderPass("__EditorOutlineComposite") != VK_NULL_HANDLE &&
+                                          !outlineCompositeContract.usesDynamicRendering;
+    if (!Require(outlineMaskPathMatches && outlineMaskContract.found && !outlineMaskContract.culled &&
+                     outlineMaskContract.attachments.IsValid() && outlineCompositePathMatches &&
+                     outlineCompositeContract.found && !outlineCompositeContract.culled &&
+                     outlineCompositeContract.attachments.IsValid(),
+                 "Graph-owned outline passes did not publish the selected rendering contract"))
+        return false;
+
+    RenderGraph sparseMrtGraph;
+    sparseMrtGraph.Initialize(&resources.context, &resources.pipelines);
+    ResourceHandle sparseMrtOutput;
+    sparseMrtGraph.AddPass("SparseMrt", [&](PassBuilder &builder) {
+        sparseMrtOutput = builder.CreateTexture("SparseMrtColor", 8, 8, VK_FORMAT_R8G8B8A8_UNORM);
+        sparseMrtOutput = builder.WriteColor(sparseMrtOutput, 2);
+        builder.SetRenderArea(8, 8);
+        return [](RenderContext &) {};
+    });
+    sparseMrtGraph.SetOutput(sparseMrtOutput);
+    if (!Require(!sparseMrtGraph.Compile(), "Sparse MRT slots were not rejected"))
         return false;
 
     RenderGraph sampledDepthGraph;
@@ -2473,6 +2628,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(sampledDepthGraph.GetExecutionPassNames() ==
                      std::vector<std::string>{"WriteSceneDepth", "ReadDepthAndSampleForParticles"},
                  "Soft-particle scene-depth dependency did not retain its producer"))
+        return false;
+    const auto readOnlyDepthContract = sampledDepthGraph.GetPassRenderingContract("ReadDepthAndSampleForParticles");
+    if (!Require(readOnlyDepthContract.found && !readOnlyDepthContract.culled && readOnlyDepthContract.depthReadOnly &&
+                     readOnlyDepthContract.depthAttachment == sceneDepth &&
+                     readOnlyDepthContract.attachments.depthFormat == infernux::rhi::PixelFormat::D32SFloat,
+                 "Read-only pass did not retain its explicitly declared depth attachment"))
         return false;
 
     RenderGraph resolvedDepthGraph;
@@ -2509,6 +2670,39 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      std::vector<std::string>{"WriteMultisampledDepth", "ResolveDepth", "SampleResolvedDepth"},
                  "Resolved scene-depth dependency did not retain its compute producer"))
         return false;
+
+    if (resources.graph.SupportsDynamicRendering()) {
+        RenderGraph dynamicMsaaGraph;
+        dynamicMsaaGraph.Initialize(&resources.context, &resources.pipelines);
+        ResourceHandle dynamicMsaaColor;
+        ResourceHandle dynamicMsaaDepth;
+        ResourceHandle dynamicResolvedColor;
+        dynamicMsaaGraph.AddPass("DynamicMsaaGeometry", [&](PassBuilder &builder) {
+            dynamicMsaaColor =
+                builder.CreateTexture("DynamicMsaaColor", 8, 8, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
+            dynamicMsaaDepth =
+                builder.CreateDepthStencil("DynamicMsaaDepth", 8, 8, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
+            dynamicResolvedColor = builder.CreateTexture("DynamicResolvedColor", 8, 8, VK_FORMAT_R16G16B16A16_SFLOAT);
+            dynamicMsaaColor = builder.WriteColor(dynamicMsaaColor);
+            dynamicMsaaDepth = builder.WriteDepth(dynamicMsaaDepth);
+            dynamicResolvedColor = builder.WriteResolve(dynamicResolvedColor);
+            builder.UseDynamicRendering();
+            builder.SetRenderArea(8, 8);
+            builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            builder.SetClearDepth(1.0f, 0);
+            return [](RenderContext &) {};
+        });
+        dynamicMsaaGraph.SetOutput(dynamicResolvedColor);
+        if (!Require(dynamicMsaaGraph.Compile(), "Dynamic Rendering MSAA resolve graph failed to compile"))
+            return false;
+        const auto signature = dynamicMsaaGraph.GetPassRenderingSignature("DynamicMsaaGeometry");
+        if (!Require(dynamicMsaaGraph.GetPassUsesDynamicRendering("DynamicMsaaGeometry") && signature.IsValid() &&
+                         signature.samples == infernux::rhi::SampleCount::Four &&
+                         signature.colorFormats[0] == infernux::rhi::PixelFormat::RGBA16SFloat &&
+                         signature.depthFormat == infernux::rhi::PixelFormat::D32SFloat,
+                     "Dynamic Rendering MSAA/depth signature is incomplete"))
+            return false;
+    }
 
     const auto compileQueueOwnershipFixture = [&](const infernux::vk::NativeQueueBinding &computeBinding,
                                                   const infernux::vk::NativeQueueBinding &graphicsBinding,

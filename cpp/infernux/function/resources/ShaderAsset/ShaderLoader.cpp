@@ -9,7 +9,6 @@
 #include <platform/filesystem/InxPath.h>
 
 #include <filesystem>
-
 namespace infernux
 {
 
@@ -20,6 +19,10 @@ namespace infernux
 static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePath, const std::string &guid,
                                                        AssetDatabase *adb)
 {
+    // Share one compiler/cache lock with linked-program prewarming and editor
+    // hot reload. Publication into AssetRegistry still occurs on the owner
+    // thread through AssetLoadTicket.
+    const InxShaderLoader::CompilationGuard compileGuard;
     if (filePath.empty() || guid.empty()) {
         INXLOG_WARN("ShaderLoader: empty filePath or guid");
         return nullptr;
@@ -40,11 +43,9 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         INXLOG_ERROR("ShaderLoader: empty file '", filePath, "'");
         return nullptr;
     }
-    // Ensure null-terminated
-    if (content.back() != '\0')
-        content.push_back('\0');
 
-    // Determine shader type from extension
+    // Runtime shader metadata remains authoritative; the source extension is
+    // a fallback for loose Editor files and packed Player GLSL alike.
     std::filesystem::path fsPath = ToFsPath(filePath);
     std::string ext = FromFsPath(fsPath.extension());
 
@@ -57,6 +58,26 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     if (shaderId.empty()) {
         shaderId = FromFsPath(fsPath.stem());
     }
+    std::string shaderType;
+    if (meta && meta->HasKey("type"))
+        shaderType = meta->GetDataAs<std::string>("type");
+    if (shaderType != "vertex" && shaderType != "fragment") {
+        if (ext == ".vert")
+            shaderType = "vertex";
+        else if (ext == ".frag")
+            shaderType = "fragment";
+    }
+
+    if (shaderType != "vertex" && shaderType != "fragment") {
+        INXLOG_ERROR("ShaderLoader: shader stage metadata is invalid for '", filePath, "'");
+        return nullptr;
+    }
+
+    // Ensure null-terminated for the GLSL compiler.
+    if (content.back() != '\0')
+        content.push_back('\0');
+
+    const std::string compilePath = InxShaderLoader::StageQualifiedVirtualPath(filePath, shaderType);
 
     // Use InxShaderLoader to compile (it manages glslang, preprocessing, etc.)
     InxShaderLoader compiler(true, false, false, false, false, false, false, false, false, false);
@@ -65,10 +86,11 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     InxResourceMeta loadMeta;
     if (meta) {
         loadMeta = *meta;
+        loadMeta.UpdateFilePath(compilePath);
     } else {
         // Build minimal meta for compilation
-        loadMeta.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(filePath));
-        loadMeta.AddMetadata("type", ext == ".vert" ? std::string("vertex") : std::string("fragment"));
+        loadMeta.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(compilePath));
+        loadMeta.AddMetadata("type", shaderType);
         loadMeta.AddMetadata("shader_id", shaderId);
     }
 
@@ -83,9 +105,9 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     // Build ShaderAsset
     auto asset = std::make_shared<ShaderAsset>();
     asset->shaderId = shaderId;
-    asset->shaderType = (ext == ".vert") ? "vertex" : "fragment";
+    asset->shaderType = shaderType;
     asset->filePath = filePath;
-    asset->descriptor = compiler.ParseShaderSource(std::string(content.data(), content.size() - 1), filePath);
+    asset->descriptor = compiler.ParseShaderSource(std::string(content.data(), content.size() - 1), compilePath);
     if (!asset->SetVariant(ShaderCompileTarget::Forward, std::move(*compiledPtr))) {
         INXLOG_ERROR("ShaderLoader: compiler returned invalid Forward SPIR-V for '", filePath, "'");
         return nullptr;
@@ -93,16 +115,13 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
 
     // Extract variant SPIR-V from InxShaderLoader's static caches
     // Use the meta's file_path as cache key (matches InxShaderLoader::CompileVariant)
-    std::string cacheKey = filePath;
-    if (meta && meta->HasKey("file_path")) {
-        cacheKey = meta->GetDataAs<std::string>("file_path");
-    }
+    const std::string cacheKey = compilePath;
 
     auto variants = InxShaderLoader::TakeCompiledVariants(cacheKey);
     for (auto &[target, spirv] : variants)
         asset->SetVariant(target, std::move(spirv));
 
-    if (ext == ".frag") {
+    if (shaderType == "fragment") {
         // Extract render-state annotations from meta
         if (meta) {
             if (meta->HasKey("shader_cull_mode"))

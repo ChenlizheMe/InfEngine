@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from Infernux.core.asset_ref import RenderEffectRef
+from Infernux.core.assets import AssetManager
 from Infernux.renderstack.effect_stage import EffectResourceContract, EffectScope, EffectStage
 from Infernux.renderstack.render_effect_asset import (
     EffectAssetReference,
@@ -12,6 +14,7 @@ from Infernux.renderstack.render_effect_asset import (
     dump_render_effect_document,
     parse_render_effect_document,
 )
+from Infernux.renderstack.render_effect import EditableRenderEffectGroup
 
 
 def test_effect_stage_has_stable_identity_scope_and_contract():
@@ -72,6 +75,42 @@ def test_render_effect_group_preserves_order_and_direct_dependencies():
     assert direct_effect_dependencies(restored) == (bloom, tone)
 
 
+def test_editable_render_effect_group_replaces_its_strict_document(tmp_path):
+    initial = RenderEffectGroupAsset()
+    resource = EditableRenderEffectGroup(
+        initial,
+        file_path=str(tmp_path / "Post.effectgroup"),
+        guid="group-guid",
+    )
+    document = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(guid="bloom-guid", path_hint="Assets/Bloom.effect"),
+            ),
+        )
+    ).to_dict()
+
+    assert resource.deserialize_document(document)
+    assert resource.serialize_document() == document
+    assert resource.entries[0].entry_id == "bloom"
+
+
+def test_render_effect_reference_resolves_effect_group_as_a_live_resource(tmp_path):
+    path = tmp_path / "Default Post Processing.effectgroup"
+    path.write_text(
+        dump_render_effect_document(RenderEffectGroupAsset()),
+        encoding="utf-8",
+    )
+
+    assert AssetManager._type_from_extension(".effectgroup").__name__ == "RenderEffect"
+    resource = RenderEffectRef(path_hint=str(path)).resolve()
+
+    assert isinstance(resource, EditableRenderEffectGroup)
+    assert resource.file_path == str(path)
+    assert resource.entries == ()
+
+
 def test_render_effect_documents_reject_unknown_fields_and_duplicate_entry_ids():
     with pytest.raises(ValueError, match="unknown"):
         parse_render_effect_document(
@@ -101,6 +140,31 @@ def test_render_effect_asset_does_not_encode_mount_scope():
     assert "scope" not in serialized
     assert "stage" not in serialized
     assert "queue" not in serialized
+
+
+def test_effect_reference_stamps_guid_from_adjacent_meta(tmp_path):
+    target = tmp_path / "Style Comic Fisheye.effect"
+    target.write_text("{}", encoding="utf-8")
+    (tmp_path / "Style Comic Fisheye.effect.meta").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "guid": {
+                        "type": "string",
+                        "value": "472285e708b5659d12e27eb9138c313a",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stamped = EffectAssetReference(path_hint=str(target))
+    kept = EffectAssetReference(guid="already-authored", path_hint=str(target))
+
+    assert stamped.guid == "472285e708b5659d12e27eb9138c313a"
+    assert stamped.path_hint
+    assert kept.guid == "already-authored"
 
 
 def test_direct_construction_rejects_untyped_dependency_values():

@@ -40,6 +40,15 @@ class InxGUI
     void BuildFrame();
     [[nodiscard]] bool BuildFrameIfDue(bool force = false);
     void RequestFrame() noexcept;
+    void RequestSyntheticInputFrame() noexcept;
+    [[nodiscard]] uint64_t GetFrameCounter() const noexcept
+    {
+        return m_guiFrameCounter;
+    }
+    [[nodiscard]] EditorGuiFrameScheduler::Snapshot GetFrameSchedulerSnapshot() const noexcept
+    {
+        return m_editorFrameScheduler.Inspect();
+    }
 
     void RecordCommand(VkCommandBuffer cmdBuf);
     void Shutdown();
@@ -67,7 +76,7 @@ class InxGUI
 
     void Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void Unregister(const std::string &name);
-    void QueueDockTabSelection(const std::string &windowId);
+    void QueueDockTabSelection(const std::string &windowId, bool allowDuringModal = false);
 
     /// @brief Submit texture data for asynchronous GPU upload.
     /// @param name Unique identifier for the texture
@@ -78,6 +87,15 @@ class InxGUI
     /// @return A monotonic submission version. Poll GetImGuiTextureVersion before consuming a replacement.
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+
+    /// Present an already-resident engine texture in ImGui without decoding or
+    /// uploading a second CPU-authored preview texture.
+    uint64_t PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
+                                        bool pinned = false);
+
+    /// Invalidate queued uploads for a name without removing its currently
+    /// published texture. Completed stale tickets are discarded by generation.
+    void SupersedePendingImGuiTextureUploads(const std::string &name);
 
     /// @brief Remove a previously uploaded ImGui texture
     /// @param name Texture identifier
@@ -95,6 +113,11 @@ class InxGUI
     /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
     /// @return false when the descriptor is no longer owned by the live texture registry.
     bool TouchImGuiTextureId(uint64_t textureId);
+    /// Return whether the current ImDrawData publication still contains a
+    /// draw command that samples @p textureId. Render-target generations use
+    /// this to keep old image resources alive until every visible panel has
+    /// rebuilt against the replacement descriptor.
+    [[nodiscard]] bool IsTextureReferencedByCurrentDrawData(uint64_t textureId) const;
     [[nodiscard]] uint64_t GetImGuiTextureVersion(const std::string &name) const;
     [[nodiscard]] uint64_t GetFailedImGuiTextureVersion(const std::string &name) const;
 
@@ -155,6 +178,8 @@ class InxGUI
         uint64_t lastUsedFrame = 0;
         uint64_t uploadGeneration = 0;
         bool pinned = false;
+        bool requiresDisplayEncoding = false;
+        std::shared_ptr<const rhi::TextureGpuView> externalView;
     };
 
     struct DeferredTextureRelease
@@ -181,7 +206,12 @@ class InxGUI
     std::unordered_map<std::string, std::shared_ptr<InxGUIRenderable>> m_renderables_umap;
     std::vector<std::string> m_renderableOrder;
     std::unordered_map<std::string, int> m_renderablePriorities;
-    std::vector<std::string> m_pendingDockTabSelections;
+    struct PendingDockTabSelection
+    {
+        std::string windowId;
+        bool allowDuringModal = false;
+    };
+    std::vector<PendingDockTabSelection> m_pendingDockTabSelections;
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
@@ -202,6 +232,7 @@ class InxGUI
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
     bool m_hasDrawData = false;
+    EditorGuiInputRearmBudget m_syntheticInputRearm;
     EditorGuiFrameScheduler m_editorFrameScheduler;
 
     void BuildFrameInternal();

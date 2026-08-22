@@ -1,0 +1,24 @@
+# Keep project text deterministic across platforms
+* text=auto
+*.py text eol=lf
+*.scene text eol=lf
+*.prefab text eol=lf
+*.mat text eol=lf
+*.effect text eol=lf
+*.effectgroup text eol=lf
+*.particlegraph text eol=lf
+*.meta text eol=lf
+
+# Binary assets must never receive line-ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.dds binary
+*.ktx binary
+*.ktx2 binary
+*.fbx binary
+*.glb binary
+*.wav binary
+*.mp3 binary
+*.ogg binary

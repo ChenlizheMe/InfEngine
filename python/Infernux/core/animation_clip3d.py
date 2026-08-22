@@ -119,6 +119,25 @@ class AnimationClip3D:
             "events": [e.to_dict() for e in self.events],
         }
 
+    def serialize_document(self) -> dict:
+        """Return the complete current editable document."""
+        return self.to_dict()
+
+    def deserialize_document(self, document: dict) -> bool:
+        """Replace authoring state while preserving this asset's file identity."""
+        try:
+            replacement = type(self).from_dict(document)
+        except (KeyError, TypeError, ValueError):
+            return False
+        self.name = replacement.name
+        self.source_model_guid = replacement.source_model_guid
+        self.source_model_path = replacement.source_model_path
+        self.take_name = replacement.take_name
+        self.bind_pose_bone_names = replacement.bind_pose_bone_names
+        self.duration_hint = replacement.duration_hint
+        self.events = replacement.events
+        return True
+
     @classmethod
     def from_dict(cls, d: dict) -> "AnimationClip3D":
         expected = {

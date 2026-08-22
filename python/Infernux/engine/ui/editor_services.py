@@ -10,7 +10,6 @@ Usage inside an EditorPanel::
     class MyPanel(EditorPanel):
         def on_render_content(self, ctx):
             engine = self.services.engine
-            undo   = self.services.undo_manager
             scene  = self.services.native_engine
 """
 
@@ -20,9 +19,9 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from Infernux.engine.engine import Engine
-    from Infernux.engine.undo import UndoManager
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.engine.play_mode import PlayModeManager
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui.window_manager import WindowManager
 
 
@@ -38,10 +37,10 @@ class EditorServices:
 
     def __init__(self) -> None:
         self._engine: Optional[Engine] = None
-        self._undo_manager: Optional[UndoManager] = None
         self._scene_file_manager: Optional[SceneFileManager] = None
         self._play_mode_manager: Optional[PlayModeManager] = None
         self._window_manager: Optional[WindowManager] = None
+        self._interaction_core: Optional[EditorInteractionCore] = None
         self._asset_database = None  # C++ AssetDatabase
         self._project_path: Optional[str] = None
         EditorServices._instance = self
@@ -72,10 +71,6 @@ class EditorServices:
         return self._engine.get_native_engine() if self._engine else None
 
     @property
-    def undo_manager(self) -> Optional[UndoManager]:
-        return self._undo_manager
-
-    @property
     def scene_file_manager(self) -> Optional[SceneFileManager]:
         return self._scene_file_manager
 
@@ -86,6 +81,30 @@ class EditorServices:
     @property
     def window_manager(self) -> Optional[WindowManager]:
         return self._window_manager
+
+    @property
+    def interaction_core(self) -> Optional[EditorInteractionCore]:
+        return self._interaction_core
+
+    @property
+    def document_registry(self):
+        core = self._interaction_core
+        return core.documents if core is not None else None
+
+    @property
+    def close_coordinator(self):
+        core = self._interaction_core
+        return core.close_coordinator if core is not None else None
+
+    @property
+    def command_registry(self):
+        core = self._interaction_core
+        return core.commands if core is not None else None
+
+    @property
+    def shortcut_router(self):
+        core = self._interaction_core
+        return core.shortcuts if core is not None else None
 
     @property
     def asset_database(self):

@@ -61,10 +61,16 @@ Example::
 
 | Method | Description |
 |------|------|
+| `require_buffer(semantic: str) → BufferHandle` |  |
+| `sample_buffer(result: PassResult, semantic: str | BufferHandle) → Any` |  |
+| `publish_result(source: str, buffers: Dict[str, Any]) → PassResult` |  |
+| `write_buffer(result: PassResult, semantic: str | BufferHandle, texture: Any, source: str) → PassResult` |  |
+| `geometry_stage(graph: RenderGraph, source: str, phase: GeometryStagePhase | str = ..., buffers: Dict[str, Any], queue_range: tuple[int, int], msaa_samples: int = ..., sort_mode: str = ..., clear: bool = ...) → PassResult` |  |
 | `render(context: Any, camera: Any) → None` | Render one camera through its dedicated context and RenderView. |
 | `should_render_camera(camera: Any) → bool` | Decide whether *camera* should be rendered this frame. |
 | `render_camera(context: Any, camera: Any, culling: Any) → None` | Per-camera render hook. |
 | `define_topology(graph: RenderGraph) → None` | Define the rendering topology on *graph*. |
+| `define(pipeline: Any) → None` | Declare a low-nesting pipeline topology. |
 | `dispose() → None` | Override to release resources when the pipeline is replaced. |
 
 <!-- USER CONTENT START --> public_methods
@@ -74,7 +80,7 @@ Example::
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.2.9. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.3.4. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

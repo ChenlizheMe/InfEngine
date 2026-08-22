@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from Infernux.engine.undo import UndoManager
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.engine.play_mode import PlayModeManager
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui.window_manager import WindowManager
 
 
@@ -50,6 +51,21 @@ class EditorServices:
 
     @property
     def window_manager(self) -> Optional[WindowManager]: ...
+
+    @property
+    def interaction_core(self) -> Optional[EditorInteractionCore]: ...
+
+    @property
+    def document_registry(self) -> object: ...
+
+    @property
+    def close_coordinator(self) -> object: ...
+
+    @property
+    def command_registry(self) -> object: ...
+
+    @property
+    def shortcut_router(self) -> object: ...
 
     @property
     def asset_database(self) -> object:

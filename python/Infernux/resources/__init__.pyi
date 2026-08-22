@@ -16,7 +16,7 @@ icon_path: str
 """Absolute path to the engine window icon (``resources/icons/icon.png``)."""
 
 engine_font_path: str
-"""Absolute path to the default UI font (``PingFangTC-Regular.otf``)."""
+"""Absolute path to the default Simplified Chinese UI font (``PingFangSC-Regular.ttf``)."""
 
 engine_lib_path: str
 """Absolute path to the native library directory (``lib/``)."""

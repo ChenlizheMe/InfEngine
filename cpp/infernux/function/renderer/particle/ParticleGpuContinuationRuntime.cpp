@@ -42,7 +42,12 @@ rhi::BufferHandle CreateGpuBuffer(rhi::Device &device, uint64_t byteSize, rhi::B
     rhi::BufferDesc desc;
     desc.byteSize = byteSize;
     desc.usage = usage;
-    desc.queueAccess = rhi::QueueAccessFlags::Compute;
+    // A compute pass can be scheduled on the graphics family when the
+    // dedicated compute submission path is unavailable.
+    desc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+    if (rhi::HasBufferUsage(usage, rhi::BufferUsageFlags::TransferSource) ||
+        rhi::HasBufferUsage(usage, rhi::BufferUsageFlags::TransferDestination))
+        desc.queueAccess = desc.queueAccess | rhi::QueueAccessFlags::Transfer;
     return device.CreateBuffer(desc);
 }
 

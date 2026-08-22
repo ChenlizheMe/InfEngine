@@ -61,25 +61,43 @@ def _get_component_script_error(comp, asset_database):
 
 def _can_remove_component(obj, comp, type_name, is_native):
     """Check whether *comp* may be removed from *obj*."""
-    if is_native:
-        blockers = []
-        if hasattr(obj, 'get_remove_component_blockers'):
-            try:
-                blockers = list(obj.get_remove_component_blockers(comp) or [])
-            except RuntimeError:
-                blockers = []
-        can_remove = not blockers
-        if can_remove and hasattr(obj, 'can_remove_component'):
-            can_remove = bool(obj.can_remove_component(comp))
-        if not can_remove:
-            suffix = (
-                f" required by: {', '.join(blockers)}"
-                if blockers else
-                "another component depends on it"
-            )
-            Debug.log_warning(f"Cannot remove '{type_name}' — {suffix}")
+    constraint_component = comp
+    if hasattr(comp, '_require_cpp_component'):
+        try:
+            constraint_component = comp._require_cpp_component()
+        except (ReferenceError, RuntimeError):
             return False
-    return True
+    elif not is_native:
+        constraint_component = getattr(comp, '_cpp_component', None)
+        if constraint_component is None:
+            return False
+
+    blockers = []
+    if hasattr(obj, 'get_remove_component_blockers'):
+        try:
+            blockers = list(
+                obj.get_remove_component_blockers(constraint_component) or []
+            )
+        except (ReferenceError, RuntimeError):
+            return False
+    can_remove = not blockers
+    if can_remove and hasattr(obj, 'can_remove_component'):
+        try:
+            can_remove = bool(
+                obj.can_remove_component(constraint_component)
+            )
+        except (ReferenceError, RuntimeError):
+            return False
+    if can_remove:
+        return True
+
+    suffix = (
+        f"required by: {', '.join(blockers)}"
+        if blockers else
+        "the component registry marks it as non-removable"
+    )
+    Debug.log_warning(f"Cannot remove '{type_name}' — {suffix}")
+    return False
 
 
 def _get_add_component_entries():
@@ -130,41 +148,3 @@ def _load_script_component(script_path, asset_database):
     if instance is None:
         Debug.log_error(f"No InxComponent found in '{script_path}'")
     return instance
-
-
-def _remove_component_impl(obj_id, type_name, comp_id, is_native,
-                           resolve_component, can_remove_component,
-                           invalidate_cache, bump_values):
-    """Remove a component from an object."""
-    from Infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
-    obj = scene.find_by_id(obj_id) if scene else None
-    if obj is None:
-        return False
-    comp = resolve_component(obj_id, comp_id, is_native)
-    if comp is None:
-        return False
-    if not can_remove_component(obj, comp, type_name, is_native):
-        return False
-    from Infernux.engine.undo import UndoManager
-    mgr = UndoManager.instance()
-    if is_native:
-        from Infernux.engine.undo import RemoveNativeComponentCommand
-        if mgr:
-            mgr.execute(RemoveNativeComponentCommand(obj.id, type_name, comp))
-            invalidate_cache()
-            bump_values()
-            return True
-        ok = obj.remove_component(comp) is not False
-    else:
-        from Infernux.engine.undo import RemovePyComponentCommand
-        if mgr:
-            mgr.execute(RemovePyComponentCommand(obj.id, comp))
-            invalidate_cache()
-            bump_values()
-            return True
-        ok = obj.remove_py_component(comp) is not False
-    if ok:
-        invalidate_cache()
-        bump_values()
-    return ok

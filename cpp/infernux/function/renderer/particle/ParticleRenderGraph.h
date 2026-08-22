@@ -127,11 +127,30 @@ class ParticleGpuGraphSpawnDomain
     [[nodiscard]] bool SetEmitterPlaying(uint32_t targetSlot, bool playing);
     [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, const std::string &namePrefix);
+    /// Arm the graph-level spawn prepass for the next graph execution. The
+    /// manager calls this only when an emitter in this graph has work.
+    void MarkFramePending() noexcept
+    {
+        m_framePending = true;
+    }
+    /// Consume the graph-level spawn prepass token. Only the attached
+    /// RenderGraph callback should call this; a second consume is a no-op.
+    [[nodiscard]] bool ConsumeFramePending() noexcept
+    {
+        if (!m_framePending)
+            return false;
+        m_framePending = false;
+        return true;
+    }
+    [[nodiscard]] bool HasFramePending() const noexcept
+    {
+        return m_framePending;
+    }
     void DeclarePrepare(vk::PassBuilder &builder);
     void DeclareKernelWrite(vk::PassBuilder &builder);
     void DeclareInitRead(vk::PassBuilder &builder);
     void RecordPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t targetSlot, uint32_t capacity,
-                       const GpuParticleFrameRequest &request, bool discard) const;
+                       const GpuParticleFrameRequest &request, bool discardCpuSpawn, bool resetPreviousState) const;
 
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint64_t GraphInstanceId() const noexcept
@@ -194,6 +213,7 @@ class ParticleGpuGraphSpawnDomain
     rhi::ComputePipelineHandle m_advancePipeline;
     rhi::ComputePipelineHandle m_preparePipeline;
     bool m_resetPending = true;
+    bool m_framePending = false;
     std::vector<rhi::BindGroupHandle> m_runtimeGroups;
     vk::ResourceHandle m_burstRequestResource;
     vk::ResourceHandle m_consumingResource;
@@ -206,13 +226,15 @@ class ParticleGpuGraphSpawnDomain
 struct GpuParticleGraphOutputs
 {
     vk::ResourceHandle instances;
+    vk::ResourceHandle visibility;
     vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirectArguments;
     vk::ResourceHandle bounds;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return instances.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid() && bounds.IsValid();
+        return instances.IsValid() && visibility.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid() &&
+               bounds.IsValid();
     }
 };
 
@@ -237,6 +259,8 @@ class ParticleRenderGraph
                               const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr,
                               ParticleGpuRibbonTopology *ribbonTopology = nullptr);
     [[nodiscard]] static bool IsFrameRequestValid(const GpuParticleFrameRequest &request) noexcept;
+    [[nodiscard]] static bool ShouldUseFusedUpdateRendering(const GpuParticleFrameRequest &request,
+                                                            const ParticleGpuRuntime &runtime) noexcept;
     [[nodiscard]] bool CanBeginFrame(const GpuParticleFrameRequest &request) const noexcept;
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
     void Reset() noexcept;
@@ -262,6 +286,19 @@ class ParticleRenderGraph
     {
         return m_resetPending;
     }
+    [[nodiscard]] bool HasRenderResetPending() const noexcept
+    {
+        return m_renderResetPending;
+    }
+    /// Consume the one-shot render reset token. The RenderReset pass uses the
+    /// same operation, so an idle frame cannot emit the reset twice.
+    [[nodiscard]] bool ConsumeRenderResetPending() noexcept
+    {
+        if (!m_renderResetPending)
+            return false;
+        m_renderResetPending = false;
+        return true;
+    }
     [[nodiscard]] uint64_t LastConsumedFrame() const noexcept
     {
         return m_lastConsumedFrame;
@@ -272,7 +309,20 @@ class ParticleRenderGraph
     }
     [[nodiscard]] uint32_t RenderExportPassId() const noexcept
     {
-        return m_renderExportPassId;
+        return m_renderExportPass.id;
+    }
+    [[nodiscard]] vk::PassHandle RenderExportPass() const noexcept
+    {
+        return m_renderExportPass;
+    }
+    [[nodiscard]] vk::PassHandle SimulationTailPass() const noexcept
+    {
+        return m_simulationTailPass;
+    }
+    [[nodiscard]] bool IsSimulationPass(uint32_t passId) const noexcept
+    {
+        return m_firstPass.IsValid() && m_simulationTailPass.IsValid() && passId >= m_firstPass.id &&
+               passId <= m_simulationTailPass.id;
     }
 
   private:
@@ -293,7 +343,13 @@ class ParticleRenderGraph
     bool m_hasConsumedFrame = false;
     uint64_t m_lastConsumedFrame = 0;
     uint32_t m_lastConsumedSubstep = 0;
-    uint32_t m_renderExportPassId = UINT32_MAX;
+    vk::PassHandle m_firstPass{};
+    vk::PassHandle m_simulationTailPass{};
+    vk::PassHandle m_renderExportPass{};
+    // RenderReset is needed every rendering frame and once when rendering is
+    // disabled, but not for an already-idle non-rendering frame.
+    bool m_lastRenderStateActive = false;
+    bool m_renderResetPending = true;
 };
 
 } // namespace infernux::particle

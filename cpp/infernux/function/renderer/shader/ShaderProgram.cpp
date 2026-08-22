@@ -10,6 +10,8 @@ namespace infernux
 VkDescriptorSetLayout ShaderProgram::s_globalsDescSetLayout = VK_NULL_HANDLE;
 VkDescriptorSetLayout ShaderProgram::s_perViewDescSetLayout = VK_NULL_HANDLE;
 bool ShaderProgram::s_updateAfterBindEnabled = false;
+VkDescriptorSetLayout ShaderProgram::s_bindlessTextureDescSetLayout = VK_NULL_HANDLE;
+bool ShaderProgram::s_bindlessTextureEnabled = false;
 
 void ShaderProgram::SetGlobalsDescSetLayout(VkDescriptorSetLayout layout)
 {
@@ -41,6 +43,26 @@ bool ShaderProgram::IsUpdateAfterBindEnabled()
     return s_updateAfterBindEnabled;
 }
 
+void ShaderProgram::SetBindlessTextureDescSetLayout(VkDescriptorSetLayout layout)
+{
+    s_bindlessTextureDescSetLayout = layout;
+}
+
+VkDescriptorSetLayout ShaderProgram::GetBindlessTextureDescSetLayout()
+{
+    return s_bindlessTextureDescSetLayout;
+}
+
+void ShaderProgram::SetBindlessTextureEnabled(bool enabled)
+{
+    s_bindlessTextureEnabled = enabled;
+}
+
+bool ShaderProgram::IsBindlessTextureEnabled()
+{
+    return s_bindlessTextureEnabled && s_bindlessTextureDescSetLayout != VK_NULL_HANDLE;
+}
+
 // ============================================================================
 // ShaderProgram Implementation
 // ============================================================================
@@ -58,7 +80,10 @@ ShaderProgram::ShaderProgram(ShaderProgram &&other) noexcept
       m_descriptorSetLayouts(std::move(other.m_descriptorSetLayouts)), m_pipelineLayout(other.m_pipelineLayout),
       m_materialUBOLayout(std::move(other.m_materialUBOLayout)), m_hasMaterialUBO(other.m_hasMaterialUBO),
       m_vertexMaterialUBOLayout(std::move(other.m_vertexMaterialUBOLayout)),
-      m_hasVertexMaterialUBO(other.m_hasVertexMaterialUBO)
+      m_hasVertexMaterialUBO(other.m_hasVertexMaterialUBO),
+      m_bindlessTextureIndexLayout(std::move(other.m_bindlessTextureIndexLayout)),
+      m_hasBindlessTextureIndexLayout(other.m_hasBindlessTextureIndexLayout),
+      m_usesBindlessTextureABI(other.m_usesBindlessTextureABI)
 {
     other.m_device = VK_NULL_HANDLE;
     other.m_vertModule = VK_NULL_HANDLE;
@@ -66,6 +91,8 @@ ShaderProgram::ShaderProgram(ShaderProgram &&other) noexcept
     other.m_pipelineLayout = VK_NULL_HANDLE;
     other.m_hasMaterialUBO = false;
     other.m_hasVertexMaterialUBO = false;
+    other.m_hasBindlessTextureIndexLayout = false;
+    other.m_usesBindlessTextureABI = false;
     other.m_descriptorSetLayouts.clear();
 }
 
@@ -88,6 +115,9 @@ ShaderProgram &ShaderProgram::operator=(ShaderProgram &&other) noexcept
         m_hasMaterialUBO = other.m_hasMaterialUBO;
         m_vertexMaterialUBOLayout = std::move(other.m_vertexMaterialUBOLayout);
         m_hasVertexMaterialUBO = other.m_hasVertexMaterialUBO;
+        m_bindlessTextureIndexLayout = std::move(other.m_bindlessTextureIndexLayout);
+        m_hasBindlessTextureIndexLayout = other.m_hasBindlessTextureIndexLayout;
+        m_usesBindlessTextureABI = other.m_usesBindlessTextureABI;
 
         other.m_device = VK_NULL_HANDLE;
         other.m_vertModule = VK_NULL_HANDLE;
@@ -95,6 +125,8 @@ ShaderProgram &ShaderProgram::operator=(ShaderProgram &&other) noexcept
         other.m_pipelineLayout = VK_NULL_HANDLE;
         other.m_hasMaterialUBO = false;
         other.m_hasVertexMaterialUBO = false;
+        other.m_hasBindlessTextureIndexLayout = false;
+        other.m_usesBindlessTextureABI = false;
         other.m_descriptorSetLayouts.clear();
     }
     return *this;
@@ -137,6 +169,20 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
 
     // Merge reflection data
     MergeReflectionData();
+    const bool hasReflectedBindlessTextureABI =
+        std::any_of(m_descriptorBindings.begin(), m_descriptorBindings.end(), [](const auto &binding) {
+            return binding.set == BindlessTextureSet && binding.binding == BindlessTextureBinding &&
+                   binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        });
+    if (hasReflectedBindlessTextureABI &&
+        (!IsBindlessTextureEnabled() || GetBindlessTextureDescSetLayout() == VK_NULL_HANDLE)) {
+        INXLOG_ERROR("Shader program '", m_shaderId,
+                     "' contains the bindless material texture ABI, but the active device does not provide the "
+                     "required descriptor-indexing table; use the bounded sampler compilation");
+        Destroy();
+        return false;
+    }
+    m_usesBindlessTextureABI = hasReflectedBindlessTextureABI;
 
     // Validate vertex→fragment stage interface
     if (!ValidateStageInterface()) {
@@ -181,7 +227,8 @@ void ShaderProgram::Destroy()
     for (auto &[set, layout] : m_descriptorSetLayouts) {
         // Skip the shared globals layout — it is owned by VkCore and
         // destroyed in DestroyGlobalsDescriptorResources().
-        if (layout != VK_NULL_HANDLE && layout != s_globalsDescSetLayout && layout != s_perViewDescSetLayout) {
+        if (layout != VK_NULL_HANDLE && layout != s_globalsDescSetLayout && layout != s_perViewDescSetLayout &&
+            layout != s_bindlessTextureDescSetLayout) {
             vkDestroyDescriptorSetLayout(m_device, layout, nullptr);
         }
     }
@@ -200,6 +247,9 @@ void ShaderProgram::Destroy()
     m_descriptorBindings.clear();
     m_hasMaterialUBO = false;
     m_hasVertexMaterialUBO = false;
+    m_bindlessTextureIndexLayout = {};
+    m_hasBindlessTextureIndexLayout = false;
+    m_usesBindlessTextureABI = false;
     m_device = VK_NULL_HANDLE;
 }
 
@@ -353,10 +403,20 @@ void ShaderProgram::ExtractMaterialUBOLayout()
 {
     m_hasMaterialUBO = false;
     m_hasVertexMaterialUBO = false;
+    m_hasBindlessTextureIndexLayout = false;
 
-    // Look for a UBO named "MaterialProperties" or "Material" in fragment shader
+    // Look for the bindless texture-index block and material properties in the
+    // fragment shader. The index block belongs to the material set of the
+    // active domain, so its set/binding cannot be hard-coded here.
     // Convention: Material UBO can be at binding 2 or 3 depending on shader type (unlit vs lit)
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
+        if (ubo.name == "InxMaterialTextureIndices") {
+            m_bindlessTextureIndexLayout.binding = ubo.binding;
+            m_bindlessTextureIndexLayout.size = ubo.size;
+            m_bindlessTextureIndexLayout.members = ubo.members;
+            m_hasBindlessTextureIndexLayout = true;
+            continue;
+        }
         bool isMaterialUBO =
             (ubo.name == "MaterialProperties" || ubo.name == "Material" || ubo.name == "MaterialUBO" ||
              ((ubo.binding == 2 || ubo.binding == 3) && ubo.set == 0)); // Fallback: binding 2 or 3, set 0
@@ -422,6 +482,34 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
         binding.pImmutableSamplers = nullptr;
 
         setBindings[merged.set].push_back(binding);
+    }
+
+    if (m_usesBindlessTextureABI) {
+        uint32_t textureIndexSet = 0;
+        uint32_t textureIndexBinding = MaterialTextureIndexBinding;
+        const auto reflectedIndexBuffer =
+            std::find_if(m_fragReflection.GetUniformBuffers().begin(), m_fragReflection.GetUniformBuffers().end(),
+                         [](const auto &buffer) { return buffer.name == "InxMaterialTextureIndices"; });
+        if (reflectedIndexBuffer != m_fragReflection.GetUniformBuffers().end()) {
+            textureIndexSet = reflectedIndexBuffer->set;
+            textureIndexBinding = reflectedIndexBuffer->binding;
+        }
+        auto &materialBindings = setBindings[textureIndexSet];
+        const auto existing =
+            std::find_if(materialBindings.begin(), materialBindings.end(),
+                         [textureIndexBinding](const auto &binding) { return binding.binding == textureIndexBinding; });
+        if (existing == materialBindings.end()) {
+            VkDescriptorSetLayoutBinding indexBinding{};
+            indexBinding.binding = textureIndexBinding;
+            indexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            indexBinding.descriptorCount = 1;
+            indexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            materialBindings.push_back(indexBinding);
+        } else if (existing->descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || existing->descriptorCount != 1) {
+            INXLOG_ERROR("Bindless material ABI reserves set ", textureIndexSet, " binding ", textureIndexBinding,
+                         " for a uniform buffer, but shader ", m_shaderId, " declares another descriptor type");
+            return false;
+        }
     }
 
     // Create a layout for each set.
@@ -499,6 +587,13 @@ bool ShaderProgram::CreatePipelineLayout()
             vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
         }
         m_descriptorSetLayouts[2] = s_globalsDescSetLayout;
+    }
+
+    if (m_usesBindlessTextureABI) {
+        auto it = m_descriptorSetLayouts.find(BindlessTextureSet);
+        if (it != m_descriptorSetLayouts.end() && it->second != s_bindlessTextureDescSetLayout)
+            vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
+        m_descriptorSetLayouts[BindlessTextureSet] = s_bindlessTextureDescSetLayout;
     }
 
     // Get layouts in order (set 0, 1, 2, ...)
@@ -616,27 +711,28 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
                                                                 const std::vector<char> &vertSpirv,
                                                                 const std::vector<char> &fragSpirv)
 {
+    const ShaderProgramVariantKey canonicalKey = CanonicalKey(variantKey);
     // Check cache first
-    auto it = m_programs.find(variantKey);
+    auto it = m_programs.find(canonicalKey);
     if (it != m_programs.end()) {
         return it->second;
     }
 
     // Check if this program previously failed creation (don't retry every frame)
-    if (m_failedPrograms.count(variantKey)) {
+    if (m_failedPrograms.count(canonicalKey)) {
         return nullptr;
     }
 
     // Create new program
     auto program = std::make_shared<ShaderProgram>();
-    if (!program->Create(m_device, vertSpirv, fragSpirv, variantKey)) {
-        INXLOG_ERROR("Failed to create shader program: ", variantKey.ToString());
-        m_failedPrograms.insert(variantKey);
+    if (!program->Create(m_device, vertSpirv, fragSpirv, canonicalKey)) {
+        INXLOG_ERROR("Failed to create shader program: ", canonicalKey.ToString());
+        m_failedPrograms.insert(canonicalKey);
         return nullptr;
     }
 
     ShaderProgramPublication publication = std::move(program);
-    m_programs[variantKey] = publication;
+    m_programs[canonicalKey] = publication;
     return publication;
 }
 
@@ -647,7 +743,7 @@ ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramKey &
 
 ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramVariantKey &variantKey) const
 {
-    auto it = m_programs.find(variantKey);
+    auto it = m_programs.find(CanonicalKey(variantKey));
     return it != m_programs.end() ? it->second : nullptr;
 }
 
@@ -658,7 +754,7 @@ bool ShaderProgramCache::HasProgram(const ShaderProgramKey &programKey) const
 
 bool ShaderProgramCache::HasProgram(const ShaderProgramVariantKey &variantKey) const
 {
-    return m_programs.find(variantKey) != m_programs.end();
+    return m_programs.find(CanonicalKey(variantKey)) != m_programs.end();
 }
 
 ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramKey &programKey)
@@ -668,14 +764,15 @@ ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramKey 
 
 ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramVariantKey &variantKey)
 {
-    auto found = m_programs.find(variantKey);
+    const ShaderProgramVariantKey canonicalKey = CanonicalKey(variantKey);
+    auto found = m_programs.find(canonicalKey);
     if (found == m_programs.end()) {
-        m_failedPrograms.erase(variantKey);
+        m_failedPrograms.erase(canonicalKey);
         return nullptr;
     }
     auto program = std::move(found->second);
     m_programs.erase(found);
-    m_failedPrograms.erase(variantKey);
+    m_failedPrograms.erase(canonicalKey);
     return program;
 }
 

@@ -6,6 +6,7 @@
 
 #include <map>
 #include <stdexcept>
+#include <vector>
 
 namespace py = pybind11;
 

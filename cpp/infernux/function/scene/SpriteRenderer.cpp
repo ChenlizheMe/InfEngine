@@ -1,9 +1,11 @@
 #include "SpriteRenderer.h"
 #include "ComponentFactory.h"
 #include <InxLog.h>
+#include <algorithm>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 
 using json = nlohmann::json;
 
@@ -19,12 +21,30 @@ SpriteRenderer::SpriteRenderer()
     SetCastShadows(false);
 }
 
+void SpriteRenderer::SetFrameId(const std::string &frameId)
+{
+    if (!frameId.empty()) {
+        const bool valid = frameId.size() == 32 && std::all_of(frameId.begin(), frameId.end(), [](unsigned char ch) {
+                               return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+                           });
+        if (!valid)
+            throw std::invalid_argument(
+                "SpriteRenderer.frameId must be empty or a 32-character lowercase UUID hex string");
+    }
+    m_frameId = frameId;
+}
+
 std::shared_ptr<InxMaterial> SpriteRenderer::GetEffectiveMaterial(uint32_t slot) const
 {
     auto mat = GetMaterial(slot);
     if (mat) {
         if (!mat->IsDeleted())
             return mat;
+        auto &registry = AssetRegistry::Instance();
+        auto err = registry.GetBuiltinMaterial("ErrorMaterial");
+        return err ? err : registry.GetBuiltinMaterial("DefaultUnlit");
+    }
+    if (!GetMaterialGuid(slot).empty()) {
         auto &registry = AssetRegistry::Instance();
         auto err = registry.GetBuiltinMaterial("ErrorMaterial");
         return err ? err : registry.GetBuiltinMaterial("DefaultUnlit");
@@ -43,7 +63,7 @@ nlohmann::json SpriteRenderer::SerializeDocument() const
     // Sprite-specific fields
     if (!m_spriteGuid.empty())
         j["spriteGuid"] = m_spriteGuid;
-    j["frameIndex"] = m_frameIndex;
+    j["frameId"] = m_frameId;
     j["spriteColor"] = {m_color.r, m_color.g, m_color.b, m_color.a};
     j["flipX"] = m_flipX;
     j["flipY"] = m_flipY;
@@ -65,8 +85,7 @@ bool SpriteRenderer::DeserializeDocument(const nlohmann::json &j)
         if (j.contains("spriteGuid") && j["spriteGuid"].is_string())
             m_spriteGuid = j["spriteGuid"].get<std::string>();
 
-        if (j.contains("frameIndex"))
-            m_frameIndex = j["frameIndex"].get<int>();
+        SetFrameId(j["frameId"].get<std::string>());
 
         if (j.contains("spriteColor") && j["spriteColor"].is_array() && j["spriteColor"].size() == 4) {
             m_color.r = j["spriteColor"][0].get<float>();

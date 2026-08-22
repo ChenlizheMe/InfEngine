@@ -23,11 +23,12 @@ from Infernux.components import (
     Multiline, ReadOnly, HideInInspector, NonSerialized, HDR, Color,
     VALUE_CODECS,
 )
-from Infernux.components.serialized_field import (
-    build_field_from_annotation, _unwrap_annotation, _UNSET,
+from Infernux.components.fields import (
+    build_field_from_annotation, coerce_serialized_field_input,
+    _unwrap_annotation, _UNSET,
 )
-from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef
-from Infernux.core.asset_ref import TextureRef
+from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef, PrefabRef
+from Infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
 
 
 # ── annotation unwrapping ────────────────────────────────────────────────
@@ -94,7 +95,7 @@ class TestBuildField:
         assert meta is not None and meta.hidden is True
 
     def test_non_serialized_returns_sentinel(self):
-        from Infernux.components.serialized_field import NON_SERIALIZED_FIELD
+        from Infernux.components.fields import NON_SERIALIZED_FIELD
         meta = build_field_from_annotation(Annotated[int, NonSerialized], default=7)
         assert meta is NON_SERIALIZED_FIELD
 
@@ -106,10 +107,22 @@ class TestBuildField:
         assert meta.field_type == FieldType.ENUM
         assert meta.enum_type is Mode and meta.default == Mode.A
 
+    def test_enum_editor_input_accepts_member_name_and_integer(self):
+        class Mode(enum.Enum):
+            A = 1
+            B = 2
+
+        meta = build_field_from_annotation(Mode, default=Mode.A)
+
+        assert coerce_serialized_field_input("B", meta, "Probe.mode") is Mode.B
+        assert coerce_serialized_field_input("b", meta, "Probe.mode") is Mode.B
+        assert coerce_serialized_field_input(1, meta, "Probe.mode") is Mode.A
+
     def test_color_annotation(self):
         meta = build_field_from_annotation(Color, default=_UNSET)
         assert meta.field_type == FieldType.COLOR
         assert tuple(meta.default) == (1.0, 1.0, 1.0, 1.0)
+        assert meta.hdr is False
 
     def test_color_string_annotation(self):
         meta = build_field_from_annotation("Color", default=_UNSET)
@@ -130,6 +143,54 @@ class TestBuildField:
             pass
         meta = build_field_from_annotation(Weird, default=2.5)
         assert meta is not None and meta.field_type == FieldType.FLOAT
+
+    def test_audio_asset_annotation_carries_explicit_contract(self):
+        meta = build_field_from_annotation(AudioClipRef, default=_UNSET)
+
+        assert meta.field_type == FieldType.ASSET
+        assert meta.asset_type == "AudioClip"
+
+    def test_registered_asset_ref_annotation_infers_contract(self):
+        meta = build_field_from_annotation(ParticleGraphRef, default=_UNSET)
+
+        assert meta.field_type == FieldType.ASSET
+        assert meta.asset_type == "ParticleGraph"
+
+    def test_prefab_ref_annotation_is_a_game_object_asset_field(self):
+        meta = build_field_from_annotation(PrefabRef, default=_UNSET)
+
+        assert meta.field_type == FieldType.GAME_OBJECT
+        assert isinstance(meta.default, PrefabRef)
+
+    def test_prefab_path_coerces_to_prefab_ref(self):
+        meta = build_field_from_annotation(PrefabRef, default=_UNSET)
+
+        value = coerce_serialized_field_input(
+            "Assets/Prefabs/Coin.prefab",
+            meta,
+            "Spawner.coin_prefab",
+        )
+
+        assert isinstance(value, PrefabRef)
+        assert value.path_hint == "Assets/Prefabs/Coin.prefab"
+
+    def test_asset_list_annotation_propagates_element_contract(self):
+        meta = build_field_from_annotation(list[AudioClipRef], default=_UNSET)
+
+        assert meta.field_type == FieldType.LIST
+        assert meta.element_type == FieldType.ASSET
+        assert meta.asset_type == "AudioClip"
+
+    def test_untyped_asset_field_is_rejected_at_schema_construction(self):
+        with pytest.raises(ValueError, match="explicit asset_type"):
+            serialized_field(default=None, field_type=FieldType.ASSET)
+
+        with pytest.raises(ValueError, match="explicit asset_type"):
+            serialized_field(
+                default=[],
+                field_type=FieldType.LIST,
+                element_type=FieldType.ASSET,
+            )
 
 
 # ── full component declarations ──────────────────────────────────────────
@@ -183,6 +244,7 @@ class TestV2Showcase:
         meta = self.fields['tint']
         assert meta.field_type == FieldType.COLOR
         assert tuple(meta.default)[:3] == (1.0, 0.0, 0.0)
+        assert meta.hdr is False
 
     def test_hidden_field_serialized(self):
         assert 'secret' in self.fields
@@ -278,6 +340,52 @@ class TestStrictSerializationFailures:
 
         with pytest.raises(TypeError, match=r"UnsupportedField\.payload"):
             component._serialize_fields()
+
+    def test_non_finite_vector_falls_back_to_field_default(self):
+        from Infernux.math import Vector3
+
+        class CameraRig(InxComponent):
+            speed: float = serialized_field(default=2.4)
+            sway: Vector3 = serialized_field(default=Vector3(0.1, 0.2, 0.3))
+
+        component = CameraRig()
+        component.speed = 5.0
+        # C++ Vector3 rejects NaN at construction. Bypass CDS so encode sees
+        # the leftover non-finite payload the way a stale Python store would.
+        component._cds_slot = None
+        type(component).__dict__["speed"]._values[id(component)] = 5.0
+        type(component).__dict__["sway"]._values[id(component)] = [
+            float("nan"),
+            0.0,
+            0.0,
+        ]
+
+        document = component._serialize_fields_document()
+        assert document["speed"] == 5.0
+        assert document["sway"] == pytest.approx([0.1, 0.2, 0.3])
+
+    def test_repair_keeps_editor_defaults_for_stale_scene_data(self):
+        class ShowcaseDirector(InxComponent):
+            style_interval: float = serialized_field(default=3.5)
+            camera_name: str = serialized_field(default="Main Camera")
+
+        component = ShowcaseDirector()
+        component._deserialize_fields_document(
+            {
+                "__type_name__": "ShowcaseDirector",
+                "style_interval": "broken",
+                "camera_name": "Hero Camera",
+                "camera_position_sway": [0.1, 0.2, 0.3],
+            },
+            repair=True,
+        )
+
+        assert component.style_interval == 3.5
+        assert component.camera_name == "Hero Camera"
+        healed = component._serialize_fields_document()
+        assert "camera_position_sway" not in healed
+        assert healed["style_interval"] == 3.5
+        assert healed["camera_name"] == "Hero Camera"
 
     @pytest.mark.parametrize(
         "mutate, error",
@@ -377,7 +485,7 @@ class TestStrictSerializationFailures:
 
 class TestColorInference:
     def test_color_factory_infers_as_color(self):
-        from Infernux.components.serialized_field import infer_field_type_from_value
+        from Infernux.components.fields import infer_field_type_from_value
         assert infer_field_type_from_value(Color(1, 0, 0)) == FieldType.COLOR
 
     def test_color_value_without_annotation(self):
@@ -424,3 +532,17 @@ class TestColorClass:
         assert isinstance(snap, list)
         assert snap == [0.2, 0.4, 0.6, 1.0]
         assert snap is not src
+
+
+class TestEffectColorFieldsAllowHdr:
+    def test_mixin_color_annotation_keeps_hdr(self):
+        from Infernux.renderstack._serialized_field_mixin import (
+            SerializedFieldCollectorMixin,
+        )
+
+        class BloomTint(SerializedFieldCollectorMixin):
+            tint: Annotated[Color, HDR] = Color(1.0, 1.0, 1.0, 1.0)
+
+        meta = get_serialized_fields(BloomTint)["tint"]
+        assert meta.field_type == FieldType.COLOR
+        assert meta.hdr is True

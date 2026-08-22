@@ -4,7 +4,6 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,7 +20,6 @@ struct ImportRequest
     std::string guid;
     ResourceType resourceType = ResourceType::DefaultText;
     InxResourceMeta metadata;
-    std::function<std::string(const std::string &)> resolveAssetGuid;
     bool isReimport = false;
 };
 
@@ -35,6 +33,11 @@ struct ImportArtifact
     }
 
     InxResourceMeta metadata;
+    // Durable dependency identity is GUID-only. Importers must never turn a
+    // path, path_hint, filename, or shader search result into an asset edge.
+    // A path_hint is non-authoritative editor/diagnostic metadata and may be
+    // stale after an asset move. AssetDatabase validates this contract before
+    // publishing the dependency graph.
     std::vector<std::string> dependencies;
     bool dependenciesAuthoritative = false;
 

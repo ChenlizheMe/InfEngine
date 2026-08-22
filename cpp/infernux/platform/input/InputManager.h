@@ -3,10 +3,12 @@
  * @brief Unified input state manager — SDL event-driven, Unity-style query API.
  *
  * Design:
- *   - Double-buffered key/mouse arrays for frame-accurate down/up detection.
- *   - O(1) lookup by SDL_Scancode index (no hash maps on hot path).
- *   - BeginFrame() copies current → previous and clears per-frame deltas.
- *   - ProcessSDLEvent() fills current-frame state from raw SDL events.
+ *   - Persistent held state plus explicit per-frame down/up edge arrays.
+ *   - O(1) lookup by SDL_Scancode index (no
+ * hash maps on hot path).
+ *   - BeginFrame() clears edge arrays and per-frame deltas.
+ *   - ProcessSDLEvent() fills current-frame state from raw
+ * SDL events.
  *
  * Integration:
  *   InxView::ProcessEvent() calls BeginFrame() once per frame, then
@@ -53,7 +55,7 @@ class InputManager
 
     // ---- Per-frame lifecycle (called by InxView) ----
 
-    /// @brief Begin a new input frame. Copies current → previous, clears deltas.
+    /// @brief Begin a new input frame. Clears transition edges and deltas.
     void BeginFrame();
 
     /// @brief Feed an SDL event into the input state.
@@ -238,9 +240,11 @@ class InputManager
 
     // ---- State buffers ----
     std::array<uint8_t, INPUT_MAX_KEYS> m_keys{};
-    std::array<uint8_t, INPUT_MAX_KEYS> m_prevKeys{};
+    std::array<uint8_t, INPUT_MAX_KEYS> m_keyDown{};
+    std::array<uint8_t, INPUT_MAX_KEYS> m_keyUp{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtons{};
-    std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_prevMouseButtons{};
+    std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtonDown{};
+    std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtonUp{};
 
     float m_mouseX = 0.f;
     float m_mouseY = 0.f;

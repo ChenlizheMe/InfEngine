@@ -69,6 +69,21 @@ class TestNativeConsolePanel:
         assert panel.get_warning_count() == 0
         assert panel.get_error_count() == 0
 
+    def test_remove_entries_from_source_is_selective(self, tmp_path):
+        panel = ConsolePanel()
+        script = tmp_path / "Player.py"
+        other = tmp_path / "Other.py"
+        panel.log_from_python(LogLevel.Error, "old error", source_file=str(script))
+        panel.log_from_python(LogLevel.Warn, "old warning", source_file=str(script))
+        panel.log_from_python(LogLevel.Error, "other error", source_file=str(other))
+
+        assert panel.remove_entries_from_source(str(script)) == 2
+        assert panel.get_info_count() == 0
+        assert panel.get_warning_count() == 0
+        assert panel.get_error_count() == 1
+        visible = panel._get_visible_log_snapshot(10)
+        assert [entry["message"] for entry in visible] == ["other error"]
+
     def test_large_pending_log_counts_are_incremental(self):
         panel = ConsolePanel()
         for index in range(20000):
@@ -118,6 +133,42 @@ class TestNativeConsolePanel:
         assert 'InputTextWithHint("##ConsoleSearch"' in source
         assert "MatchesCurrentFilters" in source
         assert "if (!m_cacheDirty && !m_filterDirty)" in source
+
+    def test_console_commands_pass_source_before_payload(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        assert 'ExecuteEditorCommand("console.set_option", "pointer"' in source
+        assert 'ExecuteEditorCommand("console.set_search", "inline_edit"' in source
+        assert 'ExecuteEditorCommand("console.set_detail_height", "drag", argument)' in source
+        assert 'ExecuteEditorCommand("console.set_option", std::string' not in source
+        assert 'ExecuteEditorCommand("console.set_search", m_searchEditStart' not in source
+
+    def test_console_user_selection_is_intent_only_until_global_projection(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+        select_uid = source[
+            source.index("void ConsolePanel::SelectUid") : source.index("void ConsolePanel::PublishSelection")
+        ]
+        render_row = source[
+            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
+        ]
+
+        assert "m_selectedUid = uid" not in select_uid
+        assert "m_selectedUid = ve.uid" not in render_row
+        assert "PublishSelection(uid, recordHistory)" in select_uid
+        assert "PublishSelection(ve.uid, true)" in render_row
+        assert "ImGui::SetWindowFocus" not in select_uid
+
+    def test_console_row_identity_is_not_truncated_by_visible_log_text(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+        render_row = source[
+            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
+        ]
+
+        assert "const std::string label" in render_row
+        assert "std::to_string" in render_row
+        assert "char label[" not in render_row
 
 
 # ═══════════════════════════════════════════════════════════════════════════

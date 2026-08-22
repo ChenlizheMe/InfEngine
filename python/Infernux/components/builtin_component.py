@@ -31,7 +31,7 @@ from __future__ import annotations
 import weakref
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
-from .serialized_field import FieldMetadata, FieldType
+from .fields import FieldMetadata, FieldType
 from .component import InxComponent
 from Infernux.debug import Debug
 
@@ -81,6 +81,7 @@ class CppProperty:
         *,
         readonly: bool = False,
         tooltip: str = "",
+        display_name_key: str = "",
         header: str = "",
         range: Optional[tuple] = None,
         enum_type=None,
@@ -89,18 +90,23 @@ class CppProperty:
         asset_type: Optional[str] = None,
         get_converter=None,
         set_converter=None,
+        native_getter=None,
+        native_setter=None,
         hdr: bool = False,
         slider: bool = False,
     ):
         self.cpp_attr = cpp_attr
         self.get_converter = get_converter
         self.set_converter = set_converter
+        self.native_getter = native_getter
+        self.native_setter = native_setter
         self.metadata = FieldMetadata(
             name="",  # filled by __set_name__ / __init_subclass__
             field_type=field_type,
             default=default,
             readonly=readonly,
             tooltip=tooltip,
+            display_name_key=display_name_key,
             header=header,
             range=range,
             enum_type=enum_type,
@@ -121,7 +127,11 @@ class CppProperty:
             return self
         cpp = instance._require_cpp_component()
         try:
-            value = getattr(cpp, self.cpp_attr)
+            value = (
+                self.native_getter(cpp)
+                if self.native_getter is not None
+                else getattr(cpp, self.cpp_attr)
+            )
         except RuntimeError as exc:
             instance._invalidate_native_binding()
             raise ReferenceError(
@@ -164,7 +174,10 @@ class CppProperty:
             value = self.set_converter(value)
         cpp = instance._require_cpp_component()
         try:
-            setattr(cpp, self.cpp_attr, value)
+            if self.native_setter is not None:
+                self.native_setter(cpp, value)
+            else:
+                setattr(cpp, self.cpp_attr, value)
         except RuntimeError as exc:
             instance._invalidate_native_binding()
             raise ReferenceError(
@@ -254,17 +267,45 @@ class BuiltinComponent(InxComponent):
 
         The cache is keyed by the C++ component's stable ``component_id``
         so the same Python object is returned on repeated lookups.
+
+        Play Mode rebuilds preserve those IDs while allocating new native
+        instances.  A still-valid cache entry must therefore rebind when the
+        incoming C++ object is a replacement, not merely a new pybind view
+        of the same handle.
         """
         comp_id = cpp_component.component_id
         existing = BuiltinComponent._wrapper_cache.get(comp_id)
-        if existing is not None and existing.is_valid:
-            return existing
         if existing is not None:
-            existing._invalidate_native_binding()
+            destroyed = bool(getattr(existing, "_is_destroyed", False))
+            if destroyed and getattr(existing, "_cpp_component", None) is None:
+                BuiltinComponent._wrapper_cache.pop(comp_id, None)
+            else:
+                # Scripts cache this wrapper (SmokeRangeDirector._body).  A
+                # Play rebuild or inspector refresh must rebind the same
+                # object so gameplay still writes to a live native body.
+                if (
+                    existing._is_native_binding_stale()
+                    or not cls._is_same_native_instance(existing, cpp_component)
+                ):
+                    existing._bind_cpp(cpp_component, game_object)
+                return existing
 
         wrapper = cls()
         wrapper._bind_cpp(cpp_component, game_object)
         return wrapper
+
+    @staticmethod
+    def _is_same_native_instance(existing, cpp_component) -> bool:
+        bound = getattr(existing, "_cpp_component", None)
+        if bound is cpp_component:
+            return True
+        existing_handle = getattr(existing, "_native_handle", None)
+        incoming_handle = getattr(cpp_component, "handle", None)
+        return (
+            existing_handle is not None
+            and incoming_handle is not None
+            and existing_handle == incoming_handle
+        )
 
     @classmethod
     def _clear_cache(cls) -> None:
@@ -276,6 +317,20 @@ class BuiltinComponent(InxComponent):
                 from Infernux.debug import Debug
                 Debug.log_warning(f"[BuiltinComponent] cache clear failed: {exc}")
         BuiltinComponent._wrapper_cache.clear()
+        # Inspector state is an editor-only cache. Importing it from Player
+        # scene publication pulls the complete Inspector/serialization UI
+        # graph into the startup path even though no editor panel exists.
+        from Infernux.application import Application
+
+        if Application.is_editor():
+            try:
+                from Infernux.engine.ui.inspector_components import (
+                    clear_component_value_cache,
+                )
+
+                clear_component_value_cache()
+            except ImportError:
+                pass
 
     @classmethod
     def _invalidate_component_ids(cls, component_ids) -> None:

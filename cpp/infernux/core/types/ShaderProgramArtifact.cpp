@@ -56,7 +56,7 @@ size_t ShaderProgramKeyHash::operator()(const ShaderProgramKey &key) const noexc
 
 std::string ShaderProgramVariantKey::ToString() const
 {
-    return program.ToString() + ":" + ShaderCompileTargetName(target);
+    return program.ToString() + ":" + ShaderCompileTargetName(target) + ":abi" + std::to_string(deviceContract);
 }
 
 size_t ShaderProgramVariantKeyHash::operator()(const ShaderProgramVariantKey &key) const noexcept
@@ -64,6 +64,7 @@ size_t ShaderProgramVariantKeyHash::operator()(const ShaderProgramVariantKey &ke
     uint64_t hash = static_cast<uint64_t>(ShaderProgramKeyHash{}(key.program));
     const auto target = static_cast<int32_t>(key.target);
     hash = AppendBytes(hash, &target, sizeof(target));
+    hash = AppendBytes(hash, &key.deviceContract, sizeof(key.deviceContract));
     return static_cast<size_t>(hash);
 }
 
@@ -179,6 +180,7 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
     hash = AppendBytes(hash, &artifact.materialLayoutSignature, sizeof(artifact.materialLayoutSignature));
     hash = AppendBytes(hash, &artifact.compatibilitySignature, sizeof(artifact.compatibilitySignature));
     hash = AppendBytes(hash, &artifact.usesParticleSceneDepthBinding, sizeof(artifact.usesParticleSceneDepthBinding));
+    hash = AppendBytes(hash, &artifact.usesBindlessTextureABI, sizeof(artifact.usesBindlessTextureABI));
     std::array<const ShaderProgramArtifact::PassVariant *, static_cast<size_t>(ShaderCompileTarget::Count)> ordered{};
     if (artifact.variants.size() > ordered.size())
         return 1;

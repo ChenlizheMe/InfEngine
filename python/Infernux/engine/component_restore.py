@@ -14,6 +14,17 @@ class PythonComponentRestoreError(RuntimeError):
     """Raised when a Python component graph cannot be restored exactly."""
 
 
+def _notify_editor_scene_changed() -> None:
+    """Invalidate editor-only scene views without pulling them into Player."""
+    from Infernux.application import Application
+
+    if not Application.is_editor():
+        return
+    from Infernux.gizmos.collector import notify_scene_changed
+
+    notify_scene_changed()
+
+
 def _validate_reference_documents(
     value,
     path: str,
@@ -255,6 +266,11 @@ def _prepare_python_component_records(
     reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     pending_types: set[tuple[int, str]] = set()
+    available_constraint_types: set[tuple[int, str]] = {
+        (object_id, token)
+        for object_id, native_type in native_types
+        for token in (native_type, f"native:{native_type}")
+    }
     component_type_counts: dict[tuple[int, str], int] = {}
     python_component_ids: set[int] = set()
     parsed: list[
@@ -289,7 +305,9 @@ def _prepare_python_component_records(
         }
         if object_id is not None:
             pending_types.add((object_id, type_name))
-            key = (object_id, type_name)
+            available_constraint_types.add((object_id, type_name))
+            available_constraint_types.add((object_id, f"python:{type_guid}"))
+            key = (object_id, type_guid)
             component_type_counts[key] = component_type_counts.get(key, 0) + 1
         parsed.append(
             (
@@ -371,47 +389,39 @@ def _prepare_python_component_records(
             else:
                 live_fields = fields
             component_type = type(instance)
+            from Infernux.components.registry import (
+                component_constraint_type_id,
+                get_component_constraints,
+            )
+            registration = None if is_broken else get_component_constraints(component_type)
             if (
                 not is_broken
                 and object_id is not None
-                and getattr(component_type, "_disallow_multiple_", False)
-                and component_type_counts[(object_id, type_name)] != 1
+                and not registration.allow_multiple
+                and component_type_counts[(object_id, type_guid)] != 1
             ):
                 instance._call_on_destroy()
                 raise PythonComponentRestoreError(
                     f"Python component '{type_name}' disallows multiple instances on one GameObject"
                 )
             if not is_broken:
-                for required_type in getattr(component_type, "_require_components_", ()):
-                    if isinstance(required_type, str):
-                        required_name = required_type
-                        required_is_native = (object_id, required_name) in native_types
-                    elif hasattr(required_type, "_cpp_type_name"):
-                        required_name = str(required_type._cpp_type_name)
-                        required_is_native = True
-                    elif isinstance(required_type, type):
-                        required_name = required_type.__name__
-                        required_is_native = False
-                    else:
+                for required_type in registration.required_types:
+                    required_token = component_constraint_type_id(required_type)
+                    if not required_token:
                         instance._call_on_destroy()
                         raise PythonComponentRestoreError(
                             f"Python component '{type_name}' has an invalid required component declaration"
                         )
-                    if not required_name:
+                    if object_id is None or (object_id, required_token) not in available_constraint_types:
                         instance._call_on_destroy()
                         raise PythonComponentRestoreError(
-                            f"Python component '{type_name}' has an empty required component type"
-                        )
-                    available_types = native_types if required_is_native else pending_types
-                    if object_id is None or (object_id, required_name) not in available_types:
-                        instance._call_on_destroy()
-                        raise PythonComponentRestoreError(
-                            f"Python component '{type_name}' requires missing component '{required_name}'"
+                            f"Python component '{type_name}' requires missing component '{required_token}'"
                         )
             try:
                 instance._deserialize_fields_document(
                     live_fields,
                     _skip_on_after_deserialize=True,
+                    repair=True,
                 )
             except Exception as exc:
                 instance._call_on_destroy()
@@ -444,7 +454,12 @@ def _prepare_python_component_records(
         raise
 
 
-def preflight_scene_python_components(document, asset_database=None) -> PreparedPythonComponentGraph:
+def preflight_scene_python_components(
+    document,
+    asset_database=None,
+    *,
+    prefer_loaded_types: bool = False,
+) -> PreparedPythonComponentGraph:
     """Resolve and decode the complete Python graph before native scene commit."""
     records = getattr(document, "_python_component_records", None)
     if callable(records):
@@ -456,6 +471,7 @@ def preflight_scene_python_components(document, asset_database=None) -> Prepared
         set(native_types),
         list(raw_descriptors),
         asset_database,
+        prefer_loaded_types=prefer_loaded_types,
     )
 
 
@@ -655,6 +671,7 @@ def _publish_prepared_scene_python_components(
                 item.instance._deserialize_fields_document(
                     remapped_fields,
                     _skip_on_after_deserialize=True,
+                    repair=True,
                 )
         except (KeyError, TypeError, ValueError) as exc:
             raise PythonComponentRestoreError(
@@ -666,8 +683,7 @@ def _publish_prepared_scene_python_components(
         InxComponent._clear_all_instances()
         from Infernux.components.builtin_component import BuiltinComponent
         BuiltinComponent._clear_cache()
-        from Infernux.gizmos.collector import notify_scene_changed
-        notify_scene_changed()
+        _notify_editor_scene_changed()
 
     attached = []
     try:
@@ -735,10 +751,18 @@ def replace_scene_python_components_for_play(
     recreating thousands of renderers and colliders is unnecessary. Stop Mode
     continues to restore the complete document transactionally.
     """
-    prepared_graph = preflight_scene_python_components(document, asset_database)
+    # Asset watching owns script publication. Entering Play must create fresh
+    # component instances from that latest accepted revision, not execute every
+    # project script from disk again on the UI thread.
+    prepared_graph = preflight_scene_python_components(
+        document,
+        asset_database,
+        prefer_loaded_types=True,
+    )
     prepared = list(prepared_graph.components)
     existing_by_object: dict[int, list[Any]] = {}
     targets: dict[int, Any] = {}
+    replaced: list[tuple[Any, Any, Any, bool]] = []
 
     try:
         for item in prepared:
@@ -769,50 +793,75 @@ def replace_scene_python_components_for_play(
                     f"Python component identity changed on GameObject {object_id}"
                 )
 
-        for existing in existing_by_object.values():
-            for component in existing:
-                native_component = getattr(component, "_cpp_component", None)
-                owner = getattr(component, "game_object", None)
-                if native_component is None or owner is None:
-                    raise PythonComponentRestoreError("live Python component lost its native binding")
-                if not owner._remove_prepared_py_component(native_component):
-                    raise PythonComponentRestoreError("failed to detach an edit-mode Python component")
-
-        from Infernux.components.component import InxComponent
-        from Infernux.components.builtin_component import BuiltinComponent
-        from Infernux.gizmos.collector import notify_scene_changed
-
-        InxComponent._clear_all_instances()
-        BuiltinComponent._clear_cache()
-        notify_scene_changed()
-
-        attached = []
+        existing_by_id = {
+            int(getattr(component, "_component_id", 0) or 0): component
+            for existing in existing_by_object.values()
+            for component in existing
+        }
         for item in sorted(prepared, key=lambda value: (value.game_object_id, value.component_index)):
             target = targets[item.game_object_id]
-            instance = target._attach_prepared_py_component(item.instance, item.component_index)
+            previous = existing_by_id.get(item.component_id)
+            if previous is None:
+                raise PythonComponentRestoreError(
+                    f"Python component '{item.type_name}' lost its edit-mode counterpart"
+                )
+            previous_was_awake = bool(getattr(previous, "_awake_called", False))
+            instance = target.replace_py_component(previous, item.instance)
             if instance is not item.instance:
                 raise PythonComponentRestoreError(
-                    f"Python component '{item.type_name}' was rejected by its target GameObject"
+                    f"Python component '{item.type_name}' replacement was rejected"
                 )
-            native_component = getattr(instance, "_cpp_component", None)
+            native_component = getattr(item.instance, "_cpp_component", None)
             if native_component is None:
                 raise PythonComponentRestoreError(
                     f"Python component '{item.type_name}' was not bound to a native proxy"
                 )
-            native_component._set_component_id(item.component_id)
-            instance._component_id = item.component_id
-            instance._refresh_native_handle()
             native_component.execution_order = item.execution_order
-            attached.append((target, instance, native_component))
+            replaced.append((target, previous, item.instance, previous_was_awake))
 
-        for _target, instance, _native_component in attached:
+        for _target, _previous, instance, _previous_was_awake in replaced:
             instance._call_on_after_deserialize()
-        for target, _instance, native_component in attached:
-            target._activate_prepared_py_component(native_component)
+
+        # Replacement normally preserves lifecycle flags because runtime hot
+        # reload must not invoke Awake/Start again.  This transaction is
+        # different: every replacement is a fresh Play-domain instance.  Reset
+        # only after every fallible publication callback has succeeded so a
+        # rollback can still restore the untouched edit-domain lifecycle.
+        for _target, _previous, instance, _previous_was_awake in replaced:
+            native_component = getattr(instance, "_cpp_component", None)
+            reset_lifecycle = getattr(
+                native_component, "_reset_lifecycle_for_play", None
+            )
+            if not callable(reset_lifecycle):
+                raise PythonComponentRestoreError(
+                    f"Python component '{type(instance).__name__}' cannot reset its Play lifecycle"
+                )
+            reset_lifecycle()
+
+        # Generic identity-preserving replacement intentionally suppresses
+        # on_destroy for hot reload. A committed Play-domain handoff must retire
+        # the edit instances so class-level singleton registrations and other
+        # edit-domain state cannot reject the fresh Play instances in Awake.
+        for _target, previous, _instance, previous_was_awake in replaced:
+            previous._finalize_play_domain_replacement(
+                was_awake=previous_was_awake
+            )
         prepared_graph.consume()
         return True
-    except Exception:
+    except Exception as exc:
+        rollback_errors = []
+        for target, previous, current, _previous_was_awake in reversed(replaced):
+            try:
+                if target.replace_py_component(current, previous) is not previous:
+                    rollback_errors.append(type(previous).__name__)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"{type(previous).__name__}: {rollback_exc}")
         prepared_graph.discard()
+        if rollback_errors:
+            raise PythonComponentRestoreError(
+                "failed to roll back Play Mode Python replacement: "
+                + "; ".join(rollback_errors)
+            ) from exc
         raise
 
 
@@ -1176,6 +1225,11 @@ def create_component_instance(
     if not script_guid or not type_guid or not type_name:
         raise ValueError("Python component identity requires script_guid, type_guid, and type_name")
 
+    from Infernux.engine.runtime_type_registry import (
+        bind_runtime_lifecycle_contract,
+        validate_runtime_component_identity,
+    )
+
     script_path = resolve_script_from_guid(script_guid, asset_database)
 
     instance = None
@@ -1192,27 +1246,24 @@ def create_component_instance(
         if component_type is not None:
             instance = component_type()
             instance._script_guid = script_guid
+            if asset_exists:
+                runtime_contract = validate_runtime_component_identity(
+                    script_guid=script_guid,
+                    type_guid=type_guid,
+                    module_name=component_type.__module__,
+                    qualified_name=component_type.__qualname__,
+                )
+                bind_runtime_lifecycle_contract(component_type, runtime_contract)
             return instance, script_path
     if asset_exists:
         loaded_from_asset = True
-        if asset_database is not None:
-            from Infernux.components.script_loader import load_and_create_component
-            instance = load_and_create_component(
-                script_path,
-                asset_database=asset_database,
-                type_name=type_name,
-                script_guid=script_guid,
-            )
-        else:
-            from Infernux.components.script_loader import (
-                create_component_instance as construct_component,
-                load_component_class_from_file,
-            )
-            from Infernux.components.component_identity import bind_asset_script_guid
-            component_type = load_component_class_from_file(script_path, type_name=type_name)
-            if component_type is not None:
-                bind_asset_script_guid(component_type, script_guid)
-                instance = construct_component(component_type)
+        from Infernux.components.script_loader import load_and_create_component
+        instance = load_and_create_component(
+            script_path,
+            asset_database=asset_database,
+            type_name=type_name,
+            script_guid=script_guid,
+        )
         if instance is not None:
             instance._script_guid = script_guid
     elif asset_database is None or registered_is_builtin:
@@ -1230,5 +1281,14 @@ def create_component_instance(
         and instance.__class__._get_type_guid() != type_guid
     ):
         instance = None
+
+    if instance is not None and loaded_from_asset:
+        runtime_contract = validate_runtime_component_identity(
+            script_guid=script_guid,
+            type_guid=type_guid,
+            module_name=instance.__class__.__module__,
+            qualified_name=instance.__class__.__qualname__,
+        )
+        bind_runtime_lifecycle_contract(instance.__class__, runtime_contract)
 
     return instance, script_path

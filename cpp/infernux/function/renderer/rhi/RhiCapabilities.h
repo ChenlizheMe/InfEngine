@@ -110,6 +110,12 @@ struct DeviceLimits
     uint32_t maxColorAttachments = 0;
     uint32_t maxPushConstantBytes = 0;
     uint32_t maxSampledTexturesPerStage = 0;
+    uint32_t maxUpdateAfterBindDescriptors = 0;
+    uint32_t maxUpdateAfterBindResourcesPerStage = 0;
+    uint32_t maxUpdateAfterBindSamplersPerStage = 0;
+    uint32_t maxUpdateAfterBindSampledTexturesPerStage = 0;
+    uint32_t maxUpdateAfterBindSamplersPerSet = 0;
+    uint32_t maxUpdateAfterBindSampledTexturesPerSet = 0;
     uint32_t maxStorageBuffersPerStage = 0;
     float maxSamplerAnisotropy = 1.0f;
     uint32_t maxComputeWorkgroupCount[3] = {};

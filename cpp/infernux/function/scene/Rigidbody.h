@@ -65,7 +65,8 @@ inline RigidbodyConstraints operator~(RigidbodyConstraints a)
 enum class CollisionDetectionMode : int
 {
     Discrete = 0,
-    Continuous = 1
+    Continuous = 1,
+    ContinuousDynamic = 2
 };
 
 enum class RigidbodyInterpolation : int
@@ -252,9 +253,14 @@ class Rigidbody : public Component
     /// @brief Apply render interpolation between previous and current physics poses.
     void ApplyInterpolatedTransform(float alpha);
 
-    /// @brief Detect if the user moved the Transform externally (gizmo, inspector)
-    ///        and teleport the Jolt body to match. Called before each physics step.
-    void SyncExternalMovesToPhysics();
+    /// @brief Publish an authored Transform pose to the physics body.
+    ///
+    /// Direct Transform writes are a distinct path from MovePosition: outside
+    /// a fixed step they are committed as an immediate teleport and reset the
+    /// interpolation history, so an older presentation pose cannot overwrite
+    /// the authored value on the next frame. During a fixed step, kinematic
+    /// bodies retain their velocity-producing drive semantics.
+    void SyncExternalMovesToPhysics(float fixedDeltaTime = 0.0f);
 
     /// @brief Is this Rigidbody responsible for any collider's body?
     ///        Returns true when enabled and has collider siblings.
@@ -275,12 +281,6 @@ class Rigidbody : public Component
     [[nodiscard]] const char *GetTypeName() const override
     {
         return "Rigidbody";
-    }
-
-    /// Rigidbody requires at least one Collider sibling to function.
-    [[nodiscard]] std::vector<std::string> GetRequiredComponentTypes() const override
-    {
-        return {"Collider"};
     }
 
     // ====================================================================

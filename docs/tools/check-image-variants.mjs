@@ -6,20 +6,20 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const docsRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(docsRoot, "..");
-const width = 1245;
-const height = 653;
+const width = 1920;
+const height = 1032;
 const expected = {
     "demo.png": {
         type: "png",
-        sha256: "e987d0ac1477896c97dae00b642df2ace4b6de06c59268528650252e831155bf",
+        sha256: "4be6e30abfd71f3e4a31593ce6e44817cffdb83ec170cee489a3b40b162d3d91",
     },
-    "demo-0.2.1.webp": {
+    "demo-0.3.4.webp": {
         type: "webp",
-        sha256: "bf5cdbc260331e75ccf1519b1cc582cb4764ae101ccdbda27feb3082d71b66df",
+        sha256: "10a141e9c795829ded555363d0866c1508403e19fb4fdc14401e1532f313384c",
     },
-    "demo-0.2.1.avif": {
+    "demo-0.3.4.avif": {
         type: "avif",
-        sha256: "cf88c7f49c3da599003066d6059249de02a6c92cf288cd7bee2f07316a63e82d",
+        sha256: "4cbe016a9eedfefebb8d7a2bbd107e829ca706f045de2aa4d5c381c456efa9f5",
     },
 };
 const failures = [];
@@ -48,6 +48,12 @@ function webpDimensions(buffer) {
             height: 1 + buffer.readUIntLE(27, 3),
         };
     }
+    if (chunk === "VP8 " && buffer.length >= 30 && buffer.subarray(23, 26).toString("hex") === "9d012a") {
+        return {
+            width: buffer.readUInt16LE(26) & 0x3fff,
+            height: buffer.readUInt16LE(28) & 0x3fff,
+        };
+    }
     return null;
 }
 
@@ -74,9 +80,9 @@ for (const [name, contract] of Object.entries(expected)) {
 }
 
 const pngBytes = assets.get("demo.png").length;
-const webpBytes = assets.get("demo-0.2.1.webp").length;
-const avifBytes = assets.get("demo-0.2.1.avif").length;
-if (webpBytes >= pngBytes * 0.6) fail(`lossless WebP must save at least 40% over PNG; found ${webpBytes} versus ${pngBytes} bytes`);
+const webpBytes = assets.get("demo-0.3.4.webp").length;
+const avifBytes = assets.get("demo-0.3.4.avif").length;
+if (webpBytes >= pngBytes * 0.2) fail(`WebP must save at least 80% over PNG; found ${webpBytes} versus ${pngBytes} bytes`);
 if (avifBytes >= pngBytes * 0.2) fail(`AVIF must save at least 80% over PNG; found ${avifBytes} versus ${pngBytes} bytes`);
 if (webpBytes <= avifBytes) fail("AVIF should remain the smallest preferred representation");
 
@@ -85,18 +91,18 @@ const picture = homepage.match(/<picture>([\s\S]*?)<\/picture>/i)?.[1];
 if (!picture) {
     fail("index.html: runtime evidence must use a picture element");
 } else {
-    const avifSource = '<source srcset="assets/demo-0.2.1.avif" type="image/avif">';
-    const fallback = '<img src="assets/demo-0.2.1.webp" width="1245" height="653" alt="Infernux 0.2.1 editor running the 10,000-cube ocean FFT reference workload" loading="lazy" decoding="async">';
+    const avifSource = '<source srcset="assets/demo-0.3.4.avif" type="image/avif">';
+    const fallback = '<img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">';
     for (const token of [avifSource, fallback]) if (!picture.includes(token)) fail(`index.html: picture is missing '${token}'`);
-    if (picture.includes('<source srcset="assets/demo-0.2.1.webp"')) fail("index.html: WebP should be the img fallback, not a redundant source candidate");
-    if (!(picture.indexOf(avifSource) < picture.indexOf(fallback))) fail("index.html: picture sources must prefer AVIF and fall back to lossless WebP");
+    if (picture.includes('<source srcset="assets/demo-0.3.4.webp"')) fail("index.html: WebP should be the img fallback, not a redundant source candidate");
+    if (!(picture.indexOf(avifSource) < picture.indexOf(fallback))) fail("index.html: picture sources must prefer AVIF and fall back to WebP");
 }
-if (!homepage.includes('"screenshot": "https://infernux-engine.com/assets/demo-0.2.1.webp"')) fail("index.html: structured evidence must use the delivered lossless WebP screenshot");
+if (!homepage.includes('"screenshot": "https://infernux-engine.com/assets/demo-0.3.4.webp"')) fail("index.html: structured evidence must use the delivered WebP screenshot");
 if (homepage.includes("assets/demo.png")) fail("index.html: the repository-only PNG evidence source must not be part of website delivery");
 if (/<link\b[^>]*rel=["']preload["'][^>]*demo-/i.test(homepage)) fail("index.html: below-the-fold runtime evidence must not compete with first-view content via preload");
 
 const sharedCss = await readFile(path.join(docsRoot, "css", "style.css"), "utf8");
-for (const contract of [".demo-frame picture", "aspect-ratio: 1245 / 653", "width: 100%", "height: auto"]) {
+for (const contract of [".demo-frame picture", "aspect-ratio: 80 / 43", "width: 100%", "height: auto"]) {
     if (!sharedCss.includes(contract)) fail(`style.css: missing responsive evidence-image contract '${contract}'`);
 }
 
@@ -111,7 +117,7 @@ for (const readmeName of ["README.md", "README-zh.md"]) {
 }
 
 const provenance = await readFile(path.join(docsRoot, "assets", "VENDOR_ASSETS.md"), "utf8");
-for (const contract of ["demo-0.2.1.webp", "demo-0.2.1.avif", "PSNR 47.03 dB", "MAE 0.3971", "lossless"]) {
+for (const contract of ["demo-0.3.4.webp", "demo-0.3.4.avif", "1920×1032", "Pillow 12.2.0", "quality 88"]) {
     if (!provenance.includes(contract)) fail(`VENDOR_ASSETS.md: missing reviewed image provenance '${contract}'`);
 }
 
@@ -130,6 +136,6 @@ const savings = (bytes) => ((1 - bytes / pngBytes) * 100).toFixed(1);
 console.log(
     `Responsive image audit passed: ${width}x${height}; `
     + `source PNG ${(pngBytes / 1024).toFixed(1)} KiB retained for repository evidence; `
-    + `website lossless WebP fallback ${(webpBytes / 1024).toFixed(1)} KiB (-${savings(webpBytes)}%); `
+    + `website WebP fallback ${(webpBytes / 1024).toFixed(1)} KiB (-${savings(webpBytes)}%); `
     + `preferred AVIF ${(avifBytes / 1024).toFixed(1)} KiB (-${savings(avifBytes)}%).`
 );

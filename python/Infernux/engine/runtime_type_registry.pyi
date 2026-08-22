@@ -1,0 +1,16 @@
+from typing import Any, Optional
+
+RUNTIME_TYPE_REGISTRY_SCHEMA: str
+RUNTIME_TYPE_REGISTRY_VERSION: int
+
+def install_runtime_type_registry(path: str) -> int: ...
+def runtime_type_contract(type_guid: str) -> Optional[dict[str, Any]]: ...
+def validate_runtime_component_identity(
+    *,
+    script_guid: str,
+    type_guid: str,
+    module_name: str,
+    qualified_name: str,
+) -> Optional[dict[str, Any]]: ...
+def bind_runtime_lifecycle_contract(component_type: type, record: Optional[dict[str, Any]]) -> None: ...
+def clear_runtime_type_registry() -> None: ...

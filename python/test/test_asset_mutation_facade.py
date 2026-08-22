@@ -108,8 +108,12 @@ def _isolate_side_effects(monkeypatch, order):
     monkeypatch.setattr(AssetManager, "invalidate", classmethod(lambda _cls, _guid: order.append("py-evict")))
     monkeypatch.setattr(
         AssetManager,
-        "_emit_editor_asset_changed",
-        classmethod(lambda _cls, _path, event="modified": order.append(f"editor-{event}")),
+        "_publish_asset_content_change",
+        classmethod(
+            lambda _cls, _path, event="modified", **_kwargs: order.append(
+                f"editor-{event}"
+            )
+        ),
     )
     monkeypatch.setattr(AssetManager, "_invalidate_project_panel_cache", classmethod(lambda _cls: None))
 
@@ -124,14 +128,64 @@ def test_reimport_rebuilds_database_before_registry_reload(monkeypatch):
     assert order == ["db-reimport", "registry-reload", "py-evict", "editor-modified"]
 
 
-def test_delete_evicts_registry_before_database_event(monkeypatch):
+def test_texture_reimport_uses_single_native_publication_path(monkeypatch):
+    order = []
+    database = _Database(order)
+    database.paths = {"image.png": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+    monkeypatch.setattr(
+        AssetManager,
+        "_invalidate_texture_ui_cache",
+        classmethod(lambda _cls, _path: order.append("texture-ui-evict")),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "_schedule_gpu_texture_reload",
+        classmethod(lambda _cls, _path: order.append("gpu-reload-queued")),
+    )
+
+    result = AssetManager.reimport_asset("image.png", database=database)
+
+    assert result and result.guid == "guid"
+    assert "registry-reload" not in order
+    assert order == [
+        "db-reimport",
+        "py-evict",
+        "texture-ui-evict",
+        "gpu-reload-queued",
+        "editor-modified",
+    ]
+
+
+def test_gpu_texture_flush_is_bounded_and_can_target_one_asset(monkeypatch):
+    AssetManager._pending_gpu_texture_reloads.clear()
+    calls = []
+    monkeypatch.setattr(
+        AssetManager,
+        "_reload_gpu_texture_now",
+        classmethod(lambda _cls, path: calls.append(path)),
+    )
+    for path in ("A.png", "B.png", "C.png"):
+        AssetManager._schedule_gpu_texture_reload(path)
+
+    assert AssetManager.flush_pending_gpu_texture_reloads() == 1
+    assert calls == ["A.png"]
+    assert AssetManager.flush_pending_gpu_texture_reloads(
+        paths=["C.png"], max_items=None
+    ) == 1
+    assert calls == ["A.png", "C.png"]
+    assert AssetManager.flush_pending_gpu_texture_reloads(max_items=None) == 1
+    assert calls == ["A.png", "C.png", "B.png"]
+
+
+def test_delete_commits_database_before_evicting_live_registry(monkeypatch):
     order = []
     database = _Database(order)
     _isolate_side_effects(monkeypatch, order)
 
     result = AssetManager.delete_asset("old.txt", database=database)
     assert result and result.database_committed
-    assert order == ["registry-remove", "py-evict", "db-delete", "editor-deleted"]
+    assert order == ["db-delete", "registry-remove", "py-evict", "editor-deleted"]
 
 
 def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
@@ -141,7 +195,7 @@ def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
 
     result = AssetManager.move_asset("old.txt", "new.txt", database=database)
     assert result and result.previous_path == "old.txt"
-    assert order == ["db-move", "registry-move", "py-evict", "editor-moved"]
+    assert order == ["db-move", "registry-move", "py-evict"]
 
 
 def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeypatch):
@@ -170,7 +224,6 @@ def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeyp
         "db-move",
         "registry-move",
         "py-evict",
-        "editor-moved",
         ("script-reload", "old.py", "new.py"),
     ]
 
@@ -236,3 +289,69 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
     assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
     assert result.error == "shader compile failed"
     assert order == ["db-reimport", "shader-runtime"]
+
+
+def test_internal_python_reimport_only_submits_collector_after_catalog_mutation(
+    monkeypatch,
+):
+    order = []
+    database = _Database(order)
+    database.paths = {"old.py": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+
+    class _Resources:
+        @staticmethod
+        def submit_script_change(path, **kwargs):
+            order.append(("collector", path, kwargs))
+
+    from Infernux.engine.resources_manager import ResourcesManager
+
+    monkeypatch.setattr(
+        ResourcesManager,
+        "instance",
+        classmethod(lambda _cls: _Resources()),
+    )
+
+    result = AssetManager.reimport_asset("old.py", database=database)
+
+    assert result and result.guid == "guid"
+    assert "registry-reload" not in order
+    assert order[:2] == ["db-reimport", "py-evict"]
+    assert order[-1][0] == "collector"
+    assert order[-1][1] == "old.py"
+    assert order[-1][2]["catalog_event"] == "modified"
+
+
+def test_external_python_reimport_leaves_collector_and_publication_to_watcher_path(monkeypatch):
+    order = []
+    database = _Database(order)
+    database.paths = {"old.py": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+
+    def fail_if_submitted(*_args, **_kwargs):
+        raise AssertionError("external watcher reimport must not submit collector")
+
+    monkeypatch.setattr(
+        AssetManager,
+        "_submit_internal_script_change",
+        classmethod(fail_if_submitted),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "note_imported_disk_change",
+        classmethod(
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("script collector owns the source revision")
+            )
+        ),
+    )
+
+    result = AssetManager.reimport_asset(
+        "old.py",
+        database=database,
+        suppress_watcher_echo=False,
+    )
+
+    assert result and result.guid == "guid"
+    assert "registry-reload" not in order
+    assert order == ["db-reimport", "py-evict"]

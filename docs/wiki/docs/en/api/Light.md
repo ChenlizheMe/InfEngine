@@ -11,7 +11,7 @@ class in <b>Infernux.components.builtin</b>
 A Light component that illuminates the scene.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.2.9
+**Status:** Preview · **Verified with:** 0.3.4
 
 Choose light type, range, intensity, color, and shadow settings for the scene scale. Confirm unshadowed lighting first, then enable shadows and tune bias.
 <!-- USER CONTENT END -->
@@ -29,6 +29,10 @@ Choose light type, range, intensity, color, and shadow settings for the scene sc
 | shadows | `int` | The shadow casting mode of the light. |
 | shadow_strength | `float` | The strength of the shadows cast by this light. |
 | shadow_bias | `float` | Bias value to reduce shadow acne artifacts. |
+| shadow_normal_bias | `float` |  |
+| shadow_softness | `float` |  |
+| affect_geometry | `bool` |  |
+| affect_particles | `bool` |  |
 
 <!-- USER CONTENT START --> properties
 
@@ -38,8 +42,6 @@ Choose light type, range, intensity, color, and shadow settings for the scene sc
 
 | Method | Description |
 |------|------|
-| `get_light_view_matrix() → Any` | Return the light's view matrix for shadow mapping. |
-| `get_light_projection_matrix(shadow_extent: float = ..., near_plane: float = ..., far_plane: float = ...) → Any` | Return the light's projection matrix for shadow mapping. |
 | `serialize() → str` | Serialize the component to a JSON string. |
 
 <!-- USER CONTENT START --> public_methods

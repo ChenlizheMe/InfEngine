@@ -16,6 +16,7 @@
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
+#include "vk/DescriptorBindTrace.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
@@ -78,7 +79,7 @@ ShadowViewGpuData PackShadowView(const lighting::ShadowView &view, uint32_t atla
 void InxVkCoreModular::PumpPendingTextureLoads()
 {
     auto &registry = AssetRegistry::Instance();
-    for (auto pending = m_pendingTextureCpuLoads.begin(); pending != m_pendingTextureCpuLoads.end();) {
+    for (auto pending = m_pendingTextureAssetLoads.begin(); pending != m_pendingTextureAssetLoads.end();) {
         try {
             if (!registry.TryCommitAssetLoad(pending->second)) {
                 ++pending;
@@ -88,7 +89,7 @@ void InxVkCoreModular::PumpPendingTextureLoads()
         } catch (const std::exception &exception) {
             INXLOG_ERROR("Texture CPU load failed for GUID '", pending->first, "': ", exception.what());
         }
-        pending = m_pendingTextureCpuLoads.erase(pending);
+        pending = m_pendingTextureAssetLoads.erase(pending);
     }
 
     for (auto pending = m_pendingTextureGpuUploads.begin(); pending != m_pendingTextureGpuUploads.end();) {
@@ -98,8 +99,7 @@ void InxVkCoreModular::PumpPendingTextureLoads()
                 continue;
             }
             auto texture = pending->second.ticket->GetTexture();
-            if (!registry.IsLoaded(pending->second.guid) ||
-                registry.GetAssetVersion(pending->second.guid) != pending->second.runtimeVersion) {
+            if (registry.GetAssetVersion(pending->second.guid) != pending->second.runtimeVersion) {
                 pending = m_pendingTextureGpuUploads.erase(pending);
                 continue;
             }
@@ -146,16 +146,36 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         return {TextureResolveStatus::Failed, {}};
     }
 
+    // A published GPU view remains authoritative after its decoded CPU asset
+    // has been evicted. Resolve it first so CPU residency policy cannot turn a
+    // stable material into a per-frame decode/upload loop.
+    const std::string filterIdentity = filterOverride ? filterOverride : "asset";
+    const std::string wrapIdentity = wrapOverride ? wrapOverride : "asset";
+    const std::string cacheKey = textureGuid + "::dim" + std::to_string(static_cast<uint32_t>(expectedDimension)) +
+                                 "::filter=" + filterIdentity + "::wrap=" + wrapIdentity;
+    const uint64_t publishedRuntimeVersion = registry.GetAssetVersion(textureGuid);
+    if (publishedRuntimeVersion != 0) {
+        auto cachedSlot =
+            m_textureCache.FindAsset(cacheKey, textureGuid, publishedRuntimeVersion, m_ensureFrameCounter);
+        auto cached = cachedSlot ? cachedSlot->Acquire() : nullptr;
+        if (cached && cached->IsValid()) {
+            auto &rhiDevice = m_backend.Device().GetRhiDevice();
+            return {TextureResolveStatus::Ready,
+                    {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()),
+                     std::move(cachedSlot), std::move(cached)}};
+        }
+    }
+
     auto infTex = registry.GetAsset<InxTexture>(textureGuid);
     if (!infTex) {
-        auto pending = m_pendingTextureCpuLoads.find(textureGuid);
-        if (pending == m_pendingTextureCpuLoads.end()) {
+        auto pending = m_pendingTextureAssetLoads.find(textureGuid);
+        if (pending == m_pendingTextureAssetLoads.end()) {
             try {
-                pending = m_pendingTextureCpuLoads
+                pending = m_pendingTextureAssetLoads
                               .emplace(textureGuid, registry.BeginLoadAsset(textureGuid, ResourceType::Texture))
                               .first;
             } catch (const std::exception &exception) {
-                INXLOG_ERROR("TextureResolver: failed to schedule CPU load for '", textureGuid,
+                INXLOG_ERROR("TextureResolver: failed to schedule texture metadata load for '", textureGuid,
                              "': ", exception.what());
                 return {TextureResolveStatus::Failed, {}};
             }
@@ -163,16 +183,16 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         try {
             if (!registry.TryCommitAssetLoad(pending->second))
                 return {TextureResolveStatus::Pending, {}};
-            m_pendingTextureCpuLoads.erase(pending);
+            m_pendingTextureAssetLoads.erase(pending);
             infTex = registry.GetAsset<InxTexture>(textureGuid);
         } catch (const std::exception &exception) {
-            INXLOG_ERROR("TextureResolver: CPU load failed for '", textureGuid, "': ", exception.what());
-            m_pendingTextureCpuLoads.erase(pending);
+            INXLOG_ERROR("TextureResolver: metadata load failed for '", textureGuid, "': ", exception.what());
+            m_pendingTextureAssetLoads.erase(pending);
             return {TextureResolveStatus::Failed, {}};
         }
     }
-    if (!infTex || !infTex->GetCpuData() || !infTex->GetCpuData()->IsValid()) {
-        INXLOG_ERROR("TextureResolver: texture asset has no decoded CPU payload: ", textureGuid);
+    if (!infTex || infTex->GetMipCount() == 0) {
+        INXLOG_ERROR("TextureResolver: texture asset has no current imported artifact description: ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
     }
     if (infTex->GetDimension() != expectedDimension) {
@@ -189,16 +209,22 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     const std::string wrapMode = wrapOverride ? wrapOverride : infTex->GetWrapMode();
     const int anisoLevel = infTex->GetAnisoLevel();
     rhi::SamplerDesc sampler;
-    sampler.maxLod = static_cast<float>(infTex->GetCpuData()->mipLevels.size() - 1);
-    sampler.maxAnisotropy = (std::min)(static_cast<float>((std::max)(1, anisoLevel)),
-                                       m_backend.Device().GetCapabilities().limits.maxSamplerAnisotropy);
+    sampler.maxLod = static_cast<float>(infTex->GetMipCount() - 1);
+    const auto &capabilities = m_backend.Device().GetCapabilities();
+    const float deviceMaxAnisotropy =
+        capabilities.features.samplerAnisotropy ? (std::max)(1.0f, capabilities.limits.maxSamplerAnisotropy) : 1.0f;
+    const float requestedAnisotropy = anisoLevel < 0 ? deviceMaxAnisotropy : static_cast<float>(anisoLevel);
+    sampler.maxAnisotropy = (std::min)((std::max)(1.0f, requestedAnisotropy), deviceMaxAnisotropy);
     if (filterMode == "point") {
         sampler.minFilter = rhi::FilterMode::Nearest;
         sampler.magFilter = rhi::FilterMode::Nearest;
         sampler.mipFilter = rhi::FilterMode::Nearest;
+        sampler.maxAnisotropy = 1.0f;
     } else if (filterMode == "trilinear") {
         sampler.mipFilter = rhi::FilterMode::Linear;
-    } else if (filterMode != "linear" && filterMode != "bilinear") {
+    } else if (filterMode == "linear" || filterMode == "bilinear") {
+        sampler.mipFilter = rhi::FilterMode::Nearest;
+    } else {
         INXLOG_ERROR("TextureResolver: unsupported filter mode '", filterMode, "' for texture ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
     }
@@ -212,12 +238,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     // The cache key identifies a stable consumer slot, not the mutable import
     // result. Format, color space and asset-controlled sampler settings may
     // change and must publish a new revision into the same slot.
-    const std::string filterIdentity = filterOverride ? filterMode : "asset";
-    const std::string wrapIdentity = wrapOverride ? wrapMode : "asset";
-    std::string cacheKey = textureGuid + "::dim" + std::to_string(static_cast<uint32_t>(expectedDimension)) +
-                           "::filter=" + filterIdentity + "::wrap=" + wrapIdentity;
-
-    // Check texture cache (thread-safe)
+    // Check texture cache again after CPU resolution: another consumer may
+    // have completed publication while this request was pending.
     {
         auto cachedSlot = m_textureCache.FindAsset(cacheKey, textureGuid, runtimeVersion, m_ensureFrameCounter);
         auto cached = cachedSlot ? cachedSlot->Acquire() : nullptr;
@@ -231,8 +253,24 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
 
     auto pendingGpu = m_pendingTextureGpuUploads.find(cacheKey);
     if (pendingGpu == m_pendingTextureGpuUploads.end()) {
+        auto pendingStaging = m_pendingTextureStagingLoads.find(cacheKey);
+        if (pendingStaging == m_pendingTextureStagingLoads.end()) {
+            try {
+                pendingStaging =
+                    m_pendingTextureStagingLoads.emplace(cacheKey, registry.BeginTextureUploadStaging(textureGuid))
+                        .first;
+            } catch (const std::exception &exception) {
+                INXLOG_ERROR("TextureResolver: failed to schedule upload staging for '", textureGuid,
+                             "': ", exception.what());
+                return {TextureResolveStatus::Failed, {}};
+            }
+        }
         try {
-            TextureUploadBatch upload(*infTex->GetCpuData(), sampler);
+            auto staging = registry.TryConsumeTextureUploadStaging(pendingStaging->second);
+            if (!staging)
+                return {TextureResolveStatus::Pending, {}};
+            m_pendingTextureStagingLoads.erase(pendingStaging);
+            TextureUploadBatch upload(*staging, sampler);
             auto ticket = m_resourceManager.BeginTextureUpload(upload.GetRequest());
             ++m_submittedTextureUploadCount;
             if (ticket->IsAsync())
@@ -241,6 +279,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
                              .emplace(cacheKey, PendingTextureGpuUpload{textureGuid, runtimeVersion, std::move(ticket)})
                              .first;
         } catch (const std::exception &exception) {
+            m_pendingTextureStagingLoads.erase(cacheKey);
             INXLOG_ERROR("TextureResolver: failed to schedule GPU upload for '", textureGuid, "': ", exception.what());
             return {TextureResolveStatus::Failed, {}};
         }
@@ -252,8 +291,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         auto &rhiDevice = m_backend.Device().GetRhiDevice();
         const VkImageView view = rhiDevice.Resolve(texture->GetView());
         const VkSampler nativeSampler = rhiDevice.Resolve(texture->GetSampler());
-        if (!registry.IsLoaded(textureGuid) ||
-            registry.GetAssetVersion(textureGuid) != pendingGpu->second.runtimeVersion) {
+        if (registry.GetAssetVersion(textureGuid) != pendingGpu->second.runtimeVersion) {
             m_pendingTextureGpuUploads.erase(pendingGpu);
             return {TextureResolveStatus::Pending, {}};
         }
@@ -270,6 +308,14 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         m_pendingTextureGpuUploads.erase(pendingGpu);
         return {TextureResolveStatus::Failed, {}};
     }
+}
+
+std::shared_ptr<const rhi::TextureGpuView>
+InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid)
+{
+    TextureResolveResult resolved =
+        ResolveTextureAsset(textureGuid, "EditorTexturePreview", TextureDimension::Texture2D, nullptr, nullptr);
+    return resolved.status == TextureResolveStatus::Ready ? std::move(resolved.binding.gpuView) : nullptr;
 }
 
 // ============================================================================
@@ -493,6 +539,10 @@ void InxVkCoreModular::InitializeMaterialSystem()
     AssetRegistry::Instance().InitializeBuiltinMaterials();
 
     if (!m_materialPipelineManagerInitialized) {
+        // A retry/reinitialization must not carry shader-program publications
+        // owned by the previous manager generation into the new one.
+        ReleaseMaterialPassResolutionCache();
+
         // Use SceneRenderTarget-compatible formats: HDR R16G16B16A16_SFLOAT color + device depth format
         VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
         VkFormat depthFormat = m_backend.Device().FindDepthFormat();
@@ -516,12 +566,22 @@ void InxVkCoreModular::InitializeMaterialSystem()
                         "x. Runtime requests remain strict and will not silently downgrade.");
             m_msaaSampleCount = rhi::ToVkSampleCount(ToRhiSampleCount(fallbackSamples));
         }
-        m_materialPipelineManager.Initialize(m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
-                                             colorFormat, depthFormat, m_msaaSampleCount,
-                                             m_shaderCache.GetProgramCache(), &m_deletionQueue,
-                                             m_backend.Device().IsDescriptorIndexingEnabled(),
-                                             &m_backend.Device().GetRhiDevice().GetDescriptorManager());
+        m_materialPipelineManager.Initialize(
+            m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
+            m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
+            m_backend.Device().IsDescriptorIndexingEnabled(),
+            m_backend.Device().GetRhiDevice().GetCapabilityState().dynamicRendering.IsEnabled(),
+            &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
+            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState()));
         m_materialPipelineManagerInitialized = true;
+
+        auto &materialDescriptors = m_materialPipelineManager.GetDescriptorManager();
+        auto &rhiDevice = m_backend.Device().GetRhiDevice();
+        materialDescriptors.SetBindlessMaterialMode(rhiDevice.GetBindlessTextureTableBinding().IsValid());
+        materialDescriptors.SetBindlessTextureResolver(
+            [device = &rhiDevice](const std::shared_ptr<const rhi::TextureGpuView> &view) -> rhi::ResourceIndex {
+                return device->PublishBindlessTexture(view);
+            });
 
         auto whiteSlot = m_textureCache.Find("white", m_ensureFrameCounter);
         auto whiteTex = whiteSlot ? whiteSlot->Acquire() : nullptr;
@@ -559,9 +619,13 @@ void InxVkCoreModular::InitializeMaterialSystem()
             m_materialPipelineManager.GetOrCreateRenderDataWithReflection(defaultMaterial, *vertCode, *fragCode,
                                                                           ShaderProgramKey{{vertId, fragId}, 0});
         } else {
-            INXLOG_ERROR("InitializeMaterialSystem: SPIR-V shader codes not found for default material "
+            // Headless/bootstrap users can prepare the renderer before a
+            // project shader catalog exists.  This is not a failed material:
+            // the normal material publication path reflects DefaultLit as
+            // soon as Standard|Lit enters the shader cache.
+            INXLOG_DEBUG("InitializeMaterialSystem: default material shader SPIR-V not yet in cache "
                          "(vert='",
-                         vertId, "', frag='", fragId, "'). Reflection path requires shader code cache.");
+                         vertId, "', frag='", fragId, "'), deferring reflection until first use");
         }
     }
 
@@ -672,6 +736,13 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         return false;
     }
 
+    // Material documents intentionally store only authored values. Resolve
+    // omitted values from the linked shader contract before any descriptor or
+    // preview pipeline observes the material, so passive Project thumbnails,
+    // Inspector previews and scene rendering all start from the same snapshot.
+    if (artifact)
+        material->SynchronizeShaderPropertyDefaults(*artifact);
+
     // Apply shader render-state annotations to the material before pipeline creation.
     // Fragment shader annotations take priority (they define the surface behaviour).
     const auto *renderMeta = m_shaderCache.GetRenderMeta(fragShaderName);
@@ -696,7 +767,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             // Optional programs are materialized by their first real pass.
             for (const auto target :
                  {ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow,
-                  ShaderCompileTarget::Depth, ShaderCompileTarget::Picking, ShaderCompileTarget::Motion})
+                  ShaderCompileTarget::Depth, ShaderCompileTarget::Picking, ShaderCompileTarget::Motion,
+                  ShaderCompileTarget::Normal, ShaderCompileTarget::BaseColor})
                 material->SetPassShaderProgram(target, nullptr);
         }
 
@@ -717,8 +789,9 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     const std::string missingProgramKey =
         vertShaderName + "|" + fragShaderName + (m_materialPipelineManagerInitialized ? "|ready" : "|initializing");
     if (reportedMissingPrograms.insert(missingProgramKey).second) {
-        INXLOG_WARN("RefreshMaterialPipeline: shader codes not found or MPM not initialized for '", material->GetName(),
-                    "' (vert='", vertShaderName, "', frag='", fragShaderName, "')");
+        // INXLOG_WARN("RefreshMaterialPipeline: shader codes not found or MPM not initialized for '",
+        // material->GetName(),
+        //             "' (vert='", vertShaderName, "', frag='", fragShaderName, "')");
     }
 
     // Dump available shader keys for debugging
@@ -726,12 +799,30 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     if (dumpCount++ < 2) {
         std::string vertKeys, fragKeys;
         m_shaderCache.DumpAvailableKeys(vertKeys, fragKeys);
-        INXLOG_WARN("  Available vert shaders:", vertKeys);
-        INXLOG_WARN("  Available frag shaders:", fragKeys);
-        INXLOG_WARN("  MPM initialized: ", m_materialPipelineManagerInitialized ? "true" : "false",
-                    ", vertCode found: ", (vertCode ? "yes" : "no"), ", fragCode found: ", (fragCode ? "yes" : "no"));
+        // INXLOG_WARN("  Available vert shaders:", vertKeys);
+        // INXLOG_WARN("  Available frag shaders:", fragKeys);
+        // INXLOG_WARN("  MPM initialized: ", m_materialPipelineManagerInitialized ? "true" : "false",
+        //             ", vertCode found: ", (vertCode ? "yes" : "no"), ", fragCode found: ", (fragCode ? "yes" :
+        //             "no"));
     }
     return false;
+}
+
+MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material,
+                                                                         bool useDynamicRendering)
+{
+    if (!material)
+        return nullptr;
+
+    auto &pipelineManager = GetMaterialPipelineManager();
+    auto *forward = pipelineManager.GetRenderData(material->GetMaterialKey());
+    if (!forward || !forward->isValid || !forward->shaderProgram)
+        return nullptr;
+
+    auto descriptor = pipelineManager.GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
+    if (useDynamicRendering)
+        descriptor.renderingMode = MaterialPassRenderingMode::DynamicRendering;
+    return pipelineManager.GetOrCreatePassRenderData(std::move(material), forward->shaderProgram, descriptor);
 }
 
 // ============================================================================
@@ -855,8 +946,10 @@ VkBuffer InxVkCoreModular::GetInstanceSSBO(size_t index) const
     return VK_NULL_HANDLE;
 }
 
-VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const std::string &type) const
+VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const std::string &type)
 {
+    if (!EnsureShaderAvailable(name, type))
+        return VK_NULL_HANDLE;
     return m_shaderCache.GetModule(name, type);
 }
 
@@ -986,7 +1079,9 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
                                (binding.stageFlags & VK_SHADER_STAGE_VERTEX_BIT) != 0;
                     });
     const bool hasAlphaClip = material->GetRenderState().alphaClipEnabled;
-    const bool needsDescriptor = hasVertexMaterialUBO || hasVertexMaterialTextures || hasAlphaClip;
+    const bool usesBindlessTextures = shadowProgram && shadowProgram->UsesBindlessTextureABI();
+    const bool needsDescriptor =
+        hasVertexMaterialUBO || hasVertexMaterialTextures || hasAlphaClip || usesBindlessTextures;
     const InxMaterial *identity = material.get();
 
     if (!needsDescriptor) {
@@ -1011,6 +1106,12 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     }
     if (hasAlphaClip && (!forwardMaterialDesc->materialUBO || !forwardMaterialDesc->materialUBO->IsValid())) {
         INXLOG_WARN("EnsureShadowMaterialBinding: missing alpha-clip material UBO for '", material->GetName(), "'");
+        return VK_NULL_HANDLE;
+    }
+    if (usesBindlessTextures &&
+        (!forwardMaterialDesc->usesBindlessTextureABI || !forwardMaterialDesc->textureIndexUBO ||
+         !forwardMaterialDesc->textureIndexUBO->IsValid())) {
+        INXLOG_WARN("EnsureShadowMaterialBinding: missing bindless texture indices for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
 
@@ -1042,6 +1143,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     HashCombine(resourceSignature, hasVertexMaterialUBO ? 1u : 0u);
     HashCombine(resourceSignature, hasVertexMaterialTextures ? 1u : 0u);
     HashCombine(resourceSignature, hasAlphaClip ? 1u : 0u);
+    HashCombine(resourceSignature, usesBindlessTextures ? 1u : 0u);
     HashCombine(resourceSignature, VulkanHandleBits(forwardMaterialDesc->descriptorSet));
     HashCombine(resourceSignature, VulkanHandleBits(defaultView));
     HashCombine(resourceSignature, VulkanHandleBits(defaultSampler));
@@ -1053,11 +1155,25 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
         HashCombine(resourceSignature, VulkanHandleBits(forwardMaterialDesc->vertexMaterialUBO->GetBuffer()));
         HashCombine(resourceSignature, forwardMaterialDesc->vertexMaterialUBO->GetSize());
     }
+    if (usesBindlessTextures && forwardMaterialDesc->textureIndexUBO) {
+        HashCombine(resourceSignature, VulkanHandleBits(forwardMaterialDesc->textureIndexUBO->GetBuffer()));
+        HashCombine(resourceSignature, forwardMaterialDesc->textureIndexUBO->GetSize());
+    }
     for (const auto &[binding, texture] : sortedTextures) {
         HashCombine(resourceSignature, binding);
         HashCombine(resourceSignature, VulkanHandleBits(texture.imageView));
         HashCombine(resourceSignature, VulkanHandleBits(texture.sampler));
     }
+
+    const auto markBindlessShadowResourcesUsed = [&]() {
+        if (!usesBindlessTextures)
+            return;
+        auto &rhiDevice = m_backend.Device().GetRhiDevice();
+        rhiDevice.MarkBindlessTexturesUsed(forwardMaterialDesc->bindlessTextureIndices.empty()
+                                               ? nullptr
+                                               : forwardMaterialDesc->bindlessTextureIndices.data(),
+                                           forwardMaterialDesc->bindlessTextureIndices.size());
+    };
 
     auto existing = m_shadowMaterialBindingCache.find(identity);
     if (existing != m_shadowMaterialBindingCache.end()) {
@@ -1066,6 +1182,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
             existing->second.descriptorSet != VK_NULL_HANDLE) {
             existing->second.materialVersion = material->GetVersion();
             ++m_shadowMaterialBindingCacheHits;
+            markBindlessShadowResourcesUsed();
             return existing->second.descriptorSet;
         }
     }
@@ -1104,7 +1221,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     vertexBuffer.range = vertexUbo ? vertexUbo->GetSize() : fragmentBuffer.range;
 
     std::vector<VkWriteDescriptorSet> writes;
-    writes.reserve(kMaxShadowMaterialTextures + 2);
+    writes.reserve(kMaxShadowMaterialTextures + 3);
     for (uint32_t index = 0; index < kMaxShadowMaterialTextures; ++index) {
         VkWriteDescriptorSet write{};
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1131,7 +1248,23 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     vertexWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     vertexWrite.pBufferInfo = &vertexBuffer;
     writes.push_back(vertexWrite);
+    VkDescriptorBufferInfo textureIndexBuffer{};
+    VkWriteDescriptorSet textureIndexWrite{};
+    if (usesBindlessTextures) {
+        textureIndexBuffer.buffer = forwardMaterialDesc->textureIndexUBO->GetBuffer();
+        textureIndexBuffer.offset = 0;
+        textureIndexBuffer.range = forwardMaterialDesc->textureIndexUBO->GetSize();
+        textureIndexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        textureIndexWrite.dstSet = allocation.descriptorSet;
+        textureIndexWrite.dstBinding = ShaderProgram::MaterialTextureIndexBinding;
+        textureIndexWrite.descriptorCount = 1;
+        textureIndexWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        textureIndexWrite.pBufferInfo = &textureIndexBuffer;
+        writes.push_back(textureIndexWrite);
+    }
     vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    markBindlessShadowResourcesUsed();
 
     ShadowMaterialBindingEntry replacement{};
     replacement.owner = material;
@@ -1160,10 +1293,11 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
 
 VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
                                                                const std::string &vertShaderName,
-                                                               const std::string &fragShaderName)
+                                                               const std::string &fragShaderName,
+                                                               VkRenderPass compatibleRenderPass, VkFormat depthFormat)
 {
     // Shared shadow resources must be ready
-    if (m_shadowCompatRenderPass == VK_NULL_HANDLE || m_shadowPipelineLayout == VK_NULL_HANDLE)
+    if (m_shadowPipelineLayout == VK_NULL_HANDLE || depthFormat == VK_FORMAT_UNDEFINED)
         return VK_NULL_HANDLE;
 
     if (!material)
@@ -1224,6 +1358,8 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     std::string shadowShaderKey = vertShaderName + "|" + fragShaderName + "|";
     shadowShaderKey += linkedArtifact ? std::to_string(linkedArtifact->key.revision) + ":Shadow" : "legacy-shadow";
     shadowShaderKey += "|cull" + std::to_string(matCullMode);
+    shadowShaderKey += "|depth" + std::to_string(static_cast<uint32_t>(depthFormat));
+    shadowShaderKey += "|renderPass" + std::to_string(VulkanHandleBits(compatibleRenderPass));
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
@@ -1313,7 +1449,21 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     pipelineInfo.pColorBlendState = &colorBlend;
     pipelineInfo.pDynamicState = &dynVpScissor.dynamicState;
     pipelineInfo.layout = m_shadowPipelineLayout;
-    pipelineInfo.renderPass = m_shadowCompatRenderPass;
+    std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
+    VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
+    if (compatibleRenderPass == VK_NULL_HANDLE) {
+        rhi::GraphicsRenderingSignature signature;
+        signature.depthFormat = rhi::FromVkFormat(depthFormat);
+        signature.stencilFormat =
+            rhi::IsStencilFormat(signature.depthFormat) ? signature.depthFormat : rhi::PixelFormat::Undefined;
+        signature.samples = rhi::SampleCount::One;
+        if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
+            INXLOG_WARN("Failed to build Dynamic Rendering signature for shadow pipeline");
+            return VK_NULL_HANDLE;
+        }
+        pipelineInfo.pNext = &dynamicRenderingInfo;
+    }
+    pipelineInfo.renderPass = compatibleRenderPass;
     pipelineInfo.subpass = 0;
 
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
@@ -1338,7 +1488,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 // ============================================================================
 
 std::shared_ptr<vk::ImageReadbackTicket>
-InxVkCoreModular::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size)
+InxVkCoreModular::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending)
 {
     if (!material || size <= 0 || !m_materialPipelineManagerInitialized)
         return nullptr;
@@ -1346,7 +1496,7 @@ InxVkCoreModular::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &ma
     if (!m_gpuMaterialPreview)
         m_gpuMaterialPreview = std::make_unique<GPUMaterialPreview>(this);
 
-    return m_gpuMaterialPreview->BeginRenderToPixels(*material, size);
+    return m_gpuMaterialPreview->BeginRenderToPixels(*material, size, texturePending);
 }
 
 bool InxVkCoreModular::TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket,

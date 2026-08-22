@@ -49,9 +49,29 @@ struct InxGUISemanticSnapshot
     float mouseX = 0.0f;
     float mouseY = 0.0f;
     bool wantsTextInput = false;
+    bool dragDropActive = false;
+    bool dragDropPreview = false;
+    bool dragDropDelivery = false;
+    std::string dragDropPayloadType;
+    uint32_t dragDropSourceId = 0;
+    uint32_t dragDropAcceptId = 0;
     std::string focusedWindow;
     std::string focusedWindowId;
     std::vector<InxGUISemanticTarget> targets;
+};
+
+struct InxGUISemanticCaptureState
+{
+    bool continuous = false;
+    bool active = false;
+    uint64_t requestedSequence = 0;
+    uint64_t completedSequence = 0;
+    uint64_t pendingInputSequence = 0;
+    uint64_t workingRequestSequence = 0;
+    uint64_t beginFrameCount = 0;
+    uint64_t endFrameCount = 0;
+    uint64_t abortFrameCount = 0;
+    uint64_t publishCount = 0;
 };
 
 class InxGUISemantics
@@ -66,6 +86,18 @@ class InxGUISemantics
     static void EndFrame();
     static void AbortFrame() noexcept;
 
+    /// Return the focused ImGui window identity tracked every GUI frame.
+    /// This remains available when full semantic capture is disabled.
+    [[nodiscard]] static std::string GetFocusedWindowId();
+
+    /// Visibility of a root editor window in the last fully completed ImGui
+    /// frame. nullopt means no frame snapshot has been published yet.
+    [[nodiscard]] static std::optional<bool> WasWindowContentPresented(const std::string &windowId);
+
+    /// Selected window in the same dock node during the last completed frame.
+    /// Floating windows and unknown windows return nullopt.
+    [[nodiscard]] static std::optional<std::string> PresentedDockPeerForWindow(const std::string &windowId);
+
     static void RecordLastItem(const std::string &kind, const std::string &label, bool enabled = true,
                                const std::string &semanticId = "", std::optional<bool> boolValue = std::nullopt,
                                std::optional<double> numericValue = std::nullopt,
@@ -77,6 +109,7 @@ class InxGUISemantics
     static void RecordCurrentWindowCloseButton(const std::string &semanticId);
 
     [[nodiscard]] static InxGUISemanticSnapshot GetSnapshot();
+    [[nodiscard]] static InxGUISemanticCaptureState GetCaptureState() noexcept;
 };
 
 } // namespace infernux

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from Infernux.lib import InxGUIContext
-from Infernux.engine.i18n import t
+from Infernux.engine.i18n import get_locale, t
 from . import inspector_support as _inspector_support
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import get_resource_preview_texture_id
@@ -34,6 +34,9 @@ from . import inspector_shader_utils as shader_utils
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
 import logging
+from ._inspector_references import (
+    _project_texture_guid_and_path,
+)
 
 
 _PROFILE_ENABLED = _inspector_support.is_inspector_profile_enabled()
@@ -173,6 +176,16 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
     handle across frames binds a freed descriptor — Vulkan validation errors,
     previews rendering as the font atlas, and intermittent crashes.
     """
+    embedded = isinstance(preview_path, str) and "::submat:" in preview_path
+    # Asset refreshes publish a new in-memory JSON document before the next
+    # inspector frame.  Do not let the old preview token survive that refresh;
+    # this keeps external/native version changes on the same generation path
+    # as an inline edit without reading the file from disk.
+    live_json = state.extra.get("cached_json", "")
+    if not embedded and live_json and live_json != (cache_tag or ""):
+        cache_tag = live_json
+        state.extra["_material_cache_tag"] = cache_tag
+
     preview_key = (preview_path or "", cache_tag or "")
     cached_key = state.extra.get("_material_preview_query_key")
     cached_ready = bool(state.extra.get("_material_preview_tex_ready", False))
@@ -247,35 +260,45 @@ def _resolve_texture_display(prop):
         tex_path = adb.get_path_from_guid(tex_guid)
         if tex_path:
             return os.path.basename(tex_path)
-    return tex_guid[:8] + "..."
+    return f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
 
 
-def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
+def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
+                              reference_cache=None):
     """Render a canonical GUID-backed Texture2D property. Returns True if changed."""
     changed = False
-    display = _resolve_texture_display(prop)
+    tex_guid = str(prop.get("guid", "") or "")
+    if isinstance(reference_cache, dict):
+        if "database" not in reference_cache:
+            reference_cache["database"] = _get_asset_database()
+        adb = reference_cache["database"]
+        database_generation = getattr(adb, "query_generation", -1) if adb else -1
+        cache_key = (id(adb), int(database_generation or 0), tex_guid)
+        if reference_cache.get("key") != cache_key:
+            tex_path = adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
+            reference_cache["key"] = cache_key
+            reference_cache["path"] = tex_path or ""
+            reference_cache["display"] = (
+                os.path.basename(tex_path) if tex_path else (
+                    f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
+                    if tex_guid else t("igui.none")
+                )
+            )
+        display = reference_cache["display"]
+        texture_path = reference_cache["path"]
+    else:
+        display = _resolve_texture_display(prop)
+        texture_path = ""
     field_label(ctx, prop_name, plw)
 
     from .igui import IGUI
 
-    def _on_tex_drop(payload):
+    def _assign_texture(payload):
         nonlocal changed
-        dropped = str(payload).replace("\\", "/")
-        guid = _resolve_path_to_guid(dropped)
+        guid, path = _project_texture_guid_and_path(payload)
         if not guid:
             logging.getLogger(__name__).warning(
-                "Cannot resolve dropped texture path to GUID: %s", dropped)
-            return
-        prop["guid"] = guid
-        changed = True
-
-    def _on_tex_pick(picked_path):
-        nonlocal changed
-        picked = str(picked_path).replace("\\", "/")
-        guid = _resolve_path_to_guid(picked)
-        if not guid:
-            logging.getLogger(__name__).warning(
-                "Cannot resolve picked texture path to GUID: %s", picked)
+                "Texture must belong to the current project's Assets folder: %s", payload)
             return
         prop["guid"] = guid
         changed = True
@@ -285,20 +308,28 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         prop["guid"] = ""
         changed = True
 
-    def _tex_asset_items(filt):
-        from .inspector_components import _picker_assets
-        return _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True)
+    def _texture_path():
+        if texture_path:
+            return texture_path
+        adb = _get_asset_database()
+        return adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
 
-    IGUI.object_field(
+    IGUI.asset_reference_field(
         ctx,
         f"{wid_prefix}_{prop_name}_tex",
         display, "Texture",
+        asset_type="Texture",
         clickable=True,
         accept="TEXTURE_FILE",
-        on_drop=_on_tex_drop,
-        picker_asset_items=_tex_asset_items,
-        on_pick=_on_tex_pick,
+        on_assign=_assign_texture,
         on_clear=_on_tex_clear,
+        ping_path=_texture_path() or None,
+        has_value=bool(prop.get("guid")),
+        reference_value={
+            "asset_type": "Texture",
+            "guid": str(prop.get("guid", "") or ""),
+            "path_hint": texture_path or _texture_path(),
+        },
     )
     return changed
 
@@ -311,6 +342,7 @@ def render_material_property(
     value,
     plw: float,
     wid_prefix: str = "mp",
+    reference_cache=None,
 ) -> bool:
     """Render one material property row.  Returns ``True`` if changed."""
     changed = False
@@ -384,7 +416,10 @@ def render_material_property(
             changed = True
 
     elif ptype == 6:  # Texture2D
-        changed = _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw)
+        changed = _render_texture2d_property(
+            ctx, prop, prop_name, wid_prefix, plw,
+            reference_cache=reference_cache,
+        )
 
     elif ptype == 7:  # Color
         if value is not None and len(value) >= 4:
@@ -394,7 +429,8 @@ def render_material_property(
         field_label(ctx, prop_name, plw)
         allow_hdr = bool(prop.get("hdr", False))
         nr, ng, nb, na = _render_color_bar(
-            ctx, wid, float(x), float(y), float(z), float(w), allow_hdr=allow_hdr)
+            ctx, wid, float(x), float(y), float(z), float(w),
+            allow_hdr=allow_hdr, default_hdr_enabled=allow_hdr)
         if (nr, ng, nb, na) != (x, y, z, w):
             prop["value"] = [nr, ng, nb, na]
             changed = True
@@ -412,14 +448,135 @@ def render_material_property(
 _native_mat = None
 _cached_data: Optional[dict] = None
 _shader_cache: dict = {".vert": None, ".frag": None}
-_surface_batch_plans: dict = {}
+_SURFACE_BATCH_SCHEMA = 2
+
+
+def _shader_value_token(value):
+    """Return a stable, value-only key for a serialized shader reference."""
+    if isinstance(value, dict):
+        return (
+            str(value.get("guid", "") or ""),
+            str(value.get("shader_id", "") or ""),
+            str(value.get("path_hint", "") or ""),
+            str(value.get("builtin", "") or ""),
+        )
+    return (type(value).__name__, str(value or ""))
+
+
+def _bump_material_schema_revision(state) -> int:
+    revision = int(state.extra.get("_material_schema_revision", 0)) + 1
+    state.extra["_material_schema_revision"] = revision
+    state.extra.pop("_material_property_layout_cache", None)
+    state.extra.pop("_material_shader_ui_cache", None)
+    return revision
+
+
+def _get_material_shader_ui_cache(state, vert_ref, frag_ref):
+    """Cache dropdown catalogs and stable display/path data per shader revision."""
+    generation = int(state.extra.get("_shader_catalog_generation", -1))
+    key = (
+        generation,
+        _shader_value_token(vert_ref),
+        _shader_value_token(frag_ref),
+    )
+    cache = state.extra.get("_material_shader_ui_cache")
+    if isinstance(cache, dict) and cache.get("key") == key:
+        return cache
+
+    vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
+    frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
+    cache = {
+        "key": key,
+        "vertex_items": vert_items,
+        "fragment_items": frag_items,
+        "vertex_id": shader_utils.shader_ref_id(vert_ref),
+        "fragment_id": shader_utils.shader_ref_id(frag_ref),
+        "vertex_display": shader_utils.shader_display_from_value(vert_ref, vert_items),
+        "fragment_display": shader_utils.shader_display_from_value(frag_ref, frag_items),
+        "vertex_path": _shader_reference_path(vert_ref, ".vert"),
+        "fragment_path": _shader_reference_path(frag_ref, ".frag"),
+    }
+    state.extra["_material_shader_ui_cache"] = cache
+    return cache
+
+
+def _get_material_property_layout_cache(ctx, state, mat_data):
+    """Cache property order and label width; values never invalidate this cache."""
+    locale = get_locale()
+    key = (
+        id(ctx),
+        locale,
+        int(state.extra.get("_material_schema_revision", 0)),
+    )
+    cache = state.extra.get("_material_property_layout_cache")
+    if isinstance(cache, dict) and cache.get("key") == key:
+        return cache
+
+    prop_names = tuple(shader_utils.get_material_property_display_order(mat_data))
+    cache = {
+        "key": key,
+        "property_names": prop_names,
+        "label_width": max_label_w(ctx, prop_names),
+    }
+    state.extra["_material_property_layout_cache"] = cache
+    return cache
+
+
+def _shader_reference_path(value, ext: str) -> str:
+    reference = shader_utils.make_shader_reference(value, ext)
+    path = str(reference.get("path_hint", "") or "")
+    if not path:
+        path = str(shader_utils.get_shader_file_path(
+            shader_utils.shader_ref_id(reference), ext,
+        ) or "")
+    return path
+
+
+def _surface_batch_cache_is_current(entries) -> bool:
+    """Check the Python/native descriptor contract before reusing a plan."""
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            return False
+        descriptor = entry[1]
+        if not isinstance(descriptor, dict):
+            return False
+        try:
+            property_type = int(descriptor.get("t", -1))
+        except (TypeError, ValueError):
+            return False
+        required_keys = {
+            0: ("f",),
+            1: ("i",),
+            2: ("b",),
+            3: ("s",),
+            4: ("f", "f2"),
+            5: ("f", "f2", "f3"),
+            6: ("f", "f2", "f3", "f4"),
+            7: ("ei", "en"),
+            8: ("f", "f2", "f3", "f4"),
+        }.get(property_type)
+        if required_keys is None or any(key not in descriptor for key in required_keys):
+            return False
+    return True
+
+
+def _ping_shader_reference(value, ext: str) -> None:
+    path = _shader_reference_path(value, ext)
+    if not path:
+        return
+    from ._inspector_references import ping_asset_in_project
+
+    ping_asset_in_project(path)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Extracted section renderers (called from render_material_body)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
+def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
+                           layout_cache=None):
     """Render the vertex/fragment shader selection section.
 
     Returns ``(changed, requires_deserialize, requires_pipeline_refresh, change_key)``.
@@ -432,16 +589,20 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
     if is_builtin:
         ctx.begin_disabled(True)
     section_t0 = _profile_start()
-    if render_compact_section_header(ctx, t("material.shader_section"), level="secondary",
+    section_label = (
+        layout_cache["shader_section_label"]
+        if isinstance(layout_cache, dict)
+        else t("material.shader_section")
+    )
+    if render_compact_section_header(ctx, section_label, level="secondary",
                                      default_open=default_open):
         shaders = mat_data.setdefault("shaders", {})
         vert_ref = shaders.get("vertex", "")
         frag_ref = shaders.get("fragment", "")
-        vert_shader_id = shader_utils.shader_ref_id(vert_ref)
-        frag_shader_id = shader_utils.shader_ref_id(frag_ref)
-        s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
-        from .inspector_components import _picker_assets
-
+        if isinstance(layout_cache, dict):
+            s_lw = layout_cache["shader_label_width"]
+        else:
+            s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
         def _apply_shader(shader_key, new_value, other_key):
             nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
             old_val = shaders.get(shader_key, "")
@@ -450,6 +611,8 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
             if not new_ref["guid"] and not new_ref["shader_id"]:
                 return
             shaders[shader_key] = new_ref
+            if new_ref != old_val:
+                _bump_material_schema_revision(state)
             changed = True
             change_key = f"shader.{shader_key}"
             requires_deserialize = True
@@ -462,124 +625,164 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
                 state.extra["shader_sync_key"] = f"{v}|{f}:{shader_utils.get_shader_property_generation()}"
 
         # Vertex shader
-        field_label(ctx, t("material.vertex"), s_lw)
-        vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
-        vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
+        shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
+        shader_labels = (
+            layout_cache["shader_labels"]
+            if isinstance(layout_cache, dict)
+            else (t("material.vertex"), t("material.fragment"))
+        )
+        field_label(ctx, shader_labels[0], s_lw)
+        vert_display = shader_ui["vertex_display"]
 
-        if _render_obj_field(ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
-                             lambda p: _apply_shader("vertex", p, "fragment"),
-                             picker_asset_items=lambda filt: _picker_assets(filt, "*.vert"),
-                             on_pick=lambda picked: _apply_shader("vertex", picked, "fragment"),
-                             semantic_id="asset.material.shader.vertex"):
-            ctx.open_popup("mat_vert_popup")
-        if ctx.begin_popup("mat_vert_popup"):
-            for display, value in vert_items:
-                if ctx.selectable(display, value == vert_shader_id):
-                    _apply_shader("vertex", value, "fragment")
-            ctx.end_popup()
+        _render_obj_field(
+            ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
+            lambda p: _apply_shader("vertex", p, "fragment"),
+            ping_path=shader_ui["vertex_path"] or None,
+            has_value=bool(shader_ui["vertex_id"]),
+            semantic_id="asset.material.shader.vertex",
+        )
 
         # Fragment shader
-        field_label(ctx, t("material.fragment"), s_lw)
-        frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
-        frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
+        field_label(ctx, shader_labels[1], s_lw)
+        frag_display = shader_ui["fragment_display"]
 
-        if _render_obj_field(ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
-                             lambda p: _apply_shader("fragment", p, "vertex"),
-                             picker_asset_items=lambda filt: _picker_assets(filt, "*.frag"),
-                             on_pick=lambda picked: _apply_shader("fragment", picked, "vertex"),
-                             semantic_id="asset.material.shader.fragment"):
-            ctx.open_popup("mat_frag_popup")
-        if ctx.begin_popup("mat_frag_popup"):
-            for display, value in frag_items:
-                if ctx.selectable(display, value == frag_shader_id):
-                    _apply_shader("fragment", value, "vertex")
-            ctx.end_popup()
+        _render_obj_field(
+            ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
+            lambda p: _apply_shader("fragment", p, "vertex"),
+            ping_path=shader_ui["fragment_path"] or None,
+            has_value=bool(shader_ui["fragment_id"]),
+            semantic_id="asset.material.shader.fragment",
+        )
     _record_profile_timing("materialShader", section_t0)
     if is_builtin:
         ctx.end_disabled()
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _prepare_surface_options_batch(ctx, rs, so_lw):
-    """Prepare the reusable native surface plan and its current values."""
-    entries = []
+def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None):
+    """Prepare the reusable native surface plan and its current values.
 
-    def add(key, desc):
-        entries.append((key, desc))
-
-    surface_items = [t("material.opaque"), t("material.transparent")]
-    add("surface", {"t": 7, "w": "##mat_surface_type", "n": t("material.surface_type"),
-                    "ei": 1 if rs.get("blendEnable", False) else 0, "en": surface_items,
-                    "sid": "asset.material.surface.type"})
-
-    cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
-    cull_idx = {0: 0, 1: 1, 2: 2}.get(int(rs.get("cullMode", 2)), 2)
-    add("cull", {"t": 7, "w": "##mat_cull_mode", "n": t("material.cull_mode"),
-                 "ei": cull_idx, "en": cull_items, "sid": "asset.material.surface.cull"})
-
-    add("depth_write", {"t": 2, "w": "##mat_depth_write", "n": t("material.depth_write"),
-                        "b": bool(rs.get("depthWriteEnable", True)), "fl": True,
-                        "sid": "asset.material.surface.depth_write"})
-
-    compare_items = [t("material.compare_never"), t("material.compare_less"),
-                     t("material.compare_equal"), t("material.compare_less_equal"),
-                     t("material.compare_greater"), t("material.compare_not_equal"),
-                     t("material.compare_greater_equal"), t("material.compare_always")]
-    depth_enabled = bool(rs.get("depthTestEnable", True))
-    depth_op = int(rs.get("depthCompareOp", 1))
-    depth_names = compare_items if depth_enabled else ["Off"] + compare_items[1:]
-    add("depth_test", {"t": 7, "w": "##mat_depth_test", "n": t("material.depth_test"),
-                       "ei": depth_op if depth_enabled else 7, "en": depth_names,
-                       "sid": "asset.material.surface.depth_test"})
-
-    if rs.get("blendEnable", False):
-        src = int(rs.get("srcColorBlendFactor", 6))
-        dst = int(rs.get("dstColorBlendFactor", 7))
-        blend_idx = 1 if (src, dst) == (1, 1) else 2 if (src, dst) == (1, 7) else 0
-        add("blend", {"t": 7, "w": "##mat_blend_mode", "n": t("material.blend_mode"),
-                      "ei": blend_idx,
-                      "en": [t("material.blend_alpha"), t("material.blend_additive"),
-                             t("material.blend_premultiply")],
-                      "sid": "asset.material.surface.blend"})
-
+    The native batch still receives fresh values every frame so controls remain
+    fully interactive. Descriptor dictionaries and the native plan only depend
+    on the shape of the surface section, the label width, and the context that
+    owns the plan, so those objects are reused by inline material inspectors.
+    """
+    blend_enabled = bool(rs.get("blendEnable", False))
     alpha_clip = bool(rs.get("alphaClipEnabled", False))
-    add("alpha_clip", {"t": 2, "w": "##mat_alpha_clip", "n": t("material.alpha_clip"),
-                       "b": alpha_clip, "fl": True,
-                       "sid": "asset.material.surface.alpha_clip"})
-    if alpha_clip:
-        add("alpha_threshold", {"t": 0, "w": "##mat_alpha_threshold", "n": t("material.threshold"),
-                                "f": float(rs.get("alphaClipThreshold", 0.5)),
-                                "mn": 0.0, "mx": 1.0, "sl": True,
-                                "sid": "asset.material.surface.alpha_threshold"})
-
-    is_transparent = bool(rs.get("blendEnable", False))
-    rq_min, rq_max = (2501, 5000) if is_transparent else (0, 2500)
-    rq = max(rq_min, min(int(rs.get("renderQueue", 2000)), rq_max))
-    add("render_queue", {"t": 1, "w": "##mat_render_queue", "n": t("material.render_queue"),
-                         "i": rq, "sp": 1.0, "mn": rq_min, "mx": rq_max,
-                         "sid": "asset.material.surface.render_queue"})
-
-    plan_key = tuple(
-        (key, desc["t"], desc["w"], desc["n"], tuple(desc.get("en", ())),
-         desc.get("mn"), desc.get("mx"), desc.get("sp"), desc.get("sl"), desc.get("fl"),
-         desc.get("sid", ""))
-        for key, desc in entries
+    depth_enabled = bool(rs.get("depthTestEnable", True))
+    # ``ei`` is part of the native enum descriptor contract even when the
+    # current value is refreshed through ``render_property_batch_plan_values``.
+    # Keep it on every cached enum descriptor so first-use plan construction
+    # and cache reuse have the same complete schema.
+    surface_index = 1 if blend_enabled else 0
+    cull_index = {0: 0, 1: 1, 2: 2}.get(int(rs.get("cullMode", 2)), 2)
+    depth_compare = int(rs.get("depthCompareOp", 1))
+    depth_index = depth_compare if depth_enabled else 7
+    src = int(rs.get("srcColorBlendFactor", 6))
+    dst = int(rs.get("dstColorBlendFactor", 7))
+    blend_index = 1 if (src, dst) == (1, 1) else 2 if (src, dst) == (1, 7) else 0
+    rq_min, rq_max = (2501, 5000) if blend_enabled else (0, 2500)
+    render_queue = max(rq_min, min(int(rs.get("renderQueue", 2000)), rq_max))
+    locale = get_locale()
+    shape_key = (
+        _SURFACE_BATCH_SCHEMA, id(ctx), locale, float(so_lw),
+        blend_enabled, alpha_clip, depth_enabled,
     )
-    plan = _surface_batch_plans.get(plan_key)
-    if plan is None:
-        plan = ctx.create_property_batch_plan([desc for _, desc in entries])
-        _surface_batch_plans[plan_key] = plan
+    cached_entries = cache.get("entries") if isinstance(cache, dict) else None
+    cached_schema_valid = _surface_batch_cache_is_current(cached_entries)
+    if (isinstance(cache, dict) and cache.get("shape_key") == shape_key
+            and cache.get("context") is ctx and cached_schema_valid
+            and cache.get("plan") is not None):
+        entries = cache["entries"]
+        plan = cache["plan"]
+    else:
+        entries = []
 
+        def add(key, desc):
+            entries.append((key, desc))
+
+        surface_items = [t("material.opaque"), t("material.transparent")]
+        add("surface", {"t": 7, "w": "##mat_surface_type", "n": t("material.surface_type"),
+                        "ei": surface_index, "en": surface_items,
+                        "sid": "asset.material.surface.type"})
+
+        cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
+        add("cull", {"t": 7, "w": "##mat_cull_mode", "n": t("material.cull_mode"),
+                     "ei": cull_index, "en": cull_items,
+                     "sid": "asset.material.surface.cull"})
+
+        add("depth_write", {"t": 2, "w": "##mat_depth_write", "n": t("material.depth_write"),
+                             "b": bool(rs.get("depthWriteEnable", True)), "fl": True,
+                             "sid": "asset.material.surface.depth_write"})
+
+        compare_items = [t("material.compare_never"), t("material.compare_less"),
+                         t("material.compare_equal"), t("material.compare_less_equal"),
+                         t("material.compare_greater"), t("material.compare_not_equal"),
+                         t("material.compare_greater_equal"), t("material.compare_always")]
+        depth_names = compare_items if depth_enabled else ["Off"] + compare_items[1:]
+        add("depth_test", {"t": 7, "w": "##mat_depth_test", "n": t("material.depth_test"),
+                            "ei": depth_index, "en": depth_names,
+                            "sid": "asset.material.surface.depth_test"})
+
+        if blend_enabled:
+            add("blend", {"t": 7, "w": "##mat_blend_mode", "n": t("material.blend_mode"),
+                           "ei": blend_index,
+                           "en": [t("material.blend_alpha"), t("material.blend_additive"),
+                                  t("material.blend_premultiply")],
+                           "sid": "asset.material.surface.blend"})
+
+        add("alpha_clip", {"t": 2, "w": "##mat_alpha_clip", "n": t("material.alpha_clip"),
+                           "b": alpha_clip, "fl": True,
+                           "sid": "asset.material.surface.alpha_clip"})
+        if alpha_clip:
+            add("alpha_threshold", {"t": 0, "w": "##mat_alpha_threshold", "n": t("material.threshold"),
+                                     "f": float(rs.get("alphaClipThreshold", 0.5)),
+                                     "mn": 0.0, "mx": 1.0, "sl": True,
+                                     "sid": "asset.material.surface.alpha_threshold"})
+
+        add("render_queue", {"t": 1, "w": "##mat_render_queue", "n": t("material.render_queue"),
+                             "i": render_queue,
+                             "sp": 1.0, "mn": rq_min, "mx": rq_max,
+                             "sid": "asset.material.surface.render_queue"})
+
+        # The per-document cache owns the native plan.  Keeping a module-level
+        # map keyed by ``id(ctx)`` lets a recycled Python object identity reuse
+        # a plan compiled from a different descriptor schema.
+        plan = ctx.create_property_batch_plan([desc for _, desc in entries])
+        if isinstance(cache, dict):
+            cache.clear()
+            cache.update({
+                "shape_key": shape_key,
+                "context": ctx,
+                "entries": entries,
+                "plan": plan,
+            })
+
+    depth_op = depth_compare
+    cull_idx = cull_index
+    blend_idx = blend_index
+    rq = render_queue
+    value_by_key = {
+        "surface": 1 if blend_enabled else 0,
+        "cull": cull_idx,
+        "depth_write": bool(rs.get("depthWriteEnable", True)),
+        "depth_test": depth_op if depth_enabled else 7,
+        "blend": blend_idx,
+        "alpha_clip": alpha_clip,
+        "alpha_threshold": float(rs.get("alphaClipThreshold", 0.5)),
+        "render_queue": rq,
+    }
     values = []
-    for _, desc in entries:
+    for key, desc in entries:
+        value = value_by_key[key]
         if desc["t"] == 0:
-            values.append(desc["f"])
+            values.append(value)
         elif desc["t"] == 1:
-            values.append(desc["i"])
+            values.append(value)
         elif desc["t"] == 2:
-            values.append(desc["b"])
+            values.append(value)
         else:
-            values.append(desc["ei"])
+            values.append(value)
     return entries, plan, values, depth_enabled, depth_op
 
 
@@ -637,16 +840,17 @@ def _apply_surface_option_changes(changes, entries, rs, mat_data, overrides,
     return overrides, change_key
 
 
-def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
+def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw, cache=None):
     """Render all steady-state surface controls through one native bridge call."""
     entries, plan, values, depth_enabled, depth_op = _prepare_surface_options_batch(
-        ctx, rs, so_lw)
+        ctx, rs, so_lw, cache=cache)
     changes = ctx.render_property_batch_plan_values(plan, values, so_lw)
     return _apply_surface_option_changes(
         changes, entries, rs, mat_data, overrides, depth_enabled, depth_op)
 
 
-def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
+def _render_surface_options_section(ctx, mat_data, is_builtin, default_open,
+                                    cache=None, layout_cache=None):
     """Render surface options (cull, depth, blend, alpha clip, render queue).
 
     Returns ``(changed, requires_deserialize, requires_pipeline_refresh, change_key)``.
@@ -659,17 +863,29 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
     if is_builtin:
         ctx.begin_disabled(True)
     section_t0 = _profile_start()
-    if render_compact_section_header(ctx, t("material.surface_options"), level="secondary",
+    section_label = (
+        layout_cache["surface_section_label"]
+        if isinstance(layout_cache, dict)
+        else t("material.surface_options")
+    )
+    if render_compact_section_header(ctx, section_label, level="secondary",
                                      default_open=default_open):
         rs = mat_data.setdefault("renderState", {})
         overrides = int(mat_data.get("renderStateOverrides", 0))
 
-        so_labels = [t("material.surface_type"), t("material.cull_mode"), t("material.depth_write"),
-                     t("material.depth_test"), t("material.blend_mode"), t("material.alpha_clip"),
-                     t("material.render_queue")]
-        so_lw = max_label_w(ctx, so_labels)
+        so_lw = (
+            layout_cache["surface_label_width"]
+            if isinstance(layout_cache, dict)
+            else max_label_w(ctx, [
+                t("material.surface_type"), t("material.cull_mode"),
+                t("material.depth_write"), t("material.depth_test"),
+                t("material.blend_mode"), t("material.alpha_clip"),
+                t("material.render_queue"),
+            ])
+        )
 
-        overrides, change_key = _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw)
+        overrides, change_key = _render_surface_options_batch(
+            ctx, rs, mat_data, overrides, so_lw, cache=cache)
         if change_key:
             changed = True
             requires_deserialize = True
@@ -681,7 +897,7 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _render_properties_section(ctx, mat_data, is_builtin, default_open):
+def _render_properties_section(ctx, mat_data, state, is_builtin, default_open):
     """Render material shader properties.
 
     Returns ``(changed, change_key, requires_deserialize)``.
@@ -693,20 +909,26 @@ def _render_properties_section(ctx, mat_data, is_builtin, default_open):
     if is_builtin:
         ctx.begin_disabled(True)
     section_t0 = _profile_start()
-    if render_compact_section_header(ctx, t("material.properties_section"), level="secondary",
+    layout_cache = _get_material_layout_cache(ctx, state)
+    if render_compact_section_header(
+            ctx, layout_cache["properties_section_label"], level="secondary",
                                      default_open=default_open):
         props = mat_data.get("properties", {})
         if not props:
-            ctx.label(t("material.no_properties"))
+            ctx.label(layout_cache["no_properties_label"])
         else:
-            prop_names = shader_utils.get_material_property_display_order(mat_data)
-            plw = max_label_w(ctx, prop_names)
+            layout_cache = _get_material_property_layout_cache(ctx, state, mat_data)
+            prop_names = layout_cache["property_names"]
+            plw = layout_cache["label_width"]
             for prop_name in prop_names:
                 prop = props[prop_name]
                 ptype = int(prop.get("type", 0))
                 value = prop.get("value")
                 prop_changed = render_material_property(
                     ctx, prop_name, prop, ptype, value, plw,
+                    reference_cache=state.extra.setdefault(
+                        "_material_texture_reference_cache", {}
+                    ),
                 )
                 if prop_changed:
                     if ptype == 6:
@@ -727,18 +949,12 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                             requires_deserialize, requires_pipeline_refresh,
                             old_document, change_key, exec_layer):
     """Serialize and save material changes, record undo."""
+    del exec_layer
+    from Infernux.engine.interaction import AuthoringMutationService
+
     try:
         embedded_path = getattr(state, "file_path", "") or ""
         is_embedded = "::submat:" in embedded_path
-
-        # Hot-path optimization: most property drags already push values via
-        # native setters in render_material_property. Full JSON deserialize is
-        # only needed when material structure changed (shader sync/texture slots).
-        if requires_deserialize:
-            if not native_mat.deserialize_document(mat_data):
-                raise RuntimeError("material document was rejected by the current native schema")
-        if requires_pipeline_refresh:
-            _refresh_pipeline(panel)
 
         if is_embedded:
             state.extra["cached_json"] = json.dumps(mat_data)
@@ -748,15 +964,37 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                 pass
             return
 
-        # Use cached file-path when available (avoids per-frame panel lookup).
-        file_path = state.extra.get("_mat_file_path", "")
-        if not file_path:
-            file_path = _ensure_material_file_path(panel, native_mat)
-            if file_path:
-                state.extra["_mat_file_path"] = file_path
+        controller = getattr(state, "resource_controller", None)
+        document_id = str(getattr(state, "document_id", "") or "")
+        if controller is None and not document_id and not embedded_path:
+            # Runtime material clones intentionally have no durable .mat
+            # document. They remain editable in Play Mode, but their changes
+            # are memory/GPU-local and must never be queued as asset writes.
+            if requires_deserialize:
+                if not native_mat.deserialize_document(copy.deepcopy(mat_data)):
+                    raise RuntimeError(
+                        "transient material live-preview document was rejected"
+                    )
+            if requires_pipeline_refresh:
+                _refresh_pipeline(panel, native_mat)
+            state.extra["cached_json"] = json.dumps(mat_data)
+            state.extra["cached_data"] = mat_data
+            state.extra["_inline_autosave_pending"] = False
+            try:
+                state.extra["_applied_version"] = native_mat.get_version()
+            except (AttributeError, RuntimeError):
+                pass
+            return
 
-        if exec_layer:
-            exec_layer.schedule_rw_save(native_mat)
+        if not AuthoringMutationService.require().can_record():
+            _restore_rejected_material_edit(
+                panel, state, native_mat, mat_data, old_document
+            )
+            raise RuntimeError(
+                "Material edit requires an available global Action Journal"
+            )
+        if controller is None or not document_id:
+            raise RuntimeError("Material edit requires a formal Material document")
 
         # ── Deferred undo ───────────────────────────────────────────
         # During continuous drag (60 fps), calling json.dumps every frame
@@ -764,34 +1002,49 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
         # we save the pre-drag JSON once and mark a pending undo commit.
         # The actual json.dumps + record happens in render_material_body
         # on the first frame where changed=False (drag ended).
+        # Native memory follows each rendered input frame so previews remain
+        # live. The Action Journal receives one document transaction when the
+        # gesture ends; intermediate text values are not separate user actions.
         if requires_deserialize:
-            # Structural changes (shader swap, texture slot) always need
-            # an immediate snapshot because they can't be replayed
-            # incrementally.
-            new_json = json.dumps(mat_data)
-            state.extra["cached_json"] = new_json
-            # Pre-capture save snapshot.
-            if file_path:
-                from Infernux.core.assets import AssetManager
-                AssetManager.set_material_save_snapshot(file_path, new_json)
-            from Infernux.engine.undo import UndoManager, MaterialDocumentCommand
-            mgr = UndoManager.instance()
-            new_document = copy.deepcopy(mat_data)
-            if mgr and not mgr.is_executing and mgr.enabled and new_document != old_document:
-                mgr.record(MaterialDocumentCommand(
-                    native_mat, old_document, new_document, "Edit Material",
-                    refresh_callback=lambda _mat: _refresh_pipeline(panel),
-                    edit_key=change_key,
-                ))
-        else:
-            # Lightweight path: just remember that an undo commit is needed.
-            if not state.extra.get("_undo_pending"):
-                # First frame of this drag — save the starting snapshot.
-                state.extra["_undo_old_document"] = copy.deepcopy(old_document)
-                state.extra["_undo_edit_key"] = change_key
-            state.extra["_undo_pending"] = True
-    except (RuntimeError, ValueError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            if not native_mat.deserialize_document(copy.deepcopy(mat_data)):
+                raise RuntimeError("material live-preview document was rejected")
+            if requires_pipeline_refresh:
+                _refresh_pipeline(panel, native_mat)
+        _update_material_edit_session(
+            panel,
+            state,
+            native_mat,
+            old_document,
+            mat_data,
+            change_key,
+        )
+    except Exception:
+        _restore_rejected_material_edit(
+            panel, state, native_mat, mat_data, old_document
+        )
+        raise
+
+
+def _restore_rejected_material_edit(
+    panel,
+    state,
+    native_mat,
+    mat_data,
+    old_document,
+) -> None:
+    """Restore both cached and native material state after a rejected edit."""
+    restored = copy.deepcopy(old_document)
+    mat_data.clear()
+    mat_data.update(restored)
+    state.extra["cached_data"] = mat_data
+    state.extra["cached_json"] = json.dumps(restored)
+    state.extra.pop("_material_preview_pending", None)
+    if not native_mat.deserialize_document(restored):
+        raise RuntimeError("material rollback document was rejected")
+    _refresh_pipeline(panel)
+    try:
+        state.extra["_applied_version"] = native_mat.get_version()
+    except (AttributeError, RuntimeError):
         pass
 
 
@@ -808,42 +1061,112 @@ def _document_before_material_edit(state, mat_data) -> dict:
     return copy.deepcopy(mat_data)
 
 
-def _flush_deferred_undo(panel, state, mat_data, native_mat):
-    """Commit deferred undo snapshot when drag ends (changed=False frame)."""
-    if not state.extra.get("_undo_pending"):
+def _material_edit_session_key(state, native_mat) -> str:
+    identity = (
+        getattr(state, "file_path", "")
+        or getattr(native_mat, "file_path", "")
+        or getattr(native_mat, "guid", "")
+        or str(id(native_mat))
+    )
+    return f"inspector:material:{identity}"
+
+
+def _commit_material_edit_session(panel, state, native_mat, session) -> None:
+    old_document = copy.deepcopy(session.initial_value)
+    new_document = copy.deepcopy(session.current_value)
+    if new_document != old_document:
+        controller = getattr(state, "resource_controller", None)
+        if controller is None or not getattr(state, "document_id", ""):
+            _restore_rejected_material_edit(
+                panel, state, native_mat, new_document, old_document
+            )
+            raise RuntimeError("Material edit requires a formal Material document")
+        if not controller.commit_applied_document(
+            old_document,
+            new_document,
+            view_id="inspector",
+            edit_key=str(session.metadata.get("edit_key", "")),
+            description="Edit Material",
+        ):
+            _restore_rejected_material_edit(
+                panel, state, native_mat, new_document, old_document
+            )
+            raise RuntimeError("Material document transaction was rejected")
+
+    state.extra["cached_json"] = json.dumps(new_document)
+    state.extra["cached_data"] = new_document
+
+
+def _cancel_material_edit_session(panel, state, native_mat, session) -> None:
+    old_document = copy.deepcopy(session.initial_value)
+    if not native_mat.deserialize_document(old_document):
+        raise RuntimeError("material rollback document was rejected")
+    cached_data = state.extra.get("cached_data")
+    if isinstance(cached_data, dict):
+        cached_data.clear()
+        cached_data.update(copy.deepcopy(old_document))
+    else:
+        state.extra["cached_data"] = copy.deepcopy(old_document)
+    state.extra["cached_json"] = json.dumps(old_document)
+    state.extra.pop("_material_preview_pending", None)
+    _refresh_pipeline(panel, native_mat)
+
+
+def _update_material_edit_session(
+    panel,
+    state,
+    native_mat,
+    old_document,
+    mat_data,
+    change_key,
+) -> None:
+    from Infernux.engine.interaction import ContinuousEditService
+
+    edits = ContinuousEditService.instance()
+    session_key = _material_edit_session_key(state, native_mat)
+    session = edits.get(session_key)
+    if session is not None and session.metadata.get("edit_key", "") != change_key:
+        edits.commit(session_key)
+        session = None
+    if session is None:
+        session = edits.begin(
+            session_key,
+            owner_id="inspector",
+            document_id=str(getattr(state, "document_id", "") or ""),
+            description="Edit Material",
+            initial_value=old_document,
+            metadata={"edit_key": str(change_key or "")},
+            on_commit=lambda item: _commit_material_edit_session(
+                panel, state, native_mat, item
+            ),
+            on_cancel=lambda item: _cancel_material_edit_session(
+                panel, state, native_mat, item
+            ),
+        )
+    edits.update(session.key, mat_data)
+
+
+def _flush_deferred_undo(
+    panel,
+    state,
+    mat_data,
+    native_mat,
+    *,
+    input_active: bool = False,
+    force: bool = False,
+):
+    """Commit the Core-owned material edit session when a gesture ends."""
+    del panel, mat_data
+    if input_active and not force:
         return
-    state.extra["_undo_pending"] = False
+    from Infernux.engine.interaction import ContinuousEditService
 
-    old_document = state.extra.pop("_undo_old_document", None)
-    edit_key = state.extra.pop("_undo_edit_key", "")
-    if old_document is None:
-        return
-
-    try:
-        from Infernux.engine.undo import UndoManager, MaterialDocumentCommand
-        mgr = UndoManager.instance()
-        new_json = json.dumps(mat_data)
-        state.extra["cached_json"] = new_json
-
-        # Pre-capture save snapshot so _save_material_resource doesn't need
-        # to call native_mat.serialize() on the main thread.
-        from Infernux.core.assets import AssetManager
-        file_path = state.extra.get("_mat_file_path", "")
-        if file_path:
-            AssetManager.set_material_save_snapshot(file_path, new_json)
-
-        if not (mgr and not mgr.is_executing and mgr.enabled):
-            return
-
-        new_document = copy.deepcopy(mat_data)
-        if new_document != old_document:
-            mgr.record(MaterialDocumentCommand(
-                native_mat, old_document, new_document, "Edit Material",
-                refresh_callback=lambda _mat: _refresh_pipeline(panel),
-                edit_key=edit_key,
-            ))
-    except (RuntimeError, ValueError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    edits = ContinuousEditService.instance()
+    session_key = _material_edit_session_key(state, native_mat)
+    if force:
+        edits.commit(session_key)
+    else:
+        edits.commit_if_idle(session_key, idle_seconds=0.75)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -857,18 +1180,40 @@ def _sync_shader_annotations(mat_data, state):
     Returns ``(changed, requires_deserialize)`` — True if new/removed
     properties were detected and pushed to the native material.
     """
-    vert_shader_id = shader_utils.shader_ref_id(mat_data.get("shaders", {}).get("vertex", ""))
-    frag_shader_id = shader_utils.shader_ref_id(mat_data.get("shaders", {}).get("fragment", ""))
+    shaders = mat_data.get("shaders", {})
+    vert_ref = shaders.get("vertex", "")
+    frag_ref = shaders.get("fragment", "")
+    ref_token = (_shader_value_token(vert_ref), _shader_value_token(frag_ref))
+    cached_ids = state.extra.get("_material_shader_ids")
+    if isinstance(cached_ids, dict) and cached_ids.get("refs") == ref_token:
+        vert_shader_id = cached_ids["vertex"]
+        frag_shader_id = cached_ids["fragment"]
+    else:
+        vert_shader_id = shader_utils.shader_ref_id(vert_ref)
+        frag_shader_id = shader_utils.shader_ref_id(frag_ref)
+        state.extra["_material_shader_ids"] = {
+            "refs": ref_token,
+            "vertex": vert_shader_id,
+            "fragment": frag_shader_id,
+        }
     prop_gen = shader_utils.get_shader_property_generation()
+    if state.extra.get("_shader_catalog_generation", -1) != prop_gen:
+        state.extra["_shader_catalog_generation"] = prop_gen
+        if isinstance(state.extra.get("shader_cache"), dict):
+            state.extra["shader_cache"][".vert"] = None
+            state.extra["shader_cache"][".frag"] = None
+        state.extra.pop("_material_shader_ui_cache", None)
     sync_key = f"{vert_shader_id}|{frag_shader_id}:{prop_gen}"
     last_sync_key = state.extra.get("shader_sync_key", "")
     last_validation_key = state.extra.get("shader_validation_key", "")
-    mat_version = state.extra.get("mat_version", -1)
-    last_validation_version = state.extra.get("shader_validation_mat_version", -2)
+    current_property_names = tuple(sorted(
+        str(name) for name in mat_data.get("properties", {}).keys()))
+    last_validation_property_names = tuple(
+        state.extra.get("shader_validation_property_names", ()))
     needs_validation = (
         sync_key != last_validation_key
         or not mat_data.get("_shader_property_order")
-        or (mat_version != -1 and mat_version != last_validation_version)
+        or current_property_names != last_validation_property_names
     )
     missing_shader_props = False
     if needs_validation and (vert_shader_id or frag_shader_id):
@@ -876,11 +1221,12 @@ def _sync_shader_annotations(mat_data, state):
         expected_shader_props = shader_utils.get_all_shader_property_names(vert_shader_id, frag_shader_id)
         missing_shader_props = any(name not in current_props for name in expected_shader_props)
         state.extra["shader_validation_key"] = sync_key
-        if mat_version != -1:
-            state.extra["shader_validation_mat_version"] = mat_version
+        state.extra["shader_validation_property_names"] = current_property_names
 
     changed = False
     requires_deserialize = False
+    if sync_key != last_sync_key:
+        _bump_material_schema_revision(state)
     if (vert_shader_id or frag_shader_id) and (sync_key != last_sync_key or missing_shader_props):
         old_key = last_sync_key.rsplit(":", 1)[0] if last_sync_key else ""
         remove = (f"{vert_shader_id}|{frag_shader_id}" == old_key) and bool(old_key)
@@ -896,6 +1242,50 @@ def _sync_shader_annotations(mat_data, state):
     return changed, requires_deserialize
 
 
+def _prepare_shader_annotations(mat_data, state, *, read_only: bool):
+    """Synchronize shader metadata without inventing a user edit.
+
+    Built-in materials are shared, immutable renderer resources.  Their
+    Inspector copy may still need newly imported shader annotations, but that
+    cache refresh must never enter the document/undo path.
+    """
+    changed, requires_deserialize = _sync_shader_annotations(mat_data, state)
+    if not read_only or not changed:
+        return changed, requires_deserialize
+
+    state.extra["cached_data"] = mat_data
+    state.extra["cached_json"] = json.dumps(mat_data)
+    state.extra.pop("_material_preview_pending", None)
+    return False, False
+
+
+def _get_material_layout_cache(ctx, state):
+    """Cache translated labels/widths while keeping locale changes observable."""
+    cache = state.extra.setdefault("_material_layout_cache", {})
+    key = (id(ctx), get_locale())
+    if cache.get("key") != key:
+        shader_labels = (t("material.vertex"), t("material.fragment"))
+        surface_labels = (
+            t("material.surface_type"), t("material.cull_mode"),
+            t("material.depth_write"), t("material.depth_test"),
+            t("material.blend_mode"), t("material.alpha_clip"),
+            t("material.render_queue"),
+        )
+        cache.clear()
+        cache.update({
+            "key": key,
+            "shader_labels": shader_labels,
+            "surface_labels": surface_labels,
+            "shader_section_label": t("material.shader_section"),
+            "surface_section_label": t("material.surface_options"),
+            "properties_section_label": t("material.properties_section"),
+            "no_properties_label": t("material.no_properties"),
+            "shader_label_width": max_label_w(ctx, shader_labels),
+            "surface_label_width": max_label_w(ctx, surface_labels),
+        })
+    return cache
+
+
 def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
                                 default_open_sections, is_embedded_slot):
     """Render the stable material top area in one native bridge call."""
@@ -903,24 +1293,23 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
     if not callable(native_renderer):
         return None
 
+    layout_cache = _get_material_layout_cache(ctx, state)
     shaders = mat_data.setdefault("shaders", {})
     vert_ref = shaders.get("vertex", "")
     frag_ref = shaders.get("fragment", "")
-    vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
-    frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
-    vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
-    frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
-    shader_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
+    shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
+    vert_items = shader_ui["vertex_items"]
+    frag_items = shader_ui["fragment_items"]
+    vert_display = shader_ui["vertex_display"]
+    frag_display = shader_ui["fragment_display"]
+    shader_lw = layout_cache["shader_label_width"]
 
     rs = mat_data.setdefault("renderState", {})
     overrides = int(mat_data.get("renderStateOverrides", 0))
-    surface_labels = [t("material.surface_type"), t("material.cull_mode"),
-                      t("material.depth_write"), t("material.depth_test"),
-                      t("material.blend_mode"), t("material.alpha_clip"),
-                      t("material.render_queue")]
-    surface_lw = max_label_w(ctx, surface_labels)
+    surface_lw = layout_cache["surface_label_width"]
+    surface_cache = state.extra.setdefault("_material_surface_batch_cache", {})
     entries, surface_plan, surface_values, depth_enabled, depth_op = (
-        _prepare_surface_options_batch(ctx, rs, surface_lw)
+        _prepare_surface_options_batch(ctx, rs, surface_lw, cache=surface_cache)
     )
 
     cache_tag = state.extra.get("_material_cache_tag", "")
@@ -958,16 +1347,17 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
 
     from .editor_icons import EditorIcons
     interaction = native_renderer(
-        t("material.shader_section"), t("material.vertex"), vert_display,
-        t("material.fragment"), frag_display, shader_lw,
-        t("material.surface_options"), surface_plan, surface_values, surface_lw,
+        layout_cache["shader_section_label"], layout_cache["shader_labels"][0], vert_display,
+        layout_cache["shader_labels"][1], frag_display, shader_lw,
+        layout_cache["surface_section_label"], surface_plan, surface_values, surface_lw,
         int(EditorIcons.get_cached(Theme.ICON_IMG_PICKER) or 0),
         int(preview_tex_id or 0), "Material preview unavailable.",
         bool(default_open_sections), bool(section_readonly),
     )
     (vert_flags, vert_picker_open, vert_payload, vert_list_open,
      frag_flags, frag_picker_open, frag_payload, frag_list_open,
-     surface_changes) = interaction
+     surface_changes, active_surface_index,
+     deactivated_surface_index) = interaction
 
     changed = False
     requires_deserialize = False
@@ -978,10 +1368,19 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
         old_val = shaders.get(shader_key, "")
         ext = ".vert" if shader_key == "vertex" else ".frag"
+        if isinstance(new_value, dict):
+            new_value = (
+                new_value.get("path_hint")
+                or new_value.get("guid")
+                or new_value.get("builtin")
+                or ""
+            )
         new_ref = shader_utils.make_shader_reference(new_value, ext)
         if not new_ref["guid"] and not new_ref["shader_id"]:
             return
         shaders[shader_key] = new_ref
+        if new_ref != old_val:
+            _bump_material_schema_revision(state)
         changed = True
         change_key = f"shader.{shader_key}"
         requires_deserialize = True
@@ -997,47 +1396,63 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
                 f"{vert_id}|{frag_id}:{shader_utils.get_shader_property_generation()}"
             )
 
-    if vert_payload:
-        apply_shader("vertex", str(vert_payload), "fragment")
-    if frag_payload:
-        apply_shader("fragment", str(frag_payload), "vertex")
-
-    from . import igui as _igui_module
     from .igui import IGUI
-    from .inspector_components import _picker_assets
+    from Infernux.engine.interaction import AssetReferenceFieldModel
 
-    def render_shader_popups(field_id, flags, picker_open, list_open,
-                             popup_id, items, selected_id, apply):
-        if flags:
-            _igui_module._popup_needs_focus.add(field_id)
-            _igui_module._picker_filters.pop(f"_igui_filter_{field_id}", None)
-        if picker_open or flags:
-            ctx.push_id_str(field_id)
-            try:
-                IGUI._render_object_picker_popup(
-                    ctx, field_id, None,
-                    lambda filt: _picker_assets(filt, "*.vert" if field_id == "mat_vert" else "*.frag"),
-                    apply, None,
-                )
-            finally:
-                ctx.pop_id()
-        if flags & 1:
-            ctx.open_popup(popup_id)
-        if list_open or (flags & 1):
-            if ctx.begin_popup(popup_id):
-                for display, value in items:
-                    if ctx.selectable(display, value == selected_id):
-                        apply(value)
-                ctx.end_popup()
+    def process_shader_field(field_id, flags, picker_open, list_open,
+                             popup_id, items, selected_id, selected_ref,
+                             reference_path, payload, apply):
+        del list_open, popup_id, items
+        ext = ".vert" if field_id == "mat_vert" else ".frag"
+        asset_type = "Shader.Vertex" if ext == ".vert" else "Shader.Fragment"
+        reference_value = {
+            "asset_type": asset_type,
+            "guid": str(selected_ref.get("guid") or "")
+            if isinstance(selected_ref, dict) else "",
+            "path_hint": reference_path,
+            "builtin": (
+                str(selected_ref.get("shader_id") or "")
+                if isinstance(selected_ref, dict) and not reference_path
+                else ""
+            ),
+        }
+        model = AssetReferenceFieldModel(
+            field_id=field_id,
+            display_text=(vert_display if field_id == "mat_vert" else frag_display),
+            type_hint=asset_type,
+            accept="SHADER_FILE",
+            on_assign=apply,
+            ping_path=reference_path or None,
+            has_value=bool(str(selected_id or "").strip()),
+            reference_value=reference_value,
+            semantic_id=(
+                "asset.material.shader.vertex"
+                if field_id == "mat_vert"
+                else "asset.material.shader.fragment"
+            ),
+        )
+        if payload:
+            model.dispatch_drop(payload)
+        IGUI.process_object_field_interaction(
+            ctx,
+            model,
+            int(flags),
+            picker_open=bool(picker_open),
+            poll_picker=False,
+        )
 
-    render_shader_popups(
+    process_shader_field(
         "mat_vert", int(vert_flags), bool(vert_picker_open), bool(vert_list_open),
-        "mat_vert_popup", vert_items, shader_utils.shader_ref_id(vert_ref),
+        "mat_vert_popup", vert_items, shader_ui["vertex_id"], vert_ref,
+        shader_ui["vertex_path"],
+        vert_payload,
         lambda value: apply_shader("vertex", value, "fragment"),
     )
-    render_shader_popups(
+    process_shader_field(
         "mat_frag", int(frag_flags), bool(frag_picker_open), bool(frag_list_open),
-        "mat_frag_popup", frag_items, shader_utils.shader_ref_id(frag_ref),
+        "mat_frag_popup", frag_items, shader_ui["fragment_id"], frag_ref,
+        shader_ui["fragment_path"],
+        frag_payload,
         lambda value: apply_shader("fragment", value, "vertex"),
     )
 
@@ -1049,7 +1464,14 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         requires_pipeline_refresh = True
         change_key = surface_change_key
 
-    return changed, requires_deserialize, requires_pipeline_refresh, change_key
+    return (
+        changed,
+        requires_deserialize,
+        requires_pipeline_refresh,
+        change_key,
+        int(active_surface_index) >= 0,
+        int(deactivated_surface_index) >= 0,
+    )
 
 
 def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
@@ -1064,8 +1486,10 @@ def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
     if did_split:
         ctx.table_next_column()
 
+    layout_cache = _get_material_layout_cache(ctx, state)
     s_ch, s_ds, s_pr, s_ck = _render_shader_section(
-        ctx, mat_data, state, section_readonly, default_open_sections)
+        ctx, mat_data, state, section_readonly, default_open_sections,
+        layout_cache=layout_cache)
     changed |= s_ch
     requires_deserialize |= s_ds
     requires_pipeline_refresh |= s_pr
@@ -1073,8 +1497,10 @@ def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
         change_key = s_ck
 
     ctx.separator()
+    surface_cache = state.extra.setdefault("_material_surface_batch_cache", {})
     so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(
-        ctx, mat_data, section_readonly, default_open_sections)
+        ctx, mat_data, section_readonly, default_open_sections,
+        cache=surface_cache, layout_cache=layout_cache)
     changed |= so_ch
     requires_deserialize |= so_ds
     requires_pipeline_refresh |= so_pr
@@ -1122,7 +1548,14 @@ def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
             ctx.pop_style_color(1)
         ctx.end_table()
     ctx.separator()
-    return changed, requires_deserialize, requires_pipeline_refresh, change_key
+    return (
+        changed,
+        requires_deserialize,
+        requires_pipeline_refresh,
+        change_key,
+        bool(ctx.is_any_item_active()),
+        bool(ctx.is_item_deactivated_after_edit()),
+    )
 
 
 def render_material_body(ctx: InxGUIContext, panel, state):
@@ -1189,19 +1622,30 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     change_key = ""
 
     # Sync shader annotations (both vertex + fragment properties)
-    sync_ch, sync_ds = _sync_shader_annotations(mat_data, state)
+    sync_ch, sync_ds = _prepare_shader_annotations(
+        mat_data,
+        state,
+        read_only=is_builtin,
+    )
     changed |= sync_ch
     requires_deserialize |= sync_ds
 
     # ── Top row: Shader + Surface + live preview ───────────────────────
-    top_result = _render_material_top_native(
+    # Shader ObjectFields own live ImGui popups. Keep their chrome and popup
+    # contents on the shared field call path instead of folding them into the
+    # native material-top batch, whose return boundary breaks popup identity.
+    # Surface controls remain native-batched inside the shared implementation.
+    top_result = _render_material_top_legacy(
         ctx, panel, state, mat_data, section_readonly,
         default_open_sections, is_embedded_slot)
-    if top_result is None:
-        top_result = _render_material_top_legacy(
-            ctx, panel, state, mat_data, section_readonly,
-            default_open_sections, is_embedded_slot)
-    top_changed, top_deserialize, top_pipeline_refresh, top_change_key = top_result
+    (
+        top_changed,
+        top_deserialize,
+        top_pipeline_refresh,
+        top_change_key,
+        top_edit_active,
+        top_edit_finished,
+    ) = top_result
     changed |= top_changed
     requires_deserialize |= top_deserialize
     requires_pipeline_refresh |= top_pipeline_refresh
@@ -1212,7 +1656,7 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     p_ch, p_ck, p_ds = _render_virtualized_material_block(
         ctx, state, "properties",
         lambda: _render_properties_section(
-            ctx, mat_data, section_readonly, default_open_sections,
+            ctx, mat_data, state, section_readonly, default_open_sections,
         ),
         (False, "", False),
     )
@@ -1228,10 +1672,15 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
         # Publish the latest document on the following frame.
         state.extra["_material_preview_pending"] = True
         state.extra["_material_preview_ready_at"] = _time.time()
+        state.extra["_inline_autosave_pending"] = True
         old_document = _document_before_material_edit(state, mat_data)
         _apply_material_changes(panel, state, mat_data, _native_mat,
                                 requires_deserialize, requires_pipeline_refresh,
                                 old_document, change_key, exec_layer)
+        if top_edit_finished:
+            _flush_deferred_undo(
+                panel, state, mat_data, _native_mat, force=True
+            )
         # Mark the native version as "ours" so _refresh_material (called once
         # per frame by asset_details_renderer) can skip the expensive
         # serialize -> json.loads -> merge -> json.dumps round-trip.
@@ -1241,7 +1690,16 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
             pass
     else:
         # Drag ended (or no edit this frame) — commit deferred undo snapshot.
-        _flush_deferred_undo(panel, state, mat_data, _native_mat)
+        _flush_deferred_undo(
+            panel,
+            state,
+            mat_data,
+            _native_mat,
+            input_active=bool(
+                top_edit_active or ctx.is_any_item_active() or ctx.want_text_input()
+            ),
+            force=top_edit_finished,
+        )
 
 def render_inline_material_body(ctx: InxGUIContext, panel, native_mat, cache_key: str | None = None) -> None:
     """Render a MeshRenderer-linked material using the shared material inspector."""
@@ -1259,8 +1717,9 @@ def render_inline_material_body(ctx: InxGUIContext, panel, native_mat, cache_key
     # Inline materials don't go through render_asset_inspector's footer,
     # so the debounced save would never be flushed.  Drive it here.
     _inline_layer = getattr(panel, "_inline_material_exec_layer", None)
-    if _inline_layer is not None:
-        _inline_layer.flush_rw_autosave()
+    if _inline_layer is not None and state.extra.get("_inline_autosave_pending", False):
+        if _inline_layer.flush_rw_autosave():
+            state.extra["_inline_autosave_pending"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -1281,18 +1740,31 @@ def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
 
 
 def _render_obj_field(ctx: InxGUIContext, fid: str, display: str, type_hint: str,
-                      drag_type: str, on_drop,
-                      picker_asset_items=None, on_pick=None, on_clear=None,
-                      semantic_id: str = "") -> bool:
+                      drag_type: str, on_assign,
+                      on_clear=None,
+                      on_ping=None, ping_path=None, has_value=None,
+                      semantic_id: str = "", asset_type: str = "",
+                      reference_value=None) -> bool:
     """Simplified object-field renderer accepting drag-drop."""
     from . import inspector_components as comp_ui
-    return comp_ui.render_object_field(ctx, fid, display, type_hint,
+    resolved_asset_type = asset_type or type_hint
+    return comp_ui.render_asset_reference_field(ctx, fid, display, type_hint,
+                                       asset_type=resolved_asset_type,
                                        clickable=True,
                                        accept_drag_type=drag_type,
-                                       on_drop_callback=on_drop,
-                                       picker_asset_items=picker_asset_items,
-                                       on_pick=on_pick,
+                                       on_assign=on_assign,
                                        on_clear=on_clear,
+                                       on_ping=on_ping,
+                                       ping_path=ping_path,
+                                       has_value=has_value,
+                                       reference_value=(
+                                           reference_value
+                                           if reference_value is not None
+                                           else ({
+                                               "asset_type": resolved_asset_type,
+                                               "path_hint": str(ping_path or ""),
+                                           } if has_value else None)
+                                       ),
                                        semantic_id=semantic_id)
 
 
@@ -1321,6 +1793,11 @@ def _apply_native_prop(prop_name: str, value, ptype: int):
 class _InlineMaterialExecLayer:
     """Lightweight adapter so inline material editing uses the same autosave path."""
 
+    # The adapter exists for view-local rendering state and may disappear or
+    # temporarily fail to resolve the selected slot.  Durable asset writes
+    # must therefore use the controller's stable category/path directly.
+    view_scoped_persistence = True
+
     def __init__(self, panel):
         self._panel = panel
 
@@ -1339,6 +1816,21 @@ class _InlineMaterialExecLayer:
         self._panel._inline_material_exec_layer = layer
         layer.schedule_rw_save(resource_obj)
 
+    def flush_rw_autosave(self, *, force: bool = False):
+        layer = getattr(self._panel, "_inline_material_exec_layer", None)
+        if layer is None or layer is self:
+            return False
+        return layer.flush_rw_autosave(force=force)
+
+    def cancel_rw_autosave(self) -> bool:
+        layer = getattr(self._panel, "_inline_material_exec_layer", None)
+        if layer is None or layer is self:
+            return False
+        return bool(layer.cancel_rw_autosave())
+
+    def refresh_binding(self, category: str, file_path: str) -> None:
+        del category, file_path
+
 
 def _build_inline_state(panel, native_mat):
     extra = _get_inline_material_extra(panel, native_mat)
@@ -1349,10 +1841,46 @@ def _build_inline_state(panel, native_mat):
             extra=extra,
             exec_layer=_InlineMaterialExecLayer(panel),
             file_path=mat_path,
+            category="material",
+            settings=native_mat,
+            resource_controller=None,
+            document_id="",
         )
         extra["_inline_state"] = state
     else:
         state.file_path = mat_path
+    binding_key = (
+        mat_path,
+        str(getattr(native_mat, "guid", "") or ""),
+        id(state.exec_layer),
+    )
+    if (mat_path and "::submat:" not in mat_path and not bool(
+        getattr(native_mat, "is_builtin", False)
+    ) and (
+        state.resource_controller is None
+        or extra.get("_inline_document_binding_key") != binding_key
+    )):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            ensure_editable_resource_document,
+        )
+
+        controller = ensure_editable_resource_document(
+            category="material",
+            document_kind=DocumentKind.MATERIAL,
+            file_path=mat_path,
+            resource=native_mat,
+            guid=str(getattr(native_mat, "guid", "") or ""),
+            title=os.path.basename(mat_path),
+            view_id="inspector",
+            exec_layer=state.exec_layer,
+            on_restored=notify_material_document_restored,
+            autosave_debounce_sec=0.25,
+        )
+        state.resource_controller = controller
+        state.settings = getattr(controller, "resource", native_mat)
+        state.document_id = controller.document_id
+        extra["_inline_document_binding_key"] = binding_key
     return state
 
 
@@ -1369,10 +1897,11 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
         mat_version = -1
 
     extra = cache.get(mat_id)
-    cache_hit = (extra is not None
-                 and mat_version != -1
-                 and (extra.get("mat_version", -1) == mat_version
-                      or extra.get("_applied_version", -2) == mat_version))
+    cache_hit = (extra is not None and (
+        mat_version == -1
+        or extra.get("mat_version", -1) == mat_version
+        or extra.get("_applied_version", -2) == mat_version
+    ))
     if cache_hit:
         extra["mat_version"] = mat_version
         return extra
@@ -1400,7 +1929,7 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
     return extra
 
 
-def _refresh_pipeline(panel):
+def _refresh_pipeline(panel, native_mat=None):
     """Ask the engine to rebuild the material pipeline."""
     engine = None
     if panel and hasattr(panel, '_get_native_engine'):
@@ -1414,8 +1943,20 @@ def _refresh_pipeline(panel):
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
-    if engine and _native_mat and hasattr(engine, 'refresh_material_pipeline'):
-        engine.refresh_material_pipeline(_native_mat)
+    material = native_mat or _native_mat
+    if engine and material and hasattr(engine, 'refresh_material_pipeline'):
+        engine.refresh_material_pipeline(material)
+
+
+def notify_material_document_restored(resource) -> None:
+    """Publish a restored Material document to rendering and preview views."""
+    native_mat = getattr(resource, "native", None) or resource
+    _refresh_pipeline(None, native_mat)
+    file_path = str(getattr(native_mat, "file_path", "") or "")
+    if file_path:
+        from .asset_resource_preview import invalidate_live_material_preview
+
+        invalidate_live_material_preview(file_path)
 
 
 def _ensure_material_file_path(panel, native_mat) -> str:

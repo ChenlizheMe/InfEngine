@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, TYPE_CHECKING
+from Infernux.renderstack.pass_result import BufferHandle, PassResult
+from Infernux.renderstack.geometry_buffers import GeometryStagePhase
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -61,6 +63,19 @@ class RenderPipeline:
     _serialized_fields_: Dict[str, Any]
 
     def __init__(self) -> None: ...
+    def require_buffer(self, semantic: str) -> BufferHandle: ...
+    def sample_buffer(self, result: PassResult, semantic: str | BufferHandle) -> Any: ...
+    def publish_result(self, source: str, buffers: Dict[str, Any]) -> PassResult: ...
+    def write_buffer(
+        self, result: PassResult, semantic: str | BufferHandle, texture: Any,
+        *, source: str,
+    ) -> PassResult: ...
+    def geometry_stage(
+        self, graph: RenderGraph, source: str, *,
+        phase: GeometryStagePhase | str = ..., buffers: Dict[str, Any],
+        queue_range: tuple[int, int], msaa_samples: int = ...,
+        sort_mode: str = ..., clear: bool = ...,
+    ) -> PassResult: ...
 
     def render(self, context: Any, camera: Any) -> None:
         """Render one camera through its dedicated context and RenderView.

@@ -109,9 +109,10 @@ CONCEPTS: dict[str, dict[str, Any]] = {
         "tools": ["asset_write_text", "runtime_run_for"],
     },
     "Undo": {
-        "summary": "Editor undo/dirty tracking layer for hierarchy and inspector changes.",
+        "summary": "The Editor's single chronological Action Journal and document revision authority.",
         "notes": [
-            "MCP mutation tools should mark scenes/assets dirty or call editor undo helpers when available.",
+            "MCP mutations use the same Command, Transaction, Selection, and Document services as visible Editor actions.",
+            "Never mark a scene or asset dirty manually and never write an Editor-owned document as generic text.",
         ],
         "tools": ["gameobject_set", "component_set_field", "scene_save"],
     },
@@ -204,7 +205,27 @@ INTENT_RECOMMENDATIONS: dict[str, dict[str, Any]] = {
     "audio_authoring": {
         "match": ["audio", "sound", "music", "sfx", "listener", "audiosource", "audioclip", "音频", "声音"],
         "summary": "Understand AudioSource multi-track playback, AudioClip loading, and AudioListener placement.",
-        "tools": ["audio_guide", "api_get", "component_describe_type", "gameobject_add_component"],
+        "tools": [
+            "audio_guide",
+            "api_get",
+            "component_describe_type",
+            "gameobject_add_component",
+            "audio_source_inspect",
+            "audio_source_configure_track",
+            "audio_source_play",
+            "audio_source_pause",
+            "audio_source_stop",
+        ],
+    },
+    "animation_authoring": {
+        "match": ["animation", "timeline", "timelinefsm", "animtimeline", "动画", "时间轴"],
+        "summary": "Create and edit public transform timelines and timeline-mode state machines.",
+        "tools": [
+            "animation_timeline_create",
+            "animation_timeline_add_keyframe",
+            "timeline_fsm_create",
+            "timeline_fsm_add_state",
+        ],
     },
 }
 
@@ -620,7 +641,7 @@ def _register_metadata() -> None:
         "scene_status": "Return active scene path, dirty flag, and suggested save path.",
         "scene_inspect": "Return compact active scene summary.",
         "scene_get_hierarchy": "Return active scene hierarchy.",
-        "scene_save": "Save the active scene through SceneFileManager; use this instead of asset tools for .scene files.",
+        "scene_save": "Save the active Scene document; unnamed scenes require an explicit Assets-relative path.",
         "scene_open": "Open a scene file only when not playing, not dirty, and not already loading.",
         "scene_new": "Create a new empty scene only with force=true and a reason.",
         "hierarchy_create_object": "Create a GameObject using registered HierarchyCreationService kinds.",
@@ -639,6 +660,7 @@ def _register_metadata() -> None:
                 "Call scene_status before changing scenes or entering Play Mode.",
                 "If scene.loading is true, wait and retry later.",
                 "If scene.dirty is true, call scene_save before scene_open/scene_new/editor_play.",
+                "Pass path=Assets/... for scene_save when the active scene has never been saved.",
                 "Do not use asset_write_text/write_json/patch_text for .scene files.",
             ],
             next_suggested_tools=["scene_status", "runtime_wait", "mcp_health"],

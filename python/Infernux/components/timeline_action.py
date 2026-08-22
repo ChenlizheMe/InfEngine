@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from Infernux.components.component import InxComponent
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.fields import serialized_field
 from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.core.asset_ref import TimelineFSMRef
 from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
@@ -65,6 +65,11 @@ class TimelineAction(InxComponent):
     def update(self, delta_time: float):
         rt = self._runtime
         if rt is None:
+            return
+        # A stopped timeline is already holding its last pose. Avoid resolving
+        # the native transform and crossing the binding boundary until playback
+        # is explicitly resumed.
+        if not getattr(rt, "needs_update", rt.is_playing):
             return
         rt.playback_speed = self.playback_speed
         rt.update(delta_time, self._transform())

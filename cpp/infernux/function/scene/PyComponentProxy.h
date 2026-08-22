@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Component.h"
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <string>
 
@@ -21,13 +23,36 @@ struct CollisionInfo;
  * calls to the corresponding Python methods.
  *
  * Ownership: The PyComponentProxy owns a reference to the Python object.
- * GameObject invokes on_destroy for actual
- * component destruction; replacing a
- * proxy during script reload deliberately skips that user lifecycle callback.
+ * GameObject invokes on_destroy for actual component destruction; replacing a
+ * proxy during script reload
+ * deliberately skips that user lifecycle callback.
  */
 class PyComponentProxy : public Component
 {
   public:
+    /**
+     * Keep the interpreter lock across one native lifecycle phase.
+     *
+     * Scene traversal remains native
+     * and ordered; this scope only removes
+     * repeated lock transitions at each Python component boundary. It is
+
+     * * intentionally a small RAII helper so native tests can run without an
+     * initialized interpreter.
+     */
+    class PythonLifecyclePhaseScope
+    {
+      public:
+        PythonLifecyclePhaseScope();
+        ~PythonLifecyclePhaseScope();
+
+        PythonLifecyclePhaseScope(const PythonLifecyclePhaseScope &) = delete;
+        PythonLifecyclePhaseScope &operator=(const PythonLifecyclePhaseScope &) = delete;
+
+      private:
+        std::optional<py::gil_scoped_acquire> m_acquire;
+    };
+
     /**
      * @brief Construct a proxy for a Python component.
      * @param pyComponent The Python InxComponent instance
@@ -75,6 +100,14 @@ class PyComponentProxy : public Component
     // ========================================================================
 
     [[nodiscard]] const char *GetTypeName() const override;
+    [[nodiscard]] std::string GetConstraintTypeId() const override
+    {
+        return m_constraintTypeId;
+    }
+    [[nodiscard]] const ComponentTypeConstraints &GetComponentTypeConstraints() const override
+    {
+        return m_typeConstraints;
+    }
 
     /// Python components only receive Awake/OnEnable/OnDisable in edit mode
     /// when explicitly decorated with @execute_in_edit_mode, matching the
@@ -89,9 +122,39 @@ class PyComponentProxy : public Component
         return m_executeInEditMode;
     }
 
-    [[nodiscard]] bool WantsPhysicsCallbacks() const override
+    [[nodiscard]] bool UsesRuntimeLifecycleScheduler() const override
     {
         return true;
+    }
+
+    [[nodiscard]] bool WantsPhysicsCallbacks() const override
+    {
+        return m_overridesCollisionEnter || m_overridesCollisionStay || m_overridesCollisionExit ||
+               m_overridesTriggerEnter || m_overridesTriggerStay || m_overridesTriggerExit;
+    }
+    [[nodiscard]] bool WantsCollisionEnterCallbacks() const override
+    {
+        return m_overridesCollisionEnter;
+    }
+    [[nodiscard]] bool WantsCollisionStayCallbacks() const override
+    {
+        return m_overridesCollisionStay;
+    }
+    [[nodiscard]] bool WantsCollisionExitCallbacks() const override
+    {
+        return m_overridesCollisionExit;
+    }
+    [[nodiscard]] bool WantsTriggerEnterCallbacks() const override
+    {
+        return m_overridesTriggerEnter;
+    }
+    [[nodiscard]] bool WantsTriggerStayCallbacks() const override
+    {
+        return m_overridesTriggerStay;
+    }
+    [[nodiscard]] bool WantsTriggerExitCallbacks() const override
+    {
+        return m_overridesTriggerExit;
     }
 
     /// Bridge Python @require_component decorator to C++ RequireComponent system.
@@ -143,6 +206,19 @@ class PyComponentProxy : public Component
         return m_hasCoroutineScheduler;
     }
 
+    /// Read the live coroutine count from the scheduler contract. The
+    /// scheduler object remains allocated after completion, so presence alone
+    /// must not enable per-frame coroutine dispatch.
+    [[nodiscard]] static std::size_t ReadCoroutineSchedulerCount(const py::handle &scheduler);
+
+    /// Update the cached coroutine dispatch bit after a Python-side scheduler
+    /// transition. This is event-driven; phase dispatch must not reflect on
+    /// the Python object every frame.
+    void SetCoroutineSchedulerActive(bool active) noexcept
+    {
+        m_hasCoroutineScheduler = active;
+    }
+
     [[nodiscard]] uint64_t GetUpdateDispatchCount() const
     {
         return m_updateDispatchCount;
@@ -156,6 +232,15 @@ class PyComponentProxy : public Component
     /// Bind a newly published Python mirror and copy the preserved native
     /// lifecycle state into it without invoking user lifecycle methods.
     void RebindPythonMirror();
+    /// Prepare a fresh scripting-domain instance for the next Play lifecycle.
+    /// Runtime hot reload must not call this because it intentionally keeps
+    /// Awake/Start state alive while only replacing executable method bodies.
+    void ResetLifecycleForPlay();
+    /// Refresh cached Python lifecycle wrappers and native phase gates after
+    /// an in-place class-body reload. This never invokes user lifecycle code.
+    void RefreshPythonLifecycleDispatch();
+    void RefreshPythonMirrorIdentity() noexcept;
+    void InvalidatePythonMirrorBinding() noexcept;
 
     // ========================================================================
     // Serialization
@@ -183,18 +268,45 @@ class PyComponentProxy : public Component
   private:
     void BindPythonMirror();
     void SyncPythonMirror() const;
+    void RefreshPythonLifecycleDispatchPlan();
+    void RefreshPythonLifecycleOverrideMask();
     void RefreshCoroutineSchedulerFlag();
+    void RefreshConstraintTypeId();
 
     py::object m_pyComponent;
+    // Bound framework entry points are immutable for the lifetime of this
+    // proxy. User method hot reload replaces the Python mirror and therefore
+    // calls RefreshPythonLifecycleDispatchPlan() on the new binding.
+    py::object m_callAwake;
+    py::object m_callStart;
+    py::object m_callUpdate;
+    py::object m_callFixedUpdate;
+    py::object m_callLateUpdate;
+    py::object m_callDisabledUpdate;
+    py::object m_callDisabledFixedUpdate;
+    py::object m_callDisabledLateUpdate;
+    py::object m_callOnEnable;
+    py::object m_callOnDisable;
+    py::object m_callOnDestroy;
+    py::object m_callOnValidate;
+    py::object m_callReset;
     std::string m_typeName;
     std::string m_typeGuid;   // Stable type GUID (hash of module.classname)
     std::string m_scriptGuid; // Stable GUID for the script asset
     std::string m_moduleName;
     std::string m_qualifiedName;
+    std::string m_constraintTypeId;
+    ComponentTypeConstraints m_typeConstraints;
     bool m_executeInEditMode = false;
     bool m_overridesUpdate = true;
     bool m_overridesFixedUpdate = true;
     bool m_overridesLateUpdate = true;
+    bool m_overridesCollisionEnter = true;
+    bool m_overridesCollisionStay = true;
+    bool m_overridesCollisionExit = true;
+    bool m_overridesTriggerEnter = true;
+    bool m_overridesTriggerStay = true;
+    bool m_overridesTriggerExit = true;
     bool m_hasCoroutineScheduler = false;
     uint64_t m_updateDispatchCount = 0;
     uint64_t m_updateForwardCount = 0;

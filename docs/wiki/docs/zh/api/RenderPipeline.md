@@ -36,10 +36,16 @@
 
 | 方法 | 描述 |
 |------|------|
-| `render(context: Any, cameras: Any) → None` | 每帧调用，执行渲染。 |
+| `require_buffer(semantic: str) → BufferHandle` |  |
+| `sample_buffer(result: PassResult, semantic: str | BufferHandle) → Any` |  |
+| `publish_result(source: str, buffers: Dict[str, Any]) → PassResult` |  |
+| `write_buffer(result: PassResult, semantic: str | BufferHandle, texture: Any, source: str) → PassResult` |  |
+| `geometry_stage(graph: RenderGraph, source: str, phase: GeometryStagePhase | str = ..., buffers: Dict[str, Any], queue_range: tuple[int, int], msaa_samples: int = ..., sort_mode: str = ..., clear: bool = ...) → PassResult` |  |
+| `render(context: Any, camera: Any) → None` | 每帧调用，执行渲染。 |
 | `should_render_camera(camera: Any) → bool` | Decide whether *camera* should be rendered this frame. |
 | `render_camera(context: Any, camera: Any, culling: Any) → None` | Per-camera render hook. |
 | `define_topology(graph: RenderGraph) → None` | Define the rendering topology on *graph*. |
+| `define(pipeline: Any) → None` | Declare a low-nesting pipeline topology. |
 | `dispose() → None` | Override to release resources when the pipeline is replaced. |
 
 <!-- USER CONTENT START --> public_methods
@@ -49,7 +55,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.2.9 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.3.4 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

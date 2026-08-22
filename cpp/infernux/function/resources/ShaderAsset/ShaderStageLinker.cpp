@@ -111,7 +111,8 @@ bool SameRange(const std::optional<std::array<double, 2>> &lhs, const std::optio
 bool SamePropertyContract(const ShaderProperty &lhs, const ShaderProperty &rhs)
 {
     return lhs.type == rhs.type && lhs.defaultValue == rhs.defaultValue && lhs.isTexture == rhs.isTexture &&
-           lhs.textureDefault == rhs.textureDefault && lhs.hdr == rhs.hdr && SameRange(lhs.range, rhs.range);
+           lhs.textureDefault == rhs.textureDefault && lhs.hdr == rhs.hdr && lhs.internal == rhs.internal &&
+           SameRange(lhs.range, rhs.range);
 }
 
 ShaderLinkDiagnostic MakeDiagnostic(ShaderLinkDiagnosticCode code, std::string message, const std::string &primaryFile,

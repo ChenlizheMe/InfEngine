@@ -34,6 +34,7 @@ void SetDescriptorRecordingContext(vk::VkDescriptorManager *manager, rhi::Submis
 void ClearDescriptorRecordingContext() noexcept;
 void PushDescriptorRecordingContext(vk::VkDescriptorManager *manager, rhi::SubmissionSerial submissionSerial) noexcept;
 void PopDescriptorRecordingContext() noexcept;
+[[nodiscard]] rhi::SubmissionSerial GetDescriptorRecordingSubmissionSerial() noexcept;
 
 class DescriptorRecordingScope
 {

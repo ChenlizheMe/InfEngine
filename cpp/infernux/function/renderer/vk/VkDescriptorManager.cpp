@@ -1,6 +1,7 @@
 #include "VkDescriptorManager.h"
 
 #include <algorithm>
+#include <core/log/InxLog.h>
 
 namespace infernux::vk
 {
@@ -77,6 +78,58 @@ DescriptorLease VkDescriptorManager::Allocate(VkDescriptorSetLayout layout, Desc
     return lease;
 }
 
+DescriptorLease VkDescriptorManager::AllocateBindlessTextureSet(VkDescriptorSetLayout layout, uint32_t descriptorCount)
+{
+    std::lock_guard lock(m_mutex);
+    if (m_device == VK_NULL_HANDLE || m_deviceId == rhi::InvalidDeviceId || layout == VK_NULL_HANDLE ||
+        descriptorCount == 0)
+        return {};
+
+    auto &pages = m_pools[ArenaIndex(DescriptorArena::BindlessGlobal)];
+    // The global table is deliberately one dedicated manager page. This keeps
+    // its variable-count capacity independent from ordinary material/view
+    // descriptor pressure while retaining normal lease retirement semantics.
+    const VkDescriptorPool pool = CreatePool(DescriptorArena::BindlessGlobal, descriptorCount);
+    if (pool == VK_NULL_HANDLE) {
+        ++m_allocationFailures;
+        return {};
+    }
+    pages.push_back({pool, m_nextPoolGeneration++, 0});
+    auto &page = pages.back();
+
+    VkDescriptorSetVariableDescriptorCountAllocateInfo variableCount{};
+    variableCount.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    variableCount.descriptorSetCount = 1;
+    variableCount.pDescriptorCounts = &descriptorCount;
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.pNext = &variableCount;
+    allocateInfo.descriptorPool = pool;
+    allocateInfo.descriptorSetCount = 1;
+    allocateInfo.pSetLayouts = &layout;
+
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(m_device, &allocateInfo, &set) != VK_SUCCESS) {
+        ++m_allocationFailures;
+        return {};
+    }
+
+    DescriptorLease lease;
+    lease.id = m_nextLeaseId++;
+    lease.device = m_deviceId;
+    lease.arena = DescriptorArena::BindlessGlobal;
+    lease.poolGeneration = page.generation;
+    lease.setGeneration = m_nextSetGeneration++;
+    lease.set = set;
+    lease.pool = pool;
+    lease.layout = layout;
+    ++page.liveSets;
+    m_leases.emplace(lease.id, LeaseState{lease});
+    m_nativeLeaseIds.emplace(reinterpret_cast<uint64_t>(set), lease.id);
+    m_peakLiveSets = (std::max)(m_peakLiveSets, m_leases.size());
+    return lease;
+}
+
 VkDescriptorPool VkDescriptorManager::AcquireExternalPool(DescriptorArena arena)
 {
     std::lock_guard lock(m_mutex);
@@ -103,9 +156,11 @@ void VkDescriptorManager::MarkUsed(VkDescriptorSet set, rhi::SubmissionSerial se
     if (native == m_nativeLeaseIds.end())
         return;
     const auto found = m_leases.find(native->second);
-    if (found == m_leases.end() || found->second.retired)
+    if (found == m_leases.end())
         return;
     found->second.lastUse = (std::max)(found->second.lastUse, serial);
+    if (found->second.retired)
+        found->second.retireAfter = (std::max)(found->second.retireAfter, serial);
 }
 
 void VkDescriptorManager::UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource)
@@ -120,10 +175,12 @@ void VkDescriptorManager::MarkUsed(const DescriptorLease &lease, rhi::Submission
         return;
     std::lock_guard lock(m_mutex);
     const auto found = m_leases.find(lease.id);
-    if (found == m_leases.end() || found->second.retired || found->second.lease.device != lease.device ||
+    if (found == m_leases.end() || found->second.lease.device != lease.device ||
         found->second.lease.setGeneration != lease.setGeneration)
         return;
     found->second.lastUse = (std::max)(found->second.lastUse, serial);
+    if (found->second.retired)
+        found->second.retireAfter = (std::max)(found->second.retireAfter, serial);
 }
 
 void VkDescriptorManager::Retire(const DescriptorLease &lease, rhi::SubmissionSerial retireAfter) noexcept
@@ -150,6 +207,12 @@ size_t VkDescriptorManager::Collect(rhi::SubmissionSerial completedSerial) noexc
     size_t collected = 0;
     for (auto it = m_leases.begin(); it != m_leases.end();) {
         if (it->second.retired && it->second.retireAfter <= completedSerial) {
+#if INFERNUX_VULKAN_VALIDATION_LAYERS
+            // INXLOG_INFO("[DescriptorLifetime] free set=", reinterpret_cast<uint64_t>(it->second.lease.set),
+            //             " lease=", it->second.lease.id, " arena=", static_cast<uint32_t>(it->second.lease.arena),
+            //             " generation=", it->second.lease.setGeneration, " last_use=", it->second.lastUse,
+            //             " retire_after=", it->second.retireAfter, " completed=", completedSerial);
+#endif
             FreeLease(it->second);
             it = m_leases.erase(it);
             ++collected;
@@ -208,7 +271,7 @@ VkDescriptorManager::Stats VkDescriptorManager::GetStats() const noexcept
     return stats;
 }
 
-VkDescriptorPool VkDescriptorManager::CreatePool(DescriptorArena arena) const
+VkDescriptorPool VkDescriptorManager::CreatePool(DescriptorArena arena, uint32_t bindlessDescriptorCount) const
 {
     if (arena == DescriptorArena::ImGuiExternal) {
         const std::array<VkDescriptorPoolSize, 11> sizes = {
@@ -230,6 +293,21 @@ VkDescriptorPool VkDescriptorManager::CreatePool(DescriptorArena arena) const
         createInfo.maxSets = 1000u * static_cast<uint32_t>(sizes.size());
         createInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
         createInfo.pPoolSizes = sizes.data();
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        return vkCreateDescriptorPool(m_device, &createInfo, nullptr, &pool) == VK_SUCCESS ? pool : VK_NULL_HANDLE;
+    }
+
+    if (arena == DescriptorArena::BindlessGlobal) {
+        if (bindlessDescriptorCount == 0)
+            return VK_NULL_HANDLE;
+        const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, bindlessDescriptorCount};
+        VkDescriptorPoolCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        createInfo.flags =
+            VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        createInfo.maxSets = 1;
+        createInfo.poolSizeCount = 1;
+        createInfo.pPoolSizes = &size;
         VkDescriptorPool pool = VK_NULL_HANDLE;
         return vkCreateDescriptorPool(m_device, &createInfo, nullptr, &pool) == VK_SUCCESS ? pool : VK_NULL_HANDLE;
     }

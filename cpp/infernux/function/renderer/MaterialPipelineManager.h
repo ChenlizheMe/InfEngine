@@ -103,8 +103,8 @@ class MaterialPipelineManager
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice, VkFormat colorFormat,
                     VkFormat depthFormat, VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
-                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled,
-                    vk::VkDescriptorManager *descriptorManager);
+                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled, bool dynamicRenderingEnabled,
+                    vk::VkDescriptorManager *descriptorManager, uint64_t shaderDeviceContractKey);
 
     /**
      * @brief Cleanup all resources
@@ -256,9 +256,10 @@ class MaterialPipelineManager
     /**
      * @brief Mark ALL cached material pipelines as dirty.
      *
-     * Called when the render graph topology changes (e.g. forward→deferred switch,
-     * MSAA change) so that every material's pipeline is re-evaluated on the next
-     * draw against the new render pass configuration.
+     * Reserved for global material ABI changes. Render-graph topology changes
+     * do not require this: semantic pass caches already include compile target,
+     * attachment formats and sample count in their keys, while MSAA changes use
+     * ReconfigureSampleCount transactionally.
      */
     void InvalidateAllMaterialPipelines();
 
@@ -287,6 +288,17 @@ class MaterialPipelineManager
         return m_sampleCount;
     }
 
+    /// Monotonic publication generation for renderer-side pass caches.
+    ///
+    /// The generation changes whenever a forward/semantic pipeline or its
+    /// descriptor publication can become stale. Callers can therefore keep a
+    /// resolved pass across frames without repeating shader reflection and
+    /// pass-ABI validation on every draw.
+    [[nodiscard]] uint64_t GetPublicationGeneration() const noexcept
+    {
+        return m_publicationGeneration;
+    }
+
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
@@ -295,12 +307,15 @@ class MaterialPipelineManager
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
+    bool m_dynamicRenderingEnabled = false;
+    uint64_t m_publicationGeneration = 1;
 
     std::unordered_map<MaterialPassPipelineDescriptor, VkRenderPass, MaterialPassPipelineDescriptorHash>
         m_passRenderPassCache;
 
     // Injected dependency — owned externally by InxVkCoreModular
     ShaderProgramCache *m_shaderProgramCache = nullptr;
+    uint64_t m_shaderDeviceContractKey = 0;
 
     // Material name -> render data
     std::unordered_map<std::string, std::unique_ptr<MaterialRenderData>> m_renderDataMap;

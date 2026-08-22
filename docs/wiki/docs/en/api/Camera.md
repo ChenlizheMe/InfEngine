@@ -11,7 +11,7 @@ class in <b>Infernux.components.builtin</b>
 A Camera component that renders a view of the scene.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.2.9
+**Status:** Preview · **Verified with:** 0.3.4
 
 Use a perspective Camera for normal 3D depth and an orthographic Camera for scale-stable 2D framing. Keep near/far clipping proportional to scene scale.
 <!-- USER CONTENT END -->
@@ -30,6 +30,8 @@ Use a perspective Camera for normal 3D depth and an orthographic Camera for scal
 | culling_mask | `int` | The layer mask used for culling objects. *(read-only)* |
 | clear_flags | `int` | How the camera clears the background before rendering. |
 | background_color | `List[float]` | The background color used when clear flags is set to solid color. |
+| stop_nans | `bool` | Whether invalid final-output pixels are replaced before display encoding. |
+| dithering | `bool` | Whether display-space dithering is applied before output quantization. |
 | pixel_width | `int` | The width of the camera's render target in pixels. *(read-only)* |
 | pixel_height | `int` | The height of the camera's render target in pixels. *(read-only)* |
 

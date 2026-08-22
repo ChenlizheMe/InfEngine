@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import zipfile
 from pathlib import Path
 
@@ -24,6 +25,30 @@ class _FakeVersionManager:
 
     def get_wheel_path(self, _engine_version: str) -> str:
         return self._wheel_path
+
+
+def test_vscode_workspace_uses_current_pyright_interpreter_settings(
+    tmp_path, monkeypatch
+):
+    project_model = _load_project_model(monkeypatch)
+    monkeypatch.setattr(project_model, "is_frozen", lambda: False)
+    project_dir = tmp_path / "project"
+
+    project_model.ProjectModel._create_vscode_workspace(str(project_dir))
+
+    settings = json.loads(
+        (project_dir / ".vscode" / "settings.json").read_text(encoding="utf-8")
+    )
+    pyright = json.loads(
+        (project_dir / "pyrightconfig.json").read_text(encoding="utf-8")
+    )
+    assert settings["python.defaultInterpreterPath"].endswith(
+        ".venv/Scripts/python.exe"
+    )
+    assert "python.pythonPath" not in settings
+    assert pyright["venvPath"] == "."
+    assert pyright["venv"] == ".venv"
+    assert "pythonPath" not in pyright
 
 
 def _write_infernux_wheel(path: Path, version: str = "0.1.6") -> None:

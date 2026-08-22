@@ -125,6 +125,30 @@ bool RunCrashInjectionGate(const std::filesystem::path &executable, const std::f
     return true;
 }
 
+bool RunTransientReplaceLockGate(const std::filesystem::path &target)
+{
+#ifdef _WIN32
+    HANDLE lock = ::CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (lock == INVALID_HANDLE_VALUE)
+        return false;
+
+    bool written = false;
+    std::string writeError;
+    std::thread writer(
+        [&] { written = infernux::WriteTextFileAtomically(target.u8string(), "after-lock", writeError); });
+    ::Sleep(40);
+    ::CloseHandle(lock);
+    writer.join();
+    if (!written)
+        std::cerr << "transient replace lock was not retried: " << writeError << '\n';
+    return written && ReadText(target) == "after-lock";
+#else
+    (void)target;
+    return true;
+#endif
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -159,6 +183,7 @@ int main(int argc, char **argv)
         error.c_str());
     passed &= Expect(ReadText(target) == "fourth", "second backup-enabled write content mismatch");
     passed &= Expect(ReadText(backup) == "third", "backup was not advanced to the previous generation");
+    passed &= Expect(RunTransientReplaceLockGate(target), "transient destination lock was not tolerated");
     passed &= Expect(infernux::RemoveFileDurably(target.u8string(), error), error.c_str());
     passed &= Expect(!std::filesystem::exists(target), "durable removal left the target behind");
     passed &= Expect(infernux::RemoveFileDurably(target.u8string(), error), "durable removal rejected a missing file");

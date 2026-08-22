@@ -33,6 +33,7 @@ from Infernux.graph.registry import (
     PortDirection,
     PortKind,
 )
+from Infernux.graph.parameters import graph_parameter_allows_hdr
 from Infernux.graph.types import CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, ValueType
 
 
@@ -68,6 +69,43 @@ def _value_port_accepts(source_type: TypeRef, target_type: TypeRef, target_port)
     except TypeError:
         return False
     return False
+
+
+def _compatible_creation_pin(
+    model,
+    type_id: str,
+    request: dict,
+    *,
+    source_definition,
+    source_port_type,
+):
+    """Return the first palette pin that a live drag source can feed."""
+    if source_definition is None:
+        return None
+    source_port = source_definition.port(str(request.get("source_pin", "")))
+    target_def = model.definition_for_type(str(type_id))
+    canvas = model.get_type(str(type_id))
+    if source_port is None or target_def is None or canvas is None:
+        return None
+    want_input = request.get("source_kind") != CanvasPinKind.INPUT
+    for port in target_def.ports:
+        if port.kind is not source_port.kind:
+            continue
+        if want_input and port.direction is not PortDirection.INPUT:
+            continue
+        if not want_input and port.direction is not PortDirection.OUTPUT:
+            continue
+        if (
+            source_port.kind is PortKind.VALUE
+            and source_port_type is not None
+            and port.value_type is not None
+            and not _value_port_accepts(source_port_type, port.value_type, port)
+        ):
+            continue
+        pin = next((item for item in canvas.pins if item.id == port.id), None)
+        if pin is not None:
+            return pin
+    return None
 
 _PARTICLE_COLLISION_ROOT_TYPES = frozenset(
     {
@@ -107,12 +145,14 @@ def _canvas_definition(
     display_name_override: str = "",
     hidden_property_ids=(),
     hidden_port_ids=(),
+    inline_field_hdr=None,
 ) -> NodeTypeDef:
     port_type_overrides = dict(port_type_overrides or {})
     inline_type_overrides = dict(inline_type_overrides or {})
     property_enum_entries = dict(property_enum_entries or {})
     hidden_property_ids = frozenset(hidden_property_ids or ())
     hidden_port_ids = frozenset(hidden_port_ids or ())
+    inline_field_hdr = dict(inline_field_hdr or {})
     pins = []
     for port in definition.ports:
         if port.id in hidden_port_ids:
@@ -133,7 +173,13 @@ def _canvas_definition(
                     else CanvasPinKind.OUTPUT
                 ),
                 color=_PIN_COLORS.get(data_type, (0.72, 0.72, 0.74, 1.0)),
-                max_connections=(1 if port.direction is PortDirection.INPUT else -1),
+                max_connections=(
+                    port.max_connections
+                    if port.max_connections is not None
+                    else 1
+                    if port.direction is PortDirection.INPUT
+                    else -1
+                ),
                 data_type=data_type,
                 pin_category=(
                     PinCategory.DATA if port.kind is PortKind.VALUE else PinCategory.EXEC
@@ -181,6 +227,10 @@ def _canvas_definition(
             ),
             visible_when_field=_PROPERTY_VISIBILITY.get(item.id, ("", None))[0],
             visible_when_value=_PROPERTY_VISIBILITY.get(item.id, ("", None))[1],
+            hdr=inline_field_hdr.get(
+                item.id,
+                item.value_type.value_type.value == "color",
+            ),
         )
         for item in definition.properties
         if item.id not in hidden_property_ids | {"composition"}
@@ -204,12 +254,19 @@ def _canvas_definition(
                 in {ValueType.CURVE, ValueType.GRADIENT}
             ):
                 continue
+            resolved_type_name = (
+                resolved_type.value_type.value if resolved_type is not None else "f32"
+            )
             inline_fields.append(
                 NodeInlineFieldDef(
                     port.id,
                     port.display_name or port.id.replace("_", " ").title(),
-                    resolved_type.value_type.value if resolved_type is not None else "f32",
+                    resolved_type_name,
                     copy.deepcopy(port.default),
+                    hdr=inline_field_hdr.get(
+                        port.id,
+                        resolved_type_name == "color",
+                    ),
                 )
             )
     input_ids = {
@@ -228,18 +285,40 @@ def _canvas_definition(
         root_header = (0.46, 0.24, 0.28, 1.0)
     elif is_event_root:
         root_header = (0.48, 0.28, 0.54, 1.0)
+    presentation = definition.presentation
+    default_header = root_header if is_root else (0.28, 0.31, 0.36, 1.0)
+    default_min_width = 248.0 if is_root else 210.0
+    default_deletable = not is_mandatory_root
+    default_body_bottom_pad = detached_fields * 24.0
+    default_visual_style = "context" if is_root else "graph"
     return NodeTypeDef(
         type_id=definition.type_id,
         label=display_name_override or definition.display_name,
-        header_color=root_header if is_root else (0.28, 0.31, 0.36, 1.0),
+        header_color=presentation.header_color or default_header,
         pins=pins,
-        min_width=248.0 if is_root else 210.0,
-        deletable=not is_mandatory_root,
-        body_bottom_pad=detached_fields * 24.0,
-        visual_style="context" if is_root else "graph",
+        min_width=(
+            default_min_width
+            if presentation.min_width is None
+            else presentation.min_width
+        ),
+        deletable=(
+            default_deletable
+            if presentation.deletable is None
+            else presentation.deletable
+        ),
+        body_bottom_pad=(
+            default_body_bottom_pad
+            if presentation.body_bottom_pad is None
+            else presentation.body_bottom_pad
+        ),
+        visual_style=presentation.visual_style or default_visual_style,
         # Node chrome shows only the display name — no MATH/COMMON chips.
-        category_label="",
-        show_header_color_swatch=False,
+        category_label=presentation.category_label,
+        show_header_color_swatch=(
+            False
+            if presentation.show_header_color_swatch is None
+            else presentation.show_header_color_swatch
+        ),
         inline_fields=inline_fields,
     )
 
@@ -327,6 +406,37 @@ class GraphDocumentAuthoringModel(NodeGraph):
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
 
+    def _effective_port_type(self, node, port):
+        if port is None or port.kind is not PortKind.VALUE:
+            return None
+        if port.value_type is not None:
+            return port.value_type
+        if port.type_property and node is not None:
+            selected = str(node.data.get(port.type_property, "") or "")
+            if port.type_property == "target_space":
+                try:
+                    return TypeRef(ValueType.VEC3, CoordinateSpace(selected or "world"))
+                except ValueError:
+                    return None
+        return None
+
+    def compatible_creation_pin(self, type_id: str, request: dict):
+        """Return the first palette pin that the live drag source can feed."""
+        if not request.get("source_node"):
+            return None
+        source_node = self.find_node(str(request.get("source_node", "")))
+        source_def = (
+            self._definitions.get(source_node.type_id) if source_node is not None else None
+        )
+        source_port = source_def.port(str(request.get("source_pin", ""))) if source_def else None
+        return _compatible_creation_pin(
+            self,
+            type_id,
+            request,
+            source_definition=source_def,
+            source_port_type=self._effective_port_type(source_node, source_port),
+        )
+
     def add_node(
         self, type_id: str, canvas_x=0.0, canvas_y=0.0, uid=None, **data
     ):
@@ -364,7 +474,7 @@ class GraphDocumentAuthoringModel(NodeGraph):
             dst_pin,
             ignore_link_uid=ignore_link_uid,
         )
-        if not basic:
+        if not basic and basic.code != "type_mismatch":
             return basic
 
         source = self.find_node(src_node)
@@ -381,9 +491,14 @@ class GraphDocumentAuthoringModel(NodeGraph):
             source_port.kind is PortKind.VALUE
             and source_port.value_type is not None
             and target_port.value_type is not None
-            and not _value_port_accepts(source_port.value_type, target_port.value_type, target_port)
         ):
+            if _value_port_accepts(
+                source_port.value_type, target_port.value_type, target_port
+            ):
+                return LinkValidationResult(True)
             return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
+        if not basic:
+            return basic
         return LinkValidationResult(True)
 
     def to_document(self) -> GraphDocument:
@@ -456,6 +571,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             registry = definition_set.registry
         self._definitions = registry
         self._definition_set = definition_set
+        self._definition_set_resolver = None
         self._emitter_id = str(emitter.stable_id)
         self._collision_enabled = bool(emitter.settings.collision_enabled)
         self._base_attribute_catalog = {
@@ -546,6 +662,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                     )
                 )
 
+        self.set_node_definition_resolver(
+            self._resolve_particle_node_type,
+            invalidator=self._invalidate_particle_node_definition,
+        )
+
     @staticmethod
     def _make_link(source_node, source_pin, target_node, target_pin, uid):
         return GraphDocumentAuthoringModel._make_link(
@@ -565,6 +686,140 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         stage = str(uid).split(cls._UID_SEPARATOR, 1)[0]
         return stage if stage in cls.STAGES or stage.startswith("event.") else ""
 
+    @staticmethod
+    def _is_portable_operator(node) -> bool:
+        """Return whether a node is a stage-neutral authoring expression."""
+        return bool(node is not None and str(node.type_id).startswith("common."))
+
+    def _portable_component(self, node_uid: str) -> set[str]:
+        """Collect the connected pure-operator island containing *node_uid*."""
+        first = self.find_node(node_uid)
+        if not self._is_portable_operator(first):
+            return set()
+        pending = [str(node_uid)]
+        result: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in result:
+                continue
+            node = self.find_node(current)
+            if not self._is_portable_operator(node):
+                continue
+            result.add(current)
+            for link in self.links:
+                if link.source_node == current:
+                    other = link.target_node
+                elif link.target_node == current:
+                    other = link.source_node
+                else:
+                    continue
+                if other not in result and self._is_portable_operator(
+                    self.find_node(other)
+                ):
+                    pending.append(other)
+        return result
+
+    def _portable_component_anchors(self, component: set[str]) -> set[str]:
+        anchors: set[str] = set()
+        for link in self.links:
+            if link.source_node in component and link.target_node not in component:
+                other = link.target_node
+            elif link.target_node in component and link.source_node not in component:
+                other = link.source_node
+            else:
+                continue
+            stage = self.stage_for_uid(other)
+            if stage:
+                anchors.add(stage)
+        return anchors
+
+    def _portable_rehome_plan(
+        self, src_node: str, dst_node: str
+    ) -> dict[str, str] | None:
+        """Plan a stage move that lets pure operators join one lifecycle chain.
+
+        Particle lifecycle nodes remain hard stage boundaries. Common math,
+        random and vector operators are compiler-local expressions, so their
+        stage is inferred from the chain they feed instead of becoming a
+        permanent authoring trap based on where they were first created.
+        """
+        source_stage = self.stage_for_uid(src_node)
+        target_stage = self.stage_for_uid(dst_node)
+        if not source_stage or not target_stage:
+            return None
+        if source_stage == target_stage:
+            return {}
+
+        source_component = self._portable_component(src_node)
+        target_component = self._portable_component(dst_node)
+        if not source_component and not target_component:
+            return None
+
+        moving = source_component | target_component
+        anchors = self._portable_component_anchors(source_component)
+        anchors.update(self._portable_component_anchors(target_component))
+        if not source_component:
+            anchors.add(source_stage)
+        if not target_component:
+            anchors.add(target_stage)
+        if len(anchors) > 1:
+            return None
+        destination = next(iter(anchors), source_stage)
+        if any(
+            destination not in self._allowed_stages.get(
+                self.find_node(uid).type_id, set()
+            )
+            for uid in moving
+        ):
+            return None
+        return {
+            uid: destination
+            for uid in moving
+            if self.stage_for_uid(uid) != destination
+        }
+
+    def _apply_portable_rehome(self, plan: dict[str, str]) -> dict[str, str]:
+        """Apply inferred compiler placement without moving authoring nodes.
+
+        The stage prefix is only the persistence/compilation owner for a pure
+        expression. It must never change the node's visible canvas position or
+        behave as an authoring-stage classification.
+        """
+        if not plan:
+            return {}
+        node_ids = {
+            old_uid: self._canvas_uid(stage, self._document_uid(old_uid))
+            for old_uid, stage in plan.items()
+        }
+        occupied_nodes = {node.uid for node in self.nodes} - set(node_ids)
+        if occupied_nodes.intersection(node_ids.values()):
+            raise ValueError("portable node stage inference produced a duplicate node id")
+
+        for node in self.nodes:
+            old_uid = node.uid
+            destination = plan.get(old_uid)
+            if destination:
+                node.uid = node_ids[old_uid]
+        for link in self.links:
+            link.source_node = node_ids.get(link.source_node, link.source_node)
+            link.target_node = node_ids.get(link.target_node, link.target_node)
+
+        occupied_links: set[str] = set()
+        for link in self.links:
+            source_stage = self.stage_for_uid(link.source_node)
+            new_uid = self._canvas_uid(source_stage, self._document_uid(link.uid))
+            if new_uid in occupied_links:
+                raise ValueError("portable node stage inference produced a duplicate link id")
+            link.uid = new_uid
+            occupied_links.add(new_uid)
+        self._mark_attribute_catalog_dirty()
+        return node_ids
+
+    @classmethod
+    def event_stage_canvas_origin(cls, event_index: int) -> float:
+        """Return the canvas Y origin for an emitter's indexed Event flow."""
+        return max(cls._STAGE_Y.values()) + 230.0 + max(0, int(event_index)) * 230.0
+
     @property
     def authoring_stage(self) -> str:
         return self._authoring_stage
@@ -582,6 +837,41 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def _mark_attribute_catalog_dirty(self) -> None:
         self._attribute_catalog_dirty = True
+        self._dynamic_type_cache.clear()
+
+    def set_definition_set_resolver(self, resolver) -> None:
+        """Supply refreshed compiler definitions after particle data changes."""
+        self._definition_set_resolver = resolver
+
+    def authoring_node_payload(self, node) -> dict:
+        payload = super().authoring_node_payload(node)
+        payload["stage"] = self.stage_for_uid(node.uid)
+        return payload
+
+    def prepare_authoring_node_restore(self, payload: dict) -> None:
+        stage = str(payload.get("stage", ""))
+        if not stage:
+            raise RuntimeError("Particle Graph node restore requires a lifecycle stage")
+        self.set_authoring_stage(stage)
+        self.prepare_node_creation(stage)
+
+    def on_authoring_node_restored(self, node) -> None:
+        self._mark_attribute_catalog_dirty()
+
+    def on_authoring_link_restored(self, link) -> None:
+        self._mark_attribute_catalog_dirty()
+
+    def _invalidate_particle_node_definition(self, node) -> None:
+        self._mark_attribute_catalog_dirty()
+        if self._definition_set_resolver is None:
+            return
+        definition_set = self._definition_set_resolver(self, node)
+        if definition_set is None:
+            return
+        self._definition_set = definition_set
+        self._definitions = definition_set.registry
+        self._parameter_catalog = dict(definition_set.parameter_by_id)
+        self._event_catalog = dict(definition_set.event_type_by_id)
         self._dynamic_type_cache.clear()
 
     def _ensure_attribute_catalog(self) -> None:
@@ -684,8 +974,28 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return False, "This collision lifecycle root already exists"
         return True, ""
 
+    def _visible_stage_ids(self) -> tuple[str, ...]:
+        collision_stages = {"collision_enter", "collision_stay", "collision_exit"}
+        visible = []
+        for stage in self._stages:
+            if stage in collision_stages and (
+                not self._collision_enabled
+                or not any(
+                    node.type_id == f"particle.root.{stage}" for node in self.nodes
+                )
+            ):
+                continue
+            visible.append(stage)
+        return tuple(visible) or tuple(self._stages)
+
     def stage_nearest_y(self, y: float) -> str:
-        return min(self._stages, key=lambda stage: abs(float(y) - self._stage_y[stage]))
+        return min(
+            self._visible_stage_ids(),
+            key=lambda stage: abs(float(y) - self._stage_y[stage]),
+        )
+
+    def stage_for_new_node(self, type_id: str, canvas_y: float) -> str:
+        return self._stage_for_new_node(type_id, float(canvas_y))
 
     def registered_types(self) -> list[NodeTypeDef]:
         definitions = []
@@ -700,6 +1010,21 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
+
+    def compatible_creation_pin(self, type_id: str, request: dict):
+        """Return the first palette pin that the live drag source can feed."""
+        if not request.get("source_node"):
+            return None
+        source_node = self.find_node(str(request.get("source_node", "")))
+        source_def = self.definition_for_node(source_node)
+        source_port = source_def.port(str(request.get("source_pin", ""))) if source_def else None
+        return _compatible_creation_pin(
+            self,
+            type_id,
+            request,
+            source_definition=source_def,
+            source_port_type=self._effective_port_type(source_node, source_port),
+        )
 
     def event_entries(self) -> tuple[tuple[str, str], ...]:
         return (("None", ""),) + tuple(
@@ -788,7 +1113,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             if bool(getattr(item, "writable", False))
         )
 
-    def get_node_type(self, node) -> NodeTypeDef | None:
+    def _resolve_particle_node_type(self, node) -> NodeTypeDef | None:
         self._ensure_attribute_catalog()
 
         def with_lifecycle_state(value):
@@ -863,7 +1188,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if node.type_id == "particle.emitter.playing":
             definition = self._definitions.get(node.type_id)
             if definition is None:
-                return with_lifecycle_state(super().get_node_type(node))
+                return with_lifecycle_state(self.get_type(node.type_id))
             entries = tuple(
                 (label, value)
                 for label, value in definition.properties[0].choices
@@ -885,7 +1210,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 self._dynamic_type_cache[cache_key] = cached
             return with_lifecycle_state(cached)
 
-        base = super().get_node_type(node)
+        base = self.get_type(node.type_id)
         if base is None:
             return base
         if node.type_id in {
@@ -984,17 +1309,21 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 for link in self.links
             )
         )
-        cache_key = (
-            f"{node.type_id}:{property_id}:{selected_id}:sampled={int(sampled)}"
-        )
-        cached = self._dynamic_type_cache.get(cache_key)
-        if cached is not None:
-            return with_lifecycle_state(cached)
         selected = (
             self._parameter_catalog.get(selected_id)
             if is_parameter
             else self._attribute_catalog.get(selected_id)
         )
+        parameter_hdr = bool(
+            is_parameter and selected is not None and graph_parameter_allows_hdr(selected)
+        )
+        cache_key = (
+            f"{node.type_id}:{property_id}:{selected_id}:sampled={int(sampled)}"
+            f":hdr={int(parameter_hdr)}"
+        )
+        cached = self._dynamic_type_cache.get(cache_key)
+        if cached is not None:
+            return with_lifecycle_state(cached)
         definition = self._definitions.get(node.type_id)
         if selected is None or definition is None:
             return with_lifecycle_state(base)
@@ -1021,30 +1350,19 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 {"parameter"} if is_parameter and not is_parameter_store else ()
             ),
             hidden_port_ids={"out"} if not is_parameter and not sampled else (),
+            inline_field_hdr=(
+                {"value": parameter_hdr}
+                if is_parameter_store
+                and selected.value_type.value_type is ValueType.COLOR
+                else None
+            ),
         )
         self._dynamic_type_cache[cache_key] = resolved
         return with_lifecycle_state(resolved)
 
     def remove_invalid_links_for_node(self, node_uid: str) -> tuple[str, ...]:
         self._mark_attribute_catalog_dirty()
-        removed = []
-        kept = []
-        for link in self.links:
-            if node_uid not in {link.source_node, link.target_node}:
-                kept.append(link)
-                continue
-            if self.validate_link(
-                link.source_node,
-                link.source_pin,
-                link.target_node,
-                link.target_pin,
-                ignore_link_uid=link.uid,
-            ):
-                kept.append(link)
-            else:
-                removed.append(link.uid)
-        self.links = kept
-        return tuple(removed)
+        return super().remove_invalid_links_for_node(node_uid)
 
     def _stage_for_new_node(self, type_id: str, canvas_y: float) -> str:
         allowed = set(self._allowed_stages.get(type_id, set()))
@@ -1182,7 +1500,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             "common.space.transform_direction",
         }:
             if port.id == "input":
-                return None
+                return TypeRef(ValueType.VEC3)
             if port.id == "value":
                 try:
                     return TypeRef(
@@ -1224,7 +1542,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     ) -> LinkValidationResult:
         source_stage = self.stage_for_uid(src_node)
         target_stage = self.stage_for_uid(dst_node)
-        if not source_stage or source_stage != target_stage:
+        rehome_plan = self._portable_rehome_plan(src_node, dst_node)
+        if (
+            not source_stage
+            or not target_stage
+            or (source_stage != target_stage and rehome_plan is None)
+        ):
             return LinkValidationResult(
                 False, "cross_stage", "Particle stage chains cannot be connected"
             )
@@ -1235,15 +1558,15 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             dst_pin,
             ignore_link_uid=ignore_link_uid,
         )
-        if not basic:
-            inference_target = self.find_node(dst_node)
-            if not (
-                basic.code == "type_mismatch"
-                and inference_target is not None
-                and inference_target.type_id == "particle.attribute.cache"
-                and dst_pin == "value"
-            ):
-                return basic
+        inference_target = self.find_node(dst_node)
+        cache_type_inference = (
+            basic.code == "type_mismatch"
+            and inference_target is not None
+            and inference_target.type_id == "particle.attribute.cache"
+            and dst_pin == "value"
+        )
+        if not basic and basic.code != "type_mismatch" and not cache_type_inference:
+            return basic
         source = self.find_node(src_node)
         target = self.find_node(dst_node)
         source_def = self.definition_for_node(source)
@@ -1266,21 +1589,17 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             and dst_pin == "input"
         ):
             supported_spaces = {
+                CoordinateSpace.NONE,
                 CoordinateSpace.EMITTER_LOCAL,
                 CoordinateSpace.SIMULATION,
                 CoordinateSpace.WORLD,
             }
-            if (
-                source_type is None
-                or source_type.value_type is not ValueType.VEC3
-                or source_type.space not in supported_spaces
-            ):
+            if source_type is not None and source_type.space not in supported_spaces:
                 return LinkValidationResult(
                     False,
                     "type_mismatch",
                     "Space transforms require a spatial Vector3 input",
                 )
-            return LinkValidationResult(True)
         cache_type_inference = (
             target is not None
             and target.type_id == "particle.attribute.cache"
@@ -1324,36 +1643,83 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         value_type = self._effective_port_type(source, port)
         if value_type is None:
             return
-        from Infernux.particle.asset import particle_attribute_zero
+        from Infernux.particle.asset import (
+            particle_attribute_cache_id,
+            particle_attribute_zero,
+        )
 
-        target.data["value_type"] = value_type.value_type.value
-        target.data["value_space"] = value_type.space.value
-        target.data["value"] = copy.deepcopy(particle_attribute_zero(value_type))
-        self._mark_attribute_catalog_dirty()
+        cache_id = particle_attribute_cache_id(
+            self.stage_for_uid(target.uid), self._document_uid(target.uid)
+        )
+        dependents = [
+            node.uid
+            for node in self.nodes
+            if node.type_id == "particle.attribute.get"
+            and str(node.data.get("attribute", "")) == cache_id
+        ]
+        self.rebuild_nodes(
+            {
+                target.uid: {
+                    "value_type": value_type.value_type.value,
+                    "value_space": value_type.space.value,
+                    "value": copy.deepcopy(particle_attribute_zero(value_type)),
+                }
+            },
+            affected_node_uids=dependents,
+        )
 
     def add_link(self, src_node, src_pin, dst_node, dst_pin, uid=None, **data):
-        stage = self.stage_for_uid(src_node)
-        raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
-        canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
-        link = super().add_link(
-            src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
-        )
-        if link is not None:
-            self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
-            self._mark_attribute_catalog_dirty()
-        return link
+        checkpoint = self.capture_authoring_state()
+        try:
+            rehome_plan = self._portable_rehome_plan(src_node, dst_node)
+            if self.stage_for_uid(src_node) != self.stage_for_uid(dst_node):
+                if rehome_plan is None:
+                    return None
+                node_ids = self._apply_portable_rehome(rehome_plan)
+                src_node = node_ids.get(src_node, src_node)
+                dst_node = node_ids.get(dst_node, dst_node)
+            stage = self.stage_for_uid(src_node)
+            raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+            canvas_uid = (
+                raw_uid
+                if self.stage_for_uid(raw_uid)
+                else self._canvas_uid(stage, raw_uid)
+            )
+            link = super().add_link(
+                src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
+            )
+            if link is not None:
+                self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
+                self._mark_attribute_catalog_dirty()
+            return self.find_link(canvas_uid) if link is not None else None
+        except Exception:
+            self.restore_authoring_state(checkpoint)
+            raise
 
     def replace_link(self, link_uid, src_node, src_pin, dst_node, dst_pin):
-        target = self.find_node(dst_node)
-        previous = copy.deepcopy(target.data) if target is not None else None
-        self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
-        link = super().replace_link(
-            link_uid, src_node, src_pin, dst_node, dst_pin
-        )
-        if link is None and target is not None and previous is not None:
-            target.data = previous
-        self._mark_attribute_catalog_dirty()
-        return link
+        checkpoint = self.capture_authoring_state()
+        try:
+            raw_link_uid = self._document_uid(link_uid)
+            rehome_plan = self._portable_rehome_plan(src_node, dst_node)
+            if self.stage_for_uid(src_node) != self.stage_for_uid(dst_node):
+                if rehome_plan is None:
+                    return None
+                node_ids = self._apply_portable_rehome(rehome_plan)
+                src_node = node_ids.get(src_node, src_node)
+                dst_node = node_ids.get(dst_node, dst_node)
+                link_uid = self._canvas_uid(
+                    self.stage_for_uid(src_node), raw_link_uid
+                )
+            link = super().replace_link(
+                link_uid, src_node, src_pin, dst_node, dst_pin
+            )
+            if link is not None:
+                self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
+                self._mark_attribute_catalog_dirty()
+            return self.find_link(link_uid) if link is not None else None
+        except Exception:
+            self.restore_authoring_state(checkpoint)
+            raise
 
     def remove_link(self, uid: str) -> bool:
         link = self.find_link(uid)

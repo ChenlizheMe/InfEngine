@@ -5,29 +5,24 @@ Tags/Layers remain a dockable editor panel.
 Physics settings are exposed through a separate standalone floating window.
 """
 
-import json
-
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import (
+    PanelInteractionDescriptor,
+    ensure_project_settings_document,
+)
 from Infernux.lib import InxGUIContext
 from Infernux.physics import settings as _phys_settings
-from .editor_panel import EditorPanel
+from .editor_panel import EditorPanel, FloatingEditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiWindowFlags
 from .igui import IGUI
 
-
-def _save_mgr_to_project(mgr, project_path: str):
-    """Persist tag/layer settings if a project path is available."""
-    if not project_path:
-        return
-    import os
-    settings_dir = os.path.join(project_path, "ProjectSettings")
-    os.makedirs(settings_dir, exist_ok=True)
-    path = os.path.join(settings_dir, "TagLayerSettings.json")
-    mgr.save_to_file(path)
-
-
-@editor_panel("Tags & Layers", type_id="tag_layer_settings", title_key="panel.tags_layers")
+@editor_panel(
+    "Tags & Layers",
+    type_id="tag_layer_settings",
+    title_key="panel.tags_layers",
+    interaction=PanelInteractionDescriptor(document_backed=True),
+)
 class TagLayerSettingsPanel(EditorPanel):
     """Inspector-style panel for managing project-wide tags and layers."""
 
@@ -43,10 +38,55 @@ class TagLayerSettingsPanel(EditorPanel):
         self._show_tags = True
         self._show_layers = True
         self._mgr = None
+        self._settings_controller = None
 
     def set_project_path(self, path: str):
-        """Set the project path for saving settings."""
+        """Set the project whose shared settings document this view edits."""
         self._project_path = path
+
+    def on_enable(self) -> None:
+        self._bind_project_settings_document()
+
+    def _document_controller_for_registry(self):
+        if not self._project_path:
+            return self
+        controller = ensure_project_settings_document(
+            self._project_path,
+            tag_layer_manager=self._get_mgr(),
+            physics_module=_phys_settings,
+        )
+        self._settings_controller = controller
+        return controller
+
+    def _bind_project_settings_document(self) -> None:
+        if not self._project_path:
+            raise RuntimeError("Tags & Layers requires an active project")
+        controller = ensure_project_settings_document(
+            self._project_path,
+            view_id=self.window_id,
+            tag_layer_manager=self._get_mgr(),
+            physics_module=_phys_settings,
+        )
+        self._settings_controller = controller
+        self.bind_document(controller.document_id)
+
+    def _commit_tag_layers(
+        self,
+        document: dict,
+        *,
+        edit_key: str,
+        description: str,
+    ) -> bool:
+        if self._settings_controller is None:
+            raise RuntimeError("Tags & Layers is not bound to Project Settings")
+        self.publish_interaction_ownership(reason="project_settings_edit")
+        return self._settings_controller.apply_section(
+            "tag_layers",
+            document,
+            edit_key=edit_key,
+            description=description,
+            view_id=self.window_id,
+        )
 
     def _get_mgr(self):
         if self._mgr is None:
@@ -131,8 +171,13 @@ class TagLayerSettingsPanel(EditorPanel):
                     ctx.set_next_item_width(ctx.get_content_region_avail_width() - 10)
                     new_name = ctx.text_input("##layer_name", name, 64)
                     if new_name != name:
-                        mgr.set_layer_name(i, new_name)
-                        self._auto_save(mgr)
+                        document = self._settings_controller.section("tag_layers")
+                        document["layers"][i] = new_name
+                        self._commit_tag_layers(
+                            document,
+                            edit_key=f"project_settings.layers.{i}",
+                            description=f"Rename Layer {i}",
+                        )
                         updated_layers = list(mgr.get_all_layers())
                         name = updated_layers[i] if i < len(updated_layers) else ""
                     if capture_semantics:
@@ -151,7 +196,7 @@ class TagLayerSettingsPanel(EditorPanel):
     def _render_footer(self, ctx: InxGUIContext, mgr):
         capture_semantics = bool(getattr(ctx, "semantic_capture_enabled", True))
         ctx.separator()
-        ctx.button(t("tags.save_settings"), lambda: self._save(mgr))
+        ctx.button(t("tags.save_settings"), self._request_save)
         if capture_semantics:
             ctx.record_semantic_item(
                 "button", t("tags.save_settings"), True, "tag_layer_settings.save"
@@ -159,8 +204,18 @@ class TagLayerSettingsPanel(EditorPanel):
         ctx.same_line()
 
         def _reset():
-            mgr.deserialize('{"custom_tags":[], "layers":[]}')
-            self._auto_save(mgr)
+            document = self._settings_controller.section("tag_layers")
+            document["custom_tags"] = []
+            document["layers"] = [
+                name if mgr.is_builtin_layer(index) else ""
+                for index, name in enumerate(document["layers"])
+            ]
+            document["layer_collision_masks"] = [0xFFFFFFFF] * 32
+            self._commit_tag_layers(
+                document,
+                edit_key="project_settings.tag_layers.reset",
+                description="Reset Tags and Layers",
+            )
 
         ctx.button(t("tags.reset_defaults"), _reset)
         if capture_semantics:
@@ -170,56 +225,82 @@ class TagLayerSettingsPanel(EditorPanel):
 
     def _do_remove_tag(self, tag: str):
         mgr = self._get_mgr()
-        if mgr:
-            mgr.remove_tag(tag)
-            self._auto_save(mgr)
+        if mgr and not mgr.is_builtin_tag(tag):
+            document = self._settings_controller.section("tag_layers")
+            if tag not in document["custom_tags"]:
+                return
+            document["custom_tags"].remove(tag)
+            self._commit_tag_layers(
+                document,
+                edit_key="project_settings.tags",
+                description="Remove Tag",
+            )
 
     def _do_add_tag(self):
         mgr = self._get_mgr()
         name = self._new_tag_name.strip()
         if mgr and name and mgr.get_tag_index(name) < 0:
-            mgr.add_tag(name)
-            self._new_tag_name = ""
-            self._auto_save(mgr)
+            document = self._settings_controller.section("tag_layers")
+            document["custom_tags"].append(name)
+            if self._commit_tag_layers(
+                document,
+                edit_key="project_settings.tags",
+                description="Add Tag",
+            ):
+                self._new_tag_name = ""
 
-    def _auto_save(self, mgr):
-        _save_mgr_to_project(mgr, self._project_path)
+    def _request_save(self) -> None:
+        from Infernux.engine.interaction import DocumentRegistry
 
-    def _save(self, mgr):
-        self._auto_save(mgr)
+        DocumentRegistry.instance().defer_save(self.document_id)
 
 
-class PhysicsLayerMatrixPanel:
-    """Standalone floating panel for project-wide physics settings and collision matrix."""
-
-    _WIN_FLAGS = Theme.WINDOW_FLAGS_DIALOG
+@editor_panel(
+    "Physics Layer Matrix",
+    type_id="physics_settings",
+    title_key="physics.title",
+    menu_path="",
+    interaction=PanelInteractionDescriptor(document_backed=True),
+)
+class PhysicsLayerMatrixPanel(FloatingEditorPanel):
+    """Project physics utility surface and collision matrix."""
 
     def __init__(self):
-        self._visible = False
-        self._first_open = True
-        self._request_focus = False
+        super().__init__(
+            title="Physics Layer Matrix",
+            window_id="physics_settings",
+            size=(980.0, 720.0),
+        )
         self._project_path = ""
         self._mgr = None
         self._gravity = list(_phys_settings.DEFAULT_PHYSICS_SETTINGS["gravity"])
         self._fixed_delta_time = float(_phys_settings.DEFAULT_PHYSICS_SETTINGS["fixed_delta_time"])
         self._max_fixed_delta_time = float(_phys_settings.DEFAULT_PHYSICS_SETTINGS["max_fixed_delta_time"])
         self._physics_settings = dict(_phys_settings.DEFAULT_PHYSICS_SETTINGS)
+        self._settings_controller = None
 
     def set_project_path(self, path: str):
         self._project_path = path
-        self._reload_project_settings()
 
-    @property
-    def is_open(self) -> bool:
-        return self._visible
+    def on_enable(self) -> None:
+        self._bind_project_settings_document()
 
-    def open(self):
-        self._visible = True
-        self._request_focus = False
-        self._reload_project_settings()
+    def _document_controller_for_registry(self):
+        if not self._project_path:
+            return self
+        controller = ensure_project_settings_document(
+            self._project_path,
+            tag_layer_manager=self._get_mgr(),
+            physics_module=_phys_settings,
+        )
+        self._settings_controller = controller
+        return controller
 
-    def close(self):
-        self._visible = False
+    def on_disable(self) -> None:
+        if self._settings_controller is not None:
+            self._settings_controller.remove_listener(
+                self._apply_project_settings_document
+            )
 
     def _get_mgr(self):
         if self._mgr is None:
@@ -227,24 +308,85 @@ class PhysicsLayerMatrixPanel:
             self._mgr = TagLayerManager.instance()
         return self._mgr
 
-    def _reload_project_settings(self):
-        settings = _phys_settings.load(self._project_path)
+    def _bind_project_settings_document(self) -> None:
+        if not self._project_path:
+            raise RuntimeError("Physics Settings requires an active project")
+        controller = ensure_project_settings_document(
+            self._project_path,
+            view_id=self.window_id,
+            tag_layer_manager=self._get_mgr(),
+            physics_module=_phys_settings,
+        )
+        if (
+            self._settings_controller is not None
+            and self._settings_controller is not controller
+        ):
+            self._settings_controller.remove_listener(
+                self._apply_project_settings_document
+            )
+        self._settings_controller = controller
+        controller.add_listener(self._apply_project_settings_document)
+        self.bind_document(controller.document_id)
+        self._apply_project_settings_document(controller.capture_document())
+
+    def _apply_project_settings_document(self, document: dict) -> None:
+        settings = dict(document["physics"])
         self._physics_settings = settings
         self._gravity = list(settings["gravity"])
         self._fixed_delta_time = float(settings["fixed_delta_time"])
         self._max_fixed_delta_time = float(settings["max_fixed_delta_time"])
-        _phys_settings.apply(settings)
 
-    def _save_project_settings(self):
+    def _commit_physics_settings(self, *, field: str, description: str) -> bool:
+        controller = self._settings_controller
+        if controller is None:
+            raise RuntimeError("Physics Settings is not bound to Project Settings")
         settings = dict(self._physics_settings)
         settings.update(
             gravity=[float(self._gravity[0]), float(self._gravity[1]), float(self._gravity[2])],
             fixed_delta_time=float(self._fixed_delta_time),
             max_fixed_delta_time=float(self._max_fixed_delta_time),
         )
-        self._physics_settings = settings
-        _phys_settings.apply(settings)
-        _phys_settings.save(self._project_path, settings)
+        self.publish_interaction_ownership(reason="project_settings_edit")
+        committed = controller.apply_section(
+            "physics",
+            settings,
+            edit_key=f"project_settings.physics.{field}",
+            description=description,
+            view_id=self.window_id,
+        )
+        if not committed:
+            self._apply_project_settings_document(controller.capture_document())
+        return committed
+
+    def _commit_collision_pair(
+        self,
+        layer_a: int,
+        layer_b: int,
+        collide: bool,
+    ) -> bool:
+        controller = self._settings_controller
+        if controller is None:
+            raise RuntimeError("Physics Settings is not bound to Project Settings")
+        document = controller.section("tag_layers")
+        masks = [int(value) & 0xFFFFFFFF for value in document["layer_collision_masks"]]
+        bit_a = 1 << int(layer_a)
+        bit_b = 1 << int(layer_b)
+        if collide:
+            masks[layer_a] |= bit_b
+            masks[layer_b] |= bit_a
+        else:
+            masks[layer_a] &= ~bit_b
+            masks[layer_b] &= ~bit_a
+        document["layer_collision_masks"] = [value & 0xFFFFFFFF for value in masks]
+        low, high = sorted((int(layer_a), int(layer_b)))
+        self.publish_interaction_ownership(reason="project_settings_edit")
+        return controller.apply_section(
+            "tag_layers",
+            document,
+            edit_key=f"project_settings.collision.{low}.{high}",
+            description=f"Set Layer Collision {low}/{high}",
+            view_id=self.window_id,
+        )
 
     @staticmethod
     def _draw_vertical_text(ctx: InxGUIContext, child_id: str, text: str, width: float, height: float):
@@ -266,32 +408,12 @@ class PhysicsLayerMatrixPanel:
             )
         ctx.end_child()
 
-    def render(self, ctx: InxGUIContext):
-        if not self._visible:
-            return
-
-        x0, y0, dw, dh = ctx.get_main_viewport_bounds()
-        cx = x0 + (dw - 980) * 0.5
-        cy = y0 + (dh - 720) * 0.5
-        ctx.set_next_window_pos(cx, cy, Theme.COND_ALWAYS, 0.0, 0.0)
-        ctx.set_next_window_size(980, 720, Theme.COND_ALWAYS)
-        visible, still_open = ctx.begin_window_closable(
-            t("physics.title") + "###physics_settings", self._visible, self._WIN_FLAGS
-        )
-
-        if not still_open:
-            self._visible = False
-            ctx.end_window()
-            return
-
-        if visible:
-            mgr = self._get_mgr()
-            if mgr is None:
-                ctx.label(t("tags.manager_unavailable"))
-            else:
-                self._render_body(ctx, mgr)
-
-        ctx.end_window()
+    def on_render_content(self, ctx: InxGUIContext):
+        mgr = self._get_mgr()
+        if mgr is None:
+            ctx.label(t("tags.manager_unavailable"))
+        else:
+            self._render_body(ctx, mgr)
 
     def _render_body(self, ctx: InxGUIContext, mgr):
         self._render_settings_section(ctx)
@@ -360,8 +482,7 @@ class PhysicsLayerMatrixPanel:
                     current = mgr.get_layers_collide(layer_a, layer_b)
                     new_value = ctx.checkbox(f"##pm_{layer_a}_{layer_b}", current)
                     if new_value != current:
-                        mgr.set_layers_collide(layer_a, layer_b, new_value)
-                        _save_mgr_to_project(mgr, self._project_path)
+                        self._commit_collision_pair(layer_a, layer_b, new_value)
                         new_value = mgr.get_layers_collide(layer_a, layer_b)
                     if capture_semantics:
                         low, high = sorted((layer_a, layer_b))
@@ -383,18 +504,27 @@ class PhysicsLayerMatrixPanel:
         if abs(new_hz - hz) > 1e-6:
             self._fixed_delta_time = max(0.001, 1.0 / max(new_hz, 1.0))
             self._max_fixed_delta_time = max(self._max_fixed_delta_time, self._fixed_delta_time)
-            self._save_project_settings()
+            self._commit_physics_settings(
+                field="fixed_delta_time",
+                description="Set Physics Iteration Rate",
+            )
 
         new_fixed_dt = ctx.input_float(t("physics.fixed_time_step"), self._fixed_delta_time, 0.001, 0.01, 0)
         if abs(new_fixed_dt - self._fixed_delta_time) > 1e-6:
             self._fixed_delta_time = max(0.001, float(new_fixed_dt))
             self._max_fixed_delta_time = max(self._max_fixed_delta_time, self._fixed_delta_time)
-            self._save_project_settings()
+            self._commit_physics_settings(
+                field="fixed_delta_time",
+                description="Set Physics Fixed Time Step",
+            )
 
         new_max_dt = ctx.input_float(t("physics.max_catchup_delta"), self._max_fixed_delta_time, 0.01, 0.05, 0)
         if abs(new_max_dt - self._max_fixed_delta_time) > 1e-6:
             self._max_fixed_delta_time = max(self._fixed_delta_time, float(new_max_dt))
-            self._save_project_settings()
+            self._commit_physics_settings(
+                field="max_fixed_delta_time",
+                description="Set Physics Catch-up Delta",
+            )
 
         ctx.spacing()
         ctx.label(t("physics.gravity"))
@@ -403,7 +533,10 @@ class PhysicsLayerMatrixPanel:
         gz = ctx.input_float("Gravity Z", float(self._gravity[2]), 0.1, 1.0, 0)
         if abs(gx - self._gravity[0]) > 1e-6 or abs(gy - self._gravity[1]) > 1e-6 or abs(gz - self._gravity[2]) > 1e-6:
             self._gravity = [float(gx), float(gy), float(gz)]
-            self._save_project_settings()
+            self._commit_physics_settings(
+                field="gravity",
+                description="Set Physics Gravity",
+            )
 
         ctx.spacing()
         ctx.set_next_item_open(False, Theme.COND_FIRST_USE_EVER)
@@ -475,7 +608,10 @@ class PhysicsLayerMatrixPanel:
         value = max(minimum, min(maximum, int(value)))
         if value != current:
             self._physics_settings[field] = value
-            self._save_project_settings()
+            self._commit_physics_settings(
+                field=field,
+                description=f"Set Physics {field}",
+            )
 
     def _render_float_setting(
         self,
@@ -491,5 +627,8 @@ class PhysicsLayerMatrixPanel:
         value = max(minimum, min(maximum, float(value)))
         if abs(value - current) > 1e-9:
             self._physics_settings[field] = value
-            self._save_project_settings()
+            self._commit_physics_settings(
+                field=field,
+                description=f"Set Physics {field}",
+            )
 

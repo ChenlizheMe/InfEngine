@@ -42,7 +42,7 @@ class SerializedFieldCollectorMixin:
             if attr is None:
                 continue
 
-            from Infernux.components.serialized_field import (
+            from Infernux.components.fields import (
                 FieldMetadata,
                 HiddenField,
                 SerializedFieldDescriptor,
@@ -58,15 +58,27 @@ class SerializedFieldCollectorMixin:
                 cls._serialized_fields_[attr_name] = attr
             else:
                 from enum import Enum as _Enum
-
-                field_type = infer_field_type_from_value(attr)
-                enum_type = type(attr) if isinstance(attr, _Enum) else None
-                metadata = FieldMetadata(
-                    name=attr_name,
-                    field_type=field_type,
-                    default=attr,
-                    enum_type=enum_type,
+                from Infernux.components.fields import (
+                    NON_SERIALIZED_FIELD,
+                    build_field_from_annotation,
                 )
+
+                annotation = getattr(cls, "__annotations__", {}).get(attr_name)
+                metadata = None
+                if annotation is not None:
+                    metadata = build_field_from_annotation(annotation, default=attr)
+                    if metadata is NON_SERIALIZED_FIELD:
+                        continue
+                if metadata is None:
+                    field_type = infer_field_type_from_value(attr)
+                    enum_type = type(attr) if isinstance(attr, _Enum) else None
+                    metadata = FieldMetadata(
+                        name=attr_name,
+                        field_type=field_type,
+                        default=attr,
+                        enum_type=enum_type,
+                    )
+                metadata.name = attr_name
                 descriptor = SerializedFieldDescriptor(metadata)
                 descriptor.__set_name__(cls, attr_name)
                 setattr(cls, attr_name, descriptor)

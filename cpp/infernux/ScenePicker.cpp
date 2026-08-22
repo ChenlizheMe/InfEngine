@@ -8,8 +8,9 @@
  *   - Scene View editor selection should work on visible scene objects, not
  *     only physics colliders. We therefore combine collider hits with a
  *     lightweight MeshRenderer bounds test.
- *   - Component icon billboards (lights, cameras, etc.) are always pickable
- *     via a lightweight screen-space proximity test.
+ *   - Component icon billboards (lights, cameras, particles, etc.) are
+ *     pickable via a screen-space proximity test ranked at the billboard
+ *     sphere entry, so they compete equally with nearby mesh AABBs.
  *   - Gizmo handles (translate/rotate/scale) are picked via a dedicated
  *     lightweight `PickGizmoAxis()` that tests both axes and plane squares.
  *
@@ -61,10 +62,15 @@ static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec3 &rayOrigin
         glm::vec3 closestOnRay = rayOrigin + rayDirection * t;
         float dist = glm::length(closestOnRay - icon.position);
         float camDist = glm::length(icon.position - rayOrigin);
-        float iconRadius = camDist * GizmosDrawCallBuffer::ICON_SIZE_FACTOR;
-        if (dist < iconRadius) {
-            hits.emplace_back(t, icon.objectId);
-        }
+        float iconRadius =
+            std::max(camDist * GizmosDrawCallBuffer::ICON_SIZE_FACTOR, GizmosDrawCallBuffer::ICON_MIN_WORLD_SIZE);
+        if (dist >= iconRadius)
+            continue;
+        // Rank icons by the ray's entry into the screen-space billboard
+        // sphere. Using the center put particle/light icons behind nearby
+        // mesh AABBs, so a click on the icon selected the cube behind it.
+        const float halfChord = std::sqrt(std::max(0.0f, iconRadius * iconRadius - dist * dist));
+        hits.emplace_back(std::max(0.0f, t - halfChord), icon.objectId);
     }
 }
 

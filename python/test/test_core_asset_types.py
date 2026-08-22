@@ -14,6 +14,7 @@ from Infernux.core.asset_types import (
     FontAssetInfo,
     MeshImportSettings,
     ShaderAssetInfo,
+    SpriteFrame,
     TextureImportSettings,
     TextureCompression,
     TextureCompressionQuality,
@@ -99,6 +100,28 @@ class TestAudioCompressionFormat:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestTextureImportSettings:
+    def test_sprite_frame_uses_full_stable_identity(self):
+        frame = SpriteFrame(name="idle", x=0, y=0, w=64, h=64)
+        assert len(frame.stable_id) == 32
+        assert SpriteFrame.from_dict(frame.to_dict()) == frame
+
+    def test_sprite_texture_requires_persisted_frame(self):
+        settings = TextureImportSettings(texture_type=TextureType.SPRITE)
+        with pytest.raises(ValueError, match="at least one sprite frame"):
+            settings.to_dict()
+
+    def test_sprite_frame_ids_must_be_unique(self):
+        stable_id = "1" * 32
+        settings = TextureImportSettings(
+            texture_type=TextureType.SPRITE,
+            sprite_frames=[
+                SpriteFrame(stable_id=stable_id, name="a", w=16, h=16),
+                SpriteFrame(stable_id=stable_id, name="b", x=16, w=16, h=16),
+            ],
+        )
+        with pytest.raises(ValueError, match="must be unique"):
+            settings.to_dict()
+
     def test_defaults(self):
         s = TextureImportSettings()
         assert s.texture_type == TextureType.DEFAULT
@@ -107,7 +130,7 @@ class TestTextureImportSettings:
         assert s.generate_mipmaps is True
         assert s.srgb is True
         assert s.max_size == 2048
-        assert s.aniso_level == 1
+        assert s.aniso_level == -1
         assert s.format == TextureFormat.AUTO
         assert s.compression == TextureCompression.AUTO
         assert s.compression_quality == TextureCompressionQuality.NORMAL
@@ -127,6 +150,15 @@ class TestTextureImportSettings:
         d = s.to_dict()
         s2 = TextureImportSettings.from_dict(d)
         assert s == s2
+
+    def test_device_max_anisotropy_round_trips(self):
+        s = TextureImportSettings(aniso_level=-1)
+        assert TextureImportSettings.from_dict(s.to_dict()).aniso_level == -1
+
+    def test_legacy_default_anisotropy_migrates_to_device_maximum(self):
+        document = TextureImportSettings().to_dict()
+        document["aniso_level"] = 1
+        assert TextureImportSettings.from_dict(document).aniso_level == -1
 
     def test_copy(self):
         s = TextureImportSettings(max_size=512)
@@ -192,6 +224,37 @@ class TestTextureImportSettings:
 
         with pytest.raises(TypeError, match="sprite_frames must use json_array"):
             _load_strict_meta_root(str(meta_path))
+
+    def test_runtime_metadata_replaces_omitted_meta_sidecar(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        from Infernux.core import asset_types
+
+        document = {
+            "metadata": {
+                "guid": {"type": "string", "value": "texture-guid"},
+                "width": {"type": "int", "value": 256},
+                "height": {"type": "int", "value": 128},
+                "texture_type": {"type": "string", "value": "sprite"},
+                "sprite_frames": {"type": "json_array", "value": []},
+            }
+        }
+        database = SimpleNamespace(
+            get_meta_by_guid=lambda guid: SimpleNamespace(
+                serialize_document=lambda: document
+            ) if guid == "texture-guid" else None,
+            get_meta_by_path=lambda _path: None,
+        )
+        monkeypatch.setattr(asset_types, "_published_asset_database", lambda: database)
+
+        metadata = asset_types.read_asset_metadata(
+            str(tmp_path / "Assets" / "sheet.png"),
+            guid="texture-guid",
+        )
+
+        assert metadata["width"] == 256
+        assert metadata["height"] == 128
+        assert metadata["texture_type"] == "sprite"
+        assert metadata["sprite_frames"] == []
 
     def test_equality_false_for_different(self):
         s1 = TextureImportSettings()
@@ -318,6 +381,8 @@ class TestAssetCategory:
     def test_audio(self):
         assert asset_category_from_extension(".wav") == "audio"
         assert asset_category_from_extension(".ogg") == "audio"
+        assert asset_category_from_extension(".mp3") == "audio"
+        assert asset_category_from_extension(".flac") == "audio"
 
     def test_font(self):
         assert asset_category_from_extension(".ttf") == "font"

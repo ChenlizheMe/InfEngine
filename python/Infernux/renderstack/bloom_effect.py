@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-from Infernux.components.serialized_field import Color, serialized_field
+from Infernux.components.fields import Color, serialized_field
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -52,7 +52,7 @@ class BloomEffect(FullScreenEffect):
     intensity: float = serialized_field(default=0.8, range=(0.0, 5.0), slider=False)
     scatter: float = serialized_field(default=0.7, range=(0.0, 1.0), slider=False)
     clamp: float = serialized_field(default=65472.0, range=(0.0, 65472.0), slider=False)
-    tint: Color = Color(1.0, 1.0, 1.0, 1.0)
+    tint: Color = serialized_field(default=Color(1.0, 1.0, 1.0, 1.0), hdr=True)
     max_iterations: int = serialized_field(default=5, range=(1, 8), slider=False)
 
     # ------------------------------------------------------------------

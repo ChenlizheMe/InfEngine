@@ -41,6 +41,8 @@ enum class ShaderCompileTarget : int
     Picking = 4,     // Stable object identity output
     Motion = 5,      // Motion-vector output
     ForwardPlus = 6, // Tiled/clustered forward lighting
+    Normal = 7,      // World-space normal output for screen-space effects
+    BaseColor = 8,   // Linear surface albedo + alpha output for the Geometry Stage
 
     Count // Sentinel — number of targets; must be last
 };
@@ -62,6 +64,10 @@ enum class ShaderCompileTarget : int
         return "Motion";
     case ShaderCompileTarget::ForwardPlus:
         return "ForwardPlus";
+    case ShaderCompileTarget::Normal:
+        return "Normal";
+    case ShaderCompileTarget::BaseColor:
+        return "BaseColor";
     case ShaderCompileTarget::Count:
         return "Count";
     }
@@ -81,6 +87,8 @@ enum class ShaderCompileTarget : int
     case ShaderCompileTarget::Picking:
     case ShaderCompileTarget::Motion:
         return true;
+    case ShaderCompileTarget::Normal:
+    case ShaderCompileTarget::BaseColor:
     case ShaderCompileTarget::Shadow:
     case ShaderCompileTarget::Depth:
     case ShaderCompileTarget::Count:

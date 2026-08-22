@@ -18,8 +18,6 @@ from Infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, Texture
 from Infernux.debug import Debug
 from Infernux import resources as _resources
 from .engine import Engine, LogLevel
-from .play_mode import PlayModeManager, PlayModeState
-from .scene_manager import SceneFileManager
 from .path_utils import resolved_path
 
 from .headless import run_headless
@@ -29,13 +27,22 @@ _EDITOR_UI_EXPORTS = {
     "InspectorPanel", "ConsolePanel", "SceneViewPanel", "GameViewPanel",
     "ProjectPanel", "WindowManager", "TagLayerSettingsPanel", "StatusBarPanel",
     "BuildSettingsPanel", "UIEditorPanel", "EditorPanel", "EditorServices",
-    "EditorEventBus", "EditorEvent", "PanelRegistry", "editor_panel",
+    "PanelRegistry", "editor_panel",
+}
+
+_EDITOR_SERVICE_EXPORTS = {
+    "PlayModeManager": (".play_mode", "PlayModeManager"),
+    "PlayModeState": (".play_mode", "PlayModeState"),
+    "SceneFileManager": (".scene_manager", "SceneFileManager"),
 }
 
 
 def __getattr__(name: str):
     if name == "ResourcesManager":
         value = importlib.import_module(".resources_manager", __name__).ResourcesManager
+    elif name in _EDITOR_SERVICE_EXPORTS:
+        module_name, export_name = _EDITOR_SERVICE_EXPORTS[name]
+        value = getattr(importlib.import_module(module_name, __name__), export_name)
     elif name in _EDITOR_UI_EXPORTS:
         value = getattr(importlib.import_module(".ui", __name__), name)
     else:
@@ -168,10 +175,13 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
     Delegates to :class:`EditorBootstrap` for structured initialization.
     """
-    import time
-    from .bootstrap import EditorBootstrap
+    from .bootstrap import EditorBootstrap, _signal_progress
 
     from .library_sync import sync_resources
+    # The launcher splash must become informative before project mirroring,
+    # which may touch many files on a cold machine.  Previously the first
+    # progress message arrived only after this work had already blocked.
+    _signal_progress(0, 13, "Synchronizing engine resources…")
     sync_resources(project_path)
     _resources.activate_library(project_path)
 
@@ -193,10 +203,10 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
         _project_name = os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
 
-        # Signal the launcher splash to begin its fade-out, then wait for it
-        # to finish before revealing the engine window.
+        # Signal the launcher splash and reveal the real window immediately.
+        # Launcher-owned presentation must never add fixed latency to engine
+        # readiness; it can finish its fade independently.
         _signal_engine_loaded()
-        time.sleep(0.6)
 
         bootstrap.engine.show()
         bootstrap.engine.run()
@@ -219,11 +229,11 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
     Opens the project's first scene from BuildSettings.json, applies the
     display mode from BuildManifest.json (fullscreen borderless or windowed
-    with a custom resolution), plays the splash sequence if configured, then
-    enters play mode and runs until the window is closed.
+    with a custom resolution), and reveals the window after runtime startup.
+    A project-configured splash remains optional and Play starts after it has
+    finished; the engine does not impose a default loading window.
     """
     import json
-    import time
     from Infernux.application import Application
     from .player_bootstrap import PlayerBootstrap
 
@@ -262,6 +272,22 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         splash_items = manifest.get("splash_items", [])
         build_icon_path = manifest.get("icon_path", "")
         game_name = manifest.get("game_name", "")
+        title = game_name or os.path.basename(resolved_path(project_path))
+        window_icon = (
+            os.path.join(project_path, build_icon_path)
+            if isinstance(build_icon_path, str) and build_icon_path
+            else _resources.icon_path
+        )
+
+        # Publish chrome before native startup. The SDL window remains hidden
+        # until bootstrap finishes, then appears with its final title, icon,
+        # and display mode without an engine-owned loading window.
+        if display_mode == "fullscreen_borderless":
+            os.environ["_INFERNUX_PLAYER_FULLSCREEN"] = "1"
+        else:
+            os.environ.pop("_INFERNUX_PLAYER_FULLSCREEN", None)
+        os.environ["_INFERNUX_PLAYER_WINDOW_TITLE"] = title
+        os.environ["_INFERNUX_PLAYER_WINDOW_ICON"] = window_icon
 
         bootstrap = PlayerBootstrap(
             project_path, engine_log_level,
@@ -269,30 +295,21 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             window_width=window_width,
             window_height=window_height,
             splash_items=splash_items,
+            game_name=game_name,
+            window_icon=window_icon,
+            window_resizable=window_resizable,
         )
         bootstrap.run()
 
-        # Set window title to game name (from manifest or folder name)
-        title = game_name or os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(title)
-
         if display_mode == "fullscreen_borderless":
             bootstrap.engine.set_fullscreen(True)
         else:
-            # Windowed mode: don't maximize, respect the specified size
             bootstrap.engine.set_maximized(False)
             bootstrap.engine.set_resizable(window_resizable)
-
-        window_icon = (
-            os.path.join(project_path, build_icon_path)
-            if isinstance(build_icon_path, str) and build_icon_path
-            else _resources.icon_path
-        )
         bootstrap.engine.set_window_icon(window_icon)
 
         _signal_engine_loaded()
-        time.sleep(0.3)
-
         bootstrap.engine.show()
         bootstrap.engine.run()
         exit_code = Application._requested_exit_code()
@@ -307,9 +324,6 @@ __all__ = [
     "LogLevel",
     "InxGUIRenderable",
     "InxGUIContext",
-    "PlayModeManager",
-    "PlayModeState",
-    "SceneFileManager",
     "TextureLoader",
     "TextureData",
     "release_engine",
@@ -319,6 +333,9 @@ __all__ = [
 
 if not _PLAYER_MODE:
     __all__ += [
+        "PlayModeManager",
+        "PlayModeState",
+        "SceneFileManager",
         "ResourcesManager",
         "MenuBarPanel",
         "ToolbarPanel",
@@ -336,8 +353,6 @@ if not _PLAYER_MODE:
         # Panel framework
         "EditorPanel",
         "EditorServices",
-        "EditorEventBus",
-        "EditorEvent",
         "PanelRegistry",
         "editor_panel",
     ]

@@ -15,6 +15,7 @@ on:
       - "docs/*.json"
       - "docs/css/**"
       - "docs/js/**"
+      - "docs/learn/**"
       - "docs/tools/**"
       - "docs/docs-manifest.json"
       - "UpdateLog.md"
@@ -63,6 +64,9 @@ jobs:
 
       - name: Verify checked-in curated API guidance
         run: node docs/tools/apply-api-curation.mjs --check
+
+      - name: Build hand-authored learning chapters
+        run: python docs/tools/build-learning-guides.py
 
       - name: Generate API index
         run: node docs/tools/build-api-index.mjs

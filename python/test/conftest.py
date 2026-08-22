@@ -27,6 +27,52 @@ from Infernux.resources import resources_path
 from Infernux.input import Input
 
 
+@pytest.fixture(autouse=True)
+def _reset_editor_interaction_state():
+    """Prevent process-wide editor interaction state from leaking across tests."""
+    from Infernux.engine.interaction import (
+        ClipboardService,
+        DocumentRegistry,
+        EditorInteractionCore,
+    )
+
+    previous_core = EditorInteractionCore._instance
+    from Infernux.engine.play_mode import PlayModeManager
+
+    # PlayModeManager is a process singleton, but most tests construct a
+    # short-lived manager for their own scenario.  Keeping that manager alive
+    # makes editor-only preview behavior depend on test order.
+    PlayModeManager._instance = None
+    registry = DocumentRegistry()
+    clipboard = ClipboardService()
+    try:
+        yield registry
+    finally:
+        from Infernux.engine.ui.asset_resource_preview import (
+            release_all_preview_authoring,
+        )
+        from Infernux.core.assets import AssetManager
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+
+        current_core = EditorInteractionCore._instance
+        if current_core is not None and current_core is not previous_core:
+            current_core.shutdown()
+        release_all_preview_authoring()
+        AssetManager.flush()
+        ParticleArtifactRegistry.clear()
+        # Never publish a test-owned manager into the next test.  The native
+        # session fixture does not require a Python PlayModeManager; tests that
+        # need one create it explicitly and own it for that test.
+        PlayModeManager._instance = None
+        EditorInteractionCore._instance = previous_core
+        registry.clear()
+        clipboard.clear(reason="test_teardown")
+        if DocumentRegistry._instance is registry:
+            DocumentRegistry._instance = None
+        if ClipboardService._instance is clipboard:
+            ClipboardService._instance = None
+
+
 # ── session-scoped engine (Vulkan + SDL, created once for ALL tests) ─────
 
 @pytest.fixture(scope="session", autouse=True)

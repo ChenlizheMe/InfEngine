@@ -1,54 +1,28 @@
 /**
  * @file JobSystem.h
- * @brief Engine-wide C++ thread pool for parallel work dispatch.
+ * @brief Engine-wide worker pool and its scheduling primitives.
  *
- * Designed to live alongside Jolt's JobSystemThreadPool (used by physics)
- * and Python's ThreadPoolExecutor (used by editor / asset workflows).
- * The C++ side previously had no general-purpose worker pool, which forced
- * every parallel-friendly path (texture decoding, mesh import, render
- * command recording, scene tick parallelisation) to either go single
- * threaded or build its own ad-hoc threading.
- *
- * Design goals:
- *
- *   * Trivial to use — `JobSystem::Get().Schedule([]{ ... });` is the
- *     entire API for one-off work; a returned JobHandle lets callers
- *     join when needed.
- *   * Move-only handles, no exceptions in the worker loop.
- *   * Configurable worker count; defaults to (hw_concurrency - 1) so
- *     the main render thread never has to compete with workers for a
- *     core. -1 keeps the CPU breathing room for the OS / driver.
- *   * Mutex-guarded queue today. The interface is deliberately minimal
- *     so we can swap the queue for a lock-free MPMC ring buffer later
- *     without touching call sites.
- *   * Designed to coexist with — not replace — Jolt's pool. Physics
- *     keeps its own pool; this one is for everything else.
- *
- * Non-goals (documented for future readers):
- *
- *   * Work stealing — keep the implementation small until we measure
- *     contention on the shared queue. Most expected workloads are
- *     coarse-grained (per-pass / per-asset) where a shared queue is
- *     fine.
- *   * Job dependencies / DAG — handled at call site for now via Wait().
- *     Add a dependency graph layer when render-graph parallel recording
- *     actually lands.
- *   * Fiber support — Vulkan command recording does not need it.
+ * The pool deliberately remains the only native general-purpose worker owner.
+ * Domains, priorities and groups describe work submitted to that pool; they
+ * never create a second executor. Existing Schedule/ScheduleBatch/ParallelFor
+ * calls use the Default domain and Normal priority.
  */
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux
@@ -60,12 +34,46 @@ class JobCancelled final : public std::runtime_error
     using std::runtime_error::runtime_error;
 };
 
+/** Logical scheduling domain. A value outside the named values is valid for
+ * project-specific domains and is still owned by the same JobSystem. */
+enum class JobDomain : uint16_t
+{
+    Default = 0,
+    Runtime = 1,
+    Render = 2,
+    Asset = 3,
+    Physics = 4,
+    IO = 5,
+    User = 1024,
+};
+
+/** Lower values are preferred only after the aging/fairness policy is applied. */
+enum class JobPriority : uint8_t
+{
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Critical = 3,
+};
+
+struct JobProfilerCounters
+{
+    uint64_t submitted = 0;
+    uint64_t started = 0;
+    uint64_t completed = 0;
+    uint64_t failed = 0;
+    uint64_t cancelled = 0;
+    uint64_t blocked = 0;
+    uint64_t helped = 0;
+    uint64_t running = 0;
+    uint64_t queued = 0;
+};
+
 /**
- * @brief Opaque, move-only handle identifying a single scheduled job.
+ * @brief Opaque completion handle for one job or a batch.
  *
- * Wait()-able through JobSystem. Multiple handles can share the same
- * underlying counter — useful for ParallelFor where we want to wait on
- * an entire batch.
+ * Handles are copyable views of shared completion state. A fence returned by
+ * TaskGroup::Fence additionally waits for the group to be closed.
  */
 class JobHandle
 {
@@ -81,57 +89,85 @@ class JobHandle
         return static_cast<bool>(m_state);
     }
 
-    /// @brief Non-blocking poll. Returns true once all referenced jobs have completed.
-    [[nodiscard]] bool IsComplete() const noexcept
-    {
-        return !m_state || m_state->remaining.load(std::memory_order_acquire) == 0;
-    }
+    [[nodiscard]] bool IsComplete() const noexcept;
 
-    bool Cancel() noexcept
-    {
-        if (!m_state || IsComplete())
-            return false;
-        m_state->cancelRequested.store(true, std::memory_order_release);
-        return true;
-    }
+    bool Cancel() noexcept;
 
     [[nodiscard]] bool IsCancellationRequested() const noexcept
     {
         return m_state && m_state->cancelRequested.load(std::memory_order_acquire);
     }
 
-  private:
+  public:
     friend class JobSystem;
+    friend class TaskGroup;
 
     struct State
     {
-        explicit State(uint32_t count) : remaining(count)
+        explicit State(uint32_t count = 0, bool groupState = false) : remaining(count), closed(!groupState)
         {
         }
 
-        std::atomic<uint32_t> remaining;
+        std::atomic<uint32_t> remaining{0};
         std::atomic<bool> cancelRequested{false};
-        std::mutex completionMutex;
+        std::atomic<bool> closed{true};
+        mutable std::mutex completionMutex;
         std::condition_variable completionCv;
         std::exception_ptr failure;
     };
 
-    explicit JobHandle(std::shared_ptr<State> state) : m_state(std::move(state))
+  private:
+    explicit JobHandle(std::shared_ptr<State> state, bool waitsForClose = false)
+        : m_state(std::move(state)), m_waitsForClose(waitsForClose)
     {
     }
 
     std::shared_ptr<State> m_state;
+    bool m_waitsForClose = false;
 };
 
-/**
- * @brief Engine-wide worker thread pool singleton.
- *
- * Initialize() must be called once at engine startup; Shutdown() once at
- * engine teardown. Get() returns the singleton in between. The singleton
- * is intentionally NOT initialised lazily — silent worker startup during
- * arbitrary translation units' static init would race with the rest of
- * engine bring-up.
- */
+using JobFence = JobHandle;
+
+/** A dynamic set of jobs sharing cancellation, error and domain semantics. */
+class TaskGroup
+{
+  public:
+    explicit TaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
+    ~TaskGroup();
+
+    TaskGroup(const TaskGroup &) = delete;
+    TaskGroup &operator=(const TaskGroup &) = delete;
+    TaskGroup(TaskGroup &&other) noexcept;
+    TaskGroup &operator=(TaskGroup &&other) noexcept;
+
+    /** Prevent further submissions. Existing work is still drained. */
+    void Close() noexcept;
+    [[nodiscard]] bool IsClosed() const noexcept;
+    [[nodiscard]] bool IsComplete() const noexcept;
+    [[nodiscard]] bool IsCancellationRequested() const noexcept;
+    bool Cancel() noexcept;
+
+    /** Returns a fence that completes only after Close() and all jobs. */
+    [[nodiscard]] JobFence Fence() const;
+    [[nodiscard]] JobDomain GetDomain() const noexcept
+    {
+        return m_domain;
+    }
+    [[nodiscard]] JobPriority GetPriority() const noexcept
+    {
+        return m_priority;
+    }
+
+  private:
+    friend class JobSystem;
+
+    std::shared_ptr<JobHandle::State> m_state;
+    mutable std::mutex m_mutex;
+    JobDomain m_domain = JobDomain::Default;
+    JobPriority m_priority = JobPriority::Normal;
+};
+
+/** Engine-wide worker pool singleton. */
 class JobSystem
 {
   public:
@@ -144,19 +180,9 @@ class JobSystem
         Stopped,
     };
 
-    /// @brief Bring up the global pool with @p workerCount worker threads.
-    /// @p workerCount = 0 picks (hw_concurrency - 1) clamped to [1, 32].
-    /// Calling Initialize twice is a logic error and asserts in debug.
     static void Initialize(uint32_t workerCount = 0);
-
-    /// @brief Shut the global pool down. Pending jobs are drained first,
-    /// then workers are joined. Safe to call multiple times.
     static void Shutdown();
-
-    /// @brief Access the global pool. Initialize() must have been called.
     [[nodiscard]] static JobSystem &Get();
-
-    /// @brief Has Initialize() been called and Shutdown() not yet called?
     [[nodiscard]] static bool IsAvailable() noexcept;
 
     JobSystem(const JobSystem &) = delete;
@@ -164,34 +190,41 @@ class JobSystem
     JobSystem(JobSystem &&) = delete;
     JobSystem &operator=(JobSystem &&) = delete;
 
-    /// @brief Schedule a single job. Returns a handle for joining later.
-    /// The handle stays valid even after the job completes — IsComplete()
-    /// just observes a zeroed counter.
-    JobHandle Schedule(JobFn job);
+    /** Existing callers retain Default/Normal behavior. */
+    JobHandle Schedule(JobFn job, JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
 
-    /// @brief Schedule @p count jobs that share a single counter, useful
-    /// for ParallelFor-style fan-out where the caller wants one wait point.
-    /// @p factory is invoked once per index (0..count-1) on the calling
-    /// thread to produce each individual job — keeps the hot scheduling
-    /// loop free of allocation when the factory is a stateless lambda.
-    JobHandle ScheduleBatch(uint32_t count, std::function<JobFn(uint32_t index)> factory);
+    JobHandle Schedule(TaskGroup &group, JobFn job);
+    JobHandle Schedule(TaskGroup &group, JobFn job, JobPriority priority);
 
-    /// @brief Convenience: parallel-for over [0, count). Equivalent to
-    /// ScheduleBatch + Wait but expresses intent more clearly at call sites.
-    void ParallelFor(uint32_t count, std::function<void(uint32_t index)> body);
+    JobHandle ScheduleBatch(uint32_t count, std::function<JobFn(uint32_t index)> factory,
+                            JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
+    JobHandle ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory);
+    JobHandle ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory,
+                            JobPriority priority);
 
-    /// @brief Block the caller until all jobs referenced by @p handle complete.
-    /// Returns immediately when the handle is invalid or already complete.
-    /// While blocked, the caller participates as an opportunistic worker —
-    /// this prevents priority inversion when the main thread joins on jobs
-    /// scheduled by helper code.
+    void ParallelFor(uint32_t count, std::function<void(uint32_t index)> body, JobDomain domain = JobDomain::Default,
+                     JobPriority priority = JobPriority::Normal);
+    void ParallelFor(TaskGroup &group, uint32_t count, std::function<void(uint32_t index)> body);
+
+    TaskGroup CreateTaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal) const;
+
+    /** Wait helps work from the target group/domain while preserving permits. */
     void Wait(const JobHandle &handle);
+    void Wait(TaskGroup &group);
 
-    /// @brief Wait without executing queued work on the calling thread.
-    /// Use when the caller owns thread-affine state and jobs must stay on workers.
+    /** Wait without executing work; a worker temporarily releases its permit. */
     void WaitPassive(const JobHandle &handle);
+    void WaitPassive(TaskGroup &group);
 
-    /// @brief How many worker threads are running. 0 if Shutdown.
+    /** 0 means unlimited. Changes affect tasks not yet dequeued. */
+    void SetDomainConcurrency(JobDomain domain, uint32_t maxConcurrency);
+    [[nodiscard]] uint32_t GetDomainConcurrency(JobDomain domain) const;
+    [[nodiscard]] uint32_t GetDomainActiveCount(JobDomain domain) const;
+
+    [[nodiscard]] JobProfilerCounters GetProfilerCounters() const;
+    [[nodiscard]] JobProfilerCounters GetProfilerCounters(JobDomain domain) const;
+    void ResetProfilerCounters();
+
     [[nodiscard]] uint32_t GetWorkerCount() const noexcept
     {
         return static_cast<uint32_t>(m_workers.size());
@@ -210,25 +243,82 @@ class JobSystem
     JobSystem() = default;
     ~JobSystem();
 
+    struct ProfilerState
+    {
+        std::atomic<uint64_t> submitted{0};
+        std::atomic<uint64_t> started{0};
+        std::atomic<uint64_t> completed{0};
+        std::atomic<uint64_t> failed{0};
+        std::atomic<uint64_t> cancelled{0};
+        std::atomic<uint64_t> blocked{0};
+        std::atomic<uint64_t> helped{0};
+        std::atomic<uint64_t> running{0};
+        std::atomic<uint64_t> queued{0};
+    };
+
     struct Task
     {
         JobFn fn;
         std::shared_ptr<JobHandle::State> state;
+        std::shared_ptr<JobHandle::State> groupState;
+        std::shared_ptr<ProfilerState> profiler;
+        JobDomain domain = JobDomain::Default;
+        JobPriority priority = JobPriority::Normal;
+        uint64_t sequence = 0;
     };
 
+    struct ExecutionContext
+    {
+        JobSystem *system = nullptr;
+        JobDomain domain = JobDomain::Default;
+        std::shared_ptr<JobHandle::State> state;
+        std::shared_ptr<JobHandle::State> groupState;
+        bool ownsPermit = false;
+    };
+
+    static thread_local ExecutionContext *s_currentContext;
+
     void WorkerLoop();
-    bool TryRunOne(); // Returns true if a task was executed.
-    void Execute(Task task) noexcept;
+    bool TryRunOne();
+    bool TryRunOneForWait(const JobHandle &handle);
+    void Execute(Task task, bool helped) noexcept;
     void StopAndJoin() noexcept;
 
+    JobHandle ScheduleInternal(JobFn job, JobDomain domain, JobPriority priority,
+                               std::shared_ptr<JobHandle::State> groupState);
+    JobHandle ScheduleBatchInternal(uint32_t count, std::function<JobFn(uint32_t index)> factory, JobDomain domain,
+                                    JobPriority priority, std::shared_ptr<JobHandle::State> groupState,
+                                    std::mutex *groupMutex);
+
+    bool DequeueTask(Task &task, const std::function<bool(const Task &)> &allowed);
+    bool CanRunDomainLocked(JobDomain domain) const;
+    void AcquirePermitLocked(JobDomain domain);
+    void ReleasePermit(JobDomain domain) noexcept;
+    bool SuspendCurrentPermit();
+    void ResumeCurrentPermit();
+    [[nodiscard]] bool WaitSatisfied(const JobHandle &handle) const;
+    void PropagateFailureAndCancellation(const JobHandle &handle);
+
+    std::shared_ptr<ProfilerState> ProfilerForDomain(JobDomain domain);
+    static JobProfilerCounters Snapshot(const std::shared_ptr<ProfilerState> &state);
+    static void RecordFailure(const std::shared_ptr<JobHandle::State> &state, std::exception_ptr failure) noexcept;
+    static void CompleteState(const std::shared_ptr<JobHandle::State> &state) noexcept;
+
     std::vector<std::thread> m_workers;
-    std::queue<Task> m_queue;
+    std::array<std::deque<Task>, 4> m_queues;
     mutable std::mutex m_queueMutex;
     std::condition_variable m_queueCv;
     std::atomic<State> m_state{State::Stopped};
     std::atomic<uint32_t> m_activeTasks{0};
     bool m_accepting = true;
     bool m_stopRequested = false;
+    uint64_t m_nextSequence = 0;
+    std::unordered_map<uint16_t, uint32_t> m_domainLimits;
+    std::unordered_map<uint16_t, uint32_t> m_domainActive;
+
+    std::shared_ptr<ProfilerState> m_globalProfiler = std::make_shared<ProfilerState>();
+    mutable std::mutex m_profilerMutex;
+    std::unordered_map<uint16_t, std::shared_ptr<ProfilerState>> m_domainProfilers;
 };
 
 } // namespace infernux

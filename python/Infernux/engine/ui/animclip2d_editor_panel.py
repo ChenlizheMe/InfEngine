@@ -2,8 +2,7 @@
 2D Animation Clip Editor — visual editor for creating and editing .animclip2d files.
 
 Drag a sprite-sheet texture onto the panel to load it, then click frames to
-build animation sequences.  Supports multiple clips per texture, live
-preview playback, and direct save to .animclip2d files.
+build one animation clip document with live preview and direct save support.
 
 Opened from Window menu → 2D Animation Clip Editor.
 """
@@ -13,8 +12,10 @@ from __future__ import annotations
 import os
 import copy
 import json
+import math
 import threading
 import time
+import uuid
 import zlib
 from Infernux.engine.path_utils import path_key, resolved_path, same_path
 from dataclasses import dataclass, field
@@ -22,7 +23,23 @@ from typing import Dict, List, Optional, Tuple
 
 from Infernux.debug import Debug
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import (
+    BoundPanelCommand,
+    CommandSource,
+    KeyChord,
+    PanelCommandAdapter,
+    PanelCommandSpec,
+    PanelInteractionDescriptor,
+    PanelShortcutSpec,
+    PanelViewStateField,
+    PanelViewStateSchema,
+    SelectionDomain,
+    SelectionService,
+    SelectionSnapshot,
+    SelectionTarget,
+)
 from Infernux.lib import InxGUIContext
+from Infernux.core.animation_clip import AnimationFrame
 
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
@@ -38,13 +55,11 @@ from .theme import Theme, ImGuiCol, ImGuiStyleVar
 @dataclass
 class _ClipState:
     """Editable state for one animation clip."""
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "NewClip"
-    frame_indices: List[int] = field(default_factory=list)
+    frames: List[AnimationFrame] = field(default_factory=list)
     fps: float = 12.0
     loop: bool = True
-    saved_path: str = ""          # .animclip2d file path (empty = unsaved)
-    saved_texture_guid: str = ""
-    saved_texture_path: str = ""
 
 
 @dataclass
@@ -71,17 +86,161 @@ _PALETTE_THUMB_SIZE = 40.0   # frame slices in palette (bottom)
 _SEQ_THUMB_SIZE = 36.0       # thumbnails in sequence strip
 _THUMB_PAD = 3.0
 _PREVIEW_MAX_SIZE = 320.0
-_TABS_CARD_H = 44.0
-_INFO_CARD_H = 44.0
-_DETAILS_CARD_H = 124.0
-_PREVIEW_CARD_H = 300.0
+_DETAILS_CARD_H = 220.0
+_PREVIEW_CARD_H = 310.0
 _SEQ_VISIBLE_ROWS = 2
 _PALETTE_H = 180.0
 _WIDE_LAYOUT_MIN_W = 920.0
 
+_FRAME_IMAGE_PAD = 5.0
+_FRAME_LABEL_H = 18.0
+_FRAME_CELL_EXTRA_W = 12.0
+_CONTENT_PAD_X = 16.0
+_CONTENT_PAD_Y = 12.0
+_FRAME_SELECTED_FILL = (0.36, 0.20, 0.20, 0.74)
+_FRAME_HOVER_FILL = (0.27, 0.22, 0.22, 0.72)
+_FRAME_IDLE_FILL = (0.18, 0.18, 0.18, 0.78)
+_FRAME_IDLE_BORDER = (0.32, 0.32, 0.32, 1.0)
+
 _PLAYBACK_STOPPED = 0
 _PLAYBACK_PLAYING = 1
 _U64 = 0xFFFFFFFFFFFFFFFF
+
+
+def _sprite_frame_by_id(frames, frame_id: str):
+    return next(
+        (frame for frame in frames if frame.stable_id == frame_id),
+        None,
+    )
+
+
+def _clip_state_from_document(document: dict) -> _ClipState:
+    expected = {"stable_id", "name", "frames", "fps", "loop"}
+    if type(document) is not dict or set(document) != expected:
+        raise ValueError("2D animation clip state must use the complete current field set")
+    stable_id = document["stable_id"]
+    if (
+        type(stable_id) is not str
+        or len(stable_id) != 32
+        or any(ch not in "0123456789abcdef" for ch in stable_id)
+    ):
+        raise TypeError(
+            "2D animation clip stable_id must be a 32-character lowercase UUID hex string"
+        )
+    if type(document["name"]) is not str:
+        raise TypeError("2D animation clip name must be a string")
+    if type(document["frames"]) is not list:
+        raise TypeError("2D animation clip frames must be an array")
+    fps = document["fps"]
+    if (
+        isinstance(fps, bool)
+        or not isinstance(fps, (int, float))
+        or not math.isfinite(fps)
+        or fps <= 0.0
+    ):
+        raise ValueError("2D animation clip fps must be a positive finite number")
+    if type(document["loop"]) is not bool:
+        raise TypeError("2D animation clip loop must be a bool")
+    frames = [AnimationFrame.from_dict(value) for value in document["frames"]]
+    if len({frame.stable_id for frame in frames}) != len(frames):
+        raise ValueError("2D animation clip frame stable_id values must be unique")
+    return _ClipState(
+        stable_id=stable_id,
+        name=document["name"],
+        frames=frames,
+        fps=float(fps),
+        loop=document["loop"],
+    )
+
+
+def _bind_animclip2d_panel(panel: object) -> PanelCommandAdapter:
+    required = (
+        "command_new_clip_document",
+        "can_new_clip_document",
+        "command_delete_selected_frame",
+        "can_delete_selected_frame",
+        "command_toggle_preview",
+        "command_stop_preview",
+        "command_previous_frame",
+        "command_next_frame",
+        "command_clear_sequence",
+        "command_add_frame",
+    )
+    missing = tuple(name for name in required if not callable(getattr(panel, name, None)))
+    if missing:
+        raise TypeError(f"2D animation panel interaction contract is missing: {missing}")
+    return PanelCommandAdapter(
+        {
+            "animclip2d.new": BoundPanelCommand(
+                lambda _context: panel.command_new_clip_document(),
+                lambda _context: panel.can_new_clip_document(),
+            ),
+            "edit.delete": BoundPanelCommand(
+                lambda _context: panel.command_delete_selected_frame(),
+                lambda _context: panel.can_delete_selected_frame(),
+            ),
+            "edit.deselect": BoundPanelCommand(
+                lambda _context: SelectionService.instance().clear(
+                    reason="animclip2d_deselect",
+                    record_history=True,
+                ),
+                lambda context: bool(context.selection.targets),
+            ),
+            "animclip2d.play_pause": BoundPanelCommand(
+                lambda _context: panel.command_toggle_preview(),
+                lambda _context: panel.can_preview(),
+            ),
+            "animclip2d.stop": BoundPanelCommand(
+                lambda _context: panel.command_stop_preview(),
+                lambda _context: panel.can_preview(),
+            ),
+            "animclip2d.previous_frame": BoundPanelCommand(
+                lambda _context: panel.command_previous_frame(),
+                lambda _context: panel.can_preview(),
+            ),
+            "animclip2d.next_frame": BoundPanelCommand(
+                lambda _context: panel.command_next_frame(),
+                lambda _context: panel.can_preview(),
+            ),
+            "animclip2d.clear_sequence": BoundPanelCommand(
+                lambda _context: panel.command_clear_sequence(),
+                lambda _context: panel.can_preview(),
+            ),
+            "animclip2d.add_frame": BoundPanelCommand(
+                lambda context: panel.command_add_frame(
+                    str(context.payload.get("frame_id", ""))
+                ),
+                lambda context: panel.can_add_frame(
+                    str(context.payload.get("frame_id", ""))
+                ),
+            ),
+        }
+    )
+
+
+_ANIMCLIP2D_PANEL_INTERACTION = PanelInteractionDescriptor(
+    document_backed=True,
+    owned_selection_domains=frozenset(
+        {SelectionDomain.TIMELINE_ELEMENT, SelectionDomain.ASSET_SUBRESOURCE}
+    ),
+    commands=(
+        PanelCommandSpec("animclip2d.new"),
+        PanelCommandSpec("edit.delete"),
+        PanelCommandSpec("edit.deselect"),
+        PanelCommandSpec("animclip2d.play_pause"),
+        PanelCommandSpec("animclip2d.stop"),
+        PanelCommandSpec("animclip2d.previous_frame"),
+        PanelCommandSpec("animclip2d.next_frame"),
+        PanelCommandSpec("animclip2d.clear_sequence"),
+        PanelCommandSpec("animclip2d.add_frame"),
+    ),
+    shortcuts=(
+        PanelShortcutSpec("animclip2d.play_pause", KeyChord.parse("Space")),
+        PanelShortcutSpec("edit.delete", KeyChord.parse("Delete")),
+        PanelShortcutSpec("edit.deselect", KeyChord.parse("Escape")),
+    ),
+    adapter_factory=_bind_animclip2d_panel,
+)
 
 
 def _sprite_frame_imgui_uv(frame, tex_w: int, tex_h: int) -> Tuple[float, float, float, float]:
@@ -100,28 +259,46 @@ def _sprite_frame_imgui_uv(frame, tex_w: int, tex_h: int) -> Tuple[float, float,
     type_id="animclip2d_editor",
     title_key="panel.animclip2d_editor",
     menu_path="Animation",
+    interaction=_ANIMCLIP2D_PANEL_INTERACTION,
 )
 class AnimClip2DEditorPanel(EditorPanel):
     """Visual editor for building .animclip2d files from sprite sheets."""
 
+    window_id = "animclip2d_editor"
+    VIEW_STATE_SCHEMA = PanelViewStateSchema(
+        "animclip2d_editor.view",
+        (
+            PanelViewStateField(
+                "preview_frame_index",
+                "_preview_frame_idx",
+                int,
+            ),
+        ),
+    )
+
     def __init__(self):
         super().__init__(title="2D Animation Clip Editor", window_id="animclip2d_editor")
+        from Infernux.engine.interaction import AuthoringDocumentController
+
+        self._authoring_document_controller = AuthoringDocumentController(self)
         self._tex: Optional[_TextureState] = None
         self._clips: List[_ClipState] = [_ClipState()]
         self._active_clip_idx: int = 0
         # Preview playback
         self._playback: int = _PLAYBACK_STOPPED
-        self._preview_frame_idx: int = 0  # index into active clip's frame_indices
+        self._preview_frame_idx: int = 0  # index into the active clip's frames
         self._last_frame_time: float = 0.0
-        self._dirty: bool = False
-        self._last_saved_signature: str = ""
-        self._last_saved_state: dict = {}
-        self._save_as_dialog = AssetSaveAsDialog("animclip2d.save_as", "2D animation clip")
+        self._save_as_dialog = AssetSaveAsDialog(
+            "animclip2d.save_as",
+            "2D animation clip",
+            owner_id=self._window_id,
+        )
         self._pending_save_as_clip: Optional[_ClipState] = None
-        self._mark_saved_snapshot()
-        # A newly opened authoring window owns an untitled in-memory document.
-        self._last_saved_signature = ""
-        self._dirty = True
+        self._pending_save_ticket_id: str = ""
+        # Window construction establishes a clean blank baseline. An explicit
+        # New command still creates an unsaved draft through
+        # _new_clip_document_immediate().
+        self._replace_animclip_document(resource_path="", dirty=False)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -131,52 +308,97 @@ class AnimClip2DEditorPanel(EditorPanel):
         return (1080, 760)
 
     def on_enable(self):
-        from .event_bus import EditorEvent, EditorEventBus
+        from Infernux.engine.interaction import AssetMutationService
 
-        EditorEventBus.instance().subscribe(
-            EditorEvent.ASSET_CHANGED,
-            self._on_asset_changed,
-        )
+        service = AssetMutationService.instance()
+        self._asset_mutation_service = service
+        if service is not None:
+            service.add_listener(self._on_asset_changed)
+        selection = SelectionService.instance()
+        self._selection_service = selection
+        selection.add_listener(self._on_global_selection_changed)
+        self._project_sequence_selection(selection.snapshot)
 
     def on_disable(self):
-        from .event_bus import EditorEvent, EditorEventBus
-
-        EditorEventBus.instance().unsubscribe(
-            EditorEvent.ASSET_CHANGED,
-            self._on_asset_changed,
-        )
+        service = getattr(self, "_asset_mutation_service", None)
+        if service is not None:
+            service.remove_listener(self._on_asset_changed)
+        self._asset_mutation_service = None
+        selection = getattr(self, "_selection_service", None)
+        if selection is not None:
+            selection.remove_listener(self._on_global_selection_changed)
+        self._selection_service = None
         self._cleanup_texture()
-        try:
-            from Infernux.engine.project_context import set_panel_dirty
 
-            set_panel_dirty(self.window_id, False)
-        except Exception:
-            pass
+    def _project_sequence_selection(self, snapshot: SelectionSnapshot) -> bool:
+        primary = snapshot.primary
+        clip = self._active_clip
+        if (
+            primary is None
+            or clip is None
+            or primary.domain is not SelectionDomain.TIMELINE_ELEMENT
+            or primary.document_id != self.document_id
+            or primary.sub_kind != "animclip2d_frame"
+        ):
+            return False
+        index = next(
+            (
+                index
+                for index, frame in enumerate(clip.frames)
+                if frame.stable_id == primary.target_id
+            ),
+            -1,
+        )
+        if index < 0:
+            return False
+        self._preview_frame_idx = index
+        self._playback = _PLAYBACK_STOPPED
+        return True
 
-    def _on_asset_changed(self, file_path: str, event_type: str = "modified") -> None:
+    def _on_global_selection_changed(self, change) -> None:
+        self._project_sequence_selection(change.after)
+
+    def _select_sequence_index(self, index: int, *, reason: str) -> bool:
+        clip = self._active_clip
+        if clip is None or not clip.frames:
+            return False
+        target_index = max(0, min(int(index), len(clip.frames) - 1))
+        target = self._sequence_target(clip.frames[target_index])
+        return SelectionService.instance().select(
+            target,
+            owner_id=self.window_id,
+            reason=reason,
+            record_history=True,
+        )
+
+    def _on_asset_changed(self, change) -> None:
         """Publish texture import changes into the open editor immediately."""
+        from Infernux.engine.interaction import AssetMutationKind, iter_asset_mutations
+
         tex = self._tex
-        if tex is None or not same_path(file_path, tex.file_path):
+        if tex is None:
             return
-        if event_type == "deleted":
+        mutation = next(
+            (
+                item
+                for item in iter_asset_mutations(change)
+                if same_path(item.source_path, tex.file_path)
+                or same_path(item.path, tex.file_path)
+            ),
+            None,
+        )
+        if mutation is None:
+            return
+        if mutation.kind is AssetMutationKind.DELETED:
             self._cleanup_texture()
             self._tex = None
             return
+        if mutation.kind is AssetMutationKind.MOVED:
+            tex.file_path = mutation.destination_path
 
         filter_tag, srgb_tag, _, _ = self._read_texture_sampling(tex.file_path)
         frames = self._read_sprite_frames(tex.file_path)
         source_w, source_h = self._read_source_dimensions(tex.file_path, frames)
-        if not frames and source_w > 0 and source_h > 0:
-            from Infernux.core.asset_types import SpriteFrame
-
-            frames = [SpriteFrame(
-                name="frame_0",
-                x=0,
-                y=0,
-                w=source_w,
-                h=source_h,
-            )]
-
         tex.frames = frames
         if source_w > 0:
             tex.tex_w = source_w
@@ -193,94 +415,344 @@ class AnimClip2DEditorPanel(EditorPanel):
             srgb_tag,
         )
 
-    def _window_title_suffix(self) -> str:
-        self._recompute_dirty()
-        self._sync_project_dirty_flag()
-        return " *" if self._dirty else ""
-
-    def _sync_project_dirty_flag(self) -> None:
-        try:
-            from Infernux.engine.project_context import set_panel_dirty
-
-            set_panel_dirty(self.window_id, bool(self._dirty))
-        except Exception:
-            pass
-
-    def _current_edit_signature(self) -> str:
-        tex = self._tex
-        blob = {
-            "texture_path": tex.file_path if tex else "",
-            "texture_guid": tex.guid if tex else "",
-            "active": self._active_clip_idx,
+    def _capture_authoring_snapshot(self) -> dict:
+        return {
+            "texture_path": self._tex.file_path if self._tex else "",
             "clips": [
                 {
-                    "name": c.name,
-                    "frames": list(c.frame_indices),
-                    "fps": float(c.fps),
-                    "loop": bool(c.loop),
-                    "saved_path": c.saved_path,
-                    "saved_texture_guid": c.saved_texture_guid,
-                    "saved_texture_path": c.saved_texture_path,
+                    "stable_id": clip.stable_id,
+                    "name": clip.name,
+                    "frames": [frame.to_dict() for frame in clip.frames],
+                    "fps": float(clip.fps),
+                    "loop": bool(clip.loop),
                 }
-                for c in self._clips
+                for clip in self._clips
             ],
         }
-        return json.dumps(blob, sort_keys=True, ensure_ascii=True)
 
-    def _mark_saved_snapshot(self) -> None:
-        self._last_saved_signature = self._current_edit_signature()
-        self._dirty = False
-        self._last_saved_state = copy.deepcopy(self.save_state())
-        self._sync_project_dirty_flag()
+    def capture_authoring_snapshot(self) -> dict:
+        """Return the document state consumed by Interaction Core mutations."""
+        return self._capture_authoring_snapshot()
 
-    def _recompute_dirty(self) -> None:
-        self._dirty = self._current_edit_signature() != self._last_saved_signature
+    def restore_authoring_snapshot(self, state: dict) -> None:
+        if type(state) is not dict or set(state) != {"texture_path", "clips"}:
+            raise ValueError("2D animation authoring state must use the complete current field set")
+        if type(state["texture_path"]) is not str:
+            raise TypeError("2D animation texture_path must be a string")
+        if type(state["clips"]) is not list:
+            raise TypeError("2D animation clips must be an array")
+        items = state["clips"]
+        if len(items) != 1:
+            raise ValueError("2D animation authoring state must contain exactly one clip")
+        clip = _clip_state_from_document(items[0])
+        texture_path = state["texture_path"]
+        current_path = self._tex.file_path if self._tex else ""
+        if texture_path and not same_path(texture_path, current_path):
+            self._load_texture(texture_path)
+        elif not texture_path and self._tex is not None:
+            self._cleanup_texture()
+            self._tex = None
+        self._clips = [clip]
+        self._active_clip_idx = 0
+        self._stop_playback()
+
+    def capture_document_restore_state(self, document_id: str) -> dict:
+        if document_id != self.document_id:
+            raise ValueError("2D animation restore capture targeted another document")
+        document = self._animclip_document()
+        return {
+            "authoring": self._capture_authoring_snapshot(),
+            "file_path": document.resource_path if document is not None else "",
+        }
+
+    def restore_document_restore_state(self, state: dict) -> None:
+        if not isinstance(state, dict) or set(state) != {"authoring", "file_path"}:
+            raise ValueError("2D animation document restore state is invalid")
+
+        def validate_authoring(authoring) -> None:
+            if not isinstance(authoring, dict) or set(authoring) != {
+                "texture_path",
+                "clips",
+            }:
+                raise ValueError("2D animation authoring restore state is invalid")
+            clips = authoring["clips"]
+            if not isinstance(clips, list):
+                raise TypeError("2D animation authoring clips must be an array")
+            required_clip_fields = {
+                "stable_id",
+                "name",
+                "frames",
+                "fps",
+                "loop",
+            }
+            if any(
+                not isinstance(item, dict) or set(item) != required_clip_fields
+                for item in clips
+            ):
+                raise ValueError("2D animation authoring clip field set is invalid")
+
+        validate_authoring(state["authoring"])
+        self.restore_authoring_snapshot(copy.deepcopy(state["authoring"]))
+
+    def recover_incompatible_document_restore_state(
+        self,
+        state,
+        error: Exception,
+    ) -> bool:
+        del error
+        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
+        if path and os.path.isfile(path):
+            return self.open_document_resource_immediate(path) is True
+        return self._new_clip_document_immediate()
+
+    def _apply_authoring_mutation(
+        self,
+        description: str,
+        mutation,
+        *,
+        merge_key: str = "",
+        before_selection=None,
+        after_selection=None,
+    ) -> bool:
+        from Infernux.engine.interaction import AuthoringMutationService
+
+        if not self.document_id:
+            return False
+        self.publish_interaction_ownership(reason="animclip2d_authoring")
+        changed = AuthoringMutationService.require().apply(
+            self.document_id,
+            description,
+            mutation,
+            view_id=self.window_id,
+            merge_key=merge_key,
+            before_selection=before_selection,
+            after_selection=after_selection,
+        )
+        return changed
+
+    def _sequence_target(self, frame: AnimationFrame) -> SelectionTarget:
+        return SelectionTarget.timeline_element(
+            self.document_id,
+            frame.stable_id,
+            sub_kind="animclip2d_frame",
+        )
+
+    def _selected_sequence_frame(self) -> Optional[AnimationFrame]:
+        primary = SelectionService.instance().snapshot.primary
+        if (
+            primary is None
+            or primary.domain is not SelectionDomain.TIMELINE_ELEMENT
+            or primary.document_id != self.document_id
+            or primary.sub_kind != "animclip2d_frame"
+        ):
+            return None
+        clip = self._active_clip
+        if clip is None:
+            return None
+        return next(
+            (frame for frame in clip.frames if frame.stable_id == primary.target_id),
+            None,
+        )
+
+    def can_delete_selected_frame(self) -> bool:
+        return self._selected_sequence_frame() is not None
+
+    def command_delete_selected_frame(self) -> bool:
+        clip = self._active_clip
+        selected = self._selected_sequence_frame()
+        if clip is None or selected is None:
+            return False
+        before_selection = SelectionService.instance().snapshot
+        index = clip.frames.index(selected)
+        remaining = [frame for frame in clip.frames if frame is not selected]
+        next_target = None
+        if remaining:
+            next_target = self._sequence_target(remaining[min(index, len(remaining) - 1)])
+        after_selection = SelectionSnapshot.create(
+            (next_target,) if next_target is not None else (),
+            owner_id=self.window_id if next_target is not None else "",
+            primary=next_target,
+            anchor=next_target,
+        )
+        changed = self._apply_authoring_mutation(
+            "Remove 2D animation frame",
+            lambda: clip.frames.remove(selected),
+            before_selection=before_selection,
+            after_selection=after_selection,
+        )
+        if changed:
+            self._preview_frame_idx = min(
+                self._preview_frame_idx,
+                max(0, len(clip.frames) - 1),
+            )
+            self._playback = _PLAYBACK_STOPPED
+        return changed
+
+    def _execute_animclip_command(self, command_id: str, *, payload=None) -> bool:
+        return self.execute_owned_command(
+            command_id,
+            source=CommandSource.TOOLBAR,
+            payload=payload,
+        )
+
+    def can_preview(self) -> bool:
+        clip = self._active_clip
+        return bool(clip is not None and clip.frames)
+
+    def command_toggle_preview(self) -> bool:
+        if not self.can_preview():
+            return False
+        if self._playback == _PLAYBACK_PLAYING:
+            self._playback = _PLAYBACK_STOPPED
+        else:
+            self._playback = _PLAYBACK_PLAYING
+            self._last_frame_time = time.perf_counter()
+            if self._preview_frame_idx >= len(self._active_clip.frames):
+                self._preview_frame_idx = 0
+        return True
+
+    def command_stop_preview(self) -> bool:
+        if not self.can_preview():
+            return False
+        changed = bool(
+            self._playback != _PLAYBACK_STOPPED
+            or self._preview_frame_idx != 0
+        )
+        self._stop_playback()
+        return changed
+
+    def command_previous_frame(self) -> bool:
+        if not self.can_preview():
+            return False
+        self._select_sequence_index(
+            self._preview_frame_idx - 1,
+            reason="animclip2d_preview_previous",
+        )
+        return True
+
+    def command_next_frame(self) -> bool:
+        if not self.can_preview():
+            return False
+        self._select_sequence_index(
+            self._preview_frame_idx + 1,
+            reason="animclip2d_preview_next",
+        )
+        return True
+
+    def command_clear_sequence(self) -> bool:
+        clip = self._active_clip
+        if clip is None or not clip.frames:
+            return False
+        owns_selection = self._selected_sequence_frame() is not None
+        changed = self._apply_authoring_mutation(
+            "Clear 2D animation frames",
+            clip.frames.clear,
+            before_selection=(
+                SelectionService.instance().snapshot if owns_selection else None
+            ),
+            after_selection=(SelectionSnapshot() if owns_selection else None),
+        )
+        if changed:
+            self._stop_playback()
+        return changed
+
+    def can_add_frame(self, frame_id: str) -> bool:
+        return bool(
+            self._active_clip is not None
+            and self._tex is not None
+            and any(
+                frame.stable_id == str(frame_id or "")
+                for frame in self._tex.frames
+            )
+        )
+
+    def command_add_frame(self, frame_id: str) -> bool:
+        clip = self._active_clip
+        if clip is None or not self.can_add_frame(frame_id):
+            return False
+        entry = AnimationFrame(sprite_frame_id=str(frame_id))
+        before_selection = SelectionService.instance().snapshot
+        target = self._sequence_target(entry)
+        after_selection = SelectionSnapshot.create(
+            (target,),
+            owner_id=self.window_id,
+            primary=target,
+            anchor=target,
+        )
+        return self._apply_authoring_mutation(
+            "Add 2D animation frame",
+            lambda: clip.frames.append(entry),
+            before_selection=before_selection,
+            after_selection=after_selection,
+        )
+
+    def _animclip_document(self):
+        from Infernux.engine.interaction import DocumentRegistry
+
+        return DocumentRegistry.instance().get(self.document_id)
+
+    @staticmethod
+    def _animclip_document_key(path: str):
+        from Infernux.engine.interaction import DocumentKey, DocumentKind
+
+        normalized = resolved_path(path)
+        try:
+            from Infernux.core.asset_types import read_meta_guid
+
+            guid = read_meta_guid(normalized)
+        except Exception:
+            guid = ""
+        if guid:
+            return DocumentKey.asset(DocumentKind.ANIMATION_CLIP, guid)
+        return DocumentKey.resource(DocumentKind.ANIMATION_CLIP, normalized)
+
+    def _replace_animclip_document(self, *, resource_path: str, dirty: bool) -> None:
+        from Infernux.engine.interaction import (
+            DocumentCapability,
+            DocumentKey,
+            DocumentKind,
+            DocumentRegistry,
+        )
+
+        path = resolved_path(resource_path) if resource_path else ""
+        title = os.path.splitext(os.path.basename(path))[0] if path else "2D Animation Clip"
+        key = (
+            self._animclip_document_key(path)
+            if path
+            else DocumentKey.session(DocumentKind.ANIMATION_CLIP)
+        )
+        registry = DocumentRegistry.instance()
+        document, created = registry.open_or_create(
+            key,
+            title,
+            resource_path=path,
+            revision=1 if dirty else 0,
+            saved_revision=0,
+            capabilities=(
+                DocumentCapability.SAVE
+                | DocumentCapability.SAVE_AS
+                | DocumentCapability.DISCARD
+            ),
+            controller=self._authoring_document_controller,
+        )
+        del created
+        self._bind_replaced_document(document.document_id, dirty=dirty)
+
+    def resource_moved(
+        self,
+        *,
+        document_id: str,
+        source_path: str,
+        destination_path: str,
+        guid: str,
+    ) -> None:
+        del document_id, source_path, destination_path, guid
 
     def save_state(self) -> dict:
-        clips_data = []
-        for c in self._clips:
-            clips_data.append({
-                "name": c.name, "frame_indices": c.frame_indices,
-                "fps": c.fps, "loop": c.loop, "saved_path": c.saved_path,
-                "saved_texture_guid": c.saved_texture_guid,
-                "saved_texture_path": c.saved_texture_path,
-            })
-        d: dict = {
-            "active_clip": self._active_clip_idx,
-            "clips": clips_data,
-            "dirty": bool(self._dirty),
-        }
-        if self._tex:
-            d["texture_path"] = self._tex.file_path
-        return d
+        return super().save_state()
 
-    def load_state(self, data: dict):
-        restore_dirty = bool(data.get("dirty", False))
-        tex_path = data.get("texture_path", "")
-        if tex_path and os.path.isfile(tex_path):
-            self._load_texture(tex_path)
-        clips_data = data.get("clips", [])
-        if clips_data:
-            self._clips = []
-            for cd in clips_data:
-                self._clips.append(_ClipState(
-                    name=cd.get("name", "NewClip"),
-                    frame_indices=list(cd.get("frame_indices", [])),
-                    fps=float(cd.get("fps", 12.0)),
-                    loop=bool(cd.get("loop", True)),
-                    saved_path=cd.get("saved_path", ""),
-                    saved_texture_guid=cd.get("saved_texture_guid", ""),
-                    saved_texture_path=cd.get("saved_texture_path", tex_path if cd.get("saved_path", "") else ""),
-                ))
-        if not self._clips:
-            self._clips = [_ClipState()]
-        self._active_clip_idx = max(0, min(
-            int(data.get("active_clip", 0)), len(self._clips) - 1))
-        self._mark_saved_snapshot()
-        if restore_dirty:
-            self._last_saved_signature = ""
-            self._dirty = True
-            self._sync_project_dirty_flag()
+    def load_state(self, data: dict) -> None:
+        super().load_state(data)
 
     # ------------------------------------------------------------------
     # Render — layout: header -> tabs -> preview/details -> sequence -> palette
@@ -288,67 +760,56 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     # ImGuiKey / ImGuiMod constants
     def on_render_content(self, ctx: InxGUIContext):
-        self._recompute_dirty()
-        self._sync_project_dirty_flag()
         try:
-            avail_w = ctx.get_content_region_avail_width()
-            self._render_texture_slot(ctx, avail_w)
-            ctx.dummy(0, 8)
-
-            if self._tex is None:
-                self._render_empty_state(ctx)
-                return
-
-            # Guard against stale texture (e.g. import settings changed externally)
-            if not self._validate_texture():
-                self._render_empty_state(ctx)
-                return
-
-            if self._tex.texture_id == 0:
-                self._render_empty_state(ctx)
-                return
-
+            if self._tex is not None:
+                self._validate_texture()
+            ctx.push_style_var_vec2(
+                ImGuiStyleVar.WindowPadding, _CONTENT_PAD_X, _CONTENT_PAD_Y,
+            )
             try:
-                clip = self._active_clip
-                if clip is None:
-                    return
-
-                self._render_main_workspace(ctx, clip, ctx.get_content_region_avail_width())
-
-            except Exception as exc:
-                Debug.log_warning(f"[AnimClipEditor] Render error: {exc}")
-        finally:
-            self._render_save_as_dialog(ctx)
-
-    def _render_save_as_dialog(self, ctx: InxGUIContext) -> None:
-        self._save_as_dialog.render(
-            ctx,
-            self._save_pending_clip,
-            cancel_callback=self._cancel_pending_save_as,
-        )
+                visible = ctx.begin_child("##animclip_content", 0, 0, False)
+                try:
+                    if visible:
+                        ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + _CONTENT_PAD_X)
+                        ctx.set_cursor_pos_y(ctx.get_cursor_pos_y() + _CONTENT_PAD_Y)
+                        clip = self._active_clip
+                        if clip is not None:
+                            self._render_main_workspace(
+                                ctx,
+                                clip,
+                                max(
+                                    120.0,
+                                    ctx.get_content_region_avail_width()
+                                    - _CONTENT_PAD_X,
+                                ),
+                            )
+                finally:
+                    # The outer content region is manually padded as well.
+                    # Submit a final item so ImGui does not infer its boundary
+                    # solely from SetCursorPos calls in an empty/short layout.
+                    ctx.dummy(0.0, 0.0)
+                    ctx.end_child()
+                IGUI.drop_target(
+                    ctx, "ANIMCLIP_FILE", self._on_animclip_drop, outline=True,
+                )
+            finally:
+                ctx.pop_style_var(1)
+        except Exception as exc:
+            Debug.log_warning(f"[AnimClipEditor] Render error: {exc}")
 
     # ------------------------------------------------------------------
     # Header / empty state helpers
     # ------------------------------------------------------------------
 
-    def _render_texture_slot(self, ctx: InxGUIContext, avail_w: float):
-        tex = self._tex
-        display = os.path.basename(tex.file_path) if tex else t("animclip_editor.drop_texture_hint")
-
-        IGUI.object_field(
-            ctx, "animclip_tex_slot", display, "Texture",
-            clickable=False,
-            accept="TEXTURE_FILE",
-            on_drop=self._on_texture_drop,
-            on_clear=self._on_texture_clear if tex else None,
-            semantic_id="animclip2d.texture",
-        )
-
-        IGUI.drop_target(ctx, "ANIMCLIP_FILE", self._on_animclip_drop, outline=True)
-
     def _on_texture_clear(self):
-        self._cleanup_texture()
-        self._tex = None
+        def clear_texture() -> None:
+            self._cleanup_texture()
+            self._tex = None
+
+        self._apply_authoring_mutation(
+            "Clear 2D animation texture",
+            clear_texture,
+        )
 
     def _empty_state_hint(self) -> str:
         return t("animclip_editor.drop_texture_hint")
@@ -365,49 +826,68 @@ class AnimClip2DEditorPanel(EditorPanel):
     def _render_main_workspace(self, ctx: InxGUIContext, clip: _ClipState, avail_w: float):
         wide = avail_w >= _WIDE_LAYOUT_MIN_W
 
-        # Name / save / basic info card — always on top, full width
-        ctx.begin_child("##animclip_info_card", avail_w, _INFO_CARD_H, True)
-        try:
-            self._render_clip_info(ctx, clip, max(avail_w - 20.0, 120.0))
-        finally:
-            ctx.end_child()
+        # A .animclip2d editor owns exactly one document.  Document commands
+        # and clip metadata are flat rows on the panel — no card chrome.
+        self._render_document_toolbar(ctx, clip)
+        ctx.separator()
+        self._render_clip_info(ctx, clip, max(avail_w - 20.0, 120.0))
+        ctx.separator()
 
-        ctx.dummy(0, 8)
+        ctx.dummy(0, 6)
 
         if wide:
-            seq_w = min(max(avail_w * 0.48, 340.0), 460.0)
-            preview_w = max(avail_w - seq_w - 10.0, 260.0)
+            preview_w = min(max(avail_w * 0.42, 320.0), 520.0)
+            seq_w = max(avail_w - preview_w - 12.0, 340.0)
 
-            ctx.begin_child("##animclip_sequence_card", seq_w, _PREVIEW_CARD_H, True)
+            ctx.begin_child("##animclip_preview", preview_w, _PREVIEW_CARD_H, True)
             try:
+                self._pad_child_cursor(ctx)
+                self._render_preview(ctx, clip, max(preview_w - 24.0, 120.0))
+            finally:
+                ctx.dummy(0.0, 0.0)
+                ctx.end_child()
+
+            ctx.same_line(0, 12)
+
+            ctx.begin_child("##animclip_sequence", seq_w, _PREVIEW_CARD_H, True)
+            try:
+                self._pad_child_cursor(ctx)
                 self._render_sequence_content(ctx, clip)
             finally:
-                ctx.end_child()
-
-            ctx.same_line(0, 10)
-
-            ctx.begin_child("##animclip_preview_card", preview_w, _PREVIEW_CARD_H, True)
-            try:
-                self._render_preview(ctx, clip, preview_w)
-            finally:
+                # The padded child uses explicit cursor positioning. Commit
+                # its final layout position before closing the parent card.
+                ctx.dummy(0.0, 0.0)
                 ctx.end_child()
         else:
-            ctx.begin_child("##animclip_preview_card", avail_w, _DETAILS_CARD_H, True)
+            ctx.begin_child("##animclip_preview", avail_w, _DETAILS_CARD_H, True)
             try:
-                self._render_preview(ctx, clip, avail_w)
+                self._pad_child_cursor(ctx)
+                self._render_preview(ctx, clip, max(avail_w - 24.0, 120.0))
             finally:
+                ctx.dummy(0.0, 0.0)
                 ctx.end_child()
 
             ctx.dummy(0, 8)
 
-            ctx.begin_child("##animclip_sequence_card", avail_w, _PREVIEW_CARD_H, True)
+            ctx.begin_child("##animclip_sequence", avail_w, 190.0, True)
             try:
+                self._pad_child_cursor(ctx)
                 self._render_sequence_content(ctx, clip)
             finally:
+                ctx.dummy(0.0, 0.0)
                 ctx.end_child()
 
         ctx.dummy(0, 8)
         self._render_frame_palette(ctx, avail_w)
+
+    @staticmethod
+    def _pad_child_cursor(
+        ctx: InxGUIContext,
+        horizontal: float = 12.0,
+        vertical: float = 8.0,
+    ) -> None:
+        ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + horizontal)
+        ctx.set_cursor_pos_y(ctx.get_cursor_pos_y() + vertical)
 
     @staticmethod
     def _calc_grid_cols(width: float, thumb_size: float) -> int:
@@ -415,61 +895,97 @@ class AnimClip2DEditorPanel(EditorPanel):
         return max(1, int(max(width, thumb_size) / max(cell_w, 1.0)))
 
     # ------------------------------------------------------------------
-    # Clip tabs
+    # Document toolbar
     # ------------------------------------------------------------------
 
-    def _render_clip_tabs(self, ctx: InxGUIContext):
-        ctx.begin_group()
-        for i, clip in enumerate(self._clips):
-            if i > 0:
-                ctx.same_line(0, 2)
-            is_active = (i == self._active_clip_idx)
+    def _execute_document_command(self, command_id: str) -> bool:
+        from Infernux.engine.interaction import CommandSource
 
-            if is_active:
-                ctx.push_style_color(ImGuiCol.Button, 0.25, 0.45, 0.7, 1.0)
+        return self.execute_owned_command(command_id, source=CommandSource.TOOLBAR)
 
-            label = clip.name if clip.name else f"Clip {i}"
-            clicked = ctx.button(f"{label}##clip_tab_{i}")
-            ctx.record_semantic_item(
-                "button", label, True, f"animclip2d.clip_tab.{i}",
-            )
-            if clicked:
-                self._active_clip_idx = i
-                self._stop_playback()
+    def can_new_clip_document(self) -> bool:
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            EditorInteractionCore,
+        )
 
-            if is_active:
-                ctx.pop_style_color(1)
+        document = DocumentRegistry.instance().get(self.document_id)
+        if (
+            document is None
+            or self.window_id not in document.view_ids
+            or self._save_as_dialog.is_open
+            or bool(self._pending_save_ticket_id)
+        ):
+            return False
+        core = EditorInteractionCore.instance()
+        return core is None or not core.close_coordinator.is_active
 
-        ctx.same_line(0, 8)
-        add_clicked = IGUI._mini_icon_button(ctx, "##add_clip", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS)
-        ctx.record_semantic_item("button", "Add Clip", True, "animclip2d.clip.add")
-        if add_clicked:
-            self._clips.append(_ClipState(name=f"Clip_{len(self._clips)}"))
-            self._active_clip_idx = len(self._clips) - 1
-            self._stop_playback()
+    def command_new_clip_document(self) -> bool:
+        if not self.can_new_clip_document():
+            return False
+        return self.request_document_replacement(
+            self._new_clip_document_immediate,
+        )
 
-        # Delete clip (only if more than 1)
-        if len(self._clips) > 1:
-            ctx.same_line(0, 8)
-            ctx.push_style_color(ImGuiCol.Button, 0.6, 0.15, 0.15, 0.8)
-            delete_label = t("animclip_editor.delete_clip")
-            delete_clicked = ctx.button(delete_label)
-            ctx.record_semantic_item("button", delete_label, True, "animclip2d.clip.delete")
-            if delete_clicked:
-                idx = self._active_clip_idx
-                self._clips.pop(idx)
-                self._active_clip_idx = max(0, min(idx, len(self._clips) - 1))
-                self._stop_playback()
+    def _render_document_toolbar(self, ctx: InxGUIContext, clip: _ClipState) -> None:
+        new_label = t("animtimeline_editor.new")
+        if ctx.button(new_label + "##animclip_new"):
+            self._execute_document_command("animclip2d.new")
+        ctx.record_semantic_item(
+            "button",
+            new_label,
+            self.can_new_clip_document(),
+            "animclip2d.toolbar.new",
+        )
+
+        ctx.same_line(0, 4)
+        save_label = t("animclip_editor.save_clip")
+        can_save = self._tex is not None and bool(clip.frames)
+        if not can_save:
+            ctx.begin_disabled(True)
+        if ctx.button(save_label + "##animclip_save"):
+            self._execute_document_command("file.save")
+        ctx.record_semantic_item("button", save_label, can_save, "animclip2d.toolbar.save")
+        ctx.same_line(0, 4)
+        save_as_label = t("animclip_editor.save_as")
+        if ctx.button(save_as_label + "##animclip_save_as"):
+            self._execute_document_command("file.save_as")
+        ctx.record_semantic_item(
+            "button", save_as_label, can_save, "animclip2d.toolbar.save_as"
+        )
+        if not can_save:
+            ctx.end_disabled()
+
+        document = self._animclip_document()
+        resource_path = document.resource_path if document is not None else ""
+        if resource_path:
+            ctx.same_line(0, 12)
+            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+            ctx.label(os.path.basename(resource_path))
             ctx.pop_style_color(1)
 
-        ctx.end_group()
+    def _new_clip_document_immediate(self) -> bool:
+        self._cancel_pending_save_as()
+        if self.document_id:
+            self.unbind_document()
+        self._clips = [_ClipState()]
+        self._active_clip_idx = 0
+        self._stop_playback()
+        self._replace_animclip_document(resource_path="", dirty=True)
+        return True
+
+    def current_child_context_id(self) -> str:
+        return ""
+
+    def restore_child_context(self, context_id: str) -> bool:
+        return not str(context_id or "")
 
     # ------------------------------------------------------------------
     # Clip info — name, fps, save (compact top bar)
     # ------------------------------------------------------------------
 
     def _render_clip_info(self, ctx: InxGUIContext, clip: _ClipState, avail_w: float):
-        # Row: Name + Save
+        # Authored clip properties. Document actions live in the toolbar above.
         name_label = t("animclip_editor.clip_name")
 
         ctx.label(name_label)
@@ -480,40 +996,48 @@ class AnimClip2DEditorPanel(EditorPanel):
             "text_input", f"{name_label}: {new_name}", True, "animclip2d.clip.name",
         )
         if new_name != clip.name:
-            clip.name = new_name
-            # Notify FSM editor of clip name change
-            if clip.saved_path:
-                from .event_bus import EditorEventBus
-                EditorEventBus.instance().emit("clip_name_changed", clip.saved_path, new_name)
+            self._apply_authoring_mutation(
+                "Rename 2D animation clip",
+                lambda: setattr(clip, "name", new_name),
+                merge_key=f"clip:{clip.stable_id}:name",
+            )
 
-        # Save button on same line as name
-        ctx.same_line(0, 16)
-        fc = len(clip.frame_indices)
-        save_label = t("animclip_editor.save_clip")
-        can_save = self._tex is not None and fc > 0
-        if not can_save:
-            ctx.begin_disabled(True)
-        save_clicked = ctx.button(save_label + "##info_save")
-        ctx.record_semantic_item(
-            "button", save_label, can_save, "animclip2d.clip.save",
-        )
-        if save_clicked:
-            self._save_clip(clip)
+        ctx.same_line(0, 14)
+        fps_label = t("animclip_editor.clip_fps")
+        ctx.label(fps_label)
         ctx.same_line(0, 4)
-        save_as_label = t("animclip_editor.save_as")
-        save_as_clicked = ctx.button(save_as_label + "##info_save_as")
+        ctx.set_next_item_width(72.0)
+        new_fps = ctx.drag_float("##clip_fps", clip.fps, 0.1, 0.1, 120.0)
         ctx.record_semantic_item(
-            "button", save_as_label, can_save, "animclip2d.clip.save_as",
+            "drag_float", f"{fps_label}: {new_fps:g}", True,
+            "animclip2d.clip.fps", numeric_value=new_fps,
         )
-        if save_as_clicked:
-            self._show_save_as_dialog(clip)
-        if not can_save:
-            ctx.end_disabled()
-        if clip.saved_path:
-            ctx.same_line(0, 8)
-            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-            ctx.label(os.path.basename(clip.saved_path))
-            ctx.pop_style_color(1)
+        normalized_fps = max(0.1, float(new_fps))
+        if normalized_fps != clip.fps:
+            self._apply_authoring_mutation(
+                "Set 2D animation frame rate",
+                lambda: setattr(clip, "fps", normalized_fps),
+                merge_key=f"clip:{clip.stable_id}:fps",
+            )
+
+        ctx.same_line(0, 14)
+        loop_label = t("animclip_editor.clip_loop")
+        new_loop = bool(ctx.checkbox(f"{loop_label}##clip_loop", clip.loop))
+        if new_loop != clip.loop:
+            self._apply_authoring_mutation(
+                "Set 2D animation loop",
+                lambda: setattr(clip, "loop", new_loop),
+            )
+        ctx.record_semantic_item(
+            "checkbox", loop_label, True, "animclip2d.clip.loop", clip.loop,
+        )
+
+        fc = len(clip.frames)
+        duration = fc / max(clip.fps, 0.1)
+        ctx.same_line(0, 16)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label(f"{fc} frames   {duration:.2f}s")
+        ctx.pop_style_color(1)
 
     # ------------------------------------------------------------------
     # Preview — centered animated playback with transport controls
@@ -526,23 +1050,22 @@ class AnimClip2DEditorPanel(EditorPanel):
 
         ctx.label(t("animclip_editor.preview"))
         preview_frame = None
-        preview_source_index = -1
-        if clip.frame_indices:
-            safe_idx = max(0, min(self._preview_frame_idx, len(clip.frame_indices) - 1))
-            preview_source_index = clip.frame_indices[safe_idx]
-            if 0 <= preview_source_index < len(tex.frames):
-                preview_frame = tex.frames[preview_source_index]
+        preview_source_id = ""
+        if clip.frames:
+            safe_idx = max(0, min(self._preview_frame_idx, len(clip.frames) - 1))
+            preview_source_id = clip.frames[safe_idx].sprite_frame_id
+            preview_frame = _sprite_frame_by_id(tex.frames, preview_source_id)
 
         if preview_frame is not None:
             ctx.same_line(0, 8)
             ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-            ctx.label(f"#{preview_source_index}  {preview_frame.w}x{preview_frame.h}")
+            ctx.label(f"{preview_frame.name}  {preview_frame.w}x{preview_frame.h}")
             ctx.pop_style_color(1)
 
         ctx.separator()
 
         # Transport controls row
-        fc = len(clip.frame_indices)
+        fc = len(clip.frames)
         if not fc:
             ctx.begin_disabled(True)
 
@@ -554,7 +1077,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 "button", play_label, bool(fc), "animclip2d.transport.play_pause",
             )
             if play_clicked:
-                self._playback = _PLAYBACK_STOPPED
+                self._execute_animclip_command("animclip2d.play_pause")
         else:
             play_label = t("animclip_editor.play")
             play_clicked = ctx.button(play_label + "##transport")
@@ -562,10 +1085,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 "button", play_label, bool(fc), "animclip2d.transport.play_pause",
             )
             if play_clicked:
-                self._playback = _PLAYBACK_PLAYING
-                self._last_frame_time = time.perf_counter()
-                if self._preview_frame_idx >= fc:
-                    self._preview_frame_idx = 0
+                self._execute_animclip_command("animclip2d.play_pause")
 
         ctx.same_line(0, 4)
         stop_label = t("animclip_editor.stop")
@@ -574,7 +1094,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             "button", stop_label, bool(fc), "animclip2d.transport.stop",
         )
         if stop_clicked:
-            self._stop_playback()
+            self._execute_animclip_command("animclip2d.stop")
 
         ctx.same_line(0, 8)
         step_back_clicked = ctx.button("|<##step_back")
@@ -582,48 +1102,20 @@ class AnimClip2DEditorPanel(EditorPanel):
             "button", "Previous Frame", bool(fc), "animclip2d.transport.previous",
         )
         if step_back_clicked:
-            self._preview_frame_idx = max(0, self._preview_frame_idx - 1)
+            self._execute_animclip_command("animclip2d.previous_frame")
         ctx.same_line(0, 2)
         step_forward_clicked = ctx.button(">|##step_fwd")
         ctx.record_semantic_item(
             "button", "Next Frame", bool(fc), "animclip2d.transport.next",
         )
         if step_forward_clicked:
-            self._preview_frame_idx = min(
-                max(0, fc - 1), self._preview_frame_idx + 1)
+            self._execute_animclip_command("animclip2d.next_frame")
 
         if fc:
             ctx.same_line(0, 12)
             ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
             ctx.label(f"{self._preview_frame_idx + 1}/{fc}")
             ctx.pop_style_color(1)
-
-        # FPS / duration — always editable
-        fps_label = t("animclip_editor.clip_fps")
-        ctx.same_line(0, 16)
-        ctx.label(fps_label)
-        ctx.same_line(0, 4)
-        ctx.set_next_item_width(60)
-        new_fps = ctx.drag_float("##clip_fps", clip.fps, 0.1, 0.1, 120.0)
-        ctx.record_semantic_item(
-            "drag_float", f"{fps_label}: {new_fps:g}", bool(fc), "animclip2d.clip.fps",
-        )
-        if new_fps != clip.fps:
-            clip.fps = max(0.1, new_fps)
-
-        dur = fc / max(clip.fps, 0.1)
-        ctx.same_line(0, 8)
-        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label(f"{fc}f {dur:.2f}s")
-        ctx.pop_style_color(1)
-
-        ctx.same_line(0, 8)
-        loop_label = t("animclip_editor.clip_loop")
-        new_loop = ctx.checkbox(f"{loop_label}##clip_loop", clip.loop)
-        ctx.record_semantic_item(
-            "checkbox", loop_label, bool(fc), "animclip2d.clip.loop", bool(new_loop),
-        )
-        clip.loop = bool(new_loop)
 
         if not fc:
             ctx.end_disabled()
@@ -634,7 +1126,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             child_w = ctx.get_content_region_avail_width()
             child_h = ctx.get_content_region_avail_height()
 
-            if not clip.frame_indices:
+            if not clip.frames:
                 ctx.dummy(0, child_h * 0.4)
                 hint = t("animclip_editor.sequence_empty_hint")
                 tw = ctx.calc_text_width(hint)
@@ -658,10 +1150,12 @@ class AnimClip2DEditorPanel(EditorPanel):
                             self._preview_frame_idx = self._preview_frame_idx % fc
 
                 self._preview_frame_idx = max(0, min(self._preview_frame_idx, fc - 1))
-                fidx = clip.frame_indices[self._preview_frame_idx]
+                frame = _sprite_frame_by_id(
+                    tex.frames,
+                    clip.frames[self._preview_frame_idx].sprite_frame_id,
+                )
 
-                if 0 <= fidx < len(tex.frames):
-                    frame = tex.frames[fidx]
+                if frame is not None:
                     uv0_x, uv0_y, uv1_x, uv1_y = _sprite_frame_imgui_uv(frame, tex.tex_w, tex.tex_h)
 
                     # Fit preview into available space, centered
@@ -687,11 +1181,97 @@ class AnimClip2DEditorPanel(EditorPanel):
         except Exception as exc:
             Debug.log_warning(f"[AnimClipEditor] Preview error: {exc}")
         finally:
+            # Centering uses SetCursorPos on both axes. The image can be
+            # unavailable for a frame, so always submit the resulting cursor
+            # position instead of relying on the conditional image item.
+            ctx.dummy(0.0, 0.0)
             ctx.end_child()
 
     # ------------------------------------------------------------------
     # Sequence strip (ordered frame thumbnails)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_frame_cell(
+        ctx: InxGUIContext,
+        *,
+        item_id: str,
+        texture_id: int,
+        thumb: float,
+        image_w: float,
+        image_h: float,
+        uv: Tuple[float, float, float, float],
+        label: str,
+        selected: bool,
+        semantic_label: str,
+        semantic_id: str,
+    ) -> Tuple[bool, bool]:
+        """Render one square frame target with a separate, inert label row."""
+        ctx.invisible_button(item_id, thumb, thumb)
+        clicked = ctx.is_item_clicked(0)
+        hovered = ctx.is_item_hovered()
+        x0 = ctx.get_item_rect_min_x()
+        y0 = ctx.get_item_rect_min_y()
+        x1 = ctx.get_item_rect_max_x()
+        y1 = ctx.get_item_rect_max_y()
+        ctx.record_semantic_item(
+            "button", semantic_label, True, semantic_id,
+            bool_value=selected,
+        )
+
+        fill = (
+            _FRAME_SELECTED_FILL
+            if selected
+            else (_FRAME_HOVER_FILL if hovered else _FRAME_IDLE_FILL)
+        )
+        border = Theme.APPLY_BUTTON if selected else (
+            Theme.BTN_HOVERED if hovered else _FRAME_IDLE_BORDER
+        )
+        ctx.draw_filled_rect(x0, y0, x1, y1, *fill, 3.0)
+        ctx.draw_rect(x0, y0, x1, y1, *border, 2.0 if selected else 1.0, 3.0)
+
+        image_side = max(1.0, thumb - _FRAME_IMAGE_PAD * 2.0)
+        scale = min(image_side / max(image_w, 1.0), image_side / max(image_h, 1.0))
+        draw_w = max(1.0, image_w * scale)
+        draw_h = max(1.0, image_h * scale)
+        image_x0 = x0 + (thumb - draw_w) * 0.5
+        image_y0 = y0 + (thumb - draw_h) * 0.5
+        uv0_x, uv0_y, uv1_x, uv1_y = uv
+        ctx.draw_image_rect(
+            texture_id,
+            image_x0,
+            image_y0,
+            image_x0 + draw_w,
+            image_y0 + draw_h,
+            uv0_x,
+            uv0_y,
+            uv1_x,
+            uv1_y,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            False,
+            False,
+            1.0,
+        )
+        label_y0 = y1 + 3.0
+        label_y1 = label_y0 + _FRAME_LABEL_H
+        ctx.draw_text_aligned(
+            x0 + 3.0,
+            label_y0,
+            x1 - 3.0,
+            label_y1,
+            label,
+            *Theme.META_TEXT,
+            0.5,
+            0.5,
+            0.0,
+            True,
+        )
+        ctx.dummy(thumb, _FRAME_LABEL_H + 5.0)
+        return clicked, hovered
 
     def _render_sequence_content(self, ctx: InxGUIContext, clip: _ClipState):
         """Render frame sequence content (called inside a wrapping begin_child)."""
@@ -700,7 +1280,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return
 
         ctx.label(t("animclip_editor.sequence"))
-        if clip.frame_indices:
+        if clip.frames:
             clear_label = t("animclip_editor.clear_sequence")
             clear_w = ctx.calc_text_width(clear_label) + 20.0
             ctx.same_line(max(ctx.get_window_width() - clear_w - 18.0, 180.0))
@@ -709,13 +1289,12 @@ class AnimClip2DEditorPanel(EditorPanel):
                 "button", clear_label, True, "animclip2d.sequence.clear",
             )
             if clear_clicked:
-                clip.frame_indices = []
-                self._stop_playback()
+                self._execute_animclip_command("animclip2d.clear_sequence")
 
         ctx.separator()
         ctx.begin_child("##seq_strip", 0, 0, False)
         try:
-            if not clip.frame_indices:
+            if not clip.frames:
                 ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
                 ctx.label(t("animclip_editor.sequence_empty_hint"))
                 ctx.pop_style_color(1)
@@ -723,67 +1302,79 @@ class AnimClip2DEditorPanel(EditorPanel):
                 thumb = _SEQ_THUMB_SIZE
                 child_w = ctx.get_content_region_avail_width()
                 cols = self._calc_grid_cols(child_w, thumb)
-                to_remove = None
+                selection = SelectionService.instance()
+                sequence_targets = tuple(
+                    self._sequence_target(entry) for entry in clip.frames
+                )
+                selection.set_ordered_targets(self.window_id, sequence_targets)
+                selected_target = (
+                    selection.snapshot.primary
+                    if selection.snapshot.domain is SelectionDomain.TIMELINE_ELEMENT
+                    else None
+                )
 
                 if ctx.begin_table("##seq_grid", cols, 0, 0.0):
-                    for seq_i, frame_idx in enumerate(clip.frame_indices):
+                    for seq_i, entry in enumerate(clip.frames):
                         ctx.table_next_column()
+                        frame_id = entry.sprite_frame_id
+                        target = sequence_targets[seq_i]
+                        frame = _sprite_frame_by_id(tex.frames, frame_id)
 
-                        if 0 <= frame_idx < len(tex.frames):
-                            frame = tex.frames[frame_idx]
+                        if frame is not None:
                             uv0_x, uv0_y, uv1_x, uv1_y = _sprite_frame_imgui_uv(frame, tex.tex_w, tex.tex_h)
 
-                            # Aspect-preserving image inside square button
-                            aspect = frame.w / max(frame.h, 1)
-                            if aspect >= 1.0:
-                                iw, ih = thumb, thumb / aspect
-                            else:
-                                iw, ih = thumb * aspect, thumb
-
-                            is_preview = (
-                                self._playback == _PLAYBACK_PLAYING
-                                and seq_i == self._preview_frame_idx
+                            clicked, hovered = self._render_frame_cell(
+                                ctx,
+                                item_id=f"##seq_{seq_i}",
+                                texture_id=tex.texture_id,
+                                thumb=thumb,
+                                image_w=float(frame.w),
+                                image_h=float(frame.h),
+                                uv=(uv0_x, uv0_y, uv1_x, uv1_y),
+                                label=str(seq_i + 1),
+                                selected=target == selected_target,
+                                semantic_label=f"Sequence {seq_i}: {frame.name}",
+                                semantic_id=f"animclip2d.sequence.frame.{entry.stable_id}",
                             )
-                            if is_preview:
-                                ctx.push_style_color(ImGuiCol.Button, 0.2, 0.6, 0.2, 0.8)
-                                ctx.push_style_color(ImGuiCol.ButtonHovered, 0.3, 0.7, 0.3, 0.8)
 
-                            save_x = ctx.get_cursor_pos_x()
-                            save_y = ctx.get_cursor_pos_y()
-                            ctx.button(f"##seq_{seq_i}", width=thumb, height=thumb)
-                            ctx.record_semantic_item(
-                                "button", f"Sequence {seq_i}: Frame {frame_idx}", True,
-                                f"animclip2d.sequence.frame.{seq_i}",
-                            )
-                            hovered = ctx.is_item_hovered()
-
-                            if is_preview:
-                                ctx.pop_style_color(2)
-
-                            bx = ctx.get_item_rect_min_x()
-                            by = ctx.get_item_rect_min_y()
-
-                            # Overlay centered image
-                            ctx.set_cursor_pos_x(save_x + (thumb - iw) * 0.5)
-                            ctx.set_cursor_pos_y(save_y + (thumb - ih) * 0.5)
-                            ctx.image(tex.texture_id, iw, ih, uv0_x, uv0_y, uv1_x, uv1_y)
-
-                            ctx.draw_text(bx + 2, by + 1, str(frame_idx), 1.0, 1.0, 1.0, 0.9)
+                            if clicked:
+                                self._playback = _PLAYBACK_STOPPED
+                                selection.select(
+                                    target,
+                                    owner_id=self.window_id,
+                                    reason="animclip2d_sequence_select",
+                                    record_history=True,
+                                )
 
                             if hovered and ctx.is_mouse_button_clicked(1):
-                                to_remove = seq_i
+                                selection.select(
+                                    target,
+                                    owner_id=self.window_id,
+                                    reason="animclip2d_sequence_context_select",
+                                    record_history=True,
+                                )
                         else:
-                            ctx.button(f"?##seq_{seq_i}", width=thumb, height=thumb)
-                            ctx.record_semantic_item(
-                                "button", f"Sequence {seq_i}: Missing Frame {frame_idx}", True,
-                                f"animclip2d.sequence.frame.{seq_i}",
+                            missing_clicked = ctx.button(
+                                f"?##seq_{seq_i}", width=thumb, height=thumb
                             )
+                            ctx.record_semantic_item(
+                                "button", f"Sequence {seq_i}: Missing Frame {frame_id}", True,
+                                f"animclip2d.sequence.frame.{entry.stable_id}",
+                            )
+                            if missing_clicked:
+                                selection.select(
+                                    target,
+                                    owner_id=self.window_id,
+                                    reason="animclip2d_sequence_select",
+                                    record_history=True,
+                                )
 
                     ctx.end_table()
-
-                if to_remove is not None:
-                    clip.frame_indices.pop(to_remove)
         finally:
+            # Table navigation may leave the child cursor beyond its last
+            # submitted item. Commit that final position before ending the
+            # child so ImGui can account for the sequence strip boundaries.
+            ctx.dummy(0.0, 0.0)
             ctx.end_child()
 
     # ------------------------------------------------------------------
@@ -792,17 +1383,26 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     def _render_frame_palette(self, ctx: InxGUIContext, avail_w: float):
         tex = self._tex
-        if tex is None or tex.texture_id == 0:
-            return
-
         palette_h = max(ctx.get_content_region_avail_height(), _PALETTE_H)
         ctx.begin_child("##animclip_palette_card", avail_w, palette_h, True)
         try:
+            self._pad_child_cursor(ctx)
             ctx.label(t("animclip_editor.frame_palette"))
+            field_width = min(360.0, max(220.0, avail_w * 0.38))
+            ctx.same_line(max(160.0, avail_w - field_width - 12.0))
+            self._render_palette_texture_field(ctx)
             ctx.separator()
+
+            if tex is None or tex.texture_id == 0:
+                ctx.dummy(0, 12.0)
+                ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+                ctx.label(t("animclip_editor.drop_texture_hint"))
+                ctx.pop_style_color(1)
+                return
 
             ctx.begin_child("##frame_palette", 0, 0, False)
             try:
+                self._pad_child_cursor(ctx, 8.0, 8.0)
                 active_clip = self._active_clip
                 thumb = _PALETTE_THUMB_SIZE
                 child_w = ctx.get_content_region_avail_width()
@@ -813,57 +1413,69 @@ class AnimClip2DEditorPanel(EditorPanel):
                         ctx.table_next_column()
                         uv0_x, uv0_y, uv1_x, uv1_y = _sprite_frame_imgui_uv(frame, tex.tex_w, tex.tex_h)
 
-                        # Aspect-preserving image inside square button
-                        aspect = frame.w / max(frame.h, 1)
-                        if aspect >= 1.0:
-                            iw, ih = thumb, thumb / aspect
-                        else:
-                            iw, ih = thumb * aspect, thumb
-
-                        in_clip = (
-                            active_clip is not None
-                            and i in active_clip.frame_indices
+                        clicked, hovered = self._render_frame_cell(
+                            ctx,
+                            item_id=f"##palette_{i}",
+                            texture_id=tex.texture_id,
+                            thumb=thumb,
+                            image_w=float(frame.w),
+                            image_h=float(frame.h),
+                            uv=(uv0_x, uv0_y, uv1_x, uv1_y),
+                            label=str(i + 1),
+                            selected=False,
+                            semantic_label=f"Frame {i}: {frame.name}",
+                            semantic_id=f"animclip2d.palette.frame.{frame.stable_id}",
                         )
-                        if in_clip:
-                            ctx.push_style_color(ImGuiCol.Button, 0.2, 0.5, 0.8, 0.6)
-                            ctx.push_style_color(ImGuiCol.ButtonHovered, 0.3, 0.6, 0.9, 0.7)
-
-                        save_x = ctx.get_cursor_pos_x()
-                        save_y = ctx.get_cursor_pos_y()
-                        clicked = ctx.button(f"##palette_{i}", width=thumb, height=thumb)
-                        ctx.record_semantic_item(
-                            "button", f"Frame {i}: {frame.name}", True,
-                            f"animclip2d.palette.frame.{i}",
-                        )
-                        hovered = ctx.is_item_hovered()
-
-                        if in_clip:
-                            ctx.pop_style_color(2)
-
-                        bx = ctx.get_item_rect_min_x()
-                        by = ctx.get_item_rect_min_y()
-
-                        # Overlay centered image
-                        ctx.set_cursor_pos_x(save_x + (thumb - iw) * 0.5)
-                        ctx.set_cursor_pos_y(save_y + (thumb - ih) * 0.5)
-                        ctx.image(tex.texture_id, iw, ih, uv0_x, uv0_y, uv1_x, uv1_y)
 
                         if clicked and active_clip is not None:
-                            active_clip.frame_indices.append(i)
+                            self._execute_animclip_command(
+                                "animclip2d.add_frame",
+                                payload={"frame_id": frame.stable_id},
+                            )
 
                         if hovered:
                             ctx.set_tooltip(f"#{i}  {frame.name}  ({frame.w}x{frame.h})")
 
-                        ctx.draw_text(bx + 2, by + 1, str(i), 1.0, 1.0, 1.0, 0.9)
-
                     ctx.end_table()
             finally:
+                ctx.dummy(0.0, 0.0)
                 ctx.end_child()
 
         except Exception as exc:
             Debug.log_warning(f"[AnimClipEditor] Frame palette error: {exc}")
         finally:
+            ctx.dummy(0.0, 0.0)
             ctx.end_child()
+
+    def _render_palette_texture_field(self, ctx: InxGUIContext) -> None:
+        tex = self._tex
+        display = (
+            os.path.basename(tex.file_path)
+            if tex is not None
+            else t("animclip_editor.drop_texture_hint")
+        )
+        IGUI.asset_reference_field(
+            ctx,
+            "animclip_tex_slot",
+            display,
+            "Texture",
+            asset_type="Texture",
+            accept="TEXTURE_FILE",
+            on_assign=self._on_texture_drop,
+            on_clear=self._on_texture_clear if tex is not None else None,
+            ping_path=tex.file_path if tex is not None else None,
+            has_value=tex is not None,
+            reference_value=(
+                {
+                    "asset_type": "Texture",
+                    "guid": tex.guid,
+                    "path_hint": tex.file_path,
+                }
+                if tex is not None
+                else None
+            ),
+            semantic_id="animclip2d.texture",
+        )
 
     # ------------------------------------------------------------------
     # Texture loading
@@ -947,31 +1559,41 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     def _on_texture_drop(self, payload):
         """Handle TEXTURE_FILE drop — payload is a file path."""
-        if isinstance(payload, str) and payload:
-            self._load_texture(payload)
+        from Infernux.core.asset_reference_types import resolve_asset_reference_path
+
+        try:
+            path = resolve_asset_reference_path("Texture", payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            Debug.log_error(f"[AnimClipEditor] Texture assignment rejected: {exc}")
+            return
+        self._apply_authoring_mutation(
+            "Set 2D animation texture",
+            lambda: self._load_texture(path),
+        )
 
     def _on_animclip_drop(self, payload):
         """Handle ANIMCLIP_FILE drop — open an existing .animclip2d."""
         if isinstance(payload, str) and payload:
-            self._open_animclip(payload)
+            from Infernux.engine.interaction import DocumentKind
+
+            self.request_document_resource_open(DocumentKind.ANIMATION_CLIP, payload)
 
     def _load_texture(self, file_path: str):
         """Load a sprite-sheet texture and extract frame data from its .meta."""
-        self._tex = None
         if not file_path or not os.path.isfile(file_path):
-            return
+            return False
 
         native = self._get_native_engine()
         if not native:
             Debug.log_warning("[AnimClipEditor] No native engine")
-            return
+            return False
 
         filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(file_path)
         norm_path = resolved_path(file_path)
         resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
         stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
         if stamp == 0:
-            return
+            return False
 
         native.pump_preview_tasks()
         texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
@@ -989,11 +1611,6 @@ class AnimClip2DEditorPanel(EditorPanel):
         if source_h <= 0:
             source_h = max(tex_h, 0)
 
-        if not frames and source_w > 0 and source_h > 0:
-            from Infernux.core.asset_types import SpriteFrame
-
-            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=source_w, h=source_h)]
-
         # Resolve GUID
         guid = ""
         try:
@@ -1004,7 +1621,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         except Exception:
             pass
 
-        self._tex = _TextureState(
+        next_texture = _TextureState(
             file_path=norm_path,
             texture_id=texture_id,
             tex_w=max(source_w, 0),
@@ -1016,6 +1633,9 @@ class AnimClip2DEditorPanel(EditorPanel):
             resource_key=resource_key,
             stamp=int(stamp),
         )
+        self._cleanup_texture()
+        self._tex = next_texture
+        return True
 
     def _cleanup_texture(self):
         """Invalidate preview task entry for the currently loaded texture."""
@@ -1090,12 +1710,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         if source_h > 0:
             tex.tex_h = source_h
 
-        if frames:
-            tex.frames = frames
-        elif not tex.frames and tex.tex_w > 0 and tex.tex_h > 0:
-            from Infernux.core.asset_types import SpriteFrame
-
-            tex.frames = [SpriteFrame(name="frame_0", x=0, y=0, w=tex.tex_w, h=tex.tex_h)]
+        tex.frames = frames
 
         return True
 
@@ -1103,15 +1718,19 @@ class AnimClip2DEditorPanel(EditorPanel):
     # Open existing .animclip2d
     # ------------------------------------------------------------------
 
-    def _open_animclip(self, animclip_path: str):
-        """Load an existing .animclip2d file into the editor."""
+    def _load_animclip_model(self, animclip_path: str) -> bool:
+        """Replace only the live authoring model from one disk asset."""
         from Infernux.core.animation_clip import AnimationClip
+
         clip_data = AnimationClip.load(animclip_path)
         if clip_data is None:
             Debug.log_warning(f"[AnimClipEditor] Failed to load: {animclip_path}")
-            return
+            return False
 
         # Resolve texture from clip's GUID or path
+        if self._tex is not None:
+            self._cleanup_texture()
+            self._tex = None
         tex_resolved = False
         if clip_data.authoring_texture_guid:
             try:
@@ -1144,17 +1763,26 @@ class AnimClip2DEditorPanel(EditorPanel):
         # Import clip state
         cs = _ClipState(
             name=clip_data.name,
-            frame_indices=list(clip_data.frame_indices),
+            frames=copy.deepcopy(clip_data.frames),
             fps=clip_data.fps,
             loop=clip_data.loop,
-            saved_path=animclip_path,
-            saved_texture_guid=clip_data.authoring_texture_guid or (self._tex.guid if self._tex else ""),
-            saved_texture_path=self._tex.file_path if self._tex else clip_data.authoring_texture_path,
         )
         self._clips = [cs]
         self._active_clip_idx = 0
         self._stop_playback()
-        self._mark_saved_snapshot()
+        return True
+
+    def open_document_resource_immediate(self, animclip_path: str):
+        """Load an existing .animclip2d file into the editor."""
+        if not self._load_animclip_model(animclip_path):
+            return False
+        if self.document_id:
+            self.unbind_document()
+        self._replace_animclip_document(
+            resource_path=resolved_path(animclip_path),
+            dirty=False,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Save
@@ -1162,108 +1790,204 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     def _save_clip(self, clip: _ClipState):
         """Save the active clip as a .animclip2d file."""
-        if clip.saved_path and self._can_direct_save_clip(clip):
-            self._do_save_clip(clip, clip.saved_path)
-            return
-        self._show_save_as_dialog(clip)
+        if clip is not self._active_clip:
+            return False
+        return self._request_document_save(save_as=False)
 
-    def handle_save_command(self, save_as: bool = False) -> bool:
+    def _request_document_save(self, *, save_as: bool) -> bool:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = self._animclip_document()
+        if document is None:
+            return False
+        return DocumentRegistry.instance().request_save(
+            document.document_id,
+            save_as=save_as,
+        ).accepted
+
+    def request_authoring_save_as(self, ticket):
+        from Infernux.engine.interaction import (
+            DocumentActionResult,
+            DocumentActionStatus,
+        )
+
         clip = self._active_clip
-        if clip is None or self._tex is None or not clip.frame_indices:
-            return True
-        if save_as:
-            self._show_save_as_dialog(clip)
-        else:
-            self._save_clip(clip)
-        return True
+        if clip is None or self._tex is None or not clip.frames:
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "2D animation clip requires a texture and at least one frame",
+            )
+        self._pending_save_ticket_id = ticket.ticket_id
+        if self._show_save_as_dialog(clip):
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        self._pending_save_ticket_id = ""
+        return DocumentActionResult(
+            DocumentActionStatus.REJECTED,
+            "no project root is available",
+        )
 
-    @staticmethod
-    def _texture_identity(guid: str = "", path: str = "") -> str:
-        guid = (guid or "").strip()
-        if guid:
-            return f"guid:{guid}"
-        path = (path or "").strip()
-        if path:
-            return "path:" + path_key(path)
-        return ""
+    def discard(self, *, document_id: str) -> bool:
+        if document_id != self.document_id:
+            return False
+        return self._discard_unsaved_changes()
 
-    def _current_texture_identity(self) -> str:
-        tex = self._tex
-        if tex is None:
-            return ""
-        return self._texture_identity(tex.guid, tex.file_path)
+    def _do_save_clip(
+        self,
+        clip: _ClipState,
+        save_path: str,
+        *,
+        ticket_id: str = "",
+    ) -> bool:
+        """Continue an existing SaveTicket with a user-selected path."""
+        if clip is not self._active_clip:
+            return False
+        active_ticket_id = ticket_id or self._pending_save_ticket_id
+        if not active_ticket_id:
+            raise RuntimeError("2D animation clip saves require a DocumentRegistry SaveTicket")
+        result = self._authoring_document_controller.continue_save_to_resource(
+            active_ticket_id,
+            save_path,
+        )
+        if result.accepted:
+            self._pending_save_ticket_id = ""
+        return result.accepted
 
-    def _saved_texture_identity(self, clip: _ClipState) -> str:
-        return self._texture_identity(clip.saved_texture_guid, clip.saved_texture_path)
-
-    def _can_direct_save_clip(self, clip: _ClipState) -> bool:
-        saved_identity = self._saved_texture_identity(clip)
-        current_identity = self._current_texture_identity()
-        return bool(saved_identity and current_identity and saved_identity == current_identity)
-
-    def _do_save_clip(self, clip: _ClipState, save_path: str) -> bool:
-        """Write the .animclip2d file to *save_path*."""
+    def _capture_animation_clip(self, *, name: str = ""):
         from Infernux.core.animation_clip import AnimationClip
-        tex = self._tex
 
-        ac = AnimationClip(
-            name=os.path.splitext(os.path.basename(save_path))[0],
+        clip = self._active_clip
+        tex = self._tex
+        if clip is None or tex is None or not clip.frames:
+            raise ValueError(
+                "2D animation clip requires a texture and at least one frame"
+            )
+        return AnimationClip(
+            name=name or clip.name,
             authoring_texture_guid=tex.guid if tex else "",
             authoring_texture_path=tex.file_path if tex else "",
-            frame_indices=list(clip.frame_indices),
+            frames=copy.deepcopy(clip.frames),
             fps=clip.fps,
             loop=clip.loop,
         )
-        ac.file_path = save_path
-        ok = ac.save()
-        if ok:
-            clip.saved_path = save_path
-            clip.saved_texture_guid = tex.guid if tex else ""
-            clip.saved_texture_path = tex.file_path if tex else ""
-            Debug.log(f"[AnimClipEditor] Saved: {save_path}")
-            try:
-                from Infernux.core.assets import AssetManager
-                AssetManager.reimport_asset(save_path)
-            except Exception:
-                pass
-            self._mark_saved_snapshot()
-            return True
-        else:
-            Debug.log_warning(f"[AnimClipEditor] Failed to save: {save_path}")
-            return False
 
-    def _show_save_as_dialog(self, clip: _ClipState) -> None:
+    def capture_authoring_save_snapshot(self, save_path: str):
+        from Infernux.engine.interaction import (
+            AuthoringAssetSnapshot,
+            document_content_token,
+        )
+
+        normalized = resolved_path(save_path)
+        if not normalized:
+            raise ValueError("2D animation clip save target is invalid")
+        title = os.path.splitext(os.path.basename(normalized))[0]
+        asset = self._capture_animation_clip(name=title)
+        asset.file_path = normalized
+        asset.validate_sprite_frame_references(
+            project_root=asset._project_root_for_asset(normalized),
+        )
+        document = asset.serialize_document()
+        return AuthoringAssetSnapshot(
+            normalized,
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+            document_content_token(document),
+            title,
+            document,
+        )
+
+    def publish_authoring_save_snapshot(self, snapshot) -> str:
+        clip = self._active_clip
+        if clip is None:
+            return "2D animation clip disappeared before publication"
+        clip.name = snapshot.title
+        Debug.log(f"[AnimClipEditor] Saved: {snapshot.target_path}")
+        try:
+            from Infernux.core.assets import AssetManager
+
+            result = AssetManager.reimport_asset(snapshot.target_path)
+            if not result:
+                result = AssetManager.import_asset(snapshot.target_path)
+            if not result:
+                return str(
+                    getattr(result, "error", "")
+                    or f"2D animation clip publication failed: {snapshot.target_path}"
+                )
+        except Exception as exc:
+            return str(exc)
+        return ""
+
+    def current_authoring_content_token(self) -> str:
+        from Infernux.engine.interaction import document_content_token
+
+        try:
+            return document_content_token(
+                self._capture_animation_clip().serialize_document()
+            )
+        except ValueError:
+            return ""
+
+    def _show_save_as_dialog(self, clip: _ClipState) -> bool:
         """Open the editor-owned Save As modal for one animation clip."""
         safe_name = clip.name.replace(" ", "_").replace("/", "_").replace("\\", "_")
         if not self._save_as_dialog.request(
             title="Save 2D Animation Clip",
             extension="animclip2d",
             default_name=safe_name,
-            current_path=clip.saved_path,
+            current_path=(
+                self._animclip_document().resource_path
+                if self._animclip_document() is not None
+                else ""
+            ),
+            save_callback=self._save_pending_clip,
+            cancel_callback=self._cancel_pending_save_as,
         ):
             Debug.log_warning("[AnimClipEditor] No project root set - cannot save animation clip.")
-            return
+            return False
         self._pending_save_as_clip = clip
+        return True
 
     def _save_pending_clip(self, save_path: str) -> bool:
         clip = self._pending_save_as_clip
         if clip is None:
             Debug.log_warning("[AnimClipEditor] Save As completed without a pending animation clip.")
             return False
-        saved = self._do_save_clip(clip, save_path)
+        saved = self._do_save_clip(
+            clip,
+            save_path,
+            ticket_id=self._pending_save_ticket_id,
+        )
         if saved:
             self._pending_save_as_clip = None
         return saved
 
     def _cancel_pending_save_as(self) -> None:
         self._pending_save_as_clip = None
+        ticket_id = self._pending_save_ticket_id
+        self._pending_save_ticket_id = ""
+        if ticket_id:
+            from Infernux.engine.interaction import DocumentRegistry
+
+            DocumentRegistry.instance().complete_save(
+                ticket_id,
+                success=False,
+                cancelled=True,
+                message="save was cancelled",
+            )
 
     def _discard_unsaved_changes(self) -> bool:
         self._cancel_pending_save_as()
-        self.load_state(copy.deepcopy(self._last_saved_state))
-        self._recompute_dirty()
-        self._sync_project_dirty_flag()
-        return not self._dirty
+        document = self._animclip_document()
+        if document is not None and document.resource_path:
+            if not self._load_animclip_model(document.resource_path):
+                return False
+        else:
+            if self._tex is not None:
+                self._cleanup_texture()
+                self._tex = None
+            self._clips = [_ClipState()]
+            self._active_clip_idx = 0
+            self._stop_playback()
+        # DocumentRegistry.request_discard() commits the revision rollback.
+        return True
 
     # ------------------------------------------------------------------
     # Playback helpers

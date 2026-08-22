@@ -1,0 +1,36 @@
+[
+  {
+    "id": "gameplay",
+    "slug": "gameplay",
+    "manifest": "gameplay-course.json",
+    "title_en": "Build gameplay with Python",
+    "title_zh": "用 Python 实现游戏逻辑",
+    "short_en": "Gameplay course",
+    "short_zh": "游戏逻辑课程",
+    "summary_en": "Build a playable loop with Infernux's component-oriented Python API, then expand it with input, physics, scenes, UI, prefabs, and coroutines.",
+    "summary_zh": "使用 Infernux 面向组件的 Python API 搭起可玩的游戏循环，再逐步加入输入、物理、场景、UI、Prefab 与协程。",
+    "level_en": "Beginner to advanced",
+    "level_zh": "从入门到进阶",
+    "promise_en": "From a running component to a complete game loop",
+    "promise_zh": "从第一个可运行组件到完整游戏循环",
+    "detail_en": "Each chapter adds one practical part to the same mental model: a GameObject owns components, components react to the engine lifecycle, and public fields connect authored scene data to runtime behavior.",
+    "detail_zh": "每一章都沿用同一套心智模型：GameObject 承载组件，组件响应引擎生命周期，公开字段把场景中的配置连接到运行时行为。"
+  },
+  {
+    "id": "rendering",
+    "slug": "rendering",
+    "manifest": "rendering-course.json",
+    "title_en": "Author the rendering pipeline",
+    "title_zh": "编写自定义渲染",
+    "short_en": "Rendering course",
+    "short_zh": "渲染课程",
+    "summary_en": "Follow a material into the frame, write reusable shader stages and effects, then assemble a custom pipeline and inspect its RenderGraph.",
+    "summary_zh": "沿着材质进入一帧，编写可复用的 Shader 阶段和 Effect，再组合自己的渲染管线并检查 RenderGraph。",
+    "level_en": "Beginner to advanced",
+    "level_zh": "从入门到进阶",
+    "promise_en": "From one material to a programmable render pipeline",
+    "promise_zh": "从一个材质走向可编程渲染管线",
+    "detail_en": "Start with the path from Material to pixel. Continue through reusable lighting and effects, then finish by authoring a complete pipeline. Low-level RenderGraph work stays in the final chapter.",
+    "detail_zh": "先理解一个材质怎样变成像素，再进入可复用光照与 Effect，最后独立编写完整渲染管线。底层 RenderGraph 留在最后一章。"
+  }
+]

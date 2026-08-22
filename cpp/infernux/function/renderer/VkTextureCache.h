@@ -60,6 +60,10 @@ class VkTextureCache
     [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot>
     FindAsset(const std::string &key, const std::string &assetGuid, uint64_t runtimeVersion, uint64_t frame);
 
+    /// Advance the renderer-owned residency clock even when no texture lookup
+    /// occurs, so current-frame protection never turns into permanent pinning.
+    void AdvanceFrame(uint64_t frame);
+
     /// Mark every resident variant of an asset as awaiting a newer runtime
     /// revision while preserving its last-known-good publication.
     [[nodiscard]] size_t RequestAssetRevision(const std::string &assetGuid, uint64_t runtimeVersion);
@@ -112,6 +116,7 @@ class VkTextureCache
     std::unordered_map<std::string, Entry> m_textures;
     mutable std::vector<RetiredLease> m_retiredLeases;
     uint64_t m_budgetBytes = 512ULL * 1024ULL * 1024ULL;
+    uint64_t m_latestFrame = 0;
     mutable uint64_t m_residentBytes = 0;
     uint64_t m_evictionCount = 0;
     mutable std::mutex m_mutex;

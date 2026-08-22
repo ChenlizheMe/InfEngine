@@ -26,7 +26,7 @@ import copy
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .serialized_field import FieldMetadata
+    from .fields import FieldMetadata
 
 # Global registry: module:qualname → class. Populated by __init_subclass__.
 _SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
@@ -80,7 +80,7 @@ class SerializableObject:
 
         own_annotations = cls.__dict__.get('__annotations__', {})
 
-        from .serialized_field import (
+        from .fields import (
             FieldMetadata,
             SerializedFieldDescriptor,
             infer_field_type_from_value,
@@ -146,7 +146,7 @@ class SerializableObject:
             fields = getattr(cls, "_serialized_fields_", {})
             meta = fields.get(name)
             if meta is not None:
-                from .serialized_field import resolve_runtime_field_value
+                from .fields import resolve_runtime_field_value
                 data = object.__getattribute__(self, "__dict__")
                 raw = data.get(name, meta.default)
                 return resolve_runtime_field_value(raw, meta)
@@ -157,12 +157,12 @@ class SerializableObject:
         fields = getattr(cls, "_serialized_fields_", {})
         meta = fields.get(name)
         if meta is not None:
-            from .serialized_field import normalize_runtime_field_value
+            from .fields import normalize_runtime_field_value
             value = normalize_runtime_field_value(value, meta)
         object.__setattr__(self, name, value)
 
     def __init__(self, **kwargs):
-        from .serialized_field import get_serialized_fields
+        from .fields import get_serialized_fields
 
         fields = get_serialized_fields(self.__class__)
         for name, meta in fields.items():
@@ -180,11 +180,11 @@ class SerializableObject:
 
     def _serialize(self) -> dict:
         """Serialize this object to a JSON-friendly dict."""
-        from .serialized_field import get_serialized_fields
+        from .fields import get_serialized_fields
 
         fields_document: Dict[str, Any] = {}
         fields = get_serialized_fields(self.__class__)
-        from .serialized_field import get_raw_field_value
+        from .fields import get_raw_field_value
         for name, meta in fields.items():
             value = get_raw_field_value(self, name)
             fields_document[name] = _serialize_so_value(
@@ -196,7 +196,7 @@ class SerializableObject:
     @classmethod
     def _validate_document(cls, data: dict, path: str = "SerializableObject"):
         """Validate a complete object graph without constructing an instance."""
-        from .serialized_field import get_serialized_fields
+        from .fields import get_serialized_fields
 
         if not isinstance(data, dict):
             raise TypeError(f"{path}: SerializableObject document must be an object")
@@ -216,7 +216,7 @@ class SerializableObject:
         if not isinstance(fields_document, dict):
             raise TypeError(f"{path}: SerializableObject fields must be an object")
 
-        from .serialized_field import validate_serialized_field_document
+        from .fields import validate_serialized_field_document
         validate_serialized_field_document(fields_document, fields, owner_name=type_id)
 
         from .value_codec import VALUE_CODECS
@@ -250,7 +250,7 @@ class SerializableObject:
     def __eq__(self, other):
         if type(self) is not type(other):
             return NotImplemented
-        from .serialized_field import get_serialized_fields
+        from .fields import get_serialized_fields
 
         fields = get_serialized_fields(self.__class__)
         return all(
@@ -259,14 +259,14 @@ class SerializableObject:
         )
 
     def __repr__(self):
-        from .serialized_field import get_serialized_fields
+        from .fields import get_serialized_fields
 
         fields = get_serialized_fields(self.__class__)
         parts = [f"{n}={getattr(self, n, 'N/A')!r}" for n in fields]
         return f"{self.__class__.__name__}({', '.join(parts)})"
 
     def __deepcopy__(self, memo):
-        from .serialized_field import get_raw_field_value, get_serialized_fields
+        from .fields import get_raw_field_value, get_serialized_fields
 
         cls = self.__class__
         result = cls.__new__(cls)

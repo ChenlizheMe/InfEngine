@@ -113,6 +113,7 @@ class ListFieldSmokeTest(InxComponent):
         default=[],
         field_type=FieldType.LIST,
         element_type=FieldType.ASSET,
+        asset_type="AudioClip",
         tooltip="Drag WAV audio assets from the project here",
     )
 

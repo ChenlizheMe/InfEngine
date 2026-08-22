@@ -12,7 +12,23 @@ async function exists(relative) {
     return stat(path.join(docsRoot, relative)).then(() => true).catch(() => false);
 }
 
-const rootPages = ["index.html", "start.html", "learn.html", "learn/shaders.html", "learn/renderstack-post-processing.html", "roadmap.html", "community.html", "download.html", "404.html"];
+const learningCourses = JSON.parse(
+    await readFile(path.join(docsRoot, "learn", "learning-courses.json"), "utf8")
+);
+const learningChapters = (await Promise.all(learningCourses.map(async (course) => JSON.parse(
+    await readFile(path.join(docsRoot, "learn", course.manifest), "utf8")
+)))).flat();
+const rootPages = [
+    "index.html",
+    "start.html",
+    "learn.html",
+    ...learningCourses.map((course) => `learn/${course.slug}.html`),
+    ...learningChapters.map((chapter) => `learn/${chapter.slug}.html`),
+    "roadmap.html",
+    "community.html",
+    "download.html",
+    "404.html",
+];
 for (const page of rootPages) {
     const html = await readFile(path.join(docsRoot, page), "utf8");
     if (!html.includes("start.html")) fail(`${page}: missing the hand-maintained Start route`);
@@ -33,20 +49,42 @@ for (const contract of [
 if (/since|last_verified|始于|验证于|zh\/manual\//i.test(start)) fail("start.html: generated-document metadata or source paths leaked into the simple guide");
 
 const learn = await readFile(path.join(docsRoot, "learn.html"), "utf8");
-for (const contract of ["data-learn-search", "data-learn-tag", "data-learn-entry", "learn/shaders.html", "learn/renderstack-post-processing.html", "js/learn.js?v=1"]) {
+for (const contract of ["learn/gameplay.html", "learn/rendering.html", "learn-course-grid", "Build gameplay with Python", "编写自定义渲染"]) {
     if (!learn.includes(contract)) fail(`learn.html: missing '${contract}'`);
 }
-const shaderGuide = await readFile(path.join(docsRoot, "learn", "shaders.md"), "utf8");
-if (!shaderGuide.includes("ShaderInfo") || !shaderGuide.includes("着色模型") || !shaderGuide.includes("Capabilities [Standalone]")) {
-    fail("learn/shaders.md: shader learning contracts are incomplete");
+for (const course of learningCourses) {
+    const coursePage = await readFile(path.join(docsRoot, "learn", `${course.slug}.html`), "utf8");
+    for (const contract of ["data-learn-search", "data-learn-tag", "data-learn-entry", course.title_en, course.title_zh, "js/learn.js?v=3"]) {
+        if (!coursePage.includes(contract)) fail(`learn/${course.slug}.html: missing '${contract}'`);
+    }
 }
-const renderStackGuide = await readFile(path.join(docsRoot, "learn", "renderstack-post-processing.md"), "utf8");
-if (!renderStackGuide.includes("RenderStack") || !renderStackGuide.includes("EffectStage") || !renderStackGuide.includes("后处理")) {
-    fail("learn/renderstack-post-processing.md: RenderStack learning contracts are incomplete");
+for (const chapter of learningChapters) {
+    const markdownPath = path.join(docsRoot, "learn", `${chapter.slug}.md`);
+    const htmlPath = path.join(docsRoot, "learn", `${chapter.slug}.html`);
+    const markdown = await readFile(markdownPath, "utf8");
+    const rendered = await readFile(htmlPath, "utf8");
+    if (!markdown.includes("<!-- language:zh -->") || !markdown.includes("<figure") || !markdown.includes("../assets/learn/")) {
+        fail(`learn/${chapter.slug}.md: bilingual content or reviewed figures are missing`);
+    }
+    if (markdown.includes("learn-figure-placeholder")) {
+        fail(`learn/${chapter.slug}.md: obsolete figure placeholder remains`);
+    }
+    if (/\.\.?\/[^)"'\s]+\.(?:png|jpe?g)(?:[?#][^)"'\s]*)?/i.test(markdown)) {
+        fail(`learn/${chapter.slug}.md: tutorial figures must use WebP only`);
+    }
+    for (const token of [chapter.title_en, chapter.title_zh, `${chapter.slug}.md`, "data-page-language=\"en\"", "data-page-language=\"zh\""]) {
+        if (!rendered.includes(token)) fail(`learn/${chapter.slug}.html: missing '${token}'`);
+    }
+}
+
+for (const asset of await readdir(path.join(docsRoot, "assets", "learn"))) {
+    if (/\.(?:png|jpe?g)$/i.test(asset)) {
+        fail(`assets/learn/${asset}: tutorial raster assets must use WebP only`);
+    }
 }
 
 const download = await readFile(path.join(docsRoot, "download.html"), "utf8");
-for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", "0.2.9", "0.2.1", "0.2.0", "js/download.js?v=3"]) {
+for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=5"]) {
     if (!download.includes(contract)) fail(`download.html: missing '${contract}'`);
 }
 if (/SHA-?256|checksum|校验码|publisher signature|data-pwa-install|pwa-install\.js/i.test(download)) {
@@ -96,4 +134,4 @@ if (failures.length) {
     process.exit(1);
 }
 
-console.log("Website verification passed: Start, rendering learning chapters, Hub-first downloads, API-only generated docs, and no Manual navigation.");
+console.log("Website verification passed: Start, multi-course Learn, Hub-first downloads, API-only generated docs, and no Manual navigation.");

@@ -10,10 +10,12 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 from typing import Mapping
 
 from installer.payload import HUB_PAYLOAD_ARCHIVE, create_payload_archive
+from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
 
 
 _VISUAL_STUDIO_GENERATOR_PREFIX = "Visual Studio "
@@ -26,6 +28,31 @@ _FORBIDDEN_WINDOWS_RUNTIME_IMPORTS = (
 _SIGNING_THUMBPRINT_ENV = "INFERNUX_SIGN_CERTIFICATE_THUMBPRINT"
 _SIGNING_TIMESTAMP_ENV = "INFERNUX_SIGN_TIMESTAMP_URL"
 _DEFAULT_TIMESTAMP_URL = "http://timestamp.digicert.com"
+
+
+def _validate_runtime_bundle(bundle_path: Path) -> None:
+    archive = runtime_archive_for_machine()
+    marker_name = "python312/.infernux-private-python-runtime.json"
+    try:
+        with zipfile.ZipFile(bundle_path) as bundle:
+            marker = json.loads(bundle.read(marker_name))
+    except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+        raise RuntimeError(
+            "The private Python runtime bundle is invalid or missing its provenance marker. "
+            "Rebuild prepare_bundled_python_runtime before packaging Infernux Hub."
+        ) from exc
+
+    if not (
+        marker.get("owner") == "Infernux Hub"
+        and marker.get("kind") == "private-python-runtime"
+        and marker.get("python_version") == PYTHON_VERSION
+        and marker.get("source_archive") == archive.name
+        and marker.get("source_archive_sha256") == archive.sha256
+    ):
+        raise RuntimeError(
+            "The private Python runtime bundle is stale or does not match the pinned "
+            f"Python {PYTHON_VERSION} archive. Rebuild prepare_bundled_python_runtime."
+        )
 
 
 def _run(
@@ -383,6 +410,19 @@ def _build_hub(
     tools: Mapping[str, str] | None,
 ) -> None:
     packaging_dir = source_root / "packaging"
+    runtime_bundle = packaging_dir / "runtime" / "runtime_bundle.zip"
+    notification_file = packaging_dir / "resources" / "hub_notifications.json"
+    if not runtime_bundle.is_file():
+        raise RuntimeError(
+            "The private Python runtime bundle is missing. Build the "
+            "prepare_bundled_python_runtime target before packaging Infernux Hub."
+        )
+    _validate_runtime_bundle(runtime_bundle)
+    if not notification_file.is_file():
+        raise RuntimeError(
+            "The version-scoped Hub notification resource is missing: "
+            f"{notification_file}"
+        )
     output_dir = build_dir / "nuitka"
     shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -398,6 +438,14 @@ def _build_hub(
         (
             f"--include-data-file={packaging_dir / 'resources' / 'icon.png'}="
             "resources/icon.png"
+        ),
+        (
+            f"--include-data-file={runtime_bundle}="
+            "InfernuxHubData/runtime/runtime_bundle.zip"
+        ),
+        (
+            f"--include-data-file={notification_file}="
+            "InfernuxHubData/hub_notifications.json"
         ),
         "--nofollow-import-to=Infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
     ]

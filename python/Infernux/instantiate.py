@@ -20,13 +20,13 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
 
 
-def Instantiate(original, parent=None):
+def Instantiate(original, *args, **kwargs):
     """Clone an object.  Dispatches by type — mirrors Unity's ``Object.Instantiate``.
 
     Supported types:
@@ -44,8 +44,10 @@ def Instantiate(original, parent=None):
     ----------
     original : GameObject | Material | InxMaterial | GameObjectRef | PrefabRef
         The object to clone.
-    parent : GameObject | None
-        (GameObject only) Optional parent for the cloned object.
+    *args, **kwargs
+        Unity-style scalar overload arguments, or the native batch overload
+        (``positions``, optional ``rotations``/``scales``, ``parent``, and
+        ``return_objects``) for GameObjects.
 
     Returns
     -------
@@ -72,15 +74,17 @@ def Instantiate(original, parent=None):
     # ── C++ GameObject ───────────────────────────────────────────────────
     from Infernux.lib import GameObject
     if isinstance(original, GameObject):
-        if parent is None:
-            return GameObject.instantiate(original)
-        return GameObject.instantiate(original, parent)
+        return GameObject.instantiate(original, *args, **kwargs)
 
     # ── GameObjectRef / PrefabRef (have .instantiate()) ──────────────────
     if hasattr(original, "instantiate") and callable(original.instantiate):
-        if parent is None:
-            return original.instantiate()
-        return original.instantiate(parent=parent)
+        return original.instantiate(*args, **kwargs)
+
+    if args or kwargs:
+        raise TypeError(
+            f"Instantiate: overload arguments are not supported for "
+            f"{type(original).__name__!r}."
+        )
 
     raise TypeError(
         f"Instantiate: unsupported type {type(original).__name__!r}. "

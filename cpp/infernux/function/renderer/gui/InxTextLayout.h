@@ -158,6 +158,29 @@ inline bool IsBreakAfterChar(ImWchar c)
     }
 }
 
+inline bool PopBackUtf8Codepoint(std::string &text)
+{
+    if (text.empty())
+        return false;
+
+    size_t codepointStart = text.size() - 1;
+    while (codepointStart > 0 && (static_cast<unsigned char>(text[codepointStart]) & 0xC0u) == 0x80u)
+        --codepointStart;
+    text.erase(codepointStart);
+    return true;
+}
+
+inline bool EraseFirstUtf8Codepoint(std::string &text)
+{
+    if (text.empty())
+        return false;
+
+    unsigned int codepoint = 0;
+    const int consumed = ImTextCharFromUtf8(&codepoint, text.data(), text.data() + text.size());
+    text.erase(0, consumed > 0 ? static_cast<size_t>(consumed) : size_t{1});
+    return true;
+}
+
 inline float MeasureSegmentWidth(ImFont *font, float fontSize, const char *start, const char *end, float letterSpacing)
 {
     if (font == nullptr || start == nullptr || end == nullptr || start >= end)

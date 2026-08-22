@@ -135,6 +135,21 @@ def portable_path(path: PathLike) -> str:
     return os.path.normpath(os.fspath(path)).replace("\\", "/")
 
 
+def portable_relative_path(path: PathLike, *, allow_root: bool = False) -> str:
+    """Normalize and validate an engine-owned portable relative path."""
+    normalized = portable_path(path)
+    if not normalized or os.path.isabs(normalized):
+        raise ValueError(f"Path must be relative: {path!r}")
+    parts = tuple(part for part in normalized.split("/") if part not in {"", "."})
+    if any(part == ".." for part in parts):
+        raise ValueError(f"Path escapes its logical root: {path!r}")
+    if not parts:
+        if allow_root:
+            return "."
+        raise ValueError("Path must name an entry below the logical root")
+    return "/".join(parts)
+
+
 def safe_path(path: PathLike) -> str:
     """Normalize a Python path before crossing the UTF-8 C++ boundary."""
     return resolved_path(path)

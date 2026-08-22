@@ -7,18 +7,25 @@ style push/pop, lifecycle hooks, and service access.
 
 Creating a custom panel::
 
-    from Infernux.engine.ui import EditorPanel, editor_panel, EditorEvent
+    from Infernux.engine.ui import EditorPanel, editor_panel
+    from Infernux.engine.interaction import (
+        PanelInteractionDescriptor,
+        SelectionService,
+    )
 
-    @editor_panel("My Debug Panel")
+    @editor_panel(
+        "My Debug Panel",
+        interaction=PanelInteractionDescriptor(),
+    )
     class MyDebugPanel(EditorPanel):
         def on_enable(self):
-            self.events.subscribe(EditorEvent.SELECTION_CHANGED, self._on_sel)
+            SelectionService.instance().add_listener(self._on_sel)
 
         def on_disable(self):
-            self.events.unsubscribe(EditorEvent.SELECTION_CHANGED, self._on_sel)
+            SelectionService.instance().remove_listener(self._on_sel)
 
         def on_render_content(self, ctx):
-            ctx.text("Hello from my custom panel!")
+            ctx.label("Hello from my custom panel!")
 
         def _on_sel(self, obj):
             pass
@@ -26,17 +33,15 @@ Creating a custom panel::
 
 from __future__ import annotations
 
-import os
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
-from Infernux.engine.path_utils import lexical_path
+from Infernux.engine.interaction import PanelViewStateSchema
 
 from .closable_panel import ClosablePanel
 
 if TYPE_CHECKING:
     from Infernux.lib import InxGUIContext
     from .editor_services import EditorServices
-    from .event_bus import EditorEventBus
 
 
 class EditorPanel(ClosablePanel):
@@ -44,7 +49,6 @@ class EditorPanel(ClosablePanel):
 
     Provides:
     - ``self.services`` to access :class:`EditorServices`
-    - ``self.events`` to access :class:`EditorEventBus`
     - ``on_enable()`` when the panel is created or reopened
     - ``on_disable()`` when the panel closes
     - ``on_render_content(ctx)`` for the panel body
@@ -58,42 +62,32 @@ class EditorPanel(ClosablePanel):
     - ``save_state() / load_state(data)`` persist panel state
     """
 
+    VIEW_STATE_SCHEMA: PanelViewStateSchema | None = None
+
     def __init__(self, title: str, window_id: Optional[str] = None):
         super().__init__(title, window_id)
         self._enable_called = False
         self._content_was_visible: Optional[bool] = None
+        self._content_visible_previous_frame = False
+        self._content_hovered = False
+        self._persisted_view_state_loaded = False
+        self._content_render_error_signature: tuple[type[BaseException], str] | None = None
 
-    # Keys that should never be part of generic persisted panel state.
-    _AUTO_STATE_SKIP_KEYS = {
-        "_window_manager",
-        "_enable_called",
-        "_panel_was_focused",
-        "_is_open",
-        "_window_id",
-        "_title",
-        "_title_key",
-        "_content_was_visible",
-        "_dirty_registry_snapshot",
-    }
+    def is_content_visible(self) -> bool:
+        """Return whether this panel's current dock tab is presenting content."""
+        return bool(self._is_open and self._content_was_visible)
 
-    # Heuristic skip prefixes for runtime-only heavy references.
-    _AUTO_STATE_SKIP_PREFIXES = (
-        "_engine",
-        "_window_manager",
-        "_services",
-        "_event",
-        "_manager",
-        "_graph",
-        "_view",
-        "_ctx",
-        "_native",
-    )
+    def was_content_visible(self) -> bool:
+        """Return content visibility from the panel's preceding render frame."""
+        return bool(self._content_visible_previous_frame)
 
-    # Hard limit so an auto-persisted panel cannot bloat panel_state.json.
-    _AUTO_STATE_MAX_KEYS = 64
-    _AUTO_STATE_MAX_ITEMS = 128
-    _AUTO_STATE_MAX_STR_LEN = 4096
-    _AUTO_STATE_MAX_DEPTH = 4
+    def is_content_hovered(self) -> bool:
+        """Return whether the presented panel owns the current pointer target."""
+        return bool(
+            self._is_open
+            and self._content_was_visible
+            and self._content_hovered
+        )
 
     # ------------------------------------------------------------------
     # Service and Event Access
@@ -105,11 +99,70 @@ class EditorPanel(ClosablePanel):
         from .editor_services import EditorServices
         return EditorServices.instance()
 
-    @property
-    def events(self) -> EditorEventBus:
-        """Access the editor event bus."""
-        from .event_bus import EditorEventBus
-        return EditorEventBus.instance()
+    def execute_owned_command(
+        self,
+        command_id: str,
+        *,
+        source=None,
+        payload=None,
+    ) -> bool:
+        """Execute a global command after publishing this panel's ownership.
+
+        Toolbar clicks can arrive before the native focus edge is published for
+        the frame.  Every panel command must therefore bind its panel, view,
+        document, and child context synchronously before command routing reads
+        the global editor context.
+        """
+        from Infernux.engine.interaction import CommandSource
+
+        registry = self.services.command_registry
+        if registry is None:
+            return False
+        self.publish_interaction_ownership(reason="panel_owned_command")
+        return registry.execute(
+            str(command_id),
+            source=CommandSource.TOOLBAR if source is None else source,
+            payload=payload,
+        ).accepted
+
+    def publish_interaction_ownership(
+        self,
+        *,
+        reason: str = "panel_owned_edit",
+        record_history: bool = True,
+    ) -> bool:
+        """Publish this panel before an edit reaches global history.
+
+        ImGui may report a newly selected dock tab and the first edited widget
+        in adjacent callbacks. Authoring code must not depend on that callback
+        order: the edit synchronously establishes its panel/document/subview
+        context, while the last completed presentation snapshot decides
+        whether revealing the tab deserves its own undo step.
+        """
+        from Infernux.engine.interaction import EditorInteractionCore, FocusService
+
+        should_record = bool(record_history)
+        core = EditorInteractionCore.instance()
+        if core is not None:
+            should_record = bool(
+                should_record
+                and core.panels.records_focus_history(
+                    type_id=self.panel_type_id,
+                    view_id=self.window_id,
+                )
+            )
+        if should_record and self._window_manager is not None:
+            should_record = not self._window_manager.is_window_content_visible(
+                self.window_id
+            )
+        return FocusService.instance().activate_panel(
+            self.panel_type_id,
+            view_id=self.window_id,
+            document_id=self.document_id,
+            child_context_id=self.current_child_context_id(),
+            reason=str(reason or "panel_owned_edit"),
+            record_history=should_record,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle Hooks
@@ -192,14 +245,6 @@ class EditorPanel(ClosablePanel):
         Override this instead of ``on_render``.
         """
         pass
-
-    def handle_save_command(self, save_as: bool = False) -> bool:
-        """Handle a save shortcut for this panel's document.
-
-        Return ``True`` only for panels that own an authoring document. The
-        menu-bar router falls back to saving the scene for all other panels.
-        """
-        return False
 
     # ------------------------------------------------------------------
     # Unified Empty State
@@ -288,154 +333,30 @@ class EditorPanel(ClosablePanel):
     # State Persistence
     # ------------------------------------------------------------------
 
-    @classmethod
-    def _auto_state_is_supported_scalar(cls, value: Any) -> bool:
-        return value is None or isinstance(value, (bool, int, float, str))
-
-    @classmethod
-    def _auto_state_normalize_path_value(cls, key: str, value: str) -> str:
-        if not isinstance(value, str):
-            return value
-        text = value.strip()
-        if not text:
-            return text
-        if "path" not in key.lower():
-            return text
-        if os.path.isabs(text):
-            return lexical_path(text)
-        try:
-            from Infernux.engine.project_context import get_project_root
-
-            root = get_project_root()
-        except Exception:
-            root = None
-        if root:
-            return lexical_path(os.path.join(root, text))
-        return lexical_path(text)
-
-    @classmethod
-    def _auto_state_serialize_value(
-        cls,
-        key: str,
-        value: Any,
-        *,
-        depth: int,
-    ) -> tuple[bool, Any]:
-        if depth > cls._AUTO_STATE_MAX_DEPTH:
-            return False, None
-
-        if cls._auto_state_is_supported_scalar(value):
-            if isinstance(value, str):
-                if len(value) > cls._AUTO_STATE_MAX_STR_LEN:
-                    return False, None
-                return True, cls._auto_state_normalize_path_value(key, value)
-            return True, value
-
-        if isinstance(value, (list, tuple)):
-            if len(value) > cls._AUTO_STATE_MAX_ITEMS:
-                return False, None
-            out = []
-            for item in value:
-                ok, s = cls._auto_state_serialize_value(key, item, depth=depth + 1)
-                if not ok:
-                    return False, None
-                out.append(s)
-            return True, out
-
-        if isinstance(value, dict):
-            if len(value) > cls._AUTO_STATE_MAX_ITEMS:
-                return False, None
-            out_dict = {}
-            for k, v in value.items():
-                if not isinstance(k, str):
-                    return False, None
-                ok, s = cls._auto_state_serialize_value(k, v, depth=depth + 1)
-                if not ok:
-                    return False, None
-                out_dict[k] = s
-            return True, out_dict
-
-        return False, None
-
-    @classmethod
-    def _auto_state_should_skip_key(cls, key: str) -> bool:
-        if key in cls._AUTO_STATE_SKIP_KEYS:
-            return True
-        if key.startswith("__"):
-            return True
-        return any(key.startswith(prefix) for prefix in cls._AUTO_STATE_SKIP_PREFIXES)
-
-    def _collect_auto_state(self) -> dict:
-        """Collect a safe generic state snapshot for panels without custom persistence."""
-        state: dict[str, Any] = {}
-        for key, value in self.__dict__.items():
-            if len(state) >= self._AUTO_STATE_MAX_KEYS:
-                break
-            if self._auto_state_should_skip_key(key):
-                continue
-            if callable(value):
-                continue
-            ok, serialized = self._auto_state_serialize_value(key, value, depth=0)
-            if ok:
-                state[key] = serialized
-        return state
-
-    @classmethod
-    def _resolve_auto_state_path_value(cls, key: str, value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-        text = value.strip()
-        if not text:
-            return text
-        if "path" not in key.lower():
-            return text
-        if os.path.isabs(text):
-            return lexical_path(text)
-        try:
-            from Infernux.engine.project_context import get_project_root
-
-            root = get_project_root()
-        except Exception:
-            root = None
-        if root:
-            return lexical_path(os.path.join(root, text))
-        return text
-
-    def _apply_auto_state(self, data: dict) -> None:
-        """Apply generic persisted state for panels without custom persistence."""
-        if not isinstance(data, dict):
-            return
-        for key, value in data.items():
-            if self._auto_state_should_skip_key(key):
-                continue
-            if not hasattr(self, key):
-                continue
-            try:
-                setattr(self, key, self._resolve_auto_state_path_value(key, value))
-            except Exception:
-                continue
-
     def save_state(self) -> dict:
-        """Return a panel state dict for persistence.
-
-        Default behavior auto-persists simple JSON-safe fields so custom
-        panels gain basic restore behavior without extra code.
-        """
-        auto_state = self._collect_auto_state()
-        if not auto_state:
-            return {}
-        return {"__auto_state__": auto_state}
+        """Capture only presentation state declared by ``VIEW_STATE_SCHEMA``."""
+        schema = self.VIEW_STATE_SCHEMA
+        return {} if schema is None else schema.capture(self)
 
     def load_state(self, data: dict) -> None:
-        """Restore panel state from persisted data."""
-        if not isinstance(data, dict):
+        """Restore only presentation state declared by ``VIEW_STATE_SCHEMA``."""
+        if not data:
             return
-        if set(data) != {"__auto_state__"} or not isinstance(data["__auto_state__"], dict):
-            raise ValueError("editor panel state requires the canonical __auto_state__ document")
-        self._apply_auto_state(data["__auto_state__"])
+        schema = self.VIEW_STATE_SCHEMA
+        if schema is None:
+            raise ValueError(
+                f"panel '{self.panel_type_id}' does not declare persisted view state"
+            )
+        schema.restore(self, data)
 
     def _persist_panel_state(self) -> None:
-        """Persist this panel immediately after an explicit document action."""
+        """Publish this panel's view state to the shared in-memory snapshot.
+
+        ``EditorBootstrap._persist_editor_state`` is the sole authority for
+        capturing the global document session and flushing ``panel_state`` to
+        disk.  A panel must never turn one local document action into a second
+        global persistence path.
+        """
         from . import panel_state
 
         key = f"panel:{self.window_id}"
@@ -444,7 +365,29 @@ class EditorPanel(ClosablePanel):
             panel_state.put(key, data)
         else:
             panel_state.delete(key)
-        panel_state.save()
+
+    def _load_persisted_view_state_once(self) -> None:
+        if self._persisted_view_state_loaded:
+            return
+        self._persisted_view_state_loaded = True
+        from . import panel_state
+
+        data = panel_state.get(f"panel:{self.window_id}")
+        if not data:
+            return
+        try:
+            self.load_state(data)
+        except (AttributeError, TypeError, ValueError) as exc:
+            # This project is intentionally destructive during early API
+            # development. Stale editor view state is discarded, never
+            # interpreted through a compatibility path.
+            from Infernux.debug import Debug
+
+            Debug.log_warning(
+                f"Discarded incompatible Panel View State for "
+                f"'{self.panel_type_id}': {exc}"
+            )
+            panel_state.delete(f"panel:{self.window_id}")
 
     # ------------------------------------------------------------------
     # Unified Render Frame
@@ -457,10 +400,13 @@ class EditorPanel(ClosablePanel):
         above instead.
         """
         if not self._is_open:
+            self._content_hovered = False
             return
 
         # Trigger on_enable once.
         if not self._enable_called:
+            self.restore_persisted_session_document()
+            self._load_persisted_view_state_once()
             self._enable_called = True
             self._dirty_registry_snapshot = None
             self.on_enable()
@@ -477,31 +423,52 @@ class EditorPanel(ClosablePanel):
         # Push window styles.
         self._push_window_style(ctx)
         try:
+            self._content_visible_previous_frame = bool(self._content_was_visible)
             visible = self._begin_closable_window(ctx, self._window_flags())
             try:
                 if visible:
-                    self._content_was_visible = True
                     self._on_visible_pre(ctx)
-                    self.on_render_content(ctx)
+                    try:
+                        self.on_render_content(ctx)
+                    except Exception as exc:
+                        # A scripting error in one panel must not abort the
+                        # complete ImGui frame. ImGui's native error recovery
+                        # restores any unfinished child/style stacks when the
+                        # window ends; keep retrying so transient asset state
+                        # can heal without requiring the panel to be reopened.
+                        signature = (type(exc), str(exc))
+                        if signature != self._content_render_error_signature:
+                            from Infernux.debug import Debug
+
+                            Debug.log_error(
+                                f"Panel '{self.panel_type_id}' render failed: {exc}"
+                            )
+                        self._content_render_error_signature = signature
+                    else:
+                        self._content_render_error_signature = None
                 else:
                     if self._content_was_visible is not False:
                         self._on_not_visible(ctx)
-                    self._content_was_visible = False
             finally:
-                try:
-                    # Panel-close confirmations belong to this window's popup
-                    # hierarchy. Rendering them here keeps an undocked panel
-                    # from covering its own modal; engine-exit confirmations
-                    # continue to use the global overlay renderer.
-                    from .dirty_panel_confirmation import (
-                        DirtyPanelConfirmationCoordinator,
-                    )
-
-                    DirtyPanelConfirmationCoordinator.instance().render(
-                        ctx, panel_host_id=self._window_id
-                    )
-                finally:
-                    ctx.end_window()
+                self._content_was_visible = bool(
+                    getattr(self, "_content_presented_this_frame", visible)
+                )
+                popup_probe = getattr(
+                    ctx,
+                    "is_pointer_activation_blocked_by_popup",
+                    None,
+                )
+                popup_blocks_pointer = bool(
+                    popup_probe() if callable(popup_probe) else False
+                )
+                hover_probe = getattr(ctx, "is_window_hovered", None)
+                self._content_hovered = bool(
+                    self._content_was_visible
+                    and not popup_blocks_pointer
+                    and callable(hover_probe)
+                    and hover_probe(1)
+                )
+                ctx.end_window()
         finally:
             # Keep the ImGui style stack balanced even when panel code fails.
             self._pop_window_style(ctx)
@@ -510,7 +477,77 @@ class EditorPanel(ClosablePanel):
         # Also reset _enable_called so a future reopen runs on_enable() again,
         # matching the documented "created or reopened" contract.
         if not self._is_open and self._enable_called:
-            self._enable_called = False
-            self._content_was_visible = None
-            self.on_disable()
-            self._dirty_registry_snapshot = None
+            self._finalize_close_lifecycle()
+
+    def _finalize_close_lifecycle(self) -> None:
+        """Publish one close lifecycle edge, regardless of close source.
+
+        Title-bar closes finish inside :meth:`on_render`, while menu and
+        history-driven closes may unregister the renderable before another
+        frame is submitted.  WindowManager calls this same idempotent method
+        from its deferred close action so both paths observe exactly one
+        ``on_disable`` callback.
+        """
+        if not self._enable_called:
+            return
+        self._enable_called = False
+        self._content_visible_previous_frame = bool(self._content_was_visible)
+        self._content_was_visible = None
+        self._content_hovered = False
+        self.on_disable()
+        self._dirty_registry_snapshot = None
+
+
+class FloatingEditorPanel(EditorPanel):
+    """Non-dockable utility panel hosted by the normal Editor lifecycle.
+
+    Settings and build windows used to be rendered by a MenuBar-owned side
+    list.  This base keeps their fixed dialog presentation while giving them
+    the same WindowManager, focus, command and close semantics as every other
+    Editor panel.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        window_id: str,
+        *,
+        size: tuple[float, float],
+    ) -> None:
+        super().__init__(title, window_id)
+        self._dialog_size = (float(size[0]), float(size[1]))
+        self._dialog_positioned = False
+
+    def _window_flags(self) -> int:
+        from .theme import Theme
+
+        return Theme.WINDOW_FLAGS_DIALOG
+
+    def _initial_size(self) -> tuple[float, float]:
+        return self._dialog_size
+
+    def _pre_render(self, ctx) -> None:
+        if self._dialog_positioned:
+            return
+        from .theme import Theme
+
+        x0, y0, width, height = ctx.get_main_viewport_bounds()
+        dialog_width, dialog_height = self._dialog_size
+        ctx.set_next_window_pos(
+            x0 + (width - dialog_width) * 0.5,
+            y0 + (height - dialog_height) * 0.5,
+            Theme.COND_ALWAYS,
+            0.0,
+            0.0,
+        )
+        self._dialog_positioned = True
+
+    def save_state(self) -> dict:
+        # Utility settings already have authoritative project/user stores.
+        # Persisting arbitrary instance fields would create a second source of
+        # truth; WindowManager separately persists only the open/closed state.
+        return {}
+
+    def load_state(self, data: dict) -> None:
+        if data:
+            raise ValueError("floating utility panels do not persist instance state")

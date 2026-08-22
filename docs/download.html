@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Download InfernuxHub and choose an Infernux engine version for Windows.">
     <meta name="theme-color" content="#0a0c11">
@@ -14,11 +14,11 @@
     <meta property="og:title" content="Download Infernux">
     <meta property="og:description" content="Get InfernuxHub and install the engine version your project needs.">
     <meta property="og:url" content="https://infernux-engine.com/download.html">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.2.1.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Download Infernux">
     <meta name="twitter:description" content="Get InfernuxHub and choose an engine version.">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.2.1.jpg">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <title>Download Infernux</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
@@ -33,7 +33,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.2.9 live</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation">
             <div class="nav-container">
                 <a href="index.html" class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
@@ -70,8 +70,8 @@
                         <span class="mini-tag">Recommended</span>
                         <h2 id="hub-title-en">InfernuxHub</h2>
                         <p>Use the Hub to install or switch Infernux versions, create projects, and open existing projects. You do not need to prepare Python by hand.</p>
-                        <a class="btn btn-primary" href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/InfernuxHubInstaller-0.2.9.exe"><i class="fas fa-download" aria-hidden="true"></i> Download InfernuxHub</a>
-                        <span class="download-meta">Windows x64 · InfernuxHub 0.2.9</span>
+                        <a class="btn btn-primary" data-latest-hub href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/InfernuxHubInstaller-0.3.4.exe"><i class="fas fa-download" aria-hidden="true"></i> Download InfernuxHub</a>
+                        <span class="download-meta" data-hub-meta>Windows x64 · latest public release</span>
                     </div>
                 </section>
 
@@ -88,7 +88,8 @@
                         <div class="version-picker">
                             <label for="engine-version-en">Infernux version</label>
                             <select id="engine-version-en" data-version-select>
-                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9 · current preview</option>
+                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/infernux-0.3.4-cp312-cp312-win_amd64.whl">0.3.4 · latest public release</option>
+                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.1/infernux-0.2.1-cp312-cp312-win_amd64.whl">0.2.1</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.0/infernux-0.2.0-cp312-cp312-win_amd64.whl">0.2.0</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.6/infernux-0.1.6-cp312-cp312-win_amd64.whl">0.1.6</option>
@@ -98,7 +99,7 @@
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.2/infernux-0.1.2-cp312-cp312-win_amd64.whl">0.1.2</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.1/infernux-0.1.1-cp312-cp312-win_amd64.whl">0.1.1</option>
                             </select>
-                            <a class="btn btn-secondary" data-version-link href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">Download WHL <i class="fas fa-download" aria-hidden="true"></i></a>
+                            <a class="btn btn-secondary" data-version-link href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/infernux-0.3.4-cp312-cp312-win_amd64.whl">Download WHL <i class="fas fa-download" aria-hidden="true"></i></a>
                         </div>
                         <p class="version-note">Windows x64 · CPython 3.12. For normal project management, install the same version through InfernuxHub instead.</p>
                     </section>
@@ -124,8 +125,8 @@
                         <span class="mini-tag">推荐</span>
                         <h2 id="hub-title-zh">InfernuxHub</h2>
                         <p>通过 Hub 安装或切换 Infernux 版本、创建项目、打开已有项目。普通用户不需要自己准备 Python 环境。</p>
-                        <a class="btn btn-primary" href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/InfernuxHubInstaller-0.2.9.exe"><i class="fas fa-download" aria-hidden="true"></i> 下载 InfernuxHub</a>
-                        <span class="download-meta">Windows x64 · InfernuxHub 0.2.9</span>
+                        <a class="btn btn-primary" data-latest-hub href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/InfernuxHubInstaller-0.3.4.exe"><i class="fas fa-download" aria-hidden="true"></i> 下载 InfernuxHub</a>
+                        <span class="download-meta" data-hub-meta>Windows x64 · GitHub 最新公开版本</span>
                     </div>
                 </section>
 
@@ -142,7 +143,8 @@
                         <div class="version-picker">
                             <label for="engine-version-zh">Infernux 版本</label>
                             <select id="engine-version-zh" data-version-select>
-                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9 · 当前预览版</option>
+                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/infernux-0.3.4-cp312-cp312-win_amd64.whl">0.3.4 · 最新公开版本</option>
+                                <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">0.2.9</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.1/infernux-0.2.1-cp312-cp312-win_amd64.whl">0.2.1</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.0/infernux-0.2.0-cp312-cp312-win_amd64.whl">0.2.0</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.6/infernux-0.1.6-cp312-cp312-win_amd64.whl">0.1.6</option>
@@ -152,7 +154,7 @@
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.2/infernux-0.1.2-cp312-cp312-win_amd64.whl">0.1.2</option>
                                 <option value="https://github.com/ChenlizheMe/Infernux/releases/download/v0.1.1/infernux-0.1.1-cp312-cp312-win_amd64.whl">0.1.1</option>
                             </select>
-                            <a class="btn btn-secondary" data-version-link href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.2.9/infernux-0.2.9-cp312-cp312-win_amd64.whl">下载 WHL <i class="fas fa-download" aria-hidden="true"></i></a>
+                            <a class="btn btn-secondary" data-version-link href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/infernux-0.3.4-cp312-cp312-win_amd64.whl">下载 WHL <i class="fas fa-download" aria-hidden="true"></i></a>
                         </div>
                         <p class="version-note">Windows x64 · CPython 3.12。普通项目仍应在 InfernuxHub 中安装同一版本。</p>
                     </section>
@@ -170,9 +172,9 @@
     <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="start.html" data-i18n="nav.start">Start</a><a href="learn.html" data-i18n="nav.learn">Learn</a><a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="js/i18n-download.js?v=3"></script>
     <script src="js/i18n.js?v=19"></script>
-    <script src="js/main.js?v=14"></script>
-    <script src="js/docs-search.js?v=5"></script>
+    <script src="js/main.js?v=15"></script>
+    <script src="js/docs-search.js?v=6"></script>
     <script src="js/bilingual-page.js?v=1"></script>
-    <script src="js/download.js?v=3"></script>
+    <script src="js/download.js?v=5"></script>
 </body>
 </html>

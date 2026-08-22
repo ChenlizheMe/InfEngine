@@ -3,7 +3,10 @@
 import math
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.gizmos.gizmos import Gizmos
+from Infernux.gizmos.collector import GizmosCollector
 from Infernux.components.particle_system import ParticleBoundsMode, ParticleSystem
 from Infernux.lib import Vector3
 from Infernux.particle import EmitterShape, EmitterShapeKind
@@ -206,4 +209,197 @@ class TestParticleEmitterShapes:
         assert Gizmos.color == original_color
 
 
-import pytest  # noqa: E402 — needed for approx
+class TestGizmosCollectorSelectionCache:
+    def test_selected_subtree_is_reused_until_selection_or_scene_changes(self, monkeypatch):
+        collector = GizmosCollector()
+        scene = SimpleNamespace()
+        calls = []
+
+        def build(_scene, selected_id):
+            calls.append(selected_id)
+            return {selected_id, selected_id + 1}
+
+        monkeypatch.setattr(collector, "_build_ancestor_set", build)
+
+        assert collector._get_selected_ancestor_ids(scene, 7) == frozenset({7, 8})
+        assert collector._get_selected_ancestor_ids(scene, 7) == frozenset({7, 8})
+        assert calls == [7]
+
+        assert collector._get_selected_ancestor_ids(scene, 9) == frozenset({9, 10})
+        assert calls == [7, 9]
+
+        collector.invalidate_cache()
+        assert collector._get_selected_ancestor_ids(scene, 9) == frozenset({9, 10})
+        assert calls == [7, 9, 9]
+
+    def test_no_selection_does_not_cross_the_scene_binding(self, monkeypatch):
+        collector = GizmosCollector()
+
+        def unexpected_walk(*_args):
+            raise AssertionError("no selection walk")
+
+        monkeypatch.setattr(collector, "_build_ancestor_set", unexpected_walk)
+
+        assert collector._get_selected_ancestor_ids(SimpleNamespace(), 0) == frozenset()
+
+
+class TestGizmosCollectorActiveHierarchy:
+    def test_inactive_hierarchy_blocks_selected_particle_system_gizmo(
+        self, monkeypatch
+    ):
+        from Infernux.components.component import InxComponent
+        import Infernux.lib as lib
+
+        hierarchy_reads = []
+        parent = SimpleNamespace(active_in_hierarchy=False)
+
+        class GameObject:
+            id = 51
+
+            @property
+            def active_in_hierarchy(self):
+                hierarchy_reads.append("particle")
+                return bool(parent.active_in_hierarchy)
+
+            def get_children(self):
+                return []
+
+        game_object = GameObject()
+        particle = ParticleSystem()
+        particle._try_get_game_object = lambda: game_object
+        callbacks = []
+        particle._call_on_draw_gizmos = lambda: callbacks.append("always")
+        particle._call_on_draw_gizmos_selected = lambda: callbacks.append("selected")
+        scene = SimpleNamespace(
+            structure_version=1,
+            find_by_id=lambda object_id: game_object if object_id == 51 else None,
+            get_all_objects=lambda: [game_object],
+        )
+
+        class SceneManager:
+            @staticmethod
+            def instance():
+                return SimpleNamespace(get_active_scene=lambda: scene)
+
+        class Native:
+            def __init__(self):
+                self.icon_uploads = 0
+
+            def clear_component_gizmos(self):
+                pass
+
+            def clear_component_gizmo_icons(self):
+                pass
+
+            def upload_component_gizmos(self, *_args):
+                raise AssertionError("inactive ParticleSystem submitted gizmo geometry")
+
+            def upload_component_gizmo_icons(self, *_args):
+                self.icon_uploads += 1
+
+        native = Native()
+        engine = SimpleNamespace(
+            get_native_engine=lambda: native,
+            get_selected_object_id=lambda: 51,
+        )
+        collector = GizmosCollector()
+        collector._builtin_registry = {}
+        monkeypatch.setattr(lib, "SceneManager", SceneManager)
+        monkeypatch.setattr(
+            InxComponent, "_active_instances", {51: [particle]}
+        )
+
+        collector.collect_and_upload(engine)
+
+        assert callbacks == []
+        assert native.icon_uploads == 0
+        assert hierarchy_reads
+
+    @pytest.mark.parametrize("type_name", ["Camera", "Light"])
+    def test_inactive_hierarchy_blocks_builtin_icon_and_selected_gizmo(
+        self, monkeypatch, type_name
+    ):
+        from Infernux.components.component import InxComponent
+        import Infernux.lib as lib
+
+        callbacks = []
+
+        class Wrapper:
+            _gizmo_icon_color = (1.0, 1.0, 1.0)
+            _gizmo_icon_kind = 0
+            _always_show = False
+            on_draw_gizmos = InxComponent.on_draw_gizmos
+
+            def on_draw_gizmos_selected(self):
+                pass
+
+            @classmethod
+            def _get_or_create_wrapper(cls, _component, _game_object):
+                return SimpleNamespace(
+                    _always_show=False,
+                    _call_on_draw_gizmos=lambda: callbacks.append("always"),
+                    _call_on_draw_gizmos_selected=lambda: callbacks.append("selected"),
+                )
+
+        hierarchy_reads = []
+        parent = SimpleNamespace(active_in_hierarchy=False)
+
+        class GameObject:
+            id = 42
+
+            @property
+            def active_in_hierarchy(self):
+                hierarchy_reads.append(type_name)
+                return bool(parent.active_in_hierarchy)
+
+            def get_cpp_component(self, requested):
+                return SimpleNamespace(enabled=True) if requested == type_name else None
+
+            def get_transform(self):
+                return SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0, z=0.0))
+
+            def get_children(self):
+                return []
+
+        game_object = GameObject()
+        scene = SimpleNamespace(
+            structure_version=1,
+            find_by_id=lambda object_id: game_object if object_id == 42 else None,
+            get_all_objects=lambda: [game_object],
+        )
+
+        class SceneManager:
+            @staticmethod
+            def instance():
+                return SimpleNamespace(get_active_scene=lambda: scene)
+
+        class Native:
+            def __init__(self):
+                self.icon_uploads = 0
+
+            def clear_component_gizmos(self):
+                pass
+
+            def clear_component_gizmo_icons(self):
+                pass
+
+            def upload_component_gizmos(self, *_args):
+                raise AssertionError("inactive selected object submitted gizmo geometry")
+
+            def upload_component_gizmo_icons(self, *_args):
+                self.icon_uploads += 1
+
+        native = Native()
+        engine = SimpleNamespace(
+            get_native_engine=lambda: native,
+            get_selected_object_id=lambda: 42,
+        )
+        collector = GizmosCollector()
+        collector._builtin_registry = {type_name: Wrapper}
+        monkeypatch.setattr(lib, "SceneManager", SceneManager)
+
+        collector.collect_and_upload(engine)
+
+        assert callbacks == []
+        assert native.icon_uploads == 0
+        assert hierarchy_reads

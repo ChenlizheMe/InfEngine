@@ -71,6 +71,12 @@ def apply_overrides_to_prefab(
     """
     ...
 
+def build_prefab_apply_command(
+    instance_obj: Any,
+    prefab_path: str,
+    asset_database: Any = None,
+) -> Any: ...
+
 def revert_overrides(
     instance_obj: Any,
     prefab_path: str,
@@ -85,10 +91,8 @@ def revert_overrides(
     """
     ...
 
-def revert_overrides_with_undo(
+def build_prefab_revert_command(
     instance_obj: Any,
     prefab_path: str,
     asset_database: Any = None,
-) -> bool:
-    """Reset the instance as one structural editor Undo command."""
-    ...
+) -> Any: ...

@@ -61,6 +61,7 @@ TextureUploadBatch::TextureUploadBatch(const TextureCpuData &cpuData, const rhi:
     m_request.texture.mipLevels = static_cast<uint32_t>(cpuData.mipLevels.size());
     m_request.texture.format = ToRhiFormat(cpuData.format);
     m_request.texture.usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::TransferDestination;
+    m_request.texture.mutableFormat = rhi::IsSrgbFormat(m_request.texture.format);
     m_request.view.dimension = cpuData.dimension == TextureDimension::Texture3D ? rhi::TextureViewDimension::Texture3D
                                                                                 : rhi::TextureViewDimension::Texture2D;
     m_request.view.format = m_request.texture.format;

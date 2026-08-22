@@ -319,6 +319,7 @@ def perform_pointer_click(
         "press_render_frame": int(rendered_press["frame"]),
         "release_render_frame": int(rendered_release["frame"]),
         "press_target_active": bool(rendered_press.get("target_active")) if expected_target_id else None,
+        "press_target_accepted": _press_target_accepted(rendered_press) if expected_target_id else None,
         "press_frame": rendered_press if expected_target_id else None,
         "delivered": True,
     })
@@ -434,6 +435,7 @@ def perform_pointer_drag(
     previous_y = float(start_y)
     motion_sequences: list[int] = []
     motion_frames: list[int] = []
+    drag_drop_frames: list[dict[str, Any]] = []
     for index in range(1, step_count + 1):
         fraction = index / step_count
         x = float(start_x) + (float(end_x) - float(start_x)) * fraction
@@ -465,6 +467,10 @@ def perform_pointer_drag(
         current_frame = int(rendered["frame"])
         motion_sequences.append(int((motion.get("data") or {}).get("sequence", 0)))
         motion_frames.append(current_frame)
+        drag_drop_frames.append({
+            "frame": current_frame,
+            **dict(rendered.get("drag_drop") or {}),
+        })
         previous_x, previous_y = x, y
 
     release = _release(end_x, end_y, "release")
@@ -489,6 +495,7 @@ def perform_pointer_drag(
         "press_frame": pressed_frame if expected_target_id else None,
         "motion_sequences": motion_sequences,
         "motion_render_frames": motion_frames,
+        "drag_drop_frames": drag_drop_frames,
         "release_sequence": int((release.get("data") or {}).get("sequence", 0)),
         "release_render_frame": int((released_frame or {}).get("frame", 0)),
         "delivered": True,
@@ -671,6 +678,7 @@ def perform_key_chord(
     scancodes = [_resolve_scancode(value) for value in values]
     press_sequences: list[int] = []
     release_sequences: list[int] = []
+    before_press_frame = _current_rendered_gui_frame(timeout_seconds)
 
     for index, scancode in enumerate(scancodes):
         result = _queue_input(
@@ -683,6 +691,35 @@ def perform_key_chord(
         if not result.get("ok"):
             return result
         press_sequences.append(int((result.get("data") or {}).get("sequence", 0)))
+
+    press_render_frame = 0
+    if before_press_frame is not None:
+        rendered_press = _wait_for_rendered_gui_frame(
+            before_press_frame,
+            timeout_seconds=timeout_seconds,
+            minimum_input_sequence=press_sequences[-1],
+        )
+        if rendered_press is None:
+            for index, scancode in reversed(list(enumerate(scancodes))):
+                _queue_input(
+                    f"{trace_name}.release_after_frame_barrier_failure.{index}",
+                    lambda native, code=scancode: native.queue_synthetic_key_input(
+                        code, False, False
+                    ),
+                    arguments={
+                        "key": values[index],
+                        "scancode": scancode,
+                        "pressed": False,
+                    },
+                    wait_for_delivery=True,
+                    timeout_seconds=timeout_seconds,
+                )
+            return fail(
+                "error.key_chord_press_frame_barrier",
+                "The key chord was delivered, but no rendered ImGui frame observed the pressed state.",
+                hint="Check editor_ui_snapshot and input_status before retrying.",
+            )
+        press_render_frame = int(rendered_press.get("frame", 0) or 0)
 
     for index, scancode in reversed(list(enumerate(scancodes))):
         result = _queue_input(
@@ -700,6 +737,7 @@ def perform_key_chord(
         "keys": values,
         "scancodes": scancodes,
         "press_sequences": press_sequences,
+        "press_render_frame": press_render_frame,
         "release_sequences": release_sequences,
         "delivered": True,
     })
@@ -913,6 +951,7 @@ def _native_gui_frame_status(expected_target_id: str = "") -> dict[str, Any]:
         "frame": int(snapshot.get("frame", 0) or 0),
         "input_sequence": int(snapshot.get("input_sequence", 0) or 0),
         "mouse": mouse,
+        "drag_drop": dict(snapshot.get("drag_drop") or {}),
         "rendered_target_count": len(targets),
         "expected_target_id": expected_target_id,
         "target_match": target_match if expected_target_id else None,

@@ -94,11 +94,22 @@ struct MaterialTopInteraction
     std::string fragmentPayload;
     bool fragmentListPopupOpen = false;
     std::vector<PropertyChange> surfaceChanges;
+    int activeSurfaceIndex = -1;
+    int deactivatedSurfaceIndex = -1;
 };
 
 class InxGUIContext
 {
   public:
+    enum EditLifecycleFlag : uint32_t
+    {
+        EditChanged = 1u << 0u,
+        EditActive = 1u << 1u,
+        EditActivated = 1u << 2u,
+        EditDeactivatedAfterEdit = 1u << 3u,
+        EditDeactivated = 1u << 4u,
+    };
+
     /* DPI scale — set by InxGUI::Init, read by Python/UI code */
     static float s_dpiScale;
     float GetDpiScale() const;
@@ -107,6 +118,11 @@ class InxGUIContext
     /// Native batch renderers use this to avoid entering widgets from
     /// selection/change callbacks that can run between panel renders.
     [[nodiscard]] bool CanRenderWidgets() const;
+    /// Capture popup ownership before panel rendering starts. A popup can
+    /// close while consuming a click, so querying only the current popup
+    /// stack later in the frame would let that click reach a panel below it.
+    void BeginFrameInteractionState();
+    [[nodiscard]] bool IsPointerActivationBlockedByPopup() const;
     /* basic text & labels */
     void Label(const std::string &text);
     void TextWrapped(const std::string &text);
@@ -116,13 +132,14 @@ class InxGUIContext
     bool RadioButton(const std::string &label, bool active);
     bool Selectable(const std::string &label, bool selected = false, int flags = 0, float width = 0.0f,
                     float height = 0.0f);
+    int SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt);
 
     /* value editors */
-    void Checkbox(const std::string &label, bool *value);
+    bool Checkbox(const std::string &label, bool *value);
     /// Inspector checkbox: square at ``INSPECTOR_CHECKBOX_BOX_SCALE``, label at normal font size.
     bool CheckboxInspector(const std::string &label, bool *value);
     void IntSlider(const std::string &label, int *value, int min, int max);
-    void FloatSlider(const std::string &label, float *value, float min, float max);
+    void FloatSlider(const std::string &label, float *value, float min, float max, const char *format = nullptr);
     bool DragFloat(const std::string &label, float *value, float speed = 1.0f, float min = 0.0f, float max = 0.0f,
                    const char *fmt = "%.3f", float power = 1.0f, const std::string &semanticId = "");
     bool DragInt(const std::string &label, int *value, float speed = 1.0f, int min = 0, int max = 0,
@@ -146,6 +163,10 @@ class InxGUIContext
     void Vector3Control(const std::string &label, float value[3], float speed = 0.1f, float labelWidth = 0.0f,
                         const std::string &axisSemanticBase = "");
     void Vector4Control(const std::string &label, float value[4], float speed = 0.1f, float labelWidth = 0.0f);
+    [[nodiscard]] uint32_t GetLastEditLifecycleFlags() const
+    {
+        return m_lastEditLifecycleFlags;
+    }
 
     /* combo & lists */
     bool Combo(const std::string &label, int *currentItem, const std::vector<std::string> &items,
@@ -153,6 +174,20 @@ class InxGUIContext
     int SearchableCombo(const std::string &id, int currentItem, const std::vector<std::string> &items,
                         float width = 0.0f, int maxVisibleItems = 8, const std::string &searchHint = "Filter...",
                         const std::string &emptyText = "No results");
+
+    using TransientBeginHandler =
+        std::function<void(const std::string &, const std::string &, int, std::function<bool()>)>;
+    using TransientEndHandler = std::function<void(const std::string &)>;
+    void SetTransientInteractionBridge(TransientBeginHandler begin, TransientEndHandler end)
+    {
+        m_transientBegin = std::move(begin);
+        m_transientEnd = std::move(end);
+    }
+    void ClearTransientInteractionBridge()
+    {
+        m_transientBegin = {};
+        m_transientEnd = {};
+    }
     bool ListBox(const std::string &label, int *currentItem, const std::vector<std::string> &items,
                  int heightInItems = -1);
 
@@ -246,6 +281,10 @@ class InxGUIContext
     void GetMainViewportBounds(float *x, float *y, float *w, float *h);
     bool BeginWindow(const std::string &name, bool *open = nullptr, int flags = 0);
     void EndWindow();
+    /// True when the current root window is actually presented to the user.
+    /// Unlike BeginWindow's return value, this remains stable for the selected
+    /// tab of a dock node when editor rendering is throttled.
+    bool IsCurrentWindowContentPresented();
 
     /* layout query */
     float CalcTextWidth(const std::string &text);
@@ -258,6 +297,7 @@ class InxGUIContext
     bool IsVirtualizedRegionVisible(float height);
     void SetCursorPosX(float x);
     void SetCursorPosY(float y);
+    void SetCursorScreenPos(float x, float y);
     float GetWindowPosX();
     float GetWindowPosY();
     float GetWindowWidth();
@@ -408,10 +448,13 @@ class InxGUIContext
     void PopDrawListClipRect();
 
     /* batch property rendering — renders all scalar fields in one call */
-    std::vector<PropertyChange> RenderPropertyBatch(const std::vector<PropertyDesc> &descriptors, float labelWidth);
+    std::vector<PropertyChange> RenderPropertyBatch(const std::vector<PropertyDesc> &descriptors, float labelWidth,
+                                                    int *activeIndex = nullptr,
+                                                    int *deactivatedAfterEditIndex = nullptr);
     uint32_t RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                      const std::string &typeHint, bool selected, bool clickable, bool hasPicker,
-                                     uint64_t pickerTextureId, const std::string &semanticId = "");
+                                     uint64_t pickerTextureId, const std::string &semanticId = "",
+                                     float fixedWidth = 0.0f);
     std::vector<ObjectFieldInteraction> RenderMeshRendererInspectorFields(const std::string &meshFieldId,
                                                                           const std::string &meshLabel,
                                                                           const std::string &meshDisplay,
@@ -436,6 +479,7 @@ class InxGUIContext
         bool scrollToHighlight = false;
         bool wasOpen = false;
         bool restoreTriggerFocus = false;
+        bool closeRequested = false;
     };
 
     // Infinite-drag helper: warps cursor to opposite screen edge when it
@@ -445,7 +489,12 @@ class InxGUIContext
 
     bool m_dragCaptured = false;
     int m_ignoreMouseDeltaFrames = 0; // suppress N frames after SDL warp
+    uint32_t m_lastEditLifecycleFlags = 0;
+    bool m_popupOwnedPointerAtFrameStart = false;
+    int m_childBgTransparentCount = 0; // ChildBg transparency pushed inside popups
     std::unordered_map<std::string, SearchableComboState> m_searchableComboStates;
+    TransientBeginHandler m_transientBegin;
+    TransientEndHandler m_transientEnd;
 };
 
 } // namespace infernux

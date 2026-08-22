@@ -324,6 +324,34 @@ def test_numeric_space_inherits_from_spatial_operand_but_rejects_mixed_spaces():
         types.unify_numeric(simulation, world)
 
 
+def test_spatial_vec3_slots_accept_convertible_spaces_and_untyped_vectors():
+    types = TypeSystem()
+    simulation = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    world = TypeRef(ValueType.VEC3, CoordinateSpace.WORLD)
+    view = TypeRef(ValueType.VEC3, CoordinateSpace.VIEW)
+    constant = TypeRef(ValueType.VEC3)
+
+    assert types.can_connect(world, simulation)
+    assert types.can_connect(simulation, world)
+    assert types.can_connect(constant, simulation)
+    assert types.can_resize_numeric(world, simulation)
+    assert not types.can_connect(world, view)
+    assert types.adaptation_ops(world, simulation, semantic="position") == (
+        (
+            "convert_space",
+            simulation,
+            {"from": "world", "to": "simulation", "semantic": "position"},
+        ),
+    )
+    assert types.adaptation_ops(constant, simulation) == (
+        (
+            "convert_space",
+            simulation,
+            {"from": "none", "to": "simulation", "semantic": "direction"},
+        ),
+    )
+
+
 def test_vec4_and_color_are_assignment_compatible_four_channel_values():
     types = TypeSystem()
     vec4 = TypeRef(ValueType.VEC4)
@@ -382,7 +410,7 @@ def test_common_expression_compiler_rejects_bad_literal_and_input_type():
     with pytest.raises(ExpressionCompileError, match="exactly 3"):
         ExpressionCompiler().compile(bad_literal, outputs=(("vector", "value"),))
 
-    bad_input = GraphDocument(
+    broadcast = GraphDocument(
         "particle.expression",
         nodes=(
             GraphNodeRecord("scalar", "common.constant.f32", properties={"value": 1.0}),
@@ -390,8 +418,14 @@ def test_common_expression_compiler_rejects_bad_literal_and_input_type():
         ),
         links=(GraphLinkRecord("link", "scalar", "value", "normal", "value"),),
     )
-    with pytest.raises(ExpressionCompileError, match="cannot connect"):
-        ExpressionCompiler().compile(bad_input, outputs=(("normal", "result"),))
+    program = ExpressionCompiler().compile(broadcast, outputs=(("normal", "result"),))
+    resize = next(
+        instruction
+        for instruction in program.instructions
+        if instruction.opcode == "numeric_resize"
+    )
+    assert resize.result_type == TypeRef(ValueType.VEC3)
+    assert resize.operands[0].value_type == TypeRef(ValueType.F32)
 
 
 def test_curve_and_gradient_nodes_compile_strict_authored_literals():

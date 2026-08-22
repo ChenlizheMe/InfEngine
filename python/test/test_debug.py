@@ -114,6 +114,34 @@ class TestDebugConsole:
         assert console.warning_count == 0
         assert console.error_count == 0
 
+    def test_remove_source_entries_preserves_unrelated_history(self, console, tmp_path):
+        script = tmp_path / "Player.py"
+        other = tmp_path / "Other.py"
+        console.log(LogEntry(
+            message="old syntax error",
+            log_type=LogType.ERROR,
+            timestamp=datetime.now(),
+            source_file=str(script),
+        ))
+        console.log(LogEntry(
+            message="old warning",
+            log_type=LogType.WARNING,
+            timestamp=datetime.now(),
+            source_file=str(script).upper(),
+        ))
+        console.log(LogEntry(
+            message="unrelated",
+            log_type=LogType.ERROR,
+            timestamp=datetime.now(),
+            source_file=str(other),
+        ))
+
+        assert console.remove_source_entries(str(script)) == 2
+        assert [entry.message for entry in console.get_entries()] == ["unrelated"]
+        assert console.log_count == 0
+        assert console.warning_count == 0
+        assert console.error_count == 1
+
     def test_max_entries_trim(self, console):
         console._max_entries = 5
         for i in range(10):

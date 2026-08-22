@@ -145,6 +145,7 @@ struct GpuParticleEmitterProgram
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
     bool collisionEnabled = false;
+    bool supportsFusedUpdateRendering = false;
     std::vector<uint32_t> parameterWords;
     bool preserveState = false;
     struct StateMigration
@@ -253,6 +254,7 @@ struct GpuParticleEmitterDiagnostic
     uint32_t aliveCount = 0;
     uint32_t visibleCount = 0;
     uint32_t droppedCount = 0;
+    uint32_t initializedSpawnCount = 0;
     uint32_t collisionHitCount = 0;
     uint32_t collisionResponseCount = 0;
     uint32_t collisionTriggerCount = 0;
@@ -332,6 +334,10 @@ class ParticleGpuSystemManager
     /// remains untouched when any runtime, renderer, or RenderGraph
     /// compilation step fails.
     [[nodiscard]] bool ApplyGraph(const GpuParticleGraphProgram &program, std::string *error = nullptr);
+    /// Compile and publish several independent graph instances as one
+    /// transaction. Scene activation uses this path so N ParticleSystem
+    /// components do not rebuild the shared GPU graph N times.
+    [[nodiscard]] bool ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error = nullptr);
     /// Update graph-instance parameters in place. No shader, pipeline, or
     /// particle-state resource is rebuilt.
     [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords,
@@ -342,6 +348,10 @@ class ParticleGpuSystemManager
                                              std::string *error = nullptr);
     [[nodiscard]] uint64_t CollisionSceneRevision() const noexcept;
     [[nodiscard]] uint32_t CollisionSceneColliderCount() const noexcept;
+    /// True when at least one resident emitter has compiled collision work.
+    /// Scene extraction uses this to avoid rebuilding collider snapshots for
+    /// particle graphs that cannot consume them.
+    [[nodiscard]] bool RequiresCollisionScene() const noexcept;
     /// Replace only render resources that reference this live material. The
     /// simulation runtime and all surviving particles remain untouched.
     [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
@@ -358,13 +368,26 @@ class ParticleGpuSystemManager
     /// Update one emitter's graph-owned runtime playing state without rebuilding resources.
     [[nodiscard]] bool SetEmitterPlaying(uint64_t id, bool playing);
     [[nodiscard]] bool Reset(uint64_t id);
+    /// Arm bootstrap on every resident emitter. Play/Stop must not resume
+    /// indirect dispatches from a previous generation's alive list.
+    void ResetAll();
     void Execute(VkCommandBuffer commandBuffer);
+    /// Drop a half-open async simulation/export recording after Play/Stop.
+    /// The next submission must begin a new compiled batch session.
+    void AbortAsyncRecording() noexcept;
     /// Record the pre-export simulation phase on an independent Compute queue.
     [[nodiscard]] bool RecordAsyncSimulation(VkCommandBuffer commandBuffer);
     /// Record Rendering/Bounds after the current Graphics frame has consumed
     /// the previous exported particle output.
     [[nodiscard]] bool RecordAsyncExport(VkCommandBuffer commandBuffer);
+    /// True when the compiled graph can record simulation and export as two
+    /// Compute submissions. Preroll and offscreen policy still allow this;
+    /// they only forbid overlapping simulation with the current Graphics frame.
+    [[nodiscard]] bool CanRecordPartitioned() const noexcept;
     [[nodiscard]] bool CanExecuteAsync() const noexcept;
+    /// Returns true only when the frame compute callback would record useful
+    /// particle work (simulation, collision upload, or diagnostics).
+    [[nodiscard]] bool HasPendingGpuWork() const noexcept;
     /// Changes whenever a simulation graph is published. Frame scheduling
     /// uses this to synchronously prime newly exported render data once.
     [[nodiscard]] uint64_t AsyncExecutionGeneration() const noexcept;

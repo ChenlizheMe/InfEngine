@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-from Infernux.components.serialized_field import Color, serialized_field
+from Infernux.components.fields import Color, serialized_field
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph

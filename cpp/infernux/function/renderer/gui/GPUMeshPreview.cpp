@@ -1,8 +1,9 @@
 /**
  * @file GPUMeshPreview.cpp
  * @brief GPU mesh preview — renders an arbitrary InxMesh with per-submesh
- *        materials into a small offscreen framebuffer and reads back RGBA8
- *        pixels for editor thumbnails (model / prefab previews).
+ *        materials into a small offscreen attachment set and reads back RGBA8
+ *        pixels for editor thumbnails
+ * (model / prefab previews).
  */
 
 #include "GPUMeshPreview.h"
@@ -139,12 +140,9 @@ GPUMeshPreview::~GPUMeshPreview()
 {
     if (!m_vkCore)
         return;
-    VkDevice device = m_vkCore->GetDevice();
     DestroyImGuiDisplayDescriptor();
-    DestroyFramebuffer();
+    DestroyAttachments();
     DestroyViewResources();
-    if (m_renderPass != VK_NULL_HANDLE)
-        vkDestroyRenderPass(device, m_renderPass, nullptr);
 }
 
 // ============================================================================
@@ -253,7 +251,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         if (!pipelineReady || !previewMat)
             continue;
 
-        MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat, true);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
             continue;
 
@@ -284,8 +282,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     // update so this command buffer never skips all geometry on stale handles.
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
                                   [&](SubmeshBinding &binding) {
-                                      MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(
-                                          binding.ownedMaterial->GetMaterialKey());
+                                      MaterialPassRenderData *rd =
+                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial, true);
                                       if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
                                           rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
                                           !rd->shaderProgram)
@@ -311,6 +309,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     sceneUBO.proj = proj;
     sceneUBO.previousViewProj = proj * view;
     sceneUBO.inverseViewProj = glm::inverse(proj * view);
+    sceneUBO.projectionParams = glm::vec4(0.1f, 100.0f, 0.01f, 0.001f);
+    sceneUBO.zBufferParams = glm::vec4(-999.0f, 1000.0f, -9.99f, 10.0f);
 
     // ── Lighting UBO ─────────────────────────────────────────────────
     ShaderLightingUBO lightingUBO{};
@@ -400,21 +400,44 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
                          VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &uboBarrier,
                          0, nullptr, 0, nullptr);
 
-    // ── Begin render pass ────────────────────────────────────────────
+    // ── Begin the RHI-selected graphics attachment path ─────────────
     VkClearValue clearValues[2];
     clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     clearValues[1].depthStencil = {1.0f, 0};
 
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = m_renderPass;
-    rpBegin.framebuffer = m_framebuffer;
-    rpBegin.renderArea.offset = {0, 0};
-    rpBegin.renderArea.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
-    rpBegin.clearValueCount = 2;
-    rpBegin.pClearValues = clearValues;
+    vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
+                                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (m_depth.HasView()) {
+        vkrender::TransitionTrackedImageLayout(cmd, m_depth.GetImage(), rhi::ToVkImageAspectMask(m_depthFormat),
+                                               m_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    }
 
-    vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = m_msaaColor.GetView();
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = clearValues[0];
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    if (m_depth.HasView()) {
+        depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAttachment.imageView = m_depth.GetView();
+        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.clearValue = clearValues[1];
+    }
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = m_depth.HasView() ? &depthAttachment : nullptr;
+    m_dynamicRenderingCommands.begin(cmd, &renderingInfo);
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(renderSize);
@@ -464,27 +487,45 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
                                                   b.pipelineLayout, 2, 1, &globalsDesc, 0, nullptr);
         }
 
+        if (b.program->UsesBindlessTextureABI()) {
+            auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+            const auto bindlessBinding = rhiDevice.GetBindlessTextureTableBinding();
+            const VkDescriptorSet bindlessSet = rhiDevice.Resolve(bindlessBinding.group);
+            if (bindlessSet == VK_NULL_HANDLE) {
+                static int missingBindlessSetErrorCount = 0;
+                if (missingBindlessSetErrorCount++ < 8)
+                    INXLOG_ERROR("Mesh preview pass skipped because the device-global texture table is unavailable");
+                continue;
+            } else {
+                vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.BindlessTextures", cmd,
+                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, b.pipelineLayout,
+                                                      ShaderProgram::BindlessTextureSet, 1, &bindlessSet, 0, nullptr);
+                if (const auto *indices =
+                        m_vkCore->GetMaterialPipelineManager().GetDescriptorManager().GetBindlessTextureIndices(
+                            b.ownedMaterial->GetMaterialKey())) {
+                    rhiDevice.MarkBindlessTexturesUsed(indices->empty() ? nullptr : indices->data(), indices->size());
+                }
+            }
+        }
+
         vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
 
         vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1, b.submesh->indexStart, 0, 0);
         anyDrawn = true;
     }
 
-    vkCmdEndRenderPass(cmd);
+    m_dynamicRenderingCommands.end(cmd);
+    m_msaaColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (m_depth.HasView())
+        m_depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // ── MSAA resolve + readback ──────────────────────────────────────
     if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
-        VkImageMemoryBarrier msaaBarrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &msaaBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
-        VkImageMemoryBarrier resolveBarrier = vkrender::MakeImageBarrier(
-            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &resolveBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_resolveColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_resolveColorLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         VkImageResolve resolveRegion{};
         resolveRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -493,17 +534,11 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         vkCmdResolveImage(cmd, m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_resolveColor.GetImage(),
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
 
-        VkImageMemoryBarrier readbackBarrier = vkrender::MakeImageBarrier(
-            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &readbackBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_resolveColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_resolveColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     } else {
-        VkImageMemoryBarrier barrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &barrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     }
 
     VkImage srcImage = (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) ? m_resolveColor.GetImage() : m_msaaColor.GetImage();
@@ -616,37 +651,37 @@ bool GPUMeshPreview::EnsureResources(int size)
     VkFormat colorFormat = mpm.GetColorFormat();
     VkFormat depthFormat = mpm.GetDepthFormat();
     VkSampleCountFlagBits sampleCount = mpm.GetSampleCount();
+    const auto dynamicCommands = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice());
+    if (!m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled ||
+        !dynamicCommands.IsValid()) {
+        INXLOG_ERROR("GPUMeshPreview: dynamic rendering is required for mesh previews");
+        return false;
+    }
 
     const bool renderConfigChanged =
-        (m_renderPass != VK_NULL_HANDLE) &&
+        (m_currentSize != 0) &&
         (colorFormat != m_colorFormat || depthFormat != m_depthFormat || sampleCount != m_sampleCount);
 
     if (renderConfigChanged) {
         DestroyImGuiDisplayDescriptor();
-        DestroyFramebuffer();
-        vkDestroyRenderPass(m_vkCore->GetDevice(), m_renderPass, nullptr);
-        m_renderPass = VK_NULL_HANDLE;
+        DestroyAttachments();
     }
 
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
     m_sampleCount = sampleCount;
-
-    if (m_renderPass == VK_NULL_HANDLE)
-        CreateRenderPass();
-    if (m_renderPass == VK_NULL_HANDLE)
-        return false;
+    m_dynamicRenderingCommands = dynamicCommands;
 
     if (m_currentSize != size) {
         DestroyImGuiDisplayDescriptor();
-        DestroyFramebuffer();
-        CreateFramebuffer(size);
+        DestroyAttachments();
+        CreateAttachments(size);
         m_currentSize = size;
-        if (m_framebuffer != VK_NULL_HANDLE)
+        if (m_msaaColor.IsValid())
             PublishRenderView();
     }
 
-    return m_framebuffer != VK_NULL_HANDLE && EnsureViewResources();
+    return m_msaaColor.IsValid() && EnsureViewResources();
 }
 
 bool GPUMeshPreview::EnsureViewResources()
@@ -718,71 +753,7 @@ void GPUMeshPreview::DestroyViewResources()
     m_previewSceneUbo.reset();
 }
 
-void GPUMeshPreview::CreateRenderPass()
-{
-    VkDevice device = m_vkCore->GetDevice();
-
-    std::vector<VkAttachmentDescription> attachments;
-    std::vector<VkAttachmentReference> colorRefs;
-    VkAttachmentReference depthRef{};
-
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format = m_colorFormat;
-    colorAtt.samples = m_sampleCount;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments.push_back(colorAtt);
-
-    VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
-    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorRefs.push_back(colorRef);
-
-    bool hasDepth = (m_depthFormat != VK_FORMAT_UNDEFINED);
-    if (hasDepth) {
-        VkAttachmentDescription depthAtt{};
-        depthAtt.format = m_depthFormat;
-        depthAtt.samples = m_sampleCount;
-        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAtt.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        attachments.push_back(depthAtt);
-
-        depthRef.attachment = 1;
-        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
-    subpass.pColorAttachments = colorRefs.data();
-    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
-
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    rpInfo.pAttachments = attachments.data();
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    if (vkCreateRenderPass(m_vkCore->GetDevice(), &rpInfo, nullptr, &m_renderPass) != VK_SUCCESS) {
-        INXLOG_ERROR("GPUMeshPreview: failed to create render pass");
-        m_renderPass = VK_NULL_HANDLE;
-    }
-}
-
-void GPUMeshPreview::CreateFramebuffer(int size)
+void GPUMeshPreview::CreateAttachments(int size)
 {
     VkDevice device = m_vkCore->GetDevice();
     VmaAllocator allocator = m_vkCore->GetDeviceContext().GetVmaAllocator();
@@ -806,48 +777,26 @@ void GPUMeshPreview::CreateFramebuffer(int size)
     if (m_depthFormat != VK_FORMAT_UNDEFINED) {
         m_depth.Create(allocator, device, w, h, m_depthFormat, VK_IMAGE_TILING_OPTIMAL,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sampleCount);
-        m_depth.CreateView(m_depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
-    }
-
-    std::vector<VkImageView> fbAttachments;
-    fbAttachments.push_back(m_msaaColor.GetView());
-    if (m_depth.IsValid())
-        fbAttachments.push_back(m_depth.GetView());
-
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass = m_renderPass;
-    fbInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size());
-    fbInfo.pAttachments = fbAttachments.data();
-    fbInfo.width = w;
-    fbInfo.height = h;
-    fbInfo.layers = 1;
-
-    if (vkCreateFramebuffer(device, &fbInfo, nullptr, &m_framebuffer) != VK_SUCCESS) {
-        INXLOG_ERROR("GPUMeshPreview: failed to create framebuffer");
-        m_framebuffer = VK_NULL_HANDLE;
-        return;
+        m_depth.CreateView(m_depthFormat, rhi::ToVkImageAspectMask(m_depthFormat));
     }
 }
 
-void GPUMeshPreview::DestroyFramebuffer()
+void GPUMeshPreview::DestroyAttachments()
 {
     UnpublishRenderView();
-    VkDevice device = m_vkCore->GetDevice();
-    if (m_framebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, m_framebuffer, nullptr);
-        m_framebuffer = VK_NULL_HANDLE;
-    }
     m_msaaColor.Destroy();
     m_resolveColor.Destroy();
     m_depth.Destroy();
+    m_msaaColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_resolveColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_currentSize = 0;
     m_displayImageShaderReady = false;
 }
 
 void GPUMeshPreview::PublishRenderView()
 {
-    if (!m_vkCore || m_framebuffer == VK_NULL_HANDLE)
+    if (!m_vkCore || !m_msaaColor.IsValid())
         return;
     auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (m_renderView.color.IsValid())
@@ -1009,7 +958,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         }
         if (!pipelineReady || !previewMat)
             continue;
-        MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat, true);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
             continue;
         previewMat->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
@@ -1033,8 +982,8 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
 
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
                                   [&](SubmeshBinding &binding) {
-                                      MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(
-                                          binding.ownedMaterial->GetMaterialKey());
+                                      MaterialPassRenderData *rd =
+                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial, true);
                                       if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
                                           rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
                                           !rd->shaderProgram)
@@ -1056,6 +1005,8 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     sceneUBO.proj = proj;
     sceneUBO.previousViewProj = proj * view;
     sceneUBO.inverseViewProj = glm::inverse(proj * view);
+    sceneUBO.projectionParams = glm::vec4(0.1f, 100.0f, 0.01f, 0.001f);
+    sceneUBO.zBufferParams = glm::vec4(-999.0f, 1000.0f, -9.99f, 10.0f);
 
     ShaderLightingUBO lightingUBO{};
     memset(&lightingUBO, 0, sizeof(lightingUBO));
@@ -1117,20 +1068,9 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
 
     VkImage displayImage =
         (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) ? m_resolveColor.GetImage() : m_msaaColor.GetImage();
-    if (m_displayImageShaderReady) {
-        VkImageMemoryBarrier toDst = vkrender::MakeImageBarrier(
-            displayImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-                                                   : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_SHADER_READ_BIT,
-            m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_ACCESS_TRANSFER_WRITE_BIT
-                                                   : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-        vkCmdPipelineBarrier(cmd,
-                             m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
-                                                                    : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_PIPELINE_STAGE_TRANSFER_BIT
-                                                                    : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &toDst);
+    if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+        vkrender::TransitionTrackedImageLayout(cmd, displayImage, VK_IMAGE_ASPECT_COLOR_BIT, m_resolveColorLayout,
+                                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     }
 
     vkCmdUpdateBuffer(cmd, sceneUBOBuf, 0, sizeof(sceneUBO), &sceneUBO);
@@ -1158,15 +1098,39 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     VkClearValue clearValues[2];
     clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     clearValues[1].depthStencil = {1.0f, 0};
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = m_renderPass;
-    rpBegin.framebuffer = m_framebuffer;
-    rpBegin.renderArea.offset = {0, 0};
-    rpBegin.renderArea.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
-    rpBegin.clearValueCount = 2;
-    rpBegin.pClearValues = clearValues;
-    vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+    vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
+                                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (m_depth.HasView()) {
+        vkrender::TransitionTrackedImageLayout(cmd, m_depth.GetImage(), rhi::ToVkImageAspectMask(m_depthFormat),
+                                               m_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    }
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = m_msaaColor.GetView();
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = clearValues[0];
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    if (m_depth.HasView()) {
+        depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAttachment.imageView = m_depth.GetView();
+        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.clearValue = clearValues[1];
+    }
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = m_depth.HasView() ? &depthAttachment : nullptr;
+    m_dynamicRenderingCommands.begin(cmd, &renderingInfo);
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(renderSize);
@@ -1204,17 +1168,38 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         if (b.program->HasDeclaredDescriptorSet(2) && globalsDesc != VK_NULL_HANDLE)
             vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Live.Set2", cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                                   b.pipelineLayout, 2, 1, &globalsDesc, 0, nullptr);
+        if (b.program->UsesBindlessTextureABI()) {
+            auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+            const auto bindlessBinding = rhiDevice.GetBindlessTextureTableBinding();
+            const VkDescriptorSet bindlessSet = rhiDevice.Resolve(bindlessBinding.group);
+            if (bindlessSet == VK_NULL_HANDLE) {
+                static int missingLiveBindlessSetErrorCount = 0;
+                if (missingLiveBindlessSetErrorCount++ < 8)
+                    INXLOG_ERROR(
+                        "Live mesh preview pass skipped because the device-global texture table is unavailable");
+                continue;
+            } else {
+                vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Live.BindlessTextures", cmd,
+                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, b.pipelineLayout,
+                                                      ShaderProgram::BindlessTextureSet, 1, &bindlessSet, 0, nullptr);
+                if (const auto *indices =
+                        m_vkCore->GetMaterialPipelineManager().GetDescriptorManager().GetBindlessTextureIndices(
+                            b.ownedMaterial->GetMaterialKey())) {
+                    rhiDevice.MarkBindlessTexturesUsed(indices->empty() ? nullptr : indices->data(), indices->size());
+                }
+            }
+        }
         vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
         vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1, b.submesh->indexStart, 0, 0);
     }
-    vkCmdEndRenderPass(cmd);
+    m_dynamicRenderingCommands.end(cmd);
+    m_msaaColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (m_depth.HasView())
+        m_depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
-        VkImageMemoryBarrier msaaBarrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &msaaBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkImageResolve resolveRegion{};
         resolveRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         resolveRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1223,17 +1208,13 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
     }
 
-    VkImageMemoryBarrier toShader = vkrender::MakeImageBarrier(
-        displayImage,
-        m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-                                               : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-        m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT);
-    vkCmdPipelineBarrier(cmd,
-                         m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_PIPELINE_STAGE_TRANSFER_BIT
-                                                                : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toShader);
+    if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+        vkrender::TransitionTrackedImageLayout(cmd, displayImage, VK_IMAGE_ASPECT_COLOR_BIT, m_resolveColorLayout,
+                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    } else {
+        vkrender::TransitionTrackedImageLayout(cmd, displayImage, VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
+                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
 
     auto vertexLease = std::shared_ptr<vk::VkBufferHandle>(std::move(vbo));
     auto indexLease = std::shared_ptr<vk::VkBufferHandle>(std::move(ibo));

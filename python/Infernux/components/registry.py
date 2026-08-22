@@ -38,6 +38,31 @@ class ComponentRegistration:
     script_path: str
     component_type: Optional[Type['InxComponent']]
     project_script: bool
+    allow_multiple: bool = True
+    user_addable: bool = True
+    removable: bool = True
+    intrinsic: bool = False
+    required_types: tuple[object, ...] = ()
+    incompatible_types: tuple[object, ...] = ()
+    exclusive_groups: tuple[str, ...] = ()
+    satisfied_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ComponentScriptRegistrySnapshot:
+    """Exact registry state owned by one component script path."""
+
+    type_registrations: tuple[tuple[str, ComponentRegistration], ...]
+    script_registration: Optional[ComponentRegistration]
+
+
+@dataclass(frozen=True)
+class ComponentRegistryStateSnapshot:
+    """Complete registry state used by multi-script reload transactions."""
+
+    type_registrations: tuple[tuple[str, ComponentRegistration], ...]
+    script_registrations: tuple[tuple[str, ComponentRegistration], ...]
+    registration_revision: int
 
 
 _registration_lock = threading.RLock()
@@ -103,13 +128,16 @@ def _bump_revision() -> None:
     _registration_revision += 1
 
 
-def register_component_type(component_type: Type['InxComponent'], *, script_path: str = "") -> None:
-    """Register the newest loaded definition of one Python component type."""
+def _build_component_registration(
+    component_type: Type['InxComponent'],
+    *,
+    script_path: str = "",
+) -> tuple[str, ComponentRegistration] | None:
     if getattr(component_type, "_is_broken", False):
-        return
+        return None
     identity = getattr(component_type, "_get_type_guid", None)
     if not callable(identity):
-        return
+        return None
     from Infernux.engine.path_utils import resolved_path
 
     source_path = script_path or _module_file(component_type)
@@ -126,25 +154,191 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
         script_path=path if project_script else "",
         component_type=component_type,
         project_script=project_script,
+        allow_multiple=not bool(getattr(component_type, "_disallow_multiple_", False)),
+        user_addable=bool(getattr(component_type, "_component_user_addable_", True)),
+        removable=bool(getattr(component_type, "_component_removable_", True)),
+        intrinsic=bool(getattr(component_type, "_component_intrinsic_", False)),
+        required_types=tuple(getattr(component_type, "_require_components_", ()) or ()),
+        incompatible_types=tuple(getattr(component_type, "_incompatible_components_", ()) or ()),
+        exclusive_groups=tuple(getattr(component_type, "_component_exclusive_groups_", ()) or ()),
+        satisfied_types=tuple(getattr(component_type, "_component_satisfied_types_", ()) or ()),
     )
-    type_key = str(identity())
+    return str(identity()), registration
+
+
+def register_component_type(component_type: Type['InxComponent'], *, script_path: str = "") -> None:
+    """Register the newest loaded definition of one Python component type."""
+    from ._component_registration import stage_candidate_component_type
+
+    if stage_candidate_component_type(component_type):
+        return
+    built = _build_component_registration(component_type, script_path=script_path)
+    if built is None:
+        return
+    type_key, registration = built
     with _registration_lock:
-        if project_script and path:
-            normalized = _normalized_path(path)
+        if registration.project_script and registration.script_path:
+            normalized = _normalized_path(registration.script_path)
             for key, previous in tuple(_type_registrations.items()):
                 if previous.project_script and _normalized_path(previous.script_path) == normalized:
                     _type_registrations.pop(key, None)
         _type_registrations[type_key] = registration
-        if project_script and path:
-            _script_registrations[_normalized_path(path)] = registration
+        if registration.project_script and registration.script_path:
+            _script_registrations[_normalized_path(registration.script_path)] = registration
         _bump_revision()
 
 
-def _direct_component_declarations(file_path: str) -> tuple[str, ...]:
+def snapshot_component_script_registry(file_path: str) -> ComponentScriptRegistrySnapshot:
+    """Capture every registry entry currently owned by *file_path*."""
+    normalized = _normalized_path(file_path)
+    with _registration_lock:
+        type_entries = tuple(
+            (key, registration)
+            for key, registration in _type_registrations.items()
+            if registration.project_script
+            and _normalized_path(registration.script_path) == normalized
+        )
+        script_entry = _script_registrations.get(normalized)
+    return ComponentScriptRegistrySnapshot(type_entries, script_entry)
+
+
+def restore_component_script_registry(
+    file_path: str,
+    snapshot: ComponentScriptRegistrySnapshot,
+) -> None:
+    """Restore one script registry snapshot after candidate execution."""
+    normalized = _normalized_path(file_path)
+    with _registration_lock:
+        for key, registration in tuple(_type_registrations.items()):
+            if registration.project_script and _normalized_path(registration.script_path) == normalized:
+                _type_registrations.pop(key, None)
+        _type_registrations.update(snapshot.type_registrations)
+        if snapshot.script_registration is None:
+            _script_registrations.pop(normalized, None)
+        else:
+            _script_registrations[normalized] = snapshot.script_registration
+        _bump_revision()
+
+
+def snapshot_component_registry_state() -> ComponentRegistryStateSnapshot:
+    """Capture every component registration without executing user code."""
+    with _registration_lock:
+        return ComponentRegistryStateSnapshot(
+            tuple(_type_registrations.items()),
+            tuple(_script_registrations.items()),
+            _registration_revision,
+        )
+
+
+def restore_component_registry_state(snapshot: ComponentRegistryStateSnapshot) -> None:
+    """Restore a complete registry snapshot exactly, including its revision."""
+    if not isinstance(snapshot, ComponentRegistryStateSnapshot):
+        raise TypeError("snapshot must be a ComponentRegistryStateSnapshot")
+    global _registration_revision
+    with _registration_lock:
+        _type_registrations.clear()
+        _type_registrations.update(snapshot.type_registrations)
+        _script_registrations.clear()
+        _script_registrations.update(snapshot.script_registrations)
+        _registration_revision = snapshot.registration_revision
+
+
+def publish_component_script_types(
+    file_path: str,
+    component_types: tuple[Type['InxComponent'], ...],
+) -> tuple[Type['InxComponent'], ...]:
+    """Atomically publish all loaded component types owned by one script."""
+    return publish_component_script_types_batch(((file_path, component_types),))
+
+
+def publish_component_script_types_batch(
+    entries: tuple[tuple[str, tuple[Type['InxComponent'], ...]], ...],
+    *,
+    remove_paths: tuple[str, ...] = (),
+    cds_prepared: bool = False,
+) -> tuple[Type['InxComponent'], ...]:
+    """Publish several script descriptors under one registry lock.
+
+    ``remove_paths`` is used by an atomic script move: the candidate is
+    registered at its destination while the old path is retired in the same
+    registry critical section.  Callers that do not relocate a script keep
+    the default empty tuple.
+    """
+    built_by_path = []
+    publish_types = []
+    for file_path, component_types in entries:
+        normalized = _normalized_path(file_path)
+        built = []
+        for component_type in component_types:
+            registration = _build_component_registration(
+                component_type,
+                script_path=file_path,
+            )
+            if registration is not None:
+                built.append(registration)
+                publish_types.append(component_type)
+        built_by_path.append((normalized, built))
+
+    if not cds_prepared:
+        # Ordinary Edit-mode publication keeps the immediate registration
+        # contract. Play/Pause schema reloads prepare every class and live slot
+        # through one CDSSchemaPublication before entering this registry edge.
+        from ._cds_bridge import publish_class
+
+        for component_type in dict.fromkeys(publish_types):
+            publish_class(component_type)
+
+    with _registration_lock:
+        paths = {normalized for normalized, _built in built_by_path}
+        paths.update(_normalized_path(path) for path in remove_paths)
+        retired_types = tuple(
+            dict.fromkeys(
+                registration.component_type
+                for registration in _type_registrations.values()
+                if registration.project_script
+                and registration.component_type is not None
+                and _normalized_path(registration.script_path) in paths
+                and registration.component_type not in publish_types
+            )
+        )
+        for key, registration in tuple(_type_registrations.items()):
+            if (
+                registration.project_script
+                and _normalized_path(registration.script_path) in paths
+            ):
+                _type_registrations.pop(key, None)
+
+        for normalized, built in built_by_path:
+            for key, registration in built:
+                _type_registrations[key] = registration
+            if len(built) == 1:
+                _script_registrations[normalized] = built[0][1]
+            else:
+                # Runtime identity lookup is carried by the type table for
+                # multi-type files; the Add Component catalog is one-file/one-entry.
+                _script_registrations.pop(normalized, None)
+        _bump_revision()
+
+    from ._component_registration import mark_component_registration_published
+
+    for component_type in dict.fromkeys(publish_types):
+        mark_component_registration_published(component_type)
+    return retired_types
+
+
+def _direct_component_declarations(
+    file_path: str,
+    *,
+    source: bytes | str | None = None,
+) -> tuple[str, ...]:
     """Read direct InxComponent declarations without executing user code."""
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as stream:
-            tree = ast.parse(stream.read(), filename=file_path)
+        if source is None:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as stream:
+                tree = ast.parse(stream.read(), filename=file_path)
+        else:
+            payload = source.encode("utf-8") if isinstance(source, str) else bytes(source)
+            tree = compile(payload, file_path, "exec", flags=ast.PyCF_ONLY_AST)
     except (OSError, SyntaxError, UnicodeError):
         return ()
 
@@ -162,12 +356,16 @@ def _direct_component_declarations(file_path: str) -> tuple[str, ...]:
     return tuple(names)
 
 
-def register_component_script(file_path: str) -> bool:
+def register_component_script(
+    file_path: str,
+    *,
+    source: bytes | str | None = None,
+) -> bool:
     """Index one validated project script in the component registry."""
     from Infernux.engine.path_utils import resolved_path
 
     path = resolved_path(file_path)
-    declarations = _direct_component_declarations(path)
+    declarations = _direct_component_declarations(path, source=source)
     key = _normalized_path(path)
     with _registration_lock:
         if len(declarations) != 1:
@@ -186,6 +384,14 @@ def register_component_script(file_path: str) -> bool:
                 else None
             ),
             project_script=True,
+            allow_multiple=(previous.allow_multiple if previous is not None else True),
+            user_addable=(previous.user_addable if previous is not None else True),
+            removable=(previous.removable if previous is not None else True),
+            intrinsic=(previous.intrinsic if previous is not None else False),
+            required_types=(previous.required_types if previous is not None else ()),
+            incompatible_types=(previous.incompatible_types if previous is not None else ()),
+            exclusive_groups=(previous.exclusive_groups if previous is not None else ()),
+            satisfied_types=(previous.satisfied_types if previous is not None else ()),
         )
         if previous != registration:
             _script_registrations[key] = registration
@@ -193,12 +399,53 @@ def register_component_script(file_path: str) -> bool:
     return True
 
 
-def unregister_component_script(file_path: str) -> None:
+def component_types_for_script_path(
+    file_path: str,
+) -> tuple[Type['InxComponent'], ...]:
+    """Return live Python types currently owned by one script path."""
+    normalized = _normalized_path(file_path)
+    with _registration_lock:
+        return tuple(
+            dict.fromkeys(
+                registration.component_type
+                for registration in _type_registrations.values()
+                if registration.project_script
+                and registration.component_type is not None
+                and _normalized_path(registration.script_path) == normalized
+            )
+        )
+
+
+def unregister_component_script(
+    file_path: str,
+) -> tuple[Type['InxComponent'], ...]:
     """Remove a deleted or invalid project script from the menu registry."""
     key = _normalized_path(file_path)
+    retired_types = component_types_for_script_path(file_path)
+    snapshot = snapshot_component_registry_state()
     with _registration_lock:
-        if _script_registrations.pop(key, None) is not None:
+        changed = _script_registrations.pop(key, None) is not None
+        for type_key, registration in tuple(_type_registrations.items()):
+            if registration.project_script and _normalized_path(registration.script_path) == key:
+                _type_registrations.pop(type_key, None)
+                changed = True
+        if changed:
             _bump_revision()
+    if retired_types:
+        try:
+            from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+
+            publication = publish_runtime_dispatch_epoch(
+                (),
+                retired_types=retired_types,
+                sync_compatibility=True,
+                defer_commit=True,
+            )
+            publication.commit()
+        except Exception:
+            restore_component_registry_state(snapshot)
+            raise
+    return retired_types
 
 
 def get_component_registrations(*, project_root: str = "") -> tuple[ComponentRegistration, ...]:
@@ -212,8 +459,12 @@ def get_component_registrations(*, project_root: str = "") -> tuple[ComponentReg
             entry
             for entry in _type_registrations.values()
             if not entry.project_script and entry.menu_path
+            and entry.user_addable and not entry.intrinsic
         ]
-        project_entries = list(_script_registrations.values())
+        project_entries = [
+            entry for entry in _script_registrations.values()
+            if entry.user_addable and not entry.intrinsic
+        ]
     if project_root:
         assets_root = os.path.join(project_root, "Assets")
         project_entries = [
@@ -228,6 +479,101 @@ def get_component_registrations(*, project_root: str = "") -> tuple[ComponentReg
 def get_component_registration_revision() -> int:
     with _registration_lock:
         return _registration_revision
+
+
+def get_component_constraints(component_type: type) -> ComponentRegistration:
+    """Return the final decorator-aware registry record for a loaded type."""
+    if not isinstance(component_type, type):
+        raise TypeError("component constraints require a component type")
+    identity = getattr(component_type, "_get_type_guid", None)
+    if not callable(identity):
+        raise TypeError("component type has no stable registry identity")
+    type_key = str(identity())
+    with _registration_lock:
+        registration = _type_registrations.get(type_key)
+    if registration is None or registration.component_type is not component_type:
+        register_component_type(component_type)
+        with _registration_lock:
+            registration = _type_registrations.get(type_key)
+    if registration is None:
+        raise LookupError(f"component type '{component_type.__name__}' is not registered")
+    return registration
+
+
+def component_constraint_type_id(value: object) -> str:
+    """Return the canonical constraint token for a component declaration.
+
+    Class references are exact identities. String declarations intentionally
+    remain semantic aliases (for example ``"Collider"``).
+    """
+    if isinstance(value, str):
+        return value
+    cpp_name = str(getattr(value, "_cpp_type_name", "") or "")
+    if cpp_name:
+        return f"native:{cpp_name}"
+    identity = getattr(value, "_get_type_guid", None)
+    if callable(identity):
+        type_guid = str(identity() or "")
+        if type_guid:
+            return f"python:{type_guid}"
+    return str(getattr(value, "__name__", "") or "")
+
+
+def _component_instance_matches_type(component: object, component_type: type) -> bool:
+    if isinstance(component, component_type):
+        return True
+    expected = component_constraint_type_id(component_type)
+    return bool(expected) and expected == component_constraint_type_id(type(component))
+
+
+def get_python_attachment_blockers(game_object, component_type: type) -> tuple[str, ...]:
+    """Evaluate one loaded Python type against an object's live components."""
+    registration = get_component_constraints(component_type)
+    blockers = []
+    if registration.intrinsic:
+        blockers.append("intrinsic components cannot be attached")
+    if not registration.user_addable:
+        blockers.append("component is not user-addable")
+    existing = tuple(game_object.get_py_components() or ())
+    if not registration.allow_multiple and any(
+        _component_instance_matches_type(component, component_type)
+        for component in existing
+    ):
+        blockers.append("only one instance is allowed per GameObject")
+
+    candidate_incompatible = {
+        component_constraint_type_id(value)
+        for value in registration.incompatible_types
+        if component_constraint_type_id(value)
+    }
+    for component in existing:
+        existing_type = type(component)
+        existing_registration = get_component_constraints(existing_type)
+        existing_name = existing_type.__name__
+        existing_identity = component_constraint_type_id(existing_type)
+        candidate_identity = component_constraint_type_id(component_type)
+        existing_incompatible = {
+            component_constraint_type_id(value)
+            for value in existing_registration.incompatible_types
+            if component_constraint_type_id(value)
+        }
+        existing_aliases = {
+            existing_name,
+            existing_identity,
+            *(component_constraint_type_id(value) for value in existing_registration.satisfied_types),
+        }
+        candidate_aliases = {
+            component_type.__name__,
+            candidate_identity,
+            *(component_constraint_type_id(value) for value in registration.satisfied_types),
+        }
+        if candidate_incompatible & existing_aliases or existing_incompatible & candidate_aliases:
+            blockers.append(f"incompatible with existing component '{existing_name}'")
+        if set(registration.exclusive_groups) & set(existing_registration.exclusive_groups):
+            blockers.append(
+                f"exclusive component group already owned by '{existing_name}'"
+            )
+    return tuple(sorted(set(blockers)))
 
 
 def get_type(name: str) -> Optional[Type['InxComponent']]:

@@ -27,13 +27,15 @@ from __future__ import annotations
 import math
 from typing import Tuple, Optional, List
 
+from Infernux.components._gizmo_ids import (
+    ICON_KIND_CAMERA,
+    ICON_KIND_DEFAULT,
+    ICON_KIND_LIGHT,
+    ICON_KIND_PARTICLE,
+)
+
 # Type alias for 3-component tuples
 Vec3 = Tuple[float, float, float]
-
-ICON_KIND_DEFAULT = 0
-ICON_KIND_CAMERA = 1
-ICON_KIND_LIGHT = 2
-ICON_KIND_PARTICLE = 3
 
 # Try to import C++ gizmo geometry helpers (available after engine build)
 try:

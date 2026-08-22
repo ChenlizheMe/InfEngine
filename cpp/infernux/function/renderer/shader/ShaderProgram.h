@@ -63,6 +63,11 @@ struct MaterialUBOLayout
 class ShaderProgram
 {
   public:
+    static constexpr uint32_t BindlessTextureSet = 3;
+    static constexpr uint32_t BindlessTextureBinding = 0;
+    static constexpr uint32_t MaterialTextureIndexBinding = 15;
+    static constexpr uint32_t MaterialTextureIndexCapacity = 64;
+
     ShaderProgram() = default;
     ~ShaderProgram();
 
@@ -106,6 +111,18 @@ class ShaderProgram
         return m_variantKey.target;
     }
 
+    [[nodiscard]] const ShaderProgramVariantKey &GetVariantKey() const noexcept
+    {
+        return m_variantKey;
+    }
+
+    /// True only for shaders that explicitly declare the engine bindless
+    /// texture ABI. Bounded samplers remain untouched on the same device.
+    [[nodiscard]] bool UsesBindlessTextureABI() const noexcept
+    {
+        return m_usesBindlessTextureABI;
+    }
+
     [[nodiscard]] VkShaderModule GetVertexModule() const
     {
         return m_vertModule;
@@ -141,6 +158,15 @@ class ShaderProgram
     [[nodiscard]] const MaterialUBOLayout *GetVertexMaterialUBOLayout() const
     {
         return m_hasVertexMaterialUBO ? &m_vertexMaterialUBOLayout : nullptr;
+    }
+
+    /// Layout of the optional domain-local texture-index block. Its
+    /// members are the authored Texture2D property names, allowing the
+    /// descriptor manager to update indices by semantic name rather than by
+    /// an unordered material-property iteration.
+    [[nodiscard]] const MaterialUBOLayout *GetBindlessTextureIndexLayout() const
+    {
+        return m_hasBindlessTextureIndexLayout ? &m_bindlessTextureIndexLayout : nullptr;
     }
 
     [[nodiscard]] const ShaderReflection &GetVertexReflection() const
@@ -200,6 +226,11 @@ class ShaderProgram
     static void SetUpdateAfterBindEnabled(bool enabled);
     [[nodiscard]] static bool IsUpdateAfterBindEnabled();
 
+    static void SetBindlessTextureDescSetLayout(VkDescriptorSetLayout layout);
+    [[nodiscard]] static VkDescriptorSetLayout GetBindlessTextureDescSetLayout();
+    static void SetBindlessTextureEnabled(bool enabled);
+    [[nodiscard]] static bool IsBindlessTextureEnabled();
+
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     std::string m_shaderId;
@@ -208,6 +239,8 @@ class ShaderProgram
     static VkDescriptorSetLayout s_globalsDescSetLayout;
     static VkDescriptorSetLayout s_perViewDescSetLayout;
     static bool s_updateAfterBindEnabled;
+    static VkDescriptorSetLayout s_bindlessTextureDescSetLayout;
+    static bool s_bindlessTextureEnabled;
 
     // Shader modules
     VkShaderModule m_vertModule = VK_NULL_HANDLE;
@@ -231,6 +264,9 @@ class ShaderProgram
     // Vertex-stage material UBO layout (if present, binding 14)
     MaterialUBOLayout m_vertexMaterialUBOLayout;
     bool m_hasVertexMaterialUBO = false;
+    MaterialUBOLayout m_bindlessTextureIndexLayout;
+    bool m_hasBindlessTextureIndexLayout = false;
+    bool m_usesBindlessTextureABI = false;
 
     /**
      * @brief Create shader module from SPIR-V
@@ -289,6 +325,19 @@ class ShaderProgramCache
      */
     void Initialize(VkDevice device);
 
+    /// Adds the enabled device shader ABI to every canonicalized variant key.
+    /// This prevents a program created before a device capability change from
+    /// being reused with an incompatible descriptor-set layout.
+    void SetDeviceContractKey(uint64_t key) noexcept
+    {
+        m_deviceContractKey = key;
+    }
+
+    [[nodiscard]] uint64_t GetDeviceContractKey() const noexcept
+    {
+        return m_deviceContractKey;
+    }
+
     /**
      * @brief Shutdown and cleanup all programs
      */
@@ -333,7 +382,15 @@ class ShaderProgramCache
     void Clear();
 
   private:
+    [[nodiscard]] ShaderProgramVariantKey CanonicalKey(const ShaderProgramVariantKey &key) const noexcept
+    {
+        ShaderProgramVariantKey canonical = key;
+        canonical.deviceContract = m_deviceContractKey;
+        return canonical;
+    }
+
     VkDevice m_device = VK_NULL_HANDLE;
+    uint64_t m_deviceContractKey = 0;
     std::unordered_map<ShaderProgramVariantKey, ShaderProgramPublication, ShaderProgramVariantKeyHash> m_programs;
     std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
 };

@@ -23,7 +23,8 @@ Yield instructions
 ``yield None``              Wait one **update** frame (same as bare ``yield``).
 ``yield WaitForSeconds(n)`` Wait *n* seconds of **scaled** game time.
 ``yield WaitForSecondsRealtime(n)``  Wait *n* seconds of wall-clock time.
-``yield WaitForEndOfFrame()``        Resume after all ``late_update()`` this frame.
+``yield WaitForEndOfFrame(n)``       Resume after *n* frame-end phases (default 1).
+``yield WaitForFrames(n)``           Resume after *n* ``update`` frames.
 ``yield WaitForFixedUpdate()``       Resume at the next ``fixed_update()`` step.
 ``yield WaitUntil(pred)``            Resume when ``pred()`` returns ``True``.
 ``yield WaitWhile(pred)``            Resume when ``pred()`` returns ``False``.
@@ -34,6 +35,7 @@ Yield instructions
 from __future__ import annotations
 
 import time as _time
+import weakref
 from typing import Any, Callable, Generator, Optional
 from Infernux.debug import Debug
 
@@ -75,11 +77,43 @@ class WaitForSecondsRealtime:
 
 
 class WaitForEndOfFrame:
-    """Suspend until after all ``late_update()`` calls this frame."""
-    __slots__ = ()
+    """Suspend until one or more frame-end phases have completed."""
+    __slots__ = ("frames", "_remaining")
+
+    def __init__(self, frames: int = 1):
+        if isinstance(frames, bool) or not isinstance(frames, int):
+            raise TypeError("frames must be an integer")
+        if frames < 1:
+            raise ValueError("frames must be at least 1")
+        self.frames = frames
+        self._remaining = frames
+
+    def _tick(self) -> bool:
+        self._remaining -= 1
+        return self._remaining <= 0
 
     def __repr__(self) -> str:
-        return "WaitForEndOfFrame()"
+        return f"WaitForEndOfFrame({self.frames})"
+
+
+class WaitForFrames:
+    """Suspend for an exact number of ``update`` frames."""
+    __slots__ = ("frames", "_remaining")
+
+    def __init__(self, frames: int = 1):
+        if isinstance(frames, bool) or not isinstance(frames, int):
+            raise TypeError("frames must be an integer")
+        if frames < 1:
+            raise ValueError("frames must be at least 1")
+        self.frames = frames
+        self._remaining = frames
+
+    def _tick(self) -> bool:
+        self._remaining -= 1
+        return self._remaining <= 0
+
+    def __repr__(self) -> str:
+        return f"WaitForFrames({self.frames})"
 
 
 class WaitForFixedUpdate:
@@ -122,6 +156,15 @@ class WaitWhile:
 # Coroutine handle
 # ======================================================================
 
+def _capture_runtime_epoch() -> Any:
+    """Read the owner-published epoch at coroutine creation time."""
+    try:
+        from Infernux.engine.runtime_dispatch import current_runtime_epoch
+
+        return current_runtime_epoch()
+    except (ImportError, AttributeError):
+        return None
+
 class Coroutine:
     """Opaque handle to a running coroutine.  Returned by ``start_coroutine()``.
 
@@ -129,10 +172,18 @@ class Coroutine:
         is_finished (bool): ``True`` once the generator has completed or been stopped.
     """
     _next_id: int = 0
-    __slots__ = ("_id", "_generator", "_owner_ref",
-                 "_current_yield", "_is_finished", "_phase")
+    __slots__ = (
+        "_id", "_generator", "_owner_ref", "_current_yield", "_is_finished",
+        "_phase", "_creation_epoch", "_creation_epoch_id", "_is_legacy",
+    )
 
-    def __init__(self, generator: Generator, owner: Any = None):
+    def __init__(
+        self,
+        generator: Generator,
+        owner: Any = None,
+        *,
+        creation_epoch: Any = None,
+    ):
         Coroutine._next_id += 1
         self._id: int = Coroutine._next_id
         self._generator: Optional[Generator] = generator
@@ -140,11 +191,32 @@ class Coroutine:
         self._current_yield: Any = None
         self._is_finished: bool = False
         self._phase: str = "update"           # which tick phase should process this
+        self._creation_epoch: Any = (
+            _capture_runtime_epoch() if creation_epoch is None else creation_epoch
+        )
+        self._creation_epoch_id: int = int(
+            getattr(self._creation_epoch, "epoch_id", 0)
+        )
+        self._is_legacy: bool = False
 
     @property
     def is_finished(self) -> bool:
         """``True`` when the coroutine has ended (completed or stopped)."""
         return self._is_finished
+
+    @property
+    def creation_epoch(self) -> Any:
+        """Immutable dispatch epoch captured when this coroutine was started."""
+        return self._creation_epoch
+
+    @property
+    def creation_epoch_id(self) -> int:
+        return self._creation_epoch_id
+
+    @property
+    def is_legacy(self) -> bool:
+        """Whether a newer runtime epoch has retired this coroutine's epoch."""
+        return self._is_legacy
 
     def __repr__(self) -> str:
         status = "finished" if self._is_finished else "running"
@@ -161,23 +233,70 @@ class CoroutineScheduler:
     The scheduler is lazily created on the first ``start_coroutine()`` call to
     avoid overhead on components that never use coroutines.
     """
-    __slots__ = ("_coroutines",)
+    _live_schedulers: "weakref.WeakSet[CoroutineScheduler]" = weakref.WeakSet()
+    __slots__ = (
+        "_coroutines", "_on_active_changed", "_creation_epoch",
+        "_creation_epoch_id", "_observed_epoch_id", "_legacy_count", "__weakref__",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, on_active_changed=None, *, creation_epoch: Any = None) -> None:
         self._coroutines: list[Coroutine] = []
+        self._on_active_changed = on_active_changed
+        self._creation_epoch = (
+            _capture_runtime_epoch() if creation_epoch is None else creation_epoch
+        )
+        self._creation_epoch_id = int(getattr(self._creation_epoch, "epoch_id", 0))
+        self._observed_epoch_id = self._creation_epoch_id
+        self._legacy_count = 0
+        self._live_schedulers.add(self)
+
+    @classmethod
+    def _notify_runtime_epoch_published(cls, epoch: Any) -> None:
+        """Refresh legacy diagnostics at an owner safe point, not per frame."""
+        for scheduler in tuple(cls._live_schedulers):
+            scheduler._observe_epoch(epoch)
+
+    def _observe_epoch(self, epoch: Any) -> None:
+        epoch_id = int(getattr(epoch, "epoch_id", self._observed_epoch_id))
+        if epoch_id == self._observed_epoch_id:
+            return
+        self._observed_epoch_id = epoch_id
+        self._legacy_count = 0
+        for coroutine in self._coroutines:
+            coroutine._is_legacy = coroutine.creation_epoch_id != epoch_id
+            self._legacy_count += int(coroutine._is_legacy)
+
+    def _notify_active_changed(self, was_active: bool) -> None:
+        is_active = bool(self._coroutines)
+        if was_active == is_active or self._on_active_changed is None:
+            return
+        self._on_active_changed(is_active)
 
     # -- Public API (used by InxComponent) ----------------------------------
 
-    def start(self, generator: Generator, owner: Any = None) -> Coroutine:
+    def start(
+        self,
+        generator: Generator,
+        owner: Any = None,
+        *,
+        epoch: Any = None,
+    ) -> Coroutine:
         """Start a new coroutine and return a handle."""
-        co = Coroutine(generator, owner)
+        was_active = bool(self._coroutines)
+        selected_epoch = _capture_runtime_epoch() if epoch is None else epoch
+        self._observe_epoch(selected_epoch)
+        co = Coroutine(generator, owner, creation_epoch=selected_epoch)
+        co._is_legacy = co.creation_epoch_id != self._observed_epoch_id
         self._advance(co)                       # run until first yield
         if not co._is_finished:
             self._coroutines.append(co)
+            self._legacy_count += int(co._is_legacy)
+        self._notify_active_changed(was_active)
         return co
 
     def stop(self, coroutine: Coroutine) -> None:
         """Immediately stop *coroutine*."""
+        was_active = bool(self._coroutines)
         if coroutine._is_finished:
             return
         coroutine._is_finished = True
@@ -193,9 +312,13 @@ class CoroutineScheduler:
         except ValueError as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
+        else:
+            self._legacy_count -= int(coroutine._is_legacy)
+        self._notify_active_changed(was_active)
 
     def stop_all(self) -> None:
         """Stop every running coroutine."""
+        was_active = bool(self._coroutines)
         for co in self._coroutines:
             co._is_finished = True
             if co._generator is not None:
@@ -206,32 +329,58 @@ class CoroutineScheduler:
                     pass
                 co._generator = None
         self._coroutines.clear()
+        self._legacy_count = 0
+        self._notify_active_changed(was_active)
 
     @property
     def count(self) -> int:
         """Number of running coroutines."""
         return len(self._coroutines)
 
+    @property
+    def creation_epoch(self) -> Any:
+        return self._creation_epoch
+
+    @property
+    def creation_epoch_id(self) -> int:
+        return self._creation_epoch_id
+
+    @property
+    def legacy_coroutine_count(self) -> int:
+        return self._legacy_count
+
+    def diagnostics(self) -> dict[str, int]:
+        """Return cheap counters for runtime/editor diagnostics."""
+        return {
+            "active_count": len(self._coroutines),
+            "legacy_count": self._legacy_count,
+            "creation_epoch_id": self._creation_epoch_id,
+            "observed_epoch_id": self._observed_epoch_id,
+        }
+
     # -- Tick entry points (called from component lifecycle) ----------------
 
-    def tick_update(self, scaled_dt: float) -> None:
+    def tick_update(self, scaled_dt: float, *, epoch: Any = None) -> None:
         """Process coroutines waiting in the **update** phase."""
-        self._tick("update", scaled_dt)
+        self._tick("update", scaled_dt, epoch=epoch)
 
-    def tick_fixed_update(self, fixed_dt: float) -> None:
+    def tick_fixed_update(self, fixed_dt: float, *, epoch: Any = None) -> None:
         """Process coroutines waiting in the **fixed_update** phase."""
-        self._tick("fixed_update", fixed_dt)
+        self._tick("fixed_update", fixed_dt, epoch=epoch)
 
-    def tick_late_update(self, scaled_dt: float) -> None:
+    def tick_late_update(self, scaled_dt: float, *, epoch: Any = None) -> None:
         """Process coroutines waiting in the **late_update** phase."""
-        self._tick("late_update", scaled_dt)
+        self._tick("late_update", scaled_dt, epoch=epoch)
 
     # -- Internal -----------------------------------------------------------
 
-    def _tick(self, phase: str, dt: float) -> None:
+    def _tick(self, phase: str, dt: float, *, epoch: Any = None) -> None:
         if not self._coroutines:
             return
+        if epoch is not None:
+            self._observe_epoch(epoch)
 
+        was_active = True
         to_remove: list[Coroutine] = []
 
         # Iterate a snapshot so that coroutines started from within user code
@@ -254,8 +403,9 @@ class CoroutineScheduler:
             elif isinstance(current, WaitForSecondsRealtime):
                 should_advance = current._is_ready()
             elif isinstance(current, WaitForEndOfFrame):
-                # Already in the correct phase (late_update)
-                should_advance = True
+                should_advance = current._tick()
+            elif isinstance(current, WaitForFrames):
+                should_advance = current._tick()
             elif isinstance(current, WaitForFixedUpdate):
                 # Already in the correct phase (fixed_update)
                 should_advance = True
@@ -281,6 +431,9 @@ class CoroutineScheduler:
             except ValueError as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
+            else:
+                self._legacy_count -= int(co._is_legacy)
+        self._notify_active_changed(was_active)
 
     def _advance(self, co: Coroutine) -> None:
         """Call ``next()`` on the generator and update the coroutine state."""
@@ -314,3 +467,8 @@ class CoroutineScheduler:
             co._phase = "fixed_update"
         else:
             co._phase = "update"
+
+
+def notify_runtime_epoch_published(epoch: Any) -> None:
+    """Notify live coroutine schedulers of a newly published runtime epoch."""
+    CoroutineScheduler._notify_runtime_epoch_published(epoch)

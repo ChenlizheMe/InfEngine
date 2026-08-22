@@ -15,7 +15,6 @@ endif()
 file(GLOB_RECURSE _python_entries LIST_DIRECTORIES true "${PYTHON_DIR}/*")
 
 set(_removed_pycache_count 0)
-set(_removed_meta_count 0)
 foreach(_entry IN LISTS _python_entries)
     if(IS_DIRECTORY "${_entry}")
         get_filename_component(_entry_name "${_entry}" NAME)
@@ -24,14 +23,9 @@ foreach(_entry IN LISTS _python_entries)
             math(EXPR _removed_pycache_count "${_removed_pycache_count} + 1")
             message(STATUS "Removed __pycache__: ${_entry}")
         endif()
-    elseif(_entry MATCHES "\\.meta$")
-        file(REMOVE "${_entry}")
-        math(EXPR _removed_meta_count "${_removed_meta_count} + 1")
-        message(STATUS "Removed metadata sidecar: ${_entry}")
     endif()
 endforeach()
 
 message(STATUS
-    "Python artifact cleanup complete. Removed ${_removed_pycache_count} __pycache__ directories and "
-    "${_removed_meta_count} .meta files."
+    "Python artifact cleanup complete. Removed ${_removed_pycache_count} __pycache__ directories."
 )

@@ -27,7 +27,7 @@ Attributes:
     reference_pixels_per_unit: Sprite pixel density hint.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.2.9
+**Status:** Preview · **Verified with:** 0.3.4
 
 Design in reference-resolution pixels, then select a scale and screen-match policy for the supported aspect ratios. Decorative elements should not be raycast targets.
 <!-- USER CONTENT END -->

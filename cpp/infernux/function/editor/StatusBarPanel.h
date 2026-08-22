@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace infernux
@@ -32,6 +33,9 @@ class StatusBarPanel : public InxGUIRenderable
 
     /// Update engine-status indicator (called from Python every frame).
     void SetEngineStatus(const std::string &text, float progress, const std::string &kind = "activity");
+
+    /// Unified command entry used by status-bar actions.
+    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
 
     // ── InxGUIRenderable ─────────────────────────────────────────────
     void OnRender(InxGUIContext *ctx) override;

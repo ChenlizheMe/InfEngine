@@ -101,6 +101,14 @@ uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
 
 struct ParticleGpuSystemManager::Impl
 {
+    // Prewarm and seek may enqueue thousands of fixed simulation steps. Recording
+    // several compiled graph executions into one command buffer erases the
+    // sim/export ownership boundary and makes the following frame-slot fence
+    // indistinguishable from a GPU hang after Play -> Stop -> Play. Record one
+    // compiled execution per submission and drain the remaining exact steps
+    // over subsequent frames.
+    static constexpr uint32_t MaxQueuedSimulationStepsPerSubmission = 1;
+
     struct DiagnosticState
     {
         mutable std::mutex mutex;
@@ -204,6 +212,7 @@ struct ParticleGpuSystemManager::Impl
         uint64_t generation = 0;
         uint32_t renderExportBatch = rhi::InvalidSubmissionBatchIndex;
         bool asyncRecordingActive = false;
+        bool asyncPhasePartitioned = false;
     };
 
     using EmitterMap = std::map<uint64_t, std::shared_ptr<Emitter>>;
@@ -224,6 +233,7 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
     std::unique_ptr<ParticleGpuCollisionScene> collisionScene;
     EmitterMap emitters;
+    bool requiresCollisionScene = false;
     std::shared_ptr<GraphState> graphState;
     mutable uint64_t nextGraphGeneration = 1;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
@@ -278,16 +288,36 @@ struct ParticleGpuSystemManager::Impl
         }
         if (pending.empty())
             return false;
+        std::vector<bool> previousAcceptance;
+        previousAcceptance.reserve(pending.size());
+        // Preflight every scheduler before mutating the spawn domain. BeginFrame
+        // has no fallible work after CanBeginFrame, so this keeps the graph
+        // mark out of a partially accepted batch even if the defensive check
+        // below is ever reached.
         for (const auto &entry : pending) {
+            const auto emitter = entry.emitter;
+            previousAcceptance.push_back(emitter->lastSimulate);
             const auto &request = entry.emitter->queuedFrameRequests.front();
             if (!entry.spawnDomain->SetEmitterAcceptingBurstRequests(entry.emitter->sourceProgram.graphEmitterIndex,
-                                                                     request.simulate))
+                                                                     request.simulate)) {
+                for (size_t rollback = 0; rollback + 1 < previousAcceptance.size(); ++rollback) {
+                    (void)pending[rollback].spawnDomain->SetEmitterAcceptingBurstRequests(
+                        pending[rollback].emitter->sourceProgram.graphEmitterIndex, previousAcceptance[rollback]);
+                }
                 return false;
+            }
         }
         for (const auto &entry : pending) {
-            if (!entry.scheduler->BeginFrame(entry.emitter->queuedFrameRequests.front()))
+            if (!entry.scheduler->BeginFrame(entry.emitter->queuedFrameRequests.front())) {
+                for (size_t rollback = 0; rollback < previousAcceptance.size(); ++rollback) {
+                    (void)pending[rollback].spawnDomain->SetEmitterAcceptingBurstRequests(
+                        pending[rollback].emitter->sourceProgram.graphEmitterIndex, previousAcceptance[rollback]);
+                }
                 return false;
+            }
         }
+        for (const auto &entry : pending)
+            entry.spawnDomain->MarkFramePending();
         for (const auto &entry : pending)
             entry.emitter->queuedFrameRequests.erase(entry.emitter->queuedFrameRequests.begin());
         return true;
@@ -302,9 +332,37 @@ struct ParticleGpuSystemManager::Impl
         }
     }
 
+    void AbortAsyncRecording() noexcept
+    {
+        if (graphState)
+            graphState->asyncRecordingActive = false;
+    }
+
+    [[nodiscard]] bool RecordPendingGraphExecution(VkCommandBuffer commandBuffer)
+    {
+        if (!graphState || !graphState->graph || commandBuffer == VK_NULL_HANDLE)
+            return false;
+        AbortAsyncRecording();
+        auto &state = *graphState;
+        if (!state.asyncPhasePartitioned) {
+            state.graph->Execute(commandBuffer, rhi::QueueRole::Compute);
+            return true;
+        }
+        const auto &plan = state.graph->GetSubmissionPlan();
+        state.graph->BeginExecution();
+        for (uint32_t batch = 0; batch < plan.batches.size(); ++batch) {
+            if (plan.batches[batch].queue != rhi::QueueRole::Compute ||
+                !state.graph->RecordSubmissionBatch(batch, commandBuffer)) {
+                INXLOG_ERROR("GPU particle sync simulation rejected compiled batch ", batch);
+                return false;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] bool RecordCollisionUpload(VkCommandBuffer commandBuffer)
     {
-        if (!collisionScene || !collisionScene->HasPendingUpload())
+        if (!requiresCollisionScene || !collisionScene || !collisionScene->HasPendingUpload())
             return true;
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = context->GetRhiDevice().MakeTransferCommandEncoder(transferContext, commandBuffer);
@@ -506,6 +564,7 @@ struct ParticleGpuSystemManager::Impl
                         capture.diagnostic.aliveCount = capture.diagnostic.capacity - capture.diagnostic.freeCount;
                         capture.diagnostic.visibleCount = counters[1];
                         capture.diagnostic.droppedCount = counters[2];
+                        capture.diagnostic.initializedSpawnCount = counters[3];
                         capture.diagnostic.collisionHitCount = counters[4];
                         capture.diagnostic.collisionResponseCount = counters[5];
                         capture.diagnostic.collisionTriggerCount = counters[6];
@@ -818,6 +877,7 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.stateStride = program.stateStride;
         runtimeDesc.eventTypeCount = program.eventTypeCount;
         runtimeDesc.collisionEnabled = program.collisionEnabled;
+        runtimeDesc.supportsFusedUpdateRendering = program.supportsFusedUpdateRendering;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
         runtimeDesc.continuation.capacity = program.continuationCapacity;
@@ -909,13 +969,12 @@ struct ParticleGpuSystemManager::Impl
         vectorFieldGenerations.reserve(sampledTextureCount);
         std::unordered_set<std::string> stableIds;
         for (const auto &field : program.vectorFields.vectorFields) {
-            const auto cpuData = field.texture ? field.texture->GetCpuData() : nullptr;
             const TextureSemantic expectedSemantic = field.kind == GpuVectorFieldDesc::Kind::SignedDistanceField
                                                          ? TextureSemantic::SignedDistanceField
                                                          : TextureSemantic::VectorField;
-            if (field.stableId.empty() || !stableIds.insert(field.stableId).second || !field.texture || !cpuData ||
-                !cpuData->IsValid() || cpuData->dimension != TextureDimension::Texture3D ||
-                cpuData->semantic != expectedSemantic || field.texture->GetGuid().empty() ||
+            if (field.stableId.empty() || !stableIds.insert(field.stableId).second || !field.texture ||
+                field.texture->GetDimension() != TextureDimension::Texture3D ||
+                field.texture->GetSemantic() != expectedSemantic || field.texture->GetGuid().empty() ||
                 !vectorFieldTextureResolver) {
                 SetError(error, "GPU particle volume bindings require unique identities and matching Texture3D assets");
                 return false;
@@ -1055,8 +1114,13 @@ struct ParticleGpuSystemManager::Impl
                      "must be valid");
             return false;
         }
+        const auto &fusedKernel = program.kernels[static_cast<size_t>(GpuKernelStage::UpdateRenderingFused)];
         if (!std::all_of(program.kernels.begin(), program.kernels.end(),
-                         [](const auto &kernel) { return IsSpirv(kernel); })) {
+                         [&](const auto &kernel) {
+                             return (&kernel == &fusedKernel && !program.supportsFusedUpdateRendering) ||
+                                    IsSpirv(kernel);
+                         }) ||
+            (program.supportsFusedUpdateRendering && !IsSpirv(fusedKernel))) {
             SetError(error, "GPU particle program contains invalid compute SPIR-V");
             return false;
         }
@@ -1177,7 +1241,11 @@ struct ParticleGpuSystemManager::Impl
                      "must be valid");
             return {};
         }
-        for (const auto &kernel : program.kernels) {
+        for (size_t index = 0; index < program.kernels.size(); ++index) {
+            const auto &kernel = program.kernels[index];
+            if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+                !program.supportsFusedUpdateRendering)
+                continue;
             if (!IsSpirv(kernel)) {
                 SetError(error, "GPU particle program contains invalid compute SPIR-V");
                 return {};
@@ -1354,6 +1422,15 @@ struct ParticleGpuSystemManager::Impl
                 return {};
             }
             emitter->migrationSource = previous;
+        } else if (program.preserveState && previous && previous->migration &&
+                   emitter->runtime->SharesStateWith(*previous->runtime)) {
+            // A compatible publication can arrive before a previously recorded
+            // layout migration reaches the next frame boundary (Save followed
+            // immediately by Play is the common case). The resident buffers are
+            // shared, so the pending migration transaction must follow them;
+            // dropping it would bootstrap the uninitialized destination state.
+            emitter->migration = previous->migration;
+            emitter->migrationSource = previous->migrationSource;
         }
         if (!boundsProgram || !boundsProgram->IsValid()) {
             SetError(error, "GPU particle bounds kernels are unavailable");
@@ -1362,7 +1439,7 @@ struct ParticleGpuSystemManager::Impl
         emitter->bounds = std::make_unique<ParticleGpuBounds>();
         GpuParticleBoundsDesc boundsDesc;
         boundsDesc.capacity = emitter->runtime->Capacity();
-        boundsDesc.instances = emitter->runtime->InstanceBuffer();
+        boundsDesc.visibility = emitter->runtime->VisibilityBuffer();
         boundsDesc.sourceIndices = emitter->runtime->RenderIndexBuffer();
         boundsDesc.sourceIndirectArguments = emitter->runtime->IndirectBuffer();
         boundsDesc.simulationControl = emitter->runtime->SimulationControlBuffer();
@@ -1619,6 +1696,12 @@ struct ParticleGpuSystemManager::Impl
             state->schedulerById.emplace(id, scheduler.get());
             state->schedulers.push_back(std::move(scheduler));
         }
+        // Do not add complete-bipartite RenderExport→SimulationTail edges
+        // across graph instances. Spawn-domain versioning already requires an
+        // earlier emitter's Rendering (after export) to finish before a later
+        // sibling's Init. Linking every other instance's Update to every
+        // RenderReset closes a cycle as soon as two multi-emitter graphs share
+        // one compile. Mixed sim/export batches are reported as unsplit.
         if (!candidateEmitters.empty() && !state->graph->Compile()) {
             SetError(error, "failed to compile the GPU particle simulation graph");
             return {};
@@ -1633,6 +1716,17 @@ struct ParticleGpuSystemManager::Impl
                     batch.workItems.end()) {
                     state->renderExportBatch = batch.index;
                     break;
+                }
+            }
+            state->asyncPhasePartitioned = state->renderExportBatch != rhi::InvalidSubmissionBatchIndex;
+            for (uint32_t batchIndex = state->renderExportBatch;
+                 state->asyncPhasePartitioned && batchIndex < plan.batches.size(); ++batchIndex) {
+                for (const uint32_t passId : plan.batches[batchIndex].workItems) {
+                    if (std::any_of(state->schedulers.begin(), state->schedulers.end(),
+                                    [&](const auto &scheduler) { return scheduler->IsSimulationPass(passId); })) {
+                        state->asyncPhasePartitioned = false;
+                        break;
+                    }
                 }
             }
         }
@@ -1661,6 +1755,7 @@ struct ParticleGpuSystemManager::Impl
                 entry.ownerLayerMask = emitter->sourceProgram.ownerLayerMask;
                 entry.capacity = emitter->runtime->Capacity();
                 entry.instances = emitter->runtime->InstanceBuffer();
+                entry.visibility = emitter->runtime->VisibilityBuffer();
                 entry.renderIndices = output.renderer->RenderIndexBuffer();
                 entry.indirectArguments = output.type == GpuParticleOutputType::Ribbon
                                               ? emitter->ribbonTopology->DrawIndirectBuffer()
@@ -1867,6 +1962,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->FailDiagnostics(0, "GPU particle manager shut down before diagnostic recording completed");
     m_impl->graphState.reset();
     m_impl->emitters.clear();
+    m_impl->requiresCollisionScene = false;
     m_impl->meshUploads.clear();
     m_impl->collisionScene.reset();
     m_impl->drawRegistry = nullptr;
@@ -1888,63 +1984,83 @@ void ParticleGpuSystemManager::Shutdown() noexcept
 
 bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program, std::string *error)
 {
+    return ApplyGraphs(std::vector<GpuParticleGraphProgram>{program}, error);
+}
+
+bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error)
+{
     if (error)
         error->clear();
     if (!m_impl || !m_impl->context || !m_impl->drawRegistry) {
         SetError(error, "GPU particle manager is not initialized");
         return false;
     }
-    if (program.graphInstanceId == 0) {
-        SetError(error, "GPU particle graph publication requires a valid graph instance id");
-        return false;
-    }
-    if (program.emitters.empty() && program.removeEmitterIds.empty()) {
-        SetError(error, "GPU particle update batch cannot be empty");
+    if (programs.empty()) {
+        SetError(error, "GPU particle graph publication batch cannot be empty");
         return false;
     }
 
     Impl::EmitterMap candidates = m_impl->emitters;
     std::unordered_set<uint64_t> batchIds;
-    batchIds.reserve(program.emitters.size() + program.removeEmitterIds.size());
-    for (const uint64_t id : program.removeEmitterIds) {
-        if (id == 0 || !batchIds.insert(id).second) {
-            SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
+    std::unordered_set<uint64_t> graphInstanceIds;
+    std::size_t operationCount = 0;
+    for (const auto &program : programs)
+        operationCount += program.emitters.size() + program.removeEmitterIds.size();
+    batchIds.reserve(operationCount);
+    graphInstanceIds.reserve(programs.size());
+
+    for (const auto &program : programs) {
+        if (program.graphInstanceId == 0 || !graphInstanceIds.insert(program.graphInstanceId).second) {
+            SetError(error, "GPU particle publication batch contains an invalid or duplicate graph instance id");
             return false;
         }
-        const auto existing = m_impl->emitters.find(id);
-        if (existing != m_impl->emitters.end() && existing->second->graphInstanceId != program.graphInstanceId) {
-            SetError(error, "GPU particle graph cannot remove another graph's emitter");
+        if (program.emitters.empty() && program.removeEmitterIds.empty()) {
+            SetError(error, "GPU particle update batch cannot be empty");
             return false;
         }
-        candidates.erase(id);
+        for (const uint64_t id : program.removeEmitterIds) {
+            if (id == 0 || !batchIds.insert(id).second) {
+                SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
+                return false;
+            }
+            const auto existing = m_impl->emitters.find(id);
+            if (existing != m_impl->emitters.end() && existing->second->graphInstanceId != program.graphInstanceId) {
+                SetError(error, "GPU particle graph cannot remove another graph's emitter");
+                return false;
+            }
+            candidates.erase(id);
+        }
+        for (const auto &emitterProgram : program.emitters) {
+            if (emitterProgram.graphInstanceId != program.graphInstanceId) {
+                SetError(error, "GPU particle update batch mixes multiple graph instances");
+                return false;
+            }
+            if (!batchIds.insert(emitterProgram.id).second) {
+                SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
+                return false;
+            }
+            const auto previous = m_impl->emitters.find(emitterProgram.id);
+            if (previous != m_impl->emitters.end() && previous->second->graphInstanceId != program.graphInstanceId) {
+                SetError(error, "GPU particle emitter id is already owned by another graph");
+                return false;
+            }
+            if (!m_impl->PreflightEmitterProgram(
+                    emitterProgram,
+                    previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error))
+                return false;
+        }
     }
-    for (const auto &emitterProgram : program.emitters) {
-        if (emitterProgram.graphInstanceId != program.graphInstanceId) {
-            SetError(error, "GPU particle update batch mixes multiple graph instances");
-            return false;
-        }
-        if (!batchIds.insert(emitterProgram.id).second) {
-            SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
-            return false;
-        }
-        const auto previous = m_impl->emitters.find(emitterProgram.id);
-        if (previous != m_impl->emitters.end() && previous->second->graphInstanceId != program.graphInstanceId) {
-            SetError(error, "GPU particle emitter id is already owned by another graph");
-            return false;
-        }
-        if (!m_impl->PreflightEmitterProgram(
+
+    for (const auto &program : programs) {
+        for (const auto &emitterProgram : program.emitters) {
+            const auto previous = m_impl->emitters.find(emitterProgram.id);
+            auto emitter = m_impl->CreateEmitter(
                 emitterProgram,
-                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error))
-            return false;
-    }
-    for (const auto &emitterProgram : program.emitters) {
-        const auto previous = m_impl->emitters.find(emitterProgram.id);
-        auto emitter = m_impl->CreateEmitter(
-            emitterProgram, previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{},
-            error);
-        if (!emitter)
-            return false;
-        candidates[emitterProgram.id] = std::move(emitter);
+                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error);
+            if (!emitter)
+                return false;
+            candidates[emitterProgram.id] = std::move(emitter);
+        }
     }
 
     auto candidateGraph = m_impl->BuildGraph(candidates, error);
@@ -1957,10 +2073,15 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
 
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
-    m_impl->FailDiagnostics(program.graphInstanceId,
-                            "GPU particle graph changed before diagnostic recording completed");
+    for (const auto &program : programs) {
+        m_impl->FailDiagnostics(program.graphInstanceId,
+                                "GPU particle graph changed before diagnostic recording completed");
+    }
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters = std::move(candidates);
+    m_impl->requiresCollisionScene =
+        std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
+                    [](const auto &entry) { return entry.second && entry.second->sourceProgram.collisionEnabled; });
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
     return true;
 }
@@ -2023,6 +2144,11 @@ uint64_t ParticleGpuSystemManager::CollisionSceneRevision() const noexcept
 uint32_t ParticleGpuSystemManager::CollisionSceneColliderCount() const noexcept
 {
     return m_impl && m_impl->collisionScene ? m_impl->collisionScene->PublishedColliderCount() : 0;
+}
+
+bool ParticleGpuSystemManager::RequiresCollisionScene() const noexcept
+{
+    return m_impl && m_impl->requiresCollisionScene;
 }
 
 bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
@@ -2140,6 +2266,7 @@ void ParticleGpuSystemManager::Clear()
     m_impl->FailDiagnostics(0, "GPU particle graph was cleared before diagnostic recording completed");
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters.clear();
+    m_impl->requiresCollisionScene = false;
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
 }
 
@@ -2159,6 +2286,16 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
 {
     if (!m_impl || !m_impl->graphState || graphInstanceId == 0 || items.empty())
         return false;
+
+    // Migration callbacks mark completion while recording the command buffer,
+    // before that command buffer has a submission ticket. Rebuilding the graph
+    // from RecordAsyncExport/Execute therefore allowed the migration source,
+    // descriptors, and pipelines to enter the retirement queue against the
+    // previous GPU epoch. A rapid ParticleGraph save could destroy those
+    // resources before the freshly recorded prime submission executed. The
+    // next frame boundary runs after the prior submission has been published,
+    // so retirement can safely inherit its completion epoch here.
+    m_impl->RetireCompletedMigrations();
 
     struct PreparedItem
     {
@@ -2204,24 +2341,23 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
                 !ParticleRenderGraph::IsFrameRequestValid(request))
                 return false;
         }
-        if (scheduler->second->HasResetPending()) {
-            for (auto &request : decoded.sequence)
-                ++request.substepIndex;
-            auto resetRequest = item.request;
-            resetRequest.substepIndex = 0;
-            resetRequest.spawnCount = 0;
-            resetRequest.deltaTime = 0.0f;
-            resetRequest.simulate = false;
-            resetRequest.render = false;
-            resetRequest.forceSimulation = true;
-            decoded.sequence.insert(decoded.sequence.begin(), resetRequest);
-        }
+        // A pending reset is part of the next real frame, not a synthetic
+        // frame of its own. Keeping bootstrap, reset-aware spawn preparation,
+        // and the resumed simulation in one RenderGraph execution guarantees
+        // that their resource transitions are described by one compiled pass
+        // chain. Splitting reset into an execution followed by ContinueExecution
+        // let CPU-side recording state advance before the bootstrap dispatch
+        // had run, which could feed stale indirect arguments to the resumed
+        // update after Play -> Stop -> Play.
         prepared.push_back(std::move(decoded));
     }
 
     for (const auto &entry : prepared)
         (void)m_impl->RefreshResources(*entry.emitter);
 
+    // This is the transaction boundary for the batch: all schedulers are
+    // preflighted before any one of them is armed, and the graph-level spawn
+    // token is published only after every BeginFrame succeeds.
     for (const auto &entry : prepared) {
         if (!entry.scheduler->CanBeginFrame(entry.sequence.front()))
             return false;
@@ -2270,6 +2406,7 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
             return false;
         }
     }
+    spawnDomain->second->MarkFramePending();
     for (const auto &entry : prepared) {
         entry.emitter->queuedFrameRequests.assign(entry.sequence.begin() + 1, entry.sequence.end());
         entry.emitter->hasFrameRequest = true;
@@ -2323,9 +2460,20 @@ bool ParticleGpuSystemManager::Reset(uint64_t id)
     emitter->second->lastSimulate = false;
     emitter->second->queuedFrameRequests.clear();
     scheduler->second->Reset();
+    domain->second->MarkFramePending();
     m_impl->FailDiagnostics(emitter->second->graphInstanceId,
                             "GPU particle graph was reset before diagnostic recording completed");
     return true;
+}
+
+void ParticleGpuSystemManager::ResetAll()
+{
+    if (!m_impl || !m_impl->graphState)
+        return;
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)emitter;
+        (void)Reset(id);
+    }
 }
 
 void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
@@ -2336,9 +2484,11 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
         INXLOG_ERROR("GPU particle collision scene upload failed");
     bool hasPendingEmitter = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                                          [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
-    while (hasPendingEmitter) {
-        m_impl->graphState->graph->Execute(commandBuffer, rhi::QueueRole::Compute);
-        m_impl->RetireCompletedMigrations();
+    uint32_t recordedSteps = 0;
+    while (hasPendingEmitter && recordedSteps < Impl::MaxQueuedSimulationStepsPerSubmission) {
+        if (!m_impl->RecordPendingGraphExecution(commandBuffer))
+            break;
+        ++recordedSteps;
         if (!m_impl->HasQueuedFrameRequests())
             break;
         if (!m_impl->ArmNextQueuedFrameRequests()) {
@@ -2351,20 +2501,46 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
     m_impl->RecordDiagnostics(commandBuffer);
 }
 
-bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
+void ParticleGpuSystemManager::AbortAsyncRecording() noexcept
+{
+    if (m_impl)
+        m_impl->AbortAsyncRecording();
+}
+
+bool ParticleGpuSystemManager::CanRecordPartitioned() const noexcept
 {
     if (!m_impl || !m_impl->context || !m_impl->context->HasIndependentComputeQueue() || !m_impl->graphState ||
-        !m_impl->graphState->graph)
+        !m_impl->graphState->graph || !m_impl->graphState->asyncPhasePartitioned || m_impl->emitters.empty())
         return false;
     const auto &plan = m_impl->graphState->graph->GetSubmissionPlan();
     const uint32_t boundary = m_impl->graphState->renderExportBatch;
     if (boundary == rhi::InvalidSubmissionBatchIndex || boundary == 0 || boundary >= plan.batches.size())
         return false;
-    return !m_impl->HasQueuedFrameRequests() &&
+    return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
+                       [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); });
+}
+
+bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
+{
+    return CanRecordPartitioned() && !m_impl->HasQueuedFrameRequests() &&
            std::all_of(m_impl->emitters.begin(), m_impl->emitters.end(), [](const auto &entry) {
                return !entry.second->hasFrameRequest ||
                       entry.second->lastOffscreenPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate;
            });
+}
+
+bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
+{
+    if (!m_impl || !m_impl->graphState || m_impl->emitters.empty())
+        return false;
+
+    if (m_impl->requiresCollisionScene && m_impl->collisionScene && m_impl->collisionScene->HasPendingUpload())
+        return true;
+    if (!m_impl->pendingDiagnostics.empty() || m_impl->HasQueuedFrameRequests())
+        return true;
+
+    return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
+                       [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); });
 }
 
 uint64_t ParticleGpuSystemManager::AsyncExecutionGeneration() const noexcept
@@ -2374,8 +2550,10 @@ uint64_t ParticleGpuSystemManager::AsyncExecutionGeneration() const noexcept
 
 bool ParticleGpuSystemManager::RecordAsyncSimulation(VkCommandBuffer commandBuffer)
 {
-    if (!CanExecuteAsync() || commandBuffer == VK_NULL_HANDLE || m_impl->graphState->asyncRecordingActive)
+    if (!CanRecordPartitioned() || commandBuffer == VK_NULL_HANDLE)
         return false;
+    if (m_impl->graphState->asyncRecordingActive)
+        m_impl->AbortAsyncRecording();
     if (!m_impl->RecordCollisionUpload(commandBuffer)) {
         INXLOG_ERROR("GPU particle collision scene upload failed during async simulation");
         return false;
@@ -2412,8 +2590,11 @@ bool ParticleGpuSystemManager::RecordAsyncExport(VkCommandBuffer commandBuffer)
     state.asyncRecordingActive = false;
     if (!recorded)
         return false;
-    m_impl->RetireCompletedMigrations();
     m_impl->RecordDiagnostics(commandBuffer);
+    if (m_impl->HasQueuedFrameRequests() && !m_impl->ArmNextQueuedFrameRequests()) {
+        INXLOG_ERROR("GPU particle preroll sequence could not arm its next fixed step");
+        m_impl->ClearQueuedFrameRequests();
+    }
     return true;
 }
 

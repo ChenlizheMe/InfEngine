@@ -7,14 +7,18 @@ const outputFile = path.join(docsRoot, "sitemap.xml");
 const check = process.argv.includes("--check");
 const manifest = JSON.parse(await readFile(path.join(docsRoot, "docs-manifest.json"), "utf8"));
 const apiIndex = JSON.parse(await readFile(path.join(docsRoot, "api-index.json"), "utf8"));
+const learningCourses = JSON.parse(await readFile(path.join(docsRoot, "learn", "learning-courses.json"), "utf8"));
+const learningChapters = (await Promise.all(learningCourses.map(async (course) => JSON.parse(
+    await readFile(path.join(docsRoot, "learn", course.manifest), "utf8")
+)))).flat();
 const origin = manifest.canonical_origin.replace(/\/$/, "");
 const defaultLastmod = manifest.last_verified;
 const rootPages = [
     "index.html",
     "start.html",
     "learn.html",
-    "learn/shaders.html",
-    "learn/renderstack-post-processing.html",
+    ...learningCourses.map((course) => `learn/${course.slug}.html`),
+    ...learningChapters.map((chapter) => `learn/${chapter.slug}.html`),
     "roadmap.html",
     "download.html",
 ];

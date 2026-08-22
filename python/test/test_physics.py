@@ -169,6 +169,7 @@ class TestRigidbodyEnums:
     def test_collision_detection_mode_values(self):
         assert int(CollisionDetectionMode.Discrete) == 0
         assert int(CollisionDetectionMode.Continuous) == 1
+        assert int(CollisionDetectionMode.ContinuousDynamic) == 2
 
     def test_interpolation_values(self):
         assert int(RigidbodyInterpolation.Interpolate) == 1
@@ -182,6 +183,8 @@ class TestRigidbodyEnums:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _backend_motion_quality(mode: CollisionDetectionMode, is_kinematic: bool) -> int:
+    if mode == CollisionDetectionMode.ContinuousDynamic:
+        return 0 if is_kinematic else 2
     if mode == CollisionDetectionMode.Continuous:
         return 0 if is_kinematic else 1
     return 0
@@ -191,10 +194,12 @@ class TestCollisionDetectionMapping:
     def test_dynamic_body_modes(self):
         assert _backend_motion_quality(CollisionDetectionMode.Discrete, False) == 0
         assert _backend_motion_quality(CollisionDetectionMode.Continuous, False) == 1
+        assert _backend_motion_quality(CollisionDetectionMode.ContinuousDynamic, False) == 2
 
     def test_kinematic_body_modes(self):
         assert _backend_motion_quality(CollisionDetectionMode.Discrete, True) == 0
         assert _backend_motion_quality(CollisionDetectionMode.Continuous, True) == 0
+        assert _backend_motion_quality(CollisionDetectionMode.ContinuousDynamic, True) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -205,9 +210,13 @@ class TestPhysicsSettings:
     def test_defaults(self):
         assert DEFAULT_PHYSICS_SETTINGS["gravity"] == [0.0, -9.81, 0.0]
         assert DEFAULT_PHYSICS_SETTINGS["fixed_delta_time"] == 0.02
-        assert DEFAULT_PHYSICS_SETTINGS["min_velocity_for_restitution"] == 1.0
+        assert DEFAULT_PHYSICS_SETTINGS["max_fixed_delta_time"] == pytest.approx(1.0 / 3.0)
+        assert DEFAULT_PHYSICS_SETTINGS["collision_steps"] == 1
+        assert DEFAULT_PHYSICS_SETTINGS["velocity_steps"] == 10
+        assert DEFAULT_PHYSICS_SETTINGS["position_steps"] == 3
+        assert DEFAULT_PHYSICS_SETTINGS["min_velocity_for_restitution"] == 2.0
         assert DEFAULT_PHYSICS_SETTINGS["time_before_sleep"] == 0.5
-        assert DEFAULT_PHYSICS_SETTINGS["point_velocity_sleep_threshold"] == 0.03
+        assert DEFAULT_PHYSICS_SETTINGS["point_velocity_sleep_threshold"] == 0.1
 
     def test_load_missing_project(self):
         result = load_physics_settings("")
@@ -308,7 +317,7 @@ class TestPhysicsSettings:
             velocity_steps=12,
             position_steps=5,
             max_bodies=32768,
-            max_worker_threads=3,
+            max_concurrency=3,
             penetration_slop=0.004,
             min_velocity_for_restitution=1.5,
             time_before_sleep=0.75,
@@ -321,7 +330,7 @@ class TestPhysicsSettings:
             assert config.physics_velocity_steps == 12
             assert config.physics_position_steps == 5
             assert config.physics_max_bodies == 32768
-            assert config.physics_max_worker_threads == 3
+            assert config.physics_max_concurrency == 3
             assert config.physics_penetration_slop == pytest.approx(0.004)
             assert config.physics_min_velocity_for_restitution == pytest.approx(1.5)
             assert config.physics_time_before_sleep == pytest.approx(0.75)

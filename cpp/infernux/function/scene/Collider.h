@@ -42,6 +42,13 @@ struct PhysicsBodyPoseUpdate;
 class Collider : public Component
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.satisfiedTypes = {"Collider"};
+        return constraints;
+    }
+
     using ECSHandle = PhysicsECSStore::ColliderHandle;
 
     Collider();
@@ -135,15 +142,6 @@ class Collider : public Component
     [[nodiscard]] const char *GetTypeName() const override
     {
         return "Collider";
-    }
-
-    /// All Collider-derived types also match the base name "Collider",
-    /// so that RequireComponent("Collider") is satisfied by BoxCollider etc.
-    [[nodiscard]] bool IsComponentType(const std::string &typeName) const override
-    {
-        if (typeName == "Collider")
-            return true;
-        return std::string(GetTypeName()) == typeName;
     }
 
     // ====================================================================

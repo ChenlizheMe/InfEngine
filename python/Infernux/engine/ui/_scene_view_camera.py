@@ -40,12 +40,20 @@ class SceneViewCameraMixin:
             ctx.get_global_mouse_pos_y(),
         )
         InputManager.instance().set_editor_mouse_capture(True)
+        from Infernux.engine.interaction import FocusService
+
+        FocusService.instance().set_capture_owner("scene_view.camera")
         self._camera_capture_active = True
 
     def _end_camera_capture(self, ctx: InxGUIContext | None = None, *, restore_cursor: bool = True):
         mgr = InputManager.instance()
         if self._camera_capture_active or mgr.is_editor_mouse_capture_active:
             mgr.set_editor_mouse_capture(False)
+        from Infernux.engine.interaction import FocusService
+
+        focus = FocusService.instance()
+        if focus.snapshot.capture_owner_id == "scene_view.camera":
+            focus.set_capture_owner("")
 
         restore_pos = self._camera_capture_restore_pos
         self._camera_capture_active = False
@@ -207,6 +215,72 @@ class SceneViewCameraMixin:
         if t >= 1.0:
             self._fly_to_active = False
 
+    def _capture_scene_camera_state(self):
+        cam = self._engine.editor_camera if self._engine else None
+        if cam is None:
+            return None
+        position = cam.position
+        yaw, pitch = cam.rotation
+        distance = float(cam.focus_distance)
+        yaw_rad = math.radians(yaw)
+        pitch_rad = math.radians(pitch)
+        cos_pitch = math.cos(pitch_rad)
+        forward = (
+            math.sin(yaw_rad) * cos_pitch,
+            -math.sin(pitch_rad),
+            math.cos(yaw_rad) * cos_pitch,
+        )
+        return (
+            float(position.x) + forward[0] * distance,
+            float(position.y) + forward[1] * distance,
+            float(position.z) + forward[2] * distance,
+            distance,
+            float(yaw),
+            float(pitch),
+            int(self._fly_to_last_obj_id),
+            bool(self._fly_to_close),
+        )
+
+    def _animate_to_scene_camera_state(self, state) -> None:
+        if state is None or not self._engine or not self._engine.editor_camera:
+            return
+        current = self._capture_scene_camera_state()
+        if current is None:
+            return
+        self._fly_to_start_focus = (current[0], current[1], current[2])
+        self._fly_to_start_dist = current[3]
+        self._fly_to_start_yaw = current[4]
+        self._fly_to_start_pitch = current[5]
+        self._fly_to_target_focus = (state[0], state[1], state[2])
+        self._fly_to_target_dist = state[3]
+        self._fly_to_target_yaw = state[4]
+        self._fly_to_target_pitch = state[5]
+        self._fly_to_last_obj_id = int(state[6])
+        self._fly_to_close = bool(state[7])
+        self._fly_to_elapsed = 0.0
+        self._fly_to_duration = 0.5
+        self._fly_to_active = True
+
+    def can_frame_object_by_id(self, object_id: int) -> bool:
+        if (
+            not self._engine
+            or not self._engine.editor_camera
+            or int(object_id or 0) <= 0
+        ):
+            return False
+        from Infernux.lib import SceneManager
+
+        scene = SceneManager.instance().get_active_scene()
+        return bool(scene and scene.find_by_id(int(object_id)))
+
+    def frame_object_by_id(self, object_id: int) -> bool:
+        if not self.can_frame_object_by_id(object_id):
+            return False
+        from Infernux.lib import SceneManager
+
+        scene = SceneManager.instance().get_active_scene()
+        return self.fly_to_object(scene.find_by_id(int(object_id)))
+
     def fly_to_object(self, game_object):
         """Start a smooth camera animation to focus on *game_object*.
 
@@ -222,16 +296,20 @@ class SceneViewCameraMixin:
         on repeated double-clicks of the same object, like Unity.
         """
         if not self._engine or game_object is None:
-            return
+            return False
+
+        old_state = self._capture_scene_camera_state()
+        if old_state is None:
+            return False
 
         obj_id = game_object.id
 
         # Toggle near/far on repeated double-click of the same object
-        if obj_id == self._fly_to_last_obj_id:
-            self._fly_to_close = not self._fly_to_close
-        else:
-            self._fly_to_close = False
-        self._fly_to_last_obj_id = obj_id
+        target_close = (
+            not self._fly_to_close
+            if obj_id == self._fly_to_last_obj_id
+            else False
+        )
 
         center, radius = self._compute_object_bounds(game_object)
 
@@ -244,36 +322,28 @@ class SceneViewCameraMixin:
             sin_half = 1e-6
         far_dist = max(radius / sin_half * 1.2, 0.5)
         close_dist = far_dist * 0.4
-        target_dist = close_dist if self._fly_to_close else far_dist
+        target_dist = close_dist if target_close else far_dist
 
-        # Current camera state — compute consistent focus from actual
-        # camera position to avoid stale m_focusPoint causing a flash.
-        cur_pos = cam.position
-        cur_dist = cam.focus_distance
         cur_yaw, cur_pitch = cam.rotation
 
-        yr = math.radians(cur_yaw)
-        pr = math.radians(cur_pitch)
-        cp = math.cos(pr)
-        fwd = (math.sin(yr) * cp, -math.sin(pr), math.cos(yr) * cp)
-        actual_focus = (cur_pos.x + fwd[0] * cur_dist,
-                        cur_pos.y + fwd[1] * cur_dist,
-                        cur_pos.z + fwd[2] * cur_dist)
+        target_state = (
+            float(center[0]),
+            float(center[1]),
+            float(center[2]),
+            float(target_dist),
+            float(cur_yaw),
+            float(cur_pitch),
+            int(obj_id),
+            bool(target_close),
+        )
+        from Infernux.engine.interaction import ViewCommandService
 
-        # Store animation state — keep world rotation fixed throughout.
-        self._fly_to_start_focus = actual_focus
-        self._fly_to_start_dist = cur_dist
-        self._fly_to_start_yaw = cur_yaw
-        self._fly_to_start_pitch = cur_pitch
-
-        self._fly_to_target_focus = center
-        self._fly_to_target_dist = target_dist
-        self._fly_to_target_yaw = cur_yaw
-        self._fly_to_target_pitch = cur_pitch
-
-        self._fly_to_elapsed = 0.0
-        self._fly_to_duration = 0.5
-        self._fly_to_active = True
+        return ViewCommandService.require().set_value(
+            old_state,
+            target_state,
+            self._animate_to_scene_camera_state,
+            description="Frame Selected",
+        )
 
     def focus_on(self, x: float, y: float, z: float, distance: float = 10.0):
         """Focus camera on a point."""
@@ -287,22 +357,28 @@ class SceneViewCameraMixin:
         if cam:
             cam.reset()
 
-    def _align_object_to_camera(self):
+    def _align_object_to_camera(self, object_id: int = 0) -> bool:
         """Align the selected object's world transform to the editor camera."""
         if not self._engine:
-            return
+            return False
 
-        obj_id = self._engine.get_selected_object_id()
-        if not obj_id:
-            return
+        obj_id = int(object_id or 0)
+        if obj_id <= 0:
+            from Infernux.engine.interaction import SelectionService
+
+            obj_id = int(SelectionService.instance().primary_scene_object_id() or 0)
+        if obj_id <= 0:
+            obj_id = int(self._engine.get_selected_object_id() or 0)
+        if obj_id <= 0:
+            return False
 
         from Infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
         if not scene:
-            return
+            return False
         obj = scene.find_by_id(obj_id)
         if obj is None:
-            return
+            return False
 
         cam = self._engine.editor_camera
         cam_pos = cam.position
@@ -317,17 +393,25 @@ class SceneViewCameraMixin:
         new_pos = Vector3(cam_pos.x, cam_pos.y, cam_pos.z)
         new_euler = Vector3(cam_pitch, cam_yaw, 0.0)
 
-        transform.position = new_pos
-        transform.euler_angles = new_euler
+        from Infernux.engine.interaction import ComponentCommandService
 
-        # Record undo
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.record(SetPropertyCommand(
-                transform, "position",
-                Vector3(*old_pos), new_pos, "Align Position"))
-            mgr.record(SetPropertyCommand(
-                transform, "euler_angles",
-                Vector3(*old_euler), new_euler, "Align Rotation"))
+        return ComponentCommandService.require().execute_property_changes(
+            [
+                (
+                    transform,
+                    "position",
+                    Vector3(*old_pos),
+                    new_pos,
+                    "Align Position",
+                ),
+                (
+                    transform,
+                    "euler_angles",
+                    Vector3(*old_euler),
+                    new_euler,
+                    "Align Rotation",
+                ),
+            ],
+            description="Align With View",
+        )
 

@@ -92,7 +92,12 @@ struct ParticleGpuRuntime::ResidentState
             return;
         device->Release(transforms);
         device->Release(simulationControl);
+        device->Release(aliveControl);
+        device->Release(aliveDispatch);
+        device->Release(aliveIndices[1]);
+        device->Release(aliveIndices[0]);
         device->Release(renderIndices);
+        device->Release(visibility);
         device->Release(indirect);
         device->Release(instances);
         device->Release(counters);
@@ -105,10 +110,16 @@ struct ParticleGpuRuntime::ResidentState
     rhi::BufferHandle freeList;
     rhi::BufferHandle counters;
     rhi::BufferHandle instances;
+    rhi::BufferHandle visibility;
     rhi::BufferHandle indirect;
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle transforms;
     rhi::BufferHandle simulationControl;
+    std::array<rhi::BufferHandle, 2> aliveIndices{};
+    rhi::BufferHandle aliveDispatch;
+    rhi::BufferHandle aliveControl;
+    uint32_t aliveReadSlot = 0;
+    bool aliveListReady = false;
     bool bootstrapRecorded = false;
 };
 
@@ -197,6 +208,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_collisionSceneLayout, replacement.m_collisionSceneLayout);
     std::swap(m_collisionSceneGroup, replacement.m_collisionSceneGroup);
     std::swap(m_pipelines, replacement.m_pipelines);
+    std::swap(m_supportsFusedUpdateRendering, replacement.m_supportsFusedUpdateRendering);
     std::swap(m_continuation, replacement.m_continuation);
     std::swap(m_contacts, replacement.m_contacts);
     return true;
@@ -210,10 +222,19 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     Destroy();
     uint64_t stateBytes = 0;
     uint64_t instanceBytes = 0;
+    uint64_t visibilityBytes = 0;
     if (!CheckedBufferSize(desc.capacity, desc.stateStride, stateBytes) ||
-        !CheckedBufferSize(desc.capacity, RenderInstanceStride, instanceBytes))
+        !CheckedBufferSize(desc.capacity, RenderInstanceStride, instanceBytes) ||
+        !CheckedBufferSize(desc.capacity, VisibilityInstanceStride, visibilityBytes))
         return false;
-    for (const auto &kernel : desc.kernels) {
+    const bool fusedUpdateRendering = desc.supportsFusedUpdateRendering && !desc.collisionEnabled &&
+                                      desc.continuation.capacity == 0 && desc.meshInterfaces.empty() &&
+                                      desc.vectorFields.vectorFields.empty() &&
+                                      desc.vectorFields.textureParameters.empty();
+    for (size_t index = 0; index < desc.kernels.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused && !fusedUpdateRendering)
+            continue;
+        const auto &kernel = desc.kernels[index];
         if (!kernel.words || kernel.wordCount == 0)
             return false;
     }
@@ -222,6 +243,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     m_stateStride = desc.stateStride;
     m_eventTypeCount = desc.eventTypeCount;
     m_collisionEnabled = desc.collisionEnabled;
+    m_supportsFusedUpdateRendering = fusedUpdateRendering;
     if (residentState) {
         if (residentState->device != &device) {
             Destroy();
@@ -232,30 +254,43 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState = std::make_shared<ResidentState>();
         m_residentState->device = &device;
         const auto storage = rhi::BufferUsageFlags::Storage;
-        // State snapshots are copied asynchronously into a readback buffer by
-        // ParticleGpuSystemManager diagnostics. Keep the transfer capability
-        // on the resident allocation itself; the copy source cannot acquire
-        // usage flags retroactively when a diagnostic request arrives.
-        m_residentState->states = device.CreateBuffer({stateBytes, storage | rhi::BufferUsageFlags::TransferSource});
-        m_residentState->freeList =
-            device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-        m_residentState->counters =
-            device.CreateBuffer({CounterBufferByteSize(), storage | rhi::BufferUsageFlags::TransferSource});
-        const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+        const auto createSharedStorage = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
             rhi::BufferDesc bufferDesc;
             bufferDesc.byteSize = bytes;
             bufferDesc.usage = usage;
             bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
             return device.CreateBuffer(bufferDesc);
         };
+        // State snapshots are copied asynchronously into a readback buffer by
+        // ParticleGpuSystemManager diagnostics. Keep the transfer capability
+        // on the resident allocation itself; the copy source cannot acquire
+        // usage flags retroactively when a diagnostic request arrives.
+        // Simulation records on the independent compute family. Default
+        // Graphics-only exclusive buffers hang that queue the first time
+        // Game-only preview or a newly selected six-way system touches them.
+        m_residentState->states = createSharedStorage(stateBytes, storage | rhi::BufferUsageFlags::TransferSource);
+        m_residentState->freeList =
+            createSharedStorage(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
+        m_residentState->counters =
+            createSharedStorage(CounterBufferByteSize(), storage | rhi::BufferUsageFlags::TransferSource);
+        const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+            return createSharedStorage(bytes, usage);
+        };
         m_residentState->instances = createRenderExport(instanceBytes, storage);
+        m_residentState->visibility = createRenderExport(visibilityBytes, storage);
         m_residentState->indirect = createRenderExport(16, storage | rhi::BufferUsageFlags::Indirect);
         m_residentState->renderIndices =
             createRenderExport(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
+        for (auto &aliveIndices : m_residentState->aliveIndices)
+            aliveIndices = createRenderExport(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
+        m_residentState->aliveDispatch =
+            createRenderExport(2u * 4u * sizeof(uint32_t), storage | rhi::BufferUsageFlags::Indirect);
+        m_residentState->aliveControl = createRenderExport(4u * sizeof(uint32_t), storage);
         rhi::BufferDesc transformDesc;
         transformDesc.byteSize = sizeof(GpuParticleTransforms);
         transformDesc.usage = rhi::BufferUsageFlags::Uniform;
         transformDesc.memory = rhi::BufferMemory::Upload;
+        transformDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         m_residentState->transforms = device.CreateBuffer(transformDesc);
         rhi::BufferDesc simulationControlDesc;
         simulationControlDesc.byteSize = sizeof(GpuParticleSimulationControl);
@@ -267,8 +302,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         // be created with direct initialData.
         m_residentState->simulationControl = device.CreateBuffer(simulationControlDesc);
         if (!StateBuffer().IsValid() || !FreeListBuffer().IsValid() || !CounterBuffer().IsValid() ||
-            !InstanceBuffer().IsValid() || !IndirectBuffer().IsValid() || !RenderIndexBuffer().IsValid() ||
-            !TransformBuffer().IsValid() || !SimulationControlBuffer().IsValid()) {
+            !InstanceBuffer().IsValid() || !VisibilityBuffer().IsValid() || !IndirectBuffer().IsValid() ||
+            !RenderIndexBuffer().IsValid() || !TransformBuffer().IsValid() || !SimulationControlBuffer().IsValid() ||
+            !AliveIndexBuffer(0).IsValid() || !AliveIndexBuffer(1).IsValid() || !AliveDispatchBuffer().IsValid() ||
+            !AliveControlBuffer().IsValid()) {
             Destroy();
             return false;
         }
@@ -283,10 +320,14 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         Destroy();
         return false;
     }
-    for (uint32_t binding = 0; binding < 7; ++binding) {
-        layoutDesc.entries[layoutDesc.entryCount++] = {
-            binding, binding == 5 ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer,
-            rhi::ShaderStage::Compute, 1};
+    for (uint32_t binding = 0; binding < 12; ++binding) {
+        if (binding == 5) {
+            layoutDesc.entries[layoutDesc.entryCount++] = {binding, rhi::BindingType::UniformBuffer,
+                                                           rhi::ShaderStage::Compute, 1};
+            continue;
+        }
+        layoutDesc.entries[layoutDesc.entryCount++] = {binding, rhi::BindingType::StorageBuffer,
+                                                       rhi::ShaderStage::Compute, 1};
     }
     layoutDesc.entries[layoutDesc.entryCount++] = {15, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     m_layout = device.CreateBindingLayout(layoutDesc);
@@ -297,9 +338,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 7> coreBuffers = {StateBuffer(),      FreeListBuffer(), CounterBuffer(),
-                                                          InstanceBuffer(),   IndirectBuffer(), TransformBuffer(),
-                                                          RenderIndexBuffer()};
+    const std::array<rhi::BufferHandle, 12> coreBuffers = {
+        StateBuffer(),       FreeListBuffer(),      CounterBuffer(),      InstanceBuffer(),
+        IndirectBuffer(),    TransformBuffer(),     RenderIndexBuffer(),  AliveIndexBuffer(0),
+        AliveIndexBuffer(1), AliveDispatchBuffer(), AliveControlBuffer(), VisibilityBuffer()};
     for (uint32_t binding = 0; binding < coreBuffers.size(); ++binding) {
         auto &entry = groupDesc.buffers[groupDesc.bufferCount++];
         entry = {binding, binding == 5 ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer,
@@ -420,6 +462,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 influenceDesc.byteSize = sizeof(dummyInfluence);
                 influenceDesc.usage = rhi::BufferUsageFlags::Storage;
                 influenceDesc.memory = rhi::BufferMemory::Upload;
+                influenceDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
                 influenceDesc.initialData = dummyInfluence.data();
                 influenceDesc.initialDataBytes = influenceDesc.byteSize;
                 runtimeMesh.influences = device.CreateBuffer(influenceDesc);
@@ -433,6 +476,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             paletteDesc.byteSize = paletteBytes;
             paletteDesc.usage = rhi::BufferUsageFlags::Storage;
             paletteDesc.memory = rhi::BufferMemory::Upload;
+            paletteDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
             paletteDesc.initialData = paletteData;
             paletteDesc.initialDataBytes = paletteBytes;
             runtimeMesh.palette = device.CreateBuffer(paletteDesc);
@@ -464,6 +508,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         metadataBufferDesc.byteSize = dataInterfaces->metadataWords.size() * sizeof(uint32_t);
         metadataBufferDesc.usage = rhi::BufferUsageFlags::Storage;
         metadataBufferDesc.memory = rhi::BufferMemory::Upload;
+        metadataBufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         metadataBufferDesc.initialData = dataInterfaces->metadataWords.data();
         metadataBufferDesc.initialDataBytes = metadataBufferDesc.byteSize;
         dataInterfaces->metadataBuffer = device.CreateBuffer(metadataBufferDesc);
@@ -557,6 +602,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         metadataDesc.byteSize = vectorFields->metadataWords.size() * sizeof(uint32_t);
         metadataDesc.usage = rhi::BufferUsageFlags::Storage;
         metadataDesc.memory = rhi::BufferMemory::Upload;
+        metadataDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         metadataDesc.initialData = vectorFields->metadataWords.data();
         metadataDesc.initialDataBytes = metadataDesc.byteSize;
         vectorFields->metadataBuffer = device.CreateBuffer(metadataDesc);
@@ -625,6 +671,9 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     }
 
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+            !m_supportsFusedUpdateRendering)
+            continue;
         const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
         if (!shader.IsValid()) {
             Destroy();
@@ -676,6 +725,7 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_stateStride = 0;
     m_eventTypeCount = 0;
     m_collisionEnabled = false;
+    m_supportsFusedUpdateRendering = false;
     m_contactPrepareRecordCalls = 0;
     m_contactSolveRecordCalls = 0;
     m_contactDispatchRecordCalls = 0;
@@ -687,12 +737,15 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_collisionSceneLayout = {};
     m_collisionSceneGroup = {};
     m_pipelines.fill({});
+    m_cachedTransforms = {};
+    m_hasCachedTransforms = false;
 }
 
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
-    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() ||
-        !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid() || !m_graphSpawnLayout.IsValid())
+    if (!m_device || !m_residentState || m_capacity == 0 || !InstanceBuffer().IsValid() ||
+        !VisibilityBuffer().IsValid() || !m_group.IsValid() || !m_emptyDataInterfaceLayout.IsValid() ||
+        !m_emptyDataInterfaceGroup.IsValid() || !m_graphSpawnLayout.IsValid())
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
@@ -711,8 +764,11 @@ bool ParticleGpuRuntime::IsValid() const noexcept
         return false;
     if (m_collisionEnabled != static_cast<bool>(m_contacts))
         return false;
-    for (auto pipeline : m_pipelines) {
-        if (!pipeline.IsValid())
+    for (size_t index = 0; index < m_pipelines.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+            !m_supportsFusedUpdateRendering)
+            continue;
+        if (!m_pipelines[index].IsValid())
             return false;
     }
     return true;
@@ -798,14 +854,23 @@ bool ParticleGpuRuntime::NeedsBootstrap() const noexcept
 
 void ParticleGpuRuntime::RequestBootstrap() noexcept
 {
-    if (m_residentState)
+    if (m_residentState) {
         m_residentState->bootstrapRecorded = false;
+        m_residentState->aliveReadSlot = 0;
+        m_residentState->aliveListReady = false;
+    }
 }
 
 void ParticleGpuRuntime::MarkStateInitialized() noexcept
 {
-    if (m_residentState)
+    if (m_residentState) {
         m_residentState->bootstrapRecorded = true;
+        // A migration restores states/free-list data but does not yet own a
+        // compact alive list. The next Update performs one GPU capacity scan
+        // and publishes the resident list without any CPU readback.
+        m_residentState->aliveReadSlot = 0;
+        m_residentState->aliveListReady = false;
+    }
 }
 
 bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources)
@@ -837,9 +902,15 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
 
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
+    if (m_hasCachedTransforms && std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) == 0)
+        return true;
     if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
         return false;
-    return UpdateMeshInterfaceMetadata(transforms) && UpdateVectorFieldMetadata(transforms);
+    if (!UpdateMeshInterfaceMetadata(transforms) || !UpdateVectorFieldMetadata(transforms))
+        return false;
+    m_cachedTransforms = transforms;
+    m_hasCachedTransforms = true;
+    return true;
 }
 
 bool ParticleGpuRuntime::UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms)
@@ -926,6 +997,11 @@ rhi::BufferHandle ParticleGpuRuntime::InstanceBuffer() const noexcept
     return m_residentState ? m_residentState->instances : rhi::BufferHandle{};
 }
 
+rhi::BufferHandle ParticleGpuRuntime::VisibilityBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->visibility : rhi::BufferHandle{};
+}
+
 rhi::BufferHandle ParticleGpuRuntime::IndirectBuffer() const noexcept
 {
     return m_residentState ? m_residentState->indirect : rhi::BufferHandle{};
@@ -946,17 +1022,67 @@ rhi::BufferHandle ParticleGpuRuntime::SimulationControlBuffer() const noexcept
     return m_residentState ? m_residentState->simulationControl : rhi::BufferHandle{};
 }
 
-void ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+rhi::BufferHandle ParticleGpuRuntime::AliveIndexBuffer(uint32_t slot) const noexcept
+{
+    return m_residentState && slot < m_residentState->aliveIndices.size() ? m_residentState->aliveIndices[slot]
+                                                                          : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::AliveDispatchBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->aliveDispatch : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::AliveControlBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->aliveControl : rhi::BufferHandle{};
+}
+
+uint32_t ParticleGpuRuntime::AliveReadSlot() const noexcept
+{
+    return m_residentState ? m_residentState->aliveReadSlot : 0u;
+}
+
+uint32_t ParticleGpuRuntime::AliveWriteSlot() const noexcept
+{
+    return AliveReadSlot() ^ 1u;
+}
+
+bool ParticleGpuRuntime::IsAliveListReady() const noexcept
+{
+    return m_residentState && m_residentState->aliveListReady;
+}
+
+void ParticleGpuRuntime::PublishAliveWrite() noexcept
+{
+    if (!m_residentState)
+        return;
+    m_residentState->aliveReadSlot ^= 1u;
+    m_residentState->aliveListReady = true;
+}
+
+bool ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                                          rhi::BindGroupHandle graphSpawnGroup)
 {
     if (!IsValid() || !encoder.IsValid())
-        return;
+        return false;
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
     constants.invocationCount = (std::max)(m_capacity, m_eventTypeCount);
     constants.systemSeed = systemSeed;
-    Record(encoder, GpuKernelStage::Bootstrap, constants, constants.invocationCount, graphSpawnGroup);
+    constants.aliveReadSlot = 0;
+    constants.aliveWriteSlot = 1;
+    if (!Record(encoder, GpuKernelStage::Bootstrap, constants, constants.invocationCount, graphSpawnGroup))
+        return false;
+    m_residentState->aliveReadSlot = 0;
+    // Recording bootstrap does not make its indirect dispatch arguments
+    // available to later CPU-side recording decisions. Force the first update
+    // after bootstrap through the bounded direct path; PublishAliveWrite marks
+    // the rebuilt list ready only after that update has been recorded behind
+    // bootstrap in the same ordered graph execution.
+    m_residentState->aliveListReady = false;
     m_residentState->bootstrapRecorded = true;
+    return true;
 }
 
 void ParticleGpuRuntime::RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount,
@@ -976,10 +1102,16 @@ void ParticleGpuRuntime::RecordInitIndirect(const rhi::ComputeCommandEncoder &en
     constants.systemSeed = systemSeed;
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
-    Record(encoder, GpuKernelStage::Init, constants, 1, graphSpawnGroup, spawnMetadata, indirectOffset);
+    constants.aliveReadSlot = AliveReadSlot();
+    constants.aliveWriteSlot = AliveWriteSlot();
+    constants.useAliveList = IsAliveListReady() ? 1u : 0u;
+    if (cpuSpawnCount > 0)
+        Record(encoder, GpuKernelStage::Init, constants, cpuSpawnCount, graphSpawnGroup);
+    else
+        Record(encoder, GpuKernelStage::Init, constants, 1, graphSpawnGroup, spawnMetadata, indirectOffset);
 }
 
-void ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+bool ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                                       uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
                                       bool collectCollisionDiagnostics) const
 {
@@ -990,7 +1122,32 @@ void ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder,
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
     constants.diagnosticFlags = collectCollisionDiagnostics ? 1u : 0u;
-    Record(encoder, GpuKernelStage::Update, constants, m_capacity, graphSpawnGroup);
+    constants.aliveReadSlot = AliveReadSlot();
+    constants.aliveWriteSlot = AliveWriteSlot();
+    constants.useAliveList = IsAliveListReady() ? 1u : 0u;
+    return Record(encoder, GpuKernelStage::Update, constants, m_capacity, graphSpawnGroup,
+                  constants.useAliveList ? AliveDispatchBuffer() : rhi::BufferHandle{},
+                  static_cast<uint64_t>(constants.aliveReadSlot) * 4u * sizeof(uint32_t));
+}
+
+bool ParticleGpuRuntime::RecordUpdateRenderingFused(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                                    uint32_t simulationStep, float deltaTime,
+                                                    rhi::BindGroupHandle graphSpawnGroup) const
+{
+    if (!SupportsFusedUpdateRendering())
+        return false;
+    GpuParticlePushConstants constants;
+    constants.capacity = m_capacity;
+    constants.invocationCount = m_capacity;
+    constants.systemSeed = systemSeed;
+    constants.simulationStep = simulationStep;
+    constants.deltaTime = deltaTime;
+    constants.aliveReadSlot = AliveReadSlot();
+    constants.aliveWriteSlot = AliveWriteSlot();
+    constants.useAliveList = IsAliveListReady() ? 1u : 0u;
+    return Record(encoder, GpuKernelStage::UpdateRenderingFused, constants, m_capacity, graphSpawnGroup,
+                  constants.useAliveList ? AliveDispatchBuffer() : rhi::BufferHandle{},
+                  static_cast<uint64_t>(constants.aliveReadSlot) * 4u * sizeof(uint32_t));
 }
 
 void ParticleGpuRuntime::RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
@@ -1041,17 +1198,21 @@ void ParticleGpuRuntime::RecordContactDispatch(const rhi::ComputeCommandEncoder 
     ++m_contactDispatchRecordCalls;
 }
 
-void ParticleGpuRuntime::RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
-                                           rhi::BindGroupHandle graphSpawnGroup, bool resetCollisionDiagnostics) const
+bool ParticleGpuRuntime::RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
+                                           rhi::BindGroupHandle graphSpawnGroup, bool resetCollisionDiagnostics,
+                                           bool prepareAliveWrite) const
 {
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
     constants.invocationCount = 1;
-    constants.diagnosticFlags = resetCollisionDiagnostics ? 2u : 0u;
-    Record(encoder, GpuKernelStage::RenderReset, constants, 1, graphSpawnGroup);
+    constants.diagnosticFlags = (resetCollisionDiagnostics ? 2u : 0u) | (prepareAliveWrite ? 8u : 0u);
+    constants.aliveReadSlot = AliveReadSlot();
+    constants.aliveWriteSlot = AliveWriteSlot();
+    constants.useAliveList = IsAliveListReady() ? 1u : 0u;
+    return Record(encoder, GpuKernelStage::RenderReset, constants, 1, graphSpawnGroup);
 }
 
-void ParticleGpuRuntime::RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+bool ParticleGpuRuntime::RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                                          uint32_t simulationStep, rhi::BindGroupHandle graphSpawnGroup) const
 {
     GpuParticlePushConstants constants;
@@ -1059,17 +1220,24 @@ void ParticleGpuRuntime::RecordRendering(const rhi::ComputeCommandEncoder &encod
     constants.invocationCount = m_capacity;
     constants.systemSeed = systemSeed;
     constants.simulationStep = simulationStep;
-    Record(encoder, GpuKernelStage::Rendering, constants, m_capacity, graphSpawnGroup);
+    constants.aliveReadSlot = AliveReadSlot();
+    constants.aliveWriteSlot = AliveWriteSlot();
+    constants.useAliveList = IsAliveListReady() ? 1u : 0u;
+    return Record(encoder, GpuKernelStage::Rendering, constants, m_capacity, graphSpawnGroup,
+                  constants.useAliveList ? AliveDispatchBuffer() : rhi::BufferHandle{},
+                  static_cast<uint64_t>(constants.aliveReadSlot) * 4u * sizeof(uint32_t));
 }
 
-void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
+bool ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
                                 rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments,
                                 uint64_t indirectOffset) const
 {
     if (!IsValid() || !encoder.IsValid() || invocationCount == 0 || !graphSpawnGroup.IsValid())
-        return;
+        return false;
     const auto pipeline = m_pipelines[StageIndex(stage)];
+    if (!pipeline.IsValid())
+        return false;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, m_group);
     encoder.BindGroup(pipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
@@ -1084,6 +1252,7 @@ void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
         encoder.DispatchIndirect(indirectArguments, indirectOffset);
     else
         encoder.Dispatch(GroupCount(invocationCount), 1, 1);
+    return true;
 }
 
 uint32_t ParticleGpuRuntime::GroupCount(uint32_t invocationCount) noexcept

@@ -16,12 +16,14 @@ def njit(*args: Any, **kwargs: Any) -> Any:
     The decorated function gains a ``.py`` attribute pointing to the
     original pure-Python source.
 
-    Supports ``auto_parallel=True`` as an Infernux extension. In that mode
-    the wrapper prepares both serial and ``parallel=True`` variants,
-    conservatively upgrades simple ``for ... in range(...)`` reduction loops
-    to ``prange`` when possible, defaults to the parallel one, and lets
-    :func:`warmup` first trigger compilation and then benchmark steady-state
-    runtime before pinning the faster choice.
+    Supports ``auto_parallel=True`` as an Infernux extension. A conservative
+    Typed HIR pass proves one-dimensional affine loops before creating a
+    ``prange`` variant. A static HIR cost model decides clear small/large
+    one-shot workloads before timing; gray-zone signatures use :func:`warmup`
+    for isolated equivalence and multi-sample measurement. Decisions remain
+    bounded per dtype/rank/layout/shape/thread-count bucket. Use
+    ``parallel_policy="required"`` to reject kernels which cannot be proven
+    parallel instead of retaining serial execution.
     """
     ...
 

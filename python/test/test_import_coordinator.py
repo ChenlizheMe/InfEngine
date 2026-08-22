@@ -45,6 +45,23 @@ def test_repeated_modifications_coalesce_to_one_event(tmp_path):
     assert events[0].kind is AssetFsEventKind.MODIFIED
 
 
+def test_one_submission_can_use_a_shorter_debounce(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "fast.py"
+
+    coordinator.submit(
+        AssetFsEventKind.MODIFIED,
+        str(path),
+        debounce_seconds=0.025,
+    )
+    clock.advance(0.024)
+    assert coordinator.drain() == []
+    clock.advance(0.002)
+    events = coordinator.drain()
+    assert [event.kind for event in events] == [AssetFsEventKind.MODIFIED]
+
+
 def test_create_modify_stays_created_and_ephemeral_create_delete_disappears(tmp_path):
     clock = _Clock()
     coordinator = _coordinator(clock)
@@ -108,6 +125,22 @@ def test_retry_is_non_blocking_and_bounded(tmp_path):
     assert not coordinator.retry(event)
 
 
+def test_defer_preserves_import_retry_budget(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "asset.mat"
+    coordinator.submit(AssetFsEventKind.MODIFIED, str(path))
+    event = coordinator.drain(force=True)[0]
+
+    for _ in range(8):
+        coordinator.defer(event)
+        clock.advance(0.21)
+        event = coordinator.drain()[0]
+        assert event.attempt == 0
+
+    assert coordinator.retry(event)
+
+
 def test_document_store_temporary_events_are_filtered_and_atomic_move_becomes_modified(tmp_path):
     clock = _Clock()
     coordinator = _coordinator(clock)
@@ -154,3 +187,29 @@ def test_concurrent_submit_is_thread_safe(tmp_path):
 
     assert coordinator.pending_count == 1
     assert len(coordinator.drain(force=True)) == 1
+
+
+def test_bounded_drain_preserves_ready_fifo_and_force_drains_remainder(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    paths = [tmp_path / f"asset-{index}.txt" for index in range(4)]
+    for index, path in enumerate(paths):
+        coordinator.submit(
+            AssetFsEventKind.MODIFIED,
+            str(path),
+            observed_at=clock.value + index * 0.01,
+        )
+    clock.advance(0.2)
+
+    first = coordinator.drain(max_events=1)
+    second = coordinator.drain(max_events=2)
+
+    assert [event.path for event in first] == [str(paths[0].resolve())]
+    assert [event.path for event in second] == [
+        str(paths[1].resolve()),
+        str(paths[2].resolve()),
+    ]
+    assert coordinator.pending_count == 1
+    assert [event.path for event in coordinator.drain(force=True, max_events=1)] == [
+        str(paths[3].resolve())
+    ]

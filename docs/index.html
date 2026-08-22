@@ -14,7 +14,7 @@
     <meta property="og:title" content="Infernux · 熔炉 — Open game engine">
     <meta property="og:description" content="A C++17/Vulkan native runtime with a Python production layer, an integrated editor, and an inspectable MIT-licensed architecture.">
     <meta property="og:url" content="https://infernux-engine.com/">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.2.1.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · 熔炉 — Open game engine">
     <meta name="twitter:description" content="C++17/Vulkan runtime · Python production layer · MIT licensed.">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.2.1.jpg">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
     <title>Infernux · 熔炉 — Open game engine</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
@@ -40,7 +40,7 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip">
             <div class="mission-ribbon-inner">
-                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open engine · release 0.2.1 online</span>
+                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span>
                 <span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span>
                 <span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span>
             </div>
@@ -83,12 +83,12 @@
                 <div class="hero-grid">
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">RELEASE 0.2.1 · ONLINE</span>
+                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.4 · FULL ENGINE UPDATE</span>
                             <span data-i18n="home.hero.kicker">OPEN-SOURCE · MIT · WIN64</span>
                         </div>
                         <h1 class="hero-title" data-i18n="home.hero.title">An engine you can <span class="accent">disassemble</span>, extend, and ship.</h1>
                         <p class="hero-subtitle" data-i18n="hero.subtitle">C++ / Vulkan core · Python production layer · repository-first</p>
-                        <p class="hero-description" data-i18n="home.hero.description">熔炉 (Infernux) is a from-scratch game engine that pairs a C++17 / Vulkan native runtime with a Python production layer for gameplay, editor tooling, and render-stack authoring. It is built for teams who want readable internals, a fast inner loop, and an MIT-licensed codebase they can actually own.</p>
+                        <p class="hero-description" data-i18n="home.hero.description">Infernux pairs a C++17/Vulkan runtime with a Python 3.12 production layer. Version 0.3.4 brings a programmable render pipeline, GPU Particle Graph, unified editor interaction, and a cleaner standalone runtime.</p>
                         <div class="hero-actions">
                             <a href="start.html" class="btn btn-primary">
                                 <i class="fas fa-rocket" aria-hidden="true"></i>
@@ -99,9 +99,9 @@
                                 <span data-i18n="download.hubInstaller">Download Hub installer</span>
                             </a>
                         </div>
-                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · v0.2.1 technical preview · broader platforms in development</p>
+                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · Infernux 0.3.4 · broader platforms in development</p>
                         <div class="hero-text-links" aria-label="More ways to explore Infernux" data-i18n-aria-label="home.hero.moreActions">
-                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">Inspect the benchmark</a>
+                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">Inspect the showcase</a>
                             <span aria-hidden="true">/</span>
                             <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
                                 <i class="fab fa-github" aria-hidden="true"></i>
@@ -167,24 +167,24 @@
             <section class="section" id="runtime-capture">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.demo.kicker">Runtime capture · 0.2.1</div>
-                        <h2 class="section-title" data-i18n="home.demo.title">10,000-cube reference workload running inside the editor.</h2>
+                        <div class="section-kicker" data-i18n="home.demo.kicker">Project showcase · 0.3.4</div>
+                        <h2 class="section-title" data-i18n="home.demo.title">A 65,536-object voxel continent authored and rendered inside Infernux.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.demo.intro">A dual-axis sine-wave workload updates a 100 × 100 cube grid through the Batch + JIT path while one directional light and one shared material keep the render setup explicit.</p>
+                    <p class="section-intro" data-i18n="home.demo.intro">This real editor capture combines standard scene objects, shared lit rendering, per-camera shadows, and a custom RenderStack tilt-shift treatment in one authored scene.</p>
                 </div>
                 <div class="stack-layout demo-layout">
                     <div class="demo-frame" data-reveal>
                         <picture>
-                            <source srcset="assets/demo-0.2.1.avif" type="image/avif">
-                            <img src="assets/demo-0.2.1.webp" width="1245" height="653" alt="Infernux 0.2.1 editor running the 10,000-cube ocean FFT reference workload" loading="lazy" decoding="async">
+                            <source srcset="assets/demo-0.3.4.avif" type="image/avif">
+                            <img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
                         </picture>
                     </div>
                     <div class="stack-board" data-reveal>
-                            <h3 data-i18n="home.demo.panel.title">Benchmark evidence and limits</h3>
+                            <h3 data-i18n="home.demo.panel.title">What this capture demonstrates</h3>
                             <ul class="list-clean">
-                            <li data-i18n="home.demo.panel.item1">Test environment: 1920 × 1080, V-Sync off, Windows 11, Core Ultra 7 265K, RTX 5070 Ti and 64 GB DDR5-6400.</li>
-                            <li data-i18n="home.demo.panel.item2">After a 60-frame warm-up, the 10,000-cube single-material workload averaged 127 FPS in the Infernux editor and 171 FPS at runtime over 300 frames.</li>
-                            <li data-i18n="home.demo.panel.item3">Unity 6 is included only as a reference: shading complexity, batching and editor maturity differ. Read the <a href="https://arxiv.org/abs/2604.10263" target="_blank" rel="noopener">methodology and complete tables</a> before comparing results.</li>
+                            <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects share one mesh and material while remaining part of the regular Scene and Hierarchy model.</li>
+                            <li data-i18n="home.demo.panel.item2">A custom RenderStack pipeline applies tilt-shift focus, distance and height fog, color controls, and MSAA without leaving the editor workflow.</li>
+                            <li data-i18n="home.demo.panel.item3">This is a real 1920 × 1032 editor capture from the 0.3.4 technology showcase, not a mock-up or offline render.</li>
                         </ul>
                     </div>
                 </div>
@@ -220,16 +220,21 @@
             <section id="capabilities" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.capabilities.kicker">Operations board · 0.2.1</div>
+                        <div class="section-kicker" data-i18n="home.capabilities.kicker">Status board · 0.3.4</div>
                         <h2 class="section-title" data-i18n="home.capabilities.title">What is online today, grouped the way real engineering teams evaluate an engine.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.capabilities.intro">This is the current technical preview, sorted by the work areas that actually matter: rendering, simulation, content, scripting, tooling, and asset pipeline.</p>
+                    <p class="section-intro" data-i18n="home.capabilities.intro">Version 0.3.4 brings rendering, simulation, authoring, scripting, automation, assets, and Player runtime onto a more coherent foundation.</p>
                 </div>
                 <div class="capability-grid">
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.render.tag">SUBSYSTEM · RENDER</div>
                         <h3 data-i18n="home.capabilities.render.title">Vulkan render core</h3>
-                        <p data-i18n="home.capabilities.render.body">Forward and deferred rendering, PBR materials, cascaded shadows, MSAA, shader reflection, post-processing stack, and RenderGraph-based pass scheduling.</p>
+                        <p data-i18n="home.capabilities.render.body">Forward, Forward+ and Deferred routes, PBR, per-camera shadows, reusable Effect assets, structured GLSL, RenderGraph scheduling, and a Python-programmable RenderStack.</p>
+                    </article>
+                    <article class="capability-card" data-reveal>
+                        <div class="mini-tag" data-i18n="home.capabilities.vfx.tag">SUBSYSTEM · GPU VFX</div>
+                        <h3 data-i18n="home.capabilities.vfx.title">Particle Graph and GPU simulation</h3>
+                        <p data-i18n="home.capabilities.vfx.body">Typed emitter, Init, Update and Rendering stages compile to runtime IR ahead of time, with sprite/mesh outputs, editor preview and live parameters.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.physics.tag">SUBSYSTEM · PHYSICS</div>
@@ -239,12 +244,12 @@
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.animation.tag">PREVIEW · ANIMATION</div>
                         <h3 data-i18n="home.capabilities.animation.title">2D / 3D animation stack</h3>
-                        <p data-i18n="home.capabilities.animation.body">Sprite-based <code>SpiritAnimator</code>, <code>AnimClip2D</code> and <code>AnimClip3D</code> assets, embedded FBX takes, skeletal animation playback, skinned mesh rendering, and an FSM editor for state machines.</p>
+                        <p data-i18n="home.capabilities.animation.body">2D clips, sprite playback, FBX takes, skeletal animation, skinned meshes, reusable state-machine graphs, and Timeline authoring share one document foundation.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.editor.tag">SUBSYSTEM · EDITOR</div>
                         <h3 data-i18n="home.capabilities.editor.title">12-panel editor shell</h3>
-                        <p data-i18n="home.capabilities.editor.body">Hierarchy, Inspector, Scene View, Game View, Project, Console, UI editor, Toolbar, gizmos, multi-selection, undo / redo, and play-mode scene isolation in a single shell.</p>
+                        <p data-i18n="home.capabilities.editor.body">Authoring panels converge on shared selection, commands, shortcuts, documents, save, conflicts and undo/redo services.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.script.tag">SUBSYSTEM · SCRIPT</div>
@@ -254,12 +259,12 @@
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.asset.tag">SUBSYSTEM · ASSETS</div>
                         <h3 data-i18n="home.capabilities.asset.title">Asset & project pipeline</h3>
-                        <p data-i18n="home.capabilities.asset.body">GUID-based AssetDatabase, <code>.meta</code> sidecar files, dependency tracking, scene serialization, asset previews, Nuitka-based standalone build, and a PySide6 Hub launcher.</p>
+                        <p data-i18n="home.capabilities.asset.body">GUID identity, dependency indexing, Library artifacts, live previews, transactional documents, and structured Player exports separate authoring from runtime content.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.ai.tag">EXTENSION · MCP · AGENTS</div>
-                        <h3 data-i18n="home.capabilities.ai.title">Self-evolving MCP with strong validation</h3>
-                        <p data-i18n="home.capabilities.ai.body">The FastMCP editor plane couples hierarchical discovery (<code>mcp.catalog.*</code>), subsystem guides with knowledge-token gates, configurable capability profiles, and trace/evolution hooks so projects can extend MCP safely—not brittle glue scripts. Scene/asset guards, transactional workflows where enabled, and structured recovery payloads (<code>stop_repeating</code>, suggested next tools) steer assistants toward validated edits.</p>
+                        <h3 data-i18n="home.capabilities.ai.title">MCP Harness for real editor workflows</h3>
+                        <p data-i18n="home.capabilities.ai.body">Operate a visible project through public workflows, inject frame-bounded input, inspect semantic state, and report blockers without embedding MCP into exported games.</p>
                     </article>
                 </div>
             </section>
@@ -268,22 +273,22 @@
                 <div class="section-head">
                     <div>
                         <div class="section-kicker" data-i18n="home.status.kicker">Project status</div>
-                        <h2 class="section-title" data-i18n="home.status.title">Release 0.2.1: animation controllers, Timeline, and validated MCP workflows.</h2>
+                        <h2 class="section-title" data-i18n="home.status.title">Infernux 0.3.4: rendering, VFX, interaction, and runtime rebuilt together.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.status.intro">The engine now includes preview animation controllers, basic Timeline workflows, and a validated MCP control plane for agents; the roadmap still calls out what needs production hardening.</p>
+                    <p class="section-intro" data-i18n="home.status.intro">Version 0.3.4 combines a broad engine refactor with programmable rendering, GPU VFX, unified editor interaction, packaging, performance work, and editor-side MCP validation.</p>
                 </div>
                 <div class="status-grid">
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card1.tag">CHECKPOINT · 0.2.1</div>
+                        <div class="mini-tag" data-i18n="home.status.card1.tag">CHECKPOINT · 0.3.4</div>
                         <h3 data-i18n="home.status.card1.title">Runtime, editor, and animation foundation</h3>
-                        <div class="status-value">v0.2.9</div>
-                        <p data-i18n="home.status.card1.body">Rendering, physics, audio, Python scripting, prefabs, game UI, editor authoring, GUID asset workflows, 2D/3D animation previews, skinned meshes, asset previews, standalone build, and the MCP automation plane (catalog guides, token gates, trace/evolution) are all online.</p>
+                        <div class="status-value">v0.3.4</div>
+                        <p data-i18n="home.status.card1.body">Scene documents, serialization, assets, rendering, particles, physics, interaction, UI, animation, build output and distribution were reworked around stricter ownership.</p>
                     </article>
                     <article class="status-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.status.card2.tag">NEXT · TRANSIT</div>
-                        <h3 data-i18n="home.status.card2.title">Advanced UI and content scale</h3>
-                        <div class="status-value" data-i18n="home.status.card2.value">v0.2 → v0.4</div>
-                        <p data-i18n="home.status.card2.body">Upcoming milestones focus on richer UI controls, GPU particles, terrain, onboarding material, and stronger content production paths.</p>
+                        <h3 data-i18n="home.status.card2.title">Rendering, VFX, interaction, and Player runtime</h3>
+                        <div class="status-value" data-i18n="home.status.card2.value">v0.3.4</div>
+                        <p data-i18n="home.status.card2.body">GPU Particle Graph, programmable render routes, shared editor interaction, and a Library-only Player cook are part of this version.</p>
                     </article>
                 </div>
             </section>
@@ -338,10 +343,10 @@
         </div>
     </footer>
 
-    <script src="js/i18n-index.js?v=1"></script>
+    <script src="js/i18n-index.js?v=2"></script>
     <script src="js/i18n.js?v=19"></script>
-    <script src="js/main.js?v=14"></script>
-    <script src="js/docs-search.js?v=5"></script>
+    <script src="js/main.js?v=15"></script>
+    <script src="js/docs-search.js?v=6"></script>
     <script src="js/home.js?v=1"></script>
     <script type="application/ld+json">
     {
@@ -362,12 +367,12 @@
           "alternateName": "熔炉",
           "applicationCategory": "DeveloperApplication",
           "operatingSystem": "Windows 10, Windows 11",
-          "softwareVersion": "0.2.9",
+          "softwareVersion": "0.3.4",
           "license": "https://opensource.org/licenses/MIT",
           "url": "https://infernux-engine.com/",
           "downloadUrl": "https://github.com/ChenlizheMe/Infernux/releases/latest",
           "codeRepository": "https://github.com/ChenlizheMe/Infernux",
-          "screenshot": "https://infernux-engine.com/assets/demo-0.2.1.webp",
+          "screenshot": "https://infernux-engine.com/assets/demo-0.3.4.webp",
           "sameAs": "https://github.com/ChenlizheMe/Infernux",
           "isAccessibleForFree": true
         }

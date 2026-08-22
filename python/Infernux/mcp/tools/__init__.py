@@ -59,6 +59,8 @@ def register_all_tools(mcp, project_path: str, config: dict[str, Any] | None = N
         register_asset_tools(gated_mcp, project_path)
         from Infernux.mcp.tools.particle import register_particle_tools
         register_particle_tools(gated_mcp, project_path)
+        from Infernux.mcp.tools.authoring import register_authoring_tools
+        register_authoring_tools(gated_mcp, project_path)
     if _group(config, "material"):
         from Infernux.mcp.tools.material import register_material_tools
         register_material_tools(gated_mcp, project_path)

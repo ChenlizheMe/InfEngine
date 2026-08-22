@@ -6,25 +6,10 @@ UI creation and agent-driven creation stay behaviorally identical.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Callable, Optional
 
 from Infernux.debug import Debug
-
-
-PRIMITIVE_INDEX = {
-    0: "primitive.cube",
-    1: "primitive.sphere",
-    2: "primitive.capsule",
-    3: "primitive.cylinder",
-    4: "primitive.plane",
-    5: "primitive.quad",
-}
-
-LIGHT_INDEX = {
-    0: "light.directional",
-    1: "light.point",
-    2: "light.spot",
-}
 
 
 class HierarchyCreationService:
@@ -34,9 +19,8 @@ class HierarchyCreationService:
     _defaults_registered: bool = False
 
     def __init__(self) -> None:
-        self._selection_manager = None
-        self._undo_tracker = None
-        self._hierarchy_panel = None
+        self._selection_service = None
+        self._navigation_service = None
         self._ensure_default_kinds()
 
     @classmethod
@@ -45,10 +29,34 @@ class HierarchyCreationService:
             cls._instance = cls()
         return cls._instance
 
-    def configure(self, *, selection_manager=None, undo_tracker=None, hierarchy_panel=None) -> None:
-        self._selection_manager = selection_manager
-        self._undo_tracker = undo_tracker
-        self._hierarchy_panel = hierarchy_panel
+    def configure(self, *, selection_service=None, navigation_service=None) -> None:
+        self._selection_service = selection_service
+        self._navigation_service = navigation_service
+
+    def _reveal_created_object(self, object_id: int, *, record_history: bool) -> None:
+        navigation = self._navigation_service
+        if navigation is None or int(object_id or 0) <= 0:
+            return
+        from Infernux.engine.interaction import SelectionTarget
+        from Infernux.engine.undo import UndoManager
+
+        manager = UndoManager.instance()
+        # Commands execute inside one global user_action. Direct service calls
+        # still reveal the object, but cannot manufacture a second history
+        # entry after their creation command has already been recorded.
+        record_reveal = bool(
+            record_history
+            and manager is not None
+            and manager.is_user_action_active
+        )
+        try:
+            navigation.reveal(
+                SelectionTarget.scene_object(int(object_id)),
+                record_history=record_reveal,
+                activate_panel=False,
+            )
+        except Exception as exc:
+            Debug.log_suppressed("hierarchy.create.reveal", exc)
 
     @classmethod
     def register_create_kind(
@@ -118,6 +126,28 @@ class HierarchyCreationService:
             for _kind, value in sorted(self._kind_registry.items(), key=lambda item: (item[1].get("category", ""), item[1].get("label", "")))
         ]
 
+    def can_create(self, kind: str, *, parent_id: int = 0) -> bool:
+        self._ensure_default_kinds()
+        normalized = str(kind or "").strip()
+        if normalized not in self._kind_registry:
+            return False
+        try:
+            from Infernux.lib import SceneManager
+
+            scene = SceneManager.instance().get_active_scene()
+            if scene is None:
+                return False
+            resolved_parent = int(parent_id or 0)
+            return not resolved_parent or scene.find_by_id(resolved_parent) is not None
+        except (RuntimeError, TypeError, ValueError):
+            return False
+
+    def can_create_empty_parent(self, object_ids: list[int] | None = None) -> bool:
+        ids = object_ids
+        if ids is None and self._selection_service is not None:
+            ids = list(self._selection_service.scene_object_ids())
+        return bool(ids and any(int(value or 0) > 0 for value in ids))
+
     def create(
         self,
         kind: str,
@@ -126,8 +156,12 @@ class HierarchyCreationService:
         name: str | None = None,
         select: bool = True,
         record_undo: bool = True,
+        selection_owner_id: str = "hierarchy",
+        selection_reason: str = "create_game_object",
+        configure_created: Callable[[Any], None] | None = None,
     ) -> dict[str, Any]:
         from Infernux.lib import SceneManager
+        from Infernux.engine.interaction import SelectionService
 
         scene = SceneManager.instance().get_active_scene()
         if not scene:
@@ -143,16 +177,59 @@ class HierarchyCreationService:
             if parent is None:
                 raise ValueError(f"Parent GameObject {effective_parent_id} was not found.")
 
-        obj = self._create_raw(scene, kind, parent_id)
-        if obj is None:
-            raise RuntimeError(f"Failed to create hierarchy object kind '{kind}'.")
+        before_selection = SelectionService.instance().snapshot
+        obj = None
+        try:
+            from Infernux.engine.undo import UndoManager
 
-        if name:
-            obj.name = str(name)
-        else:
-            obj.name = _unique_scene_object_name(scene, str(obj.name), exclude_id=int(getattr(obj, "id", 0) or 0))
+            manager = UndoManager.instance()
+            initialization_scope = (
+                manager.suppress_property_recording()
+                if manager is not None
+                else nullcontext()
+            )
+            with initialization_scope:
+                obj = self._create_raw(scene, kind, effective_parent_id)
+                if obj is None:
+                    raise RuntimeError(
+                        f"Failed to create hierarchy object kind '{kind}'."
+                    )
 
-        self._finalize(obj, effective_parent_id, self._description_for(kind), select=select, record_undo=record_undo)
+                if name:
+                    obj.name = str(name)
+                else:
+                    obj.name = _unique_scene_object_name(
+                        scene,
+                        str(obj.name),
+                        exclude_id=int(getattr(obj, "id", 0) or 0),
+                    )
+                self._finalize(
+                    obj,
+                    effective_parent_id,
+                    self._description_for(kind),
+                    select=select,
+                    record_undo=record_undo,
+                    before_selection=before_selection,
+                    selection_owner_id=selection_owner_id,
+                    selection_reason=selection_reason,
+                    configure_created=configure_created,
+                )
+        except Exception:
+            if obj is not None:
+                try:
+                    scene.destroy_game_object(obj)
+                    scene.process_pending_destroys()
+                except Exception as cleanup_exc:
+                    Debug.log_suppressed(
+                        "hierarchy.create.rollback",
+                        cleanup_exc,
+                    )
+            SelectionService.instance().apply_snapshot(
+                before_selection,
+                reason="hierarchy_create_rejected",
+                record_history=False,
+            )
+            raise
         return self._serialize_created(obj, kind, selected=select)
 
     def create_empty_parent(self, object_ids: list[int] | None = None) -> dict[str, Any]:
@@ -169,14 +246,18 @@ class HierarchyCreationService:
             MoveGameObjectCommand,
             UndoManager,
         )
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
 
         scene = SceneManager.instance().get_active_scene()
         if not scene:
             raise RuntimeError("No active scene.")
+        mgr = UndoManager.instance()
+        if mgr is None or not mgr.enabled or mgr.is_executing:
+            raise RuntimeError("Global editor history is unavailable.")
 
         raw_ids = object_ids
-        if raw_ids is None and self._selection_manager is not None:
-            raw_ids = list(self._selection_manager.get_ids())
+        if raw_ids is None and self._selection_service is not None:
+            raw_ids = list(self._selection_service.scene_object_ids())
         ids = [int(i) for i in (raw_ids or []) if int(i or 0)]
         if not ids:
             raise ValueError("No objects selected for Create Empty Parent.")
@@ -207,6 +288,8 @@ class HierarchyCreationService:
         common_parent = _deepest_common_parent(topmost)
         insert_index = _min_sibling_index_under_parent(topmost, common_parent)
 
+        selection = SelectionService.instance()
+        before_selection = selection.snapshot
         parent_go = scene.create_game_object("GameObject")
         if parent_go is None:
             raise RuntimeError("Failed to create empty parent GameObject.")
@@ -246,28 +329,24 @@ class HierarchyCreationService:
                 )
             )
 
-        if self._selection_manager:
-            self._selection_manager.select(parent_go.id)
+        selection.select(
+            SelectionTarget.scene_object(parent_go.id),
+            owner_id="hierarchy",
+            reason="create_empty_parent",
+            record_history=False,
+        )
+        after_selection = selection.snapshot
 
-        mgr = UndoManager.instance()
-        if mgr is not None and mgr.enabled:
-            cmds = [CreateGameObjectCommand(int(parent_go.id), "Create Empty Parent")]
-            cmds.extend(move_cmds)
-            mgr.record(CompoundCommand(cmds, "Create Empty Parent"))
-        elif self._undo_tracker is not None:
-            self._undo_tracker.record_create(parent_go.id, "Create Empty Parent")
+        cmds = [CreateGameObjectCommand(
+            int(parent_go.id),
+            "Create Empty Parent",
+            before_selection=before_selection,
+            after_selection=after_selection,
+        )]
+        cmds.extend(move_cmds)
+        mgr.record(CompoundCommand(cmds, "Create Empty Parent"))
 
-        hp = self._hierarchy_panel
-        if hp is not None:
-            expand_created_parent = getattr(hp, "set_pending_expand_id", None)
-            if callable(expand_created_parent):
-                expand_created_parent(parent_go.id)
-            ensure_visible = getattr(hp, "set_selected_object_by_id", None)
-            if callable(ensure_visible):
-                ensure_visible(parent_go.id)
-            callback = getattr(hp, "on_selection_changed", None)
-            if callable(callback):
-                callback(parent_go.id)
+        self._reveal_created_object(parent_go.id, record_history=True)
 
         return self._serialize_created(parent_go, "empty", selected=True)
 
@@ -379,33 +458,49 @@ class HierarchyCreationService:
 
     def _create_ui_text(self, scene, parent_id: int):
         from Infernux.ui import UIText as UITextCls
+        from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
         from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
         obj = scene.create_game_object("Text")
         if obj:
-            obj.add_py_component(UITextCls())
+            text = UITextCls()
+            text.align_h = ScreenAlignH.Center
+            text.align_v = ScreenAlignV.Center
+            text.x = -80.0
+            text.y = -20.0
+            obj.add_py_component(text)
             invalidate_canvas_cache()
         return obj
 
     def _create_ui_image(self, scene, parent_id: int):
         from Infernux.ui import UIImage as UIImageCls
+        from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
         from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
         obj = scene.create_game_object("Image")
         if obj:
             image = UIImageCls()
             image.width = 100.0
             image.height = 100.0
+            image.align_h = ScreenAlignH.Center
+            image.align_v = ScreenAlignV.Center
+            image.x = -50.0
+            image.y = -50.0
             obj.add_py_component(image)
             invalidate_canvas_cache()
         return obj
 
     def _create_ui_button(self, scene, parent_id: int):
         from Infernux.ui import UIButton as UIButtonCls
+        from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
         from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
         obj = scene.create_game_object("Button")
         if obj:
             button = UIButtonCls()
             button.width = 160.0
             button.height = 40.0
+            button.align_h = ScreenAlignH.Center
+            button.align_v = ScreenAlignV.Center
+            button.x = -80.0
+            button.y = -20.0
             obj.add_py_component(button)
             invalidate_canvas_cache()
         return obj
@@ -416,9 +511,9 @@ class HierarchyCreationService:
         candidate_ids = []
         if parent_id:
             candidate_ids.append(int(parent_id))
-        selection = self._selection_manager
-        if selection is not None and hasattr(selection, "get_primary"):
-            selected_id = int(selection.get_primary() or 0)
+        selection = self._selection_service
+        if selection is not None:
+            selected_id = int(selection.primary_scene_object_id() or 0)
             if selected_id and selected_id not in candidate_ids:
                 candidate_ids.append(selected_id)
 
@@ -438,7 +533,19 @@ class HierarchyCreationService:
             return int(canvases[0].id)
         return 0
 
-    def _finalize(self, obj, parent_id: int, description: str, *, select: bool, record_undo: bool) -> None:
+    def _finalize(
+        self,
+        obj,
+        parent_id: int,
+        description: str,
+        *,
+        select: bool,
+        record_undo: bool,
+        before_selection=None,
+        selection_owner_id: str = "hierarchy",
+        selection_reason: str = "create_game_object",
+        configure_created: Callable[[Any], None] | None = None,
+    ) -> None:
         if parent_id:
             from Infernux.lib import SceneManager
             scene = SceneManager.instance().get_active_scene()
@@ -446,25 +553,42 @@ class HierarchyCreationService:
             if parent:
                 obj.set_parent(parent)
 
-        if select and self._selection_manager:
-            self._selection_manager.select(obj.id)
+        if configure_created is not None:
+            configure_created(obj)
 
-        if record_undo and self._undo_tracker:
-            self._undo_tracker.record_create(obj.id, description)
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
 
-        hp = self._hierarchy_panel
-        if select and hp is not None:
-            ensure_visible = getattr(hp, "set_selected_object_by_id", None)
-            if callable(ensure_visible):
-                ensure_visible(obj.id)
-            # The native panel skips its selection notification when the
-            # selection manager already holds the new id (we selected it
-            # right above), so the Inspector would never hear about the new
-            # object. Always fire the Python-side selection callback — it is
-            # idempotent and syncs Inspector, outline and event bus.
-            callback = getattr(hp, "on_selection_changed", None)
-            if callable(callback):
-                callback(obj.id)
+        selection = SelectionService.instance()
+        if before_selection is None:
+            before_selection = selection.snapshot
+        if select:
+            selection.select(
+                SelectionTarget.scene_object(obj.id),
+                owner_id=str(selection_owner_id or "hierarchy"),
+                reason=str(selection_reason or "create_game_object"),
+                record_history=False,
+            )
+        after_selection = selection.snapshot
+
+        if record_undo:
+            from Infernux.engine.undo import CreateGameObjectCommand, UndoManager
+
+            manager = UndoManager.instance()
+            if manager is None or not manager.enabled or manager.is_executing:
+                raise RuntimeError("Global editor history is unavailable.")
+            recorded = manager.record(
+                CreateGameObjectCommand(
+                    obj.id,
+                    description,
+                    before_selection=before_selection,
+                    after_selection=after_selection,
+                )
+            )
+            if recorded is False:
+                raise RuntimeError("Global editor history rejected hierarchy creation.")
+
+        if select:
+            self._reveal_created_object(obj.id, record_history=record_undo)
 
     def _description_for(self, kind: str) -> str:
         if kind.startswith("primitive."):

@@ -20,6 +20,7 @@ struct ShaderProperty
     bool isTexture = false;
     std::string textureDefault;
     bool hdr = false;
+    bool internal = false;
     std::optional<std::array<double, 2>> range;
     ShaderSourceRange source;
 

@@ -35,35 +35,31 @@ if(_forbidden_files)
     )
 endif()
 
-file(GLOB_RECURSE _nested_runtime_archives LIST_DIRECTORIES false
-    "${_verify_root}/runtime-pack.zip"
-    "${_verify_root}/*-module.zip"
+file(GLOB_RECURSE _legacy_runtime_archives LIST_DIRECTORIES false
+    "${_verify_root}/*.zip"
+    "${_verify_root}/*.inxpack"
 )
-set(_archive_index 0)
-foreach(_runtime_archive IN LISTS _nested_runtime_archives)
-    math(EXPR _archive_index "${_archive_index} + 1")
-    set(_archive_verify_root "${_verify_root}/nested-${_archive_index}")
-    file(REMOVE_RECURSE "${_archive_verify_root}")
-    file(MAKE_DIRECTORY "${_archive_verify_root}")
-    file(ARCHIVE_EXTRACT INPUT "${_runtime_archive}" DESTINATION "${_archive_verify_root}")
-    file(GLOB_RECURSE _nested_forbidden_files LIST_DIRECTORIES false
-        "${_archive_verify_root}/*.bak"
-        "${_archive_verify_root}/*.exp"
-        "${_archive_verify_root}/*.lib"
-        "${_archive_verify_root}/*.meta"
-        "${_archive_verify_root}/*.pdb"
-        "${_archive_verify_root}/*.pyc"
-        "${_archive_verify_root}/*.pyi"
-        "${_archive_verify_root}/*.pyo"
+if(_legacy_runtime_archives)
+    list(JOIN _legacy_runtime_archives "\n  " _legacy_runtime_report)
+    message(FATAL_ERROR
+        "Wheel contains a legacy ZIP/InxPack runtime payload; native Runtime.inxrt/"
+        "Parallel.inxmod is required:\n  ${_legacy_runtime_report}"
     )
-    if(_nested_forbidden_files)
-        list(JOIN _nested_forbidden_files "\n  " _nested_forbidden_report)
+endif()
+
+file(GLOB_RECURSE _native_runtime_archives LIST_DIRECTORIES false
+    "${_verify_root}/*.inxrt"
+    "${_verify_root}/*.inxpkg"
+    "${_verify_root}/*.inxmod"
+)
+foreach(_runtime_archive IN LISTS _native_runtime_archives)
+    file(READ "${_runtime_archive}" _runtime_magic OFFSET 0 LIMIT 8 HEX)
+    string(TOLOWER "${_runtime_magic}" _runtime_magic)
+    if(NOT _runtime_magic STREQUAL "494e58504b470000")
         message(FATAL_ERROR
-            "Runtime archive ${_runtime_archive} contains build-time files:\n"
-            "  ${_nested_forbidden_report}"
+            "Wheel contains a non-native runtime package: ${_runtime_archive}"
         )
     endif()
-    file(REMOVE_RECURSE "${_archive_verify_root}")
 endforeach()
 
 file(GLOB_RECURSE _native_files LIST_DIRECTORIES false
@@ -75,6 +71,15 @@ file(GLOB_RECURSE _native_files LIST_DIRECTORIES false
 
 if(NOT _native_files)
     message(FATAL_ERROR "No native package files found below ${_package_root}/Infernux")
+endif()
+
+file(GLOB _bootstrap_source_files
+    "${_package_root}/Infernux/lib/_InfernuxBootstrap*.pyd"
+    "${_package_root}/Infernux/lib/_InfernuxBootstrap*.so"
+    "${_package_root}/Infernux/lib/_InfernuxBootstrap*.dylib"
+)
+if(NOT _bootstrap_source_files)
+    message(FATAL_ERROR "Missing _InfernuxBootstrap native module in the package source tree")
 endif()
 
 foreach(_source_file IN LISTS _native_files)
@@ -92,6 +97,13 @@ foreach(_source_file IN LISTS _native_files)
             "  current: ${_source_hash}\n"
             "  wheel:   ${_wheel_hash}"
         )
+    endif()
+endforeach()
+
+foreach(_bootstrap_source_file IN LISTS _bootstrap_source_files)
+    file(RELATIVE_PATH _bootstrap_relative_path "${_package_root}" "${_bootstrap_source_file}")
+    if(NOT EXISTS "${_verify_root}/${_bootstrap_relative_path}")
+        message(FATAL_ERROR "Wheel is missing bootstrap native package file: ${_bootstrap_relative_path}")
     endif()
 endforeach()
 

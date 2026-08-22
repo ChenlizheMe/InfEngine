@@ -15,23 +15,50 @@ from .editor_modal import (
     end_editor_modal,
     render_editor_modal_actions,
 )
+from Infernux.engine.interaction import ModalService
 
 
 class ProjectDeleteConfirmationCoordinator:
     """Confirm destructive Project operations without opening an OS dialog."""
 
     _instance: Optional["ProjectDeleteConfirmationCoordinator"] = None
+    MODAL_ID = "project.delete_assets"
 
-    def __init__(self) -> None:
+    def __init__(self, modal_service: Optional[ModalService] = None) -> None:
+        if modal_service is None:
+            from Infernux.engine.interaction import EditorInteractionCore
+
+            core = EditorInteractionCore.instance()
+            if core is None:
+                raise RuntimeError(
+                    "ProjectDeleteConfirmationCoordinator requires EditorInteractionCore"
+                )
+            modal_service = core.modals
+        self._modals = modal_service
         self._paths: tuple[str, ...] = ()
         self._delete_handler: Optional[Callable[[list[str]], bool]] = None
         self._requested = False
         self._error = ""
+        self._modals.register(
+            self.MODAL_ID,
+            is_active=lambda: self.is_active,
+            render=self.render,
+            cancel=self.cancel,
+        )
 
     @classmethod
     def instance(cls) -> "ProjectDeleteConfirmationCoordinator":
-        if cls._instance is None:
-            cls._instance = cls()
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        core = EditorInteractionCore.instance()
+        if core is None:
+            raise RuntimeError(
+                "ProjectDeleteConfirmationCoordinator requires EditorInteractionCore"
+            )
+        if cls._instance is None or cls._instance._modals is not core.modals:
+            if cls._instance is not None and cls._instance.is_active:
+                cls._instance.cancel()
+            cls._instance = cls(core.modals)
         return cls._instance
 
     @property
@@ -59,6 +86,8 @@ class ProjectDeleteConfirmationCoordinator:
             seen.add(key)
             unique.append(path)
         if not unique:
+            return False
+        if not self._modals.activate(self.MODAL_ID, owner_id="project"):
             return False
         self._paths = tuple(unique)
         self._delete_handler = delete_handler
@@ -118,11 +147,16 @@ class ProjectDeleteConfirmationCoordinator:
         self._close(ctx)
 
     def _cancel(self, ctx) -> None:
-        self._close(ctx)
+        ctx.close_current_popup()
+        self.cancel()
 
-    def _close(self, ctx) -> None:
+    def cancel(self) -> None:
         self._paths = ()
         self._delete_handler = None
         self._requested = False
         self._error = ""
+        self._modals.deactivate(self.MODAL_ID)
+
+    def _close(self, ctx) -> None:
         ctx.close_current_popup()
+        self.cancel()

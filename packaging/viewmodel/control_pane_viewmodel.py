@@ -105,12 +105,89 @@ class MigrationWorker(QObject):
         self.finished.emit(result)
 
 
+class LaunchPreparationWorker(QObject):
+    """Prepare a project runtime without blocking the Hub event loop."""
+
+    progress = Signal(str, int)
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, model, version_manager, project_path: str):
+        super().__init__()
+        self.model = model
+        self.version_manager = version_manager
+        self.project_path = project_path
+
+    def run(self):
+        try:
+            project_path = self.project_path
+            if not os.path.isdir(project_path):
+                raise RuntimeError(
+                    f"The project folder could not be found:\n{project_path}\n\n"
+                    "Remove this entry from Hub, then use Open Existing to register its new location."
+                )
+            if is_project_open(project_path):
+                raise RuntimeError(
+                    "The project is already open in Infernux and cannot be opened again:\n"
+                    f"{project_path}"
+                )
+
+            self.progress.emit("Checking engine version...", 4)
+            pinned_version = (
+                self.version_manager.read_project_version(project_path)
+                if self.version_manager
+                else ""
+            )
+            if (
+                pinned_version
+                and self.version_manager
+                and not self.version_manager.is_installed(pinned_version)
+            ):
+                raise RuntimeError(
+                    f"Infernux {pinned_version} is required by this project. "
+                    f"Open {tr('Installs')} and install it before launching."
+                )
+
+            if is_frozen():
+                self.progress.emit("Checking project runtime...", 7)
+                python_exe = ProjectModel._get_project_python(project_path)
+                if not os.path.isfile(python_exe):
+                    raise RuntimeError(
+                        "Project Python runtime not found at:\n"
+                        f"{os.path.join(project_path, '.runtime', 'python312')}\n\n"
+                        "Please recreate the project or reinstall the engine version."
+                    )
+                # Starting the editor is the authoritative native import check.
+                # A separate smoke-test process here used to double cold-start
+                # Python before the splash screen could even become responsive.
+            else:
+                import sys
+
+                self.progress.emit("Synchronizing development runtime...", 7)
+                self.model._install_infernux_in_runtime(
+                    project_path,
+                    pinned_version,
+                    on_status=lambda message: self.progress.emit(message, 8),
+                    validate_current=False,
+                )
+                self.progress.emit("Updating editor integration...", 9)
+                self.model._create_vscode_workspace(project_path)
+                python_exe = sys.executable
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(python_exe)
+
+
 class ControlPaneViewModel:
     def __init__(self, model, project_list, version_manager=None, runtime_manager=None):
         self.model = model
         self.project_list = project_list
         self.version_manager = version_manager
         self.runtime_manager = runtime_manager
+        self._launch_thread = None
+        self._launch_worker = None
+        self._launch_splash = None
 
     def launch_project(self, parent):
         record = self.project_list.get_selected_record()
@@ -118,64 +195,14 @@ class ControlPaneViewModel:
             QMessageBox.warning(parent, tr("No Selection"), tr("Please select a project to launch."))
             return
 
-        import sys
+        if self._launch_thread is not None and self._launch_thread.isRunning():
+            if self._launch_splash is not None:
+                self._launch_splash.show()
+                self._launch_splash.raise_()
+            return
 
         project_name = record.name
         project_path = record.path
-
-        if not os.path.isdir(project_path):
-            QMessageBox.warning(
-                parent,
-                tr("Project Path Missing"),
-                f"The project folder could not be found:\n{project_path}\n\n"
-                "Remove this entry from Hub, then use Open Existing to register its new location.",
-            )
-            return
-
-        if is_project_open(project_path):
-            QMessageBox.warning(
-                parent,
-                tr("Project Already Open"),
-                f"The project is already open in Infernux and cannot be opened again:\n{project_path}",
-            )
-            return
-
-        pinned_version = self.version_manager.read_project_version(project_path) if self.version_manager else ""
-        if pinned_version and self.version_manager and not self.version_manager.is_installed(pinned_version):
-            QMessageBox.warning(
-                parent,
-                tr("Engine Version Not Installed"),
-                f"Infernux {pinned_version} is required by this project. "
-                f"Open {tr('Installs')} and install it before launching.",
-            )
-            return
-
-        # Determine Python interpreter based on mode
-        if is_frozen():
-            # Packaged Hub → use the project's full Python runtime copy
-            python_exe = ProjectModel._get_project_python(project_path)
-            if not os.path.isfile(python_exe):
-                QMessageBox.critical(
-                    parent,
-                    tr("Missing Runtime"),
-                    f"Project Python runtime not found at:\n"
-                    f"{os.path.join(project_path, '.runtime', 'python312')}\n\n"
-                    "Please recreate the project or reinstall the engine version.",
-                )
-                return
-            try:
-                ProjectModel.validate_python_runtime(python_exe)
-            except RuntimeError as exc:
-                QMessageBox.critical(
-                    parent,
-                    tr("Native Runtime Check Failed"),
-                    "The project runtime exists, but the Infernux native module could not be loaded.\n\n"
-                    f"{exc}",
-                )
-                return
-        else:
-            # Dev mode → use current Python (conda / system)
-            python_exe = sys.executable
         
         script = (
             'import sys;'
@@ -189,13 +216,65 @@ class ControlPaneViewModel:
 
         splash = EngineSplashScreen(ICON_PATH, project_name, parent=None)
         splash.show()
-        splash.launch(
-            python_exe,
-            script,
-            project_path,
-            detached=is_frozen(),
-        )
         self._splash = splash
+        self._launch_splash = splash
+
+        self._launch_python_exe = ""
+        self._launch_error = ""
+        self._launch_thread = QThread()
+        self._launch_worker = LaunchPreparationWorker(
+            self.model,
+            self.version_manager,
+            project_path,
+        )
+        self._launch_worker.moveToThread(self._launch_thread)
+
+        def store_python_exe(python_exe: str):
+            self._launch_python_exe = python_exe
+
+        def store_error(message: str):
+            self._launch_error = message
+
+        def finish_preparation():
+            error = self._launch_error
+            python_exe = self._launch_python_exe
+            worker = self._launch_worker
+            thread = self._launch_thread
+            self._launch_error = ""
+            self._launch_python_exe = ""
+            self._launch_worker = None
+            self._launch_thread = None
+
+            if error:
+                splash.show_preparation_failure(error)
+            elif python_exe:
+                splash.launch(
+                    python_exe,
+                    script,
+                    project_path,
+                    detached=is_frozen(),
+                )
+
+            if worker is not None:
+                worker.deleteLater()
+            if thread is not None:
+                thread.deleteLater()
+
+        self._launch_cleanup_timer = QTimer()
+        self._launch_cleanup_timer.setSingleShot(True)
+        self._launch_cleanup_timer.setInterval(0)
+        self._launch_cleanup_timer.timeout.connect(finish_preparation)
+
+        self._launch_thread.started.connect(self._launch_worker.run)
+        self._launch_worker.progress.connect(splash.set_preparation_status)
+        self._launch_worker.finished.connect(store_python_exe)
+        self._launch_worker.finished.connect(self._launch_thread.quit)
+        self._launch_worker.error.connect(store_error)
+        self._launch_worker.error.connect(self._launch_thread.quit)
+        self._launch_thread.finished.connect(self._launch_cleanup_timer.start)
+
+        # Let Qt paint the splash before any runtime preparation begins.
+        QTimer.singleShot(0, self._launch_thread.start)
 
     def open_existing_project(self, parent):
         initial_dir = self.model.db.get_setting("last_open_project_dir", "") if self.model.db else ""

@@ -9,6 +9,7 @@ from Infernux.engine.path_utils import path_key, relative_path, resolved_path, s
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools.common import (
     get_asset_database,
+    fail,
     main_thread,
     ok,
     register_tool_metadata,
@@ -25,15 +26,15 @@ def register_project_tools(mcp, project_path: str) -> None:
         def _read():
             from Infernux.engine.play_mode import PlayModeManager
             from Infernux.engine.scene_manager import SceneFileManager
-            from Infernux.engine.ui.selection_manager import SelectionManager
+            from Infernux.engine.interaction import SelectionService
             from Infernux.lib import SceneManager
 
             sfm = SceneFileManager.instance()
             pmm = PlayModeManager.instance()
-            sel = SelectionManager.instance()
+            selection = SelectionService.instance()
             scene = SceneManager.instance().get_active_scene()
             return {
-                "engine_version": "0.2.9",
+                "engine_version": "0.3.4",
                 "project_root": project_path,
                 "active_scene": {
                     "name": getattr(scene, "name", ""),
@@ -41,7 +42,7 @@ def register_project_tools(mcp, project_path: str) -> None:
                     "dirty": bool(getattr(sfm, "is_dirty", False)) if sfm else False,
                 },
                 "play_state": getattr(getattr(pmm, "state", None), "name", "edit").lower() if pmm else "edit",
-                "selected_ids": sel.get_ids() if sel else [],
+                "selected_ids": list(selection.scene_object_ids()),
             }
 
         return main_thread("project_info", _read)
@@ -87,7 +88,20 @@ def register_project_tools(mcp, project_path: str) -> None:
             if _asset_expectation_met(state, bool(exists)):
                 return ok({**state, "settled": True, "expected_exists": bool(exists), "polls": polls})
             if time.monotonic() >= deadline:
-                return ok({**state, "settled": False, "expected_exists": bool(exists), "polls": polls})
+                return fail(
+                    "ASSET_WAIT_TIMEOUT",
+                    "Timed out waiting for the requested asset state to settle.",
+                    explain={
+                        "state": {
+                            **state,
+                            "settled": False,
+                            "expected_exists": bool(exists),
+                            "polls": polls,
+                        },
+                        "requested_path": requested_path,
+                        "requested_guid": requested_guid,
+                    },
+                )
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
     @mcp.tool(name="project_build_scenes_get")
@@ -140,7 +154,7 @@ def register_project_tools(mcp, project_path: str) -> None:
         category="project/mutation",
         preconditions=["Every scene has already been saved below the current project's Assets directory."],
         side_effects=["Updates ProjectSettings/BuildSettings.json through the canonical document store."],
-        recovery=["Call project_build_scenes_get to inspect the committed order; use an MCP transaction to roll back the settings document when needed."],
+        recovery=["Use global Editor Undo to revert the change, or call project_build_scenes_set with the previous ordered list."],
         next_suggested_tools=["project_build_scenes_get", "runtime_read_errors"],
         risk_level="medium",
     )
@@ -151,10 +165,14 @@ def _requested_asset_path(project_path: str, path: str) -> str:
     return resolve_asset_path(project_path, value) if value else ""
 
 
-def _read_build_scenes(project_path: str) -> dict:
-    from Infernux.engine.ui.build_settings_panel import load_build_settings
+def _project_settings_controller(project_path: str):
+    from Infernux.engine.interaction import ensure_project_settings_document
 
-    settings = load_build_settings(project_path)
+    return ensure_project_settings_document(project_path)
+
+
+def _read_build_scenes(project_path: str) -> dict:
+    settings = _project_settings_controller(project_path).section("build")
     raw_scenes = settings.get("scenes", [])
     if type(raw_scenes) is not list:
         raise ValueError("BuildSettings scenes must be an array")
@@ -203,13 +221,19 @@ def _set_build_scenes(project_path: str, scenes: list[str]) -> dict:
         seen.add(key)
         absolute_scenes.append(scene_path)
 
-    from Infernux.engine.ui.build_settings_panel import load_build_settings, save_build_settings
-
     settings_path = os.path.join(project_path, "ProjectSettings", "BuildSettings.json")
-    settings = load_build_settings(project_path)
+    controller = _project_settings_controller(project_path)
+    settings = controller.section("build")
     settings["scenes"] = [relative_path(path, project_path) for path in absolute_scenes]
     track_project_path_before_change(project_path, settings_path, "set_build_scenes")
-    save_build_settings(settings, project_path)
+    if not controller.apply_section(
+        "build",
+        settings,
+        edit_key="project_settings.build.scenes",
+        description="Set Build Scenes",
+        view_id="build_settings",
+    ):
+        raise RuntimeError("Build Settings scene update was rejected by the Editor transaction")
     return _read_build_scenes(project_path)
 
 

@@ -45,6 +45,14 @@ struct MeshRef
 class MeshRenderer : public Component
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.allowMultiple = false;
+        constraints.exclusiveGroups = {"renderer-owner"};
+        return constraints;
+    }
+
     MeshRenderer() = default;
     ~MeshRenderer() override;
 
@@ -112,6 +120,9 @@ class MeshRenderer : public Component
     /// @brief Handle asset graph notifications for the referenced mesh asset.
     void OnMeshAssetEvent(AssetEvent event);
 
+    /// @brief Invalidate or reconnect material slots without changing GUIDs.
+    void OnMaterialAssetEvent(const std::string &guid, AssetEvent event);
+
     /// @brief Get the mesh asset reference
     [[nodiscard]] const AssetRef<InxMesh> &GetMeshAssetRef() const
     {
@@ -143,6 +154,21 @@ class MeshRenderer : public Component
     [[nodiscard]] bool HasInlineMesh() const
     {
         return m_useInlineMesh;
+    }
+
+    /// Shared inline meshes are immutable engine-owned primitive streams.
+    /// Their pointer identity is stable for the process lifetime, so render
+    /// extraction can retain the stream directly instead of snapshotting the
+    /// same Cube/Quad data once per GameObject.
+    [[nodiscard]] bool HasSharedInlineMesh() const
+    {
+        return m_useInlineMesh && m_sharedVertices != nullptr && m_sharedIndices != nullptr;
+    }
+
+    /// Stable cache identity for an engine-owned inline primitive.
+    [[nodiscard]] std::string GetSharedInlineMeshGuid() const
+    {
+        return HasSharedInlineMesh() && !m_inlineMeshName.empty() ? "builtin-mesh:" + m_inlineMeshName : "";
     }
 
     /// @brief Get inline vertex data

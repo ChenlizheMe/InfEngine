@@ -42,6 +42,12 @@ class GpuParticleCompileError(ValueError):
 
 _SPIRV_DESCRIPTOR_CACHE: dict[str, dict[str, Any]] = {}
 
+
+def _update_render_fusion_capability(
+    emitter: ParticleEmitterKernelIR,
+) -> dict[str, Any]:
+    return emitter.update_render_fusion_capability()
+
 _BILLBOARD_VERTEX_GLSL = """#version 450
 
 struct ParticleInstance {
@@ -629,9 +635,6 @@ float particle_eye_depth(float device_depth) {
 
 void main() {
     vec4 base = texture(texSampler, in_uv) * in_color * view.material_tint;
-    vec2 centered_uv = in_uv * 2.0 - 1.0;
-    float edge_width = max(view.lighting_control.z, 0.0001);
-    base.a *= 1.0 - smoothstep(1.0 - edge_width, 1.0, length(centered_uv));
     if (view.lighting_control.x > 0.5) {
         base.rgb = inx_particle_forward_plus(
             in_world_position, normalize(in_world_normal), in_view_depth, base.rgb, true
@@ -928,12 +931,14 @@ class GpuParticleEmitterSource:
     contact_dispatch: str
     render_reset: str
     rendering: str
+    update_rendering_fused: str
+    update_render_fusion: dict[str, Any]
     continuation: GpuParticleContinuationSource | None
     data_interfaces: tuple[dict[str, Any], ...] = ()
     data_interface_layout: dict[str, Any] = field(default_factory=dict)
 
     def stages(self) -> dict[str, str]:
-        return {
+        stages = {
             "bootstrap": self.bootstrap,
             "init": self.init,
             "update": self.update,
@@ -943,6 +948,9 @@ class GpuParticleEmitterSource:
             "render_reset": self.render_reset,
             "rendering": self.rendering,
         }
+        if self.update_render_fusion.get("fused_stage") == "update_rendering_fused":
+            stages["update_rendering_fused"] = self.update_rendering_fused
+        return stages
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -961,6 +969,7 @@ class GpuParticleEmitterSource:
             "state_stride": self.state_stride,
             "event_type_count": self.event_type_count,
             "collision_enabled": self.collision_enabled,
+            "update_render_fusion": dict(self.update_render_fusion),
             "data_interfaces": [dict(value) for value in self.data_interfaces],
             "data_interface_layout": dict(self.data_interface_layout),
             "continuation": (
@@ -1083,6 +1092,7 @@ class GpuParticleGlslLowerer:
             continuation_lane_indices=continuation_lane_indices,
             continuation_join_indices=continuation_join_indices,
         ).compile(emitter.init, init_flows)
+        update_render_fusion = _update_render_fusion_capability(emitter)
         update_body, _ = _StageCompiler(
             emitter,
             fields,
@@ -1144,6 +1154,39 @@ class GpuParticleGlslLowerer:
         continuation_bindings = (
             _continuation_bindings_glsl(5) if continuation is not None else ""
         )
+        update_state_write = _function_has_state_effect(emitter.update)
+        update_rendering_fused = ""
+        if update_render_fusion["eligible"]:
+            fused_update_body, _ = _StageCompiler(
+                emitter,
+                fields,
+                data_interface_layout,
+                events,
+                emitter_index,
+                parameter_slots=parameter_slots,
+                continuation_lane_indices=continuation_lane_indices,
+                continuation_join_indices=continuation_join_indices,
+                symbol_prefix="update_",
+            ).compile(emitter.update, update_flows)
+            fused_rendering_body, fused_exports = _StageCompiler(
+                emitter,
+                fields,
+                data_interface_layout,
+                events,
+                emitter_index,
+                parameter_slots=parameter_slots,
+                continuation_lane_indices=continuation_lane_indices,
+                continuation_join_indices=continuation_join_indices,
+                symbol_prefix="render_",
+            ).compile(emitter.rendering, rendering_flows)
+            update_rendering_fused = prelude + _update_rendering_fused_main(
+                fused_update_body,
+                fused_rendering_body,
+                emitter,
+                fields,
+                fused_exports,
+                update_state_write=update_state_write,
+            )
         contact_continuation_bindings = (
             _continuation_bindings_glsl(5, contact_context=True)
             if continuation is not None
@@ -1188,6 +1231,8 @@ class GpuParticleGlslLowerer:
             contact_dispatch,
             prelude + _render_reset_main(),
             prelude + continuation_bindings + _rendering_main(rendering_body, exports),
+            update_rendering_fused,
+            update_render_fusion,
             continuation,
             tuple(interface.to_dict() for interface in emitter.data_interfaces),
             data_interface_layout,
@@ -1326,6 +1371,7 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
             {
                 "stable_id": emitter.stable_id,
                 "collision_enabled": emitter.collision_enabled,
+                "update_render_fusion": dict(emitter.update_render_fusion),
                 "stages": stages,
                 "continuation": continuation,
             }
@@ -1538,6 +1584,7 @@ def validate_gpu_particle_spirv(
         if type(encoded) is not dict or set(encoded) != {
             "stable_id",
             "collision_enabled",
+            "update_render_fusion",
             "stages",
             "continuation",
         }:
@@ -1550,6 +1597,8 @@ def validate_gpu_particle_spirv(
             or type(stages) is not dict
         ):
             raise GpuParticleCompileError("particle GPU emitter binary identity is invalid")
+        if encoded["update_render_fusion"] != source.update_render_fusion:
+            raise GpuParticleCompileError("particle GPU emitter fusion metadata is incompatible")
         if set(stages) != set(source.stages()):
             raise GpuParticleCompileError("particle GPU emitter binary stages are incomplete")
         for stage, descriptor in stages.items():
@@ -1633,6 +1682,7 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         type(emitters) is not list
         or emitter_index >= len(emitters)
         or type(emitters[emitter_index]) is not dict
+        or type(emitters[emitter_index].get("update_render_fusion")) is not dict
         or type(emitters[emitter_index].get("stages")) is not dict
         or type(billboard) is not dict
         or type(mesh) is not dict
@@ -1664,6 +1714,7 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
     return {
         "stable_id": emitter.get("stable_id", ""),
         "collision_enabled": emitter.get("collision_enabled"),
+        "update_render_fusion": emitter.get("update_render_fusion"),
         "parameters": parameters,
         "parameter_words": parameter_words,
         "continuation": (
@@ -1711,6 +1762,7 @@ class _StageCompiler:
         entry_guard: str = "true",
         flow_entry_guards: Mapping[tuple[ParticleStage, str], str] | None = None,
         force_flow_aware: bool = False,
+        symbol_prefix: str = "",
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
@@ -1726,6 +1778,7 @@ class _StageCompiler:
         self._entry_guard = str(entry_guard)
         self._flow_entry_guards = dict(flow_entry_guards or {})
         self._force_flow_aware = bool(force_flow_aware)
+        self._symbol_prefix = str(symbol_prefix)
         self._active_lane_var: str | None = None
         self._suspension_join_contexts: dict[str, tuple[int, int]] = {}
         self._volume_interfaces = {
@@ -1787,7 +1840,7 @@ class _StageCompiler:
             prefix = re.sub(r"[^a-zA-Z0-9_]", "_", flow.lifecycle_stage.value)
             for lane in flow.lanes:
                 lane_names[(flow_index, lane.index)] = (
-                    f"inx_lane_{prefix}_{flow_index}_{lane.index}_active"
+                    f"{self._symbol_prefix}inx_lane_{prefix}_{flow_index}_{lane.index}_active"
                 )
             joins.update(
                 {
@@ -2119,7 +2172,7 @@ class _StageCompiler:
             self._compile_instruction(function.instructions[index])
 
         lane_names = {
-            lane.index: f"inx_resume_lane_{lane.index}_active"
+            lane.index: self._symbol(f"inx_resume_lane_{lane.index}_active")
             for lane in flow.lanes
             if lane.index in selected_lanes
         }
@@ -2221,7 +2274,11 @@ class _StageCompiler:
                 f"GPU instruction {opcode!r} references unavailable SSA value "
                 f"{exc.args[0]!r}"
             ) from exc
-        result = _value_name(instruction.result_id) if instruction.result_id else ""
+        result = (
+            _value_name(instruction.result_id, self._symbol_prefix)
+            if instruction.result_id
+            else ""
+        )
         result_type = instruction.result_type
         source = instruction.source
         if source.node_uid or source.operation:
@@ -2300,7 +2357,7 @@ class _StageCompiler:
             prefix = _event_state_prefix(event_index)
             count_field = self._field(f"{prefix}.count")[1]
             active_field = self._field(f"{prefix}.active")[1]
-            variable = f"inx_event_begin_{len(self._lines)}"
+            variable = self._symbol(f"inx_event_begin_{len(self._lines)}")
             self._lines.extend(
                 (
                     f"bool {variable} = state.{active_field} == 0u && state.{count_field} > 0u;",
@@ -2656,16 +2713,16 @@ class _StageCompiler:
                     "Emitter collider collision requires vec3 position and velocity attributes"
                 )
             suffix = len(self._lines)
-            position_name = f"inx_scene_position_{suffix}"
-            velocity_name = f"inx_scene_velocity_{suffix}"
-            normal_name = f"inx_scene_normal_{suffix}"
-            point_name = f"inx_scene_point_{suffix}"
-            relative_velocity_name = f"inx_scene_relative_velocity_{suffix}"
-            penetration_name = f"inx_scene_penetration_{suffix}"
-            trigger_name = f"inx_scene_trigger_{suffix}"
-            material_name = f"inx_scene_material_{suffix}"
-            collider_id_name = f"inx_scene_collider_id_{suffix}"
-            hit_name = f"inx_scene_hit_{suffix}"
+            position_name = self._symbol(f"inx_scene_position_{suffix}")
+            velocity_name = self._symbol(f"inx_scene_velocity_{suffix}")
+            normal_name = self._symbol(f"inx_scene_normal_{suffix}")
+            point_name = self._symbol(f"inx_scene_point_{suffix}")
+            relative_velocity_name = self._symbol(f"inx_scene_relative_velocity_{suffix}")
+            penetration_name = self._symbol(f"inx_scene_penetration_{suffix}")
+            trigger_name = self._symbol(f"inx_scene_trigger_{suffix}")
+            material_name = self._symbol(f"inx_scene_material_{suffix}")
+            collider_id_name = self._symbol(f"inx_scene_collider_id_{suffix}")
+            hit_name = self._symbol(f"inx_scene_hit_{suffix}")
             self._lines.extend(
                 (
                     f"vec3 {position_name} = {operands[0]};",
@@ -2790,6 +2847,9 @@ class _StageCompiler:
             raise GpuParticleCompileError(
                 f"GPU kernel references unknown attribute {stable_id!r}"
             ) from exc
+
+    def _symbol(self, name: str) -> str:
+        return f"{self._symbol_prefix}{name}"
 
 
 def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
@@ -4168,7 +4228,6 @@ void main() {{
     if (!particle_alive)
         state.lifecycle_flags &= ~INX_PARTICLE_ALIVE;
     states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
 }}
 """
 
@@ -5445,7 +5504,6 @@ void main() {{
         states[particle_index].lifecycle_flags,
         ~INX_PARTICLE_CONTINUATION_LOCK
     );
-    if (!particle_alive) inx_push_free(particle_index);
     if (!inx_continuation_resuspended) {{
         inx_finish_continuation(
             inx_continuation_record_index, particle_index, lane_index
@@ -5565,11 +5623,26 @@ def _shader_prelude(
     uint simulation_step;
     float delta_time;
     uint diagnostic_flags;
+    uint alive_read_slot;
+    uint alive_write_slot;
+    uint use_alive_list;
+    uint reserved;
 } pc;"""
     )
     return f"""#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+shared uint inx_particle_render_local_count;
+shared uint inx_particle_render_group_base;
+shared uint inx_particle_render_subgroup_counts[64];
+shared uint inx_particle_init_old_free_count;
+shared uint inx_particle_init_accepted_count;
+shared uint inx_particle_alive_local_count;
+shared uint inx_particle_alive_group_base;
+shared uint inx_particle_alive_subgroup_counts[64];
 
 const uint INX_PARTICLE_ALIVE = 1u;
 const uint INX_PARTICLE_INIT_COMPLETE = 2u;
@@ -5591,6 +5664,10 @@ struct ParticleRenderInstance {{
     uvec4 ribbon_data;
     vec4 custom_data;
     vec4 previous_position_history;
+}};
+
+struct ParticleVisibilityInstance {{
+    vec4 position_radius;
 }};
 
 layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
@@ -5625,6 +5702,17 @@ layout(std140, set = 0, binding = 5) uniform ParticleTransforms {{
     mat4 world_to_simulation;
 }} transforms;
 layout(std430, set = 0, binding = 6) buffer ParticleRenderIndices {{ uint render_indices[]; }};
+layout(std430, set = 0, binding = 7) buffer ParticleAliveIndicesA {{ uint alive_indices_a[]; }};
+layout(std430, set = 0, binding = 8) buffer ParticleAliveIndicesB {{ uint alive_indices_b[]; }};
+layout(std430, set = 0, binding = 9) buffer ParticleAliveDispatch {{ uvec4 alive_dispatch_args[2]; }};
+layout(std430, set = 0, binding = 10) buffer ParticleAliveControl {{
+    uint alive_counts[2];
+    uint alive_control_reserved0;
+    uint alive_control_reserved1;
+}} alive_control;
+layout(std430, set = 0, binding = 11) buffer ParticleVisibility {{
+    ParticleVisibilityInstance visibility[];
+}};
 {parameter_glsl}
 struct InxParticleAffine {{
     vec4 row0;
@@ -5747,10 +5835,49 @@ uint inx_pop_free() {{
     return INX_INVALID_INDEX;
 }}
 
+uint inx_reserve_free_block(uint requested_count, out uint old_free_count) {{
+    old_free_count = 0u;
+    if (requested_count == 0u) return 0u;
+    uint observed = atomicAdd(counters.free_count, 0u);
+    uint attempt_limit = pc.capacity == 0xffffffffu ? 0xffffffffu : pc.capacity + 1u;
+    for (uint attempt = 0u; attempt < attempt_limit && observed > 0u; ++attempt) {{
+        uint accepted_count = min(requested_count, observed);
+        uint prior = atomicCompSwap(
+            counters.free_count, observed, observed - accepted_count);
+        if (prior == observed) {{
+            old_free_count = observed;
+            return accepted_count;
+        }}
+        observed = prior;
+    }}
+    return 0u;
+}}
+
 void inx_push_free(uint particle_index) {{
     uint destination = atomicAdd(counters.free_count, 1u);
     if (destination < pc.capacity) free_slots[destination] = particle_index;
     else atomicAdd(counters.free_count, 0xffffffffu);
+}}
+
+uint inx_alive_count(uint slot) {{
+    return min(alive_control.alive_counts[min(slot, 1u)], pc.capacity);
+}}
+
+uint inx_alive_index(uint slot, uint index) {{
+    return slot == 0u ? alive_indices_a[index] : alive_indices_b[index];
+}}
+
+void inx_append_alive(uint slot, uint particle_index) {{
+    uint destination = atomicAdd(alive_control.alive_counts[min(slot, 1u)], 1u);
+    if (destination >= pc.capacity) return;
+    if (slot == 0u) alive_indices_a[destination] = particle_index;
+    else alive_indices_b[destination] = particle_index;
+}}
+
+void inx_store_alive(uint slot, uint index, uint particle_index) {{
+    if (index >= pc.capacity) return;
+    if (slot == 0u) alive_indices_a[index] = particle_index;
+    else alive_indices_b[index] = particle_index;
 }}
 
 uint inx_random_u32(uint node_seed, uint particle_id, uint generation, uint random_slot) {{
@@ -6653,6 +6780,10 @@ void main() {
         indirect_args.instance_count = 0u;
         indirect_args.first_vertex = 0u;
         indirect_args.first_instance = 0u;
+        alive_control.alive_counts[0] = 0u;
+        alive_control.alive_counts[1] = 0u;
+        alive_dispatch_args[0] = uvec4(0u, 1u, 1u, 0u);
+        alive_dispatch_args[1] = uvec4(0u, 1u, 1u, 0u);
     }
 }
 """.replace("INX_EVENT_COUNTER_COUNT", str(event_type_count * 3))
@@ -6667,12 +6798,29 @@ def _init_main(
     finite = _finite_state_check(emitter.init, fields)
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u
-        || !inx_current_emitter_playing()) return;
     uint invocation = gl_GlobalInvocationID.x;
-    if (invocation >= emitter_spawn.spawn_count) return;
-    uint particle_index = inx_pop_free();
-    if (particle_index == INX_INVALID_INDEX) {{ atomicAdd(counters.dropped_count, 1u); return; }}
+    uint group_first_invocation = invocation - gl_LocalInvocationIndex;
+    if (gl_LocalInvocationIndex == 0u) {{
+        uint requested_count = 0u;
+        // Spawn Prepare is the authority for this frame. Rechecking mutable
+        // play/simulation state here can discard a burst that was already
+        // accepted and encoded into the indirect dispatch.
+        if (group_first_invocation < emitter_spawn.spawn_count) {{
+            requested_count = min(
+                gl_WorkGroupSize.x,
+                emitter_spawn.spawn_count - group_first_invocation);
+        }}
+        inx_particle_init_accepted_count = inx_reserve_free_block(
+            requested_count, inx_particle_init_old_free_count);
+        atomicAdd(counters.reserved_count, inx_particle_init_accepted_count);
+        uint dropped_count = requested_count - inx_particle_init_accepted_count;
+        if (dropped_count > 0u)
+            atomicAdd(counters.dropped_count, dropped_count);
+    }}
+    barrier();
+    if (gl_LocalInvocationIndex >= inx_particle_init_accepted_count) return;
+    uint particle_index = free_slots[
+        inx_particle_init_old_free_count - 1u - gl_LocalInvocationIndex];
     ParticleState state = states[particle_index];
     state.lifecycle_flags = INX_PARTICLE_ALIVE;
     state.update_resume_step = 0xffffffffu;
@@ -6683,12 +6831,45 @@ void main() {{
     bool particle_alive = true;
     bool inx_stage_suspended = false;
 {body}
-    particle_alive = particle_alive && ({finite});
+    bool initialized_state_finite = ({finite});
+    particle_alive = particle_alive && initialized_state_finite;
+    if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
     state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
     states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
+    if (particle_alive) inx_append_alive(pc.alive_read_slot, particle_index);
+    else inx_push_free(particle_index);
 }}
+"""
+
+
+def _alive_compact_tail(candidate: str, particle_index: str) -> str:
+    return f"""
+    uvec4 inx_particle_alive_mask = subgroupBallot({candidate});
+    uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_alive_mask);
+    if (subgroupElect())
+        inx_particle_alive_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_alive_mask);
+    barrier();
+    uint inx_particle_alive_subgroup_count = min(
+        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
+    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg)
+        inx_particle_alive_local_index += inx_particle_alive_subgroup_counts[inx_sg];
+    if (gl_LocalInvocationIndex == 0u) {{
+        inx_particle_alive_local_count = 0u;
+        for (uint inx_sg = 0u; inx_sg < inx_particle_alive_subgroup_count; ++inx_sg)
+            inx_particle_alive_local_count += inx_particle_alive_subgroup_counts[inx_sg];
+        inx_particle_alive_group_base = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot],
+            inx_particle_alive_local_count);
+    }}
+    barrier();
+    if ({candidate}) {{
+        uint inx_particle_alive_output =
+            inx_particle_alive_group_base + inx_particle_alive_local_index;
+        inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
+    }}
 """
 
 
@@ -6698,22 +6879,42 @@ def _update_main(
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
     finite = _finite_state_check(emitter.update, fields)
+    alive_compact = _alive_compact_tail("inx_particle_active_candidate", "particle_index")
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u
-        || !inx_current_emitter_playing()) return;
-    uint particle_index = gl_GlobalInvocationID.x;
-    if (particle_index >= pc.capacity
-        || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
-        || (states[particle_index].lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) == 0u) return;
-    ParticleState state = states[particle_index];
-    bool particle_alive = true;
+    uint invocation = gl_GlobalInvocationID.x;
+    uint input_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    bool inx_particle_active_candidate = invocation < input_count;
+    uint particle_index = inx_particle_active_candidate
+        ? (pc.use_alive_list != 0u
+            ? inx_alive_index(pc.alive_read_slot, invocation)
+            : invocation)
+        : 0u;
+    ParticleState state;
+    bool particle_alive = false;
+    bool particle_was_alive = false;
     bool inx_stage_suspended = false;
+    if (inx_particle_active_candidate) {{
+        state = states[particle_index];
+        particle_alive = (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u;
+        particle_was_alive = particle_alive;
+        bool run_update = particle_alive
+            && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
+            && simulation_control.simulation_allowed != 0u
+            && inx_current_emitter_playing();
+        if (run_update) {{
 {body}
-    particle_alive = particle_alive && ({finite});
-    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
-    states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
+            particle_alive = particle_alive && ({finite});
+        }}
+        state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
+        states[particle_index] = state;
+        if (!particle_alive && (particle_was_alive || pc.use_alive_list != 0u))
+            inx_push_free(particle_index);
+    }}
+    inx_particle_active_candidate = inx_particle_active_candidate && particle_alive;
+{alive_compact}
 }}
 """
 
@@ -6722,6 +6923,13 @@ def _render_reset_main() -> str:
     return """
 void main() {
     if (gl_GlobalInvocationID.x != 0u) return;
+    if ((pc.diagnostic_flags & 8u) != 0u)
+        alive_control.alive_counts[pc.alive_write_slot] = 0u;
+    uint alive_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    alive_dispatch_args[pc.alive_read_slot] = uvec4(
+        (alive_count + 255u) / 256u, 1u, 1u, 0u);
     if ((pc.diagnostic_flags & 2u) != 0u) {
         counters.collision_hit_count = 0u;
         counters.collision_response_count = 0u;
@@ -6743,7 +6951,9 @@ void main() {
 """
 
 
-def _rendering_main(body: str, exports: dict[str, str]) -> str:
+def _render_instance_write(
+    exports: dict[str, str], *, output_index: str, particle_index: str
+) -> str:
     position = exports["builtin.position"]
     size = exports["builtin.size"]
     color = exports["builtin.color"]
@@ -6765,53 +6975,290 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
         "length(transforms.simulation_to_world[1].xyz), "
         "length(transforms.simulation_to_world[2].xyz))"
     )
-    finite = " && ".join(
-        (_finite_expression(position, TypeRef(ValueType.VEC3)),
-         _finite_expression(size, TypeRef(ValueType.F32)),
-         _finite_expression(color, TypeRef(ValueType.COLOR)),
-         _finite_expression(rotation, TypeRef(ValueType.F32)),
-         _finite_expression(age, TypeRef(ValueType.F32)),
-         _finite_expression(lifetime, TypeRef(ValueType.F32)),
-         _finite_expression(orientation, TypeRef(ValueType.VEC3)),
-         _finite_expression(scale, TypeRef(ValueType.VEC3)),
-         _finite_expression(flipbook_frame, TypeRef(ValueType.F32)))
+    return f"""
+            ParticleRenderInstance previous_instance = instances[{particle_index}];
+            bool history_valid = previous_instance.ribbon_data.w == {particle_id} &&
+                floatBitsToUint(previous_instance.previous_position_history.w) == state.spawn_generation;
+            float visibility_radius = abs({size}) * max(
+                max(abs((({scale}) * {world_scale}).x), abs((({scale}) * {world_scale}).y)),
+                abs((({scale}) * {world_scale}).z)) * 1.41421356237;
+            instances[{particle_index}].position_size = vec4({world_position}, {size});
+            visibility[{particle_index}].position_radius = vec4({world_position}, visibility_radius);
+            instances[{particle_index}].color = {color};
+            instances[{particle_index}].rotation_custom = vec4({rotation}, {orientation});
+            float normalized_age = clamp(({age}) / max(({lifetime}), 0.000001), 0.0, 1.0);
+            instances[{particle_index}].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
+            instances[{particle_index}].ribbon_data = uvec4(
+                {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
+            instances[{particle_index}].custom_data = vec4({flipbook_frame}, {world_velocity});
+            instances[{particle_index}].previous_position_history = vec4(
+                history_valid ? previous_instance.position_size.xyz : {world_position},
+                uintBitsToFloat(state.spawn_generation));
+            render_indices[{output_index}] = {particle_index};
+"""
+
+
+def _render_compact_tail(instance_write: str) -> str:
+    return f"""
+    uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
+    uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_render_mask);
+    if (subgroupElect())
+        inx_particle_render_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_render_mask);
+    barrier();
+    uint inx_particle_render_subgroup_count = min(
+        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
+    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg)
+        inx_particle_render_local_index += inx_particle_render_subgroup_counts[inx_sg];
+    if (gl_LocalInvocationIndex == 0u) {{
+        inx_particle_render_local_count = 0u;
+        for (uint inx_sg = 0u; inx_sg < inx_particle_render_subgroup_count; ++inx_sg)
+            inx_particle_render_local_count += inx_particle_render_subgroup_counts[inx_sg];
+        inx_particle_render_group_base = atomicAdd(counters.visible_count,
+            inx_particle_render_local_count);
+        uint available_count = inx_particle_render_group_base < pc.capacity
+            ? pc.capacity - inx_particle_render_group_base : 0u;
+        uint committed_count = min(inx_particle_render_local_count, available_count);
+        if (committed_count > 0u)
+            atomicAdd(indirect_args.instance_count, committed_count);
+    }}
+    barrier();
+    if (inx_particle_render_candidate) {{
+        uint output_index = inx_particle_render_group_base + inx_particle_render_local_index;
+        if (output_index < pc.capacity) {{
+{instance_write}
+        }}
+    }}
+"""
+
+
+def _fused_compact_tail(instance_write: str) -> str:
+    return f"""
+    uvec4 inx_particle_alive_mask = subgroupBallot(inx_particle_active_candidate);
+    uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
+    uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_alive_mask);
+    uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_render_mask);
+    if (subgroupElect()) {{
+        inx_particle_alive_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_alive_mask);
+        inx_particle_render_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_render_mask);
+    }}
+    barrier();
+    uint inx_particle_subgroup_count = min(
+        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
+    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg) {{
+        inx_particle_alive_local_index += inx_particle_alive_subgroup_counts[inx_sg];
+        inx_particle_render_local_index += inx_particle_render_subgroup_counts[inx_sg];
+    }}
+    if (gl_LocalInvocationIndex == 0u) {{
+        inx_particle_alive_local_count = 0u;
+        inx_particle_render_local_count = 0u;
+        for (uint inx_sg = 0u; inx_sg < inx_particle_subgroup_count; ++inx_sg) {{
+            inx_particle_alive_local_count += inx_particle_alive_subgroup_counts[inx_sg];
+            inx_particle_render_local_count += inx_particle_render_subgroup_counts[inx_sg];
+        }}
+        inx_particle_alive_group_base = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot],
+            inx_particle_alive_local_count);
+        inx_particle_render_group_base = atomicAdd(
+            counters.visible_count, inx_particle_render_local_count);
+        uint available_count = inx_particle_render_group_base < pc.capacity
+            ? pc.capacity - inx_particle_render_group_base : 0u;
+        uint committed_count = min(inx_particle_render_local_count, available_count);
+        if (committed_count > 0u)
+            atomicAdd(indirect_args.instance_count, committed_count);
+    }}
+    barrier();
+    if (inx_particle_active_candidate) {{
+        uint alive_output = inx_particle_alive_group_base + inx_particle_alive_local_index;
+        inx_store_alive(pc.alive_write_slot, alive_output, particle_index);
+    }}
+    if (inx_particle_render_candidate) {{
+        uint output_index = inx_particle_render_group_base + inx_particle_render_local_index;
+        if (output_index < pc.capacity) {{
+{instance_write}
+        }}
+    }}
+"""
+
+
+def _rendering_finite(exports: dict[str, str]) -> str:
+    return " && ".join(
+        (
+            _finite_expression(exports["builtin.position"], TypeRef(ValueType.VEC3)),
+            _finite_expression(exports["builtin.size"], TypeRef(ValueType.F32)),
+            _finite_expression(exports["builtin.color"], TypeRef(ValueType.COLOR)),
+            _finite_expression(exports["builtin.rotation"], TypeRef(ValueType.F32)),
+            _finite_expression(exports["builtin.age"], TypeRef(ValueType.F32)),
+            _finite_expression(exports["builtin.lifetime"], TypeRef(ValueType.F32)),
+            _finite_expression(exports.get("builtin.orientation", "vec3(0.0)"), TypeRef(ValueType.VEC3)),
+            _finite_expression(exports.get("builtin.scale", "vec3(1.0)"), TypeRef(ValueType.VEC3)),
+            _finite_expression(exports.get("builtin.flipbook_frame", "0.0"), TypeRef(ValueType.F32)),
+        )
     )
+
+
+def _render_export_snapshots(
+    exports: dict[str, str],
+) -> tuple[str, str, dict[str, str]]:
+    export_types = (
+        ("builtin.position", "vec3", "vec3(0.0)"),
+        ("builtin.velocity", "vec3", "vec3(0.0)"),
+        ("builtin.size", "float", "0.0"),
+        ("builtin.color", "vec4", "vec4(0.0)"),
+        ("builtin.rotation", "float", "0.0"),
+        ("builtin.age", "float", "0.0"),
+        ("builtin.lifetime", "float", "0.0"),
+        ("builtin.orientation", "vec3", "vec3(0.0)"),
+        ("builtin.scale", "vec3", "vec3(1.0)"),
+        ("builtin.id", "uint", "0u"),
+        ("builtin.ribbon_strip_id", "uint", "0u"),
+        ("builtin.ribbon_order", "uint", "0u"),
+        ("builtin.ribbon_break", "bool", "false"),
+        ("builtin.flipbook_frame", "float", "0.0"),
+    )
+    declarations = []
+    assignments = []
+    snapshots = {}
+    for stable_id, glsl_type, default in export_types:
+        expression = exports.get(stable_id)
+        if expression is None:
+            continue
+        name = f"inx_render_export_{stable_id.removeprefix('builtin.')}"
+        declarations.append(f"    {glsl_type} {name} = {default};")
+        assignments.append(f"                {name} = {expression};")
+        snapshots[stable_id] = name
+    return "\n".join(declarations), "\n".join(assignments), snapshots
+
+
+def _rendering_main(body: str, exports: dict[str, str]) -> str:
+    finite = _rendering_finite(exports)
+    snapshot_declarations, snapshot_assignments, snapshot_exports = (
+        _render_export_snapshots(exports)
+    )
+    instance_write = _render_instance_write(
+        snapshot_exports,
+        output_index="output_index",
+        particle_index="particle_index",
+    )
+    compact_tail = _render_compact_tail(instance_write)
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u
-        || !inx_current_emitter_playing()) return;
-    uint particle_index = gl_GlobalInvocationID.x;
-    if (particle_index >= pc.capacity
-        || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
-        || (states[particle_index].lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) == 0u) return;
-    ParticleState state = states[particle_index];
-    bool particle_alive = true;
+    uint invocation = gl_GlobalInvocationID.x;
+    uint input_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    uint particle_index = invocation < input_count
+        ? (pc.use_alive_list != 0u
+            ? inx_alive_index(pc.alive_read_slot, invocation)
+            : invocation)
+        : 0u;
+    bool inx_particle_render_candidate =
+        simulation_control.simulation_allowed != 0u
+        && inx_current_emitter_playing()
+        && invocation < input_count;
+    ParticleState state;
+{snapshot_declarations}
+    bool particle_alive = false;
     bool inx_stage_suspended = false;
+    if (inx_particle_render_candidate) {{
+        state = states[particle_index];
+        inx_particle_render_candidate =
+            (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u
+            && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u;
+        if (inx_particle_render_candidate) {{
+            particle_alive = true;
 {body}
-    if (!({finite})) {{
-        state.lifecycle_flags = 0u;
-        states[particle_index] = state;
-        inx_push_free(particle_index);
-        return;
+            particle_alive = particle_alive && ({finite});
+            if (particle_alive) {{
+{snapshot_assignments}
+            }}
+            if (!particle_alive) {{
+                state.lifecycle_flags = 0u;
+                states[particle_index] = state;
+            }}
+        }}
     }}
-    uint output_index = atomicAdd(counters.visible_count, 1u);
-    if (output_index >= pc.capacity) return;
-    ParticleRenderInstance previous_instance = instances[particle_index];
-    bool history_valid = previous_instance.ribbon_data.w == {particle_id} &&
-        floatBitsToUint(previous_instance.previous_position_history.w) == state.spawn_generation;
-    instances[particle_index].position_size = vec4({world_position}, {size});
-    instances[particle_index].color = {color};
-    instances[particle_index].rotation_custom = vec4({rotation}, {orientation});
-    float normalized_age = clamp(({age}) / max(({lifetime}), 0.000001), 0.0, 1.0);
-    instances[particle_index].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
-    instances[particle_index].ribbon_data = uvec4(
-        {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
-    instances[particle_index].custom_data = vec4({flipbook_frame}, {world_velocity});
-    instances[particle_index].previous_position_history = vec4(
-        history_valid ? previous_instance.position_size.xyz : {world_position},
-        uintBitsToFloat(state.spawn_generation));
-    render_indices[output_index] = particle_index;
-    atomicAdd(indirect_args.instance_count, 1u);
+    inx_particle_render_candidate = inx_particle_render_candidate && particle_alive;
+{compact_tail}
+}}
+"""
+
+
+def _update_rendering_fused_main(
+    update_body: str,
+    rendering_body: str,
+    emitter: ParticleEmitterKernelIR,
+    fields: tuple[tuple[str, TypeRef, str], ...],
+    exports: dict[str, str],
+    *,
+    update_state_write: bool,
+) -> str:
+    update_finite = _finite_state_check(emitter.update, fields)
+    render_finite = _rendering_finite(exports)
+    snapshot_declarations, snapshot_assignments, snapshot_exports = (
+        _render_export_snapshots(exports)
+    )
+    instance_write = _render_instance_write(
+        snapshot_exports,
+        output_index="output_index",
+        particle_index="particle_index",
+    )
+    compact_tail = _fused_compact_tail(instance_write)
+    state_commit = "states[particle_index] = state;" if update_state_write else ""
+    return f"""
+void main() {{
+    uint invocation = gl_GlobalInvocationID.x;
+    uint input_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    bool inx_particle_active_candidate = invocation < input_count;
+    uint particle_index = inx_particle_active_candidate
+        ? (pc.use_alive_list != 0u
+            ? inx_alive_index(pc.alive_read_slot, invocation)
+            : invocation)
+        : 0u;
+    bool inx_particle_render_candidate = false;
+    ParticleState state;
+{snapshot_declarations}
+    bool particle_alive = false;
+    bool particle_was_alive = false;
+    bool inx_stage_suspended = false;
+    if (inx_particle_active_candidate) {{
+        state = states[particle_index];
+        particle_was_alive = (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u;
+        particle_alive = particle_was_alive;
+        inx_particle_render_candidate =
+            particle_was_alive
+            && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
+            && simulation_control.simulation_allowed != 0u
+            && inx_current_emitter_playing();
+        if (inx_particle_render_candidate) {{
+{update_body}
+            particle_alive = particle_alive && ({update_finite});
+            if (particle_alive) {{
+                {state_commit}
+{rendering_body}
+                particle_alive = particle_alive && ({render_finite});
+                if (particle_alive) {{
+{snapshot_assignments}
+                }}
+            }}
+        }}
+        if (!particle_alive) {{
+            state.lifecycle_flags = 0u;
+            states[particle_index] = state;
+            if (particle_was_alive || pc.use_alive_list != 0u)
+                inx_push_free(particle_index);
+        }}
+    }}
+    inx_particle_render_candidate = inx_particle_render_candidate && particle_alive;
+    inx_particle_active_candidate = inx_particle_active_candidate && particle_alive;
+{compact_tail}
 }}
 """
 
@@ -6826,6 +7273,15 @@ def _finite_state_check(
         value_type, field = schema[stable_id]
         checks.append(_finite_expression(f"state.{field}", value_type))
     return " && ".join(checks) or "true"
+
+
+def _function_has_state_effect(function: ParticleKernelFunction) -> bool:
+    # State writes and kill decisions are the only eligible Update effects that
+    # require publishing the local ParticleState before Rendering runs.
+    return any(
+        instruction.opcode in {"store_attribute", "kill_if"}
+        for instruction in function.instructions
+    )
 
 
 def _finite_expression(expression: str, value_type: TypeRef) -> str:
@@ -6855,7 +7311,32 @@ def _space_conversion(expression: str, result_type: TypeRef | None, immediate: d
         raise GpuParticleCompileError(
             f"GPU space conversion {source.value} -> {target.value} is not portable yet"
         )
-    w = "1.0" if immediate["semantic"] == "position" else "0.0"
+    semantic = str(immediate.get("semantic") or "direction")
+    if semantic == "direction":
+        # One source→target linear map, then drop scale. Applying emitter and
+        # simulation rotations as two separate multiplies can re-apply the
+        # same parent euler when those uniforms are not a true inverse pair.
+        def _rotation(matrix: str) -> str:
+            return (
+                f"mat3(normalize({matrix}[0].xyz), "
+                f"normalize({matrix}[1].xyz), "
+                f"normalize({matrix}[2].xyz))"
+            )
+
+        if source is CoordinateSpace.EMITTER_LOCAL and target is CoordinateSpace.WORLD:
+            matrix = "transforms.emitter_to_world"
+        elif source is CoordinateSpace.WORLD and target is CoordinateSpace.EMITTER_LOCAL:
+            matrix = "transforms.world_to_emitter"
+        elif source is CoordinateSpace.SIMULATION and target is CoordinateSpace.WORLD:
+            matrix = "transforms.simulation_to_world"
+        elif source is CoordinateSpace.WORLD and target is CoordinateSpace.SIMULATION:
+            matrix = "transforms.world_to_simulation"
+        elif source is CoordinateSpace.EMITTER_LOCAL and target is CoordinateSpace.SIMULATION:
+            matrix = "(transforms.world_to_simulation * transforms.emitter_to_world)"
+        else:
+            matrix = "(transforms.world_to_emitter * transforms.simulation_to_world)"
+        return f"({_rotation(matrix)} * ({expression}))"
+    w = "1.0" if semantic == "position" else "0.0"
     world = expression
     if source is CoordinateSpace.EMITTER_LOCAL:
         world = f"(transforms.emitter_to_world * vec4({expression}, {w})).xyz"
@@ -7247,10 +7728,10 @@ def _storage_type(value_type: TypeRef) -> str:
     )
 
 
-def _value_name(value_id: str) -> str:
+def _value_name(value_id: str, prefix: str = "") -> str:
     if not value_id.startswith("%") or not value_id[1:].isdigit():
         raise GpuParticleCompileError(f"invalid SSA value id {value_id!r}")
-    return "v" + value_id[1:]
+    return f"{prefix}v{value_id[1:]}"
 
 
 def _glsl_literal(value: Any, value_type: TypeRef | None) -> str:

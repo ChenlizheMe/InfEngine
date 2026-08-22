@@ -84,4 +84,5 @@ class TestComponentsRootExports:
         assert components.Transform is not None
         assert components.Rigidbody is not None
         assert components.BoxCollider is not None
+        assert components.CylinderCollider is not None
         assert components.Camera is not None

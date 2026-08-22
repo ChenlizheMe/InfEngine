@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
 
@@ -68,14 +70,10 @@ def test_ui_bind_click_creates_typed_persistent_entry(monkeypatch):
     }
     monkeypatch.setattr(ui, "main_thread", lambda _name, fn, **_kwargs: fn())
     monkeypatch.setattr(ui, "_find_game_object", lambda object_id: objects[object_id])
-    monkeypatch.setattr(ui, "_mark_ui_dirty", lambda: None)
-
-    import Infernux.engine.ui._inspector_undo as inspector_undo
-
     monkeypatch.setattr(
-        inspector_undo,
-        "_record_property",
-        lambda obj, field, _old, new, _description: setattr(obj, field, new),
+        ui,
+        "_commit_python_component_fields",
+        lambda obj, values, _description: [setattr(obj, key, value) for key, value in values.items()],
     )
     mcp = _FakeMcp()
     ui.register_ui_tools(mcp)
@@ -163,3 +161,142 @@ def test_persistent_click_dispatch_resolves_attached_component():
     button.on_pointer_click(None)
 
     assert calls == ["started"]
+
+
+def test_ui_field_mutation_uses_serialized_property_core(monkeypatch):
+    import Infernux.engine.interaction as interaction
+
+    class Component:
+        x = 1.0
+        y = 2.0
+
+    class SceneObjects:
+        def __init__(self):
+            self.actions = []
+
+        def user_action(self, description):
+            self.actions.append(description)
+            return nullcontext()
+
+    class Transaction:
+        def __init__(self, component, field):
+            self.component = component
+            self.field = field
+
+        def commit_or_raise(self, value):
+            setattr(self.component, self.field, value)
+            return interaction.PropertyTransactionStatus.APPLIED
+
+    component = Component()
+    scene_objects = SceneObjects()
+    calls = []
+
+    def _factory(components, field, **kwargs):
+        calls.append((components, field, kwargs["description"]))
+        return Transaction(components[0], field)
+
+    monkeypatch.setattr(ui, "_scene_object_service", lambda: scene_objects)
+    monkeypatch.setattr(ui, "_invalidate_ui_cache", lambda: None)
+    monkeypatch.setattr(
+        interaction,
+        "make_python_component_property_transaction",
+        _factory,
+    )
+
+    ui._commit_python_component_fields(
+        component,
+        {"x": 5.0, "y": 7.0},
+        "Set UI rectangle",
+    )
+
+    assert (component.x, component.y) == (5.0, 7.0)
+    assert scene_objects.actions == ["Set UI rectangle"]
+    assert [(field, description) for _targets, field, description in calls] == [
+        ("x", "Set UI rectangle"),
+        ("y", "Set UI rectangle"),
+    ]
+
+
+def test_ui_creation_uses_hierarchy_service_as_one_user_action(scene, monkeypatch):
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.undo import UndoManager
+
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
+    try:
+        monkeypatch.setattr(ui, "main_thread", lambda _name, fn, **_kwargs: fn())
+        mcp = _FakeMcp()
+        ui.register_ui_tools(mcp)
+
+        result = mcp.tools["ui_create_text"](
+            name="Status",
+            text="Ready",
+            rect={"x": 12.0, "y": 24.0},
+        )
+
+        obj = scene.find_by_id(result["object_id"])
+        assert obj is not None
+        assert result["fields"]["text"] == "Ready"
+        assert result["fields"]["x"] == 12.0
+        assert result["parent_id"] > 0
+        assert len(manager.action_journal.applied_entries()) == 1
+        assert manager.undo_description == "Create UI Text"
+    finally:
+        core.shutdown()
+        UndoManager._instance = previous_manager
+
+
+def test_ui_click_entries_commit_through_python_component_document(scene, monkeypatch):
+    from Infernux.components import GameObjectRef
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.undo import UndoManager
+    from Infernux.ui.ui_event_entry import UIEventEntry
+
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
+    try:
+        creation = HierarchyCreationService.instance()
+        button_entry = creation.create("ui.button", name="Start", select=False)
+        target_entry = creation.create("empty", name="Controller", select=False)
+        button_obj = scene.find_by_id(int(button_entry["id"]))
+        target_obj = scene.find_by_id(int(target_entry["id"]))
+        button = ui._find_named_component(button_obj, {"UIButton"})
+        entry = UIEventEntry(
+            target=GameObjectRef(target_obj),
+            component_name="MenuController",
+            method_name="start_game",
+            arguments=[],
+        )
+        manager.clear()
+        monkeypatch.setattr(ui, "_invalidate_ui_cache", lambda: None)
+
+        ui._commit_python_component_fields(
+            button,
+            {"on_click_entries": [entry]},
+            "Bind UIButton on_click",
+        )
+
+        assert len(button.on_click_entries) == 1
+        assert button.on_click_entries[0].method_name == "start_game"
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert button.on_click_entries == []
+    finally:
+        core.shutdown()
+        UndoManager._instance = previous_manager
+
+
+def test_ui_mcp_mutations_have_no_private_undo_or_dirty_bypass():
+    source = Path(ui.__file__).read_text(encoding="utf-8")
+
+    assert "SceneFileManager" not in source
+    assert ".mark_dirty(" not in source
+    assert "_record_property" not in source
+    assert "UndoManager" not in source
+    assert "HierarchyCreationService.instance().create" not in source
+    assert "creation.create(" in source
+    assert "make_python_component_property_transaction" in source
+    assert "_scene_object_service().user_action" in source

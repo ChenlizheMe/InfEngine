@@ -23,8 +23,7 @@
 
 #include "VkTypes.h"
 #include <array>
-#include <function/renderer/rhi/RhiCapabilities.h>
-#include <function/renderer/rhi/RhiHandles.h>
+#include <function/renderer/rhi/RhiDevice.h>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -144,6 +143,11 @@ class VkDeviceContext
     [[nodiscard]] VkInstance GetInstance() const
     {
         return m_instance;
+    }
+
+    [[nodiscard]] uint32_t GetInstanceApiVersion() const noexcept
+    {
+        return m_instanceApiVersion;
     }
 
     /// @brief Get physical device handle
@@ -388,7 +392,9 @@ class VkDeviceContext
     QueueFamilyIndices m_queueIndices{};
     VkPhysicalDeviceProperties m_deviceProperties{};
     VkPhysicalDeviceFeatures m_deviceFeatures{};
+    uint32_t m_instanceApiVersion = VK_API_VERSION_1_2;
     rhi::DeviceCaps m_capabilities{};
+    rhi::DeviceCapabilityState m_rhiCapabilityState{};
     std::unique_ptr<VulkanRhiDevice> m_rhiDevice;
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate

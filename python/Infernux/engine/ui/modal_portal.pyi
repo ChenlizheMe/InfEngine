@@ -1,0 +1,6 @@
+from typing import Any
+from Infernux.lib import InxGUIRenderable
+
+class ModalPortal(InxGUIRenderable):
+    def __init__(self, modal_service: Any) -> None: ...
+    def on_render(self, ctx: Any) -> None: ...

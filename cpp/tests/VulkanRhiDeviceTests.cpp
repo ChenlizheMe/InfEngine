@@ -1,11 +1,17 @@
 #include <function/renderer/vk/RhiVulkanTypes.h>
+#include <function/renderer/vk/VulkanBindlessTextureTable.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
+#include <memory>
+#include <shared_mutex>
+#include <thread>
 #include <type_traits>
 
 using namespace infernux;
@@ -21,16 +27,116 @@ template <typename NativeHandle> NativeHandle FakeHandle(uintptr_t value)
         return static_cast<NativeHandle>(value);
 }
 
+bool HasFeatureNode(const VkPhysicalDeviceFeatures2 &root, VkStructureType type)
+{
+    auto *node = reinterpret_cast<const VkBaseOutStructure *>(root.pNext);
+    while (node != nullptr) {
+        if (node->sType == type)
+            return true;
+        node = node->pNext;
+    }
+    return false;
+}
+
+void EnableCompleteBindless(VkPhysicalDeviceVulkan12Features &features)
+{
+    features.descriptorIndexing = VK_TRUE;
+    features.runtimeDescriptorArray = VK_TRUE;
+    features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    features.descriptorBindingPartiallyBound = VK_TRUE;
+    features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    features.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
+    features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+}
+
+void EnableCompleteBindless(VkPhysicalDeviceDescriptorIndexingFeaturesEXT &features)
+{
+    features.runtimeDescriptorArray = VK_TRUE;
+    features.descriptorBindingPartiallyBound = VK_TRUE;
+    features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    features.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
+    features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+}
+
+void EnableCompleteBindless(rhi::BindlessCapabilityStatus &status)
+{
+    const rhi::DeviceCapabilityStatus enabled{true, true};
+    status.descriptorIndexing = enabled;
+    status.runtimeDescriptorArray = enabled;
+    status.shaderSampledImageArrayNonUniformIndexing = enabled;
+    status.descriptorBindingPartiallyBound = enabled;
+    status.descriptorBindingVariableDescriptorCount = enabled;
+    status.descriptorBindingSampledImageUpdateAfterBind = enabled;
+}
+
 } // namespace
 
 int main()
 {
+    rhi::DeviceCapabilityState noBindlessCapabilities{};
+    assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, false));
+    assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, true));
+    assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(false, false));
+    assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(false, true));
+    assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(true, true));
+    assert(vk::VulkanBindlessTextureTable::IsOrphanedPublication(true, false));
+    rhi::DeviceCapabilityState completeBindlessCapabilities{};
+    EnableCompleteBindless(completeBindlessCapabilities.bindless);
+    assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(completeBindlessCapabilities, false));
+    assert(vk::VulkanBindlessTextureTable::CanUseShaderABI(completeBindlessCapabilities, true));
+
+    rhi::DeviceLimits bindlessLimits{};
+    bindlessLimits.maxUpdateAfterBindDescriptors = 32768;
+    bindlessLimits.maxUpdateAfterBindResourcesPerStage = 24576;
+    bindlessLimits.maxUpdateAfterBindSamplersPerStage = 16384;
+    bindlessLimits.maxUpdateAfterBindSampledTexturesPerStage = 12000;
+    bindlessLimits.maxUpdateAfterBindSamplersPerSet = 8192;
+    bindlessLimits.maxUpdateAfterBindSampledTexturesPerSet = 10000;
+    assert(vk::VulkanBindlessTextureTable::SelectCapacity(bindlessLimits) == 8192);
+    assert(vk::VulkanBindlessTextureTable::SelectCapacity(bindlessLimits, 4096) == 4096);
+    bindlessLimits.maxUpdateAfterBindSamplersPerSet = 1;
+    assert(vk::VulkanBindlessTextureTable::SelectCapacity(bindlessLimits) == 0);
+
+    vk::VulkanGraphicsCommandContext graphicsState;
+    graphicsState.boundPipeline = {1, 1};
+    graphicsState.boundGroups[0] = {2, 1};
+    graphicsState.ResetBindingState();
+    assert(!graphicsState.boundPipeline.IsValid());
+    assert(!graphicsState.boundGroups[0].IsValid());
+
+    vk::VulkanComputeCommandContext computeState;
+    computeState.boundPipeline = {3, 1};
+    computeState.boundGroups[7] = {4, 1};
+    computeState.ResetBindingState();
+    assert(!computeState.boundPipeline.IsValid());
+    assert(!computeState.boundGroups[7].IsValid());
+
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RG32UInt) == VK_FORMAT_R32G32_UINT);
     static_assert(rhi::FromVkFormat(VK_FORMAT_R32G32_UINT) == rhi::PixelFormat::RG32UInt);
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::BC5UNorm) == VK_FORMAT_BC5_UNORM_BLOCK);
     static_assert(rhi::FromVkFormat(VK_FORMAT_BC7_SRGB_BLOCK) == rhi::PixelFormat::BC7Srgb);
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RGBA4UNormPack16) == VK_FORMAT_R4G4B4A4_UNORM_PACK16);
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RGBA16UNorm) == VK_FORMAT_R16G16B16A16_UNORM);
+
+    rhi::GraphicsRenderingSignature renderingSignature;
+    renderingSignature.colorFormats[0] = rhi::PixelFormat::RGBA16SFloat;
+    renderingSignature.colorFormatCount = 1;
+    renderingSignature.depthFormat = rhi::PixelFormat::D32SFloat;
+    renderingSignature.samples = rhi::SampleCount::Four;
+    std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> renderingFormats{};
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    assert(rhi::BuildVkPipelineRenderingInfo(renderingSignature, renderingFormats, renderingInfo));
+    assert(renderingInfo.sType == VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
+    assert(renderingInfo.colorAttachmentCount == 1);
+    assert(renderingInfo.pColorAttachmentFormats == renderingFormats.data());
+    assert(renderingInfo.pColorAttachmentFormats[0] == VK_FORMAT_R16G16B16A16_SFLOAT);
+    assert(renderingInfo.depthAttachmentFormat == VK_FORMAT_D32_SFLOAT);
+    assert(renderingInfo.stencilAttachmentFormat == VK_FORMAT_UNDEFINED);
 
     vk::VulkanRhiDevice device;
     vk::VulkanRhiDevice secondDevice;
@@ -39,6 +145,26 @@ int main()
     assert(device.GetDeviceId() != secondDevice.GetDeviceId());
     assert(!device.CreateGraphicsPipeline({}).IsValid());
     assert(!device.CreateComputePipeline({}).IsValid());
+
+    const auto oldLifetime = device.GetLifetime();
+    std::atomic_bool resetStarted{false};
+    std::thread resetThread;
+    {
+        std::shared_lock lifetimeRead(oldLifetime->gate);
+        resetThread = std::thread([&] {
+            resetStarted.store(true, std::memory_order_release);
+            device.Reset();
+        });
+        while (!resetStarted.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        // Reset has announced itself but cannot pass the shared lease yet.
+        assert(oldLifetime->alive.load(std::memory_order_acquire));
+    }
+    resetThread.join();
+    assert(!oldLifetime->alive.load(std::memory_order_acquire));
+    assert(device.GetLifetime() != oldLifetime);
+    assert(device.GetLifetime()->alive.load(std::memory_order_acquire));
+
     rhi::TextureDesc nullTextureDesc;
     nullTextureDesc.format = rhi::PixelFormat::RGBA8UNorm;
     assert(!device.CreateTexture(nullTextureDesc).IsValid());
@@ -123,5 +249,89 @@ int main()
     const auto replacementCompute = device.RegisterComputePipeline(nativeCompute, nativeLayout);
     assert(replacementCompute.index == compute.index);
     assert(replacementCompute.generation != compute.generation);
+
+    vk::VulkanCapabilityProbeData coreProbe;
+    coreProbe.apiVersion = VK_API_VERSION_1_3;
+    coreProbe.properties.apiVersion = VK_API_VERSION_1_3;
+    EnableCompleteBindless(coreProbe.vulkan12Features);
+    coreProbe.vulkan12Features.timelineSemaphore = VK_TRUE;
+    coreProbe.vulkan13Features.dynamicRendering = VK_TRUE;
+    coreProbe.vulkan13Features.synchronization2 = VK_TRUE;
+    const auto coreSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(coreProbe);
+    assert(coreSnapshot.supported.bindless.IsSupported());
+    assert(coreSnapshot.supported.timelineSemaphore.supported);
+    assert(coreSnapshot.supported.dynamicRendering.supported);
+    assert(coreSnapshot.supported.synchronization2.supported);
+    assert(coreSnapshot.supported.submit2.supported);
+    assert(!coreSnapshot.supported.dynamicRendering.enabled);
+    assert(coreSnapshot.properties.apiVersion == VK_API_VERSION_1_3);
+
+    rhi::DeviceCapabilityRequest allModern;
+    allModern.descriptorIndexing = true;
+    allModern.timelineSemaphore = true;
+    allModern.dynamicRendering = true;
+    allModern.synchronization2 = true;
+    allModern.submit2 = true;
+    vk::VulkanDeviceFeatureChain coreChain(coreSnapshot);
+    assert(coreChain.Enable(allModern));
+    assert(coreChain.GetEnabledState().bindless.IsEnabled());
+    assert(coreChain.GetEnabledState().timelineSemaphore.IsEnabled());
+    assert(coreChain.GetEnabledState().dynamicRendering.IsEnabled());
+    assert(coreChain.GetEnabledState().synchronization2.IsEnabled());
+    assert(coreChain.GetEnabledState().submit2.IsEnabled());
+    assert(rhi::CheckDeviceCapabilities(coreChain.GetEnabledState(), allModern).IsSupported());
+    assert(HasFeatureNode(coreChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES));
+    assert(HasFeatureNode(coreChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES));
+
+    vk::VulkanCapabilityProbeData khrProbe;
+    khrProbe.apiVersion = VK_API_VERSION_1_1;
+    khrProbe.descriptorIndexingExtension = true;
+    khrProbe.timelineSemaphoreExtension = true;
+    khrProbe.dynamicRenderingExtension = true;
+    khrProbe.synchronization2Extension = true;
+    EnableCompleteBindless(khrProbe.descriptorIndexingFeaturesEXT);
+    khrProbe.timelineSemaphoreFeaturesKHR.timelineSemaphore = VK_TRUE;
+    khrProbe.dynamicRenderingFeaturesKHR.dynamicRendering = VK_TRUE;
+    khrProbe.synchronization2FeaturesKHR.synchronization2 = VK_TRUE;
+    const auto khrSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(khrProbe);
+    assert(khrSnapshot.supported.bindless.IsSupported());
+    assert(khrSnapshot.supported.timelineSemaphore.supported);
+    assert(khrSnapshot.supported.dynamicRendering.supported);
+    assert(khrSnapshot.supported.synchronization2.supported);
+    vk::VulkanDeviceFeatureChain khrChain(khrSnapshot);
+    assert(rhi::CheckDeviceCapabilities(khrChain.GetEnabledState(), allModern).code ==
+           rhi::DeviceCapabilityDiagnosticCode::NotEnabled);
+    assert(khrChain.Enable(allModern));
+    assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT));
+    assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR));
+    assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR));
+    assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR));
+    assert(rhi::CheckDeviceCapabilities(khrChain.GetEnabledState(), allModern).IsSupported());
+
+    vk::VulkanCapabilityProbeData incompleteExtProbe;
+    incompleteExtProbe.apiVersion = VK_API_VERSION_1_1;
+    incompleteExtProbe.descriptorIndexingExtension = true;
+    incompleteExtProbe.descriptorIndexingFeaturesEXT.runtimeDescriptorArray = VK_TRUE;
+    incompleteExtProbe.descriptorIndexingFeaturesEXT.descriptorBindingPartiallyBound = VK_TRUE;
+    incompleteExtProbe.descriptorIndexingFeaturesEXT.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    const auto incompleteExtSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(incompleteExtProbe);
+    assert(!incompleteExtSnapshot.supported.bindless.IsSupported());
+    vk::VulkanDeviceFeatureChain incompleteExtChain(incompleteExtSnapshot);
+    rhi::DeviceCapabilityRequest incompleteExtRequest;
+    incompleteExtRequest.descriptorIndexing = true;
+    assert(!incompleteExtChain.Enable(incompleteExtRequest));
+    assert(incompleteExtChain.GetFeatures2().pNext == nullptr);
+
+    vk::VulkanCapabilityProbeData incompleteProbe;
+    incompleteProbe.apiVersion = VK_API_VERSION_1_3;
+    incompleteProbe.vulkan12Features.descriptorIndexing = VK_TRUE;
+    const auto incompleteSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(incompleteProbe);
+    vk::VulkanDeviceFeatureChain incompleteChain(incompleteSnapshot);
+    rhi::DeviceCapabilityRequest bindlessOnly;
+    bindlessOnly.descriptorIndexing = true;
+    assert(!incompleteChain.Enable(bindlessOnly));
+    assert(incompleteChain.GetFailure().code == rhi::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing);
+    assert(incompleteChain.GetFeatures2().pNext == nullptr);
+    assert(!incompleteChain.GetEnabledState().bindless.IsEnabled());
     return 0;
 }

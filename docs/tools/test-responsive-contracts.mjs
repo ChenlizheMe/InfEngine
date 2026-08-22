@@ -28,6 +28,10 @@ const rootPages = [
     ["index.html", "Home"],
     ["start.html", "Start"],
     ["learn.html", "Learn"],
+    ["learn/gameplay.html", "Gameplay course"],
+    ["learn/rendering.html", "Rendering course"],
+    ["learn/gameplay-first-component.html", "Gameplay chapter"],
+    ["learn/rendering-overview.html", "Rendering chapter"],
     ["roadmap.html", "Roadmap"],
     ["community.html", "Community"],
     ["download.html", "Download"],
@@ -42,7 +46,7 @@ for (const [relativePath, surface] of rootPages) {
     assert.doesNotMatch(html, /\sstyle\s*=/i, `${surface} must not reintroduce fixed inline layout styles`);
 }
 
-for (const relativePath of ["index.html", "start.html", "learn.html", "roadmap.html", "community.html", "download.html", "404.html"]) {
+for (const relativePath of ["index.html", "start.html", "learn.html", "learn/gameplay.html", "learn/rendering.html", "learn/gameplay-first-component.html", "learn/rendering-overview.html", "roadmap.html", "community.html", "download.html", "404.html"]) {
     const html = await read(relativePath);
     assert.match(html, /<a[^>]+class=["'][^"']*skip-link[^"']*["'][^>]+href=["']#main-content["']/i, `${relativePath} must retain a skip link`);
     assert.match(html, /<main\b[^>]*\bid=["']main-content["']/i, `${relativePath} must retain one addressable main region`);

@@ -21,6 +21,7 @@ class TestRigidbodyEnums:
     def test_collision_detection_mode_members(self):
         assert CollisionDetectionMode.Discrete.value == 0
         assert CollisionDetectionMode.Continuous.value == 1
+        assert CollisionDetectionMode.ContinuousDynamic.value == 2
 
     def test_interpolation_members(self):
         assert RigidbodyInterpolation.None_.value == 0
@@ -51,13 +52,17 @@ class TestCollisionDetectionModeMapping:
         _rb.collision_detection_mode = CollisionDetectionMode.Continuous
         assert cpp_rigidbody.collision_detection_mode == int(CollisionDetectionMode.Continuous)
 
+    def test_continuous_dynamic(self, _rb, cpp_rigidbody):
+        _rb.collision_detection_mode = CollisionDetectionMode.ContinuousDynamic
+        assert cpp_rigidbody.collision_detection_mode == int(CollisionDetectionMode.ContinuousDynamic)
+
     def test_read_back_is_enum(self, _rb, cpp_rigidbody):
         cpp_rigidbody.collision_detection_mode = 1
         assert _rb.collision_detection_mode is CollisionDetectionMode.Continuous
 
     def test_unsupported_mode_is_rejected(self, cpp_rigidbody):
         with pytest.raises(ValueError):
-            cpp_rigidbody.collision_detection_mode = 2
+            cpp_rigidbody.collision_detection_mode = 3
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -81,15 +86,15 @@ class TestPropertyRoundTrip:
         rb = Rigidbody()
         rb._cpp_component = cpp_rigidbody
 
-        rb.collision_detection_mode = CollisionDetectionMode.Continuous
+        rb.collision_detection_mode = CollisionDetectionMode.ContinuousDynamic
         rb.interpolation = RigidbodyInterpolation.None_
 
-        assert cpp_rigidbody.collision_detection_mode == int(CollisionDetectionMode.Continuous)
+        assert cpp_rigidbody.collision_detection_mode == int(CollisionDetectionMode.ContinuousDynamic)
         assert cpp_rigidbody.interpolation == int(RigidbodyInterpolation.None_)
 
-        cpp_rigidbody.collision_detection_mode = 1
+        cpp_rigidbody.collision_detection_mode = 2
         cpp_rigidbody.interpolation = 1
-        assert rb.collision_detection_mode is CollisionDetectionMode.Continuous
+        assert rb.collision_detection_mode is CollisionDetectionMode.ContinuousDynamic
         assert rb.interpolation is RigidbodyInterpolation.Interpolate
 
     def test_zero_drag_is_preserved(self, cpp_rigidbody):

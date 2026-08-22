@@ -1,5 +1,8 @@
 import ctypes
 import glob
+import importlib
+import importlib.machinery
+import importlib.util
 import os
 import sys
 from functools import wraps
@@ -16,6 +19,7 @@ def _log_suppressed(exc: BaseException) -> None:
 
 lib_dir = os.path.join(os.path.dirname(__file__))
 lib_dir = os.path.abspath(lib_dir)
+native_dir = lib_dir
 
 _dll_dir_handles = []
 
@@ -46,10 +50,12 @@ def _register_native_search_dir(path: str) -> None:
             os.environ["LD_LIBRARY_PATH"] = norm + ((":" + ld_path) if ld_path else "")
 
 
-def _register_native_module_override() -> None:
+def _register_native_module_override() -> str | None:
+    global native_dir
+
     override = os.environ.get("INFERNUX_NATIVE_MODULE_DIR")
     if override is None:
-        return
+        return None
 
     native_dir = os.path.abspath(override)
     if not os.path.isdir(native_dir):
@@ -57,6 +63,56 @@ def _register_native_module_override() -> None:
     if native_dir not in __path__:
         __path__.insert(0, native_dir)
     _register_native_search_dir(native_dir)
+    return native_dir
+
+
+def _native_module_candidate(directory: str) -> str:
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        candidate = os.path.join(directory, f"_Infernux{suffix}")
+        if os.path.isfile(candidate):
+            return candidate
+    suffixes = ", ".join(importlib.machinery.EXTENSION_SUFFIXES)
+    raise ImportError(
+        f"No ABI-compatible _Infernux extension found under {directory}; "
+        f"expected one of: {suffixes}"
+    )
+
+
+def _load_native_module_from_dir(directory: str):
+    """Load the package-qualified native module from an explicit directory."""
+
+    module_name = f"{__name__}._Infernux"
+    module_path = _native_module_candidate(directory)
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot create an extension loader for {module_path}")
+
+    previous = sys.modules.get(module_name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
+    return module
+
+
+def _load_native_module(override_dir: str | None):
+    if override_dir is not None:
+        return _load_native_module_from_dir(override_dir)
+    return importlib.import_module(f"{__name__}._Infernux")
+
+
+def _export_native_module(module) -> None:
+    globals()["_Infernux"] = module
+    export_names = getattr(module, "__all__", None)
+    if export_names is None:
+        export_names = [name for name in vars(module) if not name.startswith("_")]
+    globals().update({name: getattr(module, name) for name in export_names})
 
 
 def _iter_dev_native_search_dirs():
@@ -104,11 +160,11 @@ def _collect_windows_native_load_hints():
         except OSError:
             hints.append(f"Missing system DLL: {dll_name}. {remedy}")
 
-    if not glob.glob(os.path.join(lib_dir, "_Infernux*.pyd")):
-        hints.append(f"Missing _Infernux*.pyd under {lib_dir}. Reinstall the Infernux wheel.")
+    if not glob.glob(os.path.join(native_dir, "_Infernux*.pyd")):
+        hints.append(f"Missing _Infernux*.pyd under {native_dir}. Reinstall the Infernux wheel.")
 
     for dll_name in _ENGINE_DLLS:
-        full = os.path.join(lib_dir, dll_name)
+        full = os.path.join(native_dir, dll_name)
         if not os.path.isfile(full):
             hints.append(f"Missing engine DLL: {dll_name}. Reinstall the Infernux wheel.")
         else:
@@ -138,7 +194,7 @@ def _collect_windows_native_load_hints():
 
 def _list_lib_dir_contents():
     try:
-        entries = sorted(os.listdir(lib_dir))
+        entries = sorted(os.listdir(native_dir))
         dlls = [e for e in entries if e.lower().endswith((".dll", ".pyd", ".so", ".dylib"))]
         return dlls
     except OSError:
@@ -148,7 +204,7 @@ def _list_lib_dir_contents():
 def _raise_native_import_error(exc):
     lines = [
         "Failed to load the Infernux native module.",
-        f"Library directory: {lib_dir}",
+        f"Native directory: {native_dir}",
         f"Original error: {exc}",
     ]
 
@@ -157,8 +213,8 @@ def _raise_native_import_error(exc):
         lines.append("Diagnostic results:")
         lines.extend(f"  - {hint}" for hint in hints)
     elif sys.platform == "darwin":
-        if not glob.glob(os.path.join(lib_dir, "_Infernux*.so")):
-            lines.append(f"Missing _Infernux*.so under {lib_dir}. Build the native module first.")
+        if not glob.glob(os.path.join(native_dir, "_Infernux*.so")):
+            lines.append(f"Missing _Infernux*.so under {native_dir}. Build the native module first.")
         lines.append(
             "Likely causes: missing Vulkan SDK (MoltenVK), or the native module was not built for this architecture."
         )
@@ -185,9 +241,9 @@ def _preload_bundled_crt_dlls() -> None:
     ``_Infernux.pyd`` (and the engine DLLs it depends on) may still fail
     to resolve ``vcruntime140.dll`` / ``msvcp140.dll`` at load time.
 
-    Explicitly loading them via ``ctypes.WinDLL`` before the ``from
-    ._Infernux import *`` guarantees they are resident in the process
-    and the dynamic linker can satisfy the dependency.
+    Explicitly loading them via ``ctypes.WinDLL`` before the native module
+    guarantees they are resident in the process and the dynamic linker can
+    satisfy the dependency.
     """
     if sys.platform != "win32":
         return
@@ -206,7 +262,7 @@ def _preload_bundled_crt_dlls() -> None:
     )
 
     for name in _CRT_LOAD_ORDER:
-        full = os.path.join(lib_dir, name)
+        full = os.path.join(native_dir, name)
         if os.path.isfile(full):
             try:
                 ctypes.WinDLL(full)
@@ -215,49 +271,74 @@ def _preload_bundled_crt_dlls() -> None:
                 pass  # Best-effort; the import below will give a clear error.
 
 
-_register_native_module_override()
+_native_override_dir = _register_native_module_override()
 _register_native_search_dir(lib_dir)
 _preload_bundled_crt_dlls()
 
 try:
-    from ._Infernux import *
-except (ModuleNotFoundError, ImportError):
+    _native_module = _load_native_module(_native_override_dir)
+except (ModuleNotFoundError, ImportError, OSError) as _initial_native_error:
+    if _native_override_dir is not None:
+        _raise_native_import_error(_initial_native_error)
     for candidate in _iter_dev_native_search_dirs():
         _register_native_search_dir(candidate)
     try:
-        from ._Infernux import *
-    except (ModuleNotFoundError, ImportError) as exc:
+        _native_module = _load_native_module(None)
+    except (ModuleNotFoundError, ImportError, OSError) as exc:
         _raise_native_import_error(exc)
 
-from ._Infernux import (
-    _SceneDocumentReadTicket,
-    _preflight_scene_resource_dependencies,
-    _schedule_scene_document_read,
+_export_native_module(_native_module)
+_SceneDocumentReadTicket = _native_module._SceneDocumentReadTicket
+_preflight_scene_resource_dependencies = (
+    _native_module._preflight_scene_resource_dependencies
 )
+_collect_scene_resource_dependencies = (
+    _native_module._collect_scene_resource_dependencies
+)
+_schedule_scene_document_read = _native_module._schedule_scene_document_read
 
 # `import *` skips underscore-prefixed names.  Re-export internal C++
 # helpers so that `from Infernux import lib; lib._cds_register_class`
 # works for the Python-side CDS bridge and batch API.
-try:
-    from ._Infernux import (
-        _cds_register_class,
-        _cds_register_field,
-        _cds_alloc,
-        _cds_free,
-        _cds_is_alive,
-        _cds_reserve,
-        _cds_capacity,
-        _cds_alive_count,
-        _cds_get,
-        _cds_set,
-        _cds_batch_gather,
-        _cds_batch_scatter,
-        _transform_batch_read,
-        _transform_batch_write,
-        _create_scene_transform_batch_handle,
-    )
-except ImportError:
-    pass  # graceful fallback if built without batch support
+for _internal_name in (
+    "_cds_register_class",
+    "_cds_register_field",
+    "_cds_schema_begin",
+    "_cds_schema_prepare_class",
+    "_cds_schema_prepare_field",
+    "_cds_schema_has_class",
+    "_cds_schema_find_class",
+    "_cds_schema_get_field_id",
+    "_cds_schema_discard_class",
+    "_cds_schema_reserve",
+    "_cds_schema_alloc",
+    "_cds_schema_free",
+    "_cds_schema_is_alive",
+    "_cds_schema_get",
+    "_cds_schema_set",
+    "_cds_schema_migrate_slot",
+    "_cds_schema_seal",
+    "_cds_schema_final_class_id",
+    "_cds_schema_commit",
+    "_cds_schema_finalize",
+    "_cds_schema_rollback",
+    "_cds_schema_active",
+    "_cds_alloc",
+    "_cds_free",
+    "_cds_is_alive",
+    "_cds_reserve",
+    "_cds_capacity",
+    "_cds_alive_count",
+    "_cds_get",
+    "_cds_set",
+    "_cds_batch_gather",
+    "_cds_batch_scatter",
+    "_transform_batch_read",
+    "_transform_batch_write",
+    "_create_scene_transform_batch_handle",
+):
+    if hasattr(_native_module, _internal_name):
+        globals()[_internal_name] = getattr(_native_module, _internal_name)
 
 
 _INVALID_NATIVE_LIFETIME_MARKERS = (
@@ -631,6 +712,7 @@ _native_game_object_add_component = GameObject.add_component
 _native_game_object_remove_component = GameObject.remove_component
 _native_game_object_can_remove_component = GameObject.can_remove_component
 _native_game_object_get_remove_component_blockers = GameObject.get_remove_component_blockers
+_native_game_object_get_py_component = GameObject.get_py_component
 _native_game_object_get_component = GameObject.get_component
 _native_game_object_get_components = GameObject.get_components
 _native_game_object_get_component_in_children = GameObject.get_component_in_children
@@ -805,6 +887,93 @@ def _parse_instantiate_arguments(args, kwargs):
 
 
 def _game_object_instantiate(original, *args, **kwargs):
+    batch_positions = kwargs.pop("positions", None)
+    if batch_positions is not None:
+        if args:
+            raise TypeError("instantiate(): batch positions cannot be combined with positional overloads")
+        batch_rotations = kwargs.pop("rotations", None)
+        batch_scales = kwargs.pop("scales", None)
+        parent_arg = kwargs.pop("parent", None)
+        instantiate_in_world_space = kwargs.pop(
+            "instantiate_in_world_space",
+            kwargs.pop("instantiateInWorldSpace", True),
+        )
+        return_objects = kwargs.pop("return_objects", True)
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"instantiate(): unexpected keyword arguments: {unexpected}")
+        if not isinstance(instantiate_in_world_space, bool):
+            raise TypeError("instantiate(): instantiate_in_world_space must be a bool")
+        if not isinstance(return_objects, bool):
+            raise TypeError("instantiate(): return_objects must be a bool")
+
+        import numpy as np
+
+        positions = np.ascontiguousarray(batch_positions, dtype=np.float32)
+        if positions.ndim != 2 or positions.shape[1] != 3:
+            raise TypeError("instantiate(): positions must have shape (N, 3)")
+        rotations = None
+        if batch_rotations is not None:
+            rotations = np.ascontiguousarray(batch_rotations, dtype=np.float32)
+            if rotations.shape != (positions.shape[0], 4):
+                raise TypeError("instantiate(): rotations must have shape (N, 4) in x, y, z, w order")
+        scales = None
+        if batch_scales is not None:
+            scales = np.ascontiguousarray(batch_scales, dtype=np.float32)
+            if scales.shape != (positions.shape[0], 3):
+                raise TypeError("instantiate(): scales must have shape (N, 3)")
+
+        parent = _coerce_parent_game_object(parent_arg) if parent_arg is not None else None
+        source_kind, source = _resolve_game_object_instantiate_source(original)
+        if source_kind == "game_object" and source is None:
+            return []
+
+        def _contains_python_components(root):
+            stack = [root]
+            while stack:
+                current = stack.pop()
+                if current.get_py_components():
+                    return True
+                stack.extend(current.get_children())
+            return False
+
+        # Pure-native hierarchies use one owner-thread transaction: capacity
+        # reservation and renderer publication are coalesced, while every
+        # returned item remains a normal independent GameObject.
+        if source_kind == "game_object" and not _contains_python_components(source):
+            result = source.scene._clone_game_objects(
+                source,
+                positions,
+                rotations,
+                scales,
+                parent,
+                instantiate_in_world_space,
+                return_objects,
+            )
+            return list(result) if return_objects else int(result)
+
+        # Python-backed components retain the existing transactional preflight
+        # and publication contract. This path is intentionally correctness
+        # first; native-only high-volume geometry takes the fast path above.
+        result = []
+        for index in range(positions.shape[0]):
+            position = Vector3(*map(float, positions[index]))
+            rotation = None if rotations is None else quatf(*map(float, rotations[index]))
+            scalar_kwargs = {
+                "position": position,
+                "parent": parent,
+                "instantiate_in_world_space": instantiate_in_world_space,
+            }
+            if rotation is not None:
+                scalar_kwargs["rotation"] = rotation
+            instance = _game_object_instantiate(original, **scalar_kwargs)
+            if instance is None:
+                continue
+            if scales is not None:
+                instance.transform.local_scale = Vector3(*map(float, scales[index]))
+            result.append(instance)
+        return result if return_objects else len(result)
+
     position, rotation, parent_arg, instantiate_in_world_space = _parse_instantiate_arguments(args, kwargs)
     parent = _coerce_parent_game_object(parent_arg) if parent_arg is not None else None
 
@@ -981,6 +1150,30 @@ def _game_object_get_component(self, component_type):
     return _call_native_game_object("get_component", _native_game_object_get_component, self, component_type)
 
 
+def _python_component_matches_type(component, component_type) -> bool:
+    try:
+        if isinstance(component, component_type):
+            return True
+    except TypeError:
+        return False
+    requested_identity = getattr(component_type, "_get_type_guid", None)
+    actual_identity = getattr(type(component), "_get_type_guid", None)
+    if not callable(requested_identity) or not callable(actual_identity):
+        return False
+    requested_guid = str(requested_identity() or "")
+    return bool(requested_guid) and requested_guid == str(actual_identity() or "")
+
+
+def _game_object_get_py_component(self, component_type):
+    component = _native_game_object_get_py_component(self, component_type)
+    if component is not None:
+        return component
+    for candidate in self.get_py_components() or ():
+        if _python_component_matches_type(candidate, component_type):
+            return candidate
+    return None
+
+
 def _game_object_get_components(self, component_type=None):
     if component_type is None:
         raw_components = _call_native_game_object("get_components", _native_game_object_get_components, self)
@@ -1007,7 +1200,7 @@ def _game_object_get_components(self, component_type=None):
         python_components = [
             component
             for component in (self.get_py_components() or [])
-            if isinstance(component, python_component_cls)
+            if _python_component_matches_type(component, python_component_cls)
         ]
         if python_components:
             return python_components
@@ -1030,8 +1223,24 @@ def _game_object_get_component_in_children(self, component_type, include_inactiv
         include_inactive,
     )
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
-    if builtin_wrapper_cls is None:
+    if builtin_wrapper_cls is None and result is not None:
         return result
+    python_component_cls = _resolve_python_component_class(component_type)
+    if builtin_wrapper_cls is None and python_component_cls is not None:
+        def find_python_component(current):
+            if include_inactive or current.is_active_in_hierarchy():
+                component = current.get_py_component(python_component_cls)
+                if component is not None:
+                    return component
+            for child in current.get_children() or ():
+                component = find_python_component(child)
+                if component is not None:
+                    return component
+            return None
+
+        return find_python_component(self)
+    if builtin_wrapper_cls is None:
+        return None
     result_game_object = getattr(result, "game_object", self)
     return _wrap_builtin_component(result_game_object, builtin_wrapper_cls, result)
 
@@ -1045,8 +1254,20 @@ def _game_object_get_component_in_parent(self, component_type, include_inactive=
         include_inactive,
     )
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
-    if builtin_wrapper_cls is None:
+    if builtin_wrapper_cls is None and result is not None:
         return result
+    python_component_cls = _resolve_python_component_class(component_type)
+    if builtin_wrapper_cls is None and python_component_cls is not None:
+        current = self
+        while current is not None:
+            if include_inactive or current.is_active_in_hierarchy():
+                component = current.get_py_component(python_component_cls)
+                if component is not None:
+                    return component
+            current = current.get_parent()
+        return None
+    if builtin_wrapper_cls is None:
+        return None
     result_game_object = getattr(result, "game_object", self)
     return _wrap_builtin_component(result_game_object, builtin_wrapper_cls, result)
 
@@ -1083,6 +1304,7 @@ GameObject.add_component = _game_object_add_component
 GameObject.remove_component = _game_object_remove_component
 GameObject.can_remove_component = _game_object_can_remove_component
 GameObject.get_remove_component_blockers = _game_object_get_remove_component_blockers
+GameObject.get_py_component = _game_object_get_py_component
 GameObject.get_component = _game_object_get_component
 GameObject.get_components = _game_object_get_components
 GameObject.get_component_in_children = _game_object_get_component_in_children

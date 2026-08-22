@@ -80,6 +80,20 @@ class Camera(BuiltinComponent):
     @background_color.setter
     def background_color(self, value: Union[List[float], tuple[float, ...]]) -> None: ...
 
+    @property
+    def stop_nans(self) -> bool:
+        """Whether invalid final-output pixels are replaced before display encoding."""
+        ...
+    @stop_nans.setter
+    def stop_nans(self, value: bool) -> None: ...
+
+    @property
+    def dithering(self) -> bool:
+        """Whether display-space dithering is applied before output quantization."""
+        ...
+    @dithering.setter
+    def dithering(self, value: bool) -> None: ...
+
     # ---- Read-only delegate properties ----
 
     @property

@@ -172,12 +172,6 @@ def _capture_policy_error() -> dict | None:
             "Engine capture is available only in a Debug feedback session.",
             hint="Restart the project through the Supervisor with build_profile=debug_feedback.",
         )
-    if not active.recording_enabled:
-        return fail(
-            "error.recording_disabled",
-            "Engine capture is disabled for this session.",
-            hint="Use a Supervisor mode handoff to enable recording, then retry.",
-        )
     return None
 
 

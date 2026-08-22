@@ -9,7 +9,7 @@ class in <b>Infernux</b>
 Game object in the scene hierarchy.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.2.9
+**Status:** Preview · **Verified with:** 0.3.4
 
 A GameObject owns a Transform and a set of components. Distinguish `active_self` from the derived `active_in_hierarchy`, and prefer component lookup by type.
 <!-- USER CONTENT END -->
@@ -45,10 +45,15 @@ A GameObject owns a Transform and a set of components. Distinguish `active_self`
 | `compare_tag(tag: str) → bool` |  |
 | `get_transform() → Transform` |  |
 | `add_component(component_type: Any) → Optional[Any]` |  |
+| `can_add_component(type_name: str) → bool` |  |
+| `get_add_component_blockers(type_name: str) → List[str]` |  |
 | `remove_component(component: Any) → bool` |  |
 | `can_remove_component(component: Any) → bool` |  |
 | `get_remove_component_blockers(component: Any) → List[str]` |  |
 | `get_components(component_type: Any = ...) → List[Any]` |  |
+| `get_component_order() → List[int]` |  |
+| `set_component_order(component_ids: List[int]) → bool` |  |
+| `get_component_default_document(component: Component) → Dict[str, Any]` |  |
 | `get_component(component_type: Any) → Optional[Any]` |  |
 | `get_cpp_component(type_name: str) → Optional[Component]` |  |
 | `get_cpp_components(type_name: str) → List[Component]` |  |
@@ -56,6 +61,7 @@ A GameObject owns a Transform and a set of components. Distinguish `active_self`
 | `get_py_component(component_type: Any) → Any` |  |
 | `get_py_components() → List[Any]` |  |
 | `remove_py_component(component: Any) → bool` |  |
+| `replace_py_component(old_component: Any, new_component: Any) → Any` |  |
 | `get_parent() → Optional[GameObject]` |  |
 | `set_parent(parent: Optional[GameObject], world_position_stays: bool = True) → None` |  |
 | `get_children() → List[GameObject]` |  |
@@ -82,7 +88,7 @@ A GameObject owns a Transform and a set of components. Distinguish `active_self`
 | `static GameObject.find(name: str) → Optional[GameObject]` |  |
 | `static GameObject.find_with_tag(tag: str) → Optional[GameObject]` |  |
 | `static GameObject.find_game_objects_with_tag(tag: str) → List[GameObject]` |  |
-| `static GameObject.instantiate(original: Any) → Optional[GameObject]` |  |
+| `static GameObject.instantiate(original: Any) → Any` |  |
 | `static GameObject.destroy(game_object: GameObject) → None` |  |
 
 <!-- USER CONTENT START --> static_methods

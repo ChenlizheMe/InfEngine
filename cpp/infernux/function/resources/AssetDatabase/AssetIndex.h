@@ -51,6 +51,10 @@ class AssetIndex final
     void Save(const std::string &path) const;
 
     [[nodiscard]] const AssetIndexEntry *Find(const std::string &normalizedPath) const;
+    [[nodiscard]] const std::unordered_map<std::string, AssetIndexEntry> &Entries() const noexcept
+    {
+        return m_entries;
+    }
     void Upsert(AssetIndexEntry entry);
     [[nodiscard]] size_t Size() const noexcept
     {

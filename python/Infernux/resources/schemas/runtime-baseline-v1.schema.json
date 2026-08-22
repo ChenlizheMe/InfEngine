@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infernux-engine.com/schemas/runtime-baseline-v1.schema.json",
+  "title": "Infernux Runtime Baseline",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "capture",
+    "contract",
+    "coverage",
+    "semantics",
+    "workloads",
+    "runtime_inventory",
+    "performance_windows",
+    "diagnostics"
+  ],
+  "$defs": {
+    "timing": {
+      "type": "object",
+      "required": ["sample_count", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "min_ms", "max_ms"],
+      "properties": {
+        "sample_count": {"type": ["integer", "null"], "minimum": 0},
+        "avg_ms": {"type": ["number", "null"], "minimum": 0},
+        "p50_ms": {"type": ["number", "null"], "minimum": 0},
+        "p95_ms": {"type": ["number", "null"], "minimum": 0},
+        "p99_ms": {"type": ["number", "null"], "minimum": 0},
+        "min_ms": {"type": ["number", "null"], "minimum": 0},
+        "max_ms": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": {"type": ["number", "null"]}
+    },
+    "counters": {
+      "type": "object",
+      "required": [
+        "gil_acquires",
+        "python_calls",
+        "engine_api_crossings",
+        "tree_object_visits",
+        "tree_component_visits",
+        "scheduler_plan_builds",
+        "scheduler_plan_hits",
+        "scheduler_phase_dispatches",
+        "scheduler_phase_skips",
+        "scheduler_phase_errors",
+        "journal_publishes",
+        "journal_coalesced_changes",
+        "descriptor_updates",
+        "pipeline_builds",
+        "command_buffer_submissions",
+        "fence_waits",
+        "resource_upload_bytes"
+      ],
+      "additionalProperties": {"type": ["number", "null"]}
+    },
+    "inventory-record": {
+      "type": ["object", "string", "number", "boolean", "null"]
+    }
+  },
+  "properties": {
+    "$schema": {"const": "https://infernux-engine.com/schemas/runtime-baseline-v1.schema.json"},
+    "schema_version": {"const": 1},
+    "capture": {
+      "type": "object",
+      "required": ["capture_id", "suite_id", "project_id", "created_utc", "identity"],
+      "properties": {
+        "capture_id": {"type": "string", "minLength": 1},
+        "suite_id": {"type": "string", "minLength": 1},
+        "project_id": {"type": "string"},
+        "created_utc": {"type": "string", "minLength": 1},
+        "identity": {
+          "type": "object",
+          "required": ["build_configuration", "application_role", "runtime_mode", "flavor", "platform", "architecture", "python_version", "native_profile_enabled", "engine_version", "build_preset"],
+          "properties": {
+            "build_configuration": {"enum": ["Debug", "Release"]},
+            "application_role": {"enum": ["Editor", "Player", "Headless"]},
+            "runtime_mode": {"type": "string", "minLength": 1},
+            "flavor": {"enum": ["EditorDebug", "EditorRelease", "PlayerDebug", "PlayerRelease", "HeadlessDebug", "HeadlessRelease"]},
+            "platform": {"type": "string"},
+            "architecture": {"type": "string"},
+            "python_version": {"type": "string"},
+            "native_profile_enabled": {"type": "boolean"},
+            "engine_version": {"type": "string"},
+            "build_preset": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "contract": {
+      "type": "object",
+      "required": ["component_counts", "lifecycle_callbacks", "mutation_domains", "workloads", "scenario_groups", "timing_fields", "counter_slots", "timing_split"],
+      "properties": {
+        "component_counts": {"const": [0, 1, 100, 1000, 10000]},
+        "lifecycle_callbacks": {"const": ["awake", "start", "on_enable", "fixed_update", "physics_callback", "update", "late_update", "on_disable", "on_destroy"]},
+        "mutation_domains": {"const": ["component_data", "transform_local", "transform_world", "rigidbody", "hierarchy", "render_extraction"]},
+        "workloads": {"const": ["no_op", "cds_field", "transform", "coroutine", "exception", "batch", "jit"]},
+        "scenario_groups": {
+          "const": {
+            "ui": ["editor-empty-panels", "inspector-static-target", "inspector-runtime-fields", "inspector-material", "inspector-render-stack", "hidden-panels", "file-manager"],
+            "preview": ["material-preview", "mesh-preview", "prefab-preview"],
+            "scene": ["empty-shadow-off", "empty-shadow-on", "balance-game", "animation-stress", "gpu-particle-stress", "gizmo-selection", "ui-scene"]
+          }
+        },
+        "timing_fields": {"const": ["sample_count", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "min_ms", "max_ms"]},
+        "counter_slots": {"const": ["gil_acquires", "python_calls", "engine_api_crossings", "tree_object_visits", "tree_component_visits", "scheduler_plan_builds", "scheduler_plan_hits", "scheduler_phase_dispatches", "scheduler_phase_skips", "scheduler_phase_errors", "journal_publishes", "journal_coalesced_changes", "descriptor_updates", "pipeline_builds", "command_buffer_submissions", "fence_waits", "resource_upload_bytes"]},
+        "timing_split": {"const": ["total", "user_script", "engine_overhead"]}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["lifecycle_events", "mutation_visibility", "workload_cases", "performance_scenarios", "runtime_inventory"],
+      "properties": {
+        "lifecycle_events": {"type": "boolean"},
+        "mutation_visibility": {"type": "boolean"},
+        "runtime_inventory": {"type": "boolean"},
+        "workload_cases": {
+          "type": "array",
+          "minItems": 35,
+          "maxItems": 35,
+          "items": {
+            "type": "object",
+            "required": ["workload", "component_count", "captured"],
+            "properties": {
+              "workload": {"enum": ["no_op", "cds_field", "transform", "coroutine", "exception", "batch", "jit"]},
+              "component_count": {"enum": [0, 1, 100, 1000, 10000]},
+              "captured": {"type": "boolean"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "performance_scenarios": {
+          "type": "array",
+          "minItems": 17,
+          "maxItems": 17,
+          "items": {
+            "type": "object",
+            "required": ["name", "group", "captured"],
+            "properties": {
+              "name": {"type": "string"},
+              "group": {"enum": ["ui", "preview", "scene"]},
+              "captured": {"type": "boolean"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "semantics": {
+      "type": "object",
+      "required": ["lifecycle_events", "mutation_visibility"],
+      "properties": {
+        "lifecycle_events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sequence", "frame", "phase", "callback", "object_id", "component_id", "type_id", "details"],
+            "properties": {
+              "sequence": {"type": "integer", "minimum": 1},
+              "frame": {"type": "integer", "minimum": 0},
+              "phase": {"type": "string"},
+              "callback": {"type": "string"},
+              "object_id": {"type": ["integer", "string"]},
+              "component_id": {"type": ["integer", "string"]},
+              "type_id": {"type": "string"},
+              "details": {"type": "object"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "mutation_visibility": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sequence", "frame", "domain", "mutation_phase", "observed_phase", "visible_same_frame", "stable_id", "field_id", "details"],
+            "properties": {
+              "sequence": {"type": "integer", "minimum": 1},
+              "frame": {"type": "integer", "minimum": 0},
+              "domain": {"type": "string"},
+              "mutation_phase": {"type": "string"},
+              "observed_phase": {"type": "string"},
+              "visible_same_frame": {"type": "boolean"},
+              "stable_id": {"type": ["integer", "string"]},
+              "field_id": {"type": ["integer", "string"]},
+              "details": {"type": "object"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "workloads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["workload", "component_count", "timing", "counters", "metadata"],
+        "properties": {
+          "workload": {"enum": ["no_op", "cds_field", "transform", "coroutine", "exception", "batch", "jit"]},
+          "component_count": {"enum": [0, 1, 100, 1000, 10000]},
+          "timing": {
+            "type": "object",
+            "required": ["total", "user_script", "engine_overhead"],
+            "properties": {
+              "total": {"$ref": "#/$defs/timing"},
+              "user_script": {"anyOf": [{"$ref": "#/$defs/timing"}, {"type": "null"}]},
+              "engine_overhead": {"anyOf": [{"$ref": "#/$defs/timing"}, {"type": "null"}]}
+            },
+            "additionalProperties": false
+          },
+          "counters": {"$ref": "#/$defs/counters"},
+          "metadata": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "runtime_inventory": {
+      "type": "object",
+      "required": ["services", "threads", "watchers", "python_modules", "native_modules"],
+      "properties": {
+        "services": {"type": "array", "items": {"$ref": "#/$defs/inventory-record"}},
+        "threads": {"type": "array", "items": {"$ref": "#/$defs/inventory-record"}},
+        "watchers": {"type": "array", "items": {"$ref": "#/$defs/inventory-record"}},
+        "python_modules": {"type": "array", "items": {"$ref": "#/$defs/inventory-record"}},
+        "native_modules": {"type": "array", "items": {"$ref": "#/$defs/inventory-record"}}
+      },
+      "additionalProperties": false
+    },
+    "performance_windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "sample_count", "first_frame", "last_frame", "dropped_sample_count", "cpu_sections", "gpu_sections", "counters", "metadata"],
+        "properties": {
+          "name": {"enum": ["editor-empty-panels", "inspector-static-target", "inspector-runtime-fields", "inspector-material", "inspector-render-stack", "hidden-panels", "file-manager", "material-preview", "mesh-preview", "prefab-preview", "empty-shadow-off", "empty-shadow-on", "balance-game", "animation-stress", "gpu-particle-stress", "gizmo-selection", "ui-scene"]},
+          "sample_count": {"type": "integer", "minimum": 0},
+          "first_frame": {"type": "integer", "minimum": 0},
+          "last_frame": {"type": "integer", "minimum": 0},
+          "dropped_sample_count": {"type": "integer", "minimum": 0},
+          "cpu_sections": {"type": "object", "additionalProperties": {"$ref": "#/$defs/timing"}},
+          "gpu_sections": {"type": "object", "additionalProperties": {"$ref": "#/$defs/timing"}},
+          "counters": {"$ref": "#/$defs/counters"},
+          "metadata": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message", "severity", "details"],
+        "properties": {
+          "code": {"type": "string"},
+          "message": {"type": "string"},
+          "severity": {"type": "string"},
+          "details": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

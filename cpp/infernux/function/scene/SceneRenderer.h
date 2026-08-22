@@ -6,6 +6,7 @@
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderWorld.h>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux
@@ -30,14 +31,26 @@ struct SceneRendererProfileSnapshot
     double renderables = 0.0;
     double visible = 0.0;
     double drawCalls = 0.0;
+    double cameraCacheHits = 0.0;
+    double cameraCacheMisses = 0.0;
+    double cameraMissWorld = 0.0;
+    double cameraMissStructural = 0.0;
+    double cameraMissTransform = 0.0;
+    double cameraMissMask = 0.0;
+    double cameraMissFrustum = 0.0;
+    double cameraMissViewProjection = 0.0;
+    double conservativeFullListUses = 0.0;
 };
 
 struct CameraDrawCallResult
 {
     std::vector<DrawCall> visibleDrawCalls;
     std::vector<DrawCall> shadowDrawCalls;
+    const std::vector<DrawCall> *visibleDrawCallsRef = nullptr;
     const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Zero-copy ref (valid when cullingMask == all)
     std::shared_ptr<const RenderWorldFrame> worldOwner;        ///< Keeps zero-copy data alive across frame publication.
+    uint64_t visibleListRevision = 0;
+    uint64_t shadowListRevision = 0;
 };
 
 /**
@@ -135,6 +148,36 @@ class SceneRenderer
     RenderWorldSnapshot m_renderWorld;
     std::shared_ptr<const RenderWorldFrame> m_buildOwner;
     std::atomic<size_t> m_visibleCount{0};
+    struct CameraCullCache
+    {
+        uint64_t worldId = 0;
+        uint64_t structuralRevision = 0;
+        uint64_t transformRevision = 0;
+        glm::mat4 viewProjection{1.0f};
+        uint32_t cullingMask = 0xFFFFFFFFu;
+        bool frustumCulling = true;
+        bool usesWorldDrawCalls = false;
+        std::vector<DrawCall> visibleDrawCalls;
+        size_t visibleCount = 0;
+        uint64_t visibleListRevision = 0;
+        std::shared_ptr<const RenderWorldFrame> worldOwner;
+    };
+    struct CoarseCullGroup
+    {
+        size_t proxyStart = 0;
+        size_t proxyCount = 0;
+        AABB worldBounds;
+        uint32_t layerMask = 0;
+    };
+
+    void RebuildCoarseCullGroups(const RenderWorldFrame &world);
+
+    std::unordered_map<uint64_t, CameraCullCache> m_cameraCullCaches;
+    std::vector<CoarseCullGroup> m_coarseCullGroups;
+    uint64_t m_coarseCullWorldId = 0;
+    uint64_t m_coarseCullStructuralRevision = 0;
+    uint64_t m_coarseCullTransformRevision = 0;
+    uint64_t m_nextCameraCullRevision = 1;
 #if INFERNUX_FRAME_PROFILE
     ProfileSnapshot m_profileSnapshot;
 #endif

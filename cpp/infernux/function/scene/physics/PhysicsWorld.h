@@ -27,7 +27,6 @@ namespace JPH
 {
 class PhysicsSystem;
 class TempAllocatorImpl;
-class JobSystemThreadPool;
 class Body;
 class BodyID;
 class Shape;
@@ -39,6 +38,7 @@ namespace infernux
 class GameObject;
 class Collider;
 class Rigidbody;
+class InfernuxJoltJobSystemAdapter;
 
 struct PhysicsBodyPoseUpdate
 {
@@ -201,7 +201,8 @@ class PhysicsWorld
     /// Set allowed degrees-of-freedom (Jolt EAllowedDOFs bitmask). Recalculates mass for the new DOFs.
     void SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float mass);
 
-    /// Set motion quality: 0 = Discrete, 1 = LinearCast (continuous).
+    /// Set collision mode: 0 = Discrete, 1 = Continuous static sweep,
+    /// 2 = ContinuousDynamic with dynamic-pair TOI subdivision.
     void SetBodyMotionQuality(uint32_t bodyId, int quality);
 
     /// Set max angular velocity (rad/s).
@@ -377,7 +378,7 @@ class PhysicsWorld
     bool m_initialized = false;
 
     std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;
-    std::unique_ptr<JPH::JobSystemThreadPool> m_jobSystem;
+    std::unique_ptr<InfernuxJoltJobSystemAdapter> m_jobSystem;
     std::unique_ptr<JPH::PhysicsSystem> m_physicsSystem;
 
     // Layer interfaces (must outlive PhysicsSystem)
@@ -390,7 +391,8 @@ class PhysicsWorld
     // Dense active-body union produced by the latest completed Step().
     std::vector<uint32_t> m_poseReadbackBodyIds;
 
-    // Full Jolt IDs of bodies configured for dynamic continuous collision.
+    // Full Jolt IDs explicitly configured for ContinuousDynamic. Plain
+    // Continuous bodies use Jolt LinearCast without dynamic-pair subdivision.
     std::unordered_set<uint32_t> m_continuousBodyIds;
     size_t m_lastDynamicCCDSplitCount = 0;
 

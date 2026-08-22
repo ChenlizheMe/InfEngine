@@ -58,7 +58,6 @@ def request_semantic_snapshot() -> int:
 def register_editor_ui_tools(mcp) -> None:
     """Register read-only targeting plus input-routed interaction helpers."""
     _register_metadata()
-    set_semantic_capture_enabled(False)
 
     @mcp.tool(name="editor_ui_snapshot")
     def editor_ui_snapshot(
@@ -112,6 +111,20 @@ def register_editor_ui_tools(mcp) -> None:
                 "visible_only": bool(visible_only),
                 "limit": int(limit),
             },
+        )
+
+    @mcp.tool(name="editor_ui_capture_status")
+    def editor_ui_capture_status() -> dict:
+        """Read native semantic-capture sequencing without requesting another frame."""
+        session.require_mode("global_validation")
+        raw = _read_native_snapshot()
+        return ok(
+            {
+                "capture_enabled": bool(raw.get("capture_enabled")),
+                "published_frame": int(raw.get("frame", 0) or 0),
+                "published_request_sequence": int(raw.get("request_sequence", 0) or 0),
+                "capture_state": dict(raw.get("capture_state") or {}),
+            }
         )
 
     @mcp.tool(name="editor_ui_wait_for_target")
@@ -259,8 +272,14 @@ def register_editor_ui_tools(mcp) -> None:
         })
 
     @mcp.tool(name="editor_ui_click")
-    def editor_ui_click(target_id: str, snapshot_id: str, button: str | int = "left", timeout_seconds: float = 3.0) -> dict:
-        """Click through pointer SDL events and observe the resulting rendered UI."""
+    def editor_ui_click(
+        target_id: str,
+        snapshot_id: str,
+        button: str | int = "left",
+        modifier: str | int | None = None,
+        timeout_seconds: float = 3.0,
+    ) -> dict:
+        """Click through SDL, optionally holding one modifier across rendered frames."""
         session.require_mode("global_validation")
         button_index = _pointer_button(button)
         resolved = _resolve_target(target_id, snapshot_id)
@@ -273,14 +292,27 @@ def register_editor_ui_tools(mcp) -> None:
 
         before = _read_interaction_observation()
 
-        input_result = input_tools.perform_pointer_click(
-            float(resolved["center_x"]),
-            float(resolved["center_y"]),
-            button=button_index,
-            timeout_seconds=timeout_seconds,
-            trace_name="editor_ui_click",
-            expected_target_id=str(resolved.get("target_id") or ""),
-        )
+        if modifier is None or str(modifier).strip() == "":
+            input_result = input_tools.perform_pointer_click(
+                float(resolved["center_x"]),
+                float(resolved["center_y"]),
+                button=button_index,
+                timeout_seconds=timeout_seconds,
+                trace_name="editor_ui_click",
+                expected_target_id=str(resolved.get("target_id") or ""),
+            )
+            action_path = "synthetic_sdl_pointer"
+        else:
+            input_result = input_tools.perform_modifier_pointer_click(
+                modifier,
+                float(resolved["center_x"]),
+                float(resolved["center_y"]),
+                button=button_index,
+                timeout_seconds=timeout_seconds,
+                trace_name="editor_ui_click",
+                expected_target_id=str(resolved.get("target_id") or ""),
+            )
+            action_path = "synthetic_sdl_modifier_pointer"
         if not input_result.get("ok"):
             return input_result
         post_action = _wait_for_post_action_observation(
@@ -291,9 +323,10 @@ def register_editor_ui_tools(mcp) -> None:
         return ok({
             "target": resolved,
             "button": button_index,
+            "modifier": modifier,
             "input": input_result.get("data") or {},
             "post_action": post_action,
-            "action_path": "synthetic_sdl_pointer",
+            "action_path": action_path,
         })
 
     @mcp.tool(name="editor_ui_double_click")
@@ -625,22 +658,34 @@ def register_editor_ui_tools(mcp) -> None:
         )
         if not chord_result.get("ok"):
             return chord_result
-        text_result = input_tools.perform_text_input(
-            text,
-            timeout_seconds=timeout_seconds,
-            trace_name="editor_ui_replace_text.type",
-        )
-        if not text_result.get("ok"):
-            return text_result
+        replacement = str(text or "")
+        if replacement:
+            text_result = input_tools.perform_text_input(
+                replacement,
+                timeout_seconds=timeout_seconds,
+                trace_name="editor_ui_replace_text.type",
+            )
+            if not text_result.get("ok"):
+                return text_result
+            action_path = f"{action_path}_and_keyboard"
+        else:
+            text_result = input_tools.perform_key_chord(
+                ["Delete"],
+                timeout_seconds=timeout_seconds,
+                trace_name="editor_ui_replace_text.clear",
+            )
+            if not text_result.get("ok"):
+                return text_result
+            action_path = f"{action_path}_and_keyboard_clear"
         return ok({
             "target": resolved,
-            "text_length": len(str(text or "")),
+            "text_length": len(replacement),
             "focus": focus_result.get("data") or {},
             "focus_confirmation": focus_confirmation,
             "modifier_release": (modifier_release or {}).get("data") or {},
             "select_all": chord_result.get("data") or {},
             "input": text_result.get("data") or {},
-            "action_path": f"{action_path}_and_keyboard",
+            "action_path": action_path,
         })
 
     @mcp.tool(name="editor_ui_hover")
@@ -891,12 +936,14 @@ def _snapshot_payload(
         "frame": int(raw.get("frame", 0) or 0),
         "mouse": list(raw.get("mouse") or [0.0, 0.0]),
         "wants_text_input": bool(raw.get("wants_text_input")),
+        "drag_drop": dict(raw.get("drag_drop") or {}),
         "focused_window": str(raw.get("focused_window") or ""),
         "focused_window_id": str(raw.get("focused_window_id") or ""),
         "rendered_target_count": len(all_targets),
         "matching_target_count": len(targets),
         "filters": filters,
         "targets": targets[:safe_limit],
+        "interaction": _interaction_core_payload(),
         "coverage_notice": (
             "Targets are registered only after ImGui renders them. Native OS dialogs are intentionally outside this "
             "capture; report them as blockers instead of using external UI automation."
@@ -909,6 +956,202 @@ def _snapshot_payload(
             "the label argument filters target labels and is not a snapshot title."
         )
     return payload
+
+
+def _interaction_core_payload() -> dict[str, Any]:
+    """Expose the authoritative interaction state without mutating the Editor."""
+    try:
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        core = EditorInteractionCore.instance()
+        if core is None:
+            return {"available": False}
+
+        focus = core.focus.snapshot
+        selection = core.selection.snapshot
+        primary = selection.primary
+        event = core.shortcuts.last_event
+        route = core.shortcuts.last_result
+        command_result = route.command_result if route is not None else None
+        close = core.close_coordinator
+        close_document = close.active_document
+
+        presentation: dict[str, Any] = {"available": False}
+        try:
+            from Infernux.engine.ui.window_manager import WindowManager
+
+            window_manager = WindowManager.instance()
+            if window_manager is not None:
+                presentation = {
+                    "available": True,
+                    "windows": window_manager.presentation_snapshot(),
+                }
+        except Exception as exc:
+            presentation = {"available": False, "error": str(exc)}
+
+        history: dict[str, Any] = {"available": False}
+        try:
+            from Infernux.engine.undo import UndoManager
+
+            manager = UndoManager.instance()
+            if manager is not None and manager.action_journal is core.action_journal:
+                journal = manager.action_journal
+
+                def _locator_payload(locator) -> Optional[dict[str, str]]:
+                    if locator is None:
+                        return None
+                    return {
+                        "stable_id": str(locator.stable_id),
+                        "kind": locator.key_hint.kind.value,
+                        "resource_path": str(locator.resource_path or ""),
+                        "title": str(locator.title or ""),
+                    }
+
+                def _context_payload(context) -> Optional[dict[str, Any]]:
+                    if context is None:
+                        return None
+                    return {
+                        "panel_id": context.focus.active_panel_id,
+                        "document_id": context.focus.active_document_id,
+                        "document": _locator_payload(context.document),
+                        "scene": _locator_payload(context.scene),
+                        "window": (
+                            {
+                                "window_id": context.window.window_id,
+                                "type_id": context.window.type_id,
+                            }
+                            if context.window is not None
+                            else None
+                        ),
+                    }
+
+                def _entry_payload(entry) -> dict[str, Any]:
+                    action = entry.action
+                    return {
+                        "description": str(getattr(action, "description", "")),
+                        "command_type": type(action).__name__,
+                        "marks_dirty": bool(getattr(action, "marks_dirty", True)),
+                        "origin": entry.origin.value,
+                        "revision": int(entry.revision),
+                        "before_context": _context_payload(entry.before_context),
+                        "after_context": _context_payload(entry.after_context),
+                    }
+
+                history = {
+                    "available": True,
+                    "cursor": journal.cursor,
+                    "entry_count": len(journal.entries),
+                    "can_undo": manager.can_undo,
+                    "can_redo": manager.can_redo,
+                    "undo_description": manager.undo_description,
+                    "redo_description": manager.redo_description,
+                    "replay_pending": manager.is_replay_pending,
+                    "applied_tail": [
+                        _entry_payload(entry)
+                        for entry in journal.applied_entries()[-8:]
+                    ],
+                    "redo_tail": [
+                        _entry_payload(entry)
+                        for entry in journal.entries[journal.cursor : journal.cursor + 8]
+                    ],
+                }
+        except Exception as exc:
+            history = {"available": False, "error": str(exc)}
+
+        def _target_payload(target) -> dict[str, str]:
+            return {
+                "domain": target.domain.value,
+                "target_id": target.target_id,
+                "document_id": target.document_id,
+                "sub_kind": target.sub_kind,
+            }
+
+        return {
+            "available": True,
+            "focus_revision": core.focus.revision,
+            "focus": {
+                "active_panel_id": focus.active_panel_id,
+                "active_view_id": focus.active_view_id,
+                "active_document_id": focus.active_document_id,
+                "child_context_id": focus.child_context_id,
+                "capture_owner_id": focus.capture_owner_id,
+            },
+            "selection_revision": core.selection.revision,
+            "selection": {
+                "owner_id": selection.owner_id,
+                "domain": selection.domain.value if selection.domain is not None else "",
+                "primary": _target_payload(primary) if primary is not None else None,
+                "targets": [_target_payload(target) for target in selection.targets],
+            },
+            "documents": [
+                {
+                    "document_id": document.document_id,
+                    "stable_id": document.stable_id,
+                    "kind": document.kind.value,
+                    "title": document.title,
+                    "resource_path": document.resource_path,
+                    "revision": document.revision,
+                    "saved_revision": document.saved_revision,
+                    "dirty": document.is_dirty,
+                    "state": document.state.value,
+                    "view_ids": sorted(document.view_ids),
+                    "dirty_view_ids": sorted(document.dirty_view_ids),
+                }
+                for document in core.documents.documents
+            ],
+            "close_transaction": {
+                "active": close.is_active,
+                "state": close.state.value,
+                "intent": close.intent.kind.value if close.intent is not None else "",
+                "active_document_id": (
+                    close_document.document_id if close_document is not None else ""
+                ),
+                "active_document_title": (
+                    close_document.title if close_document is not None else ""
+                ),
+                "issue": close.issue.value,
+                "message": close.message,
+            },
+            "history": history,
+            "presentation": presentation,
+            "shortcut": {
+                "route_revision": core.shortcuts.route_revision,
+                "binding_revision": core.shortcuts.revision,
+                "event": (
+                    {
+                        "chord": event.chord.display_name(),
+                        "phase": event.phase.value,
+                        "text_input_active": event.text_input_active,
+                        "modal_active": event.modal_active,
+                        "game_view_captured": event.game_view_captured,
+                    }
+                    if event is not None
+                    else None
+                ),
+                "result": (
+                    {
+                        "status": route.status.value,
+                        "command_id": route.command_id,
+                        "binding_id": route.binding_id,
+                        "conflicts": list(route.conflicts),
+                        "command_status": (
+                            command_result.status.value
+                            if command_result is not None
+                            else ""
+                        ),
+                        "message": (
+                            command_result.message
+                            if command_result is not None
+                            else ""
+                        ),
+                    }
+                    if route is not None
+                    else None
+                ),
+            },
+        }
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
 
 
 def _resolve_target(target_id: str, snapshot_id: str) -> dict[str, Any]:
@@ -1407,6 +1650,11 @@ def _register_metadata() -> None:
     entries = {
         "editor_ui_snapshot": (
             "Read controls rendered by the latest Editor frame; filter arguments are optional target filters.",
+            [],
+            "low",
+        ),
+        "editor_ui_capture_status": (
+            "Read semantic-capture request/completion state without scheduling a GUI frame.",
             [],
             "low",
         ),

@@ -12,14 +12,14 @@ be reused elsewhere.
 
 from __future__ import annotations
 
-import re
 from typing import Dict, Optional
 
 from Infernux.core.anim_state_machine import (
-    AnimStateMachine, AnimState, AnimTransition, evaluate_anim_condition,
+    AnimStateMachine, AnimState, AnimTransition,
 )
 from Infernux.core.animation_timeline import AnimationTimeline, sample_sorted_keys
 from Infernux.debug import Debug
+from Infernux.graph.types import ValueType
 
 _DEFAULT_PERIOD = 1.0  # fallback loop period when a timeline has no duration
 
@@ -89,10 +89,10 @@ class TimelineFSMRuntime:
         self._sorted_keys = None                          # timeline keys sorted once per state
         self._apply_additive: bool = True                 # cached apply_mode test
         self._duration: float = _DEFAULT_PERIOD           # cached timeline duration
-        self._cond_ctx: Dict[str, object] = {}            # reused condition-eval scratch dict
         # Cache against the native lifetime handle, never the wrapper address.
         self._trs_handle = None
         self._trs_setter = None
+        self._last_applied_trs = None
 
     # ── Setup ──────────────────────────────────────────────────────────
     def set_fsm(self, fsm: Optional[AnimStateMachine]):
@@ -110,14 +110,15 @@ class TimelineFSMRuntime:
         self._duration = _DEFAULT_PERIOD
         self._trs_handle = None
         self._trs_setter = None
+        self._last_applied_trs = None
         if fsm is not None:
             for p in fsm.parameters:
-                if p.kind == "bool":
-                    self._params[p.name] = bool(p.default_bool)
-                elif p.kind == "int":
-                    self._params[p.name] = int(p.default_int)
+                if p.value_type.value_type is ValueType.BOOL:
+                    self._params[p.name] = bool(p.default)
+                elif p.value_type.value_type is ValueType.I32:
+                    self._params[p.name] = int(p.default)
                 else:
-                    self._params[p.name] = float(p.default_float)
+                    self._params[p.name] = float(p.default)
 
     @property
     def fsm(self) -> Optional[AnimStateMachine]:
@@ -181,8 +182,13 @@ class TimelineFSMRuntime:
     def stop(self):
         self._playing = False
 
+    @property
+    def needs_update(self) -> bool:
+        """Whether this runtime has simulation work for the current frame."""
+        return self._playing
+
     def update(self, delta_time: float, transform=None):
-        if self._fsm is None or self._timeline is None:
+        if self._fsm is None or self._timeline is None or not self._playing:
             return
         tl = self._timeline
         state = self._state
@@ -257,6 +263,7 @@ class TimelineFSMRuntime:
             self._apply_additive = True
             self._duration = _DEFAULT_PERIOD
         self._capture_base(transform)
+        self._last_applied_trs = None
         if tl is not None:
             self._apply_timeline(tl, 0.0, transform)
         return True
@@ -305,16 +312,24 @@ class TimelineFSMRuntime:
 
             if trs is not None:
                 # Single pybind crossing, no Vector3 objects, one subtree invalidate.
-                trs(px, py, pz, rx, ry, rz, sx, sy, sz)
+                applied = (px, py, pz, rx, ry, rz, sx, sy, sz)
+                if applied == self._last_applied_trs:
+                    return
+                trs(*applied)
+                self._last_applied_trs = applied
                 return
 
             # Fallback for older native builds without set_local_trs.
             V = _Vector3 or _resolve_vector3()
             if V is None:
                 return
+            applied = (px, py, pz, rx, ry, rz, sx, sy, sz)
+            if applied == self._last_applied_trs:
+                return
             transform.local_position = V(px, py, pz)
             transform.local_euler_angles = V(rx, ry, rz)
             transform.local_scale = V(sx, sy, sz)
+            self._last_applied_trs = applied
         except Exception as exc:
             Debug.log_suppressed("TimelineFSMRuntime._apply_timeline", exc)
 
@@ -337,33 +352,29 @@ class TimelineFSMRuntime:
             return
         for tr in transitions:
             if self._evaluate_condition(tr, state):
-                self._consume_triggers(tr.condition)
+                self._consume_triggers(tr)
                 self._enter_state(tr.target_state, transform)
                 return
 
     def _evaluate_condition(self, transition: AnimTransition, state: AnimState) -> bool:
-        cond = transition.condition
-        if not cond or not cond.strip():
+        if not transition.conditions:
             # No explicit condition: advance only when a non-looping timeline ends.
             if self._timeline is None or state.loop:
                 return False
             return self._elapsed >= self._duration
-        cond = cond.strip()
-        # Reuse a persistent scratch dict instead of allocating a new ctx each frame.
-        ctx = self._cond_ctx
-        ctx.clear()
-        ctx.update(self._params)
-        ctx["time"] = self._elapsed
-        ctx["normalized_time"] = self.normalized_time
-        ctx["state"] = self._state_name
-        try:
-            return evaluate_anim_condition(cond, ctx)
-        except Exception as exc:
-            Debug.log_warning(f"[TimelineFSM] Condition error in '{self._state_name}': '{cond}' -> {exc}")
-            return False
+        return bool(
+            self._fsm
+            and self._fsm.evaluate_transition_conditions(
+                transition, self._params
+            )
+        )
 
-    def _consume_triggers(self, condition: str):
-        identifiers = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", condition or ""))
+    def _consume_triggers(self, transition: AnimTransition):
+        names = set(
+            self._fsm.transition_parameter_names(transition)
+            if self._fsm is not None
+            else ()
+        )
         for name, val in list(self._params.items()):
-            if val is True and name in identifiers:
+            if val is True and name in names:
                 self._params[name] = False

@@ -108,9 +108,17 @@ class Material:
         """Return the material document without encoding JSON text."""
         return self._native.serialize_document()
 
+    def serialize_document(self) -> dict:
+        """Return the canonical editor document for this material."""
+        return self.to_dict()
+
     def apply_dict(self, document: dict) -> bool:
         """Transactionally apply a material document."""
         return bool(self._native.deserialize_document(document))
+
+    def deserialize_document(self, document: dict) -> bool:
+        """Apply the canonical editor document transactionally."""
+        return self.apply_dict(document)
 
     @staticmethod
     def _parse_embedded_model_material_path(file_path: str) -> Optional[Tuple[str, int]]:
@@ -467,16 +475,21 @@ class Material:
             return
         try:
             ok = self._native.save()
-            self._last_save_time = time.monotonic()
-            self._save_pending = False
-            Material._pending_saves.pop(id(self), None)
-            if not ok:
+            if ok:
+                self._last_save_time = time.monotonic()
+                self._save_pending = False
+                Material._pending_saves.pop(id(self), None)
+            else:
+                self._save_pending = True
+                Material._pending_saves[id(self)] = self
                 from Infernux.debug import Debug
                 Debug.log_warning(
                     f"Material._auto_save: save() returned False for '{self.name}' "
                     f"(path={file_path})"
                 )
         except Exception as e:
+            self._save_pending = True
+            Material._pending_saves[id(self)] = self
             from Infernux.debug import Debug
             Debug.log_warning(f"Material._auto_save: exception for '{self.name}': {e}")
 
@@ -649,19 +662,6 @@ class Material:
     def get_all_properties(self) -> dict:
         """Get all properties as a dictionary."""
         return self._native.get_all_properties()
-
-    # ==========================================================================
-    # Serialization
-    # ==========================================================================
-
-    def to_dict(self) -> dict:
-        """Serialize material to a dictionary."""
-        return {
-            "name": self.name,
-            "guid": self.guid,
-            "render_queue": self.render_queue,
-            "shader_name": self.shader_name,
-        }
 
     def save(self, file_path: str) -> bool:
         """Save material to a .mat file."""

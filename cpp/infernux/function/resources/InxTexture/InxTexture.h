@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,27 @@ struct TextureCpuData
     [[nodiscard]] bool IsValid() const noexcept
     {
         return !mipLevels.empty() && !bytes.empty();
+    }
+};
+
+/// Lightweight description of an imported texture artifact. Runtime texture
+/// objects retain this metadata, never the texel payload used during upload.
+struct TextureArtifactDescription
+{
+    TextureDimension dimension = TextureDimension::Texture2D;
+    TextureSemantic semantic = TextureSemantic::Color;
+    TextureFormat format = TextureFormat::Rgba8Srgb;
+    std::vector<TextureMipLevel> mipLevels;
+    std::array<float, 16> bakeBasis = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    std::array<float, 4> valueMin = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> valueMax = {1.0f, 1.0f, 1.0f, 1.0f};
+    uint64_t payloadBytes = 0;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return !mipLevels.empty() && payloadBytes != 0;
     }
 };
 
@@ -226,7 +248,7 @@ class InxTexture
 
     [[nodiscard]] bool IsSrgb() const
     {
-        return m_cpuData ? TextureFormatIsSrgb(m_cpuData->format) : m_srgb;
+        return m_hasArtifactDescription ? TextureFormatIsSrgb(m_format) : m_srgb;
     }
     void SetSrgb(bool srgb)
     {
@@ -292,39 +314,73 @@ class InxTexture
 
     [[nodiscard]] TextureDimension GetDimension() const noexcept
     {
-        return m_cpuData ? m_cpuData->dimension : TextureDimension::Texture2D;
+        return m_dimension;
     }
     [[nodiscard]] TextureSemantic GetSemantic() const noexcept
     {
-        return m_cpuData ? m_cpuData->semantic : TextureSemantic::Color;
+        return m_semantic;
     }
     [[nodiscard]] TextureFormat GetFormat() const noexcept
     {
-        return m_cpuData ? m_cpuData->format : (m_srgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm);
+        return m_hasArtifactDescription ? m_format : (m_srgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm);
+    }
+    [[nodiscard]] uint32_t GetPixelWidth() const noexcept
+    {
+        return m_width;
+    }
+    [[nodiscard]] uint32_t GetPixelHeight() const noexcept
+    {
+        return m_height;
+    }
+    [[nodiscard]] uint32_t GetPixelDepth() const noexcept
+    {
+        return m_depth;
+    }
+    [[nodiscard]] uint32_t GetMipCount() const noexcept
+    {
+        return m_mipCount;
+    }
+    [[nodiscard]] const std::array<float, 16> &GetBakeBasis() const noexcept
+    {
+        return m_bakeBasis;
+    }
+    [[nodiscard]] const std::array<float, 4> &GetValueMin() const noexcept
+    {
+        return m_valueMin;
+    }
+    [[nodiscard]] const std::array<float, 4> &GetValueMax() const noexcept
+    {
+        return m_valueMax;
     }
 
     void ApplyImportSettings(const InxResourceMeta &metadata);
 
-    [[nodiscard]] const std::shared_ptr<const TextureCpuData> &GetCpuData() const noexcept
-    {
-        return m_cpuData;
-    }
     [[nodiscard]] uint64_t GetGeneration() const noexcept
     {
         return m_generation;
     }
-    void SetCpuData(std::shared_ptr<const TextureCpuData> cpuData)
+    void SetArtifactDescription(const TextureArtifactDescription &description)
     {
-        m_cpuData = std::move(cpuData);
+        if (!description.IsValid())
+            throw std::invalid_argument("texture artifact description is invalid");
+        m_dimension = description.dimension;
+        m_semantic = description.semantic;
+        m_format = description.format;
+        m_bakeBasis = description.bakeBasis;
+        m_valueMin = description.valueMin;
+        m_valueMax = description.valueMax;
+        m_mipCount = static_cast<uint32_t>(description.mipLevels.size());
+        m_width = description.mipLevels.front().width;
+        m_height = description.mipLevels.front().height;
+        m_depth = description.mipLevels.front().depth;
+        m_hasArtifactDescription = true;
         ++m_generation;
     }
 
     // ── Clone (Unity-style Object.Instantiate) ─────────────────────────────
 
-    /// @brief Create a copy of this texture metadata (import settings).
-    /// GPU pixel data is NOT duplicated — the clone references the same
-    /// underlying image file.  Matches Unity behavior where Instantiate
-    /// on a Texture2D copies the CPU-side metadata.
+    /// @brief Create a copy of this texture's identity-independent metadata.
+    /// Pixel payload is never copied or retained by a runtime clone.
     [[nodiscard]] std::shared_ptr<InxTexture> Clone() const;
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
 
@@ -341,7 +397,19 @@ class InxTexture
     std::string m_filterMode = "bilinear"; // "point", "bilinear", "trilinear"
     std::string m_wrapMode = "repeat";     // "repeat", "clamp", "mirror"
     int m_anisoLevel = -1;                 // -1 = device max, 0 = off, 1-16 = explicit
-    std::shared_ptr<const TextureCpuData> m_cpuData;
+    TextureDimension m_dimension = TextureDimension::Texture2D;
+    TextureSemantic m_semantic = TextureSemantic::Color;
+    TextureFormat m_format = TextureFormat::Rgba8Srgb;
+    uint32_t m_width = 0;
+    uint32_t m_height = 0;
+    uint32_t m_depth = 1;
+    uint32_t m_mipCount = 0;
+    std::array<float, 16> m_bakeBasis = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    std::array<float, 4> m_valueMin = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> m_valueMax = {1.0f, 1.0f, 1.0f, 1.0f};
+    bool m_hasArtifactDescription = false;
     uint64_t m_generation = 0;
 };
 

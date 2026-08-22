@@ -227,7 +227,12 @@ bool ParticleGpuMeshRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &enco
                                               usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
-    if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
+    const bool usesBindlessTextures =
+        m_surface.UsesBindlessTextures() &&
+        (pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus);
+    const auto bindlessTable = m_surface.BindlessTableBinding();
+    if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid() ||
+        (usesBindlessTextures && !bindlessTable.IsValid()))
         return false;
     auto constants = view;
     constants.materialTint = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -238,6 +243,10 @@ bool ParticleGpuMeshRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &enco
     encoder.BindGroup(pipeline, 0, geometryGroup);
     encoder.BindGroup(pipeline, 1, usesPerViewBindings ? perView.group : m_emptyGroup);
     encoder.BindGroup(pipeline, 2, surfaceGroup);
+    if (usesBindlessTextures) {
+        encoder.BindGroup(pipeline, 3, bindlessTable.group);
+        m_surface.MarkBindlessTexturesUsed();
+    }
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
@@ -277,7 +286,7 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
                                              const MaterialPassPipelineDescriptor &pass,
                                              rhi::BindingLayoutHandle perViewLayout)
 {
-    if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
+    if ((!pass.UsesDynamicRendering() && !renderTargetLayout.IsValid()) || !pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
          pass.target != ShaderCompileTarget::Shadow && pass.target != ShaderCompileTarget::Picking &&
          pass.target != ShaderCompileTarget::Motion)) {
@@ -309,11 +318,12 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
                           : picking ? m_pickingFragmentShader
                           : shadow  ? m_shadowFragmentShader
                                     : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
-    desc.renderTargetLayout = renderTargetLayout;
+    pass.ApplyRenderingContract(desc, renderTargetLayout);
     desc.raster.cullMode = rhi::CullMode::Back;
     desc.raster.frontFace = rhi::FrontFace::Clockwise;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
-    desc.depth.writeEnabled = state.depthWriteEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.writeEnabled =
+        state.depthWriteEnabled && !pass.depthReadOnly && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];
@@ -324,7 +334,10 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
     desc.bindingLayouts[0] = m_geometryLayout;
     desc.bindingLayouts[1] = usesPerViewBindings ? perViewLayout : m_emptyLayout;
     desc.bindingLayouts[2] = m_surface.Layout();
-    desc.bindingLayoutCount = 3;
+    const bool usesBindlessTextures = !picking && !shadow && !motion && m_surface.UsesBindlessTextures();
+    if (usesBindlessTextures)
+        desc.bindingLayouts[3] = m_surface.BindlessTableBinding().layout;
+    desc.bindingLayoutCount = usesBindlessTextures ? 4 : 3;
     desc.pushConstantStages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(GpuParticleViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);

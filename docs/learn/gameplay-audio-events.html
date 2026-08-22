@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Drive AudioSource from gameplay state and keep one-off reactions separate from per-frame polling.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-audio-events.html">
+    <title>Audio and gameplay signals · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="gameplay.html"><span data-page-language="en">Build gameplay with Python</span><span data-page-language="zh" lang="zh-CN" hidden>用 Python 实现游戏逻辑</span></a><span class="learn-chapter-position"><span data-page-language="en">Gameplay course · 7/8</span><span data-page-language="zh" lang="zh-CN" hidden>游戏逻辑课程 · 7/8</span></span><a href="gameplay-audio-events.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Gameplay · Chapter 7</span></p>
+<h1 id="audio-and-gameplay-signals">Audio and gameplay signals</h1>
+<p>Audio feedback is most useful at the moment gameplay state changes: a collision begins, a button confirms an action, or an objective completes. In this chapter you will configure the real multi-track <code>AudioSource</code> API, play a looping track, and route a collision callback to a pooled one-shot sound without polling for the same event in <code>update()</code>.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#audio-model">AudioSource model</a><a href="#editor-setup">Editor setup</a><a href="#complete-component">Complete component</a><a href="#one-shot-signals">One-shot signals</a><a href="#public-api">Public API</a><a href="#verify">Verify the result</a><a href="#common-errors">Common errors</a><a href="#next">Next chapter</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-audio-events.webp" alt="diagram separating per-frame state observation from one-shot audio, UI, and gameplay reactions" loading="lazy" decoding="async">
+  <figcaption>Observe continuous state where necessary, then send one clear reaction when the state changes.</figcaption>
+</figure>
+
+<h2 id="audio-model">Understand the AudioSource model</h2>
+<p>Infernux <code>AudioSource</code> is a multi-track component. It has no single <code>clip</code> property. Set <code>track_count</code>, assign clips with <code>set_track_clip(index, clip)</code> or <code>set_track_clip_by_guid(index, guid)</code>, and control each zero-based track with <code>play(index)</code>, <code>pause(index)</code>, <code>un_pause(index)</code>, and <code>stop(index)</code>.</p>
+<p>All tracks share the source-level <code>volume</code>, <code>pitch</code>, <code>mute</code>, <code>loop</code>, <code>min_distance</code>, <code>max_distance</code>, and <code>output_bus</code> settings. Each track also has its own volume. The effective track level therefore includes both <code>source.volume</code> and <code>source.get_track_volume(index)</code>.</p>
+<p>Short gameplay sounds use <code>play_one_shot(clip, volume_scale)</code>. The source owns a pool of transient voices, so several hits can overlap without creating temporary GameObjects or consuming persistent tracks. <code>one_shot_pool_size</code> controls the maximum concurrent one-shot voices and defaults to 8.</p>
+<p>An <code>AudioListener</code> must exist in the scene. For screen-centered or effectively 2D sound, keep the source on or near the listener. Distance attenuation starts at <code>min_distance</code> and reaches its minimum at <code>max_distance</code>.</p>
+<h2 id="editor-setup">Prepare the scene</h2>
+<p>This walkthrough builds on the collision scene from Chapter 5.</p>
+<ol>
+<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. The current runtime wrapper reliably supports WAV decoding.</li>
+<li>Select the main camera and add an <strong>AudioListener</strong> component. Keep one active listener in the scene.</li>
+<li>Select the player and add an <strong>AudioSource</strong> component. Leave <strong>Track Count</strong> at <code>1</code>; the script will assign track 0. Disable <strong>Play On Awake</strong> because the script starts playback after loading the clip.</li>
+<li>Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. <code>on_collision_enter()</code> requires a real collision pair.</li>
+<li>Create <code>Assets/Scripts/gameplay_audio.py</code>, paste the component below, and attach <code>GameplayAudio</code> to the same player GameObject as the AudioSource.</li>
+</ol>
+<p>The AudioSource Inspector exposes source settings first, followed by a <strong>Tracks</strong> section. Each track has a Clip reference and Volume slider. During Play mode it also shows a Play/Stop control and status. This tutorial assigns the clips in code so the complete example has one reproducible setup path.</p>
+<h2 id="complete-component">Build the complete component</h2>
+<pre><code class="language-python">from Infernux.components import AudioSource, InxComponent
+from Infernux.core import AudioClip
+from Infernux.debug import Debug
+
+
+class GameplayAudio(InxComponent):
+    def awake(self):
+        self._source = None
+        self._music_clip = None
+        self._hit_clip = None
+
+    def start(self):
+        self._source = self.game_object.get_component(AudioSource)
+        if self._source is None:
+            Debug.log_error(&quot;GameplayAudio requires an AudioSource.&quot;, self)
+            return
+
+        self._music_clip = AudioClip.load(&quot;Assets/Audio/music_loop.wav&quot;)
+        self._hit_clip = AudioClip.load(&quot;Assets/Audio/hit.wav&quot;)
+        if self._music_clip is None or self._hit_clip is None:
+            Debug.log_error(&quot;Could not load the gameplay WAV files.&quot;, self)
+            return
+
+        self._source.track_count = 1
+        self._source.volume = 0.8
+        self._source.loop = True
+        self._source.play_on_awake = False
+        self._source.one_shot_pool_size = 8
+        self._source.set_track_clip(0, self._music_clip)
+        self._source.set_track_volume(0, 0.35)
+        self._source.play(0)
+
+    def on_collision_enter(self, collision):
+        self.play_hit()
+
+    def play_hit(self):
+        &quot;&quot;&quot;A public one-shot reaction; a UI Button may call this too.&quot;&quot;&quot;
+        if self._source is not None and self._hit_clip is not None:
+            self._source.play_one_shot(self._hit_clip, 0.9)
+
+    def on_destroy(self):
+        if self._source is not None:
+            self._source.stop_all()
+        if self._music_clip is not None:
+            self._music_clip.unload()
+        if self._hit_clip is not None:
+            self._hit_clip.unload()
+</code></pre>
+<p><code>AudioClip.load()</code> returns an <code>AudioClip</code> or <code>None</code>. Keep the wrapper referenced while its track or one-shot may still use the native clip. The cleanup stops all persistent tracks and one-shots before unloading the clips.</p>
+<p>Track 0 carries long-lived music. The hit sound does not replace track 0, and repeated collision entries can overlap through the one-shot pool. <code>loop</code> applies to the source's persistent tracks; use one-shots for transient reactions.</p>
+<h2 id="one-shot-signals">Send one reaction per signal</h2>
+<p><code>on_collision_enter()</code> is already a transition callback. It runs when contact begins, so it is the correct place to emit one hit sound. <code>on_collision_stay()</code> runs on every fixed-update while contact continues and would repeatedly consume one-shot voices.</p>
+<p>The same rule applies when a system only exposes continuous state. Remember the previous state and react only on the edge:</p>
+<pre><code class="language-python">def awake(self):
+    self._was_complete = False
+
+def update(self, delta_time):
+    is_complete = self.objective_progress &gt;= 1.0
+    if is_complete and not self._was_complete:
+        self.play_hit()
+    self._was_complete = is_complete
+</code></pre>
+<p>When an existing event is available, call <code>play_hit()</code> directly from that event. A UI Button from Chapter 6 can bind the same public method. This keeps the sound, UI change, and gameplay consequence attached to one state transition.</p>
+<h2 id="public-api">AudioSource public API</h2>
+<p>The following members are declared by the current Python wrapper and type stub.</p>
+<table>
+<thead>
+<tr>
+<th>Member</th>
+<th>Current behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>track_count: int</code></td>
+<td>Number of persistent tracks. Inspector range: 1–16; default: 1.</td>
+</tr>
+<tr>
+<td><code>volume: float</code></td>
+<td>Source-level volume shared by all tracks. Inspector range: 0–1; default: 1.</td>
+</tr>
+<tr>
+<td><code>pitch: float</code></td>
+<td>Source pitch multiplier. Inspector range: 0.1–3; default: 1.</td>
+</tr>
+<tr>
+<td><code>mute: bool</code></td>
+<td>Mutes all tracks.</td>
+</tr>
+<tr>
+<td><code>loop: bool</code></td>
+<td>Loops persistent tracks.</td>
+</tr>
+<tr>
+<td><code>play_on_awake: bool</code></td>
+<td>Automatically plays track 0 when the component starts.</td>
+</tr>
+<tr>
+<td><code>min_distance</code>, <code>max_distance</code></td>
+<td>Start and end distances for spatial attenuation.</td>
+</tr>
+<tr>
+<td><code>one_shot_pool_size: int</code></td>
+<td>Maximum concurrent pooled one-shot voices; script-only in the current Inspector.</td>
+</tr>
+<tr>
+<td><code>output_bus: str</code></td>
+<td>Output bus name; script-only in the current Inspector.</td>
+</tr>
+<tr>
+<td><code>is_playing</code>, <code>is_paused</code></td>
+<td>Read-only convenience state for track 0.</td>
+</tr>
+<tr>
+<td><code>game_object_id</code></td>
+<td>Read-only owning GameObject ID.</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set_track_clip(i, clip)</code></td>
+<td>Assign a Python <code>AudioClip</code>, native clip, or <code>None</code> to zero-based track <code>i</code>.</td>
+</tr>
+<tr>
+<td><code>get_track_clip(i)</code></td>
+<td>Return the native clip assigned to track <code>i</code>, or <code>None</code>.</td>
+</tr>
+<tr>
+<td><code>set_track_clip_by_guid(i, guid)</code></td>
+<td>Resolve and assign a registered audio asset; an empty GUID clears it.</td>
+</tr>
+<tr>
+<td><code>get_track_clip_guid(i)</code></td>
+<td>Return the assigned asset GUID, or an empty string.</td>
+</tr>
+<tr>
+<td><code>set_track_volume(i, volume)</code> / <code>get_track_volume(i)</code></td>
+<td>Write or read the per-track volume.</td>
+</tr>
+<tr>
+<td><code>play(i=0)</code> / <code>stop(i=0)</code></td>
+<td>Start or stop one persistent track.</td>
+</tr>
+<tr>
+<td><code>pause(i=0)</code> / <code>un_pause(i=0)</code></td>
+<td>Pause or resume one persistent track.</td>
+</tr>
+<tr>
+<td><code>is_track_playing(i)</code> / <code>is_track_paused(i)</code></td>
+<td>Query one track.</td>
+</tr>
+<tr>
+<td><code>play_one_shot(clip, volume_scale=1.0)</code></td>
+<td>Play a transient clip through the source's voice pool.</td>
+</tr>
+<tr>
+<td><code>stop_one_shots()</code></td>
+<td>Stop every active pooled one-shot voice.</td>
+</tr>
+<tr>
+<td><code>stop_all()</code></td>
+<td>Stop all persistent tracks and all one-shots.</td>
+</tr>
+<tr>
+<td><code>serialize()</code> / <code>deserialize(json_str)</code></td>
+<td>Export or restore the component's JSON representation.</td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>set_track_clip_by_guid()</code> for authored asset references when the AssetRegistry/AssetDatabase is initialized. For a direct runtime load, use <code>AudioClip.load(path)</code> followed by <code>set_track_clip()</code> as in the example.</p>
+<h2 id="verify">Verify the result</h2>
+<ol>
+<li>Enter Play mode. Track 0 should begin and continue looping at a quieter level than the source volume.</li>
+<li>Move the player into the obstacle. <code>hit.wav</code> should play once when contact begins.</li>
+<li>Separate the colliders and collide again. A second hit should play. Holding the colliders together should produce no repeated hit.</li>
+<li>Trigger several distinct collisions quickly. Overlapping hit sounds should use the one-shot pool while music continues on track 0.</li>
+<li>Select the player during Play mode. The Track 0 status should read <strong>Playing</strong>. Stop Play mode and confirm that no clip-loading error appears in Console.</li>
+</ol>
+<p>For a quick API check, add temporary logs for <code>self._source.is_track_playing(0)</code>, <code>self._music_clip.duration</code>, and <code>self._hit_clip.channels</code>, then remove them after verification.</p>
+<h2 id="common-errors">Common errors</h2>
+<ul>
+<li><strong>Using <code>source.clip</code></strong>: this property is not public. Assign a numbered track with <code>set_track_clip()</code>.</li>
+<li><strong>Loading MP3 or OGG based on old UI text</strong>: the current reliable decode path is WAV. Convert the tutorial clips to WAV.</li>
+<li><strong>Unloading too early</strong>: keep each <code>AudioClip</code> wrapper alive until every source using it has stopped.</li>
+<li><strong>Playing in <code>on_collision_stay()</code></strong>: this callback repeats each fixed step. Use <code>on_collision_enter()</code> for one sound per contact.</li>
+<li><strong>No sound in the scene</strong>: confirm that one active AudioListener exists, the clip loaded, the source is not muted, and the source is inside the attenuation range.</li>
+<li><strong>Every new hit cuts off an older hit</strong>: increase <code>one_shot_pool_size</code> to the concurrency your game needs, with a deliberate upper bound.</li>
+<li><strong>Expecting <code>is_playing</code> to summarize every voice</strong>: it reports track 0. Query another persistent track with <code>is_track_playing(i)</code>; one-shot state has no public per-voice query.</li>
+<li><strong>Calling <code>play_on_awake</code> after a runtime assignment and waiting for it to fire</strong>: automatic playback belongs to component start. Call <code>play(0)</code> after assigning a clip at runtime.</li>
+</ul>
+<h2 id="next">Next: multi-frame sequences</h2>
+<p>Audio reactions are instantaneous signals. The next chapter uses Unity-style generator coroutines to express reactions that unfold across frames: delays, fixed-step handoffs, frame-end work, conditions, cancellation, and child sequences.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">游戏玩法 · 第 7 章</span></p>
+<h1 id="_1">音频与游戏信号</h1>
+<p>音频反馈最适合出现在游戏状态发生变化的时刻，例如碰撞开始、按钮确认操作或目标完成。本章会配置当前真实的多轨 <code>AudioSource</code> API，播放一条循环轨道，并让碰撞回调触发池化的一次性音效，无需在 <code>update()</code> 中反复检查同一事件。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-audio-model">AudioSource 模型</a><a href="#zh-editor-setup">编辑器设置</a><a href="#zh-complete-component">完整组件</a><a href="#zh-one-shot-signals">一次性信号</a><a href="#zh-public-api">公开 API</a><a href="#zh-verify">验证结果</a><a href="#zh-common-errors">常见错误</a><a href="#zh-next">下一章</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-audio-events.webp" alt="将逐帧状态观察与一次性音频、UI 和玩法反应分开的示意图" loading="lazy" decoding="async">
+  <figcaption>持续状态可按需观察；状态变化时只发送一次清晰的反应。</figcaption>
+</figure>
+
+<h2 id="zh-audio-model">理解 AudioSource 模型</h2>
+<p>Infernux 的 <code>AudioSource</code> 是多轨组件，没有单一的 <code>clip</code> 属性。先设置 <code>track_count</code>，再用 <code>set_track_clip(index, clip)</code> 或 <code>set_track_clip_by_guid(index, guid)</code> 分配音频。轨道索引从 0 开始，可用 <code>play(index)</code>、<code>pause(index)</code>、<code>un_pause(index)</code> 和 <code>stop(index)</code> 分别控制。</p>
+<p>所有轨道共享 <code>volume</code>、<code>pitch</code>、<code>mute</code>、<code>loop</code>、<code>min_distance</code>、<code>max_distance</code> 与 <code>output_bus</code>。每条轨道还有独立音量，因此最终轨道音量同时受 <code>source.volume</code> 和 <code>source.get_track_volume(index)</code> 影响。</p>
+<p>短促的游戏音效使用 <code>play_one_shot(clip, volume_scale)</code>。音源内部持有瞬时声部池，多次命中可以重叠播放，无需创建临时 GameObject，也不会占用持续轨道。<code>one_shot_pool_size</code> 控制一次性声部的最大并发数，默认值为 8。</p>
+<p>场景中必须存在 <code>AudioListener</code>。屏幕中心音效或近似 2D 的音效可把音源放在监听器附近。距离衰减从 <code>min_distance</code> 开始，在 <code>max_distance</code> 处达到最低音量。</p>
+<h2 id="zh-editor-setup">准备场景</h2>
+<p>以下步骤沿用第 5 章的碰撞场景。</p>
+<ol>
+<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。当前运行时封装可稳定解码 WAV。</li>
+<li>选择主摄像机，添加 <strong>AudioListener</strong> 组件。场景中保留一个启用的监听器。</li>
+<li>选择玩家，添加 <strong>AudioSource</strong> 组件。<strong>Track Count</strong> 保持 <code>1</code>，脚本会设置轨道 0。关闭 <strong>Play On Awake</strong>，脚本会在音频加载完成后启动播放。</li>
+<li>保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。<code>on_collision_enter()</code> 需要有效的碰撞组合。</li>
+<li>创建 <code>Assets/Scripts/gameplay_audio.py</code>，粘贴下面的组件，再把 <code>GameplayAudio</code> 挂到 AudioSource 所在的玩家 GameObject。</li>
+</ol>
+<p>AudioSource Inspector 先显示音源级设置，后面是 <strong>Tracks</strong> 区域。每条轨道都有 Clip 引用和 Volume 滑块；Play 模式下还会显示 Play/Stop 控件与状态。本教程在代码中分配音频，便于完整复现。</p>
+<h2 id="zh-complete-component">编写完整组件</h2>
+<pre><code class="language-python">from Infernux.components import AudioSource, InxComponent
+from Infernux.core import AudioClip
+from Infernux.debug import Debug
+
+
+class GameplayAudio(InxComponent):
+    def awake(self):
+        self._source = None
+        self._music_clip = None
+        self._hit_clip = None
+
+    def start(self):
+        self._source = self.game_object.get_component(AudioSource)
+        if self._source is None:
+            Debug.log_error(&quot;GameplayAudio requires an AudioSource.&quot;, self)
+            return
+
+        self._music_clip = AudioClip.load(&quot;Assets/Audio/music_loop.wav&quot;)
+        self._hit_clip = AudioClip.load(&quot;Assets/Audio/hit.wav&quot;)
+        if self._music_clip is None or self._hit_clip is None:
+            Debug.log_error(&quot;Could not load the gameplay WAV files.&quot;, self)
+            return
+
+        self._source.track_count = 1
+        self._source.volume = 0.8
+        self._source.loop = True
+        self._source.play_on_awake = False
+        self._source.one_shot_pool_size = 8
+        self._source.set_track_clip(0, self._music_clip)
+        self._source.set_track_volume(0, 0.35)
+        self._source.play(0)
+
+    def on_collision_enter(self, collision):
+        self.play_hit()
+
+    def play_hit(self):
+        &quot;&quot;&quot;公开的一次性反应；UI Button 也可以调用它。&quot;&quot;&quot;
+        if self._source is not None and self._hit_clip is not None:
+            self._source.play_one_shot(self._hit_clip, 0.9)
+
+    def on_destroy(self):
+        if self._source is not None:
+            self._source.stop_all()
+        if self._music_clip is not None:
+            self._music_clip.unload()
+        if self._hit_clip is not None:
+            self._hit_clip.unload()
+</code></pre>
+<p><code>AudioClip.load()</code> 返回 <code>AudioClip</code> 或 <code>None</code>。轨道或一次性音效仍可能使用原生音频时，需要保留 Python 封装引用。清理阶段先停止全部持续轨道和一次性音效，再卸载音频。</p>
+<p>轨道 0 承载持续音乐。命中音效不会替换轨道 0，多次碰撞进入可通过一次性声部池重叠播放。<code>loop</code> 作用于音源的持续轨道；瞬时反应适合使用一次性播放。</p>
+<h2 id="zh-one-shot-signals">每个信号只发送一次反应</h2>
+<p><code>on_collision_enter()</code> 本身就是状态变化回调，只在接触开始时运行，适合发出一次命中音效。<code>on_collision_stay()</code> 会在接触持续期间的每次固定更新中运行，容易连续占用一次性声部。</p>
+<p>某些系统只提供连续状态时，可以保存上一帧状态，只在变化边沿执行反应：</p>
+<pre><code class="language-python">def awake(self):
+    self._was_complete = False
+
+def update(self, delta_time):
+    is_complete = self.objective_progress &gt;= 1.0
+    if is_complete and not self._was_complete:
+        self.play_hit()
+    self._was_complete = is_complete
+</code></pre>
+<p>已有事件入口时，直接从事件调用 <code>play_hit()</code>。第 6 章的 UI Button 也能绑定这个公开方法。音效、UI 更新和玩法结果便可归到同一次状态变化中。</p>
+<h2 id="zh-public-api">AudioSource 公开 API</h2>
+<p>下表来自当前 Python 封装与类型声明。</p>
+<table>
+<thead>
+<tr>
+<th>成员</th>
+<th>当前行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>track_count: int</code></td>
+<td>持续轨道数量。Inspector 范围为 1–16，默认值为 1。</td>
+</tr>
+<tr>
+<td><code>volume: float</code></td>
+<td>所有轨道共享的音源音量。Inspector 范围为 0–1，默认值为 1。</td>
+</tr>
+<tr>
+<td><code>pitch: float</code></td>
+<td>音源音高倍率。Inspector 范围为 0.1–3，默认值为 1。</td>
+</tr>
+<tr>
+<td><code>mute: bool</code></td>
+<td>静音全部轨道。</td>
+</tr>
+<tr>
+<td><code>loop: bool</code></td>
+<td>让持续轨道循环播放。</td>
+</tr>
+<tr>
+<td><code>play_on_awake: bool</code></td>
+<td>组件启动时自动播放轨道 0。</td>
+</tr>
+<tr>
+<td><code>min_distance</code>、<code>max_distance</code></td>
+<td>空间衰减的起始与结束距离。</td>
+</tr>
+<tr>
+<td><code>one_shot_pool_size: int</code></td>
+<td>池化一次性声部的最大并发数；当前 Inspector 不显示。</td>
+</tr>
+<tr>
+<td><code>output_bus: str</code></td>
+<td>输出总线名称；当前 Inspector 不显示。</td>
+</tr>
+<tr>
+<td><code>is_playing</code>、<code>is_paused</code></td>
+<td>轨道 0 的只读便捷状态。</td>
+</tr>
+<tr>
+<td><code>game_object_id</code></td>
+<td>所属 GameObject 的只读 ID。</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set_track_clip(i, clip)</code></td>
+<td>给索引为 <code>i</code> 的轨道分配 Python <code>AudioClip</code>、原生音频或 <code>None</code>。</td>
+</tr>
+<tr>
+<td><code>get_track_clip(i)</code></td>
+<td>返回轨道 <code>i</code> 的原生音频；未分配时返回 <code>None</code>。</td>
+</tr>
+<tr>
+<td><code>set_track_clip_by_guid(i, guid)</code></td>
+<td>解析并分配已注册音频资源；空 GUID 会清除轨道。</td>
+</tr>
+<tr>
+<td><code>get_track_clip_guid(i)</code></td>
+<td>返回轨道资源 GUID；未分配时返回空字符串。</td>
+</tr>
+<tr>
+<td><code>set_track_volume(i, volume)</code> / <code>get_track_volume(i)</code></td>
+<td>写入或读取单轨音量。</td>
+</tr>
+<tr>
+<td><code>play(i=0)</code> / <code>stop(i=0)</code></td>
+<td>启动或停止一条持续轨道。</td>
+</tr>
+<tr>
+<td><code>pause(i=0)</code> / <code>un_pause(i=0)</code></td>
+<td>暂停或恢复一条持续轨道。</td>
+</tr>
+<tr>
+<td><code>is_track_playing(i)</code> / <code>is_track_paused(i)</code></td>
+<td>查询指定轨道。</td>
+</tr>
+<tr>
+<td><code>play_one_shot(clip, volume_scale=1.0)</code></td>
+<td>通过音源的声部池播放瞬时音频。</td>
+</tr>
+<tr>
+<td><code>stop_one_shots()</code></td>
+<td>停止当前全部一次性音效。</td>
+</tr>
+<tr>
+<td><code>stop_all()</code></td>
+<td>停止全部持续轨道和一次性音效。</td>
+</tr>
+<tr>
+<td><code>serialize()</code> / <code>deserialize(json_str)</code></td>
+<td>导出或恢复组件的 JSON 表示。</td>
+</tr>
+</tbody>
+</table>
+<p>AssetRegistry/AssetDatabase 已初始化时，可用 <code>set_track_clip_by_guid()</code> 处理已编辑资源引用。运行时按路径直接加载时，使用示例中的 <code>AudioClip.load(path)</code> 和 <code>set_track_clip()</code>。</p>
+<h2 id="zh-verify">验证结果</h2>
+<ol>
+<li>进入 Play 模式。轨道 0 应开始循环，音量低于音源总音量。</li>
+<li>让玩家撞上障碍物。接触开始时，<code>hit.wav</code> 应播放一次。</li>
+<li>分开两个 Collider，再次碰撞。应听到第二次音效；持续贴住时不会重复播放。</li>
+<li>快速制造多次独立碰撞。命中音效应通过一次性声部池重叠，轨道 0 的音乐继续播放。</li>
+<li>Play 模式下选择玩家，轨道 0 状态应显示 <strong>Playing</strong>。停止 Play 模式，确认 Console 中没有音频加载错误。</li>
+</ol>
+<p>需要快速核对 API 时，可临时记录 <code>self._source.is_track_playing(0)</code>、<code>self._music_clip.duration</code> 与 <code>self._hit_clip.channels</code>，验证后删除日志。</p>
+<h2 id="zh-common-errors">常见错误</h2>
+<ul>
+<li><strong>使用 <code>source.clip</code></strong>：当前公开 API 没有这个属性。请用 <code>set_track_clip()</code> 分配编号轨道。</li>
+<li><strong>根据旧界面文字加载 MP3 或 OGG</strong>：当前稳定解码路径为 WAV。请先转换教程音频。</li>
+<li><strong>过早卸载</strong>：每个音频的所有使用者停止后，再调用 <code>unload()</code>。</li>
+<li><strong>在 <code>on_collision_stay()</code> 中播放</strong>：该回调每个固定步都会运行。一次接触一次音效应使用 <code>on_collision_enter()</code>。</li>
+<li><strong>场景中没有声音</strong>：检查是否存在一个启用的 AudioListener、音频是否加载成功、音源是否静音，以及音源是否位于衰减范围内。</li>
+<li><strong>新命中会截断旧音效</strong>：按游戏实际并发需求提高 <code>one_shot_pool_size</code>，同时设置明确上限。</li>
+<li><strong>用 <code>is_playing</code> 汇总全部声部</strong>：该属性只报告轨道 0。其他持续轨道用 <code>is_track_playing(i)</code> 查询；当前公开 API 没有单个一次性声部状态查询。</li>
+<li><strong>运行时分配音频后等待 <code>play_on_awake</code> 生效</strong>：自动播放发生在组件启动阶段。运行时分配完成后请调用 <code>play(0)</code>。</li>
+</ul>
+<h2 id="zh-next">下一章：跨帧流程</h2>
+<p>音频反应是即时信号。下一章会使用 Unity 风格的生成器协程组织跨帧反应，覆盖延时、固定步切换、帧末工作、条件等待、取消和子流程。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><a href="gameplay-ui-scenes.html">← UI actions and scene flow</a><span class="learn-course-home">Chapter 7 of 8</span><a href="gameplay-coroutines.html">Coroutines and multi-frame sequences →</a></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><a href="gameplay-ui-scenes.html">← UI 操作与场景流程</a><span class="learn-course-home">第 7 章，共 8 章</span><a href="gameplay-coroutines.html">协程与跨帧流程 →</a></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

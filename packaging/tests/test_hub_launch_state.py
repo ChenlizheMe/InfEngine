@@ -14,6 +14,8 @@ from PySide6.QtWidgets import QApplication
 
 from splash_screen import EngineSplashScreen
 import splash_screen
+import viewmodel.control_pane_viewmodel as control_pane_viewmodel
+from viewmodel.control_pane_viewmodel import LaunchPreparationWorker
 
 
 class _FinishedProcess:
@@ -97,3 +99,49 @@ def test_launch_lock_tracks_engine_pid_not_hub_pid(tmp_path: Path, monkeypatch):
     assert captured == [(str(tmp_path), 424242, "launching")]
     splash._poll_timer.stop()
     splash._spin_timer.stop()
+
+
+def test_frozen_launch_preparation_does_not_cold_start_python_twice(
+    tmp_path: Path,
+    monkeypatch,
+):
+    runtime_python = tmp_path / ".runtime" / "python312" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_bytes(b"")
+
+    class VersionManager:
+        @staticmethod
+        def read_project_version(_path):
+            return "0.3.7"
+
+        @staticmethod
+        def is_installed(_version):
+            return True
+
+    monkeypatch.setattr(control_pane_viewmodel, "is_frozen", lambda: True)
+    monkeypatch.setattr(control_pane_viewmodel, "is_project_open", lambda _path: False)
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "_get_project_python",
+        staticmethod(lambda _path: str(runtime_python)),
+    )
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "validate_python_runtime",
+        staticmethod(
+            lambda _path: (_ for _ in ()).throw(
+                AssertionError("the editor process is the native import check")
+            )
+        ),
+    )
+
+    worker = LaunchPreparationWorker(object(), VersionManager(), str(tmp_path))
+    finished = []
+    errors = []
+    worker.finished.connect(finished.append)
+    worker.error.connect(errors.append)
+
+    worker.run()
+
+    assert errors == []
+    assert finished == [str(runtime_python)]

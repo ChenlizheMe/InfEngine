@@ -9,6 +9,10 @@ class PhysicMaterialLoader final : public IAssetLoader
 {
   public:
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
+    [[nodiscard]] bool SupportsWorkerLoad() const noexcept override
+    {
+        return true;
+    }
     bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
                 AssetDatabase *adb) override;
     [[nodiscard]] size_t EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const override;

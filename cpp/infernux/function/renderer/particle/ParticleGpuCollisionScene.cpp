@@ -352,36 +352,43 @@ bool ParticleGpuCollisionScene::Create(rhi::Device &device, uint32_t capacity, u
     const uint64_t meshVertexBytes = static_cast<uint64_t>(meshVertexCapacity) * sizeof(std::array<float, 4>);
     const uint64_t meshIndexBytes = static_cast<uint64_t>(meshIndexCapacity) * sizeof(uint32_t);
     const uint64_t meshBvhBytes = static_cast<uint64_t>(meshBvhNodeCapacity) * sizeof(GpuParticleCollisionBvhNode);
-    m_headerBuffer = device.CreateBuffer({sizeof(GpuParticleCollisionSceneHeader),
-                                          rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    m_colliderBuffer = device.CreateBuffer(
-        {colliderBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    m_gridOffsetBuffer = device.CreateBuffer(
-        {gridOffsetBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    m_gridColliderIndexBuffer = device.CreateBuffer(
-        {gridIndexBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    m_meshVertexBuffer = device.CreateBuffer(
-        {meshVertexBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    m_meshIndexBuffer = device.CreateBuffer(
-        {meshIndexBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    m_meshBvhBuffer = device.CreateBuffer(
-        {meshBvhBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
+    // Create() publishes an empty table, so the first GpuParticle/PrimeSimulation
+    // records these copies on the independent Compute family. Graphics-only
+    // exclusive buffers hang that queue the same way resident particle state did.
+    const auto sharedAccess =
+        rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+    const auto createShared = [&](uint64_t bytes, rhi::BufferUsageFlags usage,
+                                  rhi::BufferMemory memory = rhi::BufferMemory::DeviceLocal) {
+        rhi::BufferDesc desc;
+        desc.byteSize = bytes;
+        desc.usage = usage;
+        desc.memory = memory;
+        desc.queueAccess = sharedAccess;
+        return device.CreateBuffer(desc);
+    };
+    const auto destUsage = rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination;
+    m_headerBuffer = createShared(sizeof(GpuParticleCollisionSceneHeader), destUsage);
+    m_colliderBuffer = createShared(colliderBytes, destUsage);
+    m_gridOffsetBuffer = createShared(gridOffsetBytes, destUsage);
+    m_gridColliderIndexBuffer = createShared(gridIndexBytes, destUsage);
+    m_meshVertexBuffer = createShared(meshVertexBytes, destUsage);
+    m_meshIndexBuffer = createShared(meshIndexBytes, destUsage);
+    m_meshBvhBuffer = createShared(meshBvhBytes, destUsage);
     m_uploadPages.resize(uploadPageCount);
     for (auto &page : m_uploadPages) {
-        page.header = device.CreateBuffer({sizeof(GpuParticleCollisionSceneHeader),
-                                           rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
-        page.colliders =
-            device.CreateBuffer({colliderBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+        page.header = createShared(sizeof(GpuParticleCollisionSceneHeader), rhi::BufferUsageFlags::TransferSource,
+                                   rhi::BufferMemory::Upload);
+        page.colliders = createShared(colliderBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
         page.gridOffsets =
-            device.CreateBuffer({gridOffsetBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+            createShared(gridOffsetBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
         page.gridColliderIndices =
-            device.CreateBuffer({gridIndexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+            createShared(gridIndexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
         page.meshVertices =
-            device.CreateBuffer({meshVertexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+            createShared(meshVertexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
         page.meshIndices =
-            device.CreateBuffer({meshIndexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+            createShared(meshIndexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
         page.meshBvhNodes =
-            device.CreateBuffer({meshBvhBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+            createShared(meshBvhBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
     }
     if (!IsValid()) {
         Destroy();

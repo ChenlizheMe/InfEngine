@@ -8,6 +8,7 @@
  */
 
 #include "RenderGraph.h"
+#include "RhiVulkanTypes.h"
 #include "VkDeviceContext.h"
 #include "VkPipelineManager.h"
 #include "VulkanQueueManager.h"
@@ -78,10 +79,50 @@ std::vector<RenderGraph::PassCallbackProfileEntry> RenderGraph::GetTopCallbackPr
     return result;
 }
 
+std::vector<RenderGraph::ParticlePassProfileEntry> RenderGraph::GetParticlePassProfiles(size_t maxEntries)
+{
+    std::vector<ParticlePassProfileEntry> result;
+    result.reserve(s_particlePassProfiles.size());
+    for (const auto &entry : s_particlePassProfiles)
+        result.push_back(entry.second);
+
+    std::sort(result.begin(), result.end(), [](const ParticlePassProfileEntry &a, const ParticlePassProfileEntry &b) {
+        if (a.workgroups != b.workgroups)
+            return a.workgroups > b.workgroups;
+        if (a.inputCount != b.inputCount)
+            return a.inputCount > b.inputCount;
+        return a.name < b.name;
+    });
+    if (result.size() > maxEntries)
+        result.resize(maxEntries);
+    return result;
+}
+
 void RenderGraph::ResetExecuteProfileSnapshot()
 {
     s_executeProfile = {};
     s_callbackProfiles.clear();
+    s_particlePassProfiles.clear();
+}
+
+void RenderGraph::RecordParticleDispatch(uint32_t passId, uint32_t groupCountX, uint32_t groupCountY,
+                                         uint32_t groupCountZ, uint64_t inputCount, bool indirect)
+{
+    if (passId >= m_passes.size())
+        return;
+    const auto &pass = m_passes[passId];
+    if (pass.name.find("GpuParticle") == std::string::npos)
+        return;
+
+    auto &profile = s_particlePassProfiles[pass.name];
+    profile.name = pass.name;
+    ++profile.dispatchCalls;
+    if (indirect)
+        ++profile.indirectDispatchCalls;
+    else
+        ++profile.directDispatchCalls;
+    profile.workgroups += static_cast<uint64_t>(groupCountX) * groupCountY * groupCountZ;
+    profile.inputCount += inputCount;
 }
 #endif
 
@@ -98,6 +139,28 @@ RenderContext::RenderContext(VkCommandBuffer cmdBuffer, RenderGraph *graph) : m_
     }
 }
 
+#if INFERNUX_FRAME_PROFILE
+void RenderContext::RecordComputeDispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+                                          uint64_t inputCount, bool indirect)
+{
+    if (m_graph && m_activePassId != UINT32_MAX)
+        m_graph->RecordParticleDispatch(m_activePassId, groupCountX, groupCountY, groupCountZ, inputCount, indirect);
+}
+
+void RenderContext::RecordParticleDraw(bool indirect)
+{
+    if (!m_graph || m_activePassId == UINT32_MAX || m_activePassId >= m_graph->m_passes.size())
+        return;
+    const auto &pass = m_graph->m_passes[m_activePassId];
+    auto &profile = RenderGraph::s_particlePassProfiles[pass.name];
+    profile.name = pass.name;
+    ++profile.passCalls;
+    ++profile.drawCalls;
+    if (indirect)
+        ++profile.indirectDrawCalls;
+}
+#endif
+
 void RenderContext::SetViewport(const VkViewport &viewport)
 {
     m_viewport = viewport;
@@ -112,6 +175,7 @@ void RenderContext::SetScissor(const VkRect2D &scissor)
 
 void RenderContext::BindPipeline(VkPipeline pipeline)
 {
+    m_graphicsCommandContext.ResetBindingState();
     vkCmdBindPipeline(m_cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 }
 
@@ -128,6 +192,7 @@ void RenderContext::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uin
 
 void RenderContext::NextSubpass()
 {
+    m_graphicsCommandContext.ResetBindingState();
     vkCmdNextSubpass(m_cmdBuffer, VK_SUBPASS_CONTENTS_INLINE);
 }
 
@@ -649,6 +714,11 @@ void PassBuilder::SetRenderArea(uint32_t width, uint32_t height)
     m_graph->m_passes[m_passId].renderArea = {width, height};
 }
 
+void PassBuilder::UseDynamicRendering(bool enabled)
+{
+    m_graph->m_passes[m_passId].dynamicRenderingRequested = enabled;
+}
+
 void PassBuilder::SetQueueRole(rhi::QueueRole queue)
 {
     if (!m_graph || m_passId >= m_graph->m_passes.size() || queue == rhi::QueueRole::Count)
@@ -730,7 +800,13 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_initialResourceStates(std::move(other.m_initialResourceStates)),
       m_barrierScratch(std::move(other.m_barrierScratch)),
       m_bufferBarrierScratch(std::move(other.m_bufferBarrierScratch)),
-      m_clearValueScratch(std::move(other.m_clearValueScratch)), m_renderPassCache(std::move(other.m_renderPassCache)),
+      m_barrier2Scratch(std::move(other.m_barrier2Scratch)),
+      m_bufferBarrier2Scratch(std::move(other.m_bufferBarrier2Scratch)),
+      m_clearValueScratch(std::move(other.m_clearValueScratch)),
+      m_cmdPipelineBarrier2(std::exchange(other.m_cmdPipelineBarrier2, nullptr)),
+      m_cmdBeginRendering(std::exchange(other.m_cmdBeginRendering, nullptr)),
+      m_cmdEndRendering(std::exchange(other.m_cmdEndRendering, nullptr)),
+      m_renderPassCache(std::move(other.m_renderPassCache)),
       m_renderTargetLayoutCache(std::move(other.m_renderTargetLayoutCache)),
       m_framebufferCache(std::move(other.m_framebufferCache)),
       m_usedRenderPassKeys(std::move(other.m_usedRenderPassKeys)),
@@ -769,7 +845,12 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_initialResourceStates = std::move(other.m_initialResourceStates);
         m_barrierScratch = std::move(other.m_barrierScratch);
         m_bufferBarrierScratch = std::move(other.m_bufferBarrierScratch);
+        m_barrier2Scratch = std::move(other.m_barrier2Scratch);
+        m_bufferBarrier2Scratch = std::move(other.m_bufferBarrier2Scratch);
         m_clearValueScratch = std::move(other.m_clearValueScratch);
+        m_cmdPipelineBarrier2 = std::exchange(other.m_cmdPipelineBarrier2, nullptr);
+        m_cmdBeginRendering = std::exchange(other.m_cmdBeginRendering, nullptr);
+        m_cmdEndRendering = std::exchange(other.m_cmdEndRendering, nullptr);
         m_renderPassCache = std::move(other.m_renderPassCache);
         m_renderTargetLayoutCache = std::move(other.m_renderTargetLayoutCache);
         m_framebufferCache = std::move(other.m_framebufferCache);
@@ -794,6 +875,25 @@ void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipeli
     m_rhiDevice = context ? &context->GetRhiDevice() : nullptr;
     m_pipelineManager = pipelineManager;
     m_deletionQueue = deletionQueue;
+    m_cmdPipelineBarrier2 = nullptr;
+    m_cmdBeginRendering = nullptr;
+    m_cmdEndRendering = nullptr;
+    if (context && m_rhiDevice && m_rhiDevice->GetCapabilityState().synchronization2.enabled) {
+        m_cmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+            vkGetDeviceProcAddr(context->GetDevice(), "vkCmdPipelineBarrier2"));
+        if (!m_cmdPipelineBarrier2) {
+            m_cmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+                vkGetDeviceProcAddr(context->GetDevice(), "vkCmdPipelineBarrier2KHR"));
+        }
+    }
+    if (context && m_rhiDevice) {
+        const rhi::DynamicRenderingCommands commands = rhi::ResolveDynamicRenderingCommands(context->GetDevice());
+        if (rhi::SelectDynamicRenderingPath(m_rhiDevice->GetCapabilityState().dynamicRendering.enabled,
+                                            commands.IsValid(), false)) {
+            m_cmdBeginRendering = commands.begin;
+            m_cmdEndRendering = commands.end;
+        }
+    }
 
     std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> topology{};
     if (queueManager && context && queueManager->GetDeviceId() == context->GetDeviceId()) {
@@ -857,6 +957,7 @@ void RenderGraph::Reset()
     // that reference transient views retire together with those views.
     FreeResources();
     m_passes.clear();
+    m_explicitPassDependencies.clear();
     m_resources.clear();
     m_resourceVersions.clear();
     m_executionOrder.clear();
@@ -956,6 +1057,7 @@ void RenderGraph::Destroy()
     m_structuralCacheMisses = 0;
 
     m_passes.clear();
+    m_explicitPassDependencies.clear();
     m_resources.clear();
     m_resourceVersions.clear();
     m_executionOrder.clear();
@@ -1025,6 +1127,22 @@ void RenderGraph::SetSubmissionBoundaryBefore(PassHandle pass)
         return;
     }
     m_passes[pass.id].forceSubmissionBoundary = true;
+}
+
+void RenderGraph::AddPassDependency(PassHandle later, PassHandle earlier)
+{
+    if (!Owns(later) || !Owns(earlier) || later.id >= m_passes.size() || earlier.id >= m_passes.size()) {
+        INXLOG_ERROR("RenderGraph::AddPassDependency rejected a foreign pass handle");
+        return;
+    }
+    if (later.id == earlier.id) {
+        INXLOG_ERROR("RenderGraph::AddPassDependency rejected a self-dependency on pass ", later.id);
+        return;
+    }
+    const auto dependency = std::make_pair(later.id, earlier.id);
+    if (std::find(m_explicitPassDependencies.begin(), m_explicitPassDependencies.end(), dependency) ==
+        m_explicitPassDependencies.end())
+        m_explicitPassDependencies.push_back(dependency);
 }
 
 PassHandle RenderGraph::AddTransferPass(const std::string &name, PassSetupCallback setup)
@@ -1323,10 +1441,20 @@ bool RenderGraph::UpdatePassClearColor(const std::string &passName, float r, flo
     for (auto &pass : m_passes) {
         if (pass.name == passName) {
             pass.clearColor = {{r, g, b, a}};
-            // Refresh cached clear values for color outputs
+            // Refresh both execution paths. Dynamic Rendering owns its clear
+            // values on VkRenderingAttachmentInfo, while legacy render passes
+            // read them from VkRenderPassBeginInfo::pClearValues.
+            if (pass.usesDynamicRendering) {
+                const uint32_t colorCount =
+                    std::min<uint32_t>(static_cast<uint32_t>(pass.colorOutputs.size()),
+                                       static_cast<uint32_t>(pass.cachedRenderingColorAttachments.size()));
+                for (uint32_t i = 0; i < colorCount; ++i) {
+                    pass.cachedRenderingColorAttachments[i].clearValue.color = pass.clearColor;
+                }
+            }
             for (uint32_t i = 0; i < static_cast<uint32_t>(pass.colorOutputs.size()) && i < pass.cachedClearValueCount;
                  ++i) {
-                pass.cachedClearValues[i].color = {{r, g, b, a}};
+                pass.cachedClearValues[i].color = pass.clearColor;
             }
             return true;
         }
@@ -1339,6 +1467,9 @@ bool RenderGraph::UpdatePassClearDepth(const std::string &passName, float depth,
     for (auto &pass : m_passes) {
         if (pass.name == passName) {
             pass.clearDepth = {depth, stencil};
+            if (pass.usesDynamicRendering && pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE) {
+                pass.cachedRenderingDepthAttachment.clearValue.depthStencil = pass.clearDepth;
+            }
             // Refresh cached depth clear value (slot right after color outputs)
             uint32_t depthSlot = static_cast<uint32_t>(pass.colorOutputs.size());
             if (depthSlot < pass.cachedClearValueCount) {
@@ -1393,6 +1524,14 @@ ResourceHandle RenderGraph::AdvanceResourceVersion(ResourceHandle handle)
     return handle;
 }
 
+bool RenderGraph::CompileExecutionOrder()
+{
+    if (m_passes.empty())
+        return true;
+    CullPasses();
+    return TopologicalSort();
+}
+
 bool RenderGraph::Compile()
 {
     if (m_passes.empty()) {
@@ -1418,11 +1557,7 @@ bool RenderGraph::Compile()
 
     const auto structuralSignature = BuildStructuralSignature();
     if (!RestoreStructuralCompilation(structuralSignature)) {
-        // Step 1: Cull unused passes
-        CullPasses();
-
-        // Step 2: Topological sort via Kahn's algorithm
-        if (!TopologicalSort()) {
+        if (!CompileExecutionOrder()) {
             return false;
         }
 
@@ -1526,6 +1661,21 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordin
     RecordPasses(commandBuffer, m_executionOrder);
 }
 
+void RenderGraph::ContinueExecution(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue)
+{
+    if (!m_compiled) {
+        INXLOG_ERROR("RenderGraph::ContinueExecution - Graph not compiled");
+        return;
+    }
+
+    m_recordingSubmissionBatches = false;
+    m_immediateRecordingQueue = recordingQueue == rhi::QueueRole::Count ? rhi::QueueRole::Graphics : recordingQueue;
+#if INFERNUX_FRAME_PROFILE
+    ++s_executeProfile.executeCalls;
+#endif
+    RecordPasses(commandBuffer, m_executionOrder);
+}
+
 void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices)
 {
     if (commandBuffer == VK_NULL_HANDLE)
@@ -1556,14 +1706,32 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         }
 
 #if INFERNUX_FRAME_PROFILE
+        context.m_activePassId = passIndex;
         ++s_executeProfile.passCount;
+        if (pass.name.find("GpuParticle") != std::string::npos) {
+            auto &particleProfile = s_particlePassProfiles[pass.name];
+            particleProfile.name = pass.name;
+            ++particleProfile.passCalls;
+            // This is the graph's barrier phase count, not a GPU query or a
+            // synchronous readback. It identifies passes whose declared
+            // resources entered the barrier planner.
+            if (!pass.reads.empty() || !pass.writes.empty())
+                ++particleProfile.barrierPhases;
+        }
 #endif
 
-        const bool isGraphicsPass = (pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE);
+        const bool isDynamicGraphicsPass = pass.type == PassType::Graphics && pass.usesDynamicRendering &&
+                                           m_cmdBeginRendering != nullptr && m_cmdEndRendering != nullptr;
+        const bool isLegacyGraphicsPass = pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE;
+        const bool isGraphicsPass = isDynamicGraphicsPass || isLegacyGraphicsPass;
 #if INFERNUX_FRAME_PROFILE
         if (isGraphicsPass) {
             ++s_executeProfile.graphicsPassCount;
         }
+        if (isDynamicGraphicsPass)
+            ++s_executeProfile.dynamicRenderingPassCount;
+        if (isLegacyGraphicsPass)
+            ++s_executeProfile.legacyRenderPassCount;
         if (pass.type == PassType::Compute) {
             ++s_executeProfile.computePassCount;
         }
@@ -1613,8 +1781,10 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
-            // pClearValues points into pass.cachedClearValues (stable after Compile)
-            vkCmdBeginRenderPass(commandBuffer, &pass.cachedBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+            if (isDynamicGraphicsPass)
+                m_cmdBeginRendering(commandBuffer, &pass.cachedRenderingInfo);
+            else
+                vkCmdBeginRenderPass(commandBuffer, &pass.cachedBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
             context.SetViewport(pass.cachedViewport);
             context.SetScissor(pass.cachedScissor);
 #if INFERNUX_FRAME_PROFILE
@@ -1633,6 +1803,10 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
                 });
         }
         if (executeCallback) {
+            // RHI bind elision is deliberately scoped to one pass callback.
+            // Raw command-buffer access invalidates it again through
+            // RenderContext::GetCommandBuffer().
+            context.InvalidateRhiBindingState();
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
@@ -1659,13 +1833,26 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
-            vkCmdEndRenderPass(commandBuffer);
+            if (isDynamicGraphicsPass)
+                m_cmdEndRendering(commandBuffer);
+            else
+                vkCmdEndRenderPass(commandBuffer);
 #if INFERNUX_FRAME_PROFILE
             stageNow = Clock::now();
             s_executeProfile.endPassMs += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
 #endif
         }
     }
+#if INFERNUX_FRAME_PROFILE
+    s_executeProfile.rhiPipelineBinds +=
+        context.m_graphicsCommandContext.pipelineBinds + context.m_computeCommandContext.pipelineBinds;
+    s_executeProfile.rhiPipelineBindSkips +=
+        context.m_graphicsCommandContext.pipelineBindSkips + context.m_computeCommandContext.pipelineBindSkips;
+    s_executeProfile.rhiGroupBinds +=
+        context.m_graphicsCommandContext.groupBinds + context.m_computeCommandContext.groupBinds;
+    s_executeProfile.rhiGroupBindSkips +=
+        context.m_graphicsCommandContext.groupBindSkips + context.m_computeCommandContext.groupBindSkips;
+#endif
 }
 
 std::vector<std::string> RenderGraph::GetExecutionPassNames() const
@@ -1841,6 +2028,37 @@ rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(PassHandle 
     if (!Owns(pass) || pass.id >= m_passes.size())
         return {};
     return m_passes[pass.id].renderTargetLayout;
+}
+
+bool RenderGraph::GetPassUsesDynamicRendering(const std::string &passName) const noexcept
+{
+    const auto pass = std::find_if(m_passes.begin(), m_passes.end(),
+                                   [&](const RenderPassData &candidate) { return candidate.name == passName; });
+    return pass != m_passes.end() && pass->usesDynamicRendering;
+}
+
+rhi::GraphicsRenderingSignature RenderGraph::GetPassRenderingSignature(const std::string &passName) const noexcept
+{
+    const auto pass = std::find_if(m_passes.begin(), m_passes.end(),
+                                   [&](const RenderPassData &candidate) { return candidate.name == passName; });
+    return pass != m_passes.end() ? pass->renderingSignature : rhi::GraphicsRenderingSignature{};
+}
+
+PassRenderingContract RenderGraph::GetPassRenderingContract(const std::string &passName) const noexcept
+{
+    const auto pass = std::find_if(m_passes.begin(), m_passes.end(),
+                                   [&](const RenderPassData &candidate) { return candidate.name == passName; });
+    if (pass == m_passes.end())
+        return {};
+
+    PassRenderingContract contract;
+    contract.found = true;
+    contract.culled = pass->culled;
+    contract.usesDynamicRendering = pass->usesDynamicRendering;
+    contract.depthReadOnly = pass->depthInput.IsValid() && !pass->depthOutput.IsValid();
+    contract.depthAttachment = GetEffectiveDepth(*pass);
+    contract.attachments = pass->renderingSignature;
+    return contract;
 }
 
 VkRenderPass RenderGraph::GetCompatibleRenderPass() const

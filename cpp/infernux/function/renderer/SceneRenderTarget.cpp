@@ -1,6 +1,7 @@
 #include "SceneRenderTarget.h"
 #include "InxVkCoreModular.h"
 #include "rhi/GpuRetirementQueue.h"
+#include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkRenderUtils.h"
 #include <array>
@@ -230,17 +231,13 @@ void SceneRenderTarget::CreateDepthAttachment()
         throw std::runtime_error("Failed to create depth image via VMA");
     }
 
-    auto viewInfo = vkrender::MakeImageViewCreateInfo2D(m_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+    const VkImageAspectFlags depthAspect = rhi::ToVkImageAspectMask(depthFormat);
+    auto viewInfo = vkrender::MakeImageViewCreateInfo2D(m_depthImage, depthFormat, depthAspect);
     if (vkCreateImageView(m_vkCore->GetDevice(), &viewInfo, nullptr, &m_depthImageView) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create depth image view");
     }
 
     // Transition depth image to depth-stencil attachment optimal
-    VkImageAspectFlags depthAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (vk::VkDeviceContext::HasStencilComponent(depthFormat)) {
-        depthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-    }
-
     VkCommandBuffer cmdBuf = m_vkCore->BeginSingleTimeCommands();
     auto barrier = vkrender::MakeImageBarrier(m_depthImage, VK_IMAGE_LAYOUT_UNDEFINED,
                                               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depthAspect, 0,

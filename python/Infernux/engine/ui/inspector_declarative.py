@@ -55,6 +55,7 @@ class InspectorList:
     drop_factory: Callable[[Any], Any] | None = None
     item_label: Callable[[Any, int], str] | None = None
     item_renderer: Callable[[InxGUIContext, Any, int, str], None] | None = None
+    on_change: Callable[[Any, str, list, list], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,7 @@ def render_inspector_model(ctx: InxGUIContext, component, model: InspectorModel)
                             header_drop_factory=control.drop_factory,
                             item_label=control.item_label,
                             item_renderer=control.item_renderer,
+                            on_change=control.on_change,
                         )
                     finally:
                         ctx.pop_id()
@@ -189,7 +191,7 @@ def render_inspector_model(ctx: InxGUIContext, component, model: InspectorModel)
 
 
 def _render_serialized_target(ctx: InxGUIContext, control: InspectorSerializedTarget) -> None:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     target = control.target()
     if target is None:
@@ -230,9 +232,12 @@ def _render_serialized_target(ctx: InxGUIContext, control: InspectorSerializedTa
             label_width,
         )
         if has_field_changed(metadata.field_type, current, updated) and not metadata.readonly:
-            setattr(target, field_name, updated)
             if control.on_change is not None:
                 control.on_change(target, field_name, current, updated)
+            else:
+                raise RuntimeError(
+                    f"Serialized Inspector field '{field_name}' has no transaction handler"
+                )
         if metadata.tooltip and ctx.is_item_hovered():
             ctx.set_tooltip(metadata.tooltip)
 

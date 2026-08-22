@@ -161,7 +161,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         ],
         "workflow": [
             "Ensure a GameObject has AudioSource and the camera has AudioListener.",
-            "Load WAV or OGG assets with AudioClip.load('Assets/Audio/name.wav').",
+            "Load WAV, OGG, MP3, or FLAC assets with AudioClip.load('Assets/Audio/name.wav').",
             "Assign clips with source.set_track_clip(index, clip) or set_track_clip_by_guid(index, guid).",
             "Use source.volume/pitch/mute/loop/play_on_awake for source-level behavior.",
             "Use source.set_track_volume(index, value), play(index), pause(index), stop(index), stop_all().",
@@ -169,7 +169,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         "common_mistakes": [
             "Do not use source.clip = clip; this engine exposes per-track clips instead.",
             "Track indices are zero-based and must be below source.track_count.",
-            "AudioClip currently decodes WAV and OGG/Vorbis; MP3 and FLAC are not registered audio formats.",
+            "AudioClip decodes WAV, OGG/Vorbis, MP3, and FLAC assets.",
             "Attach one AudioListener to the main camera instead of adding listeners to many objects.",
         ],
         "symbols": ["AudioSource", "AudioListener", "AudioClip", "audio_guide"],

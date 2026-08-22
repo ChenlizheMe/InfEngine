@@ -11,7 +11,7 @@ Hierarchy:
 from __future__ import annotations
 
 from Infernux.components import serialized_field
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from .inx_ui_screen_component import InxUIScreenComponent
 from .enums import UITransitionType
 from .ui_render_revision import mark_runtime_ui_dirty

@@ -76,6 +76,9 @@ jobs:
       - name: Install documentation dependencies
         run: python -m pip install -r docs/wiki/requirements.txt
 
+      - name: Verify hand-authored learning chapters
+        run: python docs/tools/build-learning-guides.py --check
+
       - name: Build Wiki in strict mode
         env:
           PYTHONIOENCODING: utf-8
@@ -134,6 +137,9 @@ jobs:
 
       - name: Test documentation search
         run: node docs/tools/test-doc-search.mjs
+
+      - name: Test learning course filters
+        run: node docs/tools/test-learning-course-filter.mjs
 
       - name: Test website health reporting
         run: node docs/tools/test-website-health-report.mjs

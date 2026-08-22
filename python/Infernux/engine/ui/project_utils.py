@@ -914,16 +914,6 @@ def get_file_type(filename: str) -> str:
     return types.get(ext, '[FILE]')
 
 
-def update_material_name_in_file(mat_path: str, new_name: str):
-    """Rewrite the ``"name"`` key in a ``.mat`` JSON file."""
-    import json
-    with open(mat_path, 'r', encoding='utf-8') as f:
-        mat_data = json.load(f)
-    mat_data['name'] = new_name
-    from Infernux.core.document_store import write_document_text
-    write_document_text(mat_path, json.dumps(mat_data, indent=2) + '\n')
-
-
 def reveal_in_file_explorer(path: str):
     """Open the system file explorer and highlight *path*.
 

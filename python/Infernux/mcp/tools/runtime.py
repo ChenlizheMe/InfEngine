@@ -215,6 +215,45 @@ def register_runtime_tools(mcp) -> None:
             explain={"tool": "runtime_wait", "summary": "Wait for Play Mode, scene, and deferred-task conditions."},
         ) | {"data": {"ready": False, "state": last_state, "requested_scene_name": desired_scene}}
 
+    @mcp.tool(name="runtime_wait_frames")
+    def runtime_wait_frames(frames: int, timeout_seconds: float = 120.0) -> dict:
+        """Wait for a fixed number of authoritative engine or paused-step frames.
+
+        Normal Play advances ``Time.frame_count``.  A paused Step advances the
+        native SceneManager simulation clock instead, because a paused Editor
+        intentionally does not produce another Play frame.  This keeps the
+        wait bounded and preserves the paused state after the step.
+        """
+        if isinstance(frames, bool) or int(frames) < 1 or int(frames) > 120_000:
+            raise ValueError("frames must be between 1 and 120000")
+
+        requested = int(frames)
+        start = _runtime_frame_cursor()
+        deadline = time.monotonic() + max(float(timeout_seconds), 0.1)
+        current = start
+        while (
+            current["source"] == start["source"]
+            and current["progress"] - start["progress"] < requested
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+            current = _runtime_frame_cursor()
+        elapsed = max(0, current["progress"] - start["progress"])
+        if elapsed < requested:
+            return fail(
+                "error.timeout",
+                "Timed out waiting for the requested engine frames.",
+                explain={"requested_frames": requested, "elapsed_frames": elapsed},
+            )
+        return ok({
+            "start_frame": start["progress"],
+            "end_frame": current["progress"],
+            "frames": elapsed,
+            "frame_source": start["source"],
+            "engine_frame_start": start["engine_frame"],
+            "engine_frame_end": current["engine_frame"],
+        })
+
     @mcp.tool(name="runtime_run_for")
     def runtime_run_for(seconds: float = 1.0, stop_on_error: bool = True, poll_interval: float = 0.25) -> dict:
         """Let Play Mode run for a duration while polling for errors."""
@@ -563,10 +602,30 @@ def register_runtime_tools(mcp) -> None:
         """Read current renderer submission and GPU residency telemetry."""
         return ok(_run_on_main("runtime_renderer_state", _renderer_state))
 
+    @mcp.tool(name="runtime_performance_window_begin")
+    def runtime_performance_window_begin() -> dict:
+        """Reset the native numeric frame performance window before a fixed-frame run."""
+        return ok(_run_on_main("runtime_performance_window_begin", _begin_performance_window))
+
+    @mcp.tool(name="runtime_performance_window")
+    def runtime_performance_window() -> dict:
+        """Read one immutable aggregate of the native frame performance window."""
+        return ok(_run_on_main("runtime_performance_window", _performance_window_state))
+
     @mcp.tool(name="runtime_ui_performance")
     def runtime_ui_performance() -> dict:
         """Read an engine-recorded rolling UI profile without active frame polling."""
         return ok(_run_on_main("runtime_ui_performance", _ui_performance_state))
+
+    @mcp.tool(name="runtime_baseline_diagnostics")
+    def runtime_baseline_diagnostics() -> dict:
+        """Read R0 baseline identity, recorder state, and available live counters."""
+        return ok(
+            _run_on_main(
+                "runtime_baseline_diagnostics",
+                _runtime_baseline_state,
+            )
+        )
 
     @mcp.tool(name="runtime_physics_state")
     def runtime_physics_state() -> dict:
@@ -682,7 +741,7 @@ def register_runtime_tools(mcp) -> None:
             data = serialize_component(comp)
             fields = {}
             try:
-                from Infernux.components.serialized_field import get_serialized_fields
+                from Infernux.components.fields import get_serialized_fields
                 for name in get_serialized_fields(type(comp)):
                     try:
                         fields[name] = serialize_value(getattr(comp, name))
@@ -767,6 +826,37 @@ def _renderer_state() -> dict[str, Any]:
     }
 
 
+def _runtime_native_engine():
+    engine = _runtime_engine()
+    native = engine.get_native_engine() if engine is not None else None
+    if native is None:
+        raise RuntimeError("Renderer performance telemetry requires a running graphical Editor session.")
+    return native
+
+
+def _runtime_engine():
+    from Infernux.application import Application
+    from Infernux.engine.bootstrap import EditorBootstrap
+
+    engine = Application._current_engine()
+    if engine is None:
+        bootstrap = EditorBootstrap.instance()
+        engine = bootstrap.engine if bootstrap is not None else None
+    if engine is None:
+        raise RuntimeError("Runtime diagnostics require a running Engine session.")
+    return engine
+
+
+def _begin_performance_window() -> dict[str, Any]:
+    native = _runtime_native_engine()
+    return {"start_frame": int(native.begin_renderer_performance_window())}
+
+
+def _performance_window_state() -> dict[str, Any]:
+    native = _runtime_native_engine()
+    return dict(native.get_renderer_performance_window())
+
+
 def _ui_performance_state() -> dict[str, Any]:
     from Infernux.engine.bootstrap import EditorBootstrap
 
@@ -776,6 +866,17 @@ def _ui_performance_state() -> dict[str, Any]:
     if native is None:
         raise RuntimeError("UI performance telemetry requires a running graphical Editor session.")
     return dict(native.renderer_ui_performance_snapshot)
+
+
+def _runtime_baseline_state() -> dict[str, Any]:
+    from Infernux.engine.runtime_baseline import (
+        runtime_baseline_diagnostics,
+        runtime_baseline_recorder,
+    )
+
+    engine = _runtime_engine()
+    recorder = runtime_baseline_recorder(engine)
+    return runtime_baseline_diagnostics(engine, recorder=recorder)
 
 
 def _physics_state(physics_api=None, scene_manager=None) -> dict[str, Any]:
@@ -1798,6 +1899,36 @@ def _normalize_play_state(value: Any) -> str:
     return _PLAY_STATE_ALIASES.get(normalized, normalized)
 
 
+def _runtime_frame_cursor() -> dict[str, Any]:
+    """Return the frame sequence that can actually advance in the current mode.
+
+    ``Time.frame_count`` is deliberately frozen while the Editor is paused.
+    A paused Step is synchronous but does not necessarily consume a physics
+    fixed step.  Use PlayModeManager's completed-step sequence instead of
+    inferring command completion from the physics accumulator.
+    """
+    from Infernux.timing import Time
+
+    engine_frame = int(Time.frame_count)
+    try:
+        from Infernux.engine.play_mode import PlayModeManager, PlayModeState
+
+        manager = PlayModeManager.instance()
+        if manager is not None and manager.state == PlayModeState.PAUSED:
+            return {
+                "source": "paused_step",
+                "progress": int(manager.step_sequence),
+                "engine_frame": engine_frame,
+            }
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        pass
+    return {
+        "source": "engine_frame",
+        "progress": engine_frame,
+        "engine_frame": engine_frame,
+    }
+
+
 def _is_runtime_idle(state: dict[str, Any]) -> bool:
     """Return whether deferred work and scene transactions have both settled."""
     return not bool(state.get("deferred_task_busy")) and not bool(state.get("scene_loading"))
@@ -1807,12 +1938,12 @@ def _editor_state() -> dict[str, Any]:
     from Infernux.engine.deferred_task import DeferredTaskRunner
     from Infernux.engine.play_mode import PlayModeManager
     from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.ui.selection_manager import SelectionManager
+    from Infernux.engine.interaction import SelectionService
     from Infernux.lib import AudioEngine, SceneManager
 
     pmm = PlayModeManager.instance()
     sfm = SceneFileManager.instance()
-    sel = SelectionManager.instance()
+    selection = SelectionService.instance()
     runner = DeferredTaskRunner.instance()
     scene = SceneManager.instance().get_active_scene()
     return {
@@ -1820,7 +1951,7 @@ def _editor_state() -> dict[str, Any]:
         "audio_paused": bool(AudioEngine.instance().is_paused),
         "deferred_task_busy": bool(getattr(runner, "is_busy", False)),
         "scene_loading": bool(getattr(sfm, "is_loading", False)) if sfm else False,
-        "selected_ids": sel.get_ids() if sel else [],
+        "selected_ids": list(selection.scene_object_ids()),
         "scene_dirty": bool(sfm.is_dirty) if sfm else False,
         "is_prefab_mode": bool(getattr(sfm, "is_prefab_mode", False)) if sfm else False,
         "scene_name": str(getattr(scene, "name", "") or ""),
@@ -1831,23 +1962,43 @@ def _editor_state() -> dict[str, Any]:
 def _read_errors(include_warnings: bool = False, limit: int = 100) -> dict[str, Any]:
     from Infernux.debug import DebugConsole
     from Infernux.components.script_loader import get_script_errors
+    from Infernux.mcp.tools.console import _native_console, _read_native_entries
 
     allowed = {"ERROR", "FATAL"}
     if include_warnings:
         allowed.add("WARN")
         allowed.add("WARNING")
     entries = []
-    for entry in DebugConsole.instance().get_entries()[-max(int(limit), 1):]:
-        level = getattr(entry.log_type, "name", str(entry.log_type)).upper()
-        if level not in allowed:
-            continue
-        entries.append({
-            "time": entry.get_formatted_time(),
-            "level": level,
-            "message": entry.message,
-            "source_file": entry.source_file,
-            "source_line": entry.source_line,
-        })
+    bounded_limit = max(int(limit), 1)
+    native_panel = _native_console()
+    native = (
+        _read_native_entries(native_panel, bounded_limit, sorted(allowed))
+        if native_panel is not None
+        else None
+    )
+    if native is not None:
+        entries = [
+            {
+                "time": str(entry.get("time", "") or ""),
+                "level": str(entry.get("level", "") or "").upper(),
+                "message": str(entry.get("message", "") or ""),
+                "source_file": str(entry.get("source_file", "") or ""),
+                "source_line": int(entry.get("source_line", 0) or 0),
+            }
+            for entry in native.get("entries", [])
+        ]
+    else:
+        for entry in DebugConsole.instance().get_entries()[-bounded_limit:]:
+            level = getattr(entry.log_type, "name", str(entry.log_type)).upper()
+            if level not in allowed:
+                continue
+            entries.append({
+                "time": entry.get_formatted_time(),
+                "level": level,
+                "message": entry.message,
+                "source_file": entry.source_file,
+                "source_line": entry.source_line,
+            })
     script_errors = [
         {"path": path, "traceback": tb}
         for path, tb in get_script_errors().items()
@@ -2167,7 +2318,14 @@ def _register_metadata() -> None:
         ),
         "runtime_input_state": "Read Game View focus and selected keyboard, axis, and mouse input probes.",
         "runtime_renderer_state": "Read renderer targets, camera availability, draw submissions, timings, and GPU residency.",
+        "runtime_wait_frames": "Wait for a fixed number of engine frames without per-frame MCP polling.",
+        "runtime_performance_window_begin": "Mark the start of a low-overhead fixed-frame performance window.",
+        "runtime_performance_window": "Read one aggregated low-overhead frame performance window.",
         "runtime_ui_performance": "Read the engine-recorded rolling UI profile without per-frame MCP polling.",
+        "runtime_baseline_diagnostics": (
+            "Read the stable R0 baseline schema, Debug/Release and Editor/Player identity, "
+            "recorder summary, runtime inventory counts, and currently available profiler counters."
+        ),
         "runtime_physics_state": "Read physics body population and latest fixed-step/contact profile.",
         "runtime_physics_raycast": "Run a bounded read-only raycast through the public Physics API.",
         "runtime_physics_overlap_box": "Read colliders overlapping a bounded axis-aligned world-space box.",
@@ -2178,3 +2336,22 @@ def _register_metadata() -> None:
         "runtime_assert": "Evaluate runtime state, scene, transform, input, and component-field assertions.",
     }.items():
         register_tool_metadata(name, summary=summary, next_suggested_tools=["runtime_read_errors", "console_read"])
+    register_tool_metadata(
+        "runtime_baseline_diagnostics",
+        summary=(
+            "Read the stable R0 baseline schema, Debug/Release and Editor/Player identity, "
+            "recorder summary, runtime inventory counts, and available profiler counters."
+        ),
+        category="runtime/diagnostics",
+        tags=["runtime", "baseline", "profiler", "read-only"],
+        side_effects=[],
+        invariants=[
+            "Does not begin, reset, or consume a native performance window.",
+            "Does not advance Play Mode or mutate scene, asset, or recorder samples.",
+        ],
+        risk_level="low",
+        next_suggested_tools=[
+            "runtime_performance_window_begin",
+            "runtime_performance_window",
+        ],
+    )

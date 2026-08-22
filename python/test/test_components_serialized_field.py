@@ -1,4 +1,4 @@
-"""Tests for Infernux.components.serialized_field — field types, metadata, descriptors.
+"""Tests for Infernux.components.fields — field types, metadata, descriptors.
 
 Merges tests from test_component_annotation_defaults.py.
 """
@@ -6,7 +6,7 @@ Merges tests from test_component_annotation_defaults.py.
 import weakref
 
 from Infernux.components import InxComponent
-from Infernux.components.serialized_field import (
+from Infernux.components.fields import (
     FieldType,
     FieldMetadata,
     SerializedFieldDescriptor,
@@ -25,7 +25,7 @@ def test_project_relative_asset_path_is_resolved_before_guid_lookup(monkeypatch,
 
     from Infernux.engine import project_context
 
-    serialized_field_module = importlib.import_module("Infernux.components.serialized_field")
+    serialized_field_module = importlib.import_module("Infernux.components.fields")
 
     project = tmp_path / "Project"
     asset = project / "Assets" / "VFX" / "Ribbon.particlegraph"

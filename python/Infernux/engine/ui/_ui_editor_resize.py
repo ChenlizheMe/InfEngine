@@ -42,11 +42,8 @@ class UIEditorResizeMixin:
         if elem is None:
             return
         if hasattr(elem, "resize_mode"):
-            self._undo_pre_resize_mode = getattr(elem, "resize_mode", None)
-            if self._undo_pre_resize_mode != TextResizeMode.FixedSize:
+            if getattr(elem, "resize_mode", None) != TextResizeMode.FixedSize:
                 elem.resize_mode = TextResizeMode.FixedSize
-        else:
-            self._undo_pre_resize_mode = None
 
     def _apply_rotation_drag(self, inp):
         elem = self._selected_element_comp
@@ -139,29 +136,21 @@ class UIEditorResizeMixin:
         elem.height = new_h
 
     def _apply_drag_suppressed(self, vis_x, vis_y, ref_w, ref_h):
-        """Apply drag with auto-undo suppressed."""
-        mgr = self._get_undo_mgr()
-        if mgr:
-            with mgr.suppress():
-                self._selected_element_comp.set_visual_position(vis_x, vis_y, ref_w, ref_h)
-        else:
-            self._selected_element_comp.set_visual_position(vis_x, vis_y, ref_w, ref_h)
+        """Apply drag inside the core-owned continuous edit session."""
+        elem = self._selected_element_comp
+        if elem is None:
+            return False
+        return self._mutate_element_manipulation(
+            lambda: elem.set_visual_position(vis_x, vis_y, ref_w, ref_h)
+        )
 
     def _apply_resize_suppressed(self, inp):
-        """Apply resize with auto-undo suppressed."""
-        mgr = self._get_undo_mgr()
-        if mgr:
-            with mgr.suppress():
-                self._apply_resize(inp)
-        else:
-            self._apply_resize(inp)
+        """Apply resize inside the core-owned continuous edit session."""
+        return self._mutate_element_manipulation(lambda: self._apply_resize(inp))
 
     def _apply_rotation_drag_suppressed(self, inp):
-        """Apply rotation with auto-undo suppressed."""
-        mgr = self._get_undo_mgr()
-        if mgr:
-            with mgr.suppress():
-                self._apply_rotation_drag(inp)
-        else:
-            self._apply_rotation_drag(inp)
+        """Apply rotation inside the core-owned continuous edit session."""
+        return self._mutate_element_manipulation(
+            lambda: self._apply_rotation_drag(inp)
+        )
 
