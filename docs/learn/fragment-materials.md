@@ -164,19 +164,38 @@ Changing `s.alpha` cannot repair a route or depth-state mismatch. Changing Queue
 
 ## The `SurfaceData` contract {#surface-contract}
 
+`SurfaceData` is not declared inside each `.frag`. The compiler imports its canonical definition from the built-in `surface.glsl` library before it compiles the material stage:
+
+```glsl
+struct SurfaceData {
+    vec3 albedo;
+    vec3 normalWS;
+    float metallic;
+    float smoothness;
+    float occlusion;
+    vec3 emission;
+    float alpha;
+    float specularHighlights;
+    float shadingParam0;
+    float shadingParam1;
+};
+```
+
+This is the complete current shape of the structure. It describes the material state at one rasterized surface point, not the shape of the object. Mesh position, UV, vertex color, normal, and tangent originate in the vertex input and interpolants. Per-fragment geometry and camera values are prepared separately as `ShadingContext`; the ShadingModel reads them with `GetShadingContext()`. Adding a field to a project `.frag` does not extend this engine contract.
+
 `InitSurfaceData()` returns these exact built-in defaults:
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `albedo` | `vec3(1.0)` | Linear base color |
-| `normalWS` | `vec3(0.0)` | Sentinel: use the interpolated geometric normal |
-| `metallic` | `0.0` | Dielectric |
-| `smoothness` | `0.5` | `1 - perceptualRoughness` |
-| `occlusion` | `1.0` | Fully unoccluded |
-| `emission` | `vec3(0.0)` | Linear emissive RGB |
-| `alpha` | `1.0` | Fully opaque coverage |
-| `specularHighlights` | `1.0` | Full specular contribution |
-| `shadingParam0`, `shadingParam1` | `0.0` | Two model-defined scalars preserved by the canonical GBuffer |
+| Field | GLSL type | Default | Meaning |
+| --- | --- | --- | --- |
+| `albedo` | `vec3` | `vec3(1.0)` | Linear RGB base color |
+| `normalWS` | `vec3` | `vec3(0.0)` | World-space shading normal, or the sentinel that selects the geometric normal |
+| `metallic` | `float` | `0.0` | Metallic factor in `[0, 1]`; zero is dielectric |
+| `smoothness` | `float` | `0.5` | Smoothness in `[0, 1]`, equal to `1 - perceptualRoughness` |
+| `occlusion` | `float` | `1.0` | Ambient occlusion in `[0, 1]`; one is fully unoccluded |
+| `emission` | `vec3` | `vec3(0.0)` | Linear RGB emission with intensity already applied |
+| `alpha` | `float` | `1.0` | Opacity or coverage in `[0, 1]` |
+| `specularHighlights` | `float` | `1.0` | Specular-highlight multiplier in `[0, 1]` |
+| `shadingParam0`, `shadingParam1` | `float` | `0.0` | Two ShadingModel-defined scalars preserved by the canonical GBuffer |
 
 The zero `normalWS` has a specific job. Leave it untouched when the material has no authored normal. The generated pipeline adapter calls `ResolveSurfaceNormal()` after `surface()`, replacing the sentinel with the interpolated geometric normal and normalizing authored world-space normals. Normalizing the zero value inside `surface()` would destroy that signal.
 
@@ -371,19 +390,38 @@ Alpha Clip 是更早执行的二值判断。`AlphaClip 0.5` 会把阈值写入�
 
 ## `SurfaceData` 契约 {#surface-contract_1}
 
+每个 `.frag` 都不需要自行声明 `SurfaceData`。编译材质阶段前，编译器会从内置的 `surface.glsl` 函数库导入这份标准定义：
+
+```glsl
+struct SurfaceData {
+    vec3 albedo;
+    vec3 normalWS;
+    float metallic;
+    float smoothness;
+    float occlusion;
+    vec3 emission;
+    float alpha;
+    float specularHighlights;
+    float shadingParam0;
+    float shadingParam1;
+};
+```
+
+这就是当前 `SurfaceData` 的完整结构。它描述的是一个光栅化表面点上的材质状态，不负责描述物体的几何形状。Mesh 的位置、UV、顶点色、法线与切线来自顶点输入和插值变量。每个片元的几何信息与相机信息会被单独整理成 `ShadingContext`，ShadingModel 通过 `GetShadingContext()` 读取。只在项目 `.frag` 中增加字段，不会扩展引擎的这份标准契约。
+
 `InitSurfaceData()` 返回以下内置默认值：
 
-| 字段 | 默认值 | 含义 |
-| --- | --- | --- |
-| `albedo` | `vec3(1.0)` | 线性空间基础色 |
-| `normalWS` | `vec3(0.0)` | 哨兵值：使用插值后的几何法线 |
-| `metallic` | `0.0` | 非金属 |
-| `smoothness` | `0.5` | `1 - perceptualRoughness` |
-| `occlusion` | `1.0` | 完全无遮挡 |
-| `emission` | `vec3(0.0)` | 线性空间自发光 RGB |
-| `alpha` | `1.0` | 完全不透明的覆盖率 |
-| `specularHighlights` | `1.0` | 完整镜面高光贡献 |
-| `shadingParam0`、`shadingParam1` | `0.0` | 由模型定义、可被标准 GBuffer 保存的两个标量 |
+| 字段 | GLSL 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `albedo` | `vec3` | `vec3(1.0)` | 线性 RGB 基础色 |
+| `normalWS` | `vec3` | `vec3(0.0)` | 世界空间着色法线；零向量是改用几何法线的哨兵值 |
+| `metallic` | `float` | `0.0` | `[0, 1]` 范围的金属度；零表示非金属 |
+| `smoothness` | `float` | `0.5` | `[0, 1]` 范围的光滑度，等于 `1 - perceptualRoughness` |
+| `occlusion` | `float` | `1.0` | `[0, 1]` 范围的环境遮蔽；一表示完全无遮挡 |
+| `emission` | `vec3` | `vec3(0.0)` | 已经乘入强度的线性 RGB 自发光 |
+| `alpha` | `float` | `1.0` | `[0, 1]` 范围的不透明度或覆盖率 |
+| `specularHighlights` | `float` | `1.0` | `[0, 1]` 范围的镜面高光乘数 |
+| `shadingParam0`、`shadingParam1` | `float` | `0.0` | 由 ShadingModel 定义、可被标准 GBuffer 保存的两个标量 |
 
 零向量 `normalWS` 有明确用途。材质没有编写法线时，应保留这个值。管线适配器会在 `surface()` 之后调用 `ResolveSurfaceNormal()`，把哨兵替换为插值后的几何法线，并归一化用户写入的世界空间法线。不要在 `surface()` 内归一化这个零向量，否则哨兵信息会丢失。
 
