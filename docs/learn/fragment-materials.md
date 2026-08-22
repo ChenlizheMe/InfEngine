@@ -8,7 +8,7 @@ A material fragment stage assembles textures, Material values, and interpolated 
 
 This split lets one `.frag` serve Forward, Forward+, and any Deferred or custom route whose adapter and ShadingModel can represent the same surface contract.
 
-<div class="learn-article-toc"><strong>In this chapter</strong><a href="#first-surface">A first surface</a><a href="#material-workflow">Shader to visible mesh</a><a href="#properties">Material properties</a><a href="#render-state">Render state and Queue</a><a href="#surface-contract">The SurfaceData contract</a></div>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#first-surface">A first surface</a><a href="#material-workflow">Shader to visible mesh</a><a href="#ownership">Who owns what</a><a href="#properties">Material properties</a><a href="#render-state">Render state and Queue</a><a href="#surface-contract">The SurfaceData contract</a></div>
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="gold-coin material style reference" loading="lazy" decoding="async">
@@ -53,6 +53,27 @@ This editor workflow closes the loop with the shader above:
 5. Save the scene, move the camera or Cube, and confirm that the object remains visible in Scene and Game views. Reopen `PaintedCube.mat`: Vertex must still read `Standard`, Fragment must still identify `Painted Unlit`, and Queue must be `2000`. These three observations distinguish a saved mesh binding from a Material preview alone.
 
 If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that `ShaderInfo Name` still matches the imported ID. If changing `Name` during hot reload reports that an asset reimport is required, restore the old ID or reimport and reassign the Fragment asset. A Material property that does not appear usually means the fragment import failed or the assigned Material still points at another fragment ID.
+
+## Who owns what: stages, properties, and bindings {#ownership}
+
+A Material is a small document plus two stage references. The **Vertex** and **Fragment** selectors store `ShaderInfo Name` values, and the fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.
+
+Properties are declared in the fragment's `ShaderInfo` block and become typed Material fields serialized into the `.mat` document. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white` and `normal` as built-in defaults. The fragment reads them through the `material.*` members and the `sample*` helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
+
+ShaderInfo entries affect different things:
+
+| Entry | What it does |
+| --- | --- |
+| `Name` | The stable, case-sensitive selector ID |
+| `ShadingModel` | Which `.shadingmodel` provides `shading()` for the surface |
+| `Properties` | Typed Material fields and Inspector controls |
+| `Surface` | A defaults bundle (opaque or transparent) for fields left unspecified |
+| `Queue` | Which pipeline route consumes the material |
+| `Cull`, `DepthWrite`, `DepthTest`, `Blend`, `AlphaClip`, `Stencil` | Render state applied when the pipeline is built |
+| `CastShadows`, `ReceiveShadows` | Participation in shadow paths |
+| `PassTag` | A shader-authored tag that passes can filter on with `pass_tag` |
+| `Capabilities` | Domain and ABI traits such as `Fullscreen` or `BindlessTextures` |
+| `Imports`, `Requires` | Linked GLSL libraries and the engine resources they need |
 
 ## Material properties {#properties}
 
@@ -182,7 +203,7 @@ This function only assembles the surface. The ShadingModel owns the surface-ligh
 
 <div class="learn-warning"><strong>Alpha alone leaves render state unchanged.</strong><p>`s.alpha` supplies coverage to clipping or blending. Queue selects the route, depth state controls visibility, `AlphaClip` can discard, and `Blend` controls composition. Check all four when a surface disappears or stays opaque.</p></div>
 
-**Evidence note.** The workflow and state priority above follow the current Project and Hierarchy context menus, Material and MeshRenderer Inspectors, shader reload path, material metadata application, pass construction, and transparent draw sorting. Texture guidance follows the current Texture Inspector, importer defaults, GPU format selection, and `normal_utils.glsl`. The opening WebP remains a style reference because its source configuration and revision are absent from this workspace.
+**Evidence note.** The workflow and state priority above follow the current Project and Hierarchy context menus, Material and MeshRenderer Inspectors, shader reload path, material metadata application, pass construction, and transparent draw sorting. Texture guidance follows the current Texture Inspector, importer defaults, GPU format selection, and `surface_utils.glsl` (the mesh surface helpers that define `sampleNormal`). The opening WebP remains a style reference because its source configuration and revision are absent from this workspace.
 
 <!-- language:zh -->
 
@@ -194,7 +215,7 @@ This function only assembles the surface. The ShadingModel owns the surface-ligh
 
 按照这套分工，同一份 `.frag` 可以服务于 Forward、Forward+，以及能够表示同一份 Surface 契约的 Deferred 或自定义路径。
 
-<div class="learn-article-toc"><strong>本章内容</strong><a href="#first-surface_1">第一份 Surface</a><a href="#material-workflow_1">从 Shader 到可见 Mesh</a><a href="#properties_1">材质属性</a><a href="#render-state_1">渲染状态与 Queue</a><a href="#surface-contract_1">SurfaceData 契约</a></div>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#first-surface_1">第一份 Surface</a><a href="#material-workflow_1">从 Shader 到可见 Mesh</a><a href="#ownership_1">谁拥有什么</a><a href="#properties_1">材质属性</a><a href="#render-state_1">渲染状态与 Queue</a><a href="#surface-contract_1">SurfaceData 契约</a></div>
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="金币材质风格参考" loading="lazy" decoding="async">
@@ -239,6 +260,27 @@ Material 保存参数值，编译后的 Shader 状态由渲染系统管理。切
 5. 保存场景，移动相机或 Cube，确认对象在 Scene 与 Game View 都保持可见。重新打开 `PaintedCube.mat`：Vertex 应保持 `Standard`，Fragment 应保持 `Painted Unlit`，Queue 应为 `2000`。这三项观察可以确认场景保存了 Mesh 绑定，验证范围超过单独的 Material 预览。
 
 Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并检查 `ShaderInfo Name` 是否仍与导入 ID 一致。热重载期间修改 `Name` 会提示必须重新导入资产；可以恢复旧 ID，也可以重新导入后再次分配 Fragment。Material 属性没有出现时，常见原因是 Frag 导入失败，或当前 Material 仍指向另一个 Fragment ID。
+
+## 谁拥有什么：阶段、属性与绑定 {#ownership_1}
+
+Material 是一份小文档加上两个阶段引用。**Vertex** 与 **Fragment** 选择器保存 `ShaderInfo Name` 值，片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。
+
+属性在片元的 `ShaderInfo` 块里声明，会变成有类型的 Material 字段，序列化进 `.mat` 文档。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white` 与 `normal` 是内置默认值。片元通过 `material.*` 成员与 `sample*` 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
+
+ShaderInfo 各条目影响不同环节：
+
+| 条目 | 作用 |
+| --- | --- |
+| `Name` | 稳定且区分大小写的选择器 ID |
+| `ShadingModel` | 由哪个 `.shadingmodel` 提供表面的 `shading()` |
+| `Properties` | 有类型的 Material 字段与 Inspector 控件 |
+| `Surface` | 为未指定字段提供的 Opaque 或 Transparent 默认值包 |
+| `Queue` | 哪条管线路由消费这个材质 |
+| `Cull`、`DepthWrite`、`DepthTest`、`Blend`、`AlphaClip`、`Stencil` | 构建管线时应用的渲染状态 |
+| `CastShadows`、`ReceiveShadows` | 是否参与阴影路径 |
+| `PassTag` | Shader 声明的标签，Pass 可以用 `pass_tag` 过滤 |
+| `Capabilities` | 域与 ABI 特征，例如 `Fullscreen` 或 `BindlessTextures` |
+| `Imports`、`Requires` | 链接的 GLSL 函数库与其需要的引擎资源 |
 
 ## 材质属性 {#properties_1}
 
@@ -368,4 +410,4 @@ void surface(out SurfaceData s) {
 
 <div class="learn-warning"><strong>单独填写 Alpha 不会改变渲染状态。</strong><p>`s.alpha` 为裁剪或混合提供覆盖率。Queue 选择路径，深度状态控制可见性，`AlphaClip` 可以丢弃片元，`Blend` 决定合成方式。表面消失或始终不透明时，应同时检查这四项。</p></div>
 
-**证据说明。** 上述工作流与状态优先级取自当前 Project 和 Hierarchy 上下文菜单、Material 与 MeshRenderer Inspector、Shader 重载路径、Material 元数据应用、Pass 构建和透明 Draw 排序。贴图说明取自当前 Texture Inspector、导入默认值、GPU 格式选择与 `normal_utils.glsl`。页首 WebP 缺少源配置与版本记录，因此只保留为风格参考。
+**证据说明。** 上述工作流与状态优先级取自当前 Project 和 Hierarchy 上下文菜单、Material 与 MeshRenderer Inspector、Shader 重载路径、Material 元数据应用、Pass 构建和透明 Draw 排序。贴图说明取自当前 Texture Inspector、导入默认值、GPU 格式选择与 `surface_utils.glsl`（定义 `sampleNormal` 的 Mesh 表面辅助函数）。页首 WebP 缺少源配置与版本记录，因此只保留为风格参考。

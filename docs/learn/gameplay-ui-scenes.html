@@ -55,6 +55,7 @@
 <li>Add a Canvas, a child Button named <code>ReturnButton</code> with label <code>Return to menu</code>, and an empty <code>SceneFlow</code> GameObject. Save again.</li>
 </ol>
 <p>A Button created through <strong>UI &gt; Button</strong> already has a <code>UIButton</code> component. Its <code>interactable</code> state, visual transition settings, label, fill, and persistent <strong>On Click ()</strong> list are available in the Inspector.</p>
+<p>A new Canvas defaults to Screen Overlay. Two render modes exist: <strong>Screen Overlay</strong> draws after display encoding, on top of the finished image; <strong>Camera Overlay</strong> draws into the scene before post-processing, so scene effects can process the UI along with the geometry. Menu and HUD screens usually stay on Screen Overlay; choose Camera Overlay when the UI must react to bloom, color grading, or motion blur.</p>
 <h2 id="scene-actions-component">Write the scene actions component</h2>
 <p>Create <code>Assets/Scripts/scene_actions.py</code> with this complete component:</p>
 <pre><code class="language-python">from Infernux.components import InxComponent
@@ -165,6 +166,7 @@ class RuntimeButtonBinding(InxComponent):
 <li>添加 Canvas、子级 Button 和空的 <code>SceneFlow</code>。把 Button 命名为 <code>ReturnButton</code>，label 设为 <code>Return to menu</code>，然后保存场景。</li>
 </ol>
 <p>通过 <strong>UI &gt; Button</strong> 创建的对象已经带有 <code>UIButton</code>。Inspector 中可以设置 <code>interactable</code>、视觉过渡、label、填充和持久化 <strong>On Click ()</strong> 列表。</p>
+<p>新建 Canvas 默认是 Screen Overlay。Canvas 有两种渲染模式：<strong>Screen Overlay</strong> 在显示编码之后绘制，覆盖在成品图像上；<strong>Camera Overlay</strong> 在后处理之前画进场景，场景效果可以把 UI 与几何一起处理。菜单与 HUD 通常留在 Screen Overlay；需要 UI 参与 Bloom、调色或运动模糊时才选择 Camera Overlay。</p>
 <h2 id="scene-actions-component_1">编写场景操作组件</h2>
 <p>创建 <code>Assets/Scripts/scene_actions.py</code>，写入以下完整组件：</p>
 <pre><code class="language-python">from Infernux.components import InxComponent

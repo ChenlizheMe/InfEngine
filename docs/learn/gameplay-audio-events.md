@@ -27,7 +27,7 @@ An `AudioListener` must exist in the scene. For screen-centered or effectively 2
 
 This walkthrough builds on the collision scene from Chapter 5.
 
-1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. The current runtime wrapper reliably supports WAV decoding.
+1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. The runtime bundles four decoders: WAV (`SDL_LoadWAV`), OGG/Vorbis (`stb_vorbis`), MP3 (`dr_mp3`), and FLAC (`dr_flac`). WAV is the simplest path and the recommended first asset; there are currently no automated audio tests covering the decoders.
 2. Select the main camera and add an **AudioListener** component. Keep one active listener in the scene.
 3. Select the player and add an **AudioSource** component. Leave **Track Count** at `1`; the script will assign track 0. Disable **Play On Awake** because the script starts playback after loading the clip.
 4. Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. `on_collision_enter()` requires a real collision pair.
@@ -158,7 +158,7 @@ For a quick API check, add temporary logs for `self._source.is_track_playing(0)`
 ## Common errors {#common-errors}
 
 - **Using `source.clip`**: this property is not public. Assign a numbered track with `set_track_clip()`.
-- **Loading MP3 or OGG based on old UI text**: the current reliable decode path is WAV. Convert the tutorial clips to WAV.
+- **Loading MP3 or OGG based on old UI text**: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, and no automated test covers the decoders yet.
 - **Unloading too early**: keep each `AudioClip` wrapper alive until every source using it has stopped.
 - **Playing in `on_collision_stay()`**: this callback repeats each fixed step. Use `on_collision_enter()` for one sound per contact.
 - **No sound in the scene**: confirm that one active AudioListener exists, the clip loaded, the source is not muted, and the source is inside the attenuation range.
@@ -199,7 +199,7 @@ Infernux 的 `AudioSource` 是多轨组件，没有单一的 `clip` 属性。先
 
 以下步骤沿用第 5 章的碰撞场景。
 
-1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。当前运行时封装可稳定解码 WAV。
+1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。运行时内置四种解码器：WAV（`SDL_LoadWAV`）、OGG/Vorbis（`stb_vorbis`）、MP3（`dr_mp3`）与 FLAC（`dr_flac`）。WAV 路径最简单，建议把它作为第一份验收资产；当前没有自动化音频测试覆盖这些解码器。
 2. 选择主摄像机，添加 **AudioListener** 组件。场景中保留一个启用的监听器。
 3. 选择玩家，添加 **AudioSource** 组件。**Track Count** 保持 `1`，脚本会设置轨道 0。关闭 **Play On Awake**，脚本会在音频加载完成后启动播放。
 4. 保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。`on_collision_enter()` 需要有效的碰撞组合。
@@ -288,9 +288,9 @@ def update(self, delta_time):
 
 | 成员 | 当前行为 |
 | --- | --- |
-| `track_count: int` | 持续轨道数量。Inspector 范围为 1–16，默认值为 1。 |
-| `volume: float` | 所有轨道共享的音源音量。Inspector 范围为 0–1，默认值为 1。 |
-| `pitch: float` | 音源音高倍率。Inspector 范围为 0.1–3，默认值为 1。 |
+| `track_count: int` | 持续轨道数量。Inspector 范围为 1 到 16，默认值为 1。 |
+| `volume: float` | 所有轨道共享的音源音量。Inspector 范围为 0 到 1，默认值为 1。 |
+| `pitch: float` | 音源音高倍率。Inspector 范围为 0.1 到 3，默认值为 1。 |
 | `mute: bool` | 静音全部轨道。 |
 | `loop: bool` | 让持续轨道循环播放。 |
 | `play_on_awake: bool` | 组件启动时自动播放轨道 0。 |
@@ -330,7 +330,7 @@ AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 
 ## 常见错误 {#zh-common-errors}
 
 - **使用 `source.clip`**：当前公开 API 没有这个属性。请用 `set_track_clip()` 分配编号轨道。
-- **根据旧界面文字加载 MP3 或 OGG**：当前稳定解码路径为 WAV。请先转换教程音频。
+- **根据旧界面文字加载 MP3 或 OGG**：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；目前没有自动化测试覆盖解码器。
 - **过早卸载**：每个音频的所有使用者停止后，再调用 `unload()`。
 - **在 `on_collision_stay()` 中播放**：该回调每个固定步都会运行。一次接触一次音效应使用 `on_collision_enter()`。
 - **场景中没有声音**：检查是否存在一个启用的 AudioListener、音频是否加载成功、音源是否静音，以及音源是否位于衰减范围内。

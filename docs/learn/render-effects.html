@@ -209,6 +209,7 @@ class EdgeFadeEffect(FullScreenEffect):
 </ol>
 <p>Most parameter edits only change a parameter block. Put a field in the decorator's <code>topology_parameters</code> only when it can change pass count, resource shape, or binding layout. Built-in Bloom, for example, marks <code>max_iterations</code>; changing it rebuilds the graph, while changing intensity updates runtime data.</p>
 <h2 id="groups-runtime">Effect groups, policy, and runtime edits</h2>
+<p>Before stacking groups, pin down the four records this course uses. A <strong>RenderEffect feature</strong> is a Python class registered with <code>render_effect_feature(type_id, ...)</code>; it owns <code>setup_passes()</code> and the parameter schema. A <strong><code>.effect</code> asset</strong> stores a <code>feature_type</code> plus concrete parameter values, and <code>RenderEffect</code> is its mutable runtime wrapper. An <strong><code>.effectgroup</code></strong> is an asset document whose entries reference effects or nested groups with optional overrides; when mounted, the group expands in place and has no separate runtime object. <strong>EffectStage</strong> and <strong>EffectSlot</strong> belong to the pipeline and the scene, and the next chapter covers them.</p>
 <p>An <code>.effectgroup</code> is an ordered list of <code>.effect</code> or nested <code>.effectgroup</code> references. Each entry has a stable <code>entry_id</code>, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source <code>.effect</code> value intact.</p>
 <pre><code class="language-json">{
   &quot;$schema&quot;: &quot;infernux.render_effect_group&quot;,
@@ -266,7 +267,7 @@ class EdgeFadeEffect(FullScreenEffect):
 </tbody>
 </table>
 <p>At runtime, <code>RenderEffect</code> provides typed getters and setters for floats, integers, booleans, vectors, and colors. Loaded assets are shared. <code>clone()</code> creates an isolated runtime-only copy with no source path or GUID, so edits to the clone do not save over the project asset.</p>
-<p><strong>Evidence note.</strong> These rules follow <code>render_effect_compiler.py</code> (<code>discover_effect_features</code>, <code>compile_and_publish</code>, <code>_compile_effect</code>, and <code>compile_effect_slots</code>), <code>render_effect_inspector.py</code>, <code>resource_documents.py</code>, <code>assets.py</code>, <code>graph.py::fullscreen_quad</code>, and <code>FullscreenRenderer.cpp</code> in the current repository tree. The generated <code>.inxeffect</code> is a derived product; the <code>.effect</code>, feature source, fragment shader, scene Slot list, and their GUID metadata remain the authored evidence.</p>
+<p><strong>Evidence note.</strong> These rules follow <code>renderstack/discovery.py</code> (<code>discover_effect_features</code>) and <code>render_effect_compiler.py</code> (<code>compile_and_publish</code>, <code>_compile_effect</code>, and <code>compile_effect_slots</code>), <code>render_effect_inspector.py</code>, <code>resource_documents.py</code>, <code>assets.py</code>, <code>graph.py::fullscreen_quad</code>, and <code>FullscreenRenderer.cpp</code> in the current repository tree. The generated <code>.inxeffect</code> is a derived product; the <code>.effect</code>, feature source, fragment shader, scene Slot list, and their GUID metadata remain the authored evidence.</p>
 <p>The next chapter covers the stage and slot that decide which image a feature receives.</p></div>
         <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">自定义渲染 · 第 5 章</span></p>
 <h1 id="rendereffect">可复用的 RenderEffect 资源</h1>
@@ -445,6 +446,7 @@ class EdgeFadeEffect(FullScreenEffect):
 </ol>
 <p>大多数参数修改只需更新参数块。会改变 Pass 数量、资源形状或绑定布局的字段才应放进装饰器的 <code>topology_parameters</code>。例如内置 Bloom 把 <code>max_iterations</code> 列为拓扑参数；改迭代次数会重建图，改强度只更新运行时数据。</p>
 <h2 id="groups-runtime_1">EffectGroup、Policy 与运行时修改</h2>
+<p>在叠加 Group 之前，先固定本课程用到的四类记录。<strong>RenderEffect Feature</strong> 是注册了 <code>render_effect_feature(type_id, ...)</code> 的 Python 类，它拥有 <code>setup_passes()</code> 和参数 Schema。<strong><code>.effect</code> 资产</strong>保存 <code>feature_type</code> 与具体参数值，<code>RenderEffect</code> 是它的可变运行时包装。<strong><code>.effectgroup</code></strong> 是资产文档，条目引用 Effect 或嵌套 Group，可以带 Override；挂载时 Group 就地展开，没有独立的运行时对象。<strong>EffectStage</strong> 与 <strong>EffectSlot</strong> 属于管线与场景，下一章介绍。</p>
 <p><code>.effectgroup</code> 是一份有序的 <code>.effect</code> 或嵌套 <code>.effectgroup</code> 引用列表。每项有稳定的 <code>entry_id</code>、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 <code>.effect</code> 数值保持不变。</p>
 <pre><code class="language-json">{
   &quot;$schema&quot;: &quot;infernux.render_effect_group&quot;,
@@ -502,7 +504,7 @@ class EdgeFadeEffect(FullScreenEffect):
 </tbody>
 </table>
 <p>运行时的 <code>RenderEffect</code> 提供 Float、Int、Bool、向量和颜色的类型化 Getter/Setter。加载的资产默认共享。<code>clone()</code> 会生成没有源路径和 GUID 的纯运行时副本，修改它不会覆盖项目资产。</p>
-<p><strong>证据说明。</strong> 上述规则来自当前仓库中的 <code>render_effect_compiler.py</code>（<code>discover_effect_features</code>、<code>compile_and_publish</code>、<code>_compile_effect</code>、<code>compile_effect_slots</code>）、<code>render_effect_inspector.py</code>、<code>resource_documents.py</code>、<code>assets.py</code>、<code>graph.py::fullscreen_quad</code> 与 <code>FullscreenRenderer.cpp</code>。生成的 <code>.inxeffect</code> 属于派生产物；<code>.effect</code>、Feature 源码、Fragment Shader、场景 Slot 列表及其 GUID 元数据才是需要保留的编写证据。</p>
+<p><strong>证据说明。</strong> 上述规则来自当前仓库中的 <code>renderstack/discovery.py</code>（<code>discover_effect_features</code>）与 <code>render_effect_compiler.py</code>（<code>compile_and_publish</code>、<code>_compile_effect</code>、<code>compile_effect_slots</code>）、<code>render_effect_inspector.py</code>、<code>resource_documents.py</code>、<code>assets.py</code>、<code>graph.py::fullscreen_quad</code> 与 <code>FullscreenRenderer.cpp</code>。生成的 <code>.inxeffect</code> 属于派生产物；<code>.effect</code>、Feature 源码、Fragment Shader、场景 Slot 列表及其 GUID 元数据才是需要保留的编写证据。</p>
 <p>下一章继续解释 Stage 与 Slot 如何决定 Feature 实际收到哪一张图。</p></div>
 
         <nav class="learn-course-pager" aria-label="Previous and next chapters">

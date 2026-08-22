@@ -167,7 +167,7 @@ class CoroutineTour(InxComponent):
 </tr>
 <tr>
 <td><code>WaitForSeconds(seconds)</code></td>
-<td>Accumulate scaled <code>delta_time</code> until it reaches <code>seconds</code>.</td>
+<td>Accumulate the update-phase frame delta until it reaches <code>seconds</code>.</td>
 <td><code>update</code></td>
 </tr>
 <tr>
@@ -207,7 +207,7 @@ class CoroutineTour(InxComponent):
 </tr>
 </tbody>
 </table>
-<p><code>WaitForSeconds</code> receives scaled delta time. With <code>Time.time_scale == 0</code>, its elapsed value does not grow. <code>WaitForSecondsRealtime</code> uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.</p>
+<p><code>WaitForSeconds</code> accumulates the frame delta handed to the coroutine scheduler. The scheduler currently forwards the same raw, unscaled delta that <code>update()</code> receives, so <code>Time.time_scale</code> does not slow this wait today; the instruction's docstring still describes scaled time, which the current call path does not deliver. <code>WaitForSecondsRealtime</code> uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.</p>
 <p><code>WaitForEndOfFrame</code> means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.</p>
 <p>Zero or negative values are accepted by the two seconds-based instructions and become ready at the next update check. Frame-based instructions reject values below 1. For clear intent, use <code>yield None</code> when you want one frame.</p>
 <p>Wait instructions carry mutable elapsed, target, or remaining state. Create a fresh <code>WaitForSeconds</code>, <code>WaitForSecondsRealtime</code>, <code>WaitForFrames</code>, or <code>WaitForEndOfFrame</code> for each wait instead of caching one instance across coroutines.</p>
@@ -274,7 +274,7 @@ yield child
 <li><strong>Passing the method instead of its generator</strong>: call <code>self.start_coroutine(self.run_sequence())</code>, including the final parentheses.</li>
 <li><strong>Using <code>time.sleep()</code></strong>: it blocks the thread and freezes other engine work. Yield <code>WaitForSecondsRealtime()</code> for a wall-clock delay.</li>
 <li><strong>Expecting an exact timestamp</strong>: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.</li>
-<li><strong>Expecting <code>WaitForSeconds</code> during pause</strong>: scaled delta time is zero when the time scale is zero. Use realtime waiting only when paused gameplay should still advance that sequence.</li>
+<li><strong>Expecting <code>WaitForSeconds</code> to respect pause</strong>: the current scheduler feeds the raw update delta, so <code>time_scale</code> does not change this wait. Use realtime waiting for wall-clock delays, and accumulate <code>Time.delta_time</code> manually when a sequence must follow the game clock.</li>
 <li><strong>Treating <code>WaitForEndOfFrame</code> as post-render capture</strong>: it maps to late update in the current scheduler.</li>
 <li><strong>Reusing one wait instance</strong>: elapsed and remaining fields belong to that object. Construct a new instruction at each <code>yield</code>.</li>
 <li><strong>Yielding a generator directly</strong>: start it first and yield its <code>Coroutine</code> handle.</li>
@@ -419,7 +419,7 @@ class CoroutineTour(InxComponent):
 </tr>
 <tr>
 <td><code>WaitForSeconds(seconds)</code></td>
-<td>累加缩放后的 <code>delta_time</code>，达到 <code>seconds</code> 后恢复。</td>
+<td>累加更新阶段的帧间隔，达到 <code>seconds</code> 后恢复。</td>
 <td><code>update</code></td>
 </tr>
 <tr>
@@ -459,7 +459,7 @@ class CoroutineTour(InxComponent):
 </tr>
 </tbody>
 </table>
-<p><code>WaitForSeconds</code> 接收缩放后的增量时间。<code>Time.time_scale == 0</code> 时，它的累计值不会增长。<code>WaitForSecondsRealtime</code> 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 <code>yield</code> 前即时创建。</p>
+<p><code>WaitForSeconds</code> 累加协程调度器收到的帧间隔。调度器目前把 <code>update()</code> 收到的同一份原始未缩放 delta 转给协程，因此 <code>Time.time_scale</code> 今天不会减慢这个等待；该指令的 docstring 仍描述为缩放时间，当前调用路径并没有提供缩放值。<code>WaitForSecondsRealtime</code> 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 <code>yield</code> 前即时创建。</p>
 <p><code>WaitForEndOfFrame</code> 对应当前协程调度器的 <code>late_update</code> 阶段，不承诺渲染、画面呈现或截图已经完成。</p>
 <p>两种秒数等待允许 0 和负数，并会在下一次更新检查时就绪。帧数等待会拒绝小于 1 的值。需要明确等待一帧时，使用 <code>yield None</code>。</p>
 <p>等待指令会保存累计时间、目标时间或剩余次数。每次等待都应创建新的 <code>WaitForSeconds</code>、<code>WaitForSecondsRealtime</code>、<code>WaitForFrames</code> 或 <code>WaitForEndOfFrame</code>，避免跨协程缓存同一实例。</p>
@@ -513,7 +513,7 @@ yield child
 <p>这些规则让取消行为清晰地落在组件边界，也能防止已停用对象继续保留游戏调度工作。</p>
 <h2 id="zh-verify">验证结果</h2>
 <ol>
-<li>进入 Play 模式并观察 Console。消息 1 应在 <code>start()</code> 内立即出现，消息 2–10 应保持数字顺序。</li>
+<li>进入 Play 模式并观察 Console。消息 1 应在 <code>start()</code> 内立即出现，消息 2 到 10 应保持数字顺序。</li>
 <li>确认消息 2 与消息 3 之间隔着更新帧，再观察缩放时间和真实时间延时。</li>
 <li>消息 6 应出现在一次固定更新之后。消息 7 应在两次后期更新之后出现。</li>
 <li>gate 与 busy 辅助流程应在没有输入的情况下让消息 8 和 9 出现。</li>
@@ -526,7 +526,7 @@ yield child
 <li><strong>传入方法本身</strong>：应写成 <code>self.start_coroutine(self.run_sequence())</code>，末尾括号不能省略。</li>
 <li><strong>使用 <code>time.sleep()</code></strong>：它会阻塞线程并冻结其他引擎工作。墙钟延时请 <code>yield WaitForSecondsRealtime()</code>。</li>
 <li><strong>期待精确时间点</strong>：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。</li>
-<li><strong>暂停后仍等待 <code>WaitForSeconds</code></strong>：时间缩放为 0 时，缩放增量也为 0。暂停期间仍需推进的流程可使用实时等待。</li>
+<li><strong>期待 <code>WaitForSeconds</code> 响应暂停</strong>：当前调度器传入的是原始更新 delta，<code>time_scale</code> 不会改变这个等待。墙钟延时用实时等待；流程必须跟随游戏时钟时，请自行累计 <code>Time.delta_time</code>。</li>
 <li><strong>把 <code>WaitForEndOfFrame</code> 当成渲染后截图点</strong>：当前调度器把它映射到后期更新。</li>
 <li><strong>复用同一个等待实例</strong>：累计值和剩余次数保存在对象中。每个 <code>yield</code> 都应构造新指令。</li>
 <li><strong>直接 <code>yield</code> 生成器</strong>：先启动生成器，再 <code>yield</code> 它的 <code>Coroutine</code> 句柄。</li>
