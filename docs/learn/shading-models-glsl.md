@@ -6,6 +6,8 @@
 
 A `.frag` assembles `SurfaceData`. A `.shadingmodel` defines how that surface responds to light. A `.glsl` file holds reusable functions. Render-path adapters connect those contracts to Forward, Forward+, and eligible Deferred routes.
 
+`SurfaceData` has a fixed engine-owned shape: base color, world-space shading normal, metallic, smoothness, occlusion, emission, alpha, specular control, and two model-defined scalar channels. It contains material data, not mesh shape. Position, geometric normal, tangent, camera position, view depth, and face orientation live in the separate engine-populated `ShadingContext`. The previous chapter lists the exact GLSL types and defaults; a ShadingModel reads the context with `GetShadingContext()` and should not reconstruct it from a particular render path's private resources.
+
 PBR, unlit color, toon bands, halftone lighting, skin response, and project-specific lighting belong in a ShadingModel. Infernux gives every model the fixed `shading()` entry shown below.
 
 <div class="learn-article-toc"><strong>In this chapter</strong><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#pass-variants">Pass variants</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
@@ -189,6 +191,8 @@ These boundaries keep lighting code readable and leave route decisions with the 
 # ShadingModel 与 GLSL 函数库
 
 `.frag` 组装 `SurfaceData`，`.shadingmodel` 定义表面对光照的响应，`.glsl` 保存可复用函数。渲染路径适配器把这些契约接到 Forward、Forward+ 与满足条件的 Deferred 路径。
+
+`SurfaceData` 的结构由引擎固定，包含基础色、世界空间着色法线、金属度、光滑度、环境遮蔽、自发光、Alpha、高光控制以及两个由模型定义的标量通道。它保存材质数据，不描述 Mesh 的几何形状。位置、几何法线、切线、相机位置、观察深度与正反面信息属于引擎单独填写的 `ShadingContext`。上一章列出了所有字段的准确 GLSL 类型与默认值；ShadingModel 应通过 `GetShadingContext()` 读取上下文，不应从某条渲染路径的私有资源中重新拼装这些信息。
 
 PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的美术光照都属于 ShadingModel。每个模型都使用下文展示的固定 `shading()` 入口。
 
