@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -172,26 +172,27 @@
 <p>The stage contract supplies a local semantic resource bus. Its <code>inputs</code> decide whether <code>color</code>, <code>depth</code>, <code>normal</code>, <code>motion</code>, or another handle reaches the effect. The renderer also gathers <code>requires ∪ modifies</code> from enabled assets early enough to request optional geometry buffers. Both sides must agree: requesting <code>motion</code> can make the pipeline produce it, while mounting at a stage that does not expose <code>motion</code> still fails the local contract.</p>
 <p>Stable IDs are asset-facing API. A pipeline author can refactor internal pass names and temporary textures while keeping <code>after_opaque</code> or <code>final</code> stable. Renaming a stage changes the scene contract and leaves old slots orphaned until they are remapped.</p>
 <p>Here is one minimal high-level pipeline that exposes all four scopes through current public calls:</p>
-<pre><code class="language-python">from Infernux.renderstack import Queue, RenderPipeline
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">Queue</span><span class="p">,</span> <span class="n">RenderPipeline</span>
 
 
-class ScopeProbePipeline(RenderPipeline):
-    name = &quot;Scope Probe&quot;
+<span class="k">class</span><span class="w"> </span><span class="nc">ScopeProbePipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Scope Probe"</span>
 
-    def define(self, pipeline):
-        pipeline.frame(hdr=True)
-        with pipeline.opaque() as opaque:
-            with opaque.layer(&quot;Selected Objects&quot;) as selected:
-                selected.forward(Queue(1000, 1099)).effects(
-                    &quot;route_probe&quot;, label=&quot;Route Probe&quot;
-                )
-                selected.forward(Queue(1100, 1199))
-                selected.effects(&quot;layer_probe&quot;, label=&quot;Layer Probe&quot;)
-            opaque.otherwise().forward()
-            opaque.effects(&quot;opaque_probe&quot;, label=&quot;Opaque Stage Probe&quot;)
-        pipeline.effects(&quot;scene_probe&quot;, label=&quot;Scene Composite Probe&quot;)
-        pipeline.screen_ui()
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
+        <span class="n">pipeline</span><span class="o">.</span><span class="n">frame</span><span class="p">(</span><span class="n">hdr</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">opaque</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="s2">"Selected Objects"</span><span class="p">)</span> <span class="k">as</span> <span class="n">selected</span><span class="p">:</span>
+                <span class="n">selected</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">1099</span><span class="p">))</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span>
+                    <span class="s2">"route_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Route Probe"</span>
+                <span class="p">)</span>
+                <span class="n">selected</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1100</span><span class="p">,</span> <span class="mi">1199</span><span class="p">))</span>
+                <span class="n">selected</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"layer_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Layer Probe"</span><span class="p">)</span>
+            <span class="n">opaque</span><span class="o">.</span><span class="n">otherwise</span><span class="p">()</span><span class="o">.</span><span class="n">forward</span><span class="p">()</span>
+            <span class="n">opaque</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"opaque_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Opaque Stage Probe"</span><span class="p">)</span>
+        <span class="n">pipeline</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"scene_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Scene Composite Probe"</span><span class="p">)</span>
+        <span class="n">pipeline</span><span class="o">.</span><span class="n">screen_ui</span><span class="p">()</span>
+</code></pre></div>
+
 <p>Save this Python file under <code>Assets</code>, select <strong>Scope Probe</strong>, and place test objects in Material Queues <code>1000</code>, <code>1100</code>, and <code>1200</code>. Mount the Edge Fade asset from the previous chapter in one probe list at a time:</p>
 <table>
 <thead>
@@ -270,13 +271,15 @@ class ScopeProbePipeline(RenderPipeline):
 <li><strong><code>after_screen_ui</code></strong> receives encoded scene color plus Screen UI. No second display-encode pass follows it. Effects mounted here must operate in display space and preserve an encoded <code>[0,1]</code> result for presentation.</li>
 </ul>
 <p>The continuous frame tail is:</p>
-<pre><code class="language-text">Camera UI -&gt; after_camera_ui -&gt; before_post_process -&gt; final
+<div class="highlight"><pre><span></span><code>Camera UI -&gt; after_camera_ui -&gt; before_post_process -&gt; final
           -&gt; after_post_process -&gt; Display Encode + Commit
           -&gt; Screen UI -&gt; after_screen_ui -&gt; graph output -&gt; presentation
-</code></pre>
+</code></pre></div>
+
 <p>A Tone Mapping <code>.effect</code> appears only when the user mounts that asset inside <code>final</code>:</p>
-<pre><code class="language-text">final: [HDR effects] -&gt; [Tone Mapping .effect, optional] -&gt; [linear-LDR effects]
-</code></pre>
+<div class="highlight"><pre><span></span><code>final: [HDR effects] -&gt; [Tone Mapping .effect, optional] -&gt; [linear-LDR effects]
+</code></pre></div>
+
 <p>RenderStack finalization guarantees display encoding, Screen UI overlay, and <code>after_screen_ui</code> when a custom pipeline omits that terminal section. <code>after_camera_ui</code> and <code>final</code> remain pipeline-declared stages; all built-in pipelines declare both.</p>
 <p>This distinction also explains why <code>before_post_process</code> and <code>after_post_process</code> are absent from the current Effect Stages Inspector: they are injection points. Asset authors mount post-processing effects into <code>final</code> and arrange the chain with slots or an <code>.effectgroup</code>.</p>
 <p><strong>Evidence note.</strong> The stage set and frame tail above follow <code>default_forward_pipeline.py</code>, <code>default_forward_plus_pipeline.py</code>, <code>default_deferred_pipeline.py</code>, <code>graph.py::screen_ui_section</code>, <code>display_encode.frag</code>, and <code>render_stack.py</code> in the current tree. The Scope Probe calls match <code>pipeline_dsl.py</code>; orphan identity and diagnostics match <code>EffectSlot</code>, <code>remap_orphan_effect_stage()</code>, and <code>compile_effect_slots()</code>.</p></div>
@@ -420,26 +423,27 @@ class ScopeProbePipeline(RenderPipeline):
 <p>Stage 契约会建立局部语义 Resource Bus。它的 <code>inputs</code> 决定 <code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code> 等 Handle 能否到达 Effect。渲染器也会提前汇总启用资产的 <code>requires ∪ modifies</code>，以便请求可选几何 Buffer。两边必须一致：请求 <code>motion</code> 可以促使管线生成它；挂到没有暴露 <code>motion</code> 的 Stage 时，局部契约仍会失败。</p>
 <p>稳定 ID 属于面向资产的 API。管线作者可以重构内部 Pass 名称与临时纹理，同时保持 <code>after_opaque</code> 或 <code>final</code> 不变。重命名 Stage 会改变场景契约，旧 Slot 将保持 Orphan 状态，直到完成 Remap。</p>
 <p>下面这条最小高层管线通过当前公开调用暴露四种 Scope：</p>
-<pre><code class="language-python">from Infernux.renderstack import Queue, RenderPipeline
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">Queue</span><span class="p">,</span> <span class="n">RenderPipeline</span>
 
 
-class ScopeProbePipeline(RenderPipeline):
-    name = &quot;Scope Probe&quot;
+<span class="k">class</span><span class="w"> </span><span class="nc">ScopeProbePipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Scope Probe"</span>
 
-    def define(self, pipeline):
-        pipeline.frame(hdr=True)
-        with pipeline.opaque() as opaque:
-            with opaque.layer(&quot;Selected Objects&quot;) as selected:
-                selected.forward(Queue(1000, 1099)).effects(
-                    &quot;route_probe&quot;, label=&quot;Route Probe&quot;
-                )
-                selected.forward(Queue(1100, 1199))
-                selected.effects(&quot;layer_probe&quot;, label=&quot;Layer Probe&quot;)
-            opaque.otherwise().forward()
-            opaque.effects(&quot;opaque_probe&quot;, label=&quot;Opaque Stage Probe&quot;)
-        pipeline.effects(&quot;scene_probe&quot;, label=&quot;Scene Composite Probe&quot;)
-        pipeline.screen_ui()
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
+        <span class="n">pipeline</span><span class="o">.</span><span class="n">frame</span><span class="p">(</span><span class="n">hdr</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">opaque</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="s2">"Selected Objects"</span><span class="p">)</span> <span class="k">as</span> <span class="n">selected</span><span class="p">:</span>
+                <span class="n">selected</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">1099</span><span class="p">))</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span>
+                    <span class="s2">"route_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Route Probe"</span>
+                <span class="p">)</span>
+                <span class="n">selected</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1100</span><span class="p">,</span> <span class="mi">1199</span><span class="p">))</span>
+                <span class="n">selected</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"layer_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Layer Probe"</span><span class="p">)</span>
+            <span class="n">opaque</span><span class="o">.</span><span class="n">otherwise</span><span class="p">()</span><span class="o">.</span><span class="n">forward</span><span class="p">()</span>
+            <span class="n">opaque</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"opaque_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Opaque Stage Probe"</span><span class="p">)</span>
+        <span class="n">pipeline</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"scene_probe"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Scene Composite Probe"</span><span class="p">)</span>
+        <span class="n">pipeline</span><span class="o">.</span><span class="n">screen_ui</span><span class="p">()</span>
+</code></pre></div>
+
 <p>把这份 Python 文件保存到 <code>Assets</code>，选择 <strong>Scope Probe</strong>，再让测试物体分别使用 Material Queue <code>1000</code>、<code>1100</code>、<code>1200</code>。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：</p>
 <table>
 <thead>
@@ -518,13 +522,15 @@ class ScopeProbePipeline(RenderPipeline):
 <li><strong><code>after_screen_ui</code></strong> 接收编码后的场景颜色与 Screen UI。它后面没有第二次显示编码。挂在这里的 Effect 必须按显示空间工作，并为 Present 保持编码后的 <code>[0,1]</code> 结果。</li>
 </ul>
 <p>连续帧尾如下：</p>
-<pre><code class="language-text">Camera UI -&gt; after_camera_ui -&gt; before_post_process -&gt; final
+<div class="highlight"><pre><span></span><code>Camera UI -&gt; after_camera_ui -&gt; before_post_process -&gt; final
           -&gt; after_post_process -&gt; Display Encode + Commit
           -&gt; Screen UI -&gt; after_screen_ui -&gt; graph output -&gt; presentation
-</code></pre>
+</code></pre></div>
+
 <p>只有用户把 Tone Mapping <code>.effect</code> 资产挂入 <code>final</code> 后，它才会出现在链中：</p>
-<pre><code class="language-text">final: [HDR effects] -&gt; [Tone Mapping .effect, optional] -&gt; [linear-LDR effects]
-</code></pre>
+<div class="highlight"><pre><span></span><code>final: [HDR effects] -&gt; [Tone Mapping .effect, optional] -&gt; [linear-LDR effects]
+</code></pre></div>
+
 <p>自定义管线遗漏终端段时，RenderStack Finalization 会保证显示编码、Screen UI Overlay 与 <code>after_screen_ui</code> 存在。<code>after_camera_ui</code> 和 <code>final</code> 仍由管线声明；全部内置管线都会声明这两个 Stage。</p>
 <p>这也解释了当前 Effect Stages Inspector 中看不到 <code>before_post_process</code> 与 <code>after_post_process</code> 的原因：它们属于 injection point。资产作者把后处理 Effect 挂进 <code>final</code>，再通过 Slot 或 <code>.effectgroup</code> 排列执行链。</p>
 <p><strong>证据说明。</strong> 上述 Stage 集合与帧尾来自当前源码中的 <code>default_forward_pipeline.py</code>、<code>default_forward_plus_pipeline.py</code>、<code>default_deferred_pipeline.py</code>、<code>graph.py::screen_ui_section</code>、<code>display_encode.frag</code> 与 <code>render_stack.py</code>。Scope Probe 的调用与 <code>pipeline_dsl.py</code> 一致；Orphan 身份和诊断规则对应 <code>EffectSlot</code>、<code>remap_orphan_effect_stage()</code> 与 <code>compile_effect_slots()</code>。</p></div>

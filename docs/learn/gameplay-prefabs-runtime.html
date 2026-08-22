@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -62,58 +62,59 @@
 <li>Drag the <code>.prefab</code> asset from Project onto the component's <strong>Prefab</strong> field in Inspector. A Project asset dropped on this <code>GAME_OBJECT</code> field becomes a <code>PrefabRef</code>.</li>
 <li>Save the scene.</li>
 </ol>
-<pre><code class="language-python">from Infernux import (
-    Debug,
-    Destroy,
-    FieldType,
-    InxComponent,
-    Instantiate,
-    PrefabRef,
-    Vector3,
-    serialized_field,
-)
-from Infernux.input import Input, KeyCode
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">Debug</span><span class="p">,</span>
+    <span class="n">Destroy</span><span class="p">,</span>
+    <span class="n">FieldType</span><span class="p">,</span>
+    <span class="n">InxComponent</span><span class="p">,</span>
+    <span class="n">Instantiate</span><span class="p">,</span>
+    <span class="n">PrefabRef</span><span class="p">,</span>
+    <span class="n">Vector3</span><span class="p">,</span>
+    <span class="n">serialized_field</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span><span class="p">,</span> <span class="n">KeyCode</span>
 
 
-class PrefabSpawner(InxComponent):
-    prefab: PrefabRef = serialized_field(
-        default=PrefabRef(),
-        field_type=FieldType.GAME_OBJECT,
-        tooltip=&quot;Prefab created when Space is pressed&quot;,
-    )
+<span class="k">class</span><span class="w"> </span><span class="nc">PrefabSpawner</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">prefab</span><span class="p">:</span> <span class="n">PrefabRef</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">PrefabRef</span><span class="p">(),</span>
+        <span class="n">field_type</span><span class="o">=</span><span class="n">FieldType</span><span class="o">.</span><span class="n">GAME_OBJECT</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Prefab created when Space is pressed"</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    def start(self):
-        self._last_instance = None
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
 
-    def update(self, delta_time: float):
-        if Input.get_key_down(KeyCode.SPACE):
-            self.spawn()
+    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">SPACE</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
-        if Input.get_key_down(KeyCode.DELETE):
-            self.destroy_last()
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DELETE</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">destroy_last</span><span class="p">()</span>
 
-    def spawn(self):
-        if not self.prefab:
-            Debug.log_warning(&quot;PrefabSpawner needs a Prefab asset&quot;)
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">spawn</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"PrefabSpawner needs a Prefab asset"</span><span class="p">)</span>
+            <span class="k">return</span>
 
-        instance = Instantiate(self.prefab, parent=self.game_object)
-        if instance is None:
-            Debug.log_error(&quot;Prefab instantiation failed&quot;)
-            return
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Prefab instantiation failed"</span><span class="p">)</span>
+            <span class="k">return</span>
 
-        instance.transform.local_position = Vector3(0.0, 0.0, 2.0)
-        self._last_instance = instance
-        Debug.log(f&quot;Spawned {instance.name}&quot;)
+        <span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">Vector3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="n">instance</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Spawned </span><span class="si">{</span><span class="n">instance</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def destroy_last(self):
-        if self._last_instance is None:
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">destroy_last</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
 
-        Destroy(self._last_instance)
-        self._last_instance = None
-        Debug.log(&quot;Destroyed the last spawned instance&quot;)
-</code></pre>
+        <span class="n">Destroy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Destroyed the last spawned instance"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>Enter Play mode and click the Game panel. Each Space press creates a fresh Prefab instance under <code>SpawnRoot</code>. Delete removes the most recently created instance. Earlier instances remain because the component stores only the latest returned GameObject.</p>
 <h2 id="instantiate-semantics">What Instantiate accepts and returns</h2>
 <p>The public <code>Instantiate(original, *args, **kwargs)</code> dispatcher currently supports these sources:</p>
@@ -127,25 +128,26 @@ class PrefabSpawner(InxComponent):
 <p><code>Instantiate</code> also restores Python components on the copied hierarchy. Each instance receives its own component objects and runtime state; the source hierarchy stays unchanged.</p>
 <h2 id="parent-space-semantics">Choose parent and Transform space</h2>
 <p>The current scalar overloads provide three useful placement patterns:</p>
-<pre><code class="language-python">from Infernux import Instantiate, Vector3, quatf
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Instantiate</span><span class="p">,</span> <span class="n">Vector3</span><span class="p">,</span> <span class="n">quatf</span>
 
-# No parent argument: create at the scene root and preserve source world TRS.
-root_instance = Instantiate(prefab)
+<span class="c1"># No parent argument: create at the scene root and preserve source world TRS.</span>
+<span class="n">root_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">)</span>
 
-# A parent argument: preserve source local TRS under this parent.
-local_instance = Instantiate(prefab, parent=spawn_root)
+<span class="c1"># A parent argument: preserve source local TRS under this parent.</span>
+<span class="n">local_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">spawn_root</span><span class="p">)</span>
 
-# Parent plus True: keep source world TRS while adopting the parent.
-world_instance = Instantiate(prefab, spawn_root, True)
+<span class="c1"># Parent plus True: keep source world TRS while adopting the parent.</span>
+<span class="n">world_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">spawn_root</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
 
-# Position and rotation are world-space values; the parent is optional.
-placed_instance = Instantiate(
-    prefab,
-    Vector3(5.0, 0.0, 2.0),
-    quatf(),
-    spawn_root,
-)
-</code></pre>
+<span class="c1"># Position and rotation are world-space values; the parent is optional.</span>
+<span class="n">placed_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span>
+    <span class="n">prefab</span><span class="p">,</span>
+    <span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+    <span class="n">quatf</span><span class="p">(),</span>
+    <span class="n">spawn_root</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>parent</code> may be a <code>GameObject</code>, <code>Transform</code>, <code>GameObjectRef</code>, or <code>None</code>. The explicit boolean is named <code>instantiate_in_world_space</code> when passed by keyword.</p>
 <table>
 <thead>
@@ -181,20 +183,22 @@ placed_instance = Instantiate(
 <p>This distinction becomes visible when the source or target parent is translated, rotated, or scaled. The tutorial intentionally uses <code>parent=self.game_object</code>, then assigns <code>local_position</code>, so every spawned Cube appears two local Z units from <code>SpawnRoot</code>.</p>
 <p>An explicit <code>parent=None</code> uses the parent-overload path and preserves local TRS. Omitting the parent argument preserves world TRS. They can produce different positions when cloning a scene GameObject that already has a parent.</p>
 <p>After creation, hierarchy changes use matching APIs:</p>
-<pre><code class="language-python"># GameObject API: parent is a GameObject.
-instance.set_parent(spawn_root, world_position_stays=True)
+<div class="highlight"><pre><span></span><code><span class="c1"># GameObject API: parent is a GameObject.</span>
+<span class="n">instance</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span><span class="n">spawn_root</span><span class="p">,</span> <span class="n">world_position_stays</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
-# Transform API: parent is a Transform.
-instance.transform.set_parent(
-    spawn_root.transform,
-    world_position_stays=False,
-)
-</code></pre>
+<span class="c1"># Transform API: parent is a Transform.</span>
+<span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span>
+    <span class="n">spawn_root</span><span class="o">.</span><span class="n">transform</span><span class="p">,</span>
+    <span class="n">world_position_stays</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>world_position_stays=True</code> keeps the current world transform while calculating new local values. <code>False</code> keeps the current local values and lets the new parent determine the resulting world transform.</p>
 <h2 id="destroy-semantics">End an instance lifetime with Destroy</h2>
 <p>The top-level <code>Destroy</code> function currently accepts a live <code>GameObject</code> only:</p>
-<pre><code class="language-python">Destroy(instance)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">Destroy</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+</code></pre></div>
+
 <p>Destruction enters the scene's pending-destroy flow. Treat the object and all descendants as unavailable after requesting destruction, clear references you own, and let lifecycle cleanup run. Active Python components receive their disable and destroy cleanup as the pending operation is processed.</p>
 <p>The <code>delay</code> parameter exists in the current signature, but delayed destruction has not been implemented. <code>Destroy(instance, 3.0)</code> does not schedule a three-second lifetime. For timed cleanup, track elapsed time in a component or use the coroutine timing APIs introduced later in the course.</p>
 <p><code>Destroy(component)</code> raises <code>TypeError</code>. A Python component can remove itself with its <code>destroy()</code> method; that is a separate component-lifetime operation.</p>
@@ -245,58 +249,59 @@ instance.transform.set_parent(
 <li>从 Project 把 <code>.prefab</code> 资产拖到 Inspector 中该组件的 <strong>Prefab</strong> 字段。Project 资产放入这个 <code>GAME_OBJECT</code> 字段后会成为 <code>PrefabRef</code>。</li>
 <li>保存场景。</li>
 </ol>
-<pre><code class="language-python">from Infernux import (
-    Debug,
-    Destroy,
-    FieldType,
-    InxComponent,
-    Instantiate,
-    PrefabRef,
-    Vector3,
-    serialized_field,
-)
-from Infernux.input import Input, KeyCode
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">Debug</span><span class="p">,</span>
+    <span class="n">Destroy</span><span class="p">,</span>
+    <span class="n">FieldType</span><span class="p">,</span>
+    <span class="n">InxComponent</span><span class="p">,</span>
+    <span class="n">Instantiate</span><span class="p">,</span>
+    <span class="n">PrefabRef</span><span class="p">,</span>
+    <span class="n">Vector3</span><span class="p">,</span>
+    <span class="n">serialized_field</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span><span class="p">,</span> <span class="n">KeyCode</span>
 
 
-class PrefabSpawner(InxComponent):
-    prefab: PrefabRef = serialized_field(
-        default=PrefabRef(),
-        field_type=FieldType.GAME_OBJECT,
-        tooltip=&quot;Prefab created when Space is pressed&quot;,
-    )
+<span class="k">class</span><span class="w"> </span><span class="nc">PrefabSpawner</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">prefab</span><span class="p">:</span> <span class="n">PrefabRef</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">PrefabRef</span><span class="p">(),</span>
+        <span class="n">field_type</span><span class="o">=</span><span class="n">FieldType</span><span class="o">.</span><span class="n">GAME_OBJECT</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Prefab created when Space is pressed"</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    def start(self):
-        self._last_instance = None
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
 
-    def update(self, delta_time: float):
-        if Input.get_key_down(KeyCode.SPACE):
-            self.spawn()
+    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">SPACE</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
-        if Input.get_key_down(KeyCode.DELETE):
-            self.destroy_last()
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DELETE</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">destroy_last</span><span class="p">()</span>
 
-    def spawn(self):
-        if not self.prefab:
-            Debug.log_warning(&quot;PrefabSpawner needs a Prefab asset&quot;)
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">spawn</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"PrefabSpawner needs a Prefab asset"</span><span class="p">)</span>
+            <span class="k">return</span>
 
-        instance = Instantiate(self.prefab, parent=self.game_object)
-        if instance is None:
-            Debug.log_error(&quot;Prefab instantiation failed&quot;)
-            return
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Prefab instantiation failed"</span><span class="p">)</span>
+            <span class="k">return</span>
 
-        instance.transform.local_position = Vector3(0.0, 0.0, 2.0)
-        self._last_instance = instance
-        Debug.log(f&quot;Spawned {instance.name}&quot;)
+        <span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">Vector3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="n">instance</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Spawned </span><span class="si">{</span><span class="n">instance</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def destroy_last(self):
-        if self._last_instance is None:
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">destroy_last</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
 
-        Destroy(self._last_instance)
-        self._last_instance = None
-        Debug.log(&quot;Destroyed the last spawned instance&quot;)
-</code></pre>
+        <span class="n">Destroy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Destroyed the last spawned instance"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>进入 Play 模式并单击 Game 面板。每次按下空格键，<code>SpawnRoot</code> 下都会出现一个新的 Prefab 实例。Delete 会移除最近创建的实例；更早的实例会保留，因为组件只保存了最后一次返回的 GameObject。</p>
 <h2 id="instantiate-semantics_1">Instantiate 接受什么、返回什么</h2>
 <p>公共入口 <code>Instantiate(original, *args, **kwargs)</code> 当前支持以下来源：</p>
@@ -310,25 +315,26 @@ class PrefabSpawner(InxComponent):
 <p><code>Instantiate</code> 还会恢复复制层级中的 Python 组件。每个实例都有独立的组件对象与运行时状态，源层级保持原值。</p>
 <h2 id="parent-space-semantics_1">选择父级与 Transform 空间</h2>
 <p>当前标量重载提供三种常用放置方式：</p>
-<pre><code class="language-python">from Infernux import Instantiate, Vector3, quatf
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Instantiate</span><span class="p">,</span> <span class="n">Vector3</span><span class="p">,</span> <span class="n">quatf</span>
 
-# 省略 parent：创建在场景根级，并保留源对象的世界 TRS。
-root_instance = Instantiate(prefab)
+<span class="c1"># 省略 parent：创建在场景根级，并保留源对象的世界 TRS。</span>
+<span class="n">root_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">)</span>
 
-# 传入 parent：挂到该父级下，并保留源对象的局部 TRS。
-local_instance = Instantiate(prefab, parent=spawn_root)
+<span class="c1"># 传入 parent：挂到该父级下，并保留源对象的局部 TRS。</span>
+<span class="n">local_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">spawn_root</span><span class="p">)</span>
 
-# parent 加 True：挂到父级下，同时保留源对象的世界 TRS。
-world_instance = Instantiate(prefab, spawn_root, True)
+<span class="c1"># parent 加 True：挂到父级下，同时保留源对象的世界 TRS。</span>
+<span class="n">world_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">spawn_root</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
 
-# position 与 rotation 使用世界空间；parent 可省略。
-placed_instance = Instantiate(
-    prefab,
-    Vector3(5.0, 0.0, 2.0),
-    quatf(),
-    spawn_root,
-)
-</code></pre>
+<span class="c1"># position 与 rotation 使用世界空间；parent 可省略。</span>
+<span class="n">placed_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span>
+    <span class="n">prefab</span><span class="p">,</span>
+    <span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+    <span class="n">quatf</span><span class="p">(),</span>
+    <span class="n">spawn_root</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>parent</code> 可以是 <code>GameObject</code>、<code>Transform</code>、<code>GameObjectRef</code> 或 <code>None</code>。使用关键字传递时，显式布尔参数名为 <code>instantiate_in_world_space</code>。</p>
 <table>
 <thead>
@@ -364,20 +370,22 @@ placed_instance = Instantiate(
 <p>源对象或目标父级存在平移、旋转、缩放时，这个区别会清楚呈现。教程特意使用 <code>parent=self.game_object</code>，随后设置 <code>local_position</code>，因此每个 Cube 都出现在 <code>SpawnRoot</code> 的局部 Z 轴前方 2 个单位处。</p>
 <p>显式传入 <code>parent=None</code> 会进入 parent 重载并保留局部 TRS；省略 parent 参数则保留世界 TRS。复制一个已经有父级的场景 GameObject 时，两种写法可能得到不同位置。</p>
 <p>创建后调整层级，可以使用对应 API：</p>
-<pre><code class="language-python"># GameObject API：parent 参数使用 GameObject。
-instance.set_parent(spawn_root, world_position_stays=True)
+<div class="highlight"><pre><span></span><code><span class="c1"># GameObject API：parent 参数使用 GameObject。</span>
+<span class="n">instance</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span><span class="n">spawn_root</span><span class="p">,</span> <span class="n">world_position_stays</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
-# Transform API：parent 参数使用 Transform。
-instance.transform.set_parent(
-    spawn_root.transform,
-    world_position_stays=False,
-)
-</code></pre>
+<span class="c1"># Transform API：parent 参数使用 Transform。</span>
+<span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">set_parent</span><span class="p">(</span>
+    <span class="n">spawn_root</span><span class="o">.</span><span class="n">transform</span><span class="p">,</span>
+    <span class="n">world_position_stays</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>world_position_stays=True</code> 会保持当前世界变换，并计算新的局部值。设为 <code>False</code> 会保持当前局部值，再由新父级决定最终世界变换。</p>
 <h2 id="destroy-semantics_1">用 Destroy 结束实例生命周期</h2>
 <p>顶层 <code>Destroy</code> 函数当前只接受活动 <code>GameObject</code>：</p>
-<pre><code class="language-python">Destroy(instance)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">Destroy</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+</code></pre></div>
+
 <p>销毁请求会进入场景的待处理销毁流程。发出请求后，应把该对象及其所有后代视为不可再用，清空自己保存的引用，并让生命周期清理继续执行。活动 Python 组件会在处理待销毁操作时收到停用与销毁清理。</p>
 <p>当前签名包含 <code>delay</code> 参数，但延迟销毁尚未实现。<code>Destroy(instance, 3.0)</code> 不会安排三秒生命周期。需要定时清理时，可以在组件中累计时间，或使用课程后面介绍的协程计时 API。</p>
 <p><code>Destroy(component)</code> 会抛出 <code>TypeError</code>。Python 组件可以调用自身的 <code>destroy()</code> 方法移除自己，这是另一种组件生命周期操作。</p>

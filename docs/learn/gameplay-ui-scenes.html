@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -58,24 +58,25 @@
 <p>A new Canvas defaults to Screen Overlay. Two render modes exist: <strong>Screen Overlay</strong> draws after display encoding, on top of the finished image; <strong>Camera Overlay</strong> draws into the scene before post-processing, so scene effects can process the UI along with the geometry. Menu and HUD screens usually stay on Screen Overlay; choose Camera Overlay when the UI must react to bloom, color grading, or motion blur.</p>
 <h2 id="scene-actions-component">Write the scene actions component</h2>
 <p>Create <code>Assets/Scripts/scene_actions.py</code> with this complete component:</p>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.debug import Debug
-from Infernux.scene import SceneManager
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.scene</span><span class="w"> </span><span class="kn">import</span> <span class="n">SceneManager</span>
 
 
-class SceneActions(InxComponent):
-    def load_level_one(self):
-        if SceneManager.load_scene(&quot;Level01&quot;):
-            Debug.log(&quot;Level01 scene load accepted.&quot;)
-        else:
-            Debug.log_error(&quot;Could not request Level01. Check Build Settings.&quot;)
+<span class="k">class</span><span class="w"> </span><span class="nc">SceneActions</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">load_level_one</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">SceneManager</span><span class="o">.</span><span class="n">load_scene</span><span class="p">(</span><span class="s2">"Level01"</span><span class="p">):</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Level01 scene load accepted."</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not request Level01. Check Build Settings."</span><span class="p">)</span>
 
-    def load_main_menu(self):
-        if SceneManager.load_scene(&quot;MainMenu&quot;):
-            Debug.log(&quot;MainMenu scene load accepted.&quot;)
-        else:
-            Debug.log_error(&quot;Could not request MainMenu. Check Build Settings.&quot;)
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">load_main_menu</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">SceneManager</span><span class="o">.</span><span class="n">load_scene</span><span class="p">(</span><span class="s2">"MainMenu"</span><span class="p">):</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"MainMenu scene load accepted."</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not request MainMenu. Check Build Settings."</span><span class="p">)</span>
+</code></pre></div>
+
 <p>Attach <code>SceneActions</code> to the <code>SceneFlow</code> GameObject in both scenes. The two method names are public, take no arguments, and therefore appear in the Button method picker.</p>
 <p><code>SceneManager.load_scene(...)</code> accepts a build index or a string resolved against the build list. A bare name such as <code>"Level01"</code> matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so <code>True</code> does not mean that the new scene has already completed loading inside the current method call.</p>
 <div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>Infernux.scene</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
@@ -95,24 +96,25 @@ class SceneActions(InxComponent):
 <p>For events that need authored arguments, the same Inspector can reflect positional parameters typed as <code>bool</code>, <code>int</code>, <code>float</code>, <code>str</code>, GameObject, or component references. This chapter keeps both callbacks parameterless so the scene transition remains easy to verify.</p>
 <h3 id="runtime-subscription-when-the-target-is-discovered-in-code">Runtime subscription when the target is discovered in code</h3>
 <p>Persistent Inspector binding is the best fit for authored menus. A component may also subscribe a zero-argument listener at runtime through the public <code>UIEvent</code> API:</p>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.lib import GameObject
-from Infernux.ui import UIButton
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.lib</span><span class="w"> </span><span class="kn">import</span> <span class="n">GameObject</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.ui</span><span class="w"> </span><span class="kn">import</span> <span class="n">UIButton</span>
 
 
-class RuntimeButtonBinding(InxComponent):
-    def start(self):
-        button_object = GameObject.find(&quot;PlayButton&quot;)
-        if button_object is None:
-            return
+<span class="k">class</span><span class="w"> </span><span class="nc">RuntimeButtonBinding</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">button_object</span> <span class="o">=</span> <span class="n">GameObject</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="s2">"PlayButton"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">button_object</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
 
-        button = button_object.get_component(UIButton)
-        if button is not None:
-            button.on_click.add_listener(self.handle_click)
+        <span class="n">button</span> <span class="o">=</span> <span class="n">button_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">UIButton</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">button</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">button</span><span class="o">.</span><span class="n">on_click</span><span class="o">.</span><span class="n">add_listener</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">handle_click</span><span class="p">)</span>
 
-    def handle_click(self):
-        print(&quot;PlayButton clicked&quot;)
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">handle_click</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">print</span><span class="p">(</span><span class="s2">"PlayButton clicked"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>Use one binding route for one action. If the same method is present in <strong>On Click ()</strong> and added with <code>add_listener</code>, one click invokes it twice.</p>
 <h2 id="build-list">Add both scenes to Build Settings</h2>
 <p><code>SceneManager</code> resolves only scenes listed for the build. Add both assets before testing:</p>
@@ -169,24 +171,25 @@ class RuntimeButtonBinding(InxComponent):
 <p>新建 Canvas 默认是 Screen Overlay。Canvas 有两种渲染模式：<strong>Screen Overlay</strong> 在显示编码之后绘制，覆盖在成品图像上；<strong>Camera Overlay</strong> 在后处理之前画进场景，场景效果可以把 UI 与几何一起处理。菜单与 HUD 通常留在 Screen Overlay；需要 UI 参与 Bloom、调色或运动模糊时才选择 Camera Overlay。</p>
 <h2 id="scene-actions-component_1">编写场景操作组件</h2>
 <p>创建 <code>Assets/Scripts/scene_actions.py</code>，写入以下完整组件：</p>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.debug import Debug
-from Infernux.scene import SceneManager
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.scene</span><span class="w"> </span><span class="kn">import</span> <span class="n">SceneManager</span>
 
 
-class SceneActions(InxComponent):
-    def load_level_one(self):
-        if SceneManager.load_scene(&quot;Level01&quot;):
-            Debug.log(&quot;Level01 scene load accepted.&quot;)
-        else:
-            Debug.log_error(&quot;Could not request Level01. Check Build Settings.&quot;)
+<span class="k">class</span><span class="w"> </span><span class="nc">SceneActions</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">load_level_one</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">SceneManager</span><span class="o">.</span><span class="n">load_scene</span><span class="p">(</span><span class="s2">"Level01"</span><span class="p">):</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Level01 scene load accepted."</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not request Level01. Check Build Settings."</span><span class="p">)</span>
 
-    def load_main_menu(self):
-        if SceneManager.load_scene(&quot;MainMenu&quot;):
-            Debug.log(&quot;MainMenu scene load accepted.&quot;)
-        else:
-            Debug.log_error(&quot;Could not request MainMenu. Check Build Settings.&quot;)
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">load_main_menu</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">SceneManager</span><span class="o">.</span><span class="n">load_scene</span><span class="p">(</span><span class="s2">"MainMenu"</span><span class="p">):</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"MainMenu scene load accepted."</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not request MainMenu. Check Build Settings."</span><span class="p">)</span>
+</code></pre></div>
+
 <p>在两个场景的 <code>SceneFlow</code> 上都挂载 <code>SceneActions</code>。这两个方法是无参数公开方法，因此会出现在 Button 的方法选择器中。</p>
 <p><code>SceneManager.load_scene(...)</code> 接受 Build Index，也接受按构建列表解析的字符串。<code>"Level01"</code> 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 <code>True</code> 时，新场景仍可能处于待切换状态。</p>
 <div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>Infernux.scene</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
@@ -206,24 +209,25 @@ class SceneActions(InxComponent):
 <p>当事件需要可编辑参数时，Inspector 还能反射带位置参数的方法，支持 <code>bool</code>、<code>int</code>、<code>float</code>、<code>str</code>、GameObject 与组件引用。本章使用无参数回调，验证场景切换会更直接。</p>
 <h3 id="_1">在代码中发现目标后订阅</h3>
 <p>持久化 Inspector 绑定很适合已编辑好的菜单。组件也可以通过公开 <code>UIEvent</code> API 在运行时订阅无参数 Listener：</p>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.lib import GameObject
-from Infernux.ui import UIButton
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.lib</span><span class="w"> </span><span class="kn">import</span> <span class="n">GameObject</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.ui</span><span class="w"> </span><span class="kn">import</span> <span class="n">UIButton</span>
 
 
-class RuntimeButtonBinding(InxComponent):
-    def start(self):
-        button_object = GameObject.find(&quot;PlayButton&quot;)
-        if button_object is None:
-            return
+<span class="k">class</span><span class="w"> </span><span class="nc">RuntimeButtonBinding</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">button_object</span> <span class="o">=</span> <span class="n">GameObject</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="s2">"PlayButton"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">button_object</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
 
-        button = button_object.get_component(UIButton)
-        if button is not None:
-            button.on_click.add_listener(self.handle_click)
+        <span class="n">button</span> <span class="o">=</span> <span class="n">button_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">UIButton</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">button</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">button</span><span class="o">.</span><span class="n">on_click</span><span class="o">.</span><span class="n">add_listener</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">handle_click</span><span class="p">)</span>
 
-    def handle_click(self):
-        print(&quot;PlayButton clicked&quot;)
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">handle_click</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">print</span><span class="p">(</span><span class="s2">"PlayButton clicked"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>一项操作保留一种绑定方式即可。如果同一方法既存在于 <strong>On Click ()</strong>，又通过 <code>add_listener</code> 添加，一次点击会调用两次。</p>
 <h2 id="build-list_1">把两个场景加入 Build Settings</h2>
 <p><code>SceneManager</code> 只解析构建列表中的场景。测试前完成以下设置：</p>

@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -44,14 +44,15 @@
 
 <h2 id="coroutine-model">The generator model</h2>
 <p>A coroutine method contains <code>yield</code>, so calling it creates a generator. Pass that generator object to <code>start_coroutine()</code>:</p>
-<pre><code class="language-python">def start(self):
-    self._handle = self.start_coroutine(self.flash())
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">flash</span><span class="p">())</span>
 
-def flash(self):
-    Debug.log(&quot;flash starts&quot;)
-    yield WaitForSeconds(0.5)
-    Debug.log(&quot;flash ends&quot;)
-</code></pre>
+<span class="k">def</span><span class="w"> </span><span class="nf">flash</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash starts"</span><span class="p">)</span>
+    <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash ends"</span><span class="p">)</span>
+</code></pre></div>
+
 <p><code>start_coroutine()</code> runs the generator immediately until its first <code>yield</code>. In the example, <code>flash starts</code> is logged inside <code>start()</code>. The returned <code>Coroutine</code> handle represents the scheduled continuation. Its <code>is_finished</code> property becomes <code>True</code> after normal completion or cancellation.</p>
 <p>The scheduler is cooperative and belongs to the component. A coroutine must yield for other phases to advance it; it should not contain a long blocking loop, <code>time.sleep()</code>, file wait, or busy polling.</p>
 <h2 id="editor-setup">Prepare the Editor</h2>
@@ -63,86 +64,87 @@ def flash(self):
 </ol>
 <p>The example needs no Collider or Rigidbody. <code>WaitForFixedUpdate()</code> waits for the engine's next fixed-update phase even when this component does not override <code>fixed_update()</code>.</p>
 <h2 id="complete-tour">Run every wait type</h2>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.coroutine import (
-    WaitForEndOfFrame,
-    WaitForFixedUpdate,
-    WaitForFrames,
-    WaitForSeconds,
-    WaitForSecondsRealtime,
-    WaitUntil,
-    WaitWhile,
-)
-from Infernux.debug import Debug
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.coroutine</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">WaitForEndOfFrame</span><span class="p">,</span>
+    <span class="n">WaitForFixedUpdate</span><span class="p">,</span>
+    <span class="n">WaitForFrames</span><span class="p">,</span>
+    <span class="n">WaitForSeconds</span><span class="p">,</span>
+    <span class="n">WaitForSecondsRealtime</span><span class="p">,</span>
+    <span class="n">WaitUntil</span><span class="p">,</span>
+    <span class="n">WaitWhile</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
 
 
-class CoroutineTour(InxComponent):
-    def awake(self):
-        self._sequence_handle = None
-        self._gate_open = False
-        self._busy = False
+<span class="k">class</span><span class="w"> </span><span class="nc">CoroutineTour</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 
-    def start(self):
-        self._sequence_handle = self.start_coroutine(self.run_sequence())
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">run_sequence</span><span class="p">())</span>
 
-    def run_sequence(self):
-        Debug.log(&quot;1. sequence started immediately&quot;, self)
+    <span class="k">def</span><span class="w"> </span><span class="nf">run_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"1. sequence started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield None
-        Debug.log(&quot;2. one update frame passed&quot;, self)
+        <span class="k">yield</span> <span class="kc">None</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"2. one update frame passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForFrames(2)
-        Debug.log(&quot;3. two more update frames passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForSeconds(0.5)
-        Debug.log(&quot;4. 0.5 scaled seconds passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForSecondsRealtime(0.25)
-        Debug.log(&quot;5. 0.25 real seconds passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForFixedUpdate()
-        Debug.log(&quot;6. resumed in fixed update&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForFixedUpdate</span><span class="p">()</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"6. resumed in fixed update"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForEndOfFrame(2)
-        Debug.log(&quot;7. two late-update phases passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForEndOfFrame</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"7. two late-update phases passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        self._gate_open = False
-        self.start_coroutine(self.open_gate_later())
-        yield WaitUntil(lambda: self._gate_open)
-        Debug.log(&quot;8. WaitUntil observed an open gate&quot;, self)
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">open_gate_later</span><span class="p">())</span>
+        <span class="k">yield</span> <span class="n">WaitUntil</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"8. WaitUntil observed an open gate"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        self._busy = True
-        self.start_coroutine(self.clear_busy_later())
-        yield WaitWhile(lambda: self._busy)
-        Debug.log(&quot;9. WaitWhile observed idle state&quot;, self)
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">clear_busy_later</span><span class="p">())</span>
+        <span class="k">yield</span> <span class="n">WaitWhile</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"9. WaitWhile observed idle state"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        child = self.start_coroutine(self.child_sequence())
-        yield child
-        Debug.log(&quot;10. child finished; parent finished&quot;, self)
+        <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">child_sequence</span><span class="p">())</span>
+        <span class="k">yield</span> <span class="n">child</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"10. child finished; parent finished"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-    def open_gate_later(self):
-        yield WaitForSeconds(0.2)
-        self._gate_open = True
+    <span class="k">def</span><span class="w"> </span><span class="nf">open_gate_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">True</span>
 
-    def clear_busy_later(self):
-        yield WaitForFrames(2)
-        self._busy = False
+    <span class="k">def</span><span class="w"> </span><span class="nf">clear_busy_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 
-    def child_sequence(self):
-        Debug.log(&quot;child started immediately&quot;, self)
-        yield WaitForSeconds(0.2)
-        Debug.log(&quot;child completed&quot;, self)
+    <span class="k">def</span><span class="w"> </span><span class="nf">child_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child completed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-    def cancel_sequence(self):
-        &quot;&quot;&quot;May be bound to a UI Button.&quot;&quot;&quot;
-        handle = self._sequence_handle
-        if handle is not None and not handle.is_finished:
-            self.stop_coroutine(handle)
+    <span class="k">def</span><span class="w"> </span><span class="nf">cancel_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">"""May be bound to a UI Button."""</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span>
+        <span class="k">if</span> <span class="n">handle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">handle</span><span class="o">.</span><span class="n">is_finished</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">stop_coroutine</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
 
-    def cancel_everything(self):
-        &quot;&quot;&quot;Stops the parent and every helper owned by this component.&quot;&quot;&quot;
-        self.stop_all_coroutines()
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">cancel_everything</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">"""Stops the parent and every helper owned by this component."""</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">stop_all_coroutines</span><span class="p">()</span>
+</code></pre></div>
+
 <p>The helper generators make the predicates change without input. In a game, those flags can be set by animation callbacks, collision events, UI actions, loading completion, or another component.</p>
 <h2 id="wait-semantics">Complete waiting semantics</h2>
 <p>Each yielded value selects the phase that will check the coroutine next.</p>
@@ -236,18 +238,20 @@ class CoroutineTour(InxComponent):
 </tbody>
 </table>
 <p>To wait for a child, start it and yield the returned handle:</p>
-<pre><code class="language-python">child = self.start_coroutine(self.child_sequence())
-yield child
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">child_sequence</span><span class="p">())</span>
+<span class="k">yield</span> <span class="n">child</span>
+</code></pre></div>
+
 <p>Yielding <code>self.child_sequence()</code> directly produces an unsupported generator value. The current fallback waits one update frame and never schedules that generator. Always use <code>start_coroutine()</code> when the child needs independent scheduling and a handle.</p>
 <p>Stopping a generator marks its handle finished and calls <code>close()</code>. Put essential generator-local cleanup in <code>finally</code>:</p>
-<pre><code class="language-python">def temporary_state(self):
-    self._busy = True
-    try:
-        yield WaitForSeconds(5.0)
-    finally:
-        self._busy = False
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
+</code></pre></div>
+
 <p>The public handle also exposes <code>creation_epoch</code>, <code>creation_epoch_id</code>, and <code>is_legacy</code> for runtime-reload diagnostics. Gameplay flow normally needs only <code>is_finished</code>.</p>
 <p>Stopping only the parent does not automatically stop helper coroutines that were started separately. Use <code>stop_all_coroutines()</code> when the whole component-owned sequence should end together, or retain and stop each helper handle explicitly.</p>
 <h2 id="lifetime">Component lifetime rules</h2>
@@ -296,14 +300,15 @@ yield child
 
 <h2 id="zh-coroutine-model">生成器模型</h2>
 <p>协程方法包含 <code>yield</code>，调用后会创建生成器。把这个生成器对象传给 <code>start_coroutine()</code>：</p>
-<pre><code class="language-python">def start(self):
-    self._handle = self.start_coroutine(self.flash())
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">flash</span><span class="p">())</span>
 
-def flash(self):
-    Debug.log(&quot;flash starts&quot;)
-    yield WaitForSeconds(0.5)
-    Debug.log(&quot;flash ends&quot;)
-</code></pre>
+<span class="k">def</span><span class="w"> </span><span class="nf">flash</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash starts"</span><span class="p">)</span>
+    <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash ends"</span><span class="p">)</span>
+</code></pre></div>
+
 <p><code>start_coroutine()</code> 会立即运行生成器，直到遇到第一个 <code>yield</code>。上例中的 <code>flash starts</code> 会在 <code>start()</code> 内记录。返回的 <code>Coroutine</code> 句柄代表后续调度；正常结束或取消后，<code>is_finished</code> 都会变成 <code>True</code>。</p>
 <p>调度器采用协作式执行，每个组件各自持有。协程需要主动 <code>yield</code>，调度器才能在后续阶段继续推进。协程中不应放入耗时阻塞循环、<code>time.sleep()</code>、同步文件等待或忙轮询。</p>
 <h2 id="zh-editor-setup">准备编辑器</h2>
@@ -315,86 +320,87 @@ def flash(self):
 </ol>
 <p>示例不需要 Collider 或 Rigidbody。即使组件没有重写 <code>fixed_update()</code>，<code>WaitForFixedUpdate()</code> 仍会等待引擎的下一个固定更新阶段。</p>
 <h2 id="zh-complete-tour">运行全部等待类型</h2>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.coroutine import (
-    WaitForEndOfFrame,
-    WaitForFixedUpdate,
-    WaitForFrames,
-    WaitForSeconds,
-    WaitForSecondsRealtime,
-    WaitUntil,
-    WaitWhile,
-)
-from Infernux.debug import Debug
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.coroutine</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">WaitForEndOfFrame</span><span class="p">,</span>
+    <span class="n">WaitForFixedUpdate</span><span class="p">,</span>
+    <span class="n">WaitForFrames</span><span class="p">,</span>
+    <span class="n">WaitForSeconds</span><span class="p">,</span>
+    <span class="n">WaitForSecondsRealtime</span><span class="p">,</span>
+    <span class="n">WaitUntil</span><span class="p">,</span>
+    <span class="n">WaitWhile</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
 
 
-class CoroutineTour(InxComponent):
-    def awake(self):
-        self._sequence_handle = None
-        self._gate_open = False
-        self._busy = False
+<span class="k">class</span><span class="w"> </span><span class="nc">CoroutineTour</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 
-    def start(self):
-        self._sequence_handle = self.start_coroutine(self.run_sequence())
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">run_sequence</span><span class="p">())</span>
 
-    def run_sequence(self):
-        Debug.log(&quot;1. sequence started immediately&quot;, self)
+    <span class="k">def</span><span class="w"> </span><span class="nf">run_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"1. sequence started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield None
-        Debug.log(&quot;2. one update frame passed&quot;, self)
+        <span class="k">yield</span> <span class="kc">None</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"2. one update frame passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForFrames(2)
-        Debug.log(&quot;3. two more update frames passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForSeconds(0.5)
-        Debug.log(&quot;4. 0.5 scaled seconds passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForSecondsRealtime(0.25)
-        Debug.log(&quot;5. 0.25 real seconds passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForFixedUpdate()
-        Debug.log(&quot;6. resumed in fixed update&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForFixedUpdate</span><span class="p">()</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"6. resumed in fixed update"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        yield WaitForEndOfFrame(2)
-        Debug.log(&quot;7. two late-update phases passed&quot;, self)
+        <span class="k">yield</span> <span class="n">WaitForEndOfFrame</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"7. two late-update phases passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        self._gate_open = False
-        self.start_coroutine(self.open_gate_later())
-        yield WaitUntil(lambda: self._gate_open)
-        Debug.log(&quot;8. WaitUntil observed an open gate&quot;, self)
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">open_gate_later</span><span class="p">())</span>
+        <span class="k">yield</span> <span class="n">WaitUntil</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"8. WaitUntil observed an open gate"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        self._busy = True
-        self.start_coroutine(self.clear_busy_later())
-        yield WaitWhile(lambda: self._busy)
-        Debug.log(&quot;9. WaitWhile observed idle state&quot;, self)
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">clear_busy_later</span><span class="p">())</span>
+        <span class="k">yield</span> <span class="n">WaitWhile</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"9. WaitWhile observed idle state"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        child = self.start_coroutine(self.child_sequence())
-        yield child
-        Debug.log(&quot;10. child finished; parent finished&quot;, self)
+        <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">child_sequence</span><span class="p">())</span>
+        <span class="k">yield</span> <span class="n">child</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"10. child finished; parent finished"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-    def open_gate_later(self):
-        yield WaitForSeconds(0.2)
-        self._gate_open = True
+    <span class="k">def</span><span class="w"> </span><span class="nf">open_gate_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">True</span>
 
-    def clear_busy_later(self):
-        yield WaitForFrames(2)
-        self._busy = False
+    <span class="k">def</span><span class="w"> </span><span class="nf">clear_busy_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 
-    def child_sequence(self):
-        Debug.log(&quot;child started immediately&quot;, self)
-        yield WaitForSeconds(0.2)
-        Debug.log(&quot;child completed&quot;, self)
+    <span class="k">def</span><span class="w"> </span><span class="nf">child_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child completed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-    def cancel_sequence(self):
-        &quot;&quot;&quot;可绑定到 UI Button。&quot;&quot;&quot;
-        handle = self._sequence_handle
-        if handle is not None and not handle.is_finished:
-            self.stop_coroutine(handle)
+    <span class="k">def</span><span class="w"> </span><span class="nf">cancel_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">"""可绑定到 UI Button。"""</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span>
+        <span class="k">if</span> <span class="n">handle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">handle</span><span class="o">.</span><span class="n">is_finished</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">stop_coroutine</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
 
-    def cancel_everything(self):
-        &quot;&quot;&quot;停止此组件持有的父流程和全部辅助流程。&quot;&quot;&quot;
-        self.stop_all_coroutines()
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">cancel_everything</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">"""停止此组件持有的父流程和全部辅助流程。"""</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">stop_all_coroutines</span><span class="p">()</span>
+</code></pre></div>
+
 <p>辅助生成器会自动改变条件，无需输入。实际项目中的标志可以由动画回调、碰撞事件、UI 操作、加载完成信号或其他组件设置。</p>
 <h2 id="zh-wait-semantics">完整等待语义</h2>
 <p>每个 <code>yield</code> 值都会决定调度器下一次检查协程的阶段。</p>
@@ -488,18 +494,20 @@ class CoroutineTour(InxComponent):
 </tbody>
 </table>
 <p>等待子流程时，先启动它，再 <code>yield</code> 返回的句柄：</p>
-<pre><code class="language-python">child = self.start_coroutine(self.child_sequence())
-yield child
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">child_sequence</span><span class="p">())</span>
+<span class="k">yield</span> <span class="n">child</span>
+</code></pre></div>
+
 <p>直接 <code>yield self.child_sequence()</code> 会产生调度器不支持的生成器值。当前回退行为只等待一个更新帧，该生成器不会被调度。需要独立调度和句柄时，必须调用 <code>start_coroutine()</code>。</p>
 <p>停止操作会把句柄标记为完成，并调用生成器的 <code>close()</code>。生成器内部的重要清理可放在 <code>finally</code> 中：</p>
-<pre><code class="language-python">def temporary_state(self):
-    self._busy = True
-    try:
-        yield WaitForSeconds(5.0)
-    finally:
-        self._busy = False
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
+</code></pre></div>
+
 <p>公开句柄还提供 <code>creation_epoch</code>、<code>creation_epoch_id</code> 与 <code>is_legacy</code>，供运行时重载诊断使用。一般游戏流程只需检查 <code>is_finished</code>。</p>
 <p>只停止父流程不会自动停止那些单独启动的辅助协程。整个组件流程需要一起结束时，可调用 <code>stop_all_coroutines()</code>；也可以保存每个辅助句柄并逐一停止。</p>
 <h2 id="zh-lifetime">组件生命周期规则</h2>

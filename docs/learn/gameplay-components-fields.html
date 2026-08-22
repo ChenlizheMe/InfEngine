@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -44,55 +44,56 @@
 
 <h2 id="build-the-component">Build the component</h2>
 <p>Create <code>TargetReporter.py</code> under <code>Assets</code> and use this complete script:</p>
-<pre><code class="language-python">from typing import Annotated
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
 
-from Infernux import Debug, GameObject
-from Infernux.components import (
-    Header,
-    InxComponent,
-    MeshRenderer,
-    Range,
-    RequiredComponent,
-    Rigidbody,
-    Tooltip,
-    component_field,
-    disallow_multiple,
-    require_component,
-)
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span><span class="p">,</span> <span class="n">GameObject</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">Header</span><span class="p">,</span>
+    <span class="n">InxComponent</span><span class="p">,</span>
+    <span class="n">MeshRenderer</span><span class="p">,</span>
+    <span class="n">Range</span><span class="p">,</span>
+    <span class="n">RequiredComponent</span><span class="p">,</span>
+    <span class="n">Rigidbody</span><span class="p">,</span>
+    <span class="n">Tooltip</span><span class="p">,</span>
+    <span class="n">component_field</span><span class="p">,</span>
+    <span class="n">disallow_multiple</span><span class="p">,</span>
+    <span class="n">require_component</span><span class="p">,</span>
+<span class="p">)</span>
 
 
-@disallow_multiple
-@require_component(Rigidbody)
-class TargetReporter(InxComponent):
-    speed: Annotated[
-        float,
-        Header(&quot;Movement&quot;),
-        Range(0.0, 12.0),
-        Tooltip(&quot;Maximum movement speed in units per second.&quot;),
-    ] = 3.0
+<span class="nd">@disallow_multiple</span>
+<span class="nd">@require_component</span><span class="p">(</span><span class="n">Rigidbody</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">speed</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
+        <span class="nb">float</span><span class="p">,</span>
+        <span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
+        <span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
+        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="mf">3.0</span>
 
-    target: Annotated[
-        GameObject,
-        Header(&quot;References&quot;),
-        RequiredComponent(&quot;MeshRenderer&quot;),
-        Tooltip(&quot;Target must have a MeshRenderer.&quot;),
-    ]
+    <span class="n">target</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
+        <span class="n">GameObject</span><span class="p">,</span>
+        <span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
+        <span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
+        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
+    <span class="p">]</span>
 
-    body: Rigidbody = component_field(
-        component_type=&quot;Rigidbody&quot;,
-        tooltip=&quot;Rigidbody used by this reporter.&quot;,
-    )
+    <span class="n">body</span><span class="p">:</span> <span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">component_field</span><span class="p">(</span>
+        <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Rigidbody used by this reporter."</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    def start(self) -&gt; None:
-        if self.target is None or self.body is None:
-            Debug.log_warning(&quot;TargetReporter has an unassigned reference.&quot;, self)
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"TargetReporter has an unassigned reference."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="k">return</span>
 
-        Debug.log(
-            f&quot;{self.game_object.name} -&gt; {self.target.name}; speed={self.speed}&quot;,
-            self,
-        )
-</code></pre>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">target</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">; speed=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">speed</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+            <span class="bp">self</span><span class="p">,</span>
+        <span class="p">)</span>
+</code></pre></div>
+
 <p>The imports and declarations above are public APIs. <code>Annotated</code> metadata controls Inspector presentation and validation. <code>component_field()</code> creates a typed component-reference slot.</p>
 <h2 id="author-the-scene">Author the scene</h2>
 <ol>
@@ -153,55 +154,56 @@ class TargetReporter(InxComponent):
 
 <h2 id="build-the-component_1">编写组件</h2>
 <p>在 <code>Assets</code> 下创建 <code>TargetReporter.py</code>，写入下面的完整脚本：</p>
-<pre><code class="language-python">from typing import Annotated
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
 
-from Infernux import Debug, GameObject
-from Infernux.components import (
-    Header,
-    InxComponent,
-    MeshRenderer,
-    Range,
-    RequiredComponent,
-    Rigidbody,
-    Tooltip,
-    component_field,
-    disallow_multiple,
-    require_component,
-)
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span><span class="p">,</span> <span class="n">GameObject</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">Header</span><span class="p">,</span>
+    <span class="n">InxComponent</span><span class="p">,</span>
+    <span class="n">MeshRenderer</span><span class="p">,</span>
+    <span class="n">Range</span><span class="p">,</span>
+    <span class="n">RequiredComponent</span><span class="p">,</span>
+    <span class="n">Rigidbody</span><span class="p">,</span>
+    <span class="n">Tooltip</span><span class="p">,</span>
+    <span class="n">component_field</span><span class="p">,</span>
+    <span class="n">disallow_multiple</span><span class="p">,</span>
+    <span class="n">require_component</span><span class="p">,</span>
+<span class="p">)</span>
 
 
-@disallow_multiple
-@require_component(Rigidbody)
-class TargetReporter(InxComponent):
-    speed: Annotated[
-        float,
-        Header(&quot;Movement&quot;),
-        Range(0.0, 12.0),
-        Tooltip(&quot;Maximum movement speed in units per second.&quot;),
-    ] = 3.0
+<span class="nd">@disallow_multiple</span>
+<span class="nd">@require_component</span><span class="p">(</span><span class="n">Rigidbody</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">speed</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
+        <span class="nb">float</span><span class="p">,</span>
+        <span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
+        <span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
+        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="mf">3.0</span>
 
-    target: Annotated[
-        GameObject,
-        Header(&quot;References&quot;),
-        RequiredComponent(&quot;MeshRenderer&quot;),
-        Tooltip(&quot;Target must have a MeshRenderer.&quot;),
-    ]
+    <span class="n">target</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
+        <span class="n">GameObject</span><span class="p">,</span>
+        <span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
+        <span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
+        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
+    <span class="p">]</span>
 
-    body: Rigidbody = component_field(
-        component_type=&quot;Rigidbody&quot;,
-        tooltip=&quot;Rigidbody used by this reporter.&quot;,
-    )
+    <span class="n">body</span><span class="p">:</span> <span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">component_field</span><span class="p">(</span>
+        <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Rigidbody used by this reporter."</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    def start(self) -&gt; None:
-        if self.target is None or self.body is None:
-            Debug.log_warning(&quot;TargetReporter has an unassigned reference.&quot;, self)
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"TargetReporter has an unassigned reference."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="k">return</span>
 
-        Debug.log(
-            f&quot;{self.game_object.name} -&gt; {self.target.name}; speed={self.speed}&quot;,
-            self,
-        )
-</code></pre>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">target</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">; speed=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">speed</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+            <span class="bp">self</span><span class="p">,</span>
+        <span class="p">)</span>
+</code></pre></div>
+
 <p>这里的导入和声明都来自公开 API。<code>Annotated</code> 元数据控制 Inspector 展示与校验，<code>component_field()</code> 创建带类型筛选的组件引用槽。</p>
 <h2 id="author-the-scene_1">编辑场景</h2>
 <ol>

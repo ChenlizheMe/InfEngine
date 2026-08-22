@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -51,42 +51,43 @@
 <li>Return to the editor and wait for script import to finish. Select <code>Player</code>, click <strong>Add Component</strong> in the Inspector, and add <code>KeyboardMover</code>.</li>
 <li>Leave <strong>Speed</strong> at <code>4</code>, save the scene, and keep the Game panel visible.</li>
 </ol>
-<pre><code class="language-python">from math import sqrt
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">math</span><span class="w"> </span><span class="kn">import</span> <span class="n">sqrt</span>
 
-from Infernux import InxComponent, Vector3, serialized_field
-from Infernux.input import Input, KeyCode
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span><span class="p">,</span> <span class="n">Vector3</span><span class="p">,</span> <span class="n">serialized_field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span><span class="p">,</span> <span class="n">KeyCode</span>
 
 
-class KeyboardMover(InxComponent):
-    speed: float = serialized_field(default=4.0, range=(0.0, 20.0))
+<span class="k">class</span><span class="w"> </span><span class="nc">KeyboardMover</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">speed</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">4.0</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">))</span>
 
-    def update(self, delta_time: float):
-        x = 0.0
-        z = 0.0
+    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="n">x</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="n">z</span> <span class="o">=</span> <span class="mf">0.0</span>
 
-        if Input.get_key(KeyCode.A) or Input.get_key(KeyCode.LEFT_ARROW):
-            x -= 1.0
-        if Input.get_key(KeyCode.D) or Input.get_key(KeyCode.RIGHT_ARROW):
-            x += 1.0
-        if Input.get_key(KeyCode.S) or Input.get_key(KeyCode.DOWN_ARROW):
-            z -= 1.0
-        if Input.get_key(KeyCode.W) or Input.get_key(KeyCode.UP_ARROW):
-            z += 1.0
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">A</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">LEFT_ARROW</span><span class="p">):</span>
+            <span class="n">x</span> <span class="o">-=</span> <span class="mf">1.0</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">D</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">RIGHT_ARROW</span><span class="p">):</span>
+            <span class="n">x</span> <span class="o">+=</span> <span class="mf">1.0</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">S</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DOWN_ARROW</span><span class="p">):</span>
+            <span class="n">z</span> <span class="o">-=</span> <span class="mf">1.0</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">W</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">UP_ARROW</span><span class="p">):</span>
+            <span class="n">z</span> <span class="o">+=</span> <span class="mf">1.0</span>
 
-        length_squared = x * x + z * z
-        if length_squared &gt; 1.0:
-            inverse_length = 1.0 / sqrt(length_squared)
-            x *= inverse_length
-            z *= inverse_length
+        <span class="n">length_squared</span> <span class="o">=</span> <span class="n">x</span> <span class="o">*</span> <span class="n">x</span> <span class="o">+</span> <span class="n">z</span> <span class="o">*</span> <span class="n">z</span>
+        <span class="k">if</span> <span class="n">length_squared</span> <span class="o">&gt;</span> <span class="mf">1.0</span><span class="p">:</span>
+            <span class="n">inverse_length</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">sqrt</span><span class="p">(</span><span class="n">length_squared</span><span class="p">)</span>
+            <span class="n">x</span> <span class="o">*=</span> <span class="n">inverse_length</span>
+            <span class="n">z</span> <span class="o">*=</span> <span class="n">inverse_length</span>
 
-        frame_distance = self.speed * delta_time
-        position = self.transform.position
-        self.transform.position = Vector3(
-            position.x + x * frame_distance,
-            position.y,
-            position.z + z * frame_distance,
-        )
-</code></pre>
+        <span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">delta_time</span>
+        <span class="n">position</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">position</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">position</span> <span class="o">=</span> <span class="n">Vector3</span><span class="p">(</span>
+            <span class="n">position</span><span class="o">.</span><span class="n">x</span> <span class="o">+</span> <span class="n">x</span> <span class="o">*</span> <span class="n">frame_distance</span><span class="p">,</span>
+            <span class="n">position</span><span class="o">.</span><span class="n">y</span><span class="p">,</span>
+            <span class="n">position</span><span class="o">.</span><span class="n">z</span> <span class="o">+</span> <span class="n">z</span> <span class="o">*</span> <span class="n">frame_distance</span><span class="p">,</span>
+        <span class="p">)</span>
+</code></pre></div>
+
 <p>Enter Play mode, click inside the <strong>Game</strong> panel to give it game-input focus, then hold WASD or the arrow keys. The normalization block keeps diagonal movement at the same maximum speed as movement along one axis.</p>
 <h2 id="read-input-state">Read held, pressed, and released state</h2>
 <p><code>Input</code> is a static API. Call its methods on the class; do not create an <code>Input()</code> instance. A key can be a <code>KeyCode</code> integer constant or a string name such as <code>"space"</code>.</p>
@@ -118,23 +119,25 @@ class KeyboardMover(InxComponent):
 </table>
 <p>The built-in virtual axes are also current public API. <code>Input.get_axis("Horizontal")</code> reads A/D and Left/Right; <code>Input.get_axis("Vertical")</code> reads S/W and Down/Up. Values are <code>-1.0</code>, <code>0.0</code>, or <code>1.0</code>, and <code>get_axis_raw()</code> is currently an alias with the same unsmoothed behavior.</p>
 <p>Mouse state follows the same frame model. This component logs the Game-viewport position on the first frame of each left click:</p>
-<pre><code class="language-python">from Infernux import Debug, InxComponent
-from Infernux.input import Input
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span><span class="p">,</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span>
 
 
-class ClickProbe(InxComponent):
-    def update(self, delta_time: float):
-        if Input.get_mouse_button_down(0):
-            x, y = Input.game_mouse_position
-            Debug.log(f&quot;Game click: ({x:.0f}, {y:.0f})&quot;)
-</code></pre>
+<span class="k">class</span><span class="w"> </span><span class="nc">ClickProbe</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_mouse_button_down</span><span class="p">(</span><span class="mi">0</span><span class="p">):</span>
+            <span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="o">=</span> <span class="n">Input</span><span class="o">.</span><span class="n">game_mouse_position</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Game click: (</span><span class="si">{</span><span class="n">x</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">y</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>Button indices are <code>0</code> for left, <code>1</code> for right, and <code>2</code> for middle. <code>Input.mouse_position</code> uses window pixels; <code>Input.game_mouse_position</code> is relative to the top-left of the rendered Game image. Both are class properties, so they have no parentheses.</p>
 <div class="learn-note"><strong>Focus is part of the contract.</strong><p>In the editor, gameplay queries return idle values when the Game view does not accept game input. Click the Game panel after entering Play mode before diagnosing a keyboard or mouse script.</p></div>
 
 <h2 id="use-delta-time">Turn speed into frame distance</h2>
 <p><code>speed</code> is measured in world units per second. Multiplying it by the current frame duration produces the distance for one update:</p>
-<pre><code class="language-text">frame distance = units per second × seconds this frame
-</code></pre>
+<div class="highlight"><pre><span></span><code>frame distance = units per second × seconds this frame
+</code></pre></div>
+
 <p>At 4 units per second, a <code>0.025</code> second frame moves <code>0.1</code> units. Four such frames still cover <code>0.4</code> units. Faster frames produce smaller individual steps and more of them, so distance over the same elapsed time stays consistent.</p>
 <p>The current lifecycle contract distinguishes two time values:</p>
 <ul>
@@ -142,10 +145,11 @@ class ClickProbe(InxComponent):
 <li><code>Time.delta_time</code> is the clamped, scaled delta and follows <code>Time.time_scale</code>.</li>
 </ul>
 <p>The mover above uses the callback argument, so it continues to use unscaled frame time. For movement that should pause when <code>Time.time_scale</code> becomes <code>0</code>, import <code>Time</code> from <code>Infernux</code> and use <code>Time.delta_time</code> for <code>frame_distance</code>:</p>
-<pre><code class="language-python">from Infernux import Time
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Time</span>
 
-frame_distance = self.speed * Time.delta_time
-</code></pre>
+<span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">Time</span><span class="o">.</span><span class="n">delta_time</span>
+</code></pre></div>
+
 <p>Use one time source for one calculation. Multiplying by both values applies frame duration twice.</p>
 <h2 id="choose-transform-space">Choose world or local Transform space</h2>
 <p>Every <code>InxComponent</code> exposes <code>self.transform</code>, a shortcut to <code>self.game_object.transform</code>.</p>
@@ -192,42 +196,43 @@ frame_distance = self.speed * Time.delta_time
 <li>回到编辑器，等待脚本导入完成。选中 <code>Player</code>，在 Inspector 中点击 <strong>添加组件</strong>，加入 <code>KeyboardMover</code>。</li>
 <li>保持 <strong>Speed</strong> 为 <code>4</code>，保存场景，并让 Game 面板保持可见。</li>
 </ol>
-<pre><code class="language-python">from math import sqrt
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">math</span><span class="w"> </span><span class="kn">import</span> <span class="n">sqrt</span>
 
-from Infernux import InxComponent, Vector3, serialized_field
-from Infernux.input import Input, KeyCode
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span><span class="p">,</span> <span class="n">Vector3</span><span class="p">,</span> <span class="n">serialized_field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span><span class="p">,</span> <span class="n">KeyCode</span>
 
 
-class KeyboardMover(InxComponent):
-    speed: float = serialized_field(default=4.0, range=(0.0, 20.0))
+<span class="k">class</span><span class="w"> </span><span class="nc">KeyboardMover</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">speed</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">4.0</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">))</span>
 
-    def update(self, delta_time: float):
-        x = 0.0
-        z = 0.0
+    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="n">x</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="n">z</span> <span class="o">=</span> <span class="mf">0.0</span>
 
-        if Input.get_key(KeyCode.A) or Input.get_key(KeyCode.LEFT_ARROW):
-            x -= 1.0
-        if Input.get_key(KeyCode.D) or Input.get_key(KeyCode.RIGHT_ARROW):
-            x += 1.0
-        if Input.get_key(KeyCode.S) or Input.get_key(KeyCode.DOWN_ARROW):
-            z -= 1.0
-        if Input.get_key(KeyCode.W) or Input.get_key(KeyCode.UP_ARROW):
-            z += 1.0
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">A</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">LEFT_ARROW</span><span class="p">):</span>
+            <span class="n">x</span> <span class="o">-=</span> <span class="mf">1.0</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">D</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">RIGHT_ARROW</span><span class="p">):</span>
+            <span class="n">x</span> <span class="o">+=</span> <span class="mf">1.0</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">S</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DOWN_ARROW</span><span class="p">):</span>
+            <span class="n">z</span> <span class="o">-=</span> <span class="mf">1.0</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">W</span><span class="p">)</span> <span class="ow">or</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">UP_ARROW</span><span class="p">):</span>
+            <span class="n">z</span> <span class="o">+=</span> <span class="mf">1.0</span>
 
-        length_squared = x * x + z * z
-        if length_squared &gt; 1.0:
-            inverse_length = 1.0 / sqrt(length_squared)
-            x *= inverse_length
-            z *= inverse_length
+        <span class="n">length_squared</span> <span class="o">=</span> <span class="n">x</span> <span class="o">*</span> <span class="n">x</span> <span class="o">+</span> <span class="n">z</span> <span class="o">*</span> <span class="n">z</span>
+        <span class="k">if</span> <span class="n">length_squared</span> <span class="o">&gt;</span> <span class="mf">1.0</span><span class="p">:</span>
+            <span class="n">inverse_length</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="n">sqrt</span><span class="p">(</span><span class="n">length_squared</span><span class="p">)</span>
+            <span class="n">x</span> <span class="o">*=</span> <span class="n">inverse_length</span>
+            <span class="n">z</span> <span class="o">*=</span> <span class="n">inverse_length</span>
 
-        frame_distance = self.speed * delta_time
-        position = self.transform.position
-        self.transform.position = Vector3(
-            position.x + x * frame_distance,
-            position.y,
-            position.z + z * frame_distance,
-        )
-</code></pre>
+        <span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">delta_time</span>
+        <span class="n">position</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">position</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">position</span> <span class="o">=</span> <span class="n">Vector3</span><span class="p">(</span>
+            <span class="n">position</span><span class="o">.</span><span class="n">x</span> <span class="o">+</span> <span class="n">x</span> <span class="o">*</span> <span class="n">frame_distance</span><span class="p">,</span>
+            <span class="n">position</span><span class="o">.</span><span class="n">y</span><span class="p">,</span>
+            <span class="n">position</span><span class="o">.</span><span class="n">z</span> <span class="o">+</span> <span class="n">z</span> <span class="o">*</span> <span class="n">frame_distance</span><span class="p">,</span>
+        <span class="p">)</span>
+</code></pre></div>
+
 <p>进入 Play 模式，在 <strong>Game</strong> 面板内单击一次，让游戏输入获得焦点，然后按住 WASD 或方向键。归一化代码会让斜向移动与单轴移动保持相同的最高速度。</p>
 <h2 id="read-input-state_1">读取按住、按下与松开状态</h2>
 <p><code>Input</code> 是静态 API，直接调用类方法即可，无需创建 <code>Input()</code> 实例。按键参数可以使用 <code>KeyCode</code> 整数常量，也可以使用 <code>"space"</code> 这类字符串名称。</p>
@@ -259,23 +264,25 @@ class KeyboardMover(InxComponent):
 </table>
 <p>内置虚拟轴也属于当前公共 API。<code>Input.get_axis("Horizontal")</code> 读取 A/D 与左右方向键，<code>Input.get_axis("Vertical")</code> 读取 S/W 与上下方向键。结果为 <code>-1.0</code>、<code>0.0</code> 或 <code>1.0</code>；当前 <code>get_axis_raw()</code> 是同一套无平滑行为的别名。</p>
 <p>鼠标状态也遵循逐帧模型。下面的组件会在每次按下鼠标左键的第一帧记录 Game 视口坐标：</p>
-<pre><code class="language-python">from Infernux import Debug, InxComponent
-from Infernux.input import Input
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span><span class="p">,</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span>
 
 
-class ClickProbe(InxComponent):
-    def update(self, delta_time: float):
-        if Input.get_mouse_button_down(0):
-            x, y = Input.game_mouse_position
-            Debug.log(f&quot;Game click: ({x:.0f}, {y:.0f})&quot;)
-</code></pre>
+<span class="k">class</span><span class="w"> </span><span class="nc">ClickProbe</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_mouse_button_down</span><span class="p">(</span><span class="mi">0</span><span class="p">):</span>
+            <span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="o">=</span> <span class="n">Input</span><span class="o">.</span><span class="n">game_mouse_position</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Game click: (</span><span class="si">{</span><span class="n">x</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">y</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>鼠标按键编号 <code>0</code>、<code>1</code>、<code>2</code> 依次代表左键、右键与中键。<code>Input.mouse_position</code> 使用窗口像素坐标；<code>Input.game_mouse_position</code> 以 Game 图像左上角为原点。两者都是类属性，访问时不加括号。</p>
 <div class="learn-note"><strong>焦点也是输入契约的一部分。</strong><p>编辑器中的 Game 视图未接收游戏输入时，游戏查询会返回空闲值。进入 Play 模式后先单击 Game 面板，再排查键盘或鼠标脚本。</p></div>
 
 <h2 id="use-delta-time_1">把速度换算为本帧距离</h2>
 <p><code>speed</code> 的单位是“世界单位/秒”。它乘以当前帧时长，就得到一次更新应走的距离：</p>
-<pre><code class="language-text">本帧距离 = 每秒单位数 × 本帧秒数
-</code></pre>
+<div class="highlight"><pre><span></span><code>本帧距离 = 每秒单位数 × 本帧秒数
+</code></pre></div>
+
 <p>速度为每秒 4 个单位时，时长 <code>0.025</code> 秒的一帧移动 <code>0.1</code> 个单位。连续四帧仍会移动 <code>0.4</code> 个单位。帧越快，单步距离越短、步数越多，因此同样的经过时间会得到稳定距离。</p>
 <p>当前生命周期契约区分两种时间值：</p>
 <ul>
@@ -283,10 +290,11 @@ class ClickProbe(InxComponent):
 <li><code>Time.delta_time</code> 是经过上限约束和时间缩放的帧间隔，会跟随 <code>Time.time_scale</code>。</li>
 </ul>
 <p>上面的移动组件使用回调参数，所以它采用未缩放帧时间。移动需要在 <code>Time.time_scale</code> 变为 <code>0</code> 时暂停时，从 <code>Infernux</code> 导入 <code>Time</code>，并用 <code>Time.delta_time</code> 计算 <code>frame_distance</code>：</p>
-<pre><code class="language-python">from Infernux import Time
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Time</span>
 
-frame_distance = self.speed * Time.delta_time
-</code></pre>
+<span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">Time</span><span class="o">.</span><span class="n">delta_time</span>
+</code></pre></div>
+
 <p>一次计算只选一种时间来源。同时乘上两个值会重复应用帧时长。</p>
 <h2 id="choose-transform-space_1">选择世界空间或局部空间</h2>
 <p>每个 <code>InxComponent</code> 都提供 <code>self.transform</code>，它是 <code>self.game_object.transform</code> 的快捷入口。</p>

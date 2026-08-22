@@ -339,6 +339,66 @@
     font-size: 0.82rem;
 }
 
+/* Pygments emits these classes at build time, so code highlighting works
+   without a client-side parser or an external script. */
+.learn-page {
+    --syntax-comment: #87909b;
+    --syntax-preprocessor: #d98f79;
+    --syntax-keyword: #ef7d79;
+    --syntax-name: #d8dee6;
+    --syntax-callable: #79c7d6;
+    --syntax-number: #d6b26e;
+    --syntax-string: #96c27d;
+    --syntax-operator: #d6a0c8;
+    --syntax-punctuation: #b8c0ca;
+}
+
+[data-theme="light"] .learn-page {
+    --syntax-comment: #626b74;
+    --syntax-preprocessor: #a13f2d;
+    --syntax-keyword: #a62935;
+    --syntax-name: #252a31;
+    --syntax-callable: #006f82;
+    --syntax-number: #815b00;
+    --syntax-string: #3f6d24;
+    --syntax-operator: #7a3d75;
+    --syntax-punctuation: #4f5863;
+}
+
+.learn-article-body .highlight .c,
+.learn-article-body .highlight .c1,
+.learn-article-body .highlight .cm,
+.learn-article-body .highlight .cs { color: var(--syntax-comment); font-style: italic; }
+.learn-article-body .highlight .cp,
+.learn-article-body .highlight .cpf { color: var(--syntax-preprocessor); }
+.learn-article-body .highlight .k,
+.learn-article-body .highlight .kc,
+.learn-article-body .highlight .kd,
+.learn-article-body .highlight .kn,
+.learn-article-body .highlight .kp,
+.learn-article-body .highlight .kr,
+.learn-article-body .highlight .kt { color: var(--syntax-keyword); font-weight: 600; }
+.learn-article-body .highlight .n,
+.learn-article-body .highlight .na,
+.learn-article-body .highlight .nb,
+.learn-article-body .highlight .nv { color: var(--syntax-name); }
+.learn-article-body .highlight .nc,
+.learn-article-body .highlight .nf,
+.learn-article-body .highlight .nt { color: var(--syntax-callable); }
+.learn-article-body .highlight .m,
+.learn-article-body .highlight .mf,
+.learn-article-body .highlight .mi,
+.learn-article-body .highlight .mh { color: var(--syntax-number); }
+.learn-article-body .highlight .s,
+.learn-article-body .highlight .s1,
+.learn-article-body .highlight .s2,
+.learn-article-body .highlight .se { color: var(--syntax-string); }
+.learn-article-body .highlight .o,
+.learn-article-body .highlight .ow { color: var(--syntax-operator); }
+.learn-article-body .highlight .p { color: var(--syntax-punctuation); }
+/* The GLSL lexer does not know Infernux's ShaderInfo string syntax. */
+.learn-article-body .highlight .err { color: var(--syntax-string); background: transparent; }
+
 .learn-article-body table {
     width: 100%;
     margin: 16px 0 24px;

@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -111,73 +111,74 @@
 <p>In both hosts, return from <code>define_topology()</code> after recording declarations; the host calls <code>graph.build()</code>. Call <code>build()</code> directly only in an isolated topology test like the verification used for this chapter.</p>
 <h2 id="minimal-graph">Complete RenderStack graph: provider to present</h2>
 <p>Save this class under <code>Assets</code>, select <strong>Base Color Present</strong> on the scene RenderStack, and use an active Camera with an opaque MeshRenderer. It performs a depth prepass, lazily materializes a custom base-color Provider, publishes that texture through a <code>PassResult</code>, copies it to the camera target, runs the canonical UI/display tail, and presents the result.</p>
-<pre><code class="language-python">from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span><span class="p">,</span> <span class="n">geometry_buffer</span>
 
 
-class BaseColorPresentPipeline(RenderPipeline):
-    name = &quot;Base Color Present&quot;
+<span class="k">class</span><span class="w"> </span><span class="nc">BaseColorPresentPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Base Color Present"</span>
 
-    @geometry_buffer(&quot;preview_color&quot;, dependencies={&quot;depth&quot;})
-    def provide_preview_color(self, context):
-        target = context.graph.create_texture(
-            f&quot;{context.source}_preview_color&quot;,
-            format=Format.RGBA16_SFLOAT,
-        )
-        with context.graph.add_pass(
-            f&quot;{context.source}_preview_color&quot;
-        ) as render_pass:
-            render_pass.read(context.sample(&quot;depth&quot;))
-            render_pass.write_color(target)
-            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
-            render_pass.draw_renderers(
-                queue_range=context.queue_range,
-                sort_mode=context.sort_mode,
-                material_pass=&quot;base_color&quot;,
-            )
-        return target
+    <span class="nd">@geometry_buffer</span><span class="p">(</span><span class="s2">"preview_color"</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">})</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">provide_preview_color</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span>
+        <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
+                <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
+                <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
+                <span class="n">material_pass</span><span class="o">=</span><span class="s2">"base_color"</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">target</span>
 
-    def define_topology(self, graph):
-        graph.set_msaa_samples(1)
-        depth = graph.create_texture(&quot;depth&quot;, format=Format.D32_SFLOAT)
+    <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">)</span>
 
-        with graph.add_pass(&quot;DepthPrepass&quot;) as render_pass:
-            render_pass.write_depth(depth)
-            render_pass.set_clear(depth=1.0)
-            render_pass.draw_renderers(
-                queue_range=(0, 2500),
-                sort_mode=&quot;front_to_back&quot;,
-                material_pass=&quot;depth&quot;,
-            )
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"DepthPrepass"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">depth</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
+                <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+                <span class="n">sort_mode</span><span class="o">=</span><span class="s2">"front_to_back"</span><span class="p">,</span>
+                <span class="n">material_pass</span><span class="o">=</span><span class="s2">"depth"</span><span class="p">,</span>
+            <span class="p">)</span>
 
-        requested = self.require_buffer(&quot;preview_color&quot;)
-        opaque = self.geometry_stage(
-            graph,
-            &quot;opaque&quot;,
-            buffers={&quot;depth&quot;: depth},
-            queue_range=(0, 2500),
-        )
-        preview = self.sample_buffer(opaque, requested)
+        <span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"preview_color"</span><span class="p">)</span>
+        <span class="n">opaque</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
+            <span class="n">graph</span><span class="p">,</span>
+            <span class="s2">"opaque"</span><span class="p">,</span>
+            <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
+            <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+        <span class="p">)</span>
+        <span class="n">preview</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">opaque</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 
-        color = graph.create_texture(&quot;color&quot;, camera_target=True)
-        with graph.add_pass(&quot;CopyToCamera&quot;) as render_pass:
-            render_pass.set_texture(&quot;_SourceTex&quot;, preview)
-            render_pass.write_color(color)
-            render_pass.fullscreen_quad(&quot;Fullscreen Blit&quot;)
+        <span class="n">color</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">"color"</span><span class="p">,</span> <span class="n">camera_target</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"CopyToCamera"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">"_SourceTex"</span><span class="p">,</span> <span class="n">preview</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">fullscreen_quad</span><span class="p">(</span><span class="s2">"Fullscreen Blit"</span><span class="p">)</span>
 
-        camera_result = self.write_buffer(
-            opaque,
-            &quot;color&quot;,
-            color,
-            source=&quot;camera&quot;,
-        )
+        <span class="n">camera_result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buffer</span><span class="p">(</span>
+            <span class="n">opaque</span><span class="p">,</span>
+            <span class="s2">"color"</span><span class="p">,</span>
+            <span class="n">color</span><span class="p">,</span>
+            <span class="n">source</span><span class="o">=</span><span class="s2">"camera"</span><span class="p">,</span>
+        <span class="p">)</span>
 
-        with graph.pass_result(camera_result):
-            graph.screen_ui_section(resources={&quot;color&quot;, &quot;depth&quot;})
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">pass_result</span><span class="p">(</span><span class="n">camera_result</span><span class="p">):</span>
+            <span class="n">graph</span><span class="o">.</span><span class="n">screen_ui_section</span><span class="p">(</span><span class="n">resources</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">})</span>
 
-        with graph.add_present_pass(&quot;Present&quot;) as present_pass:
-            present_pass.present(color)
-</code></pre>
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_present_pass</span><span class="p">(</span><span class="s2">"Present"</span><span class="p">)</span> <span class="k">as</span> <span class="n">present_pass</span><span class="p">:</span>
+            <span class="n">present_pass</span><span class="o">.</span><span class="n">present</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
+</code></pre></div>
+
 <p><code>present(color)</code> is a typed terminal action and also calls <code>set_output(color)</code>. A graph may use <code>set_output()</code> without a Present pass, but this example makes the camera-target/export boundary visible. <code>graph.build()</code> also chooses the first camera target when no explicit output exists; production pipelines should express the intended output directly.</p>
 <p>To verify the example, check that the camera shows unlit base color, the RenderStack topology contains the standard tail and <strong>Present</strong>, and the Console has no graph validation error. Temporarily add <code>print(graph.get_debug_string())</code> as the final line of <code>define_topology()</code> to record the authored resources, actions, accesses, and output, then remove the print after diagnosis.</p>
 <p>Logical names are graph-wide resource identities. Reusable fragments can use <code>graph.name_scope()</code> to keep generated names unique. Pass order is recorded as authored, while declared accesses give the native compiler dependency and transition information. The native compiler can cull work that has no path to an output or explicit side effect, so authored order alone does not prove execution.</p>
@@ -185,67 +186,70 @@ class BaseColorPresentPipeline(RenderPipeline):
 <p>The standard tail expects the logical <code>color</code> resource. A specialized RenderStack pipeline can set another final output, though it still needs a valid <code>color</code> path for the standard UI and display-encoding sections.</p>
 <h2 id="providers">Provider contracts</h2>
 <p>Geometry-buffer providers are methods registered on a pipeline class with <code>@geometry_buffer</code>. The registration key is <code>(semantic, phase)</code>; the default phase is <code>opaque</code>. Dependencies are semantic names, and the compiler orders providers topologically.</p>
-<pre><code class="language-python">from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span><span class="p">,</span> <span class="n">geometry_buffer</span>
 
 
-class ObjectIndexPipeline(RenderPipeline):
-    name = &quot;Object Index&quot;
+<span class="k">class</span><span class="w"> </span><span class="nc">ObjectIndexPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Object Index"</span>
 
-    @geometry_buffer(&quot;object_index&quot;, dependencies={&quot;depth&quot;})
-    def provide_object_index(self, context):
-        target = context.graph.create_texture(
-            f&quot;{context.source}_object_index&quot;,
-            format=Format.RG32_UINT,
-        )
-        with context.graph.add_pass(
-            f&quot;{context.source}_object_index&quot;
-        ) as render_pass:
-            render_pass.read(context.sample(&quot;depth&quot;))
-            render_pass.write_color(target)
-            render_pass.draw_renderers(
-                queue_range=context.queue_range,
-                sort_mode=context.sort_mode,
-                material_pass=&quot;picking&quot;,
-            )
-        return target
-</code></pre>
+    <span class="nd">@geometry_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">})</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">provide_object_index</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RG32_UINT</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span>
+        <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
+                <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
+                <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
+                <span class="n">material_pass</span><span class="o">=</span><span class="s2">"picking"</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">target</span>
+</code></pre></div>
+
 <p>A Provider receives a <code>GeometryBufferProviderContext</code>. It may read <code>context.graph</code>, <code>context.source</code>, <code>context.phase</code>, <code>context.queue_range</code>, <code>context.msaa_samples</code>, <code>context.sort_mode</code>, <code>context.clear</code>, and already available semantic textures through <code>context.sample()</code>. It must return a non-null graph <code>TextureHandle</code>; <code>geometry_stage()</code> publishes that handle under the decorator's semantic. Dependencies name other semantics that must already exist or have a Provider in the same phase.</p>
 <p>A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.</p>
 <p>During <code>define_topology()</code>, call <code>self.require_buffer("object_index")</code> before the relevant <code>geometry_stage()</code>. The stage starts from its supplied buffers, runs only the providers needed by current requirements, and returns a <code>PassResult</code>. Effects mounted in RenderStack contribute their declared geometry requirements before the pipeline topology is built, so unused built-in providers such as normal or motion remain unmaterialized.</p>
-<pre><code class="language-python">requested = self.require_buffer(&quot;object_index&quot;)
-result = self.geometry_stage(
-    graph,
-    &quot;opaque&quot;,
-    buffers={&quot;color&quot;: color, &quot;depth&quot;: depth},
-    queue_range=(0, 2500),
-)
-object_index = self.sample_buffer(result, requested)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
+    <span class="n">graph</span><span class="p">,</span>
+    <span class="s2">"opaque"</span><span class="p">,</span>
+    <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
+    <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+<span class="p">)</span>
+<span class="n">object_index</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
+</code></pre></div>
+
 <p><code>require_buffer()</code> is valid only while RenderStack or the base DSL implementation has set the defining graph. The returned <code>BufferHandle</code> is a semantic request from <code>Infernux.renderstack</code>; it is separate from the transient GPU <code>BufferHandle</code> returned by <code>graph.create_buffer()</code>. Standalone overrides use <code>graph.require_geometry_buffers({"object_index"})</code>, then pass the same graph into <code>geometry_stage()</code>.</p>
 <h2 id="pass-results">PassResult, handles, and native actions</h2>
 <p>A <code>PassResult</code> is a source-scoped map from semantic names such as <code>color</code>, <code>depth</code>, <code>normal</code>, and <code>motion</code> to texture handles. <code>source</code> must be unique within one graph build. The graph assigns an increasing <code>revision</code> each time it publishes or derives a result.</p>
-<pre><code class="language-python">before = self.publish_result(
-    &quot;opaque&quot;,
-    {&quot;color&quot;: color, &quot;depth&quot;: depth},
-)
+<div class="highlight"><pre><span></span><code><span class="n">before</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">publish_result</span><span class="p">(</span>
+    <span class="s2">"opaque"</span><span class="p">,</span>
+    <span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
+<span class="p">)</span>
 
-copied = graph.create_texture(
-    &quot;post_color&quot;,
-    format=Format.RGBA16_SFLOAT,
-)
-with graph.add_pass(&quot;CopyColor&quot;) as render_pass:
-    render_pass.set_texture(&quot;_SourceTex&quot;, before.sample(&quot;color&quot;))
-    render_pass.write_color(copied)
-    render_pass.fullscreen_quad(&quot;Fullscreen Blit&quot;)
+<span class="n">copied</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+    <span class="s2">"post_color"</span><span class="p">,</span>
+    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"CopyColor"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">"_SourceTex"</span><span class="p">,</span> <span class="n">before</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"color"</span><span class="p">))</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">copied</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">fullscreen_quad</span><span class="p">(</span><span class="s2">"Fullscreen Blit"</span><span class="p">)</span>
 
-after = self.write_buffer(
-    before,
-    &quot;color&quot;,
-    copied,
-    source=&quot;post_copy&quot;,
-)
-</code></pre>
+<span class="n">after</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buffer</span><span class="p">(</span>
+    <span class="n">before</span><span class="p">,</span>
+    <span class="s2">"color"</span><span class="p">,</span>
+    <span class="n">copied</span><span class="p">,</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"post_copy"</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>write_buffer()</code> derives a result with one semantic replaced. The parent still refers to the earlier texture, so later topology can deliberately sample either revision. The revision number is local to the graph build: it expresses publication order, not a frame number, persistent asset ID, or mutable GPU-resource version.</p>
 <p>Lazy geometry providers may add a missing semantic to the result that owns them. Once a write derives a new result, earlier semantic bindings stay intact.</p>
 <p><code>publish_pass_result()</code> accepts only semantic names mapped to graph <code>TextureHandle</code> objects, and every <code>source</code> must be unique in that graph build. <code>PassResult.sample()</code> returns the logical handle; <code>snapshot</code> returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU image. A pass declaration must still write the texture, and a downstream pass must declare its read.</p>
@@ -262,36 +266,38 @@ after = self.write_buffer(
 </ul>
 <p><code>create_texture()</code> therefore has no public <code>usage=</code> parameter. Every actual use still needs a matching pass declaration. A sampled depth texture must appear as a read or sampler binding; an attachment declaration alone does not make the sampling dependency visible to the graph.</p>
 <p>Transient GPU buffers use explicit creation flags:</p>
-<pre><code class="language-python">draw_data = graph.create_buffer(
-    &quot;draw_data&quot;,
-    64 * 1024,
-    storage=True,
-    indirect=True,
-    transfer_destination=True,
-)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">draw_data</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_buffer</span><span class="p">(</span>
+    <span class="s2">"draw_data"</span><span class="p">,</span>
+    <span class="mi">64</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">,</span>
+    <span class="n">storage</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">indirect</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">transfer_destination</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>read_buffer()</code> and <code>write_buffer()</code> validate storage, indirect, or transfer access against those flags. <code>copy_buffer()</code> adds transfer source/destination flags to its two handles. These declarations describe access and synchronization; an executable pass action still has to use the resource.</p>
 <p>For MSAA, <code>graph.set_msaa_samples(1|2|4|8)</code> sets the frame policy, and <code>set_msaa_samples(0)</code> leaves the current setting unchanged. A camera target and a scene-sized depth texture default to <code>samples=0</code>, which inherits that policy. Other transient textures default to one sample. All color and depth attachments in a raster pass must resolve to the same sample count.</p>
 <p>Use <code>write_resolve()</code> when a multisampled color result must become a single-sample texture:</p>
-<pre><code class="language-python">graph.set_msaa_samples(4)
-msaa_color = graph.create_texture(
-    &quot;route_msaa&quot;,
-    format=Format.RGBA16_SFLOAT,
-    samples=4,
-)
-resolved = graph.create_texture(
-    &quot;route_color&quot;,
-    format=Format.RGBA16_SFLOAT,
-    samples=1,
-)
-depth = graph.create_texture(&quot;depth&quot;, format=Format.D32_SFLOAT)
+<div class="highlight"><pre><span></span><code><span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
+<span class="n">msaa_color</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+    <span class="s2">"route_msaa"</span><span class="p">,</span>
+    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+    <span class="n">samples</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">resolved</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+    <span class="s2">"route_color"</span><span class="p">,</span>
+    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+    <span class="n">samples</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">)</span>
 
-with graph.add_pass(&quot;Route&quot;) as render_pass:
-    render_pass.write_color(msaa_color)
-    render_pass.write_depth(depth)
-    render_pass.write_resolve(resolved)
-    render_pass.draw_renderers(queue_range=(0, 2500))
-</code></pre>
+<span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"Route"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">msaa_color</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">depth</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">resolved</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
+</code></pre></div>
+
 <p>The pass must have exactly one color output at slot <code>0</code>. The source must be multisampled; the target must be a transient, single-sample color texture with matching format and extent. The current Python API has no depth-resolve operation.</p>
 <h2 id="current-boundaries">Current boundaries</h2>
 <p>The public Python RenderGraph currently exposes three pass types:</p>
@@ -401,73 +407,74 @@ with graph.add_pass(&quot;Route&quot;) as render_pass:
 <p>两种 Host 都要求 <code>define_topology()</code> 记录完声明后直接返回，由 Host 调用 <code>graph.build()</code>。只有独立拓扑测试才应直接调用 <code>build()</code>，例如本章样例采用的验证方式。</p>
 <h2 id="minimal-graph_1">完整 RenderStack Graph：从 Provider 到 Present</h2>
 <p>把这个类保存到 <code>Assets</code> 下，在场景 RenderStack 中选择 <strong>Base Color Present</strong>，并准备一台活动 Camera 和一个不透明 MeshRenderer。样例先执行 Depth Prepass，再惰性生成自定义 Base-color Provider，通过 <code>PassResult</code> 发布纹理，把结果复制到 Camera Target，执行标准 UI/显示帧尾，最后 Present。</p>
-<pre><code class="language-python">from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span><span class="p">,</span> <span class="n">geometry_buffer</span>
 
 
-class BaseColorPresentPipeline(RenderPipeline):
-    name = &quot;Base Color Present&quot;
+<span class="k">class</span><span class="w"> </span><span class="nc">BaseColorPresentPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Base Color Present"</span>
 
-    @geometry_buffer(&quot;preview_color&quot;, dependencies={&quot;depth&quot;})
-    def provide_preview_color(self, context):
-        target = context.graph.create_texture(
-            f&quot;{context.source}_preview_color&quot;,
-            format=Format.RGBA16_SFLOAT,
-        )
-        with context.graph.add_pass(
-            f&quot;{context.source}_preview_color&quot;
-        ) as render_pass:
-            render_pass.read(context.sample(&quot;depth&quot;))
-            render_pass.write_color(target)
-            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
-            render_pass.draw_renderers(
-                queue_range=context.queue_range,
-                sort_mode=context.sort_mode,
-                material_pass=&quot;base_color&quot;,
-            )
-        return target
+    <span class="nd">@geometry_buffer</span><span class="p">(</span><span class="s2">"preview_color"</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">})</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">provide_preview_color</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span>
+        <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
+                <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
+                <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
+                <span class="n">material_pass</span><span class="o">=</span><span class="s2">"base_color"</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">target</span>
 
-    def define_topology(self, graph):
-        graph.set_msaa_samples(1)
-        depth = graph.create_texture(&quot;depth&quot;, format=Format.D32_SFLOAT)
+    <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">)</span>
 
-        with graph.add_pass(&quot;DepthPrepass&quot;) as render_pass:
-            render_pass.write_depth(depth)
-            render_pass.set_clear(depth=1.0)
-            render_pass.draw_renderers(
-                queue_range=(0, 2500),
-                sort_mode=&quot;front_to_back&quot;,
-                material_pass=&quot;depth&quot;,
-            )
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"DepthPrepass"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">depth</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
+                <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+                <span class="n">sort_mode</span><span class="o">=</span><span class="s2">"front_to_back"</span><span class="p">,</span>
+                <span class="n">material_pass</span><span class="o">=</span><span class="s2">"depth"</span><span class="p">,</span>
+            <span class="p">)</span>
 
-        requested = self.require_buffer(&quot;preview_color&quot;)
-        opaque = self.geometry_stage(
-            graph,
-            &quot;opaque&quot;,
-            buffers={&quot;depth&quot;: depth},
-            queue_range=(0, 2500),
-        )
-        preview = self.sample_buffer(opaque, requested)
+        <span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"preview_color"</span><span class="p">)</span>
+        <span class="n">opaque</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
+            <span class="n">graph</span><span class="p">,</span>
+            <span class="s2">"opaque"</span><span class="p">,</span>
+            <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
+            <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+        <span class="p">)</span>
+        <span class="n">preview</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">opaque</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 
-        color = graph.create_texture(&quot;color&quot;, camera_target=True)
-        with graph.add_pass(&quot;CopyToCamera&quot;) as render_pass:
-            render_pass.set_texture(&quot;_SourceTex&quot;, preview)
-            render_pass.write_color(color)
-            render_pass.fullscreen_quad(&quot;Fullscreen Blit&quot;)
+        <span class="n">color</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">"color"</span><span class="p">,</span> <span class="n">camera_target</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"CopyToCamera"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">"_SourceTex"</span><span class="p">,</span> <span class="n">preview</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">fullscreen_quad</span><span class="p">(</span><span class="s2">"Fullscreen Blit"</span><span class="p">)</span>
 
-        camera_result = self.write_buffer(
-            opaque,
-            &quot;color&quot;,
-            color,
-            source=&quot;camera&quot;,
-        )
+        <span class="n">camera_result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buffer</span><span class="p">(</span>
+            <span class="n">opaque</span><span class="p">,</span>
+            <span class="s2">"color"</span><span class="p">,</span>
+            <span class="n">color</span><span class="p">,</span>
+            <span class="n">source</span><span class="o">=</span><span class="s2">"camera"</span><span class="p">,</span>
+        <span class="p">)</span>
 
-        with graph.pass_result(camera_result):
-            graph.screen_ui_section(resources={&quot;color&quot;, &quot;depth&quot;})
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">pass_result</span><span class="p">(</span><span class="n">camera_result</span><span class="p">):</span>
+            <span class="n">graph</span><span class="o">.</span><span class="n">screen_ui_section</span><span class="p">(</span><span class="n">resources</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">})</span>
 
-        with graph.add_present_pass(&quot;Present&quot;) as present_pass:
-            present_pass.present(color)
-</code></pre>
+        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_present_pass</span><span class="p">(</span><span class="s2">"Present"</span><span class="p">)</span> <span class="k">as</span> <span class="n">present_pass</span><span class="p">:</span>
+            <span class="n">present_pass</span><span class="o">.</span><span class="n">present</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
+</code></pre></div>
+
 <p><code>present(color)</code> 是带类型的终止 Action，同时会调用 <code>set_output(color)</code>。Graph 也可以只使用 <code>set_output()</code>，省略 Present Pass；本例显式展示 Camera Target 与导出边界。没有显式输出时，<code>graph.build()</code> 会选取第一张 Camera Target，生产管线仍应明确表达目标输出。</p>
 <p>验证时应看到 Camera 输出未受光照的 Base Color，RenderStack 拓扑包含标准帧尾与 <strong>Present</strong>，Console 中没有 Graph 校验错误。诊断期间可以在 <code>define_topology()</code> 最后一行暂时加入 <code>print(graph.get_debug_string())</code>，记录资源、Action、Access 与输出；检查完成后删除该输出。</p>
 <p>逻辑名称是 Graph 范围内的资源身份。可复用片段可以使用 <code>graph.name_scope()</code>，避免生成的名称冲突。Pass 顺序按书写顺序记录；声明的 Access 为 Native Compiler 提供依赖与转换信息。Native Compiler 可以剔除无法到达输出且未声明 Side Effect 的工作，因此编写顺序本身不能证明执行。</p>
@@ -475,67 +482,70 @@ class BaseColorPresentPipeline(RenderPipeline):
 <p>标准帧尾使用逻辑资源 <code>color</code>。特殊 RenderStack 管线可以把另一张纹理设为最终输出，同时仍需为标准 UI 与显示编码保留有效的 <code>color</code> 路径。</p>
 <h2 id="providers_1">Provider 契约</h2>
 <p>Geometry Buffer Provider 是使用 <code>@geometry_buffer</code> 注册在管线类上的方法。注册键为 <code>(semantic, phase)</code>，默认 Phase 是 <code>opaque</code>。依赖项使用语义名，编译器按拓扑顺序安排 Provider。</p>
-<pre><code class="language-python">from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span><span class="p">,</span> <span class="n">geometry_buffer</span>
 
 
-class ObjectIndexPipeline(RenderPipeline):
-    name = &quot;Object Index&quot;
+<span class="k">class</span><span class="w"> </span><span class="nc">ObjectIndexPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"Object Index"</span>
 
-    @geometry_buffer(&quot;object_index&quot;, dependencies={&quot;depth&quot;})
-    def provide_object_index(self, context):
-        target = context.graph.create_texture(
-            f&quot;{context.source}_object_index&quot;,
-            format=Format.RG32_UINT,
-        )
-        with context.graph.add_pass(
-            f&quot;{context.source}_object_index&quot;
-        ) as render_pass:
-            render_pass.read(context.sample(&quot;depth&quot;))
-            render_pass.write_color(target)
-            render_pass.draw_renderers(
-                queue_range=context.queue_range,
-                sort_mode=context.sort_mode,
-                material_pass=&quot;picking&quot;,
-            )
-        return target
-</code></pre>
+    <span class="nd">@geometry_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">})</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">provide_object_index</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RG32_UINT</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span>
+        <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
+                <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
+                <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
+                <span class="n">material_pass</span><span class="o">=</span><span class="s2">"picking"</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">target</span>
+</code></pre></div>
+
 <p>Provider 接收 <code>GeometryBufferProviderContext</code>。它可以读取 <code>context.graph</code>、<code>context.source</code>、<code>context.phase</code>、<code>context.queue_range</code>、<code>context.msaa_samples</code>、<code>context.sort_mode</code>、<code>context.clear</code>，并通过 <code>context.sample()</code> 取得已有 Semantic Texture。Provider 必须返回非空的 Graph <code>TextureHandle</code>；<code>geometry_stage()</code> 会以 Decorator 中的 Semantic 发布该 Handle。Dependency 表示同一 Phase 中必须已存在或可由 Provider 生成的其它 Semantic。</p>
 <p>派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。</p>
 <p>在 <code>define_topology()</code> 中，应先调用 <code>self.require_buffer("object_index")</code>，再进入对应的 <code>geometry_stage()</code>。Stage 从传入的 Buffer 集合开始，只运行当前需求涉及的 Provider，最后返回 <code>PassResult</code>。RenderStack 中已挂载 Effect 声明的 Geometry 需求会在管线构建前加入 Graph，因此未使用的内置 Normal、Motion 等 Provider 不会生成资源。</p>
-<pre><code class="language-python">requested = self.require_buffer(&quot;object_index&quot;)
-result = self.geometry_stage(
-    graph,
-    &quot;opaque&quot;,
-    buffers={&quot;color&quot;: color, &quot;depth&quot;: depth},
-    queue_range=(0, 2500),
-)
-object_index = self.sample_buffer(result, requested)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
+    <span class="n">graph</span><span class="p">,</span>
+    <span class="s2">"opaque"</span><span class="p">,</span>
+    <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
+    <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+<span class="p">)</span>
+<span class="n">object_index</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
+</code></pre></div>
+
 <p><code>require_buffer()</code> 只在 RenderStack 或基础 DSL 实现已设置 Defining Graph 时有效。它返回的是 <code>Infernux.renderstack</code> 中的语义请求 <code>BufferHandle</code>；<code>graph.create_buffer()</code> 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。Standalone Override 应先调用 <code>graph.require_geometry_buffers({"object_index"})</code>，再把同一 Graph 传给 <code>geometry_stage()</code>。</p>
 <h2 id="pass-results_1">PassResult、Handle 生命周期与 Native Action</h2>
 <p><code>PassResult</code> 是带 Source 作用域的语义映射，把 <code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code> 等名称指向 Texture Handle。<code>source</code> 在一次 Graph 构建中必须唯一。每次发布或派生 Result 时，Graph 都会分配递增的 <code>revision</code>。</p>
-<pre><code class="language-python">before = self.publish_result(
-    &quot;opaque&quot;,
-    {&quot;color&quot;: color, &quot;depth&quot;: depth},
-)
+<div class="highlight"><pre><span></span><code><span class="n">before</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">publish_result</span><span class="p">(</span>
+    <span class="s2">"opaque"</span><span class="p">,</span>
+    <span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
+<span class="p">)</span>
 
-copied = graph.create_texture(
-    &quot;post_color&quot;,
-    format=Format.RGBA16_SFLOAT,
-)
-with graph.add_pass(&quot;CopyColor&quot;) as render_pass:
-    render_pass.set_texture(&quot;_SourceTex&quot;, before.sample(&quot;color&quot;))
-    render_pass.write_color(copied)
-    render_pass.fullscreen_quad(&quot;Fullscreen Blit&quot;)
+<span class="n">copied</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+    <span class="s2">"post_color"</span><span class="p">,</span>
+    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"CopyColor"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">"_SourceTex"</span><span class="p">,</span> <span class="n">before</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"color"</span><span class="p">))</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">copied</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">fullscreen_quad</span><span class="p">(</span><span class="s2">"Fullscreen Blit"</span><span class="p">)</span>
 
-after = self.write_buffer(
-    before,
-    &quot;color&quot;,
-    copied,
-    source=&quot;post_copy&quot;,
-)
-</code></pre>
+<span class="n">after</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buffer</span><span class="p">(</span>
+    <span class="n">before</span><span class="p">,</span>
+    <span class="s2">"color"</span><span class="p">,</span>
+    <span class="n">copied</span><span class="p">,</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"post_copy"</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>write_buffer()</code> 会派生一份替换了单个 Semantic 的 Result。Parent 仍指向较早的纹理，后续拓扑可以有意采样任一 Revision。Revision 只在当前 Graph 构建内表示发布顺序，不代表帧号、持久资产 ID 或可变 GPU 资源版本。</p>
 <p>惰性 Geometry Provider 可以把缺失的 Semantic 加入拥有它的 Result。一次写入派生出新 Result 后，早期 Result 的语义绑定仍保持原值。</p>
 <p><code>publish_pass_result()</code> 只接受由 Semantic 名称映射到 Graph <code>TextureHandle</code> 的数据，同一次 Graph 构建中的 <code>source</code> 必须唯一。<code>PassResult.sample()</code> 返回逻辑 Handle；<code>snapshot</code> 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU Image。仍需由 Pass 声明写入纹理，并由下游 Pass 声明读取。</p>
@@ -552,36 +562,38 @@ after = self.write_buffer(
 </ul>
 <p>因此，<code>create_texture()</code> 没有公开的 <code>usage=</code> 参数。每项实际用途仍需对应的 Pass 声明。需要采样的 Depth Texture 必须出现在 Read 或 Sampler Binding 中；只有 Attachment 声明时，Graph 看不到采样依赖。</p>
 <p>瞬态 GPU Buffer 在创建时显式声明标志：</p>
-<pre><code class="language-python">draw_data = graph.create_buffer(
-    &quot;draw_data&quot;,
-    64 * 1024,
-    storage=True,
-    indirect=True,
-    transfer_destination=True,
-)
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">draw_data</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_buffer</span><span class="p">(</span>
+    <span class="s2">"draw_data"</span><span class="p">,</span>
+    <span class="mi">64</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">,</span>
+    <span class="n">storage</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">indirect</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">transfer_destination</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
 <p><code>read_buffer()</code> 与 <code>write_buffer()</code> 会根据这些标志校验 Storage、Indirect 或 Transfer Access。<code>copy_buffer()</code> 会给两端 Handle 补充 Transfer Source/Destination 标志。这些声明负责描述访问与同步；资源还需要被可执行 Pass Action 实际使用。</p>
 <p>MSAA 由 <code>graph.set_msaa_samples(1|2|4|8)</code> 设置帧策略，<code>set_msaa_samples(0)</code> 表示保持当前设置不变。Camera Target 与场景尺寸的 Depth Texture 默认使用 <code>samples=0</code>，表示继承该策略；其它瞬态 Texture 默认是单采样。同一 Raster Pass 的所有 Color 与 Depth Attachment 必须解析为相同采样数。</p>
 <p>多采样 Color 需要变成单采样 Texture 时，使用 <code>write_resolve()</code>：</p>
-<pre><code class="language-python">graph.set_msaa_samples(4)
-msaa_color = graph.create_texture(
-    &quot;route_msaa&quot;,
-    format=Format.RGBA16_SFLOAT,
-    samples=4,
-)
-resolved = graph.create_texture(
-    &quot;route_color&quot;,
-    format=Format.RGBA16_SFLOAT,
-    samples=1,
-)
-depth = graph.create_texture(&quot;depth&quot;, format=Format.D32_SFLOAT)
+<div class="highlight"><pre><span></span><code><span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
+<span class="n">msaa_color</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+    <span class="s2">"route_msaa"</span><span class="p">,</span>
+    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+    <span class="n">samples</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">resolved</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+    <span class="s2">"route_color"</span><span class="p">,</span>
+    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+    <span class="n">samples</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">)</span>
 
-with graph.add_pass(&quot;Route&quot;) as render_pass:
-    render_pass.write_color(msaa_color)
-    render_pass.write_depth(depth)
-    render_pass.write_resolve(resolved)
-    render_pass.draw_renderers(queue_range=(0, 2500))
-</code></pre>
+<span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"Route"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">msaa_color</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">depth</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">resolved</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
+</code></pre></div>
+
 <p>该 Pass 必须只有 Slot <code>0</code> 这一项 Color 输出。Source 必须为多采样；Target 必须是格式与尺寸匹配的瞬态单采样 Color Texture。当前 Python API 没有 Depth Resolve 操作。</p>
 <h2 id="current-boundaries_1">当前能力边界</h2>
 <p>公开的 Python RenderGraph 当前提供三种 Pass：</p>

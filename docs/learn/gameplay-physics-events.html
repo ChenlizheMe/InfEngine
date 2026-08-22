@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="../css/style.css?v=20">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=5">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -86,61 +86,62 @@
 <p>The floor and sensor do not need a Rigidbody for this setup. The moving <code>Probe</code> supplies the active Rigidbody for both interactions.</p>
 <h2 id="physics-probe-script">Write the component</h2>
 <p>Create <code>Assets/Scripts/physics_probe.py</code> with the following complete component:</p>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.components.builtin import Rigidbody
-from Infernux.debug import Debug
-from Infernux.math import Vector3
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.builtin</span><span class="w"> </span><span class="kn">import</span> <span class="n">Rigidbody</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.math</span><span class="w"> </span><span class="kn">import</span> <span class="n">Vector3</span>
 
 
-class PhysicsProbe(InxComponent):
-    def awake(self):
-        self._body = None
-        self._collision_stay_steps = 0
-        self._trigger_stay_steps = 0
+<span class="k">class</span><span class="w"> </span><span class="nc">PhysicsProbe</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
 
-    def start(self):
-        self._body = self.game_object.get_component(Rigidbody)
-        if self._body is None:
-            Debug.log_error(&quot;PhysicsProbe requires a Rigidbody.&quot;, self.game_object)
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">Rigidbody</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"PhysicsProbe requires a Rigidbody."</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
 
-    def fixed_update(self, fixed_delta_time):
-        if self._body is None:
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">fixed_update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fixed_delta_time</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
 
-        # add_force defaults to ForceMode.Force.
-        self._body.add_force(Vector3(3.0, 0.0, 0.0))
+        <span class="c1"># add_force defaults to ForceMode.Force.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_body</span><span class="o">.</span><span class="n">add_force</span><span class="p">(</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
 
-    def on_collision_enter(self, collision):
-        self._collision_stay_steps = 0
-        Debug.log(
-            f&quot;collision enter: {collision.game_object.name} &quot;
-            f&quot;at {collision.contact_point}&quot;
-        )
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_collision_enter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">collision</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"collision enter: </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> "</span>
+            <span class="sa">f</span><span class="s2">"at </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">contact_point</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
 
-    def on_collision_stay(self, collision):
-        self._collision_stay_steps += 1
-        if self._collision_stay_steps == 1:
-            Debug.log(
-                f&quot;collision stay: {collision.game_object.name}; &quot;
-                f&quot;normal={collision.contact_normal}; &quot;
-                f&quot;relative velocity={collision.relative_velocity}&quot;
-            )
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_collision_stay</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">collision</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"collision stay: </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">; "</span>
+                <span class="sa">f</span><span class="s2">"normal=</span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">contact_normal</span><span class="si">}</span><span class="s2">; "</span>
+                <span class="sa">f</span><span class="s2">"relative velocity=</span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">relative_velocity</span><span class="si">}</span><span class="s2">"</span>
+            <span class="p">)</span>
 
-    def on_collision_exit(self, collision):
-        Debug.log(f&quot;collision exit: {collision.game_object.name}&quot;)
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_collision_exit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">collision</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"collision exit: </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def on_trigger_enter(self, other):
-        self._trigger_stay_steps = 0
-        Debug.log(f&quot;trigger enter: {other.game_object.name}&quot;)
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_trigger_enter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"trigger enter: </span><span class="si">{</span><span class="n">other</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def on_trigger_stay(self, other):
-        self._trigger_stay_steps += 1
-        if self._trigger_stay_steps == 1:
-            Debug.log(f&quot;trigger stay: {other.game_object.name}&quot;)
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_trigger_stay</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"trigger stay: </span><span class="si">{</span><span class="n">other</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def on_trigger_exit(self, other):
-        Debug.log(f&quot;trigger exit: {other.game_object.name}&quot;)
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_trigger_exit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"trigger exit: </span><span class="si">{</span><span class="n">other</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>Return to the editor, select <code>Probe</code>, choose <strong>Add Component</strong>, and attach <code>PhysicsProbe</code>. The component stores its Rigidbody reference in <code>start</code>; Infernux components manage their own initialization, so gameplay scripts use <code>awake</code> or <code>start</code> instead of defining <code>__init__</code>.</p>
 <p>The <code>fixed_delta_time</code> parameter is available when a calculation needs the duration of one fixed step. <code>add_force</code> already applies a force through the physics solver, so this example does not multiply the force vector by <code>fixed_delta_time</code>.</p>
 <h2 id="collision-trigger-phases">Read the callbacks</h2>
@@ -268,61 +269,62 @@ class PhysicsProbe(InxComponent):
 <p>这个场景中的地面与 Sensor 无需 Rigidbody。移动的 <code>Probe</code> 为两次交互提供活动刚体。</p>
 <h2 id="physics-probe-script_1">编写物理组件</h2>
 <p>创建 <code>Assets/Scripts/physics_probe.py</code>，写入以下完整组件：</p>
-<pre><code class="language-python">from Infernux.components import InxComponent
-from Infernux.components.builtin import Rigidbody
-from Infernux.debug import Debug
-from Infernux.math import Vector3
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.builtin</span><span class="w"> </span><span class="kn">import</span> <span class="n">Rigidbody</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.math</span><span class="w"> </span><span class="kn">import</span> <span class="n">Vector3</span>
 
 
-class PhysicsProbe(InxComponent):
-    def awake(self):
-        self._body = None
-        self._collision_stay_steps = 0
-        self._trigger_stay_steps = 0
+<span class="k">class</span><span class="w"> </span><span class="nc">PhysicsProbe</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
 
-    def start(self):
-        self._body = self.game_object.get_component(Rigidbody)
-        if self._body is None:
-            Debug.log_error(&quot;PhysicsProbe requires a Rigidbody.&quot;, self.game_object)
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">Rigidbody</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"PhysicsProbe requires a Rigidbody."</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
 
-    def fixed_update(self, fixed_delta_time):
-        if self._body is None:
-            return
+    <span class="k">def</span><span class="w"> </span><span class="nf">fixed_update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fixed_delta_time</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
 
-        # add_force 默认使用 ForceMode.Force。
-        self._body.add_force(Vector3(3.0, 0.0, 0.0))
+        <span class="c1"># add_force 默认使用 ForceMode.Force。</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_body</span><span class="o">.</span><span class="n">add_force</span><span class="p">(</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
 
-    def on_collision_enter(self, collision):
-        self._collision_stay_steps = 0
-        Debug.log(
-            f&quot;collision enter: {collision.game_object.name} &quot;
-            f&quot;at {collision.contact_point}&quot;
-        )
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_collision_enter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">collision</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"collision enter: </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> "</span>
+            <span class="sa">f</span><span class="s2">"at </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">contact_point</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
 
-    def on_collision_stay(self, collision):
-        self._collision_stay_steps += 1
-        if self._collision_stay_steps == 1:
-            Debug.log(
-                f&quot;collision stay: {collision.game_object.name}; &quot;
-                f&quot;normal={collision.contact_normal}; &quot;
-                f&quot;relative velocity={collision.relative_velocity}&quot;
-            )
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_collision_stay</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">collision</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_collision_stay_steps</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"collision stay: </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">; "</span>
+                <span class="sa">f</span><span class="s2">"normal=</span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">contact_normal</span><span class="si">}</span><span class="s2">; "</span>
+                <span class="sa">f</span><span class="s2">"relative velocity=</span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">relative_velocity</span><span class="si">}</span><span class="s2">"</span>
+            <span class="p">)</span>
 
-    def on_collision_exit(self, collision):
-        Debug.log(f&quot;collision exit: {collision.game_object.name}&quot;)
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_collision_exit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">collision</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"collision exit: </span><span class="si">{</span><span class="n">collision</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def on_trigger_enter(self, other):
-        self._trigger_stay_steps = 0
-        Debug.log(f&quot;trigger enter: {other.game_object.name}&quot;)
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_trigger_enter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"trigger enter: </span><span class="si">{</span><span class="n">other</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def on_trigger_stay(self, other):
-        self._trigger_stay_steps += 1
-        if self._trigger_stay_steps == 1:
-            Debug.log(f&quot;trigger stay: {other.game_object.name}&quot;)
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_trigger_stay</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_trigger_stay_steps</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"trigger stay: </span><span class="si">{</span><span class="n">other</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    def on_trigger_exit(self, other):
-        Debug.log(f&quot;trigger exit: {other.game_object.name}&quot;)
-</code></pre>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_trigger_exit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"trigger exit: </span><span class="si">{</span><span class="n">other</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+
 <p>回到编辑器，选中 <code>Probe</code>，通过 <strong>Add Component</strong> 挂载 <code>PhysicsProbe</code>。组件在 <code>start</code> 中保存 Rigidbody 引用。Infernux 会管理组件初始化，因此玩法组件应使用 <code>awake</code> 或 <code>start</code>，不要定义 <code>__init__</code>。</p>
 <p>需要固定步时长时，可以读取 <code>fixed_delta_time</code>。<code>add_force</code> 会把力交给物理解算器，本例无需再用 <code>fixed_delta_time</code> 乘以力向量。</p>
 <h2 id="collision-trigger-phases_1">理解六个回调阶段</h2>
