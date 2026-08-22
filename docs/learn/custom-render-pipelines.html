@@ -173,6 +173,7 @@ class MixedArtPipeline(RenderPipeline):
 <li>EffectStage stable IDs must be unique across the whole pipeline.</li>
 </ul>
 <p>For example, explicit claims <code>Queue(1, 100)</code> and <code>Queue(201, 300)</code> in the opaque domain make <code>otherwise()</code> own <code>0</code>, <code>101..200</code>, and <code>301..2500</code>. The compiler rejects overlapping or out-of-domain ownership while building the topology.</p>
+<p>Shadow casting uses its own queue. The declarative compiler draws shadow casters for Queue <code>0..2999</code>, and the built-in pipelines read the same defaults from <code>EngineConfig</code> (<code>shadow_caster_queue_min/max</code>). Materials with Queue <code>3000..9999</code> therefore do not cast shadows under the default settings, and route ownership does not change that. A project can adjust the engine queue bounds through <code>EngineConfig</code>; the DSL compiler currently keeps its own fixed range.</p>
 <p>Two failure probes make the edge behavior reproducible:</p>
 <pre><code class="language-python">with pipeline.opaque() as opaque:
     opaque.forward(Queue(1, 100))
@@ -357,6 +358,7 @@ class MixedArtPipeline(RenderPipeline):
 <li>EffectStage 稳定 ID 在整条管线中必须唯一。</li>
 </ul>
 <p>例如，不透明 Domain 中显式领取 <code>Queue(1, 100)</code> 与 <code>Queue(201, 300)</code> 后，<code>otherwise()</code> 会领取 <code>0</code>、<code>101..200</code>、<code>301..2500</code>。重叠或越过 Domain 边界的所有权会在拓扑构建时直接报错。</p>
+<p>阴影投射使用独立的队列区间。声明式编译器为 Queue <code>0..2999</code> 绘制阴影投射体，内置管线从 <code>EngineConfig</code>（<code>shadow_caster_queue_min/max</code>）读取相同默认值。因此默认设置下 Queue <code>3000..9999</code> 的材质不投射阴影，路由归属不会改变这一点。项目可以通过 <code>EngineConfig</code> 调整引擎队列边界；DSL 编译器目前使用自己的固定区间。</p>
 <p>下面两个探针可以复现边界行为：</p>
 <pre><code class="language-python">with pipeline.opaque() as opaque:
     opaque.forward(Queue(1, 100))

@@ -99,7 +99,7 @@ class TargetReporter(InxComponent):
 <li>Create a <strong>Cube</strong> in Hierarchy and name it <code>Target</code>. Keep its <code>MeshRenderer</code>.</li>
 <li>Create an empty GameObject named <code>Reporter</code>.</li>
 <li>Select <code>Reporter</code>, click <strong>Add Component</strong>, and add <strong>Rigidbody</strong> first.</li>
-<li>Add <strong>TargetReporter</strong>. Its <code>@require_component(Rigidbody)</code> requirement is now satisfied.</li>
+<li>Add <strong>TargetReporter</strong>. Its <code>@require_component(Rigidbody)</code> requirement is satisfied. Skipping step 3 also works: the engine auto-adds a missing required component during attachment.</li>
 <li>Set <strong>Speed</strong> to <code>6</code>. Drag <code>Target</code> from Hierarchy into <strong>Target</strong>. Drag <code>Reporter</code> into <strong>Body</strong>; the slot resolves its <code>Rigidbody</code>.</li>
 <li>Save the scene, clear the Console, and enter Play mode.</li>
 </ol>
@@ -108,6 +108,7 @@ class TargetReporter(InxComponent):
 <p>Supported public annotations include <code>int</code>, <code>float</code>, <code>bool</code>, <code>str</code>, vectors, enums, known asset references, <code>GameObject</code>, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Explicit <code>serialized_field(...)</code> remains useful when keyword metadata is clearer.</p>
 <p><code>Range(0.0, 12.0)</code> supplies a slider and enforces the numeric bounds on Inspector edits, deserialization, and script assignment. <code>Header</code> adds a section label and <code>Tooltip</code> adds hover help. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.</p>
 <p>Use private <code>_name</code> attributes for transient state. Use <code>serialized_field(..., hidden=True)</code> when data must be saved but omitted from the Inspector. Regular mutable runtime caches should be rebuilt in lifecycle callbacks and kept out of serialized fields.</p>
+<p>Under the hood, numeric fields (<code>int</code>, <code>float</code>, <code>bool</code>, <code>Vector2/3/4</code>) are backed by the native ComponentDataStore, a column store that keeps script data cache-friendly and outside Python objects; other field kinds live in the Python descriptor. The Inspector reads the same collected metadata to build its controls, and the scene document stores the values on save. Runtime assignments change the in-memory value only; Play mode restores the authored scene from its snapshot when you stop, so a script that writes a serialized field does not persist that write unless the scene is saved.</p>
 <h2 id="references">Inspector references</h2>
 <p><code>target</code> is a GameObject field. Its stored form is a persistent scene-object reference; reading <code>self.target</code> resolves and returns the live <code>GameObject</code>, or <code>None</code> when the target is missing or destroyed. <code>RequiredComponent("MeshRenderer")</code> filters the picker and rejects Hierarchy drops whose object has no matching component.</p>
 <p><code>body</code> stores a component reference constrained to <code>Rigidbody</code>. Reading <code>self.body</code> returns the resolved component wrapper or <code>None</code>. A reference field does not add the referenced component and does not keep a destroyed object alive. Always handle <code>None</code>, especially for optional targets or objects that can be destroyed during play.</p>
@@ -115,15 +116,15 @@ class TargetReporter(InxComponent):
 <h2 id="constraints">Component constraints</h2>
 <p>The two class decorators govern attachment:</p>
 <ul>
-<li><code>@require_component(Rigidbody)</code> requires a <code>Rigidbody</code> to exist on the same GameObject before <code>TargetReporter</code> can be added. The current editor rejects an invalid attachment; add the dependency first. Removing a component that is still required is also blocked.</li>
+<li><code>@require_component(Rigidbody)</code> declares that <code>TargetReporter</code> depends on a <code>Rigidbody</code> on the same GameObject. When the dependency is missing, the engine adds it automatically during attachment; if any required component cannot be added, the whole operation rolls back and returns <code>None</code> with a warning. Removing a component that another component still requires is blocked.</li>
 <li><code>@disallow_multiple</code> allows one <code>TargetReporter</code> instance per GameObject. A second add attempt is rejected.</li>
 </ul>
 <p>These decorators constrain the owner's component set. <code>RequiredComponent("MeshRenderer")</code> belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.</p>
 <h2 id="verify">Verify the contracts</h2>
 <p>Run these checks in order:</p>
 <ol>
-<li>On a fresh empty GameObject, try to add <code>TargetReporter</code> before <code>Rigidbody</code>. The add should be refused and the Console should explain the missing requirement.</li>
-<li>Add <code>Rigidbody</code>, then add <code>TargetReporter</code>. The component should appear.</li>
+<li>On a fresh empty GameObject, add <code>TargetReporter</code> before <code>Rigidbody</code>. The engine auto-adds the missing <code>Rigidbody</code>, and both components appear in the list.</li>
+<li>Try to remove <code>Rigidbody</code> while <code>TargetReporter</code> still exists. The removal is blocked with a warning because another component requires it.</li>
 <li>Try to add <code>TargetReporter</code> again. The second instance should be refused.</li>
 <li>Try to assign an empty GameObject to <strong>Target</strong>. The reference should remain unchanged because the object has no <code>MeshRenderer</code>.</li>
 <li>Assign the Cube and the Reporter Rigidbody, set Speed to <code>6</code>, save, leave and re-open the scene, and confirm all three authored values remain.</li>
@@ -131,7 +132,7 @@ class TargetReporter(InxComponent):
 </ol>
 <h2 id="common-errors">Common errors</h2>
 <ul>
-<li><strong>TargetReporter cannot be added.</strong> Add <code>Rigidbody</code> to the same GameObject first.</li>
+<li><strong>Rigidbody appeared when adding TargetReporter.</strong> <code>@require_component</code> auto-adds missing dependencies; add the dependency manually first when that behavior is unwanted.</li>
 <li><strong>A target drop is ignored.</strong> The selected object must contain a <code>MeshRenderer</code>; the field constraint checks the component type name exactly.</li>
 <li><strong>The code sees <code>None</code>.</strong> Assign and save the slot, and make sure the referenced scene object or component still exists.</li>
 <li><strong>A field is absent from Inspector.</strong> Keep it public, use a supported annotation or <code>serialized_field</code>, and inspect the Console for an annotation/import failure.</li>
@@ -207,7 +208,7 @@ class TargetReporter(InxComponent):
 <li>在 Hierarchy 中创建 <strong>Cube</strong>，命名为 <code>Target</code>，保留它的 <code>MeshRenderer</code>。</li>
 <li>创建空 GameObject，命名为 <code>Reporter</code>。</li>
 <li>选中 <code>Reporter</code>，点击 <strong>Add Component</strong>，先添加 <strong>Rigidbody</strong>。</li>
-<li>添加 <strong>TargetReporter</strong>。此时它的 <code>@require_component(Rigidbody)</code> 条件已经满足。</li>
+<li>添加 <strong>TargetReporter</strong>。此时它的 <code>@require_component(Rigidbody)</code> 条件已经满足。跳过第 3 步也可以：引擎会在挂载时自动补上缺失的依赖组件。</li>
 <li>把 <strong>Speed</strong> 设为 <code>6</code>。从 Hierarchy 把 <code>Target</code> 拖入 <strong>Target</strong>；把 <code>Reporter</code> 拖入 <strong>Body</strong>，该槽会解析它的 <code>Rigidbody</code>。</li>
 <li>保存场景，清空 Console，进入 Play 模式。</li>
 </ol>
@@ -216,6 +217,7 @@ class TargetReporter(InxComponent):
 <p>公开注解支持 <code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、向量、枚举、已知资产引用、<code>GameObject</code>、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。需要用关键字集中表达元数据时，可以显式使用 <code>serialized_field(...)</code>。</p>
 <p><code>Range(0.0, 12.0)</code> 提供滑块，并对 Inspector 编辑、反序列化和脚本赋值统一执行数值边界。<code>Header</code> 添加分区标题，<code>Tooltip</code> 添加悬停提示。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。</p>
 <p>临时状态适合放在私有 <code>_name</code> 属性中。数据需要保存且无需出现在 Inspector 时，使用 <code>serialized_field(..., hidden=True)</code>。普通运行时缓存应在生命周期回调中重建，并避开序列化字段。</p>
+<p>底层实现上，数值字段（<code>int</code>、<code>float</code>、<code>bool</code>、<code>Vector2/3/4</code>）由原生 ComponentDataStore 支撑，这是一种列式存储，让脚本数据留在 Python 对象之外、访问更快；其余字段种类存在 Python 描述符里。Inspector 读取同一份收集到的元数据来生成控件，保存场景时这些值写入场景文档。运行时赋值只改变内存中的值；停止 Play 时引擎从快照恢复已编辑的场景，脚本对序列化字段的写入只有保存场景后才会落盘。</p>
 <h2 id="references_1">Inspector 引用</h2>
 <p><code>target</code> 是 GameObject 字段。存储层保存持久场景物体引用；读取 <code>self.target</code> 时会解析并返回实时 <code>GameObject</code>，目标缺失或已销毁时返回 <code>None</code>。<code>RequiredComponent("MeshRenderer")</code> 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。</p>
 <p><code>body</code> 保存限定为 <code>Rigidbody</code> 的组件引用。读取 <code>self.body</code> 会得到解析后的组件包装器，无法解析时返回 <code>None</code>。引用字段不会添加目标组件，也不会让已销毁物体继续存活。可选目标或运行中可能销毁的物体都要处理 <code>None</code>。</p>
@@ -223,15 +225,15 @@ class TargetReporter(InxComponent):
 <h2 id="constraints_1">组件约束</h2>
 <p>两个类装饰器控制挂载规则：</p>
 <ul>
-<li><code>@require_component(Rigidbody)</code> 要求同一 GameObject 事先拥有 <code>Rigidbody</code>。当前编辑器会拒绝不满足条件的挂载，因此要先添加依赖。仍被其他组件依赖时，删除该组件也会被阻止。</li>
+<li><code>@require_component(Rigidbody)</code> 声明 <code>TargetReporter</code> 依赖同一 GameObject 上的 <code>Rigidbody</code>。依赖缺失时，引擎会在挂载过程中自动补加；任何必需组件无法添加时，整个操作回滚并返回 <code>None</code>，同时给出警告。删除仍被其他组件依赖的组件会被阻止。</li>
 <li><code>@disallow_multiple</code> 让每个 GameObject 最多拥有一个 <code>TargetReporter</code>，第二次添加会被拒绝。</li>
 </ul>
 <p>这两个装饰器约束所属物体的组件集合。<code>RequiredComponent("MeshRenderer")</code> 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。</p>
 <h2 id="verify_1">验证约束与保存结果</h2>
 <p>按顺序完成以下检查：</p>
 <ol>
-<li>在新的空 GameObject 上，先尝试添加 <code>TargetReporter</code>。操作应被拒绝，Console 会说明缺少依赖。</li>
-<li>添加 <code>Rigidbody</code>，再添加 <code>TargetReporter</code>。组件应正常出现。</li>
+<li>在新的空 GameObject 上，先添加 <code>TargetReporter</code>。引擎会自动补上缺失的 <code>Rigidbody</code>，两个组件都应出现在列表中。</li>
+<li>在 <code>TargetReporter</code> 仍然存在时尝试删除 <code>Rigidbody</code>。删除会被阻止，并给出组件仍被依赖的警告。</li>
 <li>再添加一次 <code>TargetReporter</code>。第二个实例应被拒绝。</li>
 <li>尝试把空 GameObject 赋给 <strong>Target</strong>。该物体没有 <code>MeshRenderer</code>，引用应保持原值。</li>
 <li>赋值 Cube 与 Reporter 的 Rigidbody，把 Speed 设为 <code>6</code>，保存并重新打开场景，确认三个编辑值都还在。</li>
@@ -239,7 +241,7 @@ class TargetReporter(InxComponent):
 </ol>
 <h2 id="_1">常见错误</h2>
 <ul>
-<li><strong>无法添加 TargetReporter。</strong> 先在同一个 GameObject 上添加 <code>Rigidbody</code>。</li>
+<li><strong>添加 TargetReporter 时 Rigidbody 意外出现。</strong> <code>@require_component</code> 会在依赖缺失时自动补加；不需要自动行为时，先手动添加依赖组件。</li>
 <li><strong>拖放目标没有反应。</strong> 目标物体必须包含 <code>MeshRenderer</code>；字段约束会准确匹配组件类型名。</li>
 <li><strong>代码读到 <code>None</code>。</strong> 给槽位赋值并保存，同时确认引用的场景物体或组件仍然存在。</li>
 <li><strong>Inspector 没有显示字段。</strong> 保持字段公开，使用受支持注解或 <code>serialized_field</code>，并检查 Console 中的注解或导入错误。</li>

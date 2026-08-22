@@ -47,6 +47,7 @@
 
 <h2 id="when">Choose the API level</h2>
 <p>Use <code>define(pipeline)</code> for frame policy, opaque and transparent Queue routes, Forward/Forward+/Deferred selection, layers, sky, and Effect mount points. Use <code>define_topology(graph)</code> for a custom target layout, a nonstandard GBuffer, a pass dependency outside the route DSL, or a new source-scoped semantic buffer.</p>
+<p>Keep the ownership chain in mind: the scene owns a RenderStack, the RenderStack owns the selected RenderPipeline and the ordered EffectSlots, the pipeline records topology on the Python RenderGraph builder, and <code>graph.build()</code> serializes that topology into a <code>RenderGraphDescription</code>. The native engine then compiles the description into a per-camera graph and reuses it across steady frames, keyed by the description's <code>source_revision</code>. The pipeline authors the topology; the engine executes it.</p>
 <p>The two methods operate at different levels:</p>
 <ul>
 <li><code>define(pipeline)</code> receives a <code>PipelineBuilder</code>. It validates domain ownership and compiles routes, intermediate images, resolves, and composition passes.</li>
@@ -270,7 +271,7 @@ after = self.write_buffer(
 )
 </code></pre>
 <p><code>read_buffer()</code> and <code>write_buffer()</code> validate storage, indirect, or transfer access against those flags. <code>copy_buffer()</code> adds transfer source/destination flags to its two handles. These declarations describe access and synchronization; an executable pass action still has to use the resource.</p>
-<p>For MSAA, <code>graph.set_msaa_samples(1|2|4|8)</code> sets the frame policy. A camera target and a scene-sized depth texture default to <code>samples=0</code>, which inherits that policy. Other transient textures default to one sample. All color and depth attachments in a raster pass must resolve to the same sample count.</p>
+<p>For MSAA, <code>graph.set_msaa_samples(1|2|4|8)</code> sets the frame policy, and <code>set_msaa_samples(0)</code> leaves the current setting unchanged. A camera target and a scene-sized depth texture default to <code>samples=0</code>, which inherits that policy. Other transient textures default to one sample. All color and depth attachments in a raster pass must resolve to the same sample count.</p>
 <p>Use <code>write_resolve()</code> when a multisampled color result must become a single-sample texture:</p>
 <pre><code class="language-python">graph.set_msaa_samples(4)
 msaa_color = graph.create_texture(
@@ -336,6 +337,7 @@ with graph.add_pass(&quot;Route&quot;) as render_pass:
 
 <h2 id="when_1">选择 API 层级</h2>
 <p><code>define(pipeline)</code> 适合帧策略、不透明与透明 Queue 路由、Forward/Forward+/Deferred 选择、Layer、天空和 Effect 挂载点。<code>define_topology(graph)</code> 适合自定义 Target 布局、非标准 GBuffer、Route DSL 词汇之外的 Pass 依赖，以及新的源作用域语义 Buffer。</p>
+<p>记住这条所有权链：场景拥有 RenderStack，RenderStack 拥有选中的 RenderPipeline 与有序 EffectSlot，管线把拓扑记录到 Python RenderGraph 构建器上，<code>graph.build()</code> 再把拓扑序列化成 <code>RenderGraphDescription</code>。原生引擎随后把描述编译成每相机的图，并在稳态帧中按描述的 <code>source_revision</code> 复用。管线负责编写拓扑，引擎负责执行。</p>
 <p>两个方法处在不同层级：</p>
 <ul>
 <li><code>define(pipeline)</code> 收到 <code>PipelineBuilder</code>，负责校验 Domain 所有权，并编译 Route、中间图像、Resolve 与合成 Pass。</li>
@@ -559,7 +561,7 @@ after = self.write_buffer(
 )
 </code></pre>
 <p><code>read_buffer()</code> 与 <code>write_buffer()</code> 会根据这些标志校验 Storage、Indirect 或 Transfer Access。<code>copy_buffer()</code> 会给两端 Handle 补充 Transfer Source/Destination 标志。这些声明负责描述访问与同步；资源还需要被可执行 Pass Action 实际使用。</p>
-<p>MSAA 由 <code>graph.set_msaa_samples(1|2|4|8)</code> 设置帧策略。Camera Target 与场景尺寸的 Depth Texture 默认使用 <code>samples=0</code>，表示继承该策略；其它瞬态 Texture 默认是单采样。同一 Raster Pass 的所有 Color 与 Depth Attachment 必须解析为相同采样数。</p>
+<p>MSAA 由 <code>graph.set_msaa_samples(1|2|4|8)</code> 设置帧策略，<code>set_msaa_samples(0)</code> 表示保持当前设置不变。Camera Target 与场景尺寸的 Depth Texture 默认使用 <code>samples=0</code>，表示继承该策略；其它瞬态 Texture 默认是单采样。同一 Raster Pass 的所有 Color 与 Depth Attachment 必须解析为相同采样数。</p>
 <p>多采样 Color 需要变成单采样 Texture 时，使用 <code>write_resolve()</code>：</p>
 <pre><code class="language-python">graph.set_msaa_samples(4)
 msaa_color = graph.create_texture(

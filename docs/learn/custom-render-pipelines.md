@@ -174,6 +174,8 @@ Material Queue values are inclusive integers from `0` through `9999`, while the 
 
 For example, explicit claims `Queue(1, 100)` and `Queue(201, 300)` in the opaque domain make `otherwise()` own `0`, `101..200`, and `301..2500`. The compiler rejects overlapping or out-of-domain ownership while building the topology.
 
+Shadow casting uses its own queue. The declarative compiler draws shadow casters for Queue `0..2999`, and the built-in pipelines read the same defaults from `EngineConfig` (`shadow_caster_queue_min/max`). Materials with Queue `3000..9999` therefore do not cast shadows under the default settings, and route ownership does not change that. A project can adjust the engine queue bounds through `EngineConfig`; the DSL compiler currently keeps its own fixed range.
+
 Two failure probes make the edge behavior reproducible:
 
 ```python
@@ -405,6 +407,8 @@ Material Queue 的合法值是 `0..9999` 的闭区间整数；高层 DSL 当前�
 - EffectStage 稳定 ID 在整条管线中必须唯一。
 
 例如，不透明 Domain 中显式领取 `Queue(1, 100)` 与 `Queue(201, 300)` 后，`otherwise()` 会领取 `0`、`101..200`、`301..2500`。重叠或越过 Domain 边界的所有权会在拓扑构建时直接报错。
+
+阴影投射使用独立的队列区间。声明式编译器为 Queue `0..2999` 绘制阴影投射体，内置管线从 `EngineConfig`（`shadow_caster_queue_min/max`）读取相同默认值。因此默认设置下 Queue `3000..9999` 的材质不投射阴影，路由归属不会改变这一点。项目可以通过 `EngineConfig` 调整引擎队列边界；DSL 编译器目前使用自己的固定区间。
 
 下面两个探针可以复现边界行为：
 

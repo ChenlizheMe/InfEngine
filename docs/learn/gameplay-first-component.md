@@ -90,7 +90,9 @@ When a scene starts, Infernux first runs `awake` and `on_enable` across active o
 | `late_update(delta_time)` | Work that follows regular updates, such as camera follow |
 | `on_destroy()` | Final cleanup |
 
-An inactive GameObject defers `awake` until it first becomes active. `start` runs once, immediately before that component's first simulation update. Regular `update` callbacks run in Play mode unless the component explicitly uses the separate edit-mode decorator.
+An inactive GameObject defers `awake` until it first becomes active. `start` runs once, immediately before that component's first simulation update. Regular `update`, `fixed_update`, and `late_update` callbacks run in Play mode.
+
+Edit-mode execution is a separate opt-in. The native component proxy reads the class attribute set by `@execute_in_edit_mode` and mirrors it onto the instance as `_execute_in_edit_mode`; both the native proxy (`PyComponentProxy`) and the Python scheduler check that instance attribute before running edit-mode callbacks. In a pure Python test context without a native proxy, the mirror step does not happen, so set the instance attribute directly when such a context needs edit-mode updates.
 
 ## Common errors {#troubleshooting}
 
@@ -197,7 +199,9 @@ class HelloComponent(InxComponent):
 | `late_update(delta_time)` | 跟随常规更新的工作，例如相机跟随 |
 | `on_destroy()` | 最终清理 |
 
-非活动 GameObject 会把 `awake` 推迟到第一次激活。`start` 只运行一次，位置在该组件第一次模拟更新之前。普通 `update` 只在 Play 模式运行；编辑模式更新由单独的编辑模式装饰器控制。
+非活动 GameObject 会把 `awake` 推迟到第一次激活。`start` 只运行一次，位置在该组件第一次模拟更新之前。普通的 `update`、`fixed_update` 与 `late_update` 只在 Play 模式运行。
+
+编辑模式执行需要单独选择加入。原生组件代理读取 `@execute_in_edit_mode` 装饰器设置的类属性，并把它镜像到实例的 `_execute_in_edit_mode` 上；原生代理（`PyComponentProxy`）与 Python 调度器在运行编辑模式回调前都会检查这个实例属性。没有原生代理的纯 Python 测试环境不会发生镜像，如果这类环境需要编辑模式更新，请直接设置实例属性。
 
 ## 常见错误 {#troubleshooting_1}
 

@@ -194,6 +194,8 @@ Most parameter edits only change a parameter block. Put a field in the decorator
 
 ## Effect groups, policy, and runtime edits {#groups-runtime}
 
+Before stacking groups, pin down the four records this course uses. A **RenderEffect feature** is a Python class registered with `render_effect_feature(type_id, ...)`; it owns `setup_passes()` and the parameter schema. A **`.effect` asset** stores a `feature_type` plus concrete parameter values, and `RenderEffect` is its mutable runtime wrapper. An **`.effectgroup`** is an asset document whose entries reference effects or nested groups with optional overrides; when mounted, the group expands in place and has no separate runtime object. **EffectStage** and **EffectSlot** belong to the pipeline and the scene, and the next chapter covers them.
+
 An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` references. Each entry has a stable `entry_id`, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source `.effect` value intact.
 
 ```json
@@ -235,7 +237,7 @@ Route policy controls how a route- or layer-scoped image is returned to its pare
 
 At runtime, `RenderEffect` provides typed getters and setters for floats, integers, booleans, vectors, and colors. Loaded assets are shared. `clone()` creates an isolated runtime-only copy with no source path or GUID, so edits to the clone do not save over the project asset.
 
-**Evidence note.** These rules follow `render_effect_compiler.py` (`discover_effect_features`, `compile_and_publish`, `_compile_effect`, and `compile_effect_slots`), `render_effect_inspector.py`, `resource_documents.py`, `assets.py`, `graph.py::fullscreen_quad`, and `FullscreenRenderer.cpp` in the current repository tree. The generated `.inxeffect` is a derived product; the `.effect`, feature source, fragment shader, scene Slot list, and their GUID metadata remain the authored evidence.
+**Evidence note.** These rules follow `renderstack/discovery.py` (`discover_effect_features`) and `render_effect_compiler.py` (`compile_and_publish`, `_compile_effect`, and `compile_effect_slots`), `render_effect_inspector.py`, `resource_documents.py`, `assets.py`, `graph.py::fullscreen_quad`, and `FullscreenRenderer.cpp` in the current repository tree. The generated `.inxeffect` is a derived product; the `.effect`, feature source, fragment shader, scene Slot list, and their GUID metadata remain the authored evidence.
 
 The next chapter covers the stage and slot that decide which image a feature receives.
 
@@ -435,6 +437,8 @@ Route Policy 冲突走另一条校验路径。例如，`ADDITIVE_EXTRACT` 无法
 
 ## EffectGroup、Policy 与运行时修改 {#groups-runtime_1}
 
+在叠加 Group 之前，先固定本课程用到的四类记录。**RenderEffect Feature** 是注册了 `render_effect_feature(type_id, ...)` 的 Python 类，它拥有 `setup_passes()` 和参数 Schema。**`.effect` 资产**保存 `feature_type` 与具体参数值，`RenderEffect` 是它的可变运行时包装。**`.effectgroup`** 是资产文档，条目引用 Effect 或嵌套 Group，可以带 Override；挂载时 Group 就地展开，没有独立的运行时对象。**EffectStage** 与 **EffectSlot** 属于管线与场景，下一章介绍。
+
 `.effectgroup` 是一份有序的 `.effect` 或嵌套 `.effectgroup` 引用列表。每项有稳定的 `entry_id`、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 `.effect` 数值保持不变。
 
 ```json
@@ -476,6 +480,6 @@ Route Policy 决定 Route 或 Layer 局部图像怎样返回父级合成：
 
 运行时的 `RenderEffect` 提供 Float、Int、Bool、向量和颜色的类型化 Getter/Setter。加载的资产默认共享。`clone()` 会生成没有源路径和 GUID 的纯运行时副本，修改它不会覆盖项目资产。
 
-**证据说明。** 上述规则来自当前仓库中的 `render_effect_compiler.py`（`discover_effect_features`、`compile_and_publish`、`_compile_effect`、`compile_effect_slots`）、`render_effect_inspector.py`、`resource_documents.py`、`assets.py`、`graph.py::fullscreen_quad` 与 `FullscreenRenderer.cpp`。生成的 `.inxeffect` 属于派生产物；`.effect`、Feature 源码、Fragment Shader、场景 Slot 列表及其 GUID 元数据才是需要保留的编写证据。
+**证据说明。** 上述规则来自当前仓库中的 `renderstack/discovery.py`（`discover_effect_features`）与 `render_effect_compiler.py`（`compile_and_publish`、`_compile_effect`、`compile_effect_slots`）、`render_effect_inspector.py`、`resource_documents.py`、`assets.py`、`graph.py::fullscreen_quad` 与 `FullscreenRenderer.cpp`。生成的 `.inxeffect` 属于派生产物；`.effect`、Feature 源码、Fragment Shader、场景 Slot 列表及其 GUID 元数据才是需要保留的编写证据。
 
 下一章继续解释 Stage 与 Slot 如何决定 Feature 实际收到哪一张图。

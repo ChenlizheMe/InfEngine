@@ -50,7 +50,7 @@
 <h2 id="editor-setup">Prepare the scene</h2>
 <p>This walkthrough builds on the collision scene from Chapter 5.</p>
 <ol>
-<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. The current runtime wrapper reliably supports WAV decoding.</li>
+<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. The runtime bundles four decoders: WAV (<code>SDL_LoadWAV</code>), OGG/Vorbis (<code>stb_vorbis</code>), MP3 (<code>dr_mp3</code>), and FLAC (<code>dr_flac</code>). WAV is the simplest path and the recommended first asset; there are currently no automated audio tests covering the decoders.</li>
 <li>Select the main camera and add an <strong>AudioListener</strong> component. Keep one active listener in the scene.</li>
 <li>Select the player and add an <strong>AudioSource</strong> component. Leave <strong>Track Count</strong> at <code>1</code>; the script will assign track 0. Disable <strong>Play On Awake</strong> because the script starts playback after loading the clip.</li>
 <li>Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. <code>on_collision_enter()</code> requires a real collision pair.</li>
@@ -248,7 +248,7 @@ def update(self, delta_time):
 <h2 id="common-errors">Common errors</h2>
 <ul>
 <li><strong>Using <code>source.clip</code></strong>: this property is not public. Assign a numbered track with <code>set_track_clip()</code>.</li>
-<li><strong>Loading MP3 or OGG based on old UI text</strong>: the current reliable decode path is WAV. Convert the tutorial clips to WAV.</li>
+<li><strong>Loading MP3 or OGG based on old UI text</strong>: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, and no automated test covers the decoders yet.</li>
 <li><strong>Unloading too early</strong>: keep each <code>AudioClip</code> wrapper alive until every source using it has stopped.</li>
 <li><strong>Playing in <code>on_collision_stay()</code></strong>: this callback repeats each fixed step. Use <code>on_collision_enter()</code> for one sound per contact.</li>
 <li><strong>No sound in the scene</strong>: confirm that one active AudioListener exists, the clip loaded, the source is not muted, and the source is inside the attenuation range.</li>
@@ -276,7 +276,7 @@ def update(self, delta_time):
 <h2 id="zh-editor-setup">准备场景</h2>
 <p>以下步骤沿用第 5 章的碰撞场景。</p>
 <ol>
-<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。当前运行时封装可稳定解码 WAV。</li>
+<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。运行时内置四种解码器：WAV（<code>SDL_LoadWAV</code>）、OGG/Vorbis（<code>stb_vorbis</code>）、MP3（<code>dr_mp3</code>）与 FLAC（<code>dr_flac</code>）。WAV 路径最简单，建议把它作为第一份验收资产；当前没有自动化音频测试覆盖这些解码器。</li>
 <li>选择主摄像机，添加 <strong>AudioListener</strong> 组件。场景中保留一个启用的监听器。</li>
 <li>选择玩家，添加 <strong>AudioSource</strong> 组件。<strong>Track Count</strong> 保持 <code>1</code>，脚本会设置轨道 0。关闭 <strong>Play On Awake</strong>，脚本会在音频加载完成后启动播放。</li>
 <li>保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。<code>on_collision_enter()</code> 需要有效的碰撞组合。</li>
@@ -359,15 +359,15 @@ def update(self, delta_time):
 <tbody>
 <tr>
 <td><code>track_count: int</code></td>
-<td>持续轨道数量。Inspector 范围为 1–16，默认值为 1。</td>
+<td>持续轨道数量。Inspector 范围为 1 到 16，默认值为 1。</td>
 </tr>
 <tr>
 <td><code>volume: float</code></td>
-<td>所有轨道共享的音源音量。Inspector 范围为 0–1，默认值为 1。</td>
+<td>所有轨道共享的音源音量。Inspector 范围为 0 到 1，默认值为 1。</td>
 </tr>
 <tr>
 <td><code>pitch: float</code></td>
-<td>音源音高倍率。Inspector 范围为 0.1–3，默认值为 1。</td>
+<td>音源音高倍率。Inspector 范围为 0.1 到 3，默认值为 1。</td>
 </tr>
 <tr>
 <td><code>mute: bool</code></td>
@@ -474,7 +474,7 @@ def update(self, delta_time):
 <h2 id="zh-common-errors">常见错误</h2>
 <ul>
 <li><strong>使用 <code>source.clip</code></strong>：当前公开 API 没有这个属性。请用 <code>set_track_clip()</code> 分配编号轨道。</li>
-<li><strong>根据旧界面文字加载 MP3 或 OGG</strong>：当前稳定解码路径为 WAV。请先转换教程音频。</li>
+<li><strong>根据旧界面文字加载 MP3 或 OGG</strong>：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；目前没有自动化测试覆盖解码器。</li>
 <li><strong>过早卸载</strong>：每个音频的所有使用者停止后，再调用 <code>unload()</code>。</li>
 <li><strong>在 <code>on_collision_stay()</code> 中播放</strong>：该回调每个固定步都会运行。一次接触一次音效应使用 <code>on_collision_enter()</code>。</li>
 <li><strong>场景中没有声音</strong>：检查是否存在一个启用的 AudioListener、音频是否加载成功、音源是否静音，以及音源是否位于衰减范围内。</li>

@@ -29,6 +29,8 @@ Create an `Assets/Scenes` folder, then prepare these saved scene assets:
 
 A Button created through **UI > Button** already has a `UIButton` component. Its `interactable` state, visual transition settings, label, fill, and persistent **On Click ()** list are available in the Inspector.
 
+A new Canvas defaults to Screen Overlay. Two render modes exist: **Screen Overlay** draws after display encoding, on top of the finished image; **Camera Overlay** draws into the scene before post-processing, so scene effects can process the UI along with the geometry. Menu and HUD screens usually stay on Screen Overlay; choose Camera Overlay when the UI must react to bloom, color grading, or motion blur.
+
 ## Write the scene actions component {#scene-actions-component}
 
 Create `Assets/Scripts/scene_actions.py` with this complete component:
@@ -174,6 +176,8 @@ You now have a complete authored action path: pointer click, serialized componen
 7. 添加 Canvas、子级 Button 和空的 `SceneFlow`。把 Button 命名为 `ReturnButton`，label 设为 `Return to menu`，然后保存场景。
 
 通过 **UI > Button** 创建的对象已经带有 `UIButton`。Inspector 中可以设置 `interactable`、视觉过渡、label、填充和持久化 **On Click ()** 列表。
+
+新建 Canvas 默认是 Screen Overlay。Canvas 有两种渲染模式：**Screen Overlay** 在显示编码之后绘制，覆盖在成品图像上；**Camera Overlay** 在后处理之前画进场景，场景效果可以把 UI 与几何一起处理。菜单与 HUD 通常留在 Screen Overlay；需要 UI 参与 Bloom、调色或运动模糊时才选择 Camera Overlay。
 
 ## 编写场景操作组件 {#scene-actions-component_1}
 

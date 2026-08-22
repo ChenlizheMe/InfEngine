@@ -13,8 +13,8 @@
     "level_zh": "从入门到进阶",
     "promise_en": "From a running component to a complete game loop",
     "promise_zh": "从第一个可运行组件到完整游戏循环",
-    "detail_en": "Each chapter adds one practical part to the same mental model: a GameObject owns components, components react to the engine lifecycle, and public fields connect authored scene data to runtime behavior.",
-    "detail_zh": "每一章都沿用同一套心智模型：GameObject 承载组件，组件响应引擎生命周期，公开字段把场景中的配置连接到运行时行为。"
+    "detail_en": "Each chapter adds one practical part to the same mental model: a GameObject owns components, components react to the engine lifecycle, and public fields connect authored scene data to runtime behavior. Particle graphs, skeletal animation, and the MCP automation tooling are planned follow-up topics outside this course.",
+    "detail_zh": "每一章都沿用同一套心智模型：GameObject 承载组件，组件响应引擎生命周期，公开字段把场景中的配置连接到运行时行为。粒子图、骨骼动画与 MCP 自动化工具属于后续专题，暂未纳入本课程。"
   },
   {
     "id": "rendering",

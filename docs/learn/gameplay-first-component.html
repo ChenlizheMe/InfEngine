@@ -135,7 +135,8 @@ class HelloComponent(InxComponent):
 </tr>
 </tbody>
 </table>
-<p>An inactive GameObject defers <code>awake</code> until it first becomes active. <code>start</code> runs once, immediately before that component's first simulation update. Regular <code>update</code> callbacks run in Play mode unless the component explicitly uses the separate edit-mode decorator.</p>
+<p>An inactive GameObject defers <code>awake</code> until it first becomes active. <code>start</code> runs once, immediately before that component's first simulation update. Regular <code>update</code>, <code>fixed_update</code>, and <code>late_update</code> callbacks run in Play mode.</p>
+<p>Edit-mode execution is a separate opt-in. The native component proxy reads the class attribute set by <code>@execute_in_edit_mode</code> and mirrors it onto the instance as <code>_execute_in_edit_mode</code>; both the native proxy (<code>PyComponentProxy</code>) and the Python scheduler check that instance attribute before running edit-mode callbacks. In a pure Python test context without a native proxy, the mirror step does not happen, so set the instance attribute directly when such a context needs edit-mode updates.</p>
 <h2 id="troubleshooting">Common errors</h2>
 <ul>
 <li><strong>The script is absent from Add Component.</strong> Save the file, confirm the class derives from <code>InxComponent</code>, and inspect the Console for an import or syntax error.</li>
@@ -250,7 +251,8 @@ class HelloComponent(InxComponent):
 </tr>
 </tbody>
 </table>
-<p>非活动 GameObject 会把 <code>awake</code> 推迟到第一次激活。<code>start</code> 只运行一次，位置在该组件第一次模拟更新之前。普通 <code>update</code> 只在 Play 模式运行；编辑模式更新由单独的编辑模式装饰器控制。</p>
+<p>非活动 GameObject 会把 <code>awake</code> 推迟到第一次激活。<code>start</code> 只运行一次，位置在该组件第一次模拟更新之前。普通的 <code>update</code>、<code>fixed_update</code> 与 <code>late_update</code> 只在 Play 模式运行。</p>
+<p>编辑模式执行需要单独选择加入。原生组件代理读取 <code>@execute_in_edit_mode</code> 装饰器设置的类属性，并把它镜像到实例的 <code>_execute_in_edit_mode</code> 上；原生代理（<code>PyComponentProxy</code>）与 Python 调度器在运行编辑模式回调前都会检查这个实例属性。没有原生代理的纯 Python 测试环境不会发生镜像，如果这类环境需要编辑模式更新，请直接设置实例属性。</p>
 <h2 id="troubleshooting_1">常见错误</h2>
 <ul>
 <li><strong>Add Component 找不到脚本。</strong> 保存文件，确认类继承 <code>InxComponent</code>，再查看 Console 中的导入或语法错误。</li>

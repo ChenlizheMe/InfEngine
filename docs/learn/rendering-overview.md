@@ -25,7 +25,7 @@ Reproduce the complete baseline from an otherwise empty scene:
 
 1. Right-click empty space in **Hierarchy**, choose **Create 3D Object > Cube**, and leave the Cube Transform at position `(0, 0, 0)`. Its MeshRenderer should show one mesh and one material slot.
 2. If no enabled Camera exists, right-click Hierarchy and choose **Camera**. Set its position to `(0, 1, -10)` and rotation to `(0, 0, 0)` so the Cube is inside the Game view. If no enabled light exists, choose **Light > Directional Light**; the creation command supplies a useful initial rotation.
-3. In **Project**, open `Assets` or a child folder, right-click empty space, and choose **Material (.mat)**. Name it `FirstCube`. The current template creates a Material whose **Vertex** selector is `Standard` and **Fragment** selector is `Lit`; confirm both values in its Inspector.
+3. In **Project**, open `Assets` or a child folder, right-click empty space, and choose **Material (.mat)**. Name it `FirstCube`. The current template creates a Material whose **Vertex** selector is `Standard` and **Fragment** selector is `Unlit`. For this lighting baseline, change **Fragment** to the built-in `Lit` in its Inspector.
 4. Select the Cube. Under **MeshRenderer > Materials**, drag `FirstCube.mat` onto **Element 0**, or use that slot's asset picker.
 5. Keep the scene free of a RenderStack for this first check. The renderer uses **Default Forward** when no RenderStack is present.
 6. Open **Scene** and **Game**. Select `FirstCube.mat` and change **Base Color** to a saturated color that is easy to distinguish from white.
@@ -34,7 +34,7 @@ The baseline passes when the same Cube is visible in both views, its lit faces s
 
 For a second, explicit pipeline check, create **Post Processing > RenderStack** from the Hierarchy context menu and select **Default Forward** in its Inspector. With an empty effect list, the Cube should remain visually unchanged. This comparison checks that the explicit baseline is usable; pixels alone do not prove which route produced them.
 
-<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Standard/Lit Material template, the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
+<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (Standard vertex + Unlit fragment; this chapter switches the fragment to the built-in Lit), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
 
 ## The authored rendering chain {#the-rendering-chain}
 
@@ -125,7 +125,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 1. 在 **Hierarchy** 空白处右键，选择 **Create 3D Object > Cube**，保持 Cube 的 Transform 位置为 `(0, 0, 0)`。它的 MeshRenderer 应显示一个 Mesh 和一个 Material Slot。
 2. 场景里没有启用的 Camera 时，在 Hierarchy 空白处右键选择 **Camera**，把位置设为 `(0, 1, -10)`、旋转设为 `(0, 0, 0)`，让 Cube 进入 Game 画面。没有启用的灯光时，选择 **Light > Directional Light**；该创建命令会提供可用的初始旋转。
-3. 在 **Project** 中打开 `Assets` 或其子目录，在空白处右键选择 **Material (.mat)**，命名为 `FirstCube`。当前模板会创建 **Vertex** 为 `Standard`、**Fragment** 为 `Lit` 的 Material；在 Inspector 中确认这两个值。
+3. 在 **Project** 中打开 `Assets` 或其子目录，在空白处右键选择 **Material (.mat)**，命名为 `FirstCube`。当前模板会创建 **Vertex** 为 `Standard`、**Fragment** 为 `Unlit` 的 Material。本章要观察受光面的明暗变化，请在 Inspector 中把 **Fragment** 换成内置的 `Lit`。
 4. 选中 Cube，在 **MeshRenderer > Materials** 中把 `FirstCube.mat` 拖到 **Element 0**，也可以使用该 Slot 的资产选择器。
 5. 第一次检查先不创建 RenderStack。场景缺少 RenderStack 时，渲染器使用 **Default Forward**。
 6. 打开 **Scene** 与 **Game**。选中 `FirstCube.mat`，把 **Base Color** 改成容易与白色区分的高饱和颜色。
@@ -134,7 +134,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 再做一次显式 Pipeline 检查：从 Hierarchy 右键菜单创建 **Post Processing > RenderStack**，在 Inspector 中选择 **Default Forward**。Effect 列表为空时，Cube 画面应保持一致。这个对照可以确认显式基线可用；仅凭像素无法证明背后的实际路由。
 
-<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Standard/Lit Material 模板、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
+<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（Standard 顶点 + Unlit 片元，本章再把片元切换为内置 Lit）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
 
 ## 用户编写的渲染链 {#the-rendering-chain_1}
 

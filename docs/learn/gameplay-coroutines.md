@@ -134,7 +134,7 @@ Each yielded value selects the phase that will check the coroutine next.
 | --- | --- | --- |
 | `yield None` or bare `yield` | Wait one update frame. | `update` |
 | `WaitForFrames(n)` | Resume after exactly `n` update-phase checks. `n` must be an integer of at least 1; `bool` is rejected. | `update` |
-| `WaitForSeconds(seconds)` | Accumulate scaled `delta_time` until it reaches `seconds`. | `update` |
+| `WaitForSeconds(seconds)` | Accumulate the update-phase frame delta until it reaches `seconds`. | `update` |
 | `WaitForSecondsRealtime(seconds)` | Resume on the first update check at or after its wall-clock target. | `update` |
 | `WaitForFixedUpdate()` | Resume on the next fixed-update scheduler pass. | `fixed_update` |
 | `WaitForEndOfFrame(n)` | Resume after `n` late-update scheduler passes. `n` has the same integer validation as `WaitForFrames`. | `late_update` |
@@ -143,7 +143,7 @@ Each yielded value selects the phase that will check the coroutine next.
 | a `Coroutine` handle | Resume after that handle is finished, including when it was stopped. | `update` |
 | any unsupported value | Current runtime treats it like a one-update-frame wait. | `update` |
 
-`WaitForSeconds` receives scaled delta time. With `Time.time_scale == 0`, its elapsed value does not grow. `WaitForSecondsRealtime` uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.
+`WaitForSeconds` accumulates the frame delta handed to the coroutine scheduler. The scheduler currently forwards the same raw, unscaled delta that `update()` receives, so `Time.time_scale` does not slow this wait today; the instruction's docstring still describes scaled time, which the current call path does not deliver. `WaitForSecondsRealtime` uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.
 
 `WaitForEndOfFrame` means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.
 
@@ -211,7 +211,7 @@ To inspect a handle during development, log `self._sequence_handle.is_finished`.
 - **Passing the method instead of its generator**: call `self.start_coroutine(self.run_sequence())`, including the final parentheses.
 - **Using `time.sleep()`**: it blocks the thread and freezes other engine work. Yield `WaitForSecondsRealtime()` for a wall-clock delay.
 - **Expecting an exact timestamp**: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.
-- **Expecting `WaitForSeconds` during pause**: scaled delta time is zero when the time scale is zero. Use realtime waiting only when paused gameplay should still advance that sequence.
+- **Expecting `WaitForSeconds` to respect pause**: the current scheduler feeds the raw update delta, so `time_scale` does not change this wait. Use realtime waiting for wall-clock delays, and accumulate `Time.delta_time` manually when a sequence must follow the game clock.
 - **Treating `WaitForEndOfFrame` as post-render capture**: it maps to late update in the current scheduler.
 - **Reusing one wait instance**: elapsed and remaining fields belong to that object. Construct a new instruction at each `yield`.
 - **Yielding a generator directly**: start it first and yield its `Coroutine` handle.
@@ -359,7 +359,7 @@ class CoroutineTour(InxComponent):
 | --- | --- | --- |
 | `yield None` 或单独 `yield` | 等待一个更新帧。 | `update` |
 | `WaitForFrames(n)` | 经过恰好 `n` 次更新阶段检查后恢复。`n` 必须是至少为 1 的整数，`bool` 会被拒绝。 | `update` |
-| `WaitForSeconds(seconds)` | 累加缩放后的 `delta_time`，达到 `seconds` 后恢复。 | `update` |
+| `WaitForSeconds(seconds)` | 累加更新阶段的帧间隔，达到 `seconds` 后恢复。 | `update` |
 | `WaitForSecondsRealtime(seconds)` | 墙钟时间达到目标后，在首次更新检查时恢复。 | `update` |
 | `WaitForFixedUpdate()` | 在下一次固定更新调度中恢复。 | `fixed_update` |
 | `WaitForEndOfFrame(n)` | 经过 `n` 次后期更新调度后恢复。`n` 与 `WaitForFrames` 使用相同的整数校验。 | `late_update` |
@@ -368,7 +368,7 @@ class CoroutineTour(InxComponent):
 | `Coroutine` 句柄 | 句柄结束后恢复，被停止的句柄也算结束。 | `update` |
 | 任意不支持的值 | 当前运行时把它当作等待一个更新帧。 | `update` |
 
-`WaitForSeconds` 接收缩放后的增量时间。`Time.time_scale == 0` 时，它的累计值不会增长。`WaitForSecondsRealtime` 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 `yield` 前即时创建。
+`WaitForSeconds` 累加协程调度器收到的帧间隔。调度器目前把 `update()` 收到的同一份原始未缩放 delta 转给协程，因此 `Time.time_scale` 今天不会减慢这个等待；该指令的 docstring 仍描述为缩放时间，当前调用路径并没有提供缩放值。`WaitForSecondsRealtime` 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 `yield` 前即时创建。
 
 `WaitForEndOfFrame` 对应当前协程调度器的 `late_update` 阶段，不承诺渲染、画面呈现或截图已经完成。
 
@@ -422,7 +422,7 @@ def temporary_state(self):
 
 ## 验证结果 {#zh-verify}
 
-1. 进入 Play 模式并观察 Console。消息 1 应在 `start()` 内立即出现，消息 2–10 应保持数字顺序。
+1. 进入 Play 模式并观察 Console。消息 1 应在 `start()` 内立即出现，消息 2 到 10 应保持数字顺序。
 2. 确认消息 2 与消息 3 之间隔着更新帧，再观察缩放时间和真实时间延时。
 3. 消息 6 应出现在一次固定更新之后。消息 7 应在两次后期更新之后出现。
 4. gate 与 busy 辅助流程应在没有输入的情况下让消息 8 和 9 出现。
@@ -436,7 +436,7 @@ def temporary_state(self):
 - **传入方法本身**：应写成 `self.start_coroutine(self.run_sequence())`，末尾括号不能省略。
 - **使用 `time.sleep()`**：它会阻塞线程并冻结其他引擎工作。墙钟延时请 `yield WaitForSecondsRealtime()`。
 - **期待精确时间点**：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。
-- **暂停后仍等待 `WaitForSeconds`**：时间缩放为 0 时，缩放增量也为 0。暂停期间仍需推进的流程可使用实时等待。
+- **期待 `WaitForSeconds` 响应暂停**：当前调度器传入的是原始更新 delta，`time_scale` 不会改变这个等待。墙钟延时用实时等待；流程必须跟随游戏时钟时，请自行累计 `Time.delta_time`。
 - **把 `WaitForEndOfFrame` 当成渲染后截图点**：当前调度器把它映射到后期更新。
 - **复用同一个等待实例**：累计值和剩余次数保存在对象中。每个 `yield` 都应构造新指令。
 - **直接 `yield` 生成器**：先启动生成器，再 `yield` 它的 `Coroutine` 句柄。

@@ -39,7 +39,7 @@ The Inspector shows only declared Effect Stages. Internal render passes, layers,
   <figcaption>A partial web-style illustration with four representative lists. It omits built-in stages such as `after_sky`, `after_transparent`, and Deferred's `after_gbuffer`; the table above is complete. The drawing does not reproduce the native Inspector pixel for pixel.</figcaption>
 </figure>
 
-Parameter edits normally update GPU parameter blocks. Slot order, group structure, enabled topology, and fields declared in `topology_parameters` invalidate the graph. A failed individual effect is rolled back and listed in **Effect Compile Errors** with its Stage/Slot path; the rebuilt graph can continue without that effect. A broader topology failure keeps the last valid graph and last valid Inspector topology in the Editor. In a packaged Player, a pipeline build failure does not substitute Default Forward.
+Parameter edits normally update GPU parameter blocks. Each compiled effect binds a named parameter block, and steady frames upload only the changed parameters through `update_parameter_blocks`. Slot order, group structure, enabled topology, and fields declared in `topology_parameters` invalidate the graph instead. A failed individual effect is rolled back and listed in **Effect Compile Errors** with its Stage/Slot path; the rebuilt graph can continue without that effect. A broader topology failure keeps the last valid graph and last valid Inspector topology in the Editor. In a packaged Player, a pipeline build failure does not substitute Default Forward.
 
 ## Five terms, four sources of authority {#terms-authority}
 
@@ -76,6 +76,8 @@ RenderStack rejects a new slot for an undeclared stage. If a pipeline change rem
 | Composite | The scene accumulated at that pipeline position | Grade scene color after sky and transparency |
 
 The scope belongs to the `EffectStage`; it is absent from the `.effect` asset and from the slot. This lets one reusable asset work at several scopes when their resource contracts and route policies are compatible.
+
+The built-in stages follow the same accumulation. `after_opaque` receives the opaque domain only: scene color plus depth, before sky and transparency. `after_sky` adds the skybox. `after_transparent` receives the complete scene composite, still in linear HDR. `after_camera_ui` adds the Camera Overlay UI on top. `final` runs before display encoding and is the intended home for post-processing chains. `after_screen_ui` receives the display-encoded image plus Screen Overlay UI. Chapter 1 of this course introduced the distinction: Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default.
 
 The stage contract supplies a local semantic resource bus. Its `inputs` decide whether `color`, `depth`, `normal`, `motion`, or another handle reaches the effect. The renderer also gathers `requires ∪ modifies` from enabled assets early enough to request optional geometry buffers. Both sides must agree: requesting `motion` can make the pipeline produce it, while mounting at a stage that does not expose `motion` still fails the local contract.
 
@@ -235,7 +237,7 @@ Inspector 只显示管线声明的 Effect Stage。内部 Render Pass、Layer、C
   <figcaption>这张网页式局部示意图只画了四个代表性列表，省略了 `after_sky`、`after_transparent` 和 Deferred 的 `after_gbuffer` 等内置 Stage；上表才是完整集合。当前原生 Inspector 的像素布局与图中不同。</figcaption>
 </figure>
 
-普通参数修改通常只更新 GPU 参数块。Slot 顺序、EffectGroup 结构、影响拓扑的启用状态，以及列入 `topology_parameters` 的字段会让图失效并触发重建。单个 Effect 失败时，其修改会回滚，**Effect Compile Errors** 按 Stage/Slot 路径显示错误，新图可以跳过该 Effect 后继续完成。更大范围的拓扑失败时，Editor 保留上一份有效渲染图和 Inspector 拓扑。打包 Player 遇到管线构建失败时不会替换为 Default Forward。
+普通参数修改通常只更新 GPU 参数块。每个编译后的 Effect 绑定一个命名参数块，稳态帧只通过 `update_parameter_blocks` 上传发生变化的参数。Slot 顺序、EffectGroup 结构、影响拓扑的启用状态，以及列入 `topology_parameters` 的字段则让图失效并触发重建。单个 Effect 失败时，其修改会回滚，**Effect Compile Errors** 按 Stage/Slot 路径显示错误，新图可以跳过该 Effect 后继续完成。更大范围的拓扑失败时，Editor 保留上一份有效渲染图和 Inspector 拓扑。打包 Player 遇到管线构建失败时不会替换为 Default Forward。
 
 ## 五个术语，四层权威 {#terms-authority_1}
 
@@ -272,6 +274,8 @@ RenderStack 会拒绝向未声明 Stage 新增 Slot。管线变化导致旧 Stag
 | Composite | 管线运行到该位置时累计的场景 | 天空与透明物之后统一调色 |
 
 Scope 属于 `EffectStage`，不会写进 `.effect` 资产或 Slot。同一份可复用资产只要满足资源契约和 Route Policy，就可以用于多个 Scope。
+
+内置 Stage 遵循同样的累加顺序。`after_opaque` 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。`after_sky` 加上天空盒。`after_transparent` 收到完整场景合成，仍在线性 HDR 空间。`after_camera_ui` 在其上叠加 Camera Overlay UI。`final` 位于显示编码之前，是后处理链的默认归宿。`after_screen_ui` 收到显示编码后的图像与 Screen Overlay UI。本课程第一章介绍了这个区别：Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。
 
 Stage 契约会建立局部语义 Resource Bus。它的 `inputs` 决定 `color`、`depth`、`normal`、`motion` 等 Handle 能否到达 Effect。渲染器也会提前汇总启用资产的 `requires ∪ modifies`，以便请求可选几何 Buffer。两边必须一致：请求 `motion` 可以促使管线生成它；挂到没有暴露 `motion` 的 Stage 时，局部契约仍会失败。
 

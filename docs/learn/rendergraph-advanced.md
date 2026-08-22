@@ -21,6 +21,8 @@ The low-level API exposes more topology and more obligations: resource names, pa
 
 Use `define(pipeline)` for frame policy, opaque and transparent Queue routes, Forward/Forward+/Deferred selection, layers, sky, and Effect mount points. Use `define_topology(graph)` for a custom target layout, a nonstandard GBuffer, a pass dependency outside the route DSL, or a new source-scoped semantic buffer.
 
+Keep the ownership chain in mind: the scene owns a RenderStack, the RenderStack owns the selected RenderPipeline and the ordered EffectSlots, the pipeline records topology on the Python RenderGraph builder, and `graph.build()` serializes that topology into a `RenderGraphDescription`. The native engine then compiles the description into a per-camera graph and reuses it across steady frames, keyed by the description's `source_revision`. The pipeline authors the topology; the engine executes it.
+
 The two methods operate at different levels:
 
 - `define(pipeline)` receives a `PipelineBuilder`. It validates domain ownership and compiles routes, intermediate images, resolves, and composition passes.
@@ -244,7 +246,7 @@ draw_data = graph.create_buffer(
 
 `read_buffer()` and `write_buffer()` validate storage, indirect, or transfer access against those flags. `copy_buffer()` adds transfer source/destination flags to its two handles. These declarations describe access and synchronization; an executable pass action still has to use the resource.
 
-For MSAA, `graph.set_msaa_samples(1|2|4|8)` sets the frame policy. A camera target and a scene-sized depth texture default to `samples=0`, which inherits that policy. Other transient textures default to one sample. All color and depth attachments in a raster pass must resolve to the same sample count.
+For MSAA, `graph.set_msaa_samples(1|2|4|8)` sets the frame policy, and `set_msaa_samples(0)` leaves the current setting unchanged. A camera target and a scene-sized depth texture default to `samples=0`, which inherits that policy. Other transient textures default to one sample. All color and depth attachments in a raster pass must resolve to the same sample count.
 
 Use `write_resolve()` when a multisampled color result must become a single-sample texture:
 
@@ -330,6 +332,8 @@ Before shipping a low-level pipeline, check these points:
 ## 选择 API 层级 {#when_1}
 
 `define(pipeline)` 适合帧策略、不透明与透明 Queue 路由、Forward/Forward+/Deferred 选择、Layer、天空和 Effect 挂载点。`define_topology(graph)` 适合自定义 Target 布局、非标准 GBuffer、Route DSL 词汇之外的 Pass 依赖，以及新的源作用域语义 Buffer。
+
+记住这条所有权链：场景拥有 RenderStack，RenderStack 拥有选中的 RenderPipeline 与有序 EffectSlot，管线把拓扑记录到 Python RenderGraph 构建器上，`graph.build()` 再把拓扑序列化成 `RenderGraphDescription`。原生引擎随后把描述编译成每相机的图，并在稳态帧中按描述的 `source_revision` 复用。管线负责编写拓扑，引擎负责执行。
 
 两个方法处在不同层级：
 
@@ -554,7 +558,7 @@ draw_data = graph.create_buffer(
 
 `read_buffer()` 与 `write_buffer()` 会根据这些标志校验 Storage、Indirect 或 Transfer Access。`copy_buffer()` 会给两端 Handle 补充 Transfer Source/Destination 标志。这些声明负责描述访问与同步；资源还需要被可执行 Pass Action 实际使用。
 
-MSAA 由 `graph.set_msaa_samples(1|2|4|8)` 设置帧策略。Camera Target 与场景尺寸的 Depth Texture 默认使用 `samples=0`，表示继承该策略；其它瞬态 Texture 默认是单采样。同一 Raster Pass 的所有 Color 与 Depth Attachment 必须解析为相同采样数。
+MSAA 由 `graph.set_msaa_samples(1|2|4|8)` 设置帧策略，`set_msaa_samples(0)` 表示保持当前设置不变。Camera Target 与场景尺寸的 Depth Texture 默认使用 `samples=0`，表示继承该策略；其它瞬态 Texture 默认是单采样。同一 Raster Pass 的所有 Color 与 Depth Attachment 必须解析为相同采样数。
 
 多采样 Color 需要变成单采样 Texture 时，使用 `write_resolve()`：
 

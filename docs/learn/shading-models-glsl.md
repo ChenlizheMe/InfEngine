@@ -8,7 +8,7 @@ A `.frag` assembles `SurfaceData`. A `.shadingmodel` defines how that surface re
 
 PBR, unlit color, toon bands, halftone lighting, skin response, and project-specific lighting belong in a ShadingModel. Infernux gives every model the fixed `shading()` entry shown below.
 
-<div class="learn-article-toc"><strong>In this chapter</strong><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#pass-variants">Pass variants</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
 
 <div class="learn-note"><strong>First-pass finish line.</strong><p>Create the three files in the complete example, select the new fragment stage on one Material, and confirm that a lit Cube changes appearance without Console errors. Stop there on a first reading; importer diagnostics and Deferred boundaries are reference material for when that visible result fails or the model grows.</p></div>
 
@@ -125,18 +125,30 @@ Use this failure matrix before debugging pixels:
 
 Imports are expanded recursively, with cycle suppression and a maximum nesting depth of 16. Current generated shader diagnostics do not add source-file `#line` mapping for imported text, so a compiler line number may refer to the expanded/root source. Start with the first import error, inspect the named library, and reimport the root `.frag` after the fix. A visible old result proves only that last-known-good fallback worked; a cleared Console plus a deliberate Threshold change proves the new program became active.
 
+## How one model becomes many pass variants {#pass-variants}
+
+One vertex/fragment pair compiles into several programs. The engine enumerates nine material pass targets: `Forward`, `ForwardPlus`, `GBuffer`, `Shadow`, `Depth`, `Picking`, `Motion`, `Normal`, and `BaseColor` (`ShaderTypes.h`). For each target, `InxShaderLoader` regenerates the GLSL with a matching `main()` template:
+
+- Forward and Forward+ call `surface()`, then `shading()` with the per-camera lighting resources (`surface_main.glsl`); the Forward+ target additionally binds the tiled light grid.
+- GBuffer writes `packGBuffer()` into the five deferred render targets (`surface_main_gbuffer.glsl`).
+- Shadow and Depth run alpha clipping only and write depth.
+- Picking writes the stable object identity, Motion writes velocity, and Normal and BaseColor write the geometry-stage buffers that effects such as Motion Blur or TAA can consume.
+
+The shared surface code stays identical; the adapter templates supply the pass-specific output. `ShaderPassVariantPlanner` decides which targets compile for a given pair. GBuffer is enabled for opaque materials whose ShadingModel does not declare `Unsupported [Deferred]` and does not force forward. Alpha clipping is shared by every compatible variant, so a cutout surface clips consistently in color, shadow, and picking passes.
+
 ## Requirements and Deferred limits {#requirements}
 
 `Imports ["Lighting"]` links declarations and helper functions. `Requires [Lighting]` asks the compiler and pipeline contract to supply camera-local lighting data. Both are required by this sample, and neither selects a render route.
 
-The compiler makes a valid model eligible for Deferred when it has `void shading(in SurfaceData s, out vec4 color)` and does not declare `Unsupported [Deferred]`. The canonical GBuffer stores `albedo`, encoded world normal, `smoothness`, `metallic`, `occlusion`, `specularHighlights`, `emission`, `alpha`, `shadingParam0`, and `shadingParam1`, plus the object light-layer mask and ShadingModel ID. Deferred reconstructs world position from depth and dispatches `shading()` by that ID.
+The compiler makes a valid model eligible for Deferred when it has `void shading(in SurfaceData s, out vec4 color)` and does not declare `Unsupported [Deferred]`. The canonical GBuffer stores `albedo`, encoded world normal, `smoothness`, `metallic`, `occlusion`, `specularHighlights`, `emission`, `alpha`, `shadingParam0`, and `shadingParam1`, plus the object light-layer mask and ShadingModel ID. The packing is concrete: target 0 holds base color and alpha (RGBA16F), target 1 holds the encoded normal plus `smoothness` in alpha (RGBA16F), target 2 holds `metallic`, `occlusion`, `specularHighlights`, and `shadingParam0` (RGBA8), target 3 holds emission plus `shadingParam1` (RGBA16F), and target 4 holds the light-layer mask and ShadingModel ID (RG32_UINT). `deferred_lighting.frag` reconstructs world position from depth, decodes those targets into a fresh `SurfaceData` and `ShadingContext`, and calls `inxDispatchShading(modelId, color)`; the compiler-generated registry appends every Deferred-capable model's `shading()` under its stable ID.
 
 `Learn Band` is eligible because its custom threshold fits in `shadingParam0` and its remaining inputs come from stored Surface fields or reconstructed context. Test the boundary explicitly:
 
 1. With no RenderStack, or with **Default Forward** selected in a RenderStack, confirm the band responds to Threshold and the first Directional Light.
 2. Select **Default Deferred** in the RenderStack Inspector. The opaque Material is Deferred-compatible and should be written to the GBuffer, then dispatched by its ShadingModel ID.
-3. Add `Unsupported [Deferred]` to `Learn Band`, reimport `learn_band_surface.frag`, and check again. The built-in Deferred pipeline omits that pair's GBuffer variant and draws the opaque object through `DeferredForwardFallbackPass`, which uses Forward+ lighting. Transparent surfaces also use the transparent Forward+ pass.
-4. Remove that declaration only when the model can be reconstructed from the listed fields. The compiler checks syntax and declarations; it cannot infer that a tangent-frame-dependent or extra-data-dependent result is semantically wrong. Such a model may compile and render incorrect Deferred pixels.
+3. Add `Unsupported [Deferred]` to `Learn Band`, reimport `learn_band_surface.frag`, and check again. The built-in Deferred pipeline omits that pair's GBuffer variant and draws the opaque object through `DeferredForwardFallbackPass`, which uses Forward+ lighting. Internally the GBuffer pass filters for Deferred-compatible materials (`deferred_compatible`), and the fallback pass filters for the rest (`deferred_unsupported`). Transparent surfaces also use the transparent Forward+ pass.
+4. The declarative DSL enforces one more rule: with MSAA above 1, a Deferred route must declare an explicit `Forward` or `Forward+` fallback, and the compiler applies that fallback to the whole route (`pipeline_compiler.py` rejects a Deferred route without one).
+5. Remove that declaration only when the model can be reconstructed from the listed fields. The compiler checks syntax and declarations; it cannot infer that a tangent-frame-dependent or extra-data-dependent result is semantically wrong. Such a model may compile and render incorrect Deferred pixels.
 
 A valid `Unsupported [Deferred]` declaration does not produce a warning: fallback is an expected built-in route. The current Material Inspector also has no per-material "Deferred fallback" status. Use the controlled toggle above, a clear Console, and the active RenderStack pipeline as the reproducible evidence. Compile errors are actionable diagnostics; a semantic mismatch that still compiles remains the ShadingModel author's responsibility.
 
@@ -144,7 +156,7 @@ Deferred substitutes the stored shading normal for `geometricNormalWS`, synthesi
 
 ```glsl
 ShadingModelInfo {
-    Name "Six Way Smoke"
+    Name "SixWaySmoke"
     Imports ["Lighting"]
     Requires [Lighting]
     Unsupported [Deferred]
@@ -180,7 +192,7 @@ These boundaries keep lighting code readable and leave route decisions with the 
 
 PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的美术光照都属于 ShadingModel。每个模型都使用下文展示的固定 `shading()` 入口。
 
-<div class="learn-article-toc"><strong>本章内容</strong><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#pass-variants_1">Pass 变体</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
 
 <div class="learn-note"><strong>第一次阅读的完成点。</strong><p>按完整示例创建三份文件，把新的片元阶段选到一个 Material 上，并确认受光 Cube 的外观发生变化且 Console 没有错误。做到这里即可先进入下一章；导入诊断和 Deferred 边界留给结果异常或模型继续扩展时查阅。</p></div>
 
@@ -297,18 +309,30 @@ Learn Band --Imports--> Learn Band Math
 
 Import 会递归展开，循环导入会被抑制，最大嵌套深度为 16。当前生成的 Shader 诊断不会为导入文本增加源文件 `#line` 映射，因此编译器行号可能指向展开后的源码或根文件。请先处理第一条 Import 错误，检查其中点名的函数库，修复后重新导入根 `.frag`。画面仍显示旧结果只能证明上一份有效版本继续工作；Console 清空后再故意修改 Threshold，才能证明新 Program 已经生效。
 
+## 一个模型如何变成多套 Pass 变体 {#pass-variants_1}
+
+一对 Vert/Frag 会编译成多套程序。引擎枚举九种材质 Pass 目标：`Forward`、`ForwardPlus`、`GBuffer`、`Shadow`、`Depth`、`Picking`、`Motion`、`Normal` 与 `BaseColor`（`ShaderTypes.h`）。每个目标都由 `InxShaderLoader` 重新生成 GLSL，并配上对应的 `main()` 模板：
+
+- Forward 与 Forward+ 调用 `surface()`，再带每相机光照资源调用 `shading()`（`surface_main.glsl`）；Forward+ 目标额外绑定分块光照网格。
+- GBuffer 把 `packGBuffer()` 写进五个 Deferred 渲染目标（`surface_main_gbuffer.glsl`）。
+- Shadow 与 Depth 只做 Alpha Clip，随后写深度。
+- Picking 写稳定的物体身份，Motion 写速度，Normal 与 BaseColor 写几何阶段缓冲，供 Motion Blur、TAA 等效果消费。
+
+共享的 Surface 代码完全不变，适配器模板负责补上各 Pass 特有的输出。`ShaderPassVariantPlanner` 决定某对阶段要编译哪些目标：材质不透明、ShadingModel 未声明 `Unsupported [Deferred]` 且未强制 Forward 时，GBuffer 才会启用。Alpha Clip 被所有兼容变体共享，Cutout 表面因此在颜色、阴影与拾取 Pass 中的裁剪行为一致。
+
 ## 依赖与 Deferred 限制 {#requirements_1}
 
 `Imports ["Lighting"]` 链接声明与辅助函数，`Requires [Lighting]` 要求编译器与管线契约提供相机局部光照数据。本例同时需要两者，这两个字段都不会选择渲染路径。
 
-有效模型包含 `void shading(in SurfaceData s, out vec4 color)` 且没有声明 `Unsupported [Deferred]` 时，编译器会赋予它 Deferred 候选资格。标准 GBuffer 保存 `albedo`、编码后的世界空间法线、`smoothness`、`metallic`、`occlusion`、`specularHighlights`、`emission`、`alpha`、`shadingParam0` 和 `shadingParam1`，同时记录物体光照层掩码与 ShadingModel ID。Deferred 从深度重建世界空间位置，再按该 ID 分派 `shading()`。
+有效模型包含 `void shading(in SurfaceData s, out vec4 color)` 且没有声明 `Unsupported [Deferred]` 时，编译器会赋予它 Deferred 候选资格。标准 GBuffer 保存 `albedo`、编码后的世界空间法线、`smoothness`、`metallic`、`occlusion`、`specularHighlights`、`emission`、`alpha`、`shadingParam0` 和 `shadingParam1`，同时记录物体光照层掩码与 ShadingModel ID。打包方式很具体：目标 0 保存基础色与 Alpha（RGBA16F），目标 1 保存编码法线、Alpha 通道存 `smoothness`（RGBA16F），目标 2 保存 `metallic`、`occlusion`、`specularHighlights` 与 `shadingParam0`（RGBA8），目标 3 保存自发光与 `shadingParam1`（RGBA16F），目标 4 保存光照层掩码与 ShadingModel ID（RG32_UINT）。`deferred_lighting.frag` 从深度重建世界位置，把各目标解码成新的 `SurfaceData` 与 `ShadingContext`，再调用 `inxDispatchShading(modelId, color)`；编译器生成的注册表会把每个具备 Deferred 资格的模型的 `shading()` 追加到它的稳定 ID 下。
 
 `Learn Band` 满足候选条件，因为自定义阈值可以装入 `shadingParam0`，其余输入来自已保存的 Surface 字段或重建上下文。请显式测试这条边界：
 
 1. 不挂 RenderStack，或者在 RenderStack 中选择 **Default Forward**，确认色阶会响应 Threshold 与第一盏 Directional Light。
 2. 在 RenderStack Inspector 中选择 **Default Deferred**。这个不透明 Material 具备 Deferred 兼容性，应写入 GBuffer，再按 ShadingModel ID 分派。
-3. 给 `Learn Band` 加上 `Unsupported [Deferred]`，重新导入 `learn_band_surface.frag`，然后再次检查。内置 Deferred 管线会省略这一组合的 GBuffer 变体，并通过使用 Forward+ 光照的 `DeferredForwardFallbackPass` 绘制该不透明物体。透明表面也会进入透明 Forward+ Pass。
-4. 只有模型确实能从上述字段重建时，才移除该声明。编译器会检查语法与声明，无法推断依赖切线框架或额外数据的结果在语义上有误。这类模型可能编译成功，却产生错误的 Deferred 像素。
+3. 给 `Learn Band` 加上 `Unsupported [Deferred]`，重新导入 `learn_band_surface.frag`，然后再次检查。内置 Deferred 管线会省略这一组合的 GBuffer 变体，并通过使用 Forward+ 光照的 `DeferredForwardFallbackPass` 绘制该不透明物体。内部实现上，GBuffer Pass 按 Deferred 兼容性过滤材质（`deferred_compatible`），回退 Pass 过滤其余材质（`deferred_unsupported`）。透明表面也会进入透明 Forward+ Pass。
+4. 声明式 DSL 还有一条规则：MSAA 大于 1 时，Deferred 路由必须声明显式的 `Forward` 或 `Forward+` 回退，编译器会把该回退应用到整条路由（`pipeline_compiler.py` 会拒绝没有回退的 Deferred 路由）。
+5. 只有模型确实能从上述字段重建时，才移除该声明。编译器会检查语法与声明，无法推断依赖切线框架或额外数据的结果在语义上有误。这类模型可能编译成功，却产生错误的 Deferred 像素。
 
 有效的 `Unsupported [Deferred]` 声明不会产生 Warning，Fallback 属于内置管线的预期路径。当前 Material Inspector 也没有逐材质的“Deferred Fallback”状态。请用上述受控切换、保持清空的 Console 与活动 RenderStack 管线作为可复现证据。编译错误属于可行动诊断；仍可通过编译的语义不匹配由 ShadingModel 作者负责判断。
 
@@ -316,7 +340,7 @@ Deferred 会用已保存的着色法线填充 `geometricNormalWS`，生成替代
 
 ```glsl
 ShadingModelInfo {
-    Name "Six Way Smoke"
+    Name "SixWaySmoke"
     Imports ["Lighting"]
     Requires [Lighting]
     Unsupported [Deferred]
