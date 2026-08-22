@@ -40,19 +40,19 @@ The material linker pairs the selected stages and checks their properties and va
 
 ## Where vertex data comes from {#vertex-layout}
 
-The hook edits `VertexInput`, but that struct sits on top of a fixed engine vertex buffer. Every mesh renderer uploads the same seven attributes, always at the same locations:
+The hook edits `VertexInput`, but that public struct sits on top of a fixed engine vertex buffer. The buffer names below are implementation fields; shader authors use the `VertexInput` field in the next column:
 
-| Location | Buffer attribute | Type    | Notes                           |
-| -------- | ---------------- | ------- | ------------------------------- |
-| 0        | `pos`            | `vec3`  | Local-space position            |
-| 1        | `normal`         | `vec3`  | Missing source normals face +Y  |
-| 2        | `tangent`        | `vec4`  | `.w` carries the bitangent sign |
-| 3        | `color`          | `vec3`  | Defaults to white               |
-| 4        | `texCoord`       | `vec2`  | Primary UV set                  |
-| 5        | `boneIndices`    | `uvec4` | GPU skinning palette indices    |
-| 6        | `boneWeights`    | `vec4`  | GPU skinning weights            |
+| Location | Engine buffer field | `VertexInput` field | Type    | Notes                           |
+| -------- | ------------------- | ------------------- | ------- | ------------------------------- |
+| 0        | `pos`               | `position`          | `vec3`  | Local-space position            |
+| 1        | `normal`            | `normal`            | `vec3`  | Missing source normals face +Y  |
+| 2        | `tangent`           | `tangent`           | `vec4`  | `.w` carries the bitangent sign |
+| 3        | `color`             | `color`             | `vec3`  | Defaults to white               |
+| 4        | `texCoord`          | `texCoord`          | `vec2`  | Primary UV set                  |
+| 5        | `boneIndices`       | Engine-owned        | `uvec4` | GPU skinning palette indices    |
+| 6        | `boneWeights`       | Engine-owned        | `vec4`  | GPU skinning weights            |
 
-The GLSL side mirrors this layout in the generated builtins (`vertex_builtins.glsl` declares locations 0-6). `VertexInput` then exposes a smaller contract: `position`, `normal`, `tangent`, `color`, and `texCoord`. The bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.
+For example, location 0 is stored as `pos` in the C++ `Vertex` structure, then presented to user code as `v.position`. Shader code never accesses `v.pos`. The generated builtins mirror locations 0-6 and construct the public `VertexInput` contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.
 
 Vulkan pipelines do not bind all seven attributes blindly. After SPIR-V compilation, `FilterVertexAttributesForReflection()` (`VertexInputFilter.h`) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; `MaterialPipelineManager.cpp` calls it during pipeline creation. The CPU-side buffer layout never changes.
 
@@ -255,19 +255,19 @@ Material 链接器会组合所选阶段，并在 Vulkan Pipeline 创建前检查
 
 ## 顶点数据从哪里来 {#vertex-layout_1}
 
-Hook 编辑的是 `VertexInput`，这个结构坐落在固定的引擎顶点缓冲之上。每个 Mesh Renderer 上传的七项属性完全一致，Location 也固定不变：
+Hook 编辑的是公开结构 `VertexInput`，它建立在固定的引擎顶点缓冲之上。下表中的“引擎缓冲字段”属于底层实现；编写 Shader 时应使用旁边的 `VertexInput` 字段：
 
-| Location | 缓冲属性      | 类型    | 说明                    |
-| -------- | ------------- | ------- | ----------------------- |
-| 0        | `pos`         | `vec3`  | 物体空间位置            |
-| 1        | `normal`      | `vec3`  | 缺少源法线时朝向 +Y     |
-| 2        | `tangent`     | `vec4`  | `.w` 保存副切线方向符号 |
-| 3        | `color`       | `vec3`  | 默认白色                |
-| 4        | `texCoord`    | `vec2`  | 主 UV 集                |
-| 5        | `boneIndices` | `uvec4` | GPU 蒙皮骨骼调色板索引  |
-| 6        | `boneWeights` | `vec4`  | GPU 蒙皮权重            |
+| Location | 引擎缓冲字段  | `VertexInput` 字段 | 类型    | 说明                    |
+| -------- | ------------- | ------------------ | ------- | ----------------------- |
+| 0        | `pos`         | `position`         | `vec3`  | 物体空间位置            |
+| 1        | `normal`      | `normal`           | `vec3`  | 缺少源法线时朝向 +Y     |
+| 2        | `tangent`     | `tangent`          | `vec4`  | `.w` 保存副切线方向符号 |
+| 3        | `color`       | `color`            | `vec3`  | 默认白色                |
+| 4        | `texCoord`    | `texCoord`         | `vec2`  | 主 UV 集                |
+| 5        | `boneIndices` | 引擎内部使用       | `uvec4` | GPU 蒙皮骨骼调色板索引  |
+| 6        | `boneWeights` | 引擎内部使用       | `vec4`  | GPU 蒙皮权重            |
 
-GLSL 侧在生成的 Builtin 中镜像这份布局（`vertex_builtins.glsl` 声明 location 0 到 6）。`VertexInput` 暴露的契约更小：`position`、`normal`、`tangent`、`color` 和 `texCoord`。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。
+以 Location 0 为例，C++ `Vertex` 结构把它存为 `pos`，生成代码再把它映射成用户接口里的 `v.position`；用户 Shader 不应写 `v.pos`。生成的 Builtin 会镜像 Location 0 到 6，并据此构造公开的 `VertexInput`。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。
 
 Vulkan Pipeline 不会盲目绑定全部七项属性。SPIR-V 编译完成后，`FilterVertexAttributesForReflection()`（`VertexInputFilter.h`）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；`MaterialPipelineManager.cpp` 在创建管线时调用它。CPU 侧缓冲布局始终不变。
 

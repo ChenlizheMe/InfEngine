@@ -177,13 +177,14 @@ Learn Band --Imports--&gt; Learn Band Math
 </ol>
 <p>A valid <code>Unsupported [Deferred]</code> declaration does not produce a warning: fallback is an expected built-in route. The current Material Inspector also has no per-material "Deferred fallback" status. Use the controlled toggle above, a clear Console, and the active RenderStack pipeline as the reproducible evidence. Compile errors are actionable diagnostics; a semantic mismatch that still compiles remains the ShadingModel author's responsibility.</p>
 <p>Deferred substitutes the stored shading normal for <code>geometricNormalWS</code>, synthesizes a tangent, and reports <code>frontFacing = true</code>. It does not preserve the original tangent frame, a separate geometric normal, face orientation, geometry-pass derivative behavior, or model data beyond the two shading scalars. Declare the restriction for models that need any of those inputs:</p>
-<pre><code class="language-glsl">ShadingModelInfo {
-    Name &quot;SixWaySmoke&quot;
-    Imports [&quot;Lighting&quot;]
-    Requires [Lighting]
-    Unsupported [Deferred]
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">ShadingModelInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">SixWaySmoke</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Imports</span><span class="w"> </span><span class="p">[</span><span class="err">"</span><span class="n">Lighting</span><span class="err">"</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Requires</span><span class="w"> </span><span class="p">[</span><span class="n">Lighting</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Unsupported</span><span class="w"> </span><span class="p">[</span><span class="n">Deferred</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>A custom pipeline must provide a compatible fallback for an unsupported model or reject that route. If a selected model is missing, malformed, or fails GLSL compilation, the linked artifact is not published; the renderer retains its last-known-good program when one exists and reports the failure in the Console.</p>
 <div class="learn-note"><strong>Current API boundary.</strong><p>`ShadingModelInfo` has no Capabilities list and the compiler does not prove semantic Deferred compatibility. `Unsupported [Deferred]` is the author's explicit opt-out from the canonical GBuffer path.</p></div>
 
@@ -369,13 +370,14 @@ Learn Band --Imports--&gt; Learn Band Math
 </ol>
 <p>有效的 <code>Unsupported [Deferred]</code> 声明不会产生 Warning，Fallback 属于内置管线的预期路径。当前 Material Inspector 也没有逐材质的“Deferred Fallback”状态。请用上述受控切换、保持清空的 Console 与活动 RenderStack 管线作为可复现证据。编译错误属于可行动诊断；仍可通过编译的语义不匹配由 ShadingModel 作者负责判断。</p>
 <p>Deferred 会用已保存的着色法线填充 <code>geometricNormalWS</code>，生成替代 Tangent，并固定报告 <code>frontFacing = true</code>。原始切线框架、独立几何法线、正反面信息、几何 Pass 的导数行为，以及两个 Shading Scalar 之外的模型数据都不会保留。依赖这些输入的模型应声明限制：</p>
-<pre><code class="language-glsl">ShadingModelInfo {
-    Name &quot;SixWaySmoke&quot;
-    Imports [&quot;Lighting&quot;]
-    Requires [Lighting]
-    Unsupported [Deferred]
-}
-</code></pre>
+<div class="highlight"><pre><span></span><code><span class="n">ShadingModelInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">SixWaySmoke</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Imports</span><span class="w"> </span><span class="p">[</span><span class="err">"</span><span class="n">Lighting</span><span class="err">"</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Requires</span><span class="w"> </span><span class="p">[</span><span class="n">Lighting</span><span class="p">]</span>
+<span class="w">    </span><span class="n">Unsupported</span><span class="w"> </span><span class="p">[</span><span class="n">Deferred</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>自定义管线需要为不支持的模型提供兼容回退，也可以拒绝该路径。选中的模型缺失、格式错误或 GLSL 编译失败时，链接后的新产物不会发布；若已有上一份有效 Program，渲染器会继续使用它，并在 Console 报告失败。</p>
 <div class="learn-note"><strong>当前 API 边界。</strong><p>`ShadingModelInfo` 没有 Capabilities 列表，编译器也不会证明 Deferred 语义兼容性。`Unsupported [Deferred]` 是作者退出标准 GBuffer 路径的显式声明。</p></div>
 

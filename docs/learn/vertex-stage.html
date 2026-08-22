@@ -59,12 +59,13 @@
 <p>The current selector is keyed only by <code>Name</code>: it scans project <code>Assets</code> before built-in shaders, duplicate IDs collapse to the first path discovered, the menu does not show origin, and it emits no duplicate-origin diagnostic. Keep names unique across project and built-in shaders; do not depend on discovery order among project files. A project stage can retain its GUID/path reference, while a built-in stage is resolved by ID. After changing <code>ShaderInfo Name</code>, save and reimport the shader, then reselect the new ID on affected Materials. Renaming only the file leaves the selector ID unchanged.</p>
 <p>The material linker pairs the selected stages and checks their properties and varyings before Vulkan pipeline creation. To verify selection semantics, save <code>Assets/Shaders/wave_bent.vert</code> with <code>Name "Wave"</code>, wait for import, and confirm that <strong>Vertex</strong> lists <code>Wave</code> and does not list <code>wave_bent.vert</code>. Change only <code>Name</code> to <code>Wave V2</code>, reimport, and confirm that affected Materials require the new ID.</p>
 <h2 id="vertex-layout">Where vertex data comes from</h2>
-<p>The hook edits <code>VertexInput</code>, but that struct sits on top of a fixed engine vertex buffer. Every mesh renderer uploads the same seven attributes, always at the same locations:</p>
+<p>The hook edits <code>VertexInput</code>, but that public struct sits on top of a fixed engine vertex buffer. The buffer names below are implementation fields; shader authors use the <code>VertexInput</code> field in the next column:</p>
 <table>
 <thead>
 <tr>
 <th>Location</th>
-<th>Buffer attribute</th>
+<th>Engine buffer field</th>
+<th><code>VertexInput</code> field</th>
 <th>Type</th>
 <th>Notes</th>
 </tr>
@@ -73,11 +74,13 @@
 <tr>
 <td>0</td>
 <td><code>pos</code></td>
+<td><code>position</code></td>
 <td><code>vec3</code></td>
 <td>Local-space position</td>
 </tr>
 <tr>
 <td>1</td>
+<td><code>normal</code></td>
 <td><code>normal</code></td>
 <td><code>vec3</code></td>
 <td>Missing source normals face +Y</td>
@@ -85,11 +88,13 @@
 <tr>
 <td>2</td>
 <td><code>tangent</code></td>
+<td><code>tangent</code></td>
 <td><code>vec4</code></td>
 <td><code>.w</code> carries the bitangent sign</td>
 </tr>
 <tr>
 <td>3</td>
+<td><code>color</code></td>
 <td><code>color</code></td>
 <td><code>vec3</code></td>
 <td>Defaults to white</td>
@@ -97,24 +102,27 @@
 <tr>
 <td>4</td>
 <td><code>texCoord</code></td>
+<td><code>texCoord</code></td>
 <td><code>vec2</code></td>
 <td>Primary UV set</td>
 </tr>
 <tr>
 <td>5</td>
 <td><code>boneIndices</code></td>
+<td>Engine-owned</td>
 <td><code>uvec4</code></td>
 <td>GPU skinning palette indices</td>
 </tr>
 <tr>
 <td>6</td>
 <td><code>boneWeights</code></td>
+<td>Engine-owned</td>
 <td><code>vec4</code></td>
 <td>GPU skinning weights</td>
 </tr>
 </tbody>
 </table>
-<p>The GLSL side mirrors this layout in the generated builtins (<code>vertex_builtins.glsl</code> declares locations 0-6). <code>VertexInput</code> then exposes a smaller contract: <code>position</code>, <code>normal</code>, <code>tangent</code>, <code>color</code>, and <code>texCoord</code>. The bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.</p>
+<p>For example, location 0 is stored as <code>pos</code> in the C++ <code>Vertex</code> structure, then presented to user code as <code>v.position</code>. Shader code never accesses <code>v.pos</code>. The generated builtins mirror locations 0-6 and construct the public <code>VertexInput</code> contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.</p>
 <p>Vulkan pipelines do not bind all seven attributes blindly. After SPIR-V compilation, <code>FilterVertexAttributesForReflection()</code> (<code>VertexInputFilter.h</code>) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; <code>MaterialPipelineManager.cpp</code> calls it during pipeline creation. The CPU-side buffer layout never changes.</p>
 <p>Different geometry domains reuse or replace this layout:</p>
 <ul>
@@ -271,12 +279,13 @@
 <p>当前选择器只按 <code>Name</code> 建索引：它先扫描项目 <code>Assets</code>，再扫描内置 Shader；重名 ID 会折叠到先发现的路径。菜单不显示来源，也不会报告来源冲突。项目 Shader 与内置 Shader 应使用全局唯一名字，不能依赖项目文件之间的扫描顺序。项目阶段可以保留 GUID/路径引用，内置阶段则按 ID 解析。修改 <code>ShaderInfo Name</code> 后，先保存并重新导入，再让受影响的 Material 重新选择新 ID。只改文件名会保留选择器 ID。</p>
 <p>Material 链接器会组合所选阶段，并在 Vulkan Pipeline 创建前检查属性与 Varying。可以这样验证选择语义：把带有 <code>Name "Wave"</code> 的文件保存为 <code>Assets/Shaders/wave_bent.vert</code>，等待导入，确认 <strong>Vertex</strong> 只列出 <code>Wave</code>，不会列出 <code>wave_bent.vert</code>。随后只把 <code>Name</code> 改为 <code>Wave V2</code> 并重新导入，确认受影响的 Material 需要选择新 ID。</p>
 <h2 id="vertex-layout_1">顶点数据从哪里来</h2>
-<p>Hook 编辑的是 <code>VertexInput</code>，这个结构坐落在固定的引擎顶点缓冲之上。每个 Mesh Renderer 上传的七项属性完全一致，Location 也固定不变：</p>
+<p>Hook 编辑的是公开结构 <code>VertexInput</code>，它建立在固定的引擎顶点缓冲之上。下表中的“引擎缓冲字段”属于底层实现；编写 Shader 时应使用旁边的 <code>VertexInput</code> 字段：</p>
 <table>
 <thead>
 <tr>
 <th>Location</th>
-<th>缓冲属性</th>
+<th>引擎缓冲字段</th>
+<th><code>VertexInput</code> 字段</th>
 <th>类型</th>
 <th>说明</th>
 </tr>
@@ -285,11 +294,13 @@
 <tr>
 <td>0</td>
 <td><code>pos</code></td>
+<td><code>position</code></td>
 <td><code>vec3</code></td>
 <td>物体空间位置</td>
 </tr>
 <tr>
 <td>1</td>
+<td><code>normal</code></td>
 <td><code>normal</code></td>
 <td><code>vec3</code></td>
 <td>缺少源法线时朝向 +Y</td>
@@ -297,11 +308,13 @@
 <tr>
 <td>2</td>
 <td><code>tangent</code></td>
+<td><code>tangent</code></td>
 <td><code>vec4</code></td>
 <td><code>.w</code> 保存副切线方向符号</td>
 </tr>
 <tr>
 <td>3</td>
+<td><code>color</code></td>
 <td><code>color</code></td>
 <td><code>vec3</code></td>
 <td>默认白色</td>
@@ -309,24 +322,27 @@
 <tr>
 <td>4</td>
 <td><code>texCoord</code></td>
+<td><code>texCoord</code></td>
 <td><code>vec2</code></td>
 <td>主 UV 集</td>
 </tr>
 <tr>
 <td>5</td>
 <td><code>boneIndices</code></td>
+<td>引擎内部使用</td>
 <td><code>uvec4</code></td>
 <td>GPU 蒙皮骨骼调色板索引</td>
 </tr>
 <tr>
 <td>6</td>
 <td><code>boneWeights</code></td>
+<td>引擎内部使用</td>
 <td><code>vec4</code></td>
 <td>GPU 蒙皮权重</td>
 </tr>
 </tbody>
 </table>
-<p>GLSL 侧在生成的 Builtin 中镜像这份布局（<code>vertex_builtins.glsl</code> 声明 location 0 到 6）。<code>VertexInput</code> 暴露的契约更小：<code>position</code>、<code>normal</code>、<code>tangent</code>、<code>color</code> 和 <code>texCoord</code>。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。</p>
+<p>以 Location 0 为例，C++ <code>Vertex</code> 结构把它存为 <code>pos</code>，生成代码再把它映射成用户接口里的 <code>v.position</code>；用户 Shader 不应写 <code>v.pos</code>。生成的 Builtin 会镜像 Location 0 到 6，并据此构造公开的 <code>VertexInput</code>。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。</p>
 <p>Vulkan Pipeline 不会盲目绑定全部七项属性。SPIR-V 编译完成后，<code>FilterVertexAttributesForReflection()</code>（<code>VertexInputFilter.h</code>）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；<code>MaterialPipelineManager.cpp</code> 在创建管线时调用它。CPU 侧缓冲布局始终不变。</p>
 <p>不同几何域复用或替换这份布局：</p>
 <ul>
