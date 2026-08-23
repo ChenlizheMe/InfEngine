@@ -20,7 +20,7 @@ creating temporary AudioSource objects. Sources are spatialized; for "2D"
 audio, place the AudioSource on/near the AudioListener's GameObject.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.4
+**Status:** Preview · **Verified with:** 0.3.5
 
 AudioSource owns 1–16 tracks; `play_on_awake` starts only track 0. Use pooled one-shots for transient effects and keep assigned AudioClip objects loaded while playback may use them.
 <!-- USER CONTENT END -->

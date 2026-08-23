@@ -11,7 +11,7 @@ serialized_field(default: _SerializedValue = ..., field_type: Optional[FieldType
 ## Description
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.4
+**Status:** Preview · **Verified with:** 0.3.5
 
 Keep an explicit type annotation beside each serialized field. Metadata controls Inspector presentation and validation; it does not replace runtime checks for missing object or asset references.
 <!-- USER CONTENT END -->

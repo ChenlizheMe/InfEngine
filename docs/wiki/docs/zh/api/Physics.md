@@ -9,7 +9,7 @@
 物理系统的静态工具类。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.4
+**状态：** Preview · **验证版本：** 0.3.5
 
 空间查询接受 Layer Mask 和明确的 Trigger 处理。应限制查询体积与距离，并选择能回答玩法问题的最简单查询。
 <!-- USER CONTENT END -->

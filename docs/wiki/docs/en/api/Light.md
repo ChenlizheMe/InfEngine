@@ -11,7 +11,7 @@ class in <b>Infernux.components.builtin</b>
 A Light component that illuminates the scene.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.4
+**Status:** Preview · **Verified with:** 0.3.5
 
 Choose light type, range, intensity, color, and shadow settings for the scene scale. Confirm unshadowed lighting first, then enable shadows and tune bias.
 <!-- USER CONTENT END -->

@@ -46,7 +46,13 @@ if (-not ((Get-Content -LiteralPath $UpdateLog -Raw).Contains($Version))) {
 
 function Test-TrustedSignature([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-    return (Get-AuthenticodeSignature -LiteralPath $Path).Status -eq 'Valid'
+    try {
+        return (Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop).Status -eq 'Valid'
+    } catch {
+        # Signing is optional. A stripped or unavailable PowerShell security
+        # module must not block an otherwise valid local release build.
+        return $false
+    }
 }
 
 function Invoke-GhWithRetry([string]$Description, [scriptblock]$Operation) {
