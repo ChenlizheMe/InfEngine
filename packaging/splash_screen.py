@@ -269,9 +269,15 @@ class EngineSplashScreen(QWidget):
         self._status.setText(tr("Checking project..."))
         self._progress_bar.setValue(5)
         env = os.environ.copy()
+        paths_to_inherit = [p for p in sys.path if os.path.isdir(p)]
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        if existing_pythonpath:
+            paths_to_inherit.extend(existing_pythonpath.split(os.pathsep))
+        unique_paths = list(dict.fromkeys(paths_to_inherit))
         env["_INFERNUX_READY_FILE"] = self._ready_file
         env["_INFERNUX_PROJECT_LOCK_PATH"] = get_project_lock_path(project_path)
         env["_INFERNUX_PROJECT_LOCK_TOKEN"] = self._lock_token
+        env["PYTHONPATH"] = os.pathsep.join(unique_paths)
         if extra_env:
             env.update(extra_env)
         env = merge_child_env_utf8(env)
