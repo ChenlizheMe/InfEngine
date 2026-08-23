@@ -153,11 +153,12 @@ class PythonRuntimeInstallDialog(QDialog):
         title.setObjectName("cardName")
         layout.addWidget(title)
 
+        runtime_dir = runtime_manager.installed_runtime_dir()
         detail = QLabel(tr(
             "A background setup process is extracting an isolated full Python 3.12 runtime "
-            "under C:\\Users\\Public\\InfernuxHub. Each new project will receive its own copy of this runtime. "
+            "under {path}. Each new project will receive its own copy of this runtime. "
             "Your existing Python installations are not used or changed. This window will close automatically when setup finishes."
-        ))
+        ).format(path=runtime_dir))
         detail.setWordWrap(True)
         detail.setObjectName("cardPath")
         layout.addWidget(detail)

@@ -35,6 +35,8 @@ _RUNTIME_COPY_EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo")
 def _runtime_lib_names() -> list[str]:
     if sys.platform == "darwin":
         return ["libpython3.12.dylib", "libpython3.dylib"]
+    elif sys.platform.startswith("linux"):
+        return ["libpython3.12.so", "libpython3.so"]
     return ["python312.lib", "python3.lib"]
 
 
@@ -196,23 +198,37 @@ def _is_python312(python_exe: str) -> bool:
 
 
 def _site_packages_root(runtime_root: str) -> str:
-    if sys.platform == "darwin":
-        path = os.path.join(runtime_root, "lib", "python3.12", "site-packages")
-    else:
+    if sys.platform == "win32":
         path = os.path.join(runtime_root, "Lib", "site-packages")
+    else:
+        path = os.path.join(runtime_root, "lib", "python3.12", "site-packages")
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def _has_build_support(root: str) -> bool:
-    include_dir = os.path.join(root, "include")
-    if sys.platform == "darwin":
-        libs_dir = os.path.join(root, "lib")
-    else:
+    if sys.platform == "win32":
+        include_dir = os.path.join(root, "include")
         libs_dir = os.path.join(root, "libs")
-    if not os.path.isfile(os.path.join(include_dir, "Python.h")):
+        if not os.path.isfile(os.path.join(include_dir, "Python.h")):
+            return False
+        return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
+    else:
+        include_candidates = [
+            os.path.join(root, "include", "Python.h"),
+            os.path.join(root, "include", "python3.12", "Python.h"),
+        ]
+        if not any(os.path.isfile(p) for p in include_candidates):
+            return False
+        # 检查 lib 或 lib64 中是否存在 libpython3.12.so / .dylib
+        lib_dirs = [os.path.join(root, "lib"), os.path.join(root, "lib64")]
+        for lib_dir in lib_dirs:
+            if not os.path.isdir(lib_dir):
+                continue
+            for lib_name in _runtime_lib_names():  # ['libpython3.12.so', 'libpython3.so']
+                if os.path.isfile(os.path.join(lib_dir, lib_name)):
+                    return True
         return False
-    return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
 
 
 def _fast_copy_threads() -> int:
@@ -331,25 +347,50 @@ def _copy_directory_contents(src_root: str, dest_root: str) -> None:
 
 
 def _copy_build_support(src_root: str, dest_root: str) -> bool:
-    include_src = os.path.join(src_root, "include")
-    libs_src = os.path.join(src_root, "libs")
-    if not os.path.isfile(os.path.join(include_src, "Python.h")):
-        return False
-
-    copied_lib = False
-    os.makedirs(os.path.join(dest_root, "libs"), exist_ok=True)
-    for name in _runtime_lib_names():
-        source_path = os.path.join(libs_src, name)
-        if not os.path.isfile(source_path):
-            continue
-        shutil.copy2(source_path, os.path.join(dest_root, "libs", name))
-        copied_lib = True
-
-    if not copied_lib:
-        return False
-
-    _copy_tree(include_src, os.path.join(dest_root, "include"))
-    return True
+    if sys.platform == "win32":
+        include_src = os.path.join(src_root, "include")
+        libs_src = os.path.join(src_root, "libs")
+        if not os.path.isfile(os.path.join(include_src, "Python.h")):
+            return False
+        shutil.copytree(include_src, os.path.join(dest_root, "include"), dirs_exist_ok=True)
+        os.makedirs(os.path.join(dest_root, "libs"), exist_ok=True)
+        copied = False
+        for name in _runtime_lib_names():
+            src_lib = os.path.join(libs_src, name)
+            if os.path.isfile(src_lib):
+                shutil.copy2(src_lib, os.path.join(dest_root, "libs", name))
+                copied = True
+        return copied
+    else:
+        include_candidates = [
+            os.path.join(src_root, "include"),
+            os.path.join(src_root, "include", "python3.12"),
+        ]
+        src_include = None
+        for cand in include_candidates:
+            if os.path.isfile(os.path.join(cand, "Python.h")):
+                src_include = cand
+                break
+        if not src_include:
+            return False
+        dest_include = os.path.join(dest_root, "include")
+        shutil.copytree(src_include, dest_include, dirs_exist_ok=True)
+        lib_dirs = [os.path.join(src_root, "lib"), os.path.join(src_root, "lib64")]
+        dest_lib = os.path.join(dest_root, "lib")
+        os.makedirs(dest_lib, exist_ok=True)
+        copied = False
+        for lib_dir in lib_dirs:
+            if not os.path.isdir(lib_dir):
+                continue
+            for lib_name in _runtime_lib_names():
+                src_lib = os.path.join(lib_dir, lib_name)
+                if os.path.isfile(src_lib):
+                    shutil.copy2(src_lib, os.path.join(dest_lib, lib_name))
+                    copied = True
+                    break
+            if copied:
+                break
+        return copied
 
 
 def _download_file(url: str, dest: str, *, user_agent: str, timeout: int = 120) -> None:
