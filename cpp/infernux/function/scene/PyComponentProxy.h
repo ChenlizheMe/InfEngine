@@ -27,7 +27,11 @@ struct CollisionInfo;
  * proxy during script reload
  * deliberately skips that user lifecycle callback.
  */
+#ifdef __linux__
+class __attribute((visibility("default"))) PyComponentProxy : public Component
+#else
 class PyComponentProxy : public Component
+#endif
 {
   public:
     /**
