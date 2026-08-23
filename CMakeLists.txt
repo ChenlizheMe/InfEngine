@@ -138,6 +138,10 @@ option(INFERNUX_BUILD_PLAYER_HOST
     "Build the native single-process PlayerHost bootstrap"
     OFF
 )
+option(INFERNUX_RUNTIME_STATIC
+    "Link the private runtime composition layer statically into the Python module"
+    ON
+)
 if(WIN32 AND INFERNUX_BUILD_PLAYER_HOST)
     include(InstallRequiredSystemLibraries)
 endif()
@@ -151,11 +155,15 @@ add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
 add_library(InfernuxRendererRuntime SHARED ${INFERNUX_RENDERER_RUNTIME_SOURCES})
 add_library(InfernuxVulkanBackend SHARED ${INFERNUX_VULKAN_BACKEND_SOURCES})
-# The composition layer is not a plug-in ABI. Keep it as a private archive so
-# the Python module can LTO/dead-strip the exact bound surface instead of
-# shipping a 60k-symbol auto-export DLL. Stable subsystem boundaries remain the
-# six shared libraries below.
-add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
+# Shipping builds keep the composition layer as a private archive so the Python
+# module can LTO/dead-strip the exact bound surface instead of shipping a
+# 60k-symbol auto-export DLL. Native regression tests use the shared form to
+# avoid loading a full private runtime image into every test process.
+if(INFERNUX_RUNTIME_STATIC)
+    add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
+else()
+    add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
+endif()
 pybind11_add_module(_Infernux MODULE NO_EXTRAS ${BINDING_SOURCES})
 pybind11_add_module(_InfernuxBootstrap MODULE NO_EXTRAS ${INFERNUX_BOOTSTRAP_BINDING_SOURCE})
 
@@ -215,6 +223,9 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxRendererRuntime
     InfernuxVulkanBackend
 )
+if(NOT INFERNUX_RUNTIME_STATIC)
+    list(APPEND INFERNUX_RUNTIME_DLL_TARGETS InfernuxRuntime)
+endif()
 foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
     set_target_properties(${_infernux_dll} PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
@@ -1423,15 +1434,19 @@ add_custom_command(TARGET _Infernux POST_BUILD
         "-DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>"
         -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
 
-    # InfernuxRuntime used to be a 60k-symbol auto-export DLL. It is now a
-    # private static composition archive, so remove stale copies before any
-    # dependency scan or wheel staging can mistake them for current payload.
-    COMMAND ${CMAKE_COMMAND} -E rm -f
-        "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
-        "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
-
     COMMENT "Copy _Infernux binding module to python/Infernux/lib"
 )
+
+if(INFERNUX_RUNTIME_STATIC)
+    # A shipping build has no composition DLL. Remove stale shared-test or
+    # pre-refactor copies before dependency scans and wheel staging.
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
+            "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
+        VERBATIM
+    )
+endif()
 
 if(WIN32)
     # Windows: copy all DLL dependencies automatically

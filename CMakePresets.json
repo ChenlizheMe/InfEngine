@@ -13,7 +13,8 @@
       "binaryDir": "${sourceDir}/out/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "INFERNUX_BUILD_PLAYER_HOST": "ON"
+        "INFERNUX_BUILD_PLAYER_HOST": "ON",
+        "INFERNUX_RUNTIME_STATIC": "ON"
       }
     },
     {
@@ -61,6 +62,7 @@
       "binaryDir": "${sourceDir}/out/build-native-tests",
       "cacheVariables": {
         "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF",
         "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build-native-tests/python-sync"
       }
     },
