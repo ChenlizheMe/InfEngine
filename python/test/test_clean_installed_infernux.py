@@ -15,7 +15,7 @@ _SPEC.loader.exec_module(_MODULE)
 
 def test_guard_rejects_loaded_installed_package(monkeypatch, tmp_path: Path) -> None:
     package = tmp_path / "Infernux"
-    module = package / "lib" / "InfernuxRuntime.dll"
+    module = package / "lib" / "InfernuxRendererRuntime.dll"
     module.parent.mkdir(parents=True)
     module.touch()
     monkeypatch.setattr(

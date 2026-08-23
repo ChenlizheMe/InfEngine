@@ -1376,14 +1376,14 @@ def _find_component(obj, component_type: str, ordinal: int):
     matches = []
     seen_component_ids: set[int] = set()
 
-    def _append(comp) -> None:
+    def _append(comp, *, promote_native: bool) -> None:
         type_name = getattr(comp, "type_name", type(comp).__name__)
         if type_name != component_type and type(comp).__name__ != component_type:
             return
         try:
             from Infernux.components import BuiltinComponent
 
-            if not isinstance(comp, BuiltinComponent):
+            if promote_native and not isinstance(comp, BuiltinComponent):
                 wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
                 if wrapper_cls is not None:
                     comp = wrapper_cls._get_or_create_wrapper(comp, obj)
@@ -1404,12 +1404,12 @@ def _find_component(obj, component_type: str, ordinal: int):
     # native components when no wrapper exists.
     try:
         for comp in obj.get_py_components() or []:
-            _append(comp)
+            _append(comp, promote_native=False)
     except Exception:
         pass
     try:
         for comp in obj.get_components() or []:
-            _append(comp)
+            _append(comp, promote_native=True)
     except Exception:
         pass
     if ordinal < 0 or ordinal >= len(matches):

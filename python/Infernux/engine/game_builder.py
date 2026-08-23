@@ -57,6 +57,7 @@ from Infernux.engine.player_package_native import (
 )
 from Infernux.engine.path_utils import (
     is_path_within,
+    path_key,
     path_fingerprint,
     portable_path,
     relative_path,
@@ -2070,12 +2071,12 @@ finally:
         by_guid = {str(item["guid"]): item for item in entries}
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
         indexed_source_paths = {
-            os.path.normcase(self._library_source_entry_path(entry))
+            path_key(self._library_source_entry_path(entry))
             for entry in entries
         }
         for configured_scene in load_build_settings(self.project_path).get("scenes", []):
             scene_path = self._resolve_build_scene_path(configured_scene)
-            if os.path.normcase(scene_path) not in indexed_source_paths:
+            if path_key(scene_path) not in indexed_source_paths:
                 raise RuntimeError(
                     "BuildSettings scene is absent from the current AssetIndex: "
                     f"{configured_scene}"
@@ -3365,7 +3366,7 @@ finally:
             source_path = os.path.join(final_dir, filename)
             if not os.path.isfile(source_path):
                 continue
-            if filename.casefold() in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+            if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
                 deferred_sources.append(source_path)
                 deferred_source_set.add(source_path)
                 continue
@@ -3410,7 +3411,7 @@ finally:
                     # do not hide another executable inside Runtime.inxrt.
                     if filename.casefold().endswith(".exe"):
                         continue
-                    if filename.casefold() in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+                    if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
                         continue
                     if is_numpy_package and not self._include_numpy_runtime_file(filename):
                         continue

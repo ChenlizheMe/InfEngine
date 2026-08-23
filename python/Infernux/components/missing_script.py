@@ -36,6 +36,7 @@ class MissingScript(InxComponent):
         data: dict[str, Any],
         *,
         _skip_on_after_deserialize: bool = False,
+        repair: bool = False,
     ) -> None:
         if not isinstance(data, dict):
             raise TypeError("MissingScript fields document must be an object")

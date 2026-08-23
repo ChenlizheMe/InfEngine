@@ -86,8 +86,6 @@ ipch/
 # ============================================================================
 .vscode/
 .idea/
-.codex/
-.agents/
 *.swp
 *.swo
 *~
@@ -158,10 +156,3 @@ _script_guid_map.json
 # Compiled Python bytecode in project assets
 # ============================================================================
 Assets/Scripts/**/*.pycbuild_log.txt
-
-
-# ============================================================================
-# Else: I found that when some guys push their branches, they always include their AGENTS.md file.
-# ============================================================================
-AGENTS.md
-

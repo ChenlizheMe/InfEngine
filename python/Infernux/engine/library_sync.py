@@ -6,6 +6,8 @@ import os
 import shutil
 import tempfile
 
+from .path_utils import relative_path
+
 _log = logging.getLogger("Infernux.library_sync")
 
 _SKIP = {"__pycache__", "__init__.py", "__init__.pyi", "icons.zip"}
@@ -26,7 +28,7 @@ def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
             if filename in _SKIP or filename.endswith(".meta"):
                 continue
             source = os.path.join(directory, filename)
-            relative = os.path.relpath(source, root).replace("\\", "/")
+            relative = relative_path(source, root)
             stat = os.stat(source)
             snapshot[relative] = {
                 "size": int(stat.st_size),

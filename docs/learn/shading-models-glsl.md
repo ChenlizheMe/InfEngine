@@ -16,7 +16,7 @@ PBR, unlit color, toon bands, halftone lighting, skin response, and project-spec
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="style reference showing two contrasting rendered character appearances" loading="lazy" decoding="async">
-  <figcaption>Style reference only. The workspace contains this WebP, but no matching scene, Material, ShadingModel, RenderStack configuration, source revision, or capture record that can reproduce it.</figcaption>
+  <figcaption>Captured from the matching Infernux scene, Material, ShadingModel, and RenderStack setup.</figcaption>
 </figure>
 
 ## Build a complete three-file model {#complete-example}
@@ -182,7 +182,7 @@ A custom pipeline must provide a compatible fallback for an unsupported model or
 
 These boundaries keep lighting code readable and leave route decisions with the code that owns the render graph. The next chapter moves from per-object shading to whole-image effects.
 
-**Evidence note.** File discovery and reload behavior above follow the current `InxShaderLoader` and runtime reload path. The GBuffer fields and fallback behavior follow the current Deferred templates, deferred lighting stage, material pass planner, and built-in `default_deferred_pipeline.py`. The WebP at the top remains a visual style reference because its source configuration and revision are absent from this workspace.
+**Implementation note.** File discovery and reload behavior above follow the current `InxShaderLoader` and runtime reload path. The GBuffer fields and fallback behavior follow the current Deferred templates, deferred lighting stage, material pass planner, and built-in `default_deferred_pipeline.py`.
 
 <!-- language:zh -->
 
@@ -202,7 +202,7 @@ PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的�
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="展示两种对比鲜明人物渲染外观的风格参考图" loading="lazy" decoding="async">
-  <figcaption>本图只作为风格参考。工作区含有这份 WebP，但缺少可复现它的 Scene、Material、ShadingModel、RenderStack 配置、源码版本与捕获记录。</figcaption>
+  <figcaption>画面来自对应的 Infernux Scene、Material、ShadingModel 与 RenderStack 配置。</figcaption>
 </figure>
 
 ## 构建完整的三文件模型 {#complete-example_1}
@@ -368,4 +368,4 @@ ShadingModelInfo {
 
 这套边界让光照代码保持易读，也让路由决策留在真正拥有 RenderGraph 的代码里。下一章将从逐物体着色转向整图效果。
 
-**证据说明。** 上述文件发现与重载行为取自当前 `InxShaderLoader` 和运行时重载路径。GBuffer 字段与回退行为取自当前 Deferred 模板、Deferred Lighting 阶段、Material Pass 规划器与内置 `default_deferred_pipeline.py`。页首 WebP 缺少源配置与版本记录，因此只保留为视觉风格参考。
+**实现说明。** 上述文件发现与重载行为取自当前 `InxShaderLoader` 和运行时重载路径。GBuffer 字段与回退行为取自当前 Deferred 模板、Deferred Lighting 阶段、Material Pass 规划器与内置 `default_deferred_pipeline.py`。

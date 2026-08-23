@@ -1932,6 +1932,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardShaderProgram->key = {{"Tests/ParticleTextured", "Tests/ParticleTexturedSurface"}, 1};
     billboardShaderProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
     billboardShaderProgram->compatibilitySignature = 42;
+    infernux::ShaderProgramPropertyBinding billboardTextureProperty;
+    billboardTextureProperty.name = "texSampler";
+    billboardTextureProperty.type = "texture2d";
+    billboardTextureProperty.textureDefault = "white";
+    billboardTextureProperty.stages = infernux::ShaderProgramStageMask::Fragment;
+    billboardTextureProperty.textureSlot = 0;
+    billboardShaderProgram->properties.push_back(std::move(billboardTextureProperty));
     infernux::ShaderProgramArtifact::PassVariant billboardForward;
     billboardForward.compatibilitySignature = billboardShaderProgram->compatibilitySignature;
     billboardForward.vertexSpirv = SpirvBytes(particleTexturedVertexCode);
@@ -2272,9 +2279,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     postPrewarmFrame.forceSimulation = false;
     const infernux::particle::GpuParticleBatchFrameItem prewarmBatchItem{managedProgram.id, prewarmSteps,
                                                                          postPrewarmFrame, managedTransforms};
-    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}) &&
-                     particleSystems.CanRecordPartitioned() && !particleSystems.CanExecuteAsync(),
-                 "GPU particle manager rejected or asynchronously overlapped a fixed-step preroll sequence"))
+    const bool prerollAccepted = particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem});
+    if (!Require(prerollAccepted, "GPU particle manager rejected a valid fixed-step preroll sequence") ||
+        // This graph contains two emitters whose spawn-domain ordering is
+        // Simulation A -> Export A -> Simulation B -> Export B. It cannot be
+        // split into one global simulation prefix and one export suffix, but
+        // the queued preroll must still drain through bounded submissions.
+        !Require(!particleSystems.CanRecordPartitioned(),
+                 "Interleaved multi-emitter graph was incorrectly exposed as globally partitionable") ||
+        !Require(!particleSystems.CanExecuteAsync(),
+                 "GPU particle manager attempted to overlap a queued fixed-step preroll with Graphics"))
         return false;
     uint32_t prerollSubmissions = 0;
     while (particleSystems.HasPendingGpuWork()) {

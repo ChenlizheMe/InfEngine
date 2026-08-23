@@ -369,6 +369,7 @@ class PhysicsWorld
                        bool queryTriggers) const;
 
     [[nodiscard]] float FindEarliestDynamicCCDFraction(float deltaTime) const;
+    [[nodiscard]] float FindEarliestStaticCCDFraction(float deltaTime) const;
 
     /// Stop tracked kinematic-move bodies that did not receive a new target
     /// since the previous Step(), and restore temporarily-kinematic statics.
@@ -391,8 +392,10 @@ class PhysicsWorld
     // Dense active-body union produced by the latest completed Step().
     std::vector<uint32_t> m_poseReadbackBodyIds;
 
-    // Full Jolt IDs explicitly configured for ContinuousDynamic. Plain
-    // Continuous bodies use Jolt LinearCast without dynamic-pair subdivision.
+    // Full Jolt IDs explicitly configured for each CCD contract. Plain
+    // Continuous uses an engine-owned static-only sweep; ContinuousDynamic
+    // keeps Jolt LinearCast and adds relative dynamic-pair subdivision.
+    std::unordered_set<uint32_t> m_staticContinuousBodyIds;
     std::unordered_set<uint32_t> m_continuousBodyIds;
     size_t m_lastDynamicCCDSplitCount = 0;
 

@@ -151,7 +151,11 @@ add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
 add_library(InfernuxRendererRuntime SHARED ${INFERNUX_RENDERER_RUNTIME_SOURCES})
 add_library(InfernuxVulkanBackend SHARED ${INFERNUX_VULKAN_BACKEND_SOURCES})
-add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
+# The composition layer is not a plug-in ABI. Keep it as a private archive so
+# the Python module can LTO/dead-strip the exact bound surface instead of
+# shipping a 60k-symbol auto-export DLL. Stable subsystem boundaries remain the
+# six shared libraries below.
+add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
 pybind11_add_module(_Infernux MODULE NO_EXTRAS ${BINDING_SOURCES})
 pybind11_add_module(_InfernuxBootstrap MODULE NO_EXTRAS ${INFERNUX_BOOTSTRAP_BINDING_SOURCE})
 
@@ -200,10 +204,9 @@ if(WIN32 AND INFERNUX_BUILD_PLAYER_HOST)
     target_link_libraries(InfernuxPlayerHost PRIVATE shell32)
 endif()
 
-# Most of the existing runtime API predates explicit visibility annotations.
-# CMake generates the Windows export table while Linux/macOS use their default
-# symbol visibility. A later ABI-hardening pass can replace this with a narrow
-# INFERNUX_API surface without collapsing the binary boundary again.
+# Shared subsystem boundaries still predate explicit visibility annotations.
+# The former monolithic composition DLL is deliberately absent from this list:
+# it has no public ABI and is linked privately into the Python module with LTO.
 set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
     InfernuxParticleRuntime
@@ -211,7 +214,6 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxRenderCore
     InfernuxRendererRuntime
     InfernuxVulkanBackend
-    InfernuxRuntime
 )
 foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
     set_target_properties(${_infernux_dll} PROPERTIES
@@ -273,13 +275,6 @@ if(MSVC)
             /bigobj   # pybind11 binding TUs exceed the default COFF section limit
         )
     endforeach()
-    # Keep the historical runtime-DLL linker policy until its public ABI uses
-    # explicit INFERNUX_API exports. The pybind module does not need this
-    # workaround and can use the standard optimized Release linker policy.
-    target_link_options(InfernuxRuntime PRIVATE
-        $<$<CONFIG:Release>:/OPT:NOREF>
-        $<$<CONFIG:Release>:/OPT:NOICF>
-    )
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # IPO/LTO is configured through CMake below; keep only the optimization
     # level here so the compiler and linker receive one consistent policy.
@@ -297,10 +292,11 @@ if(INFERNUX_RELEASE_LTO)
     if(_infernux_ipo_supported)
         set_property(TARGET _Infernux PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         set_property(TARGET _InfernuxBootstrap PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET InfernuxRuntime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         if(WIN32)
-            # WINDOWS_EXPORT_ALL_SYMBOLS cannot inspect MSVC /GL objects, so
-            # enabling IPO here removes the DLL export table. Keep the runtime
-            # stable until its public ABI has explicit export annotations.
+            # Auto-exported subsystem DLLs cannot consume MSVC /GL objects.
+            # InfernuxRuntime is a private static composition archive and can
+            # therefore participate in the _Infernux Release LTCG link.
             foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
                 set_property(TARGET ${_infernux_dll} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
             endforeach()
@@ -1407,6 +1403,13 @@ add_custom_command(TARGET _Infernux POST_BUILD
         "-DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>"
         -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
 
+    # InfernuxRuntime used to be a 60k-symbol auto-export DLL. It is now a
+    # private static composition archive, so remove stale copies before any
+    # dependency scan or wheel staging can mistake them for current payload.
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+        "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
+
     COMMENT "Copy _Infernux binding module to python/Infernux/lib"
 )
 
@@ -1479,6 +1482,17 @@ endif()
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_packs")
 set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_modules")
 add_custom_target(prebuild_player_runtime
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+        "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
+        "${PYTHON_TARGET_DIR}/SPIRV.dll"
+        "${PYTHON_TARGET_DIR}/SPVRemapper.dll"
+        "${PYTHON_TARGET_DIR}/glslang-default-resource-limits.dll"
+        "${PYTHON_TARGET_DIR}/glslang.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/SPIRV.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/SPVRemapper.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/glslang-default-resource-limits.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/glslang.dll"
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
         "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"

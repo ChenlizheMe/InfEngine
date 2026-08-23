@@ -414,11 +414,8 @@ class TestComponentLifecycle:
         assert restored_holder.target is restored_target
         assert restored_target is not target
 
-    def test_pending_python_component_restore_is_atomic(self, scene):
-        from Infernux.engine.component_restore import (
-            PythonComponentRestoreError,
-            deserialize_game_object_document_transactionally,
-        )
+    def test_pending_python_component_restore_repairs_invalid_field_atomically(self, scene):
+        from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
 
         game_object = scene.create_game_object("AtomicPythonRestore")
         game_object.add_py_component(_RestoreFirst())
@@ -426,10 +423,12 @@ class TestComponentLifecycle:
         document = game_object.serialize_document()
         document["components"][1]["data"]["value"] = "invalid"
 
-        with pytest.raises(PythonComponentRestoreError, match="invalid fields"):
-            deserialize_game_object_document_transactionally(game_object, document)
+        assert deserialize_game_object_document_transactionally(game_object, document)
 
-        assert len(game_object.get_py_components()) == 2
+        restored = game_object.get_py_components()
+        assert len(restored) == 2
+        assert next(item for item in restored if isinstance(item, _RestoreFirst)).value == 1
+        assert next(item for item in restored if isinstance(item, _RestoreSecond)).value == 2
         assert scene.has_pending_py_components() is False
 
     def test_missing_python_component_type_restores_as_data_preserving_placeholder(self, scene):
@@ -1408,6 +1407,7 @@ class TestColliders:
         DocumentRegistry()
         manager = UndoManager()
         material = PhysicMaterial()
+        original_friction = material.friction
         execution_layer = _ExecutionLayer()
         controller = ensure_editable_resource_document(
             category="physic_material",
@@ -1428,11 +1428,13 @@ class TestColliders:
             assert material.friction == pytest.approx(0.8)
 
             manager.undo()
-            assert material.friction == pytest.approx(0.4)
+            assert material.friction == pytest.approx(original_friction)
 
             manager.redo()
             assert material.friction == pytest.approx(0.8)
-            assert [entry["friction"] for entry in execution_layer.published] == pytest.approx([0.8, 0.4, 0.8])
+            assert [entry["friction"] for entry in execution_layer.published] == pytest.approx(
+                [0.8, original_friction, 0.8]
+            )
         finally:
             UndoManager._instance = previous_manager
             DocumentRegistry._instance = previous_registry

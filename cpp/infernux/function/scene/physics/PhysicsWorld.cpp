@@ -441,6 +441,7 @@ void PhysicsWorld::Shutdown()
     }
     m_bodyToCollider.clear();
     m_poseReadbackBodyIds.clear();
+    m_staticContinuousBodyIds.clear();
     m_continuousBodyIds.clear();
     m_kinematicMoveStates.clear();
     m_lastDynamicCCDSplitCount = 0;
@@ -567,6 +568,64 @@ float PhysicsWorld::FindEarliestDynamicCCDFraction(float deltaTime) const
     return earliestFraction;
 }
 
+float PhysicsWorld::FindEarliestStaticCCDFraction(float deltaTime) const
+{
+    if (m_staticContinuousBodyIds.empty())
+        return 1.0f;
+
+    JPH::ShapeCastSettings castSettings;
+    castSettings.mUseShrunkenShapeAndConvexRadius = true;
+    castSettings.mBackFaceModeTriangles = JPH::EBackFaceMode::IgnoreBackFaces;
+    castSettings.mBackFaceModeConvex = JPH::EBackFaceMode::IgnoreBackFaces;
+
+    float earliestFraction = 1.0f;
+    for (const uint32_t sourceRawId : m_staticContinuousBodyIds) {
+        const JPH::BodyID sourceId(sourceRawId);
+        JPH::BodyLockRead sourceLock(m_physicsSystem->GetBodyLockInterface(), sourceId);
+        if (!sourceLock.Succeeded())
+            continue;
+        const JPH::Body &source = sourceLock.GetBody();
+        if (!source.IsDynamic() || source.IsSensor() || !source.IsActive())
+            continue;
+
+        const JPH::Vec3 motion = deltaTime * source.GetLinearVelocity();
+        if (motion.LengthSq() <= 1e-12f)
+            continue;
+
+        JPH::AABox sweptBounds = source.GetWorldSpaceBounds();
+        JPH::AABox endBounds = sweptBounds;
+        endBounds.Translate(motion);
+        sweptBounds.Encapsulate(endBounds);
+        const JPH::RMat44 sourceTransform = source.GetCenterOfMassTransform();
+        const JPH::RShapeCast cast(source.GetShape(), JPH::Vec3::sOne(), sourceTransform, motion);
+
+        for (const auto &[targetRawId, collider] : m_bodyToCollider) {
+            (void)collider;
+            if (targetRawId == sourceRawId)
+                continue;
+            const JPH::BodyID targetId(targetRawId);
+            JPH::BodyLockRead targetLock(m_physicsSystem->GetBodyLockInterface(), targetId);
+            if (!targetLock.Succeeded())
+                continue;
+            const JPH::Body &target = targetLock.GetBody();
+            if (!target.IsStatic() || target.IsSensor() || !sweptBounds.Overlaps(target.GetWorldSpaceBounds()))
+                continue;
+            if (!m_layers->objPairFilter.ShouldCollide(source.GetObjectLayer(), target.GetObjectLayer()) ||
+                !source.GetCollisionGroup().CanCollide(target.GetCollisionGroup()))
+                continue;
+
+            JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+            JPH::ShapeFilter shapeFilter;
+            shapeFilter.mBodyID2 = targetId;
+            target.GetTransformedShape().CastShape(cast, castSettings, sourceTransform.GetTranslation(), collector,
+                                                   shapeFilter);
+            if (collector.HadHit() && collector.mHit.mFraction > 1e-4f)
+                earliestFraction = std::min(earliestFraction, collector.mHit.mFraction);
+        }
+    }
+    return earliestFraction;
+}
+
 void PhysicsWorld::SettleKinematicMoves()
 {
     if (m_kinematicMoveStates.empty())
@@ -675,7 +734,8 @@ void PhysicsWorld::Step(float deltaTime)
     int dynamicCCDSplits = 0;
     try {
         while (remainingTime > kMinStepDuration) {
-            const float hitFraction = FindEarliestDynamicCCDFraction(remainingTime);
+            const float hitFraction =
+                std::min(FindEarliestStaticCCDFraction(remainingTime), FindEarliestDynamicCCDFraction(remainingTime));
             if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
                 m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps, m_tempAllocator.get(),
                                         m_jobSystem.get());
@@ -978,6 +1038,7 @@ void PhysicsWorld::DestroyBody(Collider *collider)
     bodyInterface.DestroyBody(JPH::BodyID(id));
 
     m_bodyToCollider.erase(id);
+    m_staticContinuousBodyIds.erase(id);
     m_continuousBodyIds.erase(id);
     m_kinematicMoveStates.erase(id);
 }
@@ -1148,8 +1209,10 @@ void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetMotionType(JPH::BodyID(bodyId), mt, JPH::EActivation::Activate);
     bi.SetObjectLayer(JPH::BodyID(bodyId), layer);
-    if (mt != JPH::EMotionType::Dynamic)
+    if (mt != JPH::EMotionType::Dynamic) {
+        m_staticContinuousBodyIds.erase(bodyId);
         m_continuousBodyIds.erase(bodyId);
+    }
     // An explicit motion-type change supersedes any pending drag tracking —
     // never restore this body to Static behind the caller's back.
     m_kinematicMoveStates.erase(bodyId);
@@ -1379,9 +1442,17 @@ void PhysicsWorld::SetBodyMotionQuality(uint32_t bodyId, int quality)
         return;
 
     const int mappedQuality = MapMotionQualityMode(quality);
-    JPH::EMotionQuality mq = (mappedQuality == 1) ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
+    // Jolt LinearCast also catches dynamic targets. Keep it only for the
+    // ContinuousDynamic contract; plain Continuous is swept against statics by
+    // FindEarliestStaticCCDFraction and otherwise remains discrete.
+    JPH::EMotionQuality mq =
+        (mappedQuality == 1 && quality == 2) ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetMotionQuality(JPH::BodyID(bodyId), mq);
+    if (quality == 1)
+        m_staticContinuousBodyIds.insert(bodyId);
+    else
+        m_staticContinuousBodyIds.erase(bodyId);
     if (quality == 2)
         m_continuousBodyIds.insert(bodyId);
     else

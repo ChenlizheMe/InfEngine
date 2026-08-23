@@ -81,24 +81,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
-    },
-    {
-      "name": "release-linux",
-      "displayName": "Release Preset (Linux / Ninja)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build-linux-release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
-      }
-    },
-    {
-      "name": "debug-linux",
-      "displayName": "Debug Preset (Linux)",
-      "inherits": "release-linux",
-      "binaryDir": "${sourceDir}/out/build-linux-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
-      }
     }
   ],
   "buildPresets": [
@@ -157,18 +139,6 @@
     {
       "name": "debug-macos",
       "configurePreset": "debug-macos",
-      "jobs": 8,
-      "targets": ["package_and_install_python"]
-    },
-    {
-      "name": "release-linux",
-      "configurePreset": "release-linux",
-      "jobs": 8,
-      "targets": ["package_and_install_python"]
-    },
-    {
-      "name": "debug-linux",
-      "configurePreset": "debug-linux",
       "jobs": 8,
       "targets": ["package_and_install_python"]
     },
@@ -248,20 +218,6 @@
     {
       "name": "debug-macos",
       "configurePreset": "debug-macos",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "release-linux",
-      "configurePreset": "release-linux",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "debug-linux",
-      "configurePreset": "debug-linux",
       "output": {
         "outputOnFailure": true
       }

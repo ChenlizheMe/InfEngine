@@ -390,6 +390,8 @@ void TransformECSStore::ScatterLocalPositions(Transform *const *transforms, cons
     for (size_t i = 0; i < count; ++i) {
         InvalidateSubtree(transforms[i], false);
     }
+    if (count > 0)
+        ++m_globalTransformSerial;
 }
 
 void TransformECSStore::GatherLocalScales(Transform *const *transforms, float *out, size_t count) const
@@ -416,6 +418,8 @@ void TransformECSStore::ScatterLocalScales(Transform *const *transforms, const f
     for (size_t i = 0; i < count; ++i) {
         InvalidateSubtree(transforms[i], false);
     }
+    if (count > 0)
+        ++m_globalTransformSerial;
 }
 
 void TransformECSStore::GatherLocalRotations(Transform *const *transforms, float *out, size_t count) const
@@ -447,6 +451,8 @@ void TransformECSStore::ScatterLocalRotations(Transform *const *transforms, cons
     for (size_t i = 0; i < count; ++i) {
         InvalidateSubtree(transforms[i], true);
     }
+    if (count > 0)
+        ++m_globalTransformSerial;
 }
 
 void TransformECSStore::GatherLocalEulerAngles(Transform *const *transforms, float *out, size_t count) const
@@ -477,6 +483,11 @@ void TransformECSStore::ScatterLocalEulerAngles(Transform *const *transforms, co
     for (size_t i = 0; i < count; ++i) {
         InvalidateSubtree(transforms[i], true);
     }
+    // A batch is one externally visible mutation even when every row was
+    // already dirty. Consumers use this serial as a commit notification, not
+    // as a count of clean-to-dirty transitions.
+    if (count > 0)
+        ++m_globalTransformSerial;
 }
 
 void TransformECSStore::GatherWorldPositions(Transform *const *transforms, float *out, size_t count) const

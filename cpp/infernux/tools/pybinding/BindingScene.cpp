@@ -2388,6 +2388,9 @@ void RegisterSceneBindings(py::module_ &m)
              py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")
         .def("set_runtime_frame_barrier_callback", &SceneManager::SetRuntimeFrameBarrierCallback, py::arg("callback"),
              "Install the native runtime frame barrier bridge")
+        .def("set_runtime_lifecycle_plan", &SceneManager::SetRuntimeLifecyclePlan, py::arg("revision"),
+             py::arg("fixed_update_count"), py::arg("update_count"), py::arg("late_update_count"),
+             "Publish the immutable Python lifecycle phase plan to the native frame driver")
         .def("set_runtime_lifecycle_work_available", &SceneManager::SetRuntimeLifecycleWorkAvailable,
              py::arg("available"), "Enable lifecycle bridge calls only while Python components exist")
         .def("clear_runtime_lifecycle_callbacks", &SceneManager::ClearRuntimeLifecycleCallbacks,

@@ -110,7 +110,7 @@ Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶�
 | CMake | 3.22+ |
 | 编译器 | Visual Studio 2022，MSVC v143 |
 
-仓库包含 macOS 和 Linux 的持续开发预设，但当前预览版主要支持 Windows 开发与分发。
+当前预览版只支持 Windows 开发与分发。Linux 适配属于后续工作，目前不作为可用的构建路径提供。
 
 ### 克隆并准备环境
 
@@ -138,7 +138,7 @@ cmake --preset release
 cmake --build --preset release
 ```
 
-开发构建使用 `debug` 配置和构建预设。平台预设还包括 `release-macos`、`debug-macos`、`release-linux` 和 `debug-linux`。
+开发构建请使用 Windows 的 `debug` 配置与构建预设。
 
 ### 启动 Hub
 
@@ -151,9 +151,13 @@ python packaging/launcher.py
 
 ```bash
 conda activate infernux
-cd python
-python -m pytest test/ -v
+python -m pytest python/test/ -v
 ```
+
+请从仓库根目录运行这条命令。`pytest.ini` 会把源码包加入
+`PYTHONPATH`，源码审计测试也会从同一个根目录解析 `cpp/`。原生正确性测试使用
+`cmake --preset native-tests`、`cmake --build --preset native-tests` 和
+`ctest --preset native-tests`。
 
 ## 文档
 

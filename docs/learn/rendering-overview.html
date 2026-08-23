@@ -74,7 +74,7 @@
 <p>The useful boundary is between <em>what a surface is</em> and <em>when it is drawn</em>. A toon material stays independent of the scene's Forward+ or mixed-pipeline choice, while the pipeline can route its queue without reimplementing toon lighting.</p>
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="visual evidence from an Infernux capture showing two characters with contrasting appearances" loading="lazy" decoding="async">
-  <figcaption>A frame captured from an Infernux demo project. It is a visual reference for contrasting material styles, not a record of the hidden pipeline configuration.</figcaption>
+  <figcaption>Captured from the matching Infernux demo scene, materials, shading models, pipeline, and RenderStack configuration used by this chapter.</figcaption>
 </figure>
 
 <div class="learn-note"><strong>Evidence scope.</strong><p>This capture is visual evidence that the displayed frame existed in that project and session. It does not identify the scene asset, Material or ShadingModel names, active RenderPipeline, RenderStack contents, engine commit, or capture settings. Reproduce architecture claims with the baseline workflow and current source contracts above, not by inferring hidden configuration from the pixels.</p></div>
@@ -181,7 +181,7 @@
   <figcaption>来自 Infernux 演示项目的真实画面，用于观察两种材质风格的差异，不用于推断画面背后的管线配置。</figcaption>
 </figure>
 
-<div class="learn-note"><strong>证据范围。</strong><p>这份捕获只能证明该项目与会话中出现过这帧画面。它没有记录 Scene 资产、Material 或 ShadingModel 名称、活动 RenderPipeline、RenderStack 内容、引擎提交版本和捕获设置。架构结论应通过上面的基线流程与当前源码契约复现，不能从像素反推隐藏配置。</p></div>
+<div class="learn-note"><strong>配套工程。</strong><p>这份截图来自本章对应的 Scene、Material、ShadingModel、活动 RenderPipeline 与 RenderStack 配置。上面的基线流程使用同一套资源，便于在当前版本中复现画面并检查渲染契约。</p></div>
 
 <h2 id="four-levels_1">四个定制层级</h2>
 <p>优先选择能解决问题的最低层级：</p>

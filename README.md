@@ -110,7 +110,7 @@ Capture and recording are optional evidence for human review, not the primary co
 | CMake | 3.22+ |
 | Compiler | Visual Studio 2022, MSVC v143 |
 
-macOS and Linux presets exist for ongoing platform work, but Windows is the primary supported development and distribution target for this preview.
+This preview currently supports Windows development and distribution. Linux support is future work and is not exposed as a usable build path yet.
 
 ### Clone and prepare
 
@@ -138,7 +138,7 @@ cmake --preset release
 cmake --build --preset release
 ```
 
-For a development build, use the `debug` configure and build presets. Platform presets include `release-macos`, `debug-macos`, `release-linux`, and `debug-linux`.
+For a development build, use the Windows `debug` configure and build presets.
 
 ### Launch the Hub
 
@@ -151,9 +151,13 @@ python packaging/launcher.py
 
 ```bash
 conda activate infernux
-cd python
-python -m pytest test/ -v
+python -m pytest python/test/ -v
 ```
+
+Run the command from the repository root. `pytest.ini` adds the source package
+to `PYTHONPATH`, while source-audit tests resolve `cpp/` from that same root.
+Native correctness tests use `cmake --preset native-tests`,
+`cmake --build --preset native-tests`, and `ctest --preset native-tests`.
 
 ## Documentation
 

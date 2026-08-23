@@ -371,6 +371,12 @@ class SceneManager
                                       RuntimeLifecyclePhaseCallback lateUpdate,
                                       RuntimeLifecyclePhaseCallback editorUpdate, RuntimeLifecycleEndCallback endFrame);
     void SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback);
+    /// Publish the immutable Python phase plan consumed by the native frame
+    /// driver. Python still owns arbitrary user-callable objects; native code
+    /// owns phase ordering, rejects stale revisions, and retains phase counts
+    /// without scanning Python component structure every frame.
+    void SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
+                                 size_t lateUpdateCount) noexcept;
     void SetRuntimeLifecycleWorkAvailable(bool available) noexcept;
     void EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const;
     void ClearRuntimeLifecycleCallbacks();
@@ -526,6 +532,10 @@ class SceneManager
     bool m_runtimeLifecycleSchedulerEnabled = false;
     bool m_runtimeLifecycleWorkAvailable = false;
     bool m_runtimeLifecycleFrameOpen = false;
+    uint64_t m_runtimeLifecyclePlanRevision = 0;
+    size_t m_runtimeLifecycleFixedUpdateCount = 0;
+    size_t m_runtimeLifecycleUpdateCount = 0;
+    size_t m_runtimeLifecycleLateUpdateCount = 0;
     uint64_t m_renderTransformRevision = 1;
 
     // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
