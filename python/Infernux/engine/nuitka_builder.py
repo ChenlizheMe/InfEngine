@@ -41,7 +41,9 @@ from Infernux.engine.player_package_native import extract_pack, read_manifest, w
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
 
 # ASCII-safe root for Nuitka staging and temporary build artifacts.
-_STAGING_ROOT = tempfile.gettempdir()
+_STAGING_ROOT = "C:\\InxBuild"
+if sys.platform.startswith("linux"):
+    _STAGING_ROOT = tempfile.gettempdir()
 
 # Persistent Nuitka compilation cache — lives outside the per-build staging
 # directory so it survives across builds, dramatically speeding up rebuilds.
@@ -2561,6 +2563,14 @@ print(json.dumps({{
         )
 
     def _python_bootstrap_runtime_sources(self) -> tuple[dict[str, Path], Path]:
+        if sys.platform == "win32":
+            return self._get_windows_bootstrap_sources()
+        elif sys.platform == "darwin":
+            return self._get_macos_bootstrap_sources()
+        elif sys.platform.startswith("linux"):
+            return self._get_linux_bootstrap_sources()
+        
+    def _get_windows_bootstrap_sources(self) -> tuple[dict[str, Path], Path]:
         """Resolve the CPython files required before Runtime.inxrt is mounted."""
 
         python_root = Path(resolved_path(self._builder_python)).parent
@@ -2640,6 +2650,127 @@ print(json.dumps({{
                         sources.setdefault(source.name, source)
         encodings_root = Path(next(iter(encodings_spec.submodule_search_locations)))
         return sources, encodings_root
+
+    def _get_macos_bootstrap_sources(self) -> tuple[dict[str, Path], Path]:
+        raise RuntimeError("Temporaily not support mac os platform. ")
+
+    def _get_linux_bootstrap_sources(self) -> tuple[dict[str, Path], Path]:
+        """Resolve the CPython files required before Runtime.inxrt is mounted (Linux)."""
+        import sysconfig
+
+        ctypes_spec = importlib.util.find_spec("_ctypes")
+        encodings_spec = importlib.util.find_spec("encodings")
+        if ctypes_spec is None or not ctypes_spec.origin:
+            raise RuntimeError("Builder Python has no loadable _ctypes extension")
+        if encodings_spec is None or not encodings_spec.submodule_search_locations:
+            raise RuntimeError("Builder Python has no encodings package")
+
+        ctypes_path = Path(resolved_path(ctypes_spec.origin))
+
+        prefix = Path(sys.prefix)
+        base_prefix = Path(sys.base_prefix)
+        libdir = Path(sysconfig.get_config_var("LIBDIR") or prefix / "lib")
+        platstdlib = Path(sysconfig.get_path("platstdlib"))
+
+        search_roots = (
+            libdir,
+            prefix / "lib",
+            prefix / "lib64",
+            platstdlib,
+            base_prefix / "lib",
+            base_prefix / "lib64",
+            ctypes_path.parent,
+            Path(self._builder_python).parent,
+        )
+
+        search_roots = list(dict.fromkeys(search_roots))
+
+        def find_runtime_file(filename: str, *, required: bool) -> Optional[Path]:
+            for root in search_roots:
+                candidate = root / filename
+                if candidate.is_file():
+                    return candidate
+            if required:
+                raise RuntimeError(
+                    f"Builder Python bootstrap dependency is missing: {filename}"
+                )
+            return None
+
+        sources: dict[str, Path] = {}
+
+        python_so_name = (
+            sysconfig.get_config_var("INSTSONAME")
+            or sysconfig.get_config_var("LDLIBRARY")
+            or "libpython3.so"
+        )
+        python_so_path = find_runtime_file(python_so_name, required=False)
+        if python_so_path is None:
+            for root in search_roots:
+                matches = list(root.glob("libpython*.so*"))
+                if matches:
+                    python_so_path = matches[0]
+                    break
+        if python_so_path is None:
+            raise RuntimeError("Builder Python bootstrap dependency is missing: libpython*.so*")
+        sources[python_so_path.name] = python_so_path
+
+        sources[ctypes_path.name] = ctypes_path
+
+        ffi_so_path = find_runtime_file("libffi.so", required=False)
+        if ffi_so_path is None:
+            for root in search_roots:
+                matches = list(root.glob("libffi.so*"))
+                if matches:
+                    ffi_so_path = matches[0]
+                    break
+        if ffi_so_path is None:
+            raise RuntimeError("Builder Python bootstrap dependency is missing: libffi.so*")
+        sources[ffi_so_path.name] = ffi_so_path
+
+        zlib_so_path = find_runtime_file("libz.so", required=False)
+        if zlib_so_path is None:
+            for root in search_roots:
+                matches = list(root.glob("libz.so*"))
+                if matches:
+                    zlib_so_path = matches[0]
+                    break
+        if zlib_so_path is not None:
+            sources[zlib_so_path.name] = zlib_so_path
+
+        extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
+        for module_name in sorted(sys.stdlib_module_names):
+            try:
+                spec = importlib.util.find_spec(module_name)
+            except (ImportError, AttributeError, ValueError):
+                continue
+            origin = getattr(spec, "origin", None) if spec is not None else None
+            if not origin or not str(origin).endswith(extension_suffixes):
+                continue
+            source = Path(resolved_path(origin))
+            if source.is_file():
+                sources.setdefault(source.name, source)
+
+        dependency_patterns = (
+            "libbz2.so*",
+            "libcrypto.so*",
+            "libexpat.so*",
+            "libffi.so*", 
+            "liblzma.so*",
+            "libssl.so*",
+            "libsqlite3.so*",
+            "libz.so*",
+        )
+        for root in search_roots:
+            if not root.is_dir():
+                continue
+            for pattern in dependency_patterns:
+                for source in root.glob(pattern):
+                    if source.is_file():
+                        sources.setdefault(source.name, source)
+
+        encodings_root = Path(next(iter(encodings_spec.submodule_search_locations)))
+        return sources, encodings_root
+
 
     def _inject_python_bootstrap_runtime(self, dist_dir: str) -> None:
         """Stage an explicit isolated-CPython bootstrap closure for PlayerHost."""
