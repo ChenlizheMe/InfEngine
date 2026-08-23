@@ -1317,6 +1317,26 @@ if(INFERNUX_BUILD_TESTS)
         RUN_SERIAL TRUE
     )
 
+    # These executables pull substantial portions of the static runtime into
+    # separate processes. Serializing their cold starts avoids paging and
+    # executable-scanning stalls on small Windows CI runners while leaving the
+    # lightweight native tests free to run in parallel.
+    set_tests_properties(
+        infernux.scene_render_graph_validation
+        infernux.py_component_proxy
+        infernux.runtime_frame_barrier
+        infernux.runtime_persistent_scene
+        infernux.camera_culling_isolation
+        infernux.particle_gpu_runtime
+        infernux.asset_database_refresh
+        infernux.material_document
+        infernux.vector_field_importer
+        infernux.shader_asset
+        infernux.shader_info_schema
+        infernux.shader_stage_linker
+        PROPERTIES RESOURCE_LOCK infernux_runtime_process
+    )
+
     add_test(
         NAME infernux.gpu_upload
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/gpu_upload_smoke_test.py
