@@ -41,7 +41,7 @@ from Infernux.engine.player_package_native import extract_pack, read_manifest, w
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
 
 # ASCII-safe root for Nuitka staging and temporary build artifacts.
-_STAGING_ROOT = "C:\\_InxBuild"
+_STAGING_ROOT = tempfile.gettempdir()
 
 # Persistent Nuitka compilation cache — lives outside the per-build staging
 # directory so it survives across builds, dramatically speeding up rebuilds.
