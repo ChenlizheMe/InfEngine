@@ -37,6 +37,14 @@ def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
     return snapshot
 
 
+def _destination_files(root: str) -> set[str]:
+    files: set[str] = set()
+    for directory, _folders, filenames in os.walk(root):
+        for filename in filenames:
+            files.add(relative_path(os.path.join(directory, filename), root))
+    return files
+
+
 def _read_sync_manifest(path: str) -> dict[str, dict[str, int]]:
     try:
         with open(path, "r", encoding="utf-8") as stream:
@@ -101,7 +109,10 @@ def sync_resources(project_path: str) -> str:
         changed += 1
 
     removed = 0
-    for relative in previous_entries.keys() - source_entries.keys():
+    # Library/Resources is an engine-owned mirror.  Enumerating destination
+    # names keeps upgrades from retaining files produced before the manifest
+    # existed, or other residue that was never recorded in it.
+    for relative in _destination_files(dst) - source_entries.keys():
         target = os.path.join(dst, *relative.split("/"))
         try:
             os.remove(target)

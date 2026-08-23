@@ -747,7 +747,7 @@ def test_audit_does_not_read_binary_entries_individually(tmp_path: Path, monkeyp
     assert all(not entry.startswith("RuntimeAssets/binary/") for _, entry in calls)
 
 
-def test_audit_still_reads_text_entries_for_absolute_path_checks(
+def test_audit_still_extracts_text_entries_for_absolute_path_checks(
     tmp_path: Path, monkeypatch
 ):
     root = _valid_player(tmp_path)
@@ -761,18 +761,18 @@ def test_audit_still_reads_text_entries_for_absolute_path_checks(
     _write_catalog(root)
 
     calls = []
-    original_read_entry = player_package_audit.read_entry
+    original_extract_pack = player_package_audit.extract_pack
 
-    def tracked_read_entry(path, entry_path):
-        calls.append((Path(path).name, str(entry_path)))
-        return original_read_entry(path, entry_path)
+    def tracked_extract_pack(path, output_path):
+        calls.append(Path(path).name)
+        return original_extract_pack(path, output_path)
 
-    monkeypatch.setattr(player_package_audit, "read_entry", tracked_read_entry)
+    monkeypatch.setattr(player_package_audit, "extract_pack", tracked_extract_pack)
 
     with pytest.raises(RuntimeError, match="absolute_author_paths"):
         audit_player_package(root, write_manifest=False)
 
-    assert ("Content.inxpkg", "RuntimeAssets/runtime-metadata.json") in calls
+    assert "Content.inxpkg" in calls
 
 
 def test_audit_accepts_minimal_bootstrap_native_closure(tmp_path: Path):
