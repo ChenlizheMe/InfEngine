@@ -201,7 +201,7 @@ The first command builds the portable Hub bundle. The second builds the Windows 
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.4},
+  version = {0.3.5},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

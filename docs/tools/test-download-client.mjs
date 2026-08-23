@@ -10,7 +10,7 @@ const listeners = new Map();
 
 function makeSelect(id, initialUrl) {
     const link = { href: "" };
-    const options = [{ value: initialUrl, textContent: "0.3.4 · fallback" }];
+    const options = [{ value: initialUrl, textContent: "0.3.5 · fallback" }];
     const select = {
         id,
         value: initialUrl,
@@ -31,7 +31,7 @@ function makeSelect(id, initialUrl) {
     return { select, link };
 }
 
-const oldWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.4/infernux-0.3.4-cp312-cp312-win_amd64.whl";
+const fallbackWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.5/infernux-0.3.5-cp312-cp312-win_amd64.whl";
 const latestWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/infernux-0.3.7-cp312-cp312-win_amd64.whl";
 const latestHub = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe";
 const previousWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.6/infernux-0.3.6-cp312-cp312-win_amd64.whl";
@@ -48,8 +48,8 @@ const previousRelease = {
         { name: "infernux-0.3.6-cp312-cp312-win_amd64.whl", browser_download_url: previousWheel }
     ]
 };
-const en = makeSelect("engine-version-en", oldWheel);
-const zh = makeSelect("engine-version-zh", oldWheel);
+const en = makeSelect("engine-version-en", fallbackWheel);
+const zh = makeSelect("engine-version-zh", fallbackWheel);
 const hubLinks = [{ href: "" }, { href: "" }];
 const labels = [
     { textContent: "", closest() { return null; } },
@@ -96,9 +96,9 @@ assert.deepEqual(hubLinks.map((link) => link.href), [latestHub, latestHub]);
 assert.match(labels[0].textContent, /latest public release 0\.3\.7/);
 assert.match(labels[1].textContent, /最新公开版本 0\.3\.7/);
 
-en.select.value = oldWheel;
+en.select.value = fallbackWheel;
 listeners.get("engine-version-en:change")();
-assert.equal(en.link.href, oldWheel, "changing versions should still update the direct wheel link");
+assert.equal(en.link.href, fallbackWheel, "changing versions should still update the direct wheel link");
 
 assert.match(html, /InfernuxHub/, "the primary download must be presented as InfernuxHub");
 assert.match(html, /data-latest-hub/, "the recommended Hub download must track GitHub's latest release");
