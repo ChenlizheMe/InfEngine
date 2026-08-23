@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Infernux Project'),
           StringStruct('FileDescription', 'Infernux Hub and Installer'),
-          StringStruct('FileVersion', '0.3.4.0'),
+          StringStruct('FileVersion', '0.3.5.0'),
           StringStruct('InternalName', 'Infernux'),
           StringStruct('LegalCopyright', 'MIT License'),
           StringStruct('OriginalFilename', 'Infernux.exe'),
           StringStruct('ProductName', 'Infernux'),
-          StringStruct('ProductVersion', '0.3.4.0')
+          StringStruct('ProductVersion', '0.3.5.0')
         ]
       )
     ]),
