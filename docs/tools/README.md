@@ -17,7 +17,9 @@ repository-level maintainer entry point is
 
 `i18n-source.json` is the source of truth for route-localized text.
 `build-i18n.mjs` produces the checked-in `docs/js/i18n*.js` bundles; do not edit
-those bundles by hand.
+those bundles by hand. `normalize-i18n-fallbacks.mjs` rewrites the inline English
+inside every `[data-i18n]` element to match that same source, so the pre-script
+and crawler view of a page never drifts from the localized copy.
 
 The GitHub workflows in `.github/workflows/build-wiki.yml` and
 `.github/workflows/website-quality.yml` define the authoritative execution

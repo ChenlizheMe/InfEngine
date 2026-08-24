@@ -6,19 +6,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="Install InfernuxHub, choose an engine version, create a project, and run your first scene.">
+    <meta name="description" content="Five steps from an empty machine to a cube spinning under your own Python: install InfernuxHub, pick an engine version, create a project, run a scene, write a component.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/start.html">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
     <meta property="og:title" content="Get started with Infernux">
-    <meta property="og:description" content="A short guide from InfernuxHub to a running scene and a first Python component.">
+    <meta property="og:description" content="From InfernuxHub to a running scene and your first Python component, in five steps.">
     <meta property="og:url" content="https://infernux-engine.com/start.html">
     <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Get started with Infernux">
-    <meta name="twitter:description" content="Install the Hub, create a project, and run your first scene.">
+    <meta name="twitter:description" content="Install the Hub, create a project, and get your first Python component running.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <title>Get started with Infernux</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
@@ -71,14 +71,14 @@
                 <header class="start-heading">
                     <span class="mini-tag">Infernux 0.3.6 · Windows</span>
                     <h1>Get started</h1>
-                    <p>Install InfernuxHub, choose an engine version, create a project, and run a scene. That is enough for a first pass.</p>
+                    <p>Five steps from an empty machine to a cube spinning under your own Python. No environment to assemble, no build system to learn first.</p>
                 </header>
 
                 <section class="start-section" id="install-hub">
                     <div class="start-step">1</div>
                     <div>
                         <h2>Install InfernuxHub</h2>
-                        <p>Download and open InfernuxHub. The Hub manages engine versions, projects, and the Python runtime used by each project.</p>
+                        <p>Download InfernuxHub and open it. The Hub looks after your engine versions, your projects, and the Python runtime behind each one, so you never have to wire up an interpreter by hand.</p>
                         <a class="btn btn-primary" href="download.html"><i class="fas fa-download" aria-hidden="true"></i> Download InfernuxHub</a>
                     </div>
                 </section>
@@ -89,24 +89,24 @@
                         <h2>Install an engine version</h2>
                         <ol>
                             <li>Open <strong>Installs</strong> in InfernuxHub.</li>
-                            <li>Choose the Infernux version you want and install it.</li>
-                            <li>Open <strong>Projects</strong>, create a project, and select that engine version.</li>
+                            <li>Pick the Infernux version you want and install it.</li>
+                            <li>Go to <strong>Projects</strong>, create a project, and point it at that version.</li>
                         </ol>
-                        <p>You can keep more than one engine version installed and choose a version per project.</p>
+                        <p>Keep as many engine versions installed as you like. Every project pins its own, so upgrading one project leaves the rest untouched.</p>
                     </div>
                 </section>
 
                 <section class="start-section">
                     <div class="start-step">3</div>
                     <div>
-                        <h2>Know the editor windows</h2>
+                        <h2>Get your bearings in the editor</h2>
                         <dl class="editor-map">
-                            <div><dt>Hierarchy</dt><dd>Objects in the current scene.</dd></div>
-                            <div><dt>Scene</dt><dd>Move, rotate, and arrange objects.</dd></div>
-                            <div><dt>Game</dt><dd>What the active Camera renders.</dd></div>
-                            <div><dt>Inspector</dt><dd>Components and values on the selected object.</dd></div>
-                            <div><dt>Project</dt><dd>Scenes, scripts, materials, textures, and other assets.</dd></div>
-                            <div><dt>Console</dt><dd>Errors, warnings, and your script logs.</dd></div>
+                            <div><dt>Hierarchy</dt><dd>Everything in the current scene, scene objects and UI alike.</dd></div>
+                            <div><dt>Scene</dt><dd>Where you move, rotate and arrange things.</dd></div>
+                            <div><dt>Game</dt><dd>Exactly what the active Camera renders.</dd></div>
+                            <div><dt>Inspector</dt><dd>The components and values on whatever you have selected.</dd></div>
+                            <div><dt>Project</dt><dd>Scenes, scripts, materials, textures and every other asset.</dd></div>
+                            <div><dt>Console</dt><dd>Errors, warnings and anything your scripts log.</dd></div>
                         </dl>
                     </div>
                 </section>
@@ -117,18 +117,18 @@
                         <h2>Run a scene</h2>
                         <ol>
                             <li>Create or open a scene.</li>
-                            <li>Add a Cube, a Camera, and a light if the scene is empty.</li>
-                            <li>Save the scene with <kbd>Ctrl</kbd> + <kbd>S</kbd>.</li>
-                            <li>Press Play and check the Game window.</li>
+                            <li>If it is empty, drop in a Cube, a Camera and a light.</li>
+                            <li>Save with <kbd>Ctrl</kbd> + <kbd>S</kbd>.</li>
+                            <li>Press Play and watch the Game window.</li>
                         </ol>
-                        <p>If the Game window is empty, first check that the scene has an enabled Camera and then read the first error in Console.</p>
+                        <p>Nothing on screen? Check that the scene has an enabled Camera, then read the <em>first</em> error in Console. The first one is almost always the real one.</p>
                     </div>
                 </section>
 
                 <section class="start-section" id="first-script">
                     <div class="start-step">5</div>
                     <div>
-                        <h2>Add a Python component</h2>
+                        <h2>Write your first Python component</h2>
                         <p>Create <code>Spin.py</code> in your project, then add <code>Spin</code> to a GameObject from the Inspector.</p>
                         <pre><code>from Infernux import InxComponent, Vector3, serialized_field
 
@@ -138,15 +138,15 @@ class Spin(InxComponent):
 
     def update(self, delta_time: float) -> None:
         self.transform.rotate(Vector3(0.0, self.speed * delta_time, 0.0))</code></pre>
-                        <p>Save the scene and enter Play mode. The object should rotate, and <strong>Speed</strong> should be editable in the Inspector.</p>
+                        <p>Save the scene and hit Play. The object turns, and <strong>Speed</strong> is right there in the Inspector, editable while the game runs. That is the whole loop: an ordinary Python class, one lifecycle method, and a field the editor knows how to show.</p>
                     </div>
                 </section>
 
                 <section class="start-next">
-                    <h2>Where to go next</h2>
-                    <a href="learn.html">Browse learning chapters</a>
+                    <h2>Where to go from here</h2>
+                    <a href="learn.html">Work through the courses</a>
                     <a href="wiki/site/en/api/index.html">Look up a scripting API</a>
-                    <a href="https://infernux-engine.discourse.group/">Ask in the community</a>
+                    <a href="https://infernux-engine.discourse.group/">Ask the community</a>
                     <a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener">Report a bug</a>
                 </section>
             </article>
@@ -155,14 +155,14 @@ class Spin(InxComponent):
                 <header class="start-heading">
                     <span class="mini-tag">Infernux 0.3.6 · Windows</span>
                     <h1>开始使用</h1>
-                    <p>安装 InfernuxHub，选择一个引擎版本，创建项目，然后运行场景。第一次使用先做到这些就够了。</p>
+                    <p>五步，从一台干净的电脑到一个由你自己的 Python 驱动、正在转动的方块。不用配环境，也不用先学一套构建系统。</p>
                 </header>
 
                 <section class="start-section" id="install-hub-zh">
                     <div class="start-step">1</div>
                     <div>
                         <h2>安装 InfernuxHub</h2>
-                        <p>下载并打开 InfernuxHub。Hub 用来管理引擎版本、项目，以及每个项目使用的 Python 运行环境。</p>
+                        <p>下载并打开 InfernuxHub。引擎版本、项目，以及每个项目背后的 Python 运行环境，都由它照看，你不需要自己去接解释器。</p>
                         <a class="btn btn-primary" href="download.html"><i class="fas fa-download" aria-hidden="true"></i> 下载 InfernuxHub</a>
                     </div>
                 </section>
@@ -170,27 +170,27 @@ class Spin(InxComponent):
                 <section class="start-section">
                     <div class="start-step">2</div>
                     <div>
-                        <h2>安装引擎版本</h2>
+                        <h2>装一个引擎版本</h2>
                         <ol>
                             <li>在 InfernuxHub 里打开<strong>安装</strong>页面。</li>
-                            <li>选择需要的 Infernux 版本并安装。</li>
-                            <li>回到<strong>项目</strong>页面，创建项目，并为项目选择刚才安装的版本。</li>
+                            <li>挑一个 Infernux 版本装上。</li>
+                            <li>回到<strong>项目</strong>页面新建项目，把它指向刚装好的版本。</li>
                         </ol>
-                        <p>你可以同时保留多个引擎版本，每个项目也可以选择不同的版本。</p>
+                        <p>想装多少个版本都行。每个项目锁定自己的那一个，升级其中一个项目不会动到其他项目。</p>
                     </div>
                 </section>
 
                 <section class="start-section">
                     <div class="start-step">3</div>
                     <div>
-                        <h2>认识编辑器窗口</h2>
+                        <h2>先认认编辑器</h2>
                         <dl class="editor-map">
-                            <div><dt>Hierarchy</dt><dd>当前场景里的物体。</dd></div>
-                            <div><dt>Scene</dt><dd>移动、旋转和摆放物体。</dd></div>
-                            <div><dt>Game</dt><dd>当前 Camera 实际渲染的画面。</dd></div>
-                            <div><dt>Inspector</dt><dd>查看和修改选中物体的组件与数值。</dd></div>
-                            <div><dt>Project</dt><dd>场景、脚本、材质、贴图等项目文件。</dd></div>
-                            <div><dt>Console</dt><dd>错误、警告和脚本日志。</dd></div>
+                            <div><dt>Hierarchy</dt><dd>当前场景里的一切，场景物体和 UI 都在这儿。</dd></div>
+                            <div><dt>Scene</dt><dd>移动、旋转、摆放东西的地方。</dd></div>
+                            <div><dt>Game</dt><dd>当前 Camera 真正渲染出来的画面。</dd></div>
+                            <div><dt>Inspector</dt><dd>你选中的那个物体身上的组件和数值。</dd></div>
+                            <div><dt>Project</dt><dd>场景、脚本、材质、贴图，以及其他所有资产。</dd></div>
+                            <div><dt>Console</dt><dd>错误、警告，还有你脚本打的日志。</dd></div>
                         </dl>
                     </div>
                 </section>
@@ -198,22 +198,22 @@ class Spin(InxComponent):
                 <section class="start-section">
                     <div class="start-step">4</div>
                     <div>
-                        <h2>运行一个场景</h2>
+                        <h2>跑起一个场景</h2>
                         <ol>
-                            <li>创建或打开一个场景。</li>
-                            <li>如果场景是空的，添加 Cube、Camera 和灯光。</li>
-                            <li>按 <kbd>Ctrl</kbd> + <kbd>S</kbd> 保存场景。</li>
-                            <li>点击 Play，然后查看 Game 窗口。</li>
+                            <li>新建或打开一个场景。</li>
+                            <li>如果它是空的，丢进去一个 Cube、一个 Camera 和一盏灯。</li>
+                            <li>按 <kbd>Ctrl</kbd> + <kbd>S</kbd> 保存。</li>
+                            <li>点 Play，盯着 Game 窗口。</li>
                         </ol>
-                        <p>如果 Game 窗口没有画面，先确认场景里有启用的 Camera，再查看 Console 里的第一条错误。</p>
+                        <p>什么都没有？先确认场景里有一个启用的 Camera，然后去 Console 看<em>第一条</em>错误。第一条几乎总是真正的那条。</p>
                     </div>
                 </section>
 
                 <section class="start-section" id="first-script-zh">
                     <div class="start-step">5</div>
                     <div>
-                        <h2>添加 Python 组件</h2>
-                        <p>在项目里创建 <code>Spin.py</code>，然后从 Inspector 把 <code>Spin</code> 添加到一个 GameObject 上。</p>
+                        <h2>写下第一个 Python 组件</h2>
+                        <p>在项目里新建 <code>Spin.py</code>，然后在 Inspector 里把 <code>Spin</code> 挂到一个 GameObject 上。</p>
                         <pre><code>from Infernux import InxComponent, Vector3, serialized_field
 
 
@@ -222,16 +222,16 @@ class Spin(InxComponent):
 
     def update(self, delta_time: float) -> None:
         self.transform.rotate(Vector3(0.0, self.speed * delta_time, 0.0))</code></pre>
-                        <p>保存场景并进入 Play。物体应该开始旋转，Inspector 里也应该能直接修改 <strong>Speed</strong>。</p>
+                        <p>保存场景，点 Play。物体转了起来，<strong>Speed</strong> 就在 Inspector 里，运行时也能随手改。整个循环就这么多：一个普通的 Python 类，一个生命周期方法，一个编辑器认得出来的字段。</p>
                     </div>
                 </section>
 
                 <section class="start-next">
-                    <h2>接下来</h2>
-                    <a href="learn.html">浏览学习章节</a>
-                    <a href="wiki/site/zh/api/index.html">查询脚本 API</a>
-                    <a href="https://infernux-engine.discourse.group/">去社区提问</a>
-                    <a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener">报告 Bug</a>
+                    <h2>接下来去哪</h2>
+                    <a href="learn.html">跟着课程走一遍</a>
+                    <a href="wiki/site/zh/api/index.html">查脚本 API</a>
+                    <a href="https://infernux-engine.discourse.group/">去社区问一句</a>
+                    <a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener">报个 Bug</a>
                 </section>
             </article>
         </div>
@@ -240,7 +240,7 @@ class Spin(InxComponent):
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
-                <div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div>
+                <div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Source fully open, architecture written down, and when something breaks you can chase it all the way to the bottom.</p></div>
                 <div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="start.html" data-i18n="nav.start">Start</a><a href="learn.html" data-i18n="nav.learn">Learn</a><a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div>
             </div>
             <div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div>

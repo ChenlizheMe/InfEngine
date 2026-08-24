@@ -5,25 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="The Infernux 0.3.6 to 0.5.2 roadmap for Android, Web, Torch, Linux/headless, authoritative schemas, replayable worlds, tensor data, and governed tools.">
+    <meta name="description" content="How Infernux gets from 0.3.6 to 0.5.2: Android and Web Players, Torch workflows, Linux and windowless execution, authoritative schemas, replayable worlds, the tensor data plane, and tools an agent can safely build.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/roadmap.html">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
-    <meta property="og:title" content="Infernux Roadmap">
-    <meta property="og:description" content="A gated 0.3.6 to 0.5.2 engineering plan for cross-platform shipping and AI-native engine contracts.">
+    <meta property="og:title" content="Infernux roadmap — 0.3.6 to 0.5.2">
+    <meta property="og:description" content="From a complete engine on Windows to cross-platform shipping, models running through the data plane, and agents that can build tools safely.">
     <meta property="og:url" content="https://infernux-engine.com/roadmap.html">
     <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
+    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and third-generation engine positioning">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Infernux Roadmap">
-    <meta name="twitter:description" content="Cross-platform Players, Torch workflows, reproducible worlds, and governed agent tools.">
+    <meta name="twitter:title" content="Infernux roadmap — 0.3.6 to 0.5.2">
+    <meta name="twitter:description" content="Cross-platform Players, Torch workflows, replayable worlds, and tools an agent can safely build.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
-    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
+    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and third-generation engine positioning">
     <title>Infernux · 熔炉 — Roadmap</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
@@ -82,10 +82,10 @@
             <section class="subpage-hero roadmap-hero">
                 <div class="hero-codename">
                     <span class="badge" data-i18n="roadmap.hero.badge">CURRENT CYCLE · 0.3.6 → 0.5.2</span>
-                    <span data-i18n="roadmap.hero.kicker">Release roadmap</span>
+                    <span data-i18n="roadmap.hero.kicker">Roadmap</span>
                 </div>
                 <h1 data-i18n="roadmap.hero.title">Infernux roadmap</h1>
-                <p data-i18n="roadmap.hero.description">A gated plan for cross-platform Players, Torch workflows, reproducible worlds, and governed agent tools. No target date is implied.</p>
+                <p data-i18n="roadmap.hero.description">From a working engine on Windows to cross-platform shipping, models running through the data plane, and agents that can build tools safely. No dates here, only what each step has to do before it counts as done.</p>
                 <div class="hub-actions">
                     <a href="https://github.com/ChenlizheMe/Infernux/issues" class="btn btn-primary" target="_blank" rel="noopener" data-i18n="roadmap.hero.primary">Track issues</a>
                     <a href="start.html" class="btn btn-secondary" data-i18n="roadmap.hero.secondary">Get started</a>
@@ -94,39 +94,39 @@
 
             <section class="release-grid">
                 <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">CHECKPOINT · ONLINE</div>
+                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">RUNNING</div>
                     <strong>v0.3.6</strong>
-                    <h3 data-i18n="roadmap.release.current.title">Unified Hierarchy and Hub updates</h3>
+                    <h3 data-i18n="roadmap.release.current.title">One Hierarchy, working Hub updates</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.current.item1">The current release unifies scene and UI objects in one Hierarchy and restores automatic update discovery in packaged Hub builds.</li>
-                        <li data-i18n="roadmap.release.current.item2">It keeps the Windows x64 editor and Player as the verified public baseline while the next platform work is prepared.</li>
+                        <li data-i18n="roadmap.release.current.item1">Scene objects and UI objects now live in one Hierarchy, and update discovery works again in packaged Hub builds.</li>
+                        <li data-i18n="roadmap.release.current.item2">The Windows x64 editor and Player are the verified baseline, and every milestone below is built on top of it.</li>
                     </ul>
                 </article>
                 <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">0.3.7–0.4.0 · SHIPPING GATE</div>
+                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">0.3.7–0.4.0 · LEAVING WINDOWS</div>
                     <strong>v0.3.7–0.4.0</strong>
-                    <h3 data-i18n="roadmap.release.next.title">Android, Web, and Torch</h3>
+                    <h3 data-i18n="roadmap.release.next.title">Android, Web, Torch</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.next.item1">0.3.7 targets an Android Player vertical slice; 0.3.8 hardens Android inference and packaging; 0.4.0 requires the same project to ship on Android and Web.</li>
-                        <li data-i18n="roadmap.release.next.item2">Torch is a vertical capability across these gates: native ecosystem in the Host, platform inference runtime in each Player.</li>
+                        <li data-i18n="roadmap.release.next.item1">0.3.7 has to install a first APK on real hardware. 0.3.8 hardens Android inference and packaging. 0.4.0 requires one project to ship on Android and Web at the same time.</li>
+                        <li data-i18n="roadmap.release.next.item2">Torch runs through all three: train and export with native PyTorch in the editor, then swap in whatever inference runtime the target platform can actually carry. Nobody should install a CUDA Toolkit to play a game.</li>
                     </ul>
                 </article>
                 <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.mid.tag">0.4.1–0.4.4 · INFRASTRUCTURE</div>
+                    <div class="mini-tag" data-i18n="roadmap.release.mid.tag">0.4.1–0.4.4 · PLUMBING</div>
                     <strong>v0.4.1–0.4.4</strong>
-                    <h3 data-i18n="roadmap.release.mid.title">Headless, semantics, replay, and batch data</h3>
+                    <h3 data-i18n="roadmap.release.mid.title">Headless, semantics, replay, batch data</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.mid.item1">0.4.1 adds Linux/headless; 0.4.2 establishes authoritative schemas; 0.4.3 adds snapshot/delta/replay; 0.4.4 adds batch worlds and the tensor data plane.</li>
-                        <li data-i18n="roadmap.release.mid.item2">Each milestone must expose versioned contracts and measurable acceptance evidence, not a private demo-only path.</li>
+                        <li data-i18n="roadmap.release.mid.item1">0.4.1 brings Linux and windowless execution. 0.4.2 sets up the authoritative schemas. 0.4.3 does snapshot, delta and deterministic replay. 0.4.4 opens batch worlds and the tensor data plane.</li>
+                        <li data-i18n="roadmap.release.mid.item2">Every one of these produces a versioned contract and acceptance evidence somebody else can measure. A private path that only survives inside a demo does not count.</li>
                     </ul>
                 </article>
                 <article class="release-card">
                     <div class="mini-tag" data-i18n="roadmap.release.long.tag">0.5.0–0.5.2 · CONVERGENCE</div>
                     <strong>v0.5.0–0.5.2</strong>
-                    <h3 data-i18n="roadmap.release.long.title">Governed tools and research system</h3>
+                    <h3 data-i18n="roadmap.release.long.title">Tools an agent can build, on an engine that holds together</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.long.item1">0.5.0 formalizes Engine Tools and the trusted/untrusted execution boundary; 0.5.1 publishes a reproducible benchmark alpha.</li>
-                        <li data-i18n="roadmap.release.long.item2">0.5.2 must demonstrate one documented path joining cross-platform Players, models, schemas, replay, batching, and governed tools.</li>
+                        <li data-i18n="roadmap.release.long.item1">0.5.0 formalises Engine Tools and draws a hard line between trusted and untrusted execution. 0.5.1 ships the distribution format for plugins and models, with their own tests run in a sandbox before anything lands in your project.</li>
+                        <li data-i18n="roadmap.release.long.item2">0.5.2 has to string cross-platform Players, models, schemas, replay, batch worlds and tool governance into one path somebody can walk end to end, live.</li>
                     </ul>
                 </article>
             </section>
@@ -134,45 +134,45 @@
             <section class="roadmap-bands">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="roadmap.lanes.kicker">Delivery tracks</div>
-                        <h2 class="section-title" data-i18n="roadmap.lanes.title">Four tracks, one end-to-end system.</h2>
+                        <div class="section-kicker" data-i18n="roadmap.lanes.kicker">Four tracks</div>
+                        <h2 class="section-title" data-i18n="roadmap.lanes.title">Four tracks, and they all have to end up in one engine.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="roadmap.lanes.intro">The tracks share infrastructure: platform contracts shape Players, schemas shape control, replay shapes debugging and science, and tool governance shapes both plugins and agents.</p>
+                    <p class="section-intro" data-i18n="roadmap.lanes.intro">They share their plumbing. Platform contracts decide where a Player can run. Schemas decide who is allowed to change the world. Replay serves debugging and training equally well. Tool governance covers plugins and agents with the same machinery.</p>
                 </div>
                 <div class="lane-grid">
                     <article class="lane-card">
                         <div class="card-mark"><i class="fas fa-toolbox"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card1.title">Shipping track</h3>
+                        <h3 data-i18n="roadmap.lanes.card1.title">Shipping</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card1.item1">Android APK/AAB and deployable Web game packages from the same project.</li>
-                            <li data-i18n="roadmap.lanes.card1.item2">Linux Player plus windowless and offscreen execution for CI, servers, and simulation.</li>
-                            <li data-i18n="roadmap.lanes.card1.item3">Explicit platform capabilities instead of silent semantic fallback.</li>
+                            <li data-i18n="roadmap.lanes.card1.item1">One project exporting an Android APK/AAB and a Web package you can deploy as it is.</li>
+                            <li data-i18n="roadmap.lanes.card1.item2">A Linux Player, plus windowless and offscreen runs for CI, servers and large-scale simulation.</li>
+                            <li data-i18n="roadmap.lanes.card1.item3">Platform capabilities declared up front, and missing ones failing loudly. No silent downgrades; quiet fallback is a debugging nightmare.</li>
                         </ul>
                     </article>
                     <article class="lane-card">
                         <div class="card-mark"><i class="fas fa-layer-group"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card2.title">Model data track</h3>
+                        <h3 data-i18n="roadmap.lanes.card2.title">Model data</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card2.item1">Standard PyTorch in the Host/Editor for development, training, evaluation, and export.</li>
-                            <li data-i18n="roadmap.lanes.card2.item2">Platform inference runtimes in Players without requiring ordinary users to install a CUDA Toolkit.</li>
-                            <li data-i18n="roadmap.lanes.card2.item3">Measured Torch/DLPack/buffer interchange with documented copy boundaries.</li>
+                            <li data-i18n="roadmap.lanes.card2.item1">Standard PyTorch right in the editor: develop, train, evaluate and export without switching environments.</li>
+                            <li data-i18n="roadmap.lanes.card2.item2">A Player that carries only the inference runtime its platform needs. No CUDA Toolkit, no entire training stack riding along.</li>
+                            <li data-i18n="roadmap.lanes.card2.item3">Every hop between Torch, DLPack and GPU buffers measured, and every copy written down in the docs.</li>
                         </ul>
                     </article>
                     <article class="lane-card">
                         <div class="card-mark"><i class="fas fa-ship"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card3.title">Semantic world track</h3>
+                        <h3 data-i18n="roadmap.lanes.card3.title">Semantic world</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card3.item1">Versioned reflection plus Command/Query schemas shared by UI, Python, and MCP.</li>
-                            <li data-i18n="roadmap.lanes.card3.item2">World snapshot/delta, deterministic replay contracts, and batched create/step/reset.</li>
+                            <li data-i18n="roadmap.lanes.card3.item1">Versioned reflection plus Command/Query schemas, so UI, Python and MCP read one definition instead of each reimplementing it.</li>
+                            <li data-i18n="roadmap.lanes.card3.item2">World snapshot and delta, deterministic replay contracts, and batched create, step and reset.</li>
                         </ul>
                     </article>
                     <article class="lane-card">
                         <div class="card-mark"><i class="fas fa-microchip"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card4.title">Trust and research track</h3>
+                        <h3 data-i18n="roadmap.lanes.card4.title">Tools and ecosystem</h3>
                         <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card4.item1">Engine Tools with schemas, permissions, tests, provenance, resource limits, and lifecycle.</li>
-                            <li data-i18n="roadmap.lanes.card4.item2">Versioned tasks, evaluators, baselines, and replay packages for research use.</li>
-                            <li data-i18n="roadmap.lanes.card4.item3">Research claims only after reproducibility and held-out evaluation gates exist.</li>
+                            <li data-i18n="roadmap.lanes.card4.item1">An Engine Tool ships with its schema, permissions, tests, provenance, resource limits and lifecycle attached.</li>
+                            <li data-i18n="roadmap.lanes.card4.item2">Plugins and models get a real distribution format, and their own tests run in a sandbox before anything enters your project.</li>
+                            <li data-i18n="roadmap.lanes.card4.item3">Anything an agent builds clears the same bar as human-written code before it goes near someone else's project.</li>
                         </ul>
                     </article>
                 </div>
@@ -181,26 +181,26 @@
             <section class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="roadmap.priorities.kicker">Immediate focus</div>
-                        <h2 class="section-title" data-i18n="roadmap.priorities.title">The next three gates.</h2>
+                        <div class="section-kicker" data-i18n="roadmap.priorities.kicker">On the bench right now</div>
+                        <h2 class="section-title" data-i18n="roadmap.priorities.title">The next three.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="roadmap.priorities.intro">The immediate work must close real shipping loops. Architecture documents or isolated demos do not pass a release gate by themselves.</p>
+                    <p class="section-intro" data-i18n="roadmap.priorities.intro">These have to close real shipping loops. Writing the architecture document does not count, and neither does getting one isolated demo to run.</p>
                 </div>
                 <div class="priority-grid">
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-link"></i></div>
                         <h3 data-i18n="roadmap.priorities.card1.title">Android Player vertical slice</h3>
-                        <p data-i18n="roadmap.priorities.card1.body">Produce the first installable APK on physical hardware with lifecycle, input, assets, audio, rendering, logs, and a minimal portable scripting contract.</p>
+                        <p data-i18n="roadmap.priorities.card1.body">Get a first APK onto real hardware with lifecycle, input, assets, audio, rendering, logs and a minimal portable scripting subset all working in one pass.</p>
                     </article>
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-cubes"></i></div>
                         <h3 data-i18n="roadmap.priorities.card2.title">Web portability gate</h3>
-                        <p data-i18n="roadmap.priorities.card2.body">Validate the Web native-module, Python, rendering, storage, and packaging boundary before promising compatibility or performance.</p>
+                        <p data-i18n="roadmap.priorities.card2.body">Map out the native module, Python, rendering, storage and packaging boundaries in the browser first, then talk about compatibility and performance. This step will probably kill a few assumptions.</p>
                     </article>
                     <article class="priority-card">
                         <div class="card-mark"><i class="fas fa-vector-square"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card3.title">Torch entry and inference decision</h3>
-                        <p data-i18n="roadmap.priorities.card3.body">Keep native PyTorch on the Host; compare real Android and Web inference providers using model coverage, latency, memory, package size, fallback behavior, and maintenance cost.</p>
+                        <h3 data-i18n="roadmap.priorities.card3.title">Torch entry and the inference backend</h3>
+                        <p data-i18n="roadmap.priorities.card3.body">Native PyTorch stays in the editor. Which inference backend goes on Android and Web gets decided by measuring model coverage, latency, memory, package size and fallback behaviour, not by picking a favourite.</p>
                     </article>
                 </div>
             </section>
@@ -215,7 +215,7 @@
                         <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
                         <span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span>
                     </div>
-                    <p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p>
+                    <p data-i18n="footer.tagline">Source fully open, architecture written down, and when something breaks you can chase it all the way to the bottom.</p>
                 </div>
                 <div class="footer-links">
                     <div class="footer-column">

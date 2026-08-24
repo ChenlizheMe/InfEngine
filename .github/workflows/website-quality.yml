@@ -93,6 +93,9 @@ jobs:
       - name: Verify route-localized bundles
         run: node docs/tools/build-i18n.mjs --check
 
+      - name: Verify inline localization fallbacks
+        run: node docs/tools/normalize-i18n-fallbacks.mjs --check
+
       - name: Verify deterministic Service Worker
         run: node docs/tools/build-service-worker.mjs --check
 
