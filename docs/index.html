@@ -5,25 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="Infernux (熔炉) is a third-generation game engine built for the AI era: a C++17/Vulkan core, Python as a first-class authoring surface, and an architecture where models and agents enter through contracts instead of plugins.">
+    <meta name="description" content="Infernux (熔炉) is an open-source game engine rewritten for AI: a C++17/Vulkan core, Python as a first-class authoring surface, and agents wired into the engine at the data plane instead of through a plugin.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
     <meta property="og:title" content="Infernux · 熔炉 — A game engine for the AI era">
-    <meta property="og:description" content="The forge is lit. A third-generation game engine with a C++/Vulkan core, Python as a first-class citizen, and AI running through the whole stack. Open source, MIT, Windows x64 available now.">
+    <meta property="og:description" content="The forge is lit. A C++/Vulkan core, Python as a first-class citizen, and agents wired into the engine down at the data plane. Open source, MIT, Windows x64 available now.">
     <meta property="og:url" content="https://infernux-engine.com/">
     <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and third-generation engine positioning">
+    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · 熔炉 — A game engine for the AI era">
-    <meta name="twitter:description" content="Third-generation game engine · C++/Vulkan core · Python as a first-class citizen · open source under MIT.">
+    <meta name="twitter:description" content="C++/Vulkan core · Python as a first-class citizen · agents wired in at the data plane · MIT.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
-    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and third-generation engine positioning">
+    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <title>Infernux · 熔炉 — A game engine for the AI era</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
@@ -83,12 +83,12 @@
                 <div class="hero-grid">
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.6 · THIRD-GENERATION GAME ENGINE</span>
+                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.6 · A GAME ENGINE REWRITTEN FOR AI</span>
                             <span data-i18n="home.hero.kicker">MIT · open source · Windows x64, downloadable right now</span>
                         </div>
                         <h1 class="hero-title" data-i18n="home.hero.title">The <span class="accent">forge</span> is lit. Come feed the fire.</h1>
                         <p class="hero-subtitle" data-i18n="hero.subtitle">A C++17 and Vulkan core. You write gameplay, tools, render pipelines and models in Python 3.12.</p>
-                        <p class="hero-description" data-i18n="home.hero.description">Second-generation engines treat Python as a scripting add-on. Every trip across the language boundary costs you, and a model that wants to read world state ends up calling getattr in a loop. Infernux is built the other way round: state lives in C++ as structs of arrays, one call hands Python the whole block as a numpy array, and the GIL stays released for the trip. Training, inference and agents that build their own tools only become realistic after that.</p>
+                        <p class="hero-description" data-i18n="home.hero.description">The Doom generation of engines finished its job a long time ago. Unity and Unreal got the tools into everyone's hands, and now they are fumbling at what this era actually asks for, because whether a model or an agent can really use an engine comes down to its lowest-level data layout, threading model and tool boundaries. None of that can be bolted on afterwards. Infernux starts writing at that layer: agents and the engine collaborating down in the plumbing, not through a chat panel stapled to the side.</p>
                         <div class="hero-actions">
                             <a href="start.html" class="btn btn-primary">
                                 <i class="fas fa-rocket" aria-hidden="true"></i>
@@ -150,33 +150,33 @@
             </section>
 
             <section class="manifesto-strip">
-                <span class="manifesto-tag" data-i18n="home.manifesto.tag">THE THIRD GENERATION</span>
+                <span class="manifesto-tag" data-i18n="home.manifesto.tag">MANIFESTO</span>
                 <p data-i18n="home.manifesto">AI-native is not a chat panel. It means world state you can pull out as a tensor in one call, training that runs inside the editor, and agent-built tools that carry a schema, permissions and tests. None of that can be retrofitted. It has to grow up from the core.</p>
             </section>
 
-            <section id="generations" class="section">
+            <section id="thesis" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.gen.kicker">Three generations</div>
-                        <h2 class="section-title" data-i18n="home.gen.title">The third generation is not an AI panel.</h2>
+                        <div class="section-kicker" data-i18n="home.thesis.kicker">What we are betting on</div>
+                        <h2 class="section-title" data-i18n="home.thesis.title">Agents and the engine, wired together at the bottom.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.gen.intro">Wire an LLM into a second-generation engine and you get a very good plugin. But that engine's data structures, threading model and tool interfaces were never designed for it, and that is where the ceiling is.</p>
+                    <p class="section-intro" data-i18n="home.thesis.intro">You do not get there by hanging a plugin off a mature engine. How the data is laid out, who is allowed to release the GIL, where the tool boundary sits: all of it has to be decided again, from the core outward.</p>
                 </div>
                 <div class="grid-3">
                     <article class="pillar-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.gen.card1.era">FIRST GENERATION · 1993</div>
-                        <h3 data-i18n="home.gen.card1.title">The engine gets pulled out of the game</h3>
-                        <p data-i18n="home.gen.card1.body">Before id Tech, the code and the game were the same thing. After Doom, rendering, assets and gameplay became something you could reuse, license, and keep alive long after that one game shipped.</p>
+                        <div class="mini-tag" data-i18n="home.thesis.card1.era">MISSION COMPLETE</div>
+                        <h3 data-i18n="home.thesis.card1.title">The Doom generation already handed in its work</h3>
+                        <p data-i18n="home.thesis.card1.body">Pulling rendering, assets and gameplay out of one game and turning them into something you could reuse and license: id Tech settled that in 1993. It was the right problem then. Nobody needs to prove it again.</p>
                     </article>
                     <article class="pillar-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.gen.card2.era">SECOND GENERATION · 2005 ONWARD</div>
-                        <h3 data-i18n="home.gen.card2.title">The tools reach everyone</h3>
-                        <p data-i18n="home.gen.card2.body">Unity, Unreal and Godot turned the engine into a product with an ecosystem: editors, asset stores, one-click cross-platform builds. You stopped needing an engine team. The trade was that high-level languages like Python stayed bolted on the side, permanently second class.</p>
+                        <div class="mini-tag" data-i18n="home.thesis.card2.era">FUMBLING · RIGHT NOW</div>
+                        <h3 data-i18n="home.thesis.card2.title">Unity and Unreal are patching AI on from outside</h3>
+                        <p data-i18n="home.thesis.card2.body">They did the universal-tooling part well. But Python stays a second-class citizen over there, world state comes out one getattr at a time, and whatever an agent is allowed to touch rests on a script behaving itself. A plugin cannot fix any of that.</p>
                     </article>
                     <article class="pillar-card pillar-card-accent" data-reveal>
-                        <div class="mini-tag" data-i18n="home.gen.card3.era">THIRD GENERATION · NOW</div>
-                        <h3 data-i18n="home.gen.card3.title">Models and agents move into the core</h3>
-                        <p data-i18n="home.gen.card3.body">Python is the first-class surface, not the scripting layer. World state is laid out so a tensor can read it directly. Agents drive the engine through declared contracts, and every capability they hold can be audited and taken back. That is the bet, and it is what we write code against every day.</p>
+                        <div class="mini-tag" data-i18n="home.thesis.card3.era">WHAT WE ARE BUILDING</div>
+                        <h3 data-i18n="home.thesis.card3.title">Start at the data plane and cut the path through</h3>
+                        <p data-i18n="home.thesis.card3.body">State sits in C++ as structs of arrays, and one call hands it to Python as a numpy array with the GIL released. An agent drives the same command system you do, and every capability it holds can be audited and taken back. This is the code we write every day.</p>
                     </article>
                 </div>
             </section>
