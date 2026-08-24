@@ -3,9 +3,9 @@
   "project": "Infernux",
   "canonical_origin": "https://infernux-engine.com",
   "repository": "https://github.com/ChenlizheMe/Infernux",
-  "documented_release": "0.3.5",
+  "documented_release": "0.3.6",
   "release_status": "stable",
-  "last_verified": "2026-08-23",
+  "last_verified": "2026-08-24",
   "build": {
     "status": "stamped",
     "source_commit": "8c85885c6856b6decfec2f05f6aa105a71ff9c9f",

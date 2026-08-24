@@ -29,7 +29,7 @@ const checks = [
     { route: "/learn/renderstack-mount-points.html", tokens: ["after_camera_ui", "after_screen_ui", "renderstack-mount-points.md"] },
     { route: "/learn/custom-render-pipelines.html", tokens: ["MixedArtPipeline", "forward_plus", "custom-render-pipelines.md"] },
     { route: "/learn/rendergraph-advanced.html", tokens: ["define_topology", "PassResult", "rendergraph-advanced.md"] },
-    { route: "/download.html", tokens: ["InfernuxHub", "advanced-download", "data-version-select", ".whl", "0.3.5", "0.3.4", "0.2.9"], forbid: ["SHA-256", "checksum", "校验码", "pwa-install.js", "advanced-download\" open"] },
+    { route: "/download.html", tokens: ["InfernuxHub", "advanced-download", "data-version-select", ".whl", "0.3.6", "0.3.5", "0.3.4", "0.2.9"], forbid: ["SHA-256", "checksum", "校验码", "pwa-install.js", "advanced-download\" open"] },
     { route: "/community.html", tokens: ["https://infernux-engine.discourse.group/", "http-equiv=\"refresh\""] },
     { route: "/roadmap.html", tokens: ["<h1", "start.html"] },
     { route: "/wiki/site/en/api/index.html", tokens: ["API", "/start.html", "/learn.html"], forbid: [">Manual</a>", "/manual/"] },

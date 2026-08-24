@@ -6,7 +6,7 @@ const translations = {
     en: { ...{
     "brand.footerTitle": "熔炉 · INFERNUX",
     "brand.navShort": "熔炉 · INFERNUX",
-    "brand.ribbonKicker": "Open-source engine · 0.3.5",
+    "brand.ribbonKicker": "Open-source engine · 0.3.6",
     "brand.ribbonName": "INFER<span class=\"mission-accent\">NUX</span>",
     "brand.ribbonSub": "熔炉 · ENG-CORE",
     "footer.community": "Community",
@@ -24,7 +24,7 @@ const translations = {
     zh: { ...{
     "brand.footerTitle": "熔炉 · INFERNUX",
     "brand.navShort": "熔炉 · INFERNUX",
-    "brand.ribbonKicker": "开源引擎 · 0.3.5",
+    "brand.ribbonKicker": "开源引擎 · 0.3.6",
     "brand.ribbonName": "<span class=\"mission-accent\">熔</span>炉",
     "brand.ribbonSub": "INFERNUX · ENG-CORE",
     "footer.community": "社区",

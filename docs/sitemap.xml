@@ -2,1216 +2,1216 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
     <loc>https://infernux-engine.com/</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/download.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/custom-render-pipelines.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/fragment-materials.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-audio-events.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-components-fields.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-coroutines.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-first-component.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-input-movement.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-physics-events.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-prefabs-runtime.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay-ui-scenes.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/gameplay.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/render-effects.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/rendergraph-advanced.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/rendering-overview.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/rendering.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/renderstack-mount-points.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/shading-models-glsl.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/learn/vertex-stage.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/roadmap.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/start.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/add_component_menu.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/add_component_menu.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/add_component_menu.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/add_component_menu.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/AudioClip.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/AudioClip.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/AudioClip.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/AudioClip.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/AudioListener.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/AudioListener.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/AudioListener.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/AudioListener.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/AudioSource.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/AudioSource.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/AudioSource.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/AudioSource.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/BloomEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/BloomEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/BloomEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/BloomEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/BoxCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/BoxCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/BoxCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/BoxCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Camera.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Camera.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Camera.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Camera.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/CameraClearFlags.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CameraClearFlags.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CameraClearFlags.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CameraClearFlags.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/CameraProjection.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CameraProjection.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CameraProjection.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CameraProjection.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/CapsuleCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CapsuleCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CapsuleCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CapsuleCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/ChromaticAberrationEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ChromaticAberrationEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ChromaticAberrationEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ChromaticAberrationEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Collider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Collider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Collider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Collider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/CollisionDetectionMode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CollisionDetectionMode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CollisionDetectionMode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CollisionDetectionMode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ColorAdjustmentsEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Component.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Component.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Component.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Component.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Coroutine.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Coroutine.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Coroutine.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Coroutine.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Debug.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Debug.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Debug.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Debug.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/disallow_multiple.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/disallow_multiple.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/disallow_multiple.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/disallow_multiple.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/execute_in_edit_mode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/execute_in_edit_mode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/execute_in_edit_mode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/execute_in_edit_mode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/FilmGrainEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/FilmGrainEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/FilmGrainEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/FilmGrainEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/ForceMode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ForceMode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ForceMode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ForceMode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Format.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Format.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Format.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Format.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/FullScreenEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/FullScreenEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/FullScreenEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/FullScreenEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/GameObject.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/GameObject.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/GameObject.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/GameObject.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Gizmos.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Gizmos.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Gizmos.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Gizmos.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/index.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/index.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/index.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/index.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Input.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Input.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Input.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Input.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/InxComponent.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/InxComponent.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/InxComponent.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/InxComponent.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/InxUIComponent.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/InxUIComponent.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/InxUIComponent.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/InxUIComponent.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/KeyCode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/KeyCode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/KeyCode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/KeyCode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Light.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Light.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Light.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Light.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/LightShadows.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/LightShadows.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/LightShadows.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/LightShadows.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/LightType.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/LightType.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/LightType.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/LightType.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/LogLevel.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/LogLevel.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/LogLevel.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/LogLevel.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Material.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Material.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Material.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Material.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Mathf.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Mathf.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Mathf.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Mathf.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/MeshCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/MeshCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/MeshCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/MeshCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/MeshRenderer.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/njit.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/njit.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Physics.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Physics.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Physics.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Physics.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/PointerEventData.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/PointerEventData.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/PointerEventData.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/PointerEventData.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/PrimitiveType.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/PrimitiveType.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/PrimitiveType.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/PrimitiveType.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/quaternion.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/quaternion.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/quaternion.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/quaternion.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/RenderGraph.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderGraph.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderGraph.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderGraph.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/RenderPass.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderPass.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderPass.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderPass.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/RenderPassBuilder.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderPassBuilder.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderPassBuilder.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderPassBuilder.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/RenderPipeline.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderPipeline.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderPipeline.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderPipeline.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/RenderStack.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderStack.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderStack.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderStack.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/require_component.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/require_component.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/require_component.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/require_component.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Rigidbody.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Rigidbody.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Rigidbody.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Rigidbody.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/RigidbodyConstraints.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RigidbodyConstraints.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RigidbodyConstraints.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RigidbodyConstraints.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Scene.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Scene.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Scene.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Scene.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/SceneManager.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SceneManager.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SceneManager.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SceneManager.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/serialized_field.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/serialized_field.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/serialized_field.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/serialized_field.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Shader.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Shader.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Shader.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Shader.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/SharpenEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SharpenEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SharpenEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SharpenEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Space.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Space.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Space.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Space.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/SphereCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Texture.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Texture.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Texture.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Texture.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/TextureHandle.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/TextureHandle.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/TextureHandle.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/TextureHandle.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Time.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Time.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Time.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Time.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/ToneMappingEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ToneMappingEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ToneMappingEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ToneMappingEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Transform.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Transform.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Transform.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Transform.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/UIButton.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UIButton.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UIButton.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UIButton.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/UICanvas.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UICanvas.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UICanvas.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UICanvas.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/UIImage.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UIImage.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UIImage.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UIImage.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/UISelectable.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UISelectable.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UISelectable.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UISelectable.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/UIText.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UIText.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UIText.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UIText.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/vector2.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/vector2.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/vector2.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/vector2.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/vector3.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/vector3.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/vector3.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/vector3.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/vector4.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/vector4.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/vector4.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/vector4.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/VignetteEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/VignetteEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/VignetteEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/VignetteEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WaitForEndOfFrame.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForEndOfFrame.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForEndOfFrame.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForEndOfFrame.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WaitForFixedUpdate.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForFixedUpdate.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForFixedUpdate.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForFixedUpdate.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WaitForSeconds.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForSeconds.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForSeconds.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForSeconds.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WaitForSecondsRealtime.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForSecondsRealtime.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForSecondsRealtime.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForSecondsRealtime.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WaitUntil.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitUntil.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitUntil.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitUntil.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WaitWhile.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitWhile.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitWhile.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitWhile.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/warmup.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/warmup.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/warmup.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/warmup.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/WhiteBalanceEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WhiteBalanceEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WhiteBalanceEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WhiteBalanceEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/index.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/add_component_menu.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/add_component_menu.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/add_component_menu.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/add_component_menu.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/AudioClip.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/AudioClip.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/AudioClip.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/AudioClip.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/AudioListener.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/AudioListener.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/AudioListener.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/AudioListener.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/AudioSource.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/AudioSource.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/AudioSource.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/AudioSource.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/BloomEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/BloomEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/BloomEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/BloomEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/BoxCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/BoxCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/BoxCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/BoxCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Camera.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Camera.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Camera.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Camera.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/CameraClearFlags.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CameraClearFlags.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CameraClearFlags.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CameraClearFlags.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/CameraProjection.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CameraProjection.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CameraProjection.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CameraProjection.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/CapsuleCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CapsuleCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CapsuleCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CapsuleCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/ChromaticAberrationEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ChromaticAberrationEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ChromaticAberrationEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ChromaticAberrationEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Collider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Collider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Collider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Collider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/CollisionDetectionMode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/CollisionDetectionMode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/CollisionDetectionMode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/CollisionDetectionMode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/ColorAdjustmentsEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ColorAdjustmentsEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Component.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Component.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Component.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Component.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Coroutine.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Coroutine.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Coroutine.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Coroutine.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Debug.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Debug.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Debug.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Debug.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/disallow_multiple.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/disallow_multiple.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/disallow_multiple.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/disallow_multiple.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/execute_in_edit_mode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/execute_in_edit_mode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/execute_in_edit_mode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/execute_in_edit_mode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/FilmGrainEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/FilmGrainEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/FilmGrainEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/FilmGrainEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/ForceMode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ForceMode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ForceMode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ForceMode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Format.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Format.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Format.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Format.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/FullScreenEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/FullScreenEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/FullScreenEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/FullScreenEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/GameObject.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/GameObject.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/GameObject.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/GameObject.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Gizmos.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Gizmos.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Gizmos.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Gizmos.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/index.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/index.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/index.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/index.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Input.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Input.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Input.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Input.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/InxComponent.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/InxComponent.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/InxComponent.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/InxComponent.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/InxUIComponent.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/InxUIComponent.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/InxUIComponent.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/InxUIComponent.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/KeyCode.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/KeyCode.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/KeyCode.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/KeyCode.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Light.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Light.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Light.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Light.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/LightShadows.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/LightShadows.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/LightShadows.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/LightShadows.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/LightType.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/LightType.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/LightType.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/LightType.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/LogLevel.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/LogLevel.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/LogLevel.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/LogLevel.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Material.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Material.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Material.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Material.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Mathf.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Mathf.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Mathf.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Mathf.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/MeshCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/MeshCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/MeshCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/MeshCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/MeshRenderer.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/MeshRenderer.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/njit.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/njit.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Physics.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Physics.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Physics.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Physics.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/PointerEventData.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/PointerEventData.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/PointerEventData.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/PointerEventData.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/PrimitiveType.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/PrimitiveType.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/PrimitiveType.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/PrimitiveType.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/quaternion.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/quaternion.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/quaternion.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/quaternion.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/RenderGraph.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderGraph.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderGraph.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderGraph.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/RenderPass.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderPass.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderPass.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderPass.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/RenderPassBuilder.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderPassBuilder.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderPassBuilder.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderPassBuilder.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/RenderPipeline.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderPipeline.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderPipeline.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderPipeline.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/RenderStack.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RenderStack.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RenderStack.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RenderStack.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/require_component.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/require_component.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/require_component.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/require_component.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Rigidbody.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Rigidbody.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Rigidbody.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Rigidbody.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/RigidbodyConstraints.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/RigidbodyConstraints.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/RigidbodyConstraints.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/RigidbodyConstraints.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Scene.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Scene.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Scene.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Scene.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/SceneManager.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SceneManager.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SceneManager.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SceneManager.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/serialized_field.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/serialized_field.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/serialized_field.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/serialized_field.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Shader.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Shader.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Shader.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Shader.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/SharpenEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SharpenEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SharpenEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SharpenEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Space.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Space.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Space.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Space.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/SphereCollider.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Texture.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Texture.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Texture.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Texture.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/TextureHandle.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/TextureHandle.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/TextureHandle.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/TextureHandle.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Time.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Time.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Time.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Time.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/ToneMappingEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/ToneMappingEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/ToneMappingEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ToneMappingEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Transform.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Transform.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/Transform.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/Transform.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/UIButton.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UIButton.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UIButton.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UIButton.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/UICanvas.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UICanvas.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UICanvas.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UICanvas.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/UIImage.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UIImage.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UIImage.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UIImage.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/UISelectable.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UISelectable.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UISelectable.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UISelectable.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/UIText.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/UIText.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/UIText.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/UIText.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/vector2.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/vector2.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/vector2.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/vector2.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/vector3.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/vector3.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/vector3.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/vector3.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/vector4.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/vector4.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/vector4.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/vector4.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/VignetteEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/VignetteEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/VignetteEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/VignetteEffect.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WaitForEndOfFrame.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForEndOfFrame.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForEndOfFrame.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForEndOfFrame.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WaitForFixedUpdate.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForFixedUpdate.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForFixedUpdate.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForFixedUpdate.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WaitForSeconds.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForSeconds.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForSeconds.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForSeconds.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WaitForSecondsRealtime.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitForSecondsRealtime.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitForSecondsRealtime.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitForSecondsRealtime.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WaitUntil.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitUntil.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitUntil.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitUntil.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WaitWhile.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WaitWhile.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WaitWhile.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WaitWhile.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/warmup.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/warmup.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/warmup.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/warmup.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/WhiteBalanceEffect.html</loc>
-    <lastmod>2026-08-23</lastmod>
+    <lastmod>2026-08-24</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/WhiteBalanceEffect.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/WhiteBalanceEffect.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/WhiteBalanceEffect.html" />

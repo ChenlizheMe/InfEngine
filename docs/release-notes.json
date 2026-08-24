@@ -1,31 +1,63 @@
 {
   "schema_version": 1,
-  "version": "0.3.5",
-  "tag": "v0.3.5",
-  "title": "Infernux v0.3.5 · Small Fixes",
-  "codename": "Small Fixes",
+  "version": "0.3.6",
+  "tag": "v0.3.6",
+  "title": "Infernux v0.3.6 · Unified Hierarchy and Hub Updates",
+  "codename": "Unified Hierarchy and Hub Updates",
   "language": "en",
-  "published_at": "2026-08-23T11:50:42Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.5",
+  "published_at": "2026-08-24T02:46:50Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.6",
   "source": "UpdateLog.md",
-  "summary": "Version 0.3.5 includes a few small fixes and stability improvements.",
+  "summary": "Version 0.3.6 unifies the editor Hierarchy and restores automatic update discovery for packaged Infernux Hub builds.",
   "comparison": {
-    "from": "0.3.4",
-    "to": "0.3.5",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.4...v0.3.5"
+    "from": "0.3.5",
+    "to": "0.3.6",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.5...v0.3.6"
   },
-  "section_count": 1,
-  "item_count": 1,
+  "section_count": 2,
+  "item_count": 6,
   "sections": [
     {
-      "id": "fixes",
-      "title": "Fixes",
+      "id": "editor",
+      "title": "Editor",
       "kind": "changes",
       "items": [
         {
-          "title": "Made a few small fixes and stability improvements.",
+          "title": "Removed the separate Hierarchy UI mode. Scene and UI objects now share one tree, one selection model, and one context-menu path.",
           "detail": "",
-          "text": "Made a few small fixes and stability improvements."
+          "text": "Removed the separate Hierarchy UI mode. Scene and UI objects now share one tree, one selection model, and one context-menu path."
+        },
+        {
+          "title": "Preserved Canvas root placement and UI Screen subtree constraints in the unified Hierarchy.",
+          "detail": "",
+          "text": "Preserved Canvas root placement and UI Screen subtree constraints in the unified Hierarchy."
+        }
+      ]
+    },
+    {
+      "id": "hub-updates",
+      "title": "Hub Updates",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Restored startup update checks in packaged Nuitka Hub builds.",
+          "detail": "",
+          "text": "Restored startup update checks in packaged Nuitka Hub builds."
+        },
+        {
+          "title": "Kept the Install Engine Version list on the selected Hub theme instead of inheriting the desktop system palette.",
+          "detail": "",
+          "text": "Kept the Install Engine Version list on the selected Hub theme instead of inheriting the desktop system palette."
+        },
+        {
+          "title": "Added verified full-package update fallback and elevation for protected installation directories.",
+          "detail": "",
+          "text": "Added verified full-package update fallback and elevation for protected installation directories."
+        },
+        {
+          "title": "Changed the release pipeline to publish independently installable full Hub packages instead of incremental patch assets.",
+          "detail": "",
+          "text": "Changed the release pipeline to publish independently installable full Hub packages instead of incremental patch assets."
         }
       ]
     }

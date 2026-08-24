@@ -11,7 +11,7 @@ serialized_field(default: _SerializedValue = ..., field_type: Optional[FieldType
 ## 描述
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.5
+**状态：** Preview · **验证版本：** 0.3.6
 
 每个序列化字段都应保留明确类型标注。元数据用于 Inspector 展示与校验，不能替代对缺失对象或资源引用的运行时检查。
 <!-- USER CONTENT END -->
