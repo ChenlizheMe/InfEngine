@@ -538,23 +538,17 @@ class TestHierarchyPanel:
         hp = HierarchyPanel()
         assert isinstance(hp, EditorPanel)
 
-    def test_ui_mode_default_false(self):
+    def test_hierarchy_has_one_mode(self):
         hp = HierarchyPanel()
-        assert hp.get_ui_mode() is False
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/HierarchyPanel.h").read_text(encoding="utf-8")
+        binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
 
-    def test_ui_mode_property(self):
-        hp = HierarchyPanel()
-        hp.ui_mode = True
-        assert hp.ui_mode is True
-        hp.ui_mode = False
-        assert hp.ui_mode is False
-
-    def test_set_ui_mode(self):
-        hp = HierarchyPanel()
-        hp.set_ui_mode(True)
-        assert hp.get_ui_mode() is True
-        hp.set_ui_mode(False)
-        assert hp.get_ui_mode() is False
+        assert not hasattr(hp, "ui_mode")
+        assert not hasattr(hp, "set_ui_mode")
+        assert not hasattr(hp, "get_ui_mode")
+        assert "m_uiMode" not in source + header
+        assert "set_ui_mode" not in binding
 
     def test_clear_search_no_crash(self):
         hp = HierarchyPanel()
@@ -644,19 +638,17 @@ class TestHierarchyPanel:
         calls = []
         callback = lambda *_args: calls.append(_args)
         hp.render_context_menu = callback
-        hp.render_context_menu(None, 42, True, 42, False)
-        assert calls == [(None, 42, True, 42, False)]
+        hp.render_context_menu(None, 42, True, 42)
+        assert calls == [(None, 42, True, 42)]
 
     def test_canvas_query_callbacks(self):
         hp = HierarchyPanel()
         hp.go_has_canvas = lambda oid: oid == 10
         hp.go_has_ui_screen_component = lambda oid: False
         hp.parent_has_canvas_ancestor = lambda oid: oid > 5
-        hp.has_canvas_descendant = lambda oid: oid == 1
 
         assert hp.go_has_canvas(10) is True
         assert hp.go_has_canvas(11) is False
-        assert hp.has_canvas_descendant(1) is True
 
     def test_set_pending_expand_id(self):
         hp = HierarchyPanel()

@@ -62,6 +62,7 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
 
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
     const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
+    const uint64_t currentContentRevision = sm.GetRenderContentRevision();
     Scene *activeScene = sm.GetActiveScene();
     const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
     RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
@@ -73,7 +74,8 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
 #endif
-        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision))
+        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision &&
+              currentContentRevision == m_lastContentRevision))
             UpdateCachedRenderableTransforms(frame);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -111,7 +113,9 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     frame.m_worldId = currentWorldId;
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = currentTransformRevision;
+    frame.m_contentRevision = currentContentRevision;
     m_lastTransformRevision = currentTransformRevision;
+    m_lastContentRevision = currentContentRevision;
     world.Publish();
     return m_visibleCount;
 }
@@ -134,6 +138,7 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     SceneManager &sm = SceneManager::Instance();
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
     const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
+    const uint64_t currentContentRevision = sm.GetRenderContentRevision();
     Scene *activeScene = sm.GetActiveScene();
     const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
     RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
@@ -144,7 +149,8 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
 #endif
-        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision))
+        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision &&
+              currentContentRevision == m_lastContentRevision))
             UpdateCachedRenderableTransforms(frame);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -181,7 +187,9 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     frame.m_worldId = currentWorldId;
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = currentTransformRevision;
+    frame.m_contentRevision = currentContentRevision;
     m_lastTransformRevision = currentTransformRevision;
+    m_lastContentRevision = currentContentRevision;
     world.Publish();
     return m_visibleCount;
 }

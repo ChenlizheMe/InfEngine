@@ -92,7 +92,28 @@ def _write_json_document(path: str, document: dict) -> None:
         stream.write("\n")
 
 
-def _default_scene_document() -> dict:
+def _write_asset_identity_meta(path: str, guid: str, resource_type: str) -> None:
+    """Seed an asset identity before the first AssetDatabase scan.
+
+    The AssetDatabase recognizes sidecars without a content hash as legacy
+    identity records.  On first scan it rebuilds all derived metadata while
+    preserving this GUID, so generated references are valid from frame zero.
+    """
+    _write_json_document(
+        path + ".meta",
+        {
+            "metadata": {
+                "guid": {"type": "string", "value": guid},
+                "resource_type": {
+                    "type": "enum infernux::ResourceType",
+                    "value": resource_type,
+                },
+            }
+        },
+    )
+
+
+def _default_scene_document(default_effect_guid: str) -> dict:
     render_stack_type = _engine_component_type_id(
         "Infernux.renderstack.render_stack",
         "RenderStack",
@@ -199,7 +220,7 @@ def _default_scene_document() -> dict:
                                         "effect": {
                                             "$type": "asset_ref",
                                             "asset_type": "RenderEffect",
-                                            "guid": "",
+                                            "guid": default_effect_guid,
                                             "path_hint": "Assets/Rendering/Default Post Processing.effectgroup",
                                         },
                                         "enabled": True,
@@ -253,6 +274,9 @@ def _create_default_project_content(
     ):
         os.makedirs(os.path.join(assets_dir, folder), exist_ok=True)
 
+    bloom_guid = uuid.uuid4().hex
+    tone_mapping_guid = uuid.uuid4().hex
+    effect_group_guid = uuid.uuid4().hex
     bloom = {
         "$schema": "infernux.render_effect",
         "dependencies": [],
@@ -277,7 +301,7 @@ def _create_default_project_content(
         "entries": [
             {
                 "asset": {
-                    "guid": "",
+                    "guid": bloom_guid,
                     "path_hint": "Assets/Rendering/Bloom.effect",
                 },
                 "enabled": True,
@@ -286,7 +310,7 @@ def _create_default_project_content(
             },
             {
                 "asset": {
-                    "guid": "",
+                    "guid": tone_mapping_guid,
                     "path_hint": "Assets/Rendering/ACES Tone Mapping.effect",
                 },
                 "enabled": True,
@@ -296,18 +320,24 @@ def _create_default_project_content(
         ],
     }
     rendering_dir = os.path.join(assets_dir, "Rendering")
-    _write_json_document(os.path.join(rendering_dir, "Bloom.effect"), bloom)
+    bloom_path = os.path.join(rendering_dir, "Bloom.effect")
+    tone_mapping_path = os.path.join(rendering_dir, "ACES Tone Mapping.effect")
+    effect_group_path = os.path.join(rendering_dir, "Default Post Processing.effectgroup")
+    _write_json_document(bloom_path, bloom)
     _write_json_document(
-        os.path.join(rendering_dir, "ACES Tone Mapping.effect"),
+        tone_mapping_path,
         tone_mapping,
     )
     _write_json_document(
-        os.path.join(rendering_dir, "Default Post Processing.effectgroup"),
+        effect_group_path,
         effect_group,
     )
+    _write_asset_identity_meta(bloom_path, bloom_guid, "RenderEffect")
+    _write_asset_identity_meta(tone_mapping_path, tone_mapping_guid, "RenderEffect")
+    _write_asset_identity_meta(effect_group_path, effect_group_guid, "RenderEffect")
 
     scene_path = os.path.join(assets_dir, "Scenes", "Start.scene")
-    _write_json_document(scene_path, _default_scene_document())
+    _write_json_document(scene_path, _default_scene_document(effect_group_guid))
     final_scene_path = os.path.join(final_dir, "Assets", "Scenes", "Start.scene")
     _write_json_document(
         os.path.join(staging_dir, "ProjectSettings", "BuildSettings.json"),
@@ -506,10 +536,10 @@ def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
     Only used in dev mode (non-frozen).
     """
     engine_root = _engine_root()
-    wheel_dirs = (
-        os.path.join(engine_root, "out", "build", "python_wheel"),
-        os.path.join(engine_root, "dist"),
-    )
+    wheel_dirs = [
+        *glob.glob(os.path.join(engine_root, "out", "build", "*", "python_wheel")),
+        *glob.glob(os.path.join(engine_root, "dist", "releases", "*")),
+    ]
     wheels = [
         wheel
         for wheel_dir in wheel_dirs
@@ -524,7 +554,7 @@ def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
         if strict:
             available = ", ".join(os.path.basename(wheel) for wheel in sorted(wheels))
             raise RuntimeError(
-                f"No prebuilt Infernux wheel compatible with Python {python_tag} was found in dist/.\n"
+                f"No prebuilt Infernux wheel compatible with Python {python_tag} was found in the canonical build or release directories.\n"
                 f"Available wheels: {available}"
             )
     return ""
@@ -941,7 +971,7 @@ class ProjectModel:
                     "Open the Installs page and install that engine version first."
                 )
             raise RuntimeError(
-                "No prebuilt Infernux wheel was found in dist/.\n"
+                "No prebuilt Infernux wheel was found in out/build or dist/releases.\n"
                 "Build a wheel first; project creation will not fall back to a source build."
             )
 

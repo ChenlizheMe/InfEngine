@@ -731,7 +731,7 @@ def test_set_emitter_playing_dropdown_excludes_the_owning_emitter():
     assert [item["value"] for item in catalog_choices] == ["trail", "impact"]
 
 
-def test_get_attribute_disconnects_links_made_invalid_by_attribute_change():
+def test_get_attribute_preserves_links_compatible_by_dimension_conversion():
     emitter = ParticleGraphAsset().emitters[0]
     model = ParticleEmitterGraphAuthoringModel(emitter)
     model.prepare_node_creation("update")
@@ -741,8 +741,8 @@ def test_get_attribute_disconnects_links_made_invalid_by_attribute_change():
     assert link is not None
 
     attribute.data["attribute"] = "builtin.age"
-    assert model.remove_invalid_links_for_node(attribute.uid) == (link.uid,)
-    assert all(existing.uid != link.uid for existing in model.links)
+    assert model.remove_invalid_links_for_node(attribute.uid) == ()
+    assert model.find_link(link.uid) is not None
 
 
 def test_vector_field_sample_connects_to_simulation_space_acceleration():
@@ -1941,6 +1941,8 @@ def test_particle_output_exposes_selected_shader_properties_as_node_inputs():
     assert shader_ports == {
         "shader.baseColor": ValueType.COLOR,
         "shader.texSampler": ValueType.TEXTURE2D,
+        "shader.glow": ValueType.F32,
+        "shader.rainbow": ValueType.F32,
     }
 
 
@@ -1976,6 +1978,8 @@ def test_every_particle_output_uses_the_same_shader_property_contract(type_id):
     } == {
         "shader.baseColor",
         "shader.texSampler",
+        "shader.glow",
+        "shader.rainbow",
     }
 
     if type_id == "particle.output.mesh":
@@ -2743,7 +2747,7 @@ def test_particle_graph_editor_exposes_vector_components_and_dimension_policies(
     ]
     noise = definitions["common.noise.value3d"]
     policies = {port["id"]: port["dimension_policy"] for port in noise["ports"]}
-    assert policies == {"position": "fixed", "frequency": "exact", "seed": "exact", "value": "exact"}
+    assert policies == {"position": "fixed", "frequency": "fixed", "seed": "exact", "value": "exact"}
     velocity = definitions["particle.attribute.velocity"]
     assert next(port for port in velocity["ports"] if port["id"] == "value")[
         "dimension_policy"
@@ -3006,7 +3010,7 @@ def test_particle_graph_editor_event_schema_edit_prunes_only_invalid_payload_lin
     )
     links = panel.asset.emitters[0].event_flows[0].graph.links
     assert any(link.kind.value == "exec" for link in links)
-    assert not any(
+    assert any(
         link.source_port == particle_event_payload_port_id(field_id) for link in links
     )
 
@@ -3622,7 +3626,7 @@ def test_particle_structural_parameter_edit_restores_affected_graph_in_one_undo(
         {"type": TypeRef(ValueType.VEC3).to_dict()},
     )
 
-    assert panel._model.find_link(link["link_uid"]) is None
+    assert panel._model.find_link(link["link_uid"]) is not None
     manager.undo()
     restored = next(
         item
@@ -3632,7 +3636,7 @@ def test_particle_structural_parameter_edit_restores_affected_graph_in_one_undo(
     assert restored.value_type == TypeRef(ValueType.F32)
     assert panel._model.find_link(link["link_uid"]) is not None
     manager.redo()
-    assert panel._model.find_link(link["link_uid"]) is None
+    assert panel._model.find_link(link["link_uid"]) is not None
 
 
 def test_particle_emitter_settings_use_one_precise_undo_action():

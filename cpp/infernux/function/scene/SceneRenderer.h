@@ -153,11 +153,13 @@ class SceneRenderer
         uint64_t worldId = 0;
         uint64_t structuralRevision = 0;
         uint64_t transformRevision = 0;
+        uint64_t contentRevision = 0;
         glm::mat4 viewProjection{1.0f};
         uint32_t cullingMask = 0xFFFFFFFFu;
         bool frustumCulling = true;
         bool usesWorldDrawCalls = false;
         std::vector<DrawCall> visibleDrawCalls;
+        std::vector<size_t> visibleDrawCallSourceIndices;
         size_t visibleCount = 0;
         uint64_t visibleListRevision = 0;
         std::shared_ptr<const RenderWorldFrame> worldOwner;

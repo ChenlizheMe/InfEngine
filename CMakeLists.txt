@@ -138,6 +138,10 @@ option(INFERNUX_BUILD_PLAYER_HOST
     "Build the native single-process PlayerHost bootstrap"
     OFF
 )
+option(INFERNUX_RUNTIME_STATIC
+    "Link the private runtime composition layer statically into the Python module"
+    ON
+)
 if(WIN32 AND INFERNUX_BUILD_PLAYER_HOST)
     include(InstallRequiredSystemLibraries)
 endif()
@@ -151,7 +155,15 @@ add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
 add_library(InfernuxRendererRuntime SHARED ${INFERNUX_RENDERER_RUNTIME_SOURCES})
 add_library(InfernuxVulkanBackend SHARED ${INFERNUX_VULKAN_BACKEND_SOURCES})
-add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
+# Shipping builds keep the composition layer as a private archive so the Python
+# module can LTO/dead-strip the exact bound surface instead of shipping a
+# 60k-symbol auto-export DLL. Native regression tests use the shared form to
+# avoid loading a full private runtime image into every test process.
+if(INFERNUX_RUNTIME_STATIC)
+    add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
+else()
+    add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
+endif()
 pybind11_add_module(_Infernux MODULE NO_EXTRAS ${BINDING_SOURCES})
 pybind11_add_module(_InfernuxBootstrap MODULE NO_EXTRAS ${INFERNUX_BOOTSTRAP_BINDING_SOURCE})
 
@@ -200,10 +212,9 @@ if(WIN32 AND INFERNUX_BUILD_PLAYER_HOST)
     target_link_libraries(InfernuxPlayerHost PRIVATE shell32)
 endif()
 
-# Most of the existing runtime API predates explicit visibility annotations.
-# CMake generates the Windows export table while Linux/macOS use their default
-# symbol visibility. A later ABI-hardening pass can replace this with a narrow
-# INFERNUX_API surface without collapsing the binary boundary again.
+# Shared subsystem boundaries still predate explicit visibility annotations.
+# The former monolithic composition DLL is deliberately absent from this list:
+# it has no public ABI and is linked privately into the Python module with LTO.
 set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
     InfernuxParticleRuntime
@@ -211,8 +222,10 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxRenderCore
     InfernuxRendererRuntime
     InfernuxVulkanBackend
-    InfernuxRuntime
 )
+if(NOT INFERNUX_RUNTIME_STATIC)
+    list(APPEND INFERNUX_RUNTIME_DLL_TARGETS InfernuxRuntime)
+endif()
 foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
     set_target_properties(${_infernux_dll} PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
@@ -273,13 +286,6 @@ if(MSVC)
             /bigobj   # pybind11 binding TUs exceed the default COFF section limit
         )
     endforeach()
-    # Keep the historical runtime-DLL linker policy until its public ABI uses
-    # explicit INFERNUX_API exports. The pybind module does not need this
-    # workaround and can use the standard optimized Release linker policy.
-    target_link_options(InfernuxRuntime PRIVATE
-        $<$<CONFIG:Release>:/OPT:NOREF>
-        $<$<CONFIG:Release>:/OPT:NOICF>
-    )
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # IPO/LTO is configured through CMake below; keep only the optimization
     # level here so the compiler and linker receive one consistent policy.
@@ -297,10 +303,11 @@ if(INFERNUX_RELEASE_LTO)
     if(_infernux_ipo_supported)
         set_property(TARGET _Infernux PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         set_property(TARGET _InfernuxBootstrap PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET InfernuxRuntime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         if(WIN32)
-            # WINDOWS_EXPORT_ALL_SYMBOLS cannot inspect MSVC /GL objects, so
-            # enabling IPO here removes the DLL export table. Keep the runtime
-            # stable until its public ABI has explicit export annotations.
+            # Auto-exported subsystem DLLs cannot consume MSVC /GL objects.
+            # InfernuxRuntime is a private static composition archive and can
+            # therefore participate in the _Infernux Release LTCG link.
             foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
                 set_property(TARGET ${_infernux_dll} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
             endforeach()
@@ -1321,6 +1328,26 @@ if(INFERNUX_BUILD_TESTS)
         RUN_SERIAL TRUE
     )
 
+    # These executables pull substantial portions of the static runtime into
+    # separate processes. Serializing their cold starts avoids paging and
+    # executable-scanning stalls on small Windows CI runners while leaving the
+    # lightweight native tests free to run in parallel.
+    set_tests_properties(
+        infernux.scene_render_graph_validation
+        infernux.py_component_proxy
+        infernux.runtime_frame_barrier
+        infernux.runtime_persistent_scene
+        infernux.camera_culling_isolation
+        infernux.particle_gpu_runtime
+        infernux.asset_database_refresh
+        infernux.material_document
+        infernux.vector_field_importer
+        infernux.shader_asset
+        infernux.shader_info_schema
+        infernux.shader_stage_linker
+        PROPERTIES RESOURCE_LOCK infernux_runtime_process
+    )
+
     add_test(
         NAME infernux.gpu_upload
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/gpu_upload_smoke_test.py
@@ -1410,6 +1437,17 @@ add_custom_command(TARGET _Infernux POST_BUILD
     COMMENT "Copy _Infernux binding module to python/Infernux/lib"
 )
 
+if(INFERNUX_RUNTIME_STATIC)
+    # A shipping build has no composition DLL. Remove stale shared-test or
+    # pre-refactor copies before dependency scans and wheel staging.
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
+            "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
+        VERBATIM
+    )
+endif()
+
 if(WIN32)
     # Windows: copy all DLL dependencies automatically
     add_custom_command(TARGET _Infernux POST_BUILD
@@ -1479,6 +1517,17 @@ endif()
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_packs")
 set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_modules")
 add_custom_target(prebuild_player_runtime
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+        "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
+        "${PYTHON_TARGET_DIR}/SPIRV.dll"
+        "${PYTHON_TARGET_DIR}/SPVRemapper.dll"
+        "${PYTHON_TARGET_DIR}/glslang-default-resource-limits.dll"
+        "${PYTHON_TARGET_DIR}/glslang.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/SPIRV.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/SPVRemapper.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/glslang-default-resource-limits.dll"
+        "$<TARGET_FILE_DIR:_Infernux>/glslang.dll"
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
         "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"

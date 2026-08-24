@@ -10,7 +10,7 @@ on:
       - ".github/workflows/website-health.yml"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/DISCUSSION_TEMPLATE/**"
-      - "update_api_docs.bat"
+      - "scripts/docs/update_api_docs.bat"
   push:
     branches:
       - main
@@ -23,7 +23,7 @@ on:
       - ".github/workflows/website-health.yml"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/DISCUSSION_TEMPLATE/**"
-      - "update_api_docs.bat"
+      - "scripts/docs/update_api_docs.bat"
   workflow_dispatch:
 
 permissions:
@@ -92,6 +92,9 @@ jobs:
 
       - name: Verify route-localized bundles
         run: node docs/tools/build-i18n.mjs --check
+
+      - name: Verify inline localization fallbacks
+        run: node docs/tools/normalize-i18n-fallbacks.mjs --check
 
       - name: Verify deterministic Service Worker
         run: node docs/tools/build-service-worker.mjs --check

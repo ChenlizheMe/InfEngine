@@ -22,8 +22,8 @@ function Get-Sha256([string]$Path) {
     }
 }
 
-$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $Root "dist\release"))
+$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $Root "dist\releases"))
 $ReleaseDir = [IO.Path]::GetFullPath((Join-Path $ReleaseRoot $Version))
 if (-not $ReleaseDir.StartsWith($ReleaseRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Unsafe release output path: $ReleaseDir"
@@ -46,7 +46,13 @@ if (-not ((Get-Content -LiteralPath $UpdateLog -Raw).Contains($Version))) {
 
 function Test-TrustedSignature([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-    return (Get-AuthenticodeSignature -LiteralPath $Path).Status -eq 'Valid'
+    try {
+        return (Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop).Status -eq 'Valid'
+    } catch {
+        # Signing is optional. A stripped or unavailable PowerShell security
+        # module must not block an otherwise valid local release build.
+        return $false
+    }
 }
 
 function Invoke-GhWithRetry([string]$Description, [scriptblock]$Operation) {
@@ -124,48 +130,24 @@ if ($LASTEXITCODE -ne 0) { throw 'Wheel build failed.' }
 Write-Host "[3/6] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
 & cmake --build --preset packaging-installer
 if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
-$HubDir = Join-Path $Root 'dist\Infernux Hub'
-$Installer = Join-Path $Root 'dist\installer\InfernuxHubInstaller.exe'
+$HubDir = Join-Path $Root 'out\package\hub'
+$Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
 if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub output not found: $HubDir" }
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
 Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe")
 
-Write-Host "[4/6] Looking for a previous Hub manifest..." -ForegroundColor Cyan
-$BaseManifest = $null
-if (Get-Command gh -ErrorAction SilentlyContinue) {
-    try {
-        $PreviousTags = & gh release list --repo ChenlizheMe/Infernux --limit 20 --exclude-drafts --exclude-pre-releases --json tagName | ConvertFrom-Json
-        $PreviousTag = $PreviousTags | Where-Object { $_.tagName -ne "v$Version" } | Select-Object -First 1
-        if ($PreviousTag) {
-            $PreviousRelease = & gh release view $PreviousTag.tagName --repo ChenlizheMe/Infernux --json assets | ConvertFrom-Json
-            if ($PreviousRelease.assets.name -contains 'InfernuxHub-manifest.json') {
-                $BaseDir = Join-Path $ReleaseDir '.base'
-                New-Item -ItemType Directory -Path $BaseDir -Force | Out-Null
-                & gh release download $PreviousTag.tagName --repo ChenlizheMe/Infernux --pattern 'InfernuxHub-manifest.json' --dir $BaseDir
-                if ($LASTEXITCODE -eq 0) {
-                    $Candidate = Join-Path $BaseDir 'InfernuxHub-manifest.json'
-                    if (Test-Path -LiteralPath $Candidate -PathType Leaf) { $BaseManifest = $Candidate }
-                }
-            }
-        }
-    } catch {
-        Write-Warning "Previous release manifest was not available; this release will contain the full package only. $($_.Exception.Message)"
-    }
-}
+Write-Host "[4/6] Using standalone full-package Hub updates..." -ForegroundColor Cyan
+Write-Host "       Release assets are independently installable; incremental patches are not published." -ForegroundColor DarkGray
 
-Write-Host "[5/6] Generating full and incremental Hub assets..." -ForegroundColor Cyan
+Write-Host "[5/6] Generating standalone Hub assets..." -ForegroundColor Cyan
 $Arguments = @(
     (Join-Path $Root 'packaging\incremental_update.py'),
     '--hub-dir', $HubDir,
     '--version', $Version,
     '--output-dir', $ReleaseDir
 )
-if ($BaseManifest) { $Arguments += @('--base-manifest', $BaseManifest) }
 & python @Arguments
 if ($LASTEXITCODE -ne 0) { throw 'Hub update artifact generation failed.' }
-if (Test-Path -LiteralPath (Join-Path $ReleaseDir '.base')) {
-    Remove-Item -LiteralPath (Join-Path $ReleaseDir '.base') -Recurse -Force
-}
 
 $ChecksumPath = Join-Path $ReleaseDir 'SHA256SUMS.txt'
 $Artifacts = Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name
@@ -247,5 +229,5 @@ if ($Publish) {
     }
     Write-Host "Published GitHub Release $Tag." -ForegroundColor Green
 } else {
-    Write-Host 'Publish was skipped. Run release_hub.bat <version> to rebuild and publish while the tag is still absent.' -ForegroundColor Yellow
+    Write-Host 'Publish was skipped. Run scripts\release\release_hub.bat <version> to rebuild and publish while the tag is still absent.' -ForegroundColor Yellow
 }

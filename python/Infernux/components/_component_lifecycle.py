@@ -119,10 +119,33 @@ class RuntimeExecutionScheduler:
             # has completed.
             return
 
+    def _publish_native_plan(self) -> None:
+        """Publish one structural plan summary; never crosses per component/frame."""
+        if not self._native_bridge:
+            return
+        try:
+            from Infernux.lib import SceneManager
+
+            setter = getattr(
+                SceneManager.instance(),
+                "set_runtime_lifecycle_plan",
+                None,
+            )
+            if callable(setter):
+                setter(
+                    max(0, int(self._plan_revision)),
+                    len(self._phase_plan["fixed_update"]),
+                    len(self._phase_plan["update"]),
+                    len(self._phase_plan["late_update"]),
+                )
+        except (ImportError, AttributeError, RuntimeError):
+            return
+
     def sync_native_work_availability(self) -> None:
         """Synchronize the native fast-path after lifecycle bridge installation."""
         self._sync_active_registry_once()
         self._sync_native_work_availability()
+        self._publish_native_plan()
 
     def refresh_scene_membership(self) -> None:
         """Reconcile the plan after one complete scene graph publication.
@@ -502,6 +525,7 @@ class RuntimeExecutionScheduler:
         self._plan_revision = self._structure_revision
         self._execution_snapshot = None
         self._counters["plan_builds"] += 1
+        self._publish_native_plan()
 
     def _execution_snapshot_for_frame(self) -> "_RuntimeExecutionSnapshot":
         """Return the immutable dispatch snapshot for the current epoch.
@@ -783,7 +807,10 @@ class RuntimeExecutionScheduler:
         self._components.clear()
         self._component_tokens.clear()
         self._sync_native_work_availability()
+        self._invalidate()
         self._phase_plan = {phase: () for phase in _RUNTIME_SCHEDULER_PHASES}
+        self._plan_revision = self._structure_revision
+        self._publish_native_plan()
         self._execution_snapshot = None
         self._registry_scan_pending = True
         self._dispatch_types_dirty = True
@@ -793,7 +820,6 @@ class RuntimeExecutionScheduler:
         self._change_cursor = self._change_journal.create_cursor(
             f"runtime-execution:{self.name}:{id(self):x}"
         )
-        self._invalidate()
 
 
 @dataclass(frozen=True, slots=True)

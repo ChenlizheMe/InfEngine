@@ -137,10 +137,12 @@ def cpp_rigidbody(scene):
 @pytest.fixture(autouse=True)
 def _reset_input_state():
     """Reset Input focus state between every test."""
+    InputManager.instance().reset_all()
     Input._game_focused = True
     Input._automation_game_input_depth = 0
     Input._game_viewport_origin = (0.0, 0.0)
     yield
+    InputManager.instance().reset_all()
     Input._game_focused = True
     Input._automation_game_input_depth = 0
     Input._game_viewport_origin = (0.0, 0.0)

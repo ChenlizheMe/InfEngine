@@ -1803,13 +1803,6 @@ class BootstrapWiringMixin:
 
     def _wire_ui_editor(self):
         ui_editor = self.ui_editor
-        hierarchy = self.hierarchy
-        scene_view = self.scene_view
-        game_view = self.game_view
-        def on_ui_mode_request(enter: bool):
-            hierarchy.set_ui_mode(enter)
-
-        ui_editor.set_on_request_ui_mode(on_ui_mode_request)
 
         from Infernux.engine.interaction import SelectionService
 

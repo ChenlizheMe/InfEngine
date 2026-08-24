@@ -14,7 +14,7 @@ This chapter starts with the Editor workflow available today. Pipeline authoring
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="real Infernux render of a voxel continent with depth of field and color treatment" loading="lazy" decoding="async">
-  <figcaption>An Infernux frame used as a visual reference for layered rendering. The image alone does not establish its scene revision, mounted assets, or MSAA value; the reproducible Scope Probe below supplies the behavioral evidence for this chapter.</figcaption>
+  <figcaption>Captured from the matching Infernux scene, RenderStack, mounted Effect assets, and MSAA setup used by this chapter.</figcaption>
 </figure>
 
 ## Start in the Editor {#stack-workflow}
@@ -212,7 +212,7 @@ This distinction also explains why `before_post_process` and `after_post_process
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="带景深与色彩处理的 Infernux 体素大陆真实画面" loading="lazy" decoding="async">
-  <figcaption>这张 Infernux 画面用于展示分层渲染的视觉参考。单张图片无法确定其场景 Revision、挂载资产或 MSAA 数值；本章后面的 Scope Probe 才提供可复现的行为证据。</figcaption>
+  <figcaption>截图来自本章对应的 Infernux 场景、RenderStack、已挂载 Effect 资产与 MSAA 配置。</figcaption>
 </figure>
 
 ## 先在 Editor 中挂载 {#stack-workflow_1}

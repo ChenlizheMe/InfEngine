@@ -291,6 +291,19 @@ class ComponentNativeMixin:
             if resolved is None:
                 self._invalidate_native_binding()
                 return None
+            # Native scene resolution normally returns the private proxy. Some
+            # public/facade resolution paths may already unwrap that proxy to
+            # this Python component; that still proves the handle is live, but
+            # must not make _cpp_component self-referential.
+            if resolved is self:
+                if self._tracks_scene_structure_binding():
+                    self._capture_bound_structure_version()
+                return cpp_component
+            # A different public Python object at the same handle means this
+            # wrapper belongs to the scene generation that was replaced.
+            if getattr(resolved, "_get_bound_native_component", None) is not None:
+                self._invalidate_native_binding()
+                return None
             self._cpp_component = resolved
             if self._tracks_scene_structure_binding():
                 self._capture_bound_structure_version()

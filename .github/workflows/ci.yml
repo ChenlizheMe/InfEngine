@@ -81,7 +81,7 @@ jobs:
           }
           $loader = Join-Path $runtimeBin "vulkan-1.dll"
           $destinations = @("python\Infernux\lib\vulkan-1.dll")
-          Get-ChildItem "out\build-native-tests" -Recurse -Filter "InfernuxRuntime.dll" |
+          Get-ChildItem "out\build\native-tests" -Recurse -Filter "InfernuxRuntime.dll" |
             ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
           foreach ($destination in ($destinations | Select-Object -Unique)) {
             $parent = Split-Path -Parent $destination

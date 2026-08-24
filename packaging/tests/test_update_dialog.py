@@ -1,7 +1,23 @@
+import json
+
 from PySide6.QtCore import QEventLoop, QThread, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 import view.update_dialog as update_dialog
+
+
+def test_opt_in_update_trace_records_result(tmp_path, monkeypatch):
+    trace = tmp_path / "trace.json"
+    monkeypatch.setenv("INFERNUX_HUB_UPDATE_TRACE", str(trace))
+
+    update_dialog._write_update_trace(
+        {"status": "update_available", "target_version": "1.2.3"}
+    )
+
+    assert json.loads(trace.read_text(encoding="utf-8")) == {
+        "status": "update_available",
+        "target_version": "1.2.3",
+    }
 
 
 def _app():

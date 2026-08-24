@@ -219,7 +219,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._box_select_end = (0.0, 0.0)
         self._box_select_vp = None  # ViewportInfo when box-select started
 
-        # Focus tracking for auto-exit UI Mode
+        # Focus tracking for view-owned interactions
         self._was_focused: bool = False
         self._on_focus_gained = None   # callback() when panel gains focus
 
@@ -399,7 +399,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             if native:
                 native.request_full_speed_frame()
 
-        # Track focus to auto-exit UI Mode
+        # Track focus for view-owned interactions
         focused = ClosablePanel.get_active_view_id() == self.window_id
         if not focused:
             self._interrupt_gizmo_drag(commit=True)

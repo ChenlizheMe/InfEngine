@@ -56,6 +56,9 @@ int main()
     assert(observed.empty());
 
     manager.SetRuntimeLifecycleWorkAvailable(true);
+    // Production begin_frame publishes this immutable summary before the
+    // native driver dispatches any phase callback.
+    manager.SetRuntimeLifecyclePlan(1, 1, 1, 1);
     manager.Update(0.0f);
     assert(beginCount == 1);
     assert(editorUpdateCount == 1);

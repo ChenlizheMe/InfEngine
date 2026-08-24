@@ -265,6 +265,7 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
         nextPalette = model->GetOrBuildGpuBonePalette(request);
     }
     m_skinPoseHistory.Publish(std::move(nextPalette), modelChanged);
+    SceneManager::Instance().NotifyMeshRendererContentChanged(this);
     if (modelChanged)
         SceneManager::Instance().NotifyMeshRendererChanged(this);
 }

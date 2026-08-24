@@ -326,6 +326,17 @@ void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
         m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
 }
 
+void SceneManager::SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
+                                           size_t lateUpdateCount) noexcept
+{
+    if (revision < m_runtimeLifecyclePlanRevision)
+        return;
+    m_runtimeLifecyclePlanRevision = revision;
+    m_runtimeLifecycleFixedUpdateCount = fixedUpdateCount;
+    m_runtimeLifecycleUpdateCount = updateCount;
+    m_runtimeLifecycleLateUpdateCount = lateUpdateCount;
+}
+
 void SceneManager::SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback)
 {
     m_runtimeFrameBarrier = std::move(callback);
@@ -351,6 +362,10 @@ void SceneManager::ClearRuntimeLifecycleCallbacks()
     m_runtimeLifecycleSchedulerEnabled = false;
     m_runtimeLifecycleWorkAvailable = false;
     m_runtimeLifecycleFrameOpen = false;
+    m_runtimeLifecyclePlanRevision = 0;
+    m_runtimeLifecycleFixedUpdateCount = 0;
+    m_runtimeLifecycleUpdateCount = 0;
+    m_runtimeLifecycleLateUpdateCount = 0;
     for (const auto &scene : m_scenes) {
         if (scene)
             scene->SetRuntimeLifecycleSchedulerEnabled(false);
@@ -378,7 +393,7 @@ void SceneManager::Update(float deltaTime)
         m_activeScene->EditorUpdate(deltaTime);
         m_lastFrameProfile.editorUpdateMs += ProfileMsSince(t0);
 
-        if (useRuntimeScheduler)
+        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
             m_runtimeLifecycleEditorUpdate(deltaTime);
     }
 
@@ -416,7 +431,7 @@ void SceneManager::Update(float deltaTime)
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
 
         t0 = ProfileClock::now();
-        if (useRuntimeScheduler)
+        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
             m_runtimeLifecycleUpdate(m_lastScaledDeltaTime);
         if (m_activeScene)
             m_activeScene->Update(m_lastScaledDeltaTime);
@@ -458,7 +473,8 @@ void SceneManager::LateUpdate(float deltaTime)
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
 
         t0 = ProfileClock::now();
-        if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable)
+        if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable &&
+            m_runtimeLifecycleLateUpdateCount > 0)
             m_runtimeLifecycleLateUpdate(m_lastScaledDeltaTime);
         if (m_activeScene)
             m_activeScene->LateUpdate(m_lastScaledDeltaTime);
@@ -620,7 +636,7 @@ void SceneManager::Step(float deltaTime)
     RunFixedSimulationStep(useRuntimeScheduler);
     ApplyInterpolatedRigidbodies(1.0f);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
-    if (useRuntimeScheduler)
+    if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
         m_runtimeLifecycleUpdate(deltaTime);
     if (m_activeScene)
         m_activeScene->Update(deltaTime);
@@ -632,7 +648,7 @@ void SceneManager::Step(float deltaTime)
         m_activeScene->ProcessPendingStarts();
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
-    if (useRuntimeScheduler)
+    if (useRuntimeScheduler && m_runtimeLifecycleLateUpdateCount > 0)
         m_runtimeLifecycleLateUpdate(deltaTime);
     if (m_activeScene)
         m_activeScene->LateUpdate(deltaTime);
@@ -870,7 +886,7 @@ void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
     FlushPendingBroadphase();
 
     auto phaseStart = ProfileClock::now();
-    if (useRuntimeScheduler)
+    if (useRuntimeScheduler && m_runtimeLifecycleFixedUpdateCount > 0)
         m_runtimeLifecycleFixedUpdate(m_fixedTimeStep);
     if (m_activeScene)
         m_activeScene->FixedUpdate(m_fixedTimeStep);
@@ -1212,6 +1228,15 @@ void SceneManager::NotifyMeshRendererChanged(MeshRenderer *renderer)
     if (m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
         MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
                                     m_meshRendererVersion);
+}
+
+void SceneManager::NotifyMeshRendererContentChanged(MeshRenderer *renderer)
+{
+    if (!renderer || m_activeMeshRendererSet.find(renderer) == m_activeMeshRendererSet.end())
+        return;
+    ++m_renderContentRevision;
+    if (m_renderContentRevision == 0)
+        m_renderContentRevision = 1;
 }
 
 void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, const std::string &meshPath)

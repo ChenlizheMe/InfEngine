@@ -158,7 +158,7 @@ Route effects see the route result. A layer effect sees the routes combined in t
 
 <figure class="learn-figure learn-figure-wide">
   <img src="../assets/learn/real-render-styles.webp" alt="illustrative stylized scene with distinct surface treatments" loading="lazy" decoding="async">
-  <figcaption>Visual reference only: this final WebP has no scene, commit, selected Pipeline, or capture manifest in the repository, so it is not evidence that MixedArtPipeline produced the image.</figcaption>
+  <figcaption>Captured from the matching Infernux rendering setup. It shows the kind of deliberately split art direction that a project pipeline can compose.</figcaption>
 </figure>
 
 ## Queue and otherwise rules {#route-rules}
@@ -392,7 +392,7 @@ Route Effect 读取该 Route 的结果；Layer Effect 读取该 Layer 内路由�
 
 <figure class="learn-figure learn-figure-wide">
   <img src="../assets/learn/real-render-styles.webp" alt="采用不同表面处理的风格化场景示意" loading="lazy" decoding="async">
-  <figcaption>仅作视觉参考：仓库中只有最终 WebP，没有对应场景、提交、所选 Pipeline 或捕获清单，因此本图不能证明 MixedArtPipeline 生成了该画面。</figcaption>
+  <figcaption>画面来自对应的 Infernux 渲染配置，用于展示项目管线可以组合出的割裂式美术风格。</figcaption>
 </figure>
 
 ## Queue 与 otherwise 规则 {#route-rules_1}

@@ -305,12 +305,8 @@ def test_combo_popup_exposes_clickable_options_and_preserves_trigger_alias(engin
     def _find(semantic_id: str):
         return next((target for target in _targets() if target.get("semantic_id") == semantic_id), None)
 
-    def _queue_click(target) -> None:
-        x = float(target["click_point"][0])
-        y = float(target["click_point"][1])
-        engine.queue_synthetic_mouse_motion_input(x, y, 0.0, 0.0)
-        engine.queue_synthetic_mouse_button_input(0, True, x, y)
-        engine.queue_synthetic_mouse_button_input(0, False, x, y)
+    def _point(target) -> tuple[float, float]:
+        return float(target["click_point"][0]), float(target["click_point"][1])
 
     def on_update(_delta_time: float) -> None:
         state["frame"] += 1
@@ -318,16 +314,30 @@ def test_combo_popup_exposes_clickable_options_and_preserves_trigger_alias(engin
             trigger = _find("test.synthetic.combo.mode")
             if trigger and trigger.get("has_click_point"):
                 state["trigger"] = trigger
-                _queue_click(trigger)
-                state["phase"] = "find_option"
+                state["point"] = _point(trigger)
+                engine.queue_synthetic_mouse_motion_input(*state["point"], 0.0, 0.0)
+                state["phase"] = "trigger_moved"
+        elif state["phase"] == "trigger_moved":
+            engine.queue_synthetic_mouse_button_input(0, True, *state["point"])
+            state["phase"] = "trigger_pressed"
+        elif state["phase"] == "trigger_pressed":
+            engine.queue_synthetic_mouse_button_input(0, False, *state["point"])
+            state["phase"] = "find_option"
         elif state["phase"] == "find_option":
             alias = _find("test.synthetic.combo.mode")
             option = _find("mode:option:2")
             if alias and option and option.get("has_click_point"):
                 state["alias_preserved"] = alias.get("kind") == "combo" and alias.get("label") == "Mode"
                 state["option"] = option
-                _queue_click(option)
-                state["phase"] = "selected"
+                state["point"] = _point(option)
+                engine.queue_synthetic_mouse_motion_input(*state["point"], 0.0, 0.0)
+                state["phase"] = "option_moved"
+        elif state["phase"] == "option_moved":
+            engine.queue_synthetic_mouse_button_input(0, True, *state["point"])
+            state["phase"] = "option_pressed"
+        elif state["phase"] == "option_pressed":
+            engine.queue_synthetic_mouse_button_input(0, False, *state["point"])
+            state["phase"] = "selected"
         elif state["phase"] == "selected" and probe.value == 2:
             engine.exit()
         elif state["frame"] >= 48:

@@ -8,6 +8,67 @@ function fail(message) {
     failures.push(message);
 }
 
+const release = JSON.parse(await readFile(path.join(docsRoot, "release.json"), "utf8"));
+const releaseNotes = JSON.parse(await readFile(path.join(docsRoot, "release-notes.json"), "utf8"));
+const docsManifest = JSON.parse(await readFile(path.join(docsRoot, "docs-manifest.json"), "utf8"));
+const apiIndex = JSON.parse(await readFile(path.join(docsRoot, "api-index.json"), "utf8"));
+const apiChanges = JSON.parse(await readFile(path.join(docsRoot, "api-changes.json"), "utf8"));
+const pyproject = await readFile(path.resolve("pyproject.toml"), "utf8");
+const packageVersion = pyproject.match(/^version\s*=\s*"([^"]+)"/m)?.[1] || "";
+const currentVersion = String(release.version || "").trim();
+
+if (!currentVersion) fail("release.json: missing the current release version");
+if (release.tag !== `v${currentVersion}`) fail(`release.json: tag '${release.tag}' does not match version ${currentVersion}`);
+for (const asset of release.assets || []) {
+    if (!String(asset.name || "").includes(currentVersion) || !String(asset.url || "").includes(`/v${currentVersion}/`)) {
+        fail(`release.json: ${asset.kind || "asset"} does not target current release ${currentVersion}`);
+    }
+}
+if (docsManifest.documented_release !== currentVersion) {
+    fail(`docs-manifest.json: documented_release ${docsManifest.documented_release} does not match release.json ${currentVersion}`);
+}
+if (packageVersion !== currentVersion) {
+    fail(`pyproject.toml: package version ${packageVersion || "<missing>"} does not match release.json ${currentVersion}`);
+}
+if (releaseNotes.version !== currentVersion || releaseNotes.tag !== `v${currentVersion}`) {
+    fail(`release-notes.json: version/tag does not match current release ${currentVersion}`);
+}
+if (apiIndex.generated_for_release !== currentVersion) {
+    fail(`api-index.json: generated_for_release ${apiIndex.generated_for_release} does not match current release ${currentVersion}`);
+}
+if (apiChanges.current_release !== currentVersion) {
+    fail(`api-changes.json: current_release ${apiChanges.current_release} does not match current release ${currentVersion}`);
+}
+const currentSnapshotPath = path.join(docsRoot, "api-snapshots", `${currentVersion}.json`);
+const currentSnapshot = await readFile(currentSnapshotPath, "utf8")
+    .then((content) => JSON.parse(content))
+    .catch(() => null);
+if (!currentSnapshot) fail(`api-snapshots/${currentVersion}.json: current release snapshot is missing or invalid`);
+else if (currentSnapshot.release !== currentVersion) {
+    fail(`api-snapshots/${currentVersion}.json: snapshot release ${currentSnapshot.release} does not match ${currentVersion}`);
+}
+
+const versionContracts = [
+    ["README.md", `version-${currentVersion}-orange.svg`],
+    ["README.md", `## ${currentVersion}`],
+    ["README.md", `version = {${currentVersion}}`],
+    ["README-zh.md", `version-${currentVersion}-orange.svg`],
+    ["README-zh.md", `## ${currentVersion}`],
+    ["README-zh.md", `version = {${currentVersion}}`],
+    ["packaging/windows_version_info.txt", `'${currentVersion}.0'`],
+    ["packaging/windows_version_info.txt", `filevers=(${currentVersion.replaceAll(".", ", ")}, 0)`],
+    ["packaging/windows_version_info.txt", `prodvers=(${currentVersion.replaceAll(".", ", ")}, 0)`],
+    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `"${currentVersion}.0"`],
+    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `FILEVERSION ${currentVersion.replaceAll(".", ",")},0`],
+    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `PRODUCTVERSION ${currentVersion.replaceAll(".", ",")},0`],
+    ["python/Infernux/mcp/tools/common.py", `MCP_SERVER_VERSION = "${currentVersion}"`],
+    ["python/Infernux/mcp/tools/project.py", `"engine_version": "${currentVersion}"`],
+];
+for (const [relative, token] of versionContracts) {
+    const content = await readFile(path.resolve(relative), "utf8");
+    if (!content.includes(token)) fail(`${relative}: missing current-version contract '${token}'`);
+}
+
 async function exists(relative) {
     return stat(path.join(docsRoot, relative)).then(() => true).catch(() => false);
 }
@@ -34,6 +95,39 @@ for (const page of rootPages) {
     if (!html.includes("start.html")) fail(`${page}: missing the hand-maintained Start route`);
     if (/data-i18n=["']nav\.manual["']|>\s*(?:Manual|手册)\s*<\/a>/i.test(html)) fail(`${page}: obsolete Manual navigation is still present`);
     if (/wiki\/site\/(?:en|zh)\/(?:learn|manual|architecture)\//i.test(html)) fail(`${page}: links to a removed guide tree`);
+    const ribbon = html.match(/<span class="mission-kicker" data-i18n="brand\.ribbonKicker">([^<]+)<\/span>/);
+    if (ribbon && !ribbon[1].includes(currentVersion)) {
+        fail(`${page}: identity ribbon fallback '${ribbon[1]}' does not match current release ${currentVersion}`);
+    }
+}
+
+const homepage = await readFile(path.join(docsRoot, "index.html"), "utf8");
+if (!homepage.includes(`"softwareVersion": "${currentVersion}"`)) {
+    fail(`index.html: structured softwareVersion does not match current release ${currentVersion}`);
+}
+if (!homepage.includes(`>v${currentVersion}</div>`)) {
+    fail(`index.html: current status card does not show v${currentVersion}`);
+}
+
+const roadmap = await readFile(path.join(docsRoot, "roadmap.html"), "utf8");
+if (!roadmap.includes(`<strong>v${currentVersion}</strong>`)) {
+    fail(`roadmap.html: current release card does not show v${currentVersion}`);
+}
+
+const i18nSource = JSON.parse(await readFile(path.join(docsRoot, "tools", "i18n-source.json"), "utf8"));
+for (const language of ["en", "zh"]) {
+    for (const key of ["brand.ribbonKicker", "home.hero.badge", "home.hero.platform", "home.capabilities.kicker", "roadmap.hero.badge"]) {
+        if (!String(i18nSource[language]?.[key] || "").includes(currentVersion)) {
+            fail(`i18n-source.json: ${language}.${key} does not contain current release ${currentVersion}`);
+        }
+    }
+}
+
+for (const language of ["en", "zh"]) {
+    const apiIndex = await readFile(path.join(docsRoot, "wiki", "docs", language, "api", "index.md"), "utf8");
+    if (!apiIndex.includes(currentVersion)) {
+        fail(`wiki/docs/${language}/api/index.md: API landing page does not show current release ${currentVersion}`);
+    }
 }
 
 const start = await readFile(path.join(docsRoot, "start.html"), "utf8");
@@ -84,8 +178,14 @@ for (const asset of await readdir(path.join(docsRoot, "assets", "learn"))) {
 }
 
 const download = await readFile(path.join(docsRoot, "download.html"), "utf8");
-for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=5"]) {
+for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", currentVersion, "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=5"]) {
     if (!download.includes(contract)) fail(`download.html: missing '${contract}'`);
+}
+if (!download.includes(`/download/v${currentVersion}/InfernuxHubInstaller-${currentVersion}.exe`)) {
+    fail(`download.html: offline Hub fallback does not target v${currentVersion}`);
+}
+if (!download.includes(`/download/v${currentVersion}/infernux-${currentVersion}-cp312-cp312-win_amd64.whl`)) {
+    fail(`download.html: offline wheel fallback does not target v${currentVersion}`);
 }
 if (/SHA-?256|checksum|校验码|publisher signature|data-pwa-install|pwa-install\.js/i.test(download)) {
     fail("download.html: verification or documentation-app installation clutter was restored");

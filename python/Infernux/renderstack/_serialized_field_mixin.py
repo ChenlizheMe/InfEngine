@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict, FrozenSet
 
 
@@ -26,6 +27,18 @@ class SerializedFieldCollectorMixin:
             ra = getattr(klass, "_reserved_attrs_", None)
             if ra:
                 reserved.update(ra)
+
+        own_annotations = dict(cls.__dict__.get("__annotations__", {}))
+        resolved_annotations: dict[str, Any] = {}
+        module = sys.modules.get(cls.__module__)
+        globalns = getattr(module, "__dict__", {})
+        for name, annotation in own_annotations.items():
+            if isinstance(annotation, str):
+                try:
+                    annotation = eval(annotation, globalns, dict(vars(cls)))  # noqa: S307
+                except Exception:
+                    pass
+            resolved_annotations[name] = annotation
 
         for attr_name in list(cls.__dict__):
             if attr_name.startswith("_"):
@@ -63,7 +76,7 @@ class SerializedFieldCollectorMixin:
                     build_field_from_annotation,
                 )
 
-                annotation = getattr(cls, "__annotations__", {}).get(attr_name)
+                annotation = resolved_annotations.get(attr_name)
                 metadata = None
                 if annotation is not None:
                     metadata = build_field_from_annotation(annotation, default=attr)

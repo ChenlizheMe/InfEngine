@@ -11,6 +11,45 @@
 
 namespace py = pybind11;
 
+namespace
+{
+class RuntimeSchedulerFallbackProbe final : public infernux::Component
+{
+  public:
+    explicit RuntimeSchedulerFallbackProbe(int &updates) : m_updates(updates)
+    {
+    }
+
+    void Update(float) override
+    {
+        ++m_updates;
+    }
+
+    [[nodiscard]] const char *GetTypeName() const override
+    {
+        return "RuntimeSchedulerFallbackProbe";
+    }
+
+    [[nodiscard]] std::string GetConstraintTypeId() const override
+    {
+        return "test:runtime-scheduler-fallback";
+    }
+
+    [[nodiscard]] bool UsesRuntimeLifecycleScheduler() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] bool WantsRuntimeUpdate() const override
+    {
+        return true;
+    }
+
+  private:
+    int &m_updates;
+};
+} // namespace
+
 int main()
 {
     py::scoped_interpreter interpreter{};
@@ -91,16 +130,15 @@ class CollisionEnterOnlyProbe(InxComponent):
     assert(!collisionProxy.WantsTriggerExitCallbacks());
 
     // A stale Python-side work hint must never freeze ordinary Play frames.
-    // The native scene graph remains authoritative when a live Python proxy is
-    // present, matching the paused single-step path.
+    // Keep this contract test inside one native runtime: _Infernux owns a
+    // separate private composition archive, so crossing extension/executable
+    // registries here would test an unsupported internal ABI rather than the
+    // Scene fallback branch.
     auto &sceneManager = infernux::SceneManager::Instance();
     infernux::Scene *scene = sceneManager.CreateScene("RuntimeSchedulerFallback");
     infernux::GameObject *owner = scene->CreateGameObject("PythonOwner");
-    const py::object runtimeProbe = probeType();
     int nativeProxyUpdates = 0;
-    runtimeProbe.attr("_native_test_sink") =
-        py::cpp_function([&nativeProxyUpdates](const std::string &) { ++nativeProxyUpdates; });
-    assert(owner->AddExistingComponent(std::make_unique<infernux::PyComponentProxy>(runtimeProbe)) != nullptr);
+    assert(owner->AddExistingComponent(std::make_unique<RuntimeSchedulerFallbackProbe>(nativeProxyUpdates)) != nullptr);
 
     int runtimeUpdates = 0;
     sceneManager.SetRuntimeLifecycleCallbacks([] {}, [](float) {}, [&runtimeUpdates](float) { ++runtimeUpdates; },
@@ -112,6 +150,23 @@ class CollisionEnterOnlyProbe(InxComponent):
     sceneManager.EndFrame();
     assert(runtimeUpdates == 0);
     assert(nativeProxyUpdates == 1);
+    sceneManager.Stop();
+
+    // The native frame driver consumes the published phase plan. A scheduler
+    // may remain installed while a structural rebuild produces an empty phase;
+    // that phase must not cross into Python until a newer plan enables it.
+    sceneManager.SetRuntimeLifecycleWorkAvailable(true);
+    sceneManager.SetRuntimeLifecyclePlan(1, 0, 0, 0);
+    sceneManager.Play();
+    sceneManager.Update(1.0f / 60.0f);
+    sceneManager.LateUpdate(1.0f / 60.0f);
+    sceneManager.EndFrame();
+    assert(runtimeUpdates == 0);
+    sceneManager.SetRuntimeLifecyclePlan(2, 0, 1, 0);
+    sceneManager.Update(1.0f / 60.0f);
+    sceneManager.LateUpdate(1.0f / 60.0f);
+    sceneManager.EndFrame();
+    assert(runtimeUpdates == 1);
     sceneManager.Stop();
     sceneManager.ClearRuntimeLifecycleCallbacks();
     sceneManager.UnloadAllScenes();

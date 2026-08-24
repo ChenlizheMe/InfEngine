@@ -240,6 +240,10 @@ def test_native_render_dll_dependency_direction() -> None:
         re.DOTALL,
     )
     assert "add_library(InfernuxRendererRuntime SHARED ${INFERNUX_RENDERER_RUNTIME_SOURCES})" in cmake
+    assert "add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})" in cmake
+    assert "WINDOWS_EXPORT_ALL_SYMBOLS ON" in cmake
+    runtime_dll_list = cmake.split("set(INFERNUX_RUNTIME_DLL_TARGETS", 1)[1].split(")", 1)[0]
+    assert "InfernuxRuntime" not in runtime_dll_list
     assert re.search(
         r"set\(INFERNUX_RENDERER_RUNTIME_SOURCES.*?SceneRenderer\.cpp.*?\)",
         cmake,

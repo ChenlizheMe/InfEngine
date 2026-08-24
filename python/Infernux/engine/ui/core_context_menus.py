@@ -33,7 +33,6 @@ def _hierarchy_create_entries(
     parent_id: int,
     *,
     semantic_root: str,
-    ui_only: bool = False,
 ):
     ui = _create_object(
         translate,
@@ -42,9 +41,6 @@ def _hierarchy_create_entries(
         parent_id,
         f"{semantic_root}.ui.canvas",
     )
-    if ui_only:
-        return (ui,)
-
     primitive_specs = (
         ("hierarchy.primitive_cube", "primitive.cube", "cube"),
         ("hierarchy.primitive_sphere", "primitive.sphere", "sphere"),
@@ -154,7 +150,6 @@ def hierarchy_context_menu(
     target_id: int = 0,
     target_is_prefab: bool = False,
     create_parent_id: int = 0,
-    ui_mode: bool = False,
 ):
     """Return the complete Hierarchy menu for one frozen right-click target."""
     target_id = int(target_id or 0)
@@ -259,7 +254,6 @@ def hierarchy_context_menu(
             translate,
             create_parent_id,
             semantic_root="hierarchy.context",
-            ui_only=bool(ui_mode),
         )
     )
     entries.extend(

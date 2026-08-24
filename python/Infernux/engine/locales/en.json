@@ -450,7 +450,6 @@
   "hierarchy.prefab_mode_header": "[Prefab] {name}",
   "hierarchy.delete": "Delete",
   "hierarchy.rename": "Rename",
-  "hierarchy.ui_mode": "UI Mode",
   "hierarchy.no_scene": "(No Scene)",
   "hierarchy.search_placeholder": "Search objects...",
   "hierarchy.no_search_results": "No objects match the search.",

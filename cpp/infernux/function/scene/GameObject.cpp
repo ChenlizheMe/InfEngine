@@ -515,6 +515,10 @@ Component *GameObject::AttachComponent(std::unique_ptr<Component> component, boo
 
     Component *ptr = component.get();
     ptr->SetGameObject(this);
+    // Publish ownership before binding a Python mirror. The mirror validates
+    // its native handle through Scene::ResolveComponent, which must already be
+    // able to find the proxy during _bind_native_component callbacks.
+    m_components.push_back(std::move(component));
     if (auto *proxy = dynamic_cast<PyComponentProxy *>(ptr)) {
         try {
             proxy->RebindPythonMirror();
@@ -523,10 +527,10 @@ Component *GameObject::AttachComponent(std::unique_ptr<Component> component, boo
             ptr->SetGameObject(nullptr);
             INXLOG_ERROR("Cannot bind Python component '", ptr->GetTypeName(), "' to GameObject '", m_name,
                          "': ", error.what());
+            m_components.pop_back();
             return nullptr;
         }
     }
-    m_components.push_back(std::move(component));
     PostAddComponent(ptr);
     return ptr;
 }

@@ -459,7 +459,11 @@ class AssetManager:
             result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
             result.error = effect_error
             return result
-        particle_error = cls._compile_particle_runtime(path, result.guid)
+        particle_error = cls._compile_particle_runtime(
+            path,
+            result.guid,
+            database=asset_database,
+        )
         if particle_error:
             from Infernux.lib import AssetMutationErrorCode
 
@@ -547,7 +551,11 @@ class AssetManager:
             result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
             result.error = effect_error
             return result
-        particle_error = cls._compile_particle_runtime(path, guid)
+        particle_error = cls._compile_particle_runtime(
+            path,
+            guid,
+            database=asset_database,
+        )
         if particle_error:
             from Infernux.lib import AssetMutationErrorCode
 
@@ -644,14 +652,29 @@ class AssetManager:
         )
 
     @classmethod
-    def _compile_particle_runtime(cls, path: str, guid: str) -> str:
+    def _compile_particle_runtime(cls, path: str, guid: str, *, database=None) -> str:
         """Compile ParticleGraph/ParticleScript before publishing file changes."""
         if not cls._is_particle_source(path):
             return ""
         try:
             from Infernux.particle.artifact import ParticleArtifactRegistry
 
-            ParticleArtifactRegistry.compile_path(path, guid=guid)
+            runtime_artifact_path = ""
+            if database is not None:
+                from Infernux.lib import ResourceType
+
+                runtime_artifact_path = str(
+                    database.get_runtime_artifact_path(
+                        guid,
+                        ResourceType.ParticleGraph,
+                    )
+                    or ""
+                )
+            ParticleArtifactRegistry.compile_path(
+                path,
+                guid=guid,
+                runtime_artifact_path=runtime_artifact_path,
+            )
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return f"particle compile failed; keeping last-known-good: {exc}"

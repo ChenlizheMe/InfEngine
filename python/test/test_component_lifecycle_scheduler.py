@@ -87,6 +87,42 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     assert counters["plan_prepare_calls"] == 2
 
 
+def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild(monkeypatch):
+    import Infernux.lib as native_lib
+
+    class _NativeManager:
+        def __init__(self) -> None:
+            self.available = False
+            self.plans = []
+
+        def set_runtime_lifecycle_work_available(self, available):
+            self.available = bool(available)
+
+        def set_runtime_lifecycle_plan(self, revision, fixed_count, update_count, late_count):
+            self.plans.append(
+                (int(revision), int(fixed_count), int(update_count), int(late_count))
+            )
+
+    manager = _NativeManager()
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return manager
+
+    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
+    scheduler = RuntimeExecutionScheduler(name="native-plan", native_bridge=True)
+    scheduler.register_component(_ScheduledProbe(1))
+
+    scheduler.prepare_frame()
+
+    assert manager.available is True
+    assert manager.plans[-1][1:] == (1, 1, 1)
+    scheduler.clear()
+    assert manager.available is False
+    assert manager.plans[-1][1:] == (0, 0, 0)
+
+
 def test_scene_replacement_retirement_cannot_remove_same_id_new_component():
     scheduler = RuntimeExecutionScheduler(name="scene-replacement")
     old_scene_component = _ScheduledProbe(17)

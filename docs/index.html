@@ -5,26 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="Infernux is an MIT-licensed C++17/Vulkan game engine with a Python production layer for gameplay, editor tooling, assets, physics, and render authoring.">
+    <meta name="description" content="Infernux (熔炉) is an open-source game engine rewritten for AI: a C++17/Vulkan core, Python as a first-class authoring surface, and agents wired into the engine at the data plane instead of through a plugin.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
-    <meta property="og:title" content="Infernux · 熔炉 — Open game engine">
-    <meta property="og:description" content="A C++17/Vulkan native runtime with a Python production layer, an integrated editor, and an inspectable MIT-licensed architecture.">
+    <meta property="og:title" content="Infernux · 熔炉 — A game engine for the AI era">
+    <meta property="og:description" content="The forge is lit. A C++/Vulkan core, Python as a first-class citizen, and agents wired into the engine down at the data plane. Open source, MIT, Windows x64 available now.">
     <meta property="og:url" content="https://infernux-engine.com/">
     <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
+    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Infernux · 熔炉 — Open game engine">
-    <meta name="twitter:description" content="C++17/Vulkan runtime · Python production layer · MIT licensed.">
+    <meta name="twitter:title" content="Infernux · 熔炉 — A game engine for the AI era">
+    <meta name="twitter:description" content="C++/Vulkan core · Python as a first-class citizen · agents wired in at the data plane · MIT.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
-    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
-    <title>Infernux · 熔炉 — Open game engine</title>
+    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
+    <title>Infernux · 熔炉 — A game engine for the AI era</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
@@ -40,7 +40,7 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip">
             <div class="mission-ribbon-inner">
-                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span>
+                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.6</span>
                 <span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span>
                 <span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span>
             </div>
@@ -83,12 +83,12 @@
                 <div class="hero-grid">
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.4 · FULL ENGINE UPDATE</span>
-                            <span data-i18n="home.hero.kicker">OPEN-SOURCE · MIT · WIN64</span>
+                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.6 · A GAME ENGINE REWRITTEN FOR AI</span>
+                            <span data-i18n="home.hero.kicker">MIT · open source · Windows x64, downloadable right now</span>
                         </div>
-                        <h1 class="hero-title" data-i18n="home.hero.title">An engine you can <span class="accent">disassemble</span>, extend, and ship.</h1>
-                        <p class="hero-subtitle" data-i18n="hero.subtitle">C++ / Vulkan core · Python production layer · repository-first</p>
-                        <p class="hero-description" data-i18n="home.hero.description">Infernux pairs a C++17/Vulkan runtime with a Python 3.12 production layer. Version 0.3.4 brings a programmable render pipeline, GPU Particle Graph, unified editor interaction, and a cleaner standalone runtime.</p>
+                        <h1 class="hero-title" data-i18n="home.hero.title">The <span class="accent">forge</span> is lit. Come feed the fire.</h1>
+                        <p class="hero-subtitle" data-i18n="hero.subtitle">A C++17 and Vulkan core. You write gameplay, tools, render pipelines and models in Python 3.12.</p>
+                        <p class="hero-description" data-i18n="home.hero.description">The Doom generation of engines finished its job a long time ago. Unity and Unreal got the tools into everyone's hands, and now they are fumbling at what this era actually asks for, because whether a model or an agent can really use an engine comes down to its lowest-level data layout, threading model and tool boundaries. None of that can be bolted on afterwards. Infernux starts writing at that layer: agents and the engine collaborating down in the plumbing, not through a chat panel stapled to the side.</p>
                         <div class="hero-actions">
                             <a href="start.html" class="btn btn-primary">
                                 <i class="fas fa-rocket" aria-hidden="true"></i>
@@ -96,16 +96,16 @@
                             </a>
                             <a href="download.html" class="btn btn-secondary" aria-describedby="hero-platform-note">
                                 <i class="fas fa-download" aria-hidden="true"></i>
-                                <span data-i18n="download.hubInstaller">Download Hub installer</span>
+                                <span data-i18n="download.hubInstaller">Download InfernuxHub</span>
                             </a>
                         </div>
-                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · Infernux 0.3.4 · broader platforms in development</p>
+                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · Infernux 0.3.6 · Android, Web and Linux are next in line</p>
                         <div class="hero-text-links" aria-label="More ways to explore Infernux" data-i18n-aria-label="home.hero.moreActions">
-                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">Inspect the showcase</a>
+                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">See what it renders</a>
                             <span aria-hidden="true">/</span>
                             <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
                                 <i class="fab fa-github" aria-hidden="true"></i>
-                                <span data-i18n="hero.viewGithub">Inspect the repository</span>
+                                <span data-i18n="hero.viewGithub">Read the source</span>
                             </a>
                         </div>
                         <div class="hero-meta">
@@ -115,11 +115,11 @@
                             </div>
                             <div class="metric-card">
                                 <strong>Python 3.12</strong>
-                                <span data-i18n="home.hero.metric.python">Gameplay & tooling</span>
+                                <span data-i18n="home.hero.metric.python">Gameplay, tools, rendering, models</span>
                             </div>
                             <div class="metric-card">
                                 <strong>MIT</strong>
-                                <span data-i18n="home.hero.metric.license">No royalties</span>
+                                <span data-i18n="home.hero.metric.license">Free forever, no royalties</span>
                             </div>
                         </div>
                     </div>
@@ -129,30 +129,20 @@
                                 <span class="dot red"></span>
                                 <span class="dot yellow"></span>
                                 <span class="dot green"></span>
-                                <span class="filename">mover.py</span>
+                                <span class="filename">spin.py</span>
                                 <button class="code-copy-action" type="button" data-home-code-copy data-state="idle" aria-controls="home-starter-code" aria-describedby="home-code-copy-status" aria-label="Copy starter component" title="Copy starter component">
                                     <i class="fas fa-copy" aria-hidden="true"></i>
                                     <span>Copy starter component</span>
                                 </button>
                             </div>
-                            <pre><code id="home-starter-code"><span class="keyword">from</span> Infernux <span class="keyword">import</span> InxComponent, Vector3
-<span class="keyword">from</span> Infernux.coroutine <span class="keyword">import</span> WaitForSeconds
+                            <pre><code id="home-starter-code"><span class="keyword">from</span> Infernux <span class="keyword">import</span> InxComponent, Vector3, serialized_field
 
-<span class="keyword">class</span> <span class="class-name">Mover</span>(InxComponent):
-    <span class="keyword">def</span> <span class="function">awake</span>(<span class="param">self</span>) -&gt; <span class="type">None</span>:
-        <span class="param">self</span>._dir = <span class="number">1.0</span>
 
-    <span class="keyword">def</span> <span class="function">start</span>(<span class="param">self</span>) -&gt; <span class="type">None</span>:
-        <span class="param">self</span>.start_coroutine(<span class="param">self</span>.pulse())
+<span class="keyword">class</span> <span class="class-name">Spin</span>(InxComponent):
+    speed: float = serialized_field(default=<span class="number">90.0</span>, range=(<span class="number">0.0</span>, <span class="number">360.0</span>))
 
     <span class="keyword">def</span> <span class="function">update</span>(<span class="param">self</span>, delta_time: float) -&gt; <span class="type">None</span>:
-        v = Vector3(<span class="number">0.2</span> * <span class="param">self</span>._dir, <span class="number">0.0</span>, <span class="number">0.0</span>)
-        <span class="param">self</span>.transform.translate(v * delta_time)
-
-    <span class="keyword">def</span> <span class="function">pulse</span>(<span class="param">self</span>):
-        <span class="keyword">while</span> <span class="literal">True</span>:
-            <span class="keyword">yield</span> WaitForSeconds(<span class="number">0.5</span>)
-            <span class="param">self</span>._dir = -<span class="param">self</span>._dir</code></pre>
+        <span class="param">self</span>.transform.rotate(Vector3(<span class="number">0.0</span>, <span class="param">self</span>.speed * delta_time, <span class="number">0.0</span>))</code></pre>
                             <p class="visually-hidden" id="home-code-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
                         </div>
                     </div>
@@ -160,17 +150,44 @@
             </section>
 
             <section class="manifesto-strip">
-                <span class="manifesto-tag" data-i18n="home.manifesto.tag">FLIGHT NOTE</span>
-                <p data-i18n="home.manifesto">熔炉 is shaped around a simple position: keep the hot path native, keep the workflow scriptable, and keep the architecture readable enough that a team can actually take ownership of it instead of negotiating with a vendor.</p>
+                <span class="manifesto-tag" data-i18n="home.manifesto.tag">MANIFESTO</span>
+                <p data-i18n="home.manifesto">AI-native is not a chat panel. It means world state you can pull out as a tensor in one call, training that runs inside the editor, and agent-built tools that carry a schema, permissions and tests. None of that can be retrofitted. It has to grow up from the core.</p>
+            </section>
+
+            <section id="thesis" class="section">
+                <div class="section-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="home.thesis.kicker">What we are betting on</div>
+                        <h2 class="section-title" data-i18n="home.thesis.title">Agents and the engine, wired together at the bottom.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="home.thesis.intro">You do not get there by hanging a plugin off a mature engine. How the data is laid out, who is allowed to release the GIL, where the tool boundary sits: all of it has to be decided again, from the core outward.</p>
+                </div>
+                <div class="grid-3">
+                    <article class="pillar-card" data-reveal>
+                        <div class="mini-tag" data-i18n="home.thesis.card1.era">MISSION COMPLETE</div>
+                        <h3 data-i18n="home.thesis.card1.title">The Doom generation already handed in its work</h3>
+                        <p data-i18n="home.thesis.card1.body">Pulling rendering, assets and gameplay out of one game and turning them into something you could reuse and license: id Tech settled that in 1993. It was the right problem then. Nobody needs to prove it again.</p>
+                    </article>
+                    <article class="pillar-card" data-reveal>
+                        <div class="mini-tag" data-i18n="home.thesis.card2.era">FUMBLING · RIGHT NOW</div>
+                        <h3 data-i18n="home.thesis.card2.title">Unity and Unreal are patching AI on from outside</h3>
+                        <p data-i18n="home.thesis.card2.body">They did the universal-tooling part well. But Python stays a second-class citizen over there, world state comes out one getattr at a time, and whatever an agent is allowed to touch rests on a script behaving itself. A plugin cannot fix any of that.</p>
+                    </article>
+                    <article class="pillar-card pillar-card-accent" data-reveal>
+                        <div class="mini-tag" data-i18n="home.thesis.card3.era">WHAT WE ARE BUILDING</div>
+                        <h3 data-i18n="home.thesis.card3.title">Start at the data plane and cut the path through</h3>
+                        <p data-i18n="home.thesis.card3.body">State sits in C++ as structs of arrays, and one call hands it to Python as a numpy array with the GIL released. An agent drives the same command system you do, and every capability it holds can be audited and taken back. This is the code we write every day.</p>
+                    </article>
+                </div>
             </section>
 
             <section class="section" id="runtime-capture">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.demo.kicker">Project showcase · 0.3.4</div>
-                        <h2 class="section-title" data-i18n="home.demo.title">A 65,536-object voxel continent authored and rendered inside Infernux.</h2>
+                        <div class="section-kicker" data-i18n="home.demo.kicker">Technology showcase · 0.3.4</div>
+                        <h2 class="section-title" data-i18n="home.demo.title">A voxel continent of 65,536 objects, built in the editor and rendered in the editor.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.demo.intro">This real editor capture combines standard scene objects, shared lit rendering, per-camera shadows, and a custom RenderStack tilt-shift treatment in one authored scene.</p>
+                    <p class="section-intro" data-i18n="home.demo.intro">Not an offline render and not a concept image. Those blocks are ordinary GameObjects going through the ordinary Scene and Hierarchy, with no dedicated batching path. The tilt-shift, fog and colour on top are a RenderStack written in Python.</p>
                 </div>
                 <div class="stack-layout demo-layout">
                     <div class="demo-frame" data-reveal>
@@ -180,11 +197,11 @@
                         </picture>
                     </div>
                     <div class="stack-board" data-reveal>
-                            <h3 data-i18n="home.demo.panel.title">What this capture demonstrates</h3>
+                            <h3 data-i18n="home.demo.panel.title">What is in this frame</h3>
                             <ul class="list-clean">
-                            <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects share one mesh and material while remaining part of the regular Scene and Hierarchy model.</li>
-                            <li data-i18n="home.demo.panel.item2">A custom RenderStack pipeline applies tilt-shift focus, distance and height fog, color controls, and MSAA without leaving the editor workflow.</li>
-                            <li data-i18n="home.demo.panel.item3">This is a real 1920 × 1032 editor capture from the 0.3.4 technology showcase, not a mock-up or offline render.</li>
+                            <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects sharing one mesh and one material. You can still select them in the Hierarchy and edit them. They are no different from a cube you dropped in by hand.</li>
+                            <li data-i18n="home.demo.panel.item2">Tilt-shift focus, distance fog, height fog, colour controls and MSAA all come from one custom RenderStack. Change it in the editor and you see the result immediately.</li>
+                            <li data-i18n="home.demo.panel.item3">The raw 1920 × 1032 capture from the 0.3.4 showcase. Nothing retouched.</li>
                         </ul>
                     </div>
                 </div>
@@ -193,26 +210,26 @@
             <section id="system" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.system.kicker">Operating principles</div>
-                        <h2 class="section-title" data-i18n="home.system.title">Three rules that decide what enters the engine.</h2>
+                        <div class="section-kicker" data-i18n="home.system.kicker">House rules</div>
+                        <h2 class="section-title" data-i18n="home.system.title">Three rules we do not break.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.system.intro">The engine is shaped around engineering control rather than platform lock-in. Each principle reduces hidden cost for teams building real games and real tools.</p>
+                    <p class="section-intro" data-i18n="home.system.intro">These three regularly make us turn down things that look cool. They are written here so you can hold us to them.</p>
                 </div>
                 <div class="grid-3">
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-bolt"></i></div>
-                        <h3 data-i18n="home.system.card1.title">PRINCIPLE I · Fast inner loop</h3>
-                        <p data-i18n="home.system.card1.body">Python scripts, hot-reload, asset previews, and editor-side tooling keep the iteration loop under a second without weakening the native runtime core.</p>
+                        <h3 data-i18n="home.system.card1.title">1 · It has to be an engine you can ship a game with</h3>
+                        <p data-i18n="home.system.card1.body">Scenes, assets, rendering, physics, UI, animation and packaging stay working. If an AI feature does not make shipping a game better, it does not get merged, however good the demo looks.</p>
                     </article>
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-project-diagram"></i></div>
-                        <h3 data-i18n="home.system.card2.title">PRINCIPLE II · Transparent render</h3>
-                        <p data-i18n="home.system.card2.body">RenderGraph, RenderStack, and material descriptors are inspectable and scriptable from Python. The render path is meant to be extended, not hidden.</p>
+                        <h3 data-i18n="home.system.card2.title">2 · Python is not the scripting layer</h3>
+                        <p data-i18n="home.system.card2.body">Gameplay, editor extensions, render pipelines, asset workflows, training scripts: all Python. C++ and the GPU only own performance and deployment. The language you drive the engine with is the language you drive the model with.</p>
                     </article>
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-unlock"></i></div>
-                        <h3 data-i18n="home.system.card3.title">PRINCIPLE III · No business trap</h3>
-                        <p data-i18n="home.system.card3.body">MIT licensing and repository-first development keep the cost model simple: the work is in the code, not in negotiating with a vendor.</p>
+                        <h3 data-i18n="home.system.card3.title">3 · AI comes in the front door</h3>
+                        <p data-i18n="home.system.card3.body">UI, Python, MCP and agents all read the same schema and the same permission set. What a model can call is declared up front, so when it goes wrong you can trace it, undo it, and take the capability back. Without that, do not hand it an engine.</p>
                     </article>
                 </div>
             </section>
@@ -220,51 +237,56 @@
             <section id="capabilities" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.capabilities.kicker">Status board · 0.3.4</div>
-                        <h2 class="section-title" data-i18n="home.capabilities.title">What is online today, grouped the way real engineering teams evaluate an engine.</h2>
+                        <div class="section-kicker" data-i18n="home.capabilities.kicker">What is in 0.3.6</div>
+                        <h2 class="section-title" data-i18n="home.capabilities.title">The parts you can already work with.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.capabilities.intro">Version 0.3.4 brings rendering, simulation, authoring, scripting, automation, assets, and Player runtime onto a more coherent foundation.</p>
+                    <p class="section-intro" data-i18n="home.capabilities.intro">0.3.6 merged scene and UI authoring into one Hierarchy and fixed automatic updates in packaged Hub builds. The engine still moves fast, and we still change an interface when it turns out to be wrong.</p>
                 </div>
                 <div class="capability-grid">
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.render.tag">SUBSYSTEM · RENDER</div>
                         <h3 data-i18n="home.capabilities.render.title">Vulkan render core</h3>
-                        <p data-i18n="home.capabilities.render.body">Forward, Forward+ and Deferred routes, PBR, per-camera shadows, reusable Effect assets, structured GLSL, RenderGraph scheduling, and a Python-programmable RenderStack.</p>
+                        <p data-i18n="home.capabilities.render.body">Forward, Forward+ and Deferred paths, PBR, per-camera shadows, MSAA. You describe the pipeline in Python and C++ compiles it into a RenderGraph and schedules it. Effects are reusable assets, and the GLSL is structured rather than one long string.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.vfx.tag">SUBSYSTEM · GPU VFX</div>
-                        <h3 data-i18n="home.capabilities.vfx.title">Particle Graph and GPU simulation</h3>
-                        <p data-i18n="home.capabilities.vfx.body">Typed emitter, Init, Update and Rendering stages compile to runtime IR ahead of time, with sprite/mesh outputs, editor preview and live parameters.</p>
+                        <h3 data-i18n="home.capabilities.vfx.title">Particle Graph on the GPU</h3>
+                        <p data-i18n="home.capabilities.vfx.body">GPU Particle Graph: an emitter plus Init, Update and Rendering stages. The typed graph compiles to runtime IR ahead of time, outputs sprites or meshes, and previews in the editor with parameters you can drag while it runs.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.physics.tag">SUBSYSTEM · PHYSICS</div>
-                        <h3 data-i18n="home.capabilities.physics.title">Jolt rigid bodies</h3>
-                        <p data-i18n="home.capabilities.physics.body">Rigid bodies, colliders, scene queries, collision callbacks, layer filtering, and scene-synchronized transforms backed by Jolt Physics.</p>
+                        <h3 data-i18n="home.capabilities.physics.title">Jolt physics</h3>
+                        <p data-i18n="home.capabilities.physics.body">Jolt. Rigid bodies, colliders, scene queries, collision callbacks, layer filtering, transforms kept in sync with the scene. Its job system runs on the engine's own thread pool rather than spawning threads of its own.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.animation.tag">PREVIEW · ANIMATION</div>
-                        <h3 data-i18n="home.capabilities.animation.title">2D / 3D animation stack</h3>
-                        <p data-i18n="home.capabilities.animation.body">2D clips, sprite playback, FBX takes, skeletal animation, skinned meshes, reusable state-machine graphs, and Timeline authoring share one document foundation.</p>
+                        <h3 data-i18n="home.capabilities.animation.title">2D and 3D animation</h3>
+                        <p data-i18n="home.capabilities.animation.body">2D clips and sprite playback, embedded FBX takes, skeletal animation, skinned meshes, state-machine graphs, Timeline. All of it hangs off the same document and undo services, so the pieces do not fight each other.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.editor.tag">SUBSYSTEM · EDITOR</div>
-                        <h3 data-i18n="home.capabilities.editor.title">12-panel editor shell</h3>
-                        <p data-i18n="home.capabilities.editor.body">Authoring panels converge on shared selection, commands, shortcuts, documents, save, conflicts and undo/redo services.</p>
+                        <h3 data-i18n="home.capabilities.editor.title">12 panels, one command system</h3>
+                        <p data-i18n="home.capabilities.editor.body">Hierarchy, Inspector, Scene/Game, Project, Console, UI, animation, Timeline and the graph editors all share one selection, command, shortcut, document, save and undo stack. Useful side effect: an agent drives the editor down exactly the path you do.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.script.tag">SUBSYSTEM · SCRIPT</div>
                         <h3 data-i18n="home.capabilities.script.title">Python gameplay layer</h3>
-                        <p data-i18n="home.capabilities.script.body">Unity-style component lifecycle, serialized inspector fields, decorators, input APIs, coroutines, prefabs, hot-reload, and a built-in <code>@njit</code> decorator that opts in to Numba JIT with automatic pure-Python fallback.</p>
+                        <p data-i18n="home.capabilities.script.body">Component lifecycle, serialized inspector fields, coroutines, prefabs, hot reload. Close enough to Unity that you will not have to relearn much. Put <code>@njit</code> on a hot function and Numba takes it; where Numba is unavailable it falls back to pure Python instead of blowing up.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.asset.tag">SUBSYSTEM · ASSETS</div>
-                        <h3 data-i18n="home.capabilities.asset.title">Asset & project pipeline</h3>
-                        <p data-i18n="home.capabilities.asset.body">GUID identity, dependency indexing, Library artifacts, live previews, transactional documents, and structured Player exports separate authoring from runtime content.</p>
+                        <h3 data-i18n="home.capabilities.asset.title">Assets and project pipeline</h3>
+                        <p data-i18n="home.capabilities.asset.body">GUID identity, dependency indexing, imported Library artifacts, live previews, transactional documents. When you export a Player, authoring data and runtime content are two separate things.</p>
+                    </article>
+                    <article class="capability-card" data-reveal>
+                        <div class="mini-tag" data-i18n="home.capabilities.data.tag">SUBSYSTEM · DATA PLANE</div>
+                        <h3 data-i18n="home.capabilities.data.title">Batch data bridge</h3>
+                        <p data-i18n="home.capabilities.data.body"><code>batch_read(cubes, "position")</code> hands you an (N, 3) numpy array in one call. The C++ side keeps that data as a struct of arrays and the GIL stays released for the trip. Writing back works the same way. This is what makes world state visible to a model at all.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.ai.tag">EXTENSION · MCP · AGENTS</div>
-                        <h3 data-i18n="home.capabilities.ai.title">MCP Harness for real editor workflows</h3>
-                        <p data-i18n="home.capabilities.ai.body">Operate a visible project through public workflows, inject frame-bounded input, inspect semantic state, and report blockers without embedding MCP into exported games.</p>
+                        <h3 data-i18n="home.capabilities.ai.title">MCP Harness</h3>
+                        <p data-i18n="home.capabilities.ai.body">An agent opens a real project window and drives it through the public workflows: frame-bounded input, semantic state reads, and a straight answer about where it got stuck. Development-time tool. It never ships inside your game.</p>
                     </article>
                 </div>
             </section>
@@ -272,36 +294,36 @@
             <section class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.status.kicker">Project status</div>
-                        <h2 class="section-title" data-i18n="home.status.title">Infernux 0.3.4: rendering, VFX, interaction, and runtime rebuilt together.</h2>
+                        <div class="section-kicker" data-i18n="home.status.kicker">Where this is now</div>
+                        <h2 class="section-title" data-i18n="home.status.title">0.3.6 can finish a game. Next it has to leave Windows.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.status.intro">Version 0.3.4 combines a broad engine refactor with programmable rendering, GPU VFX, unified editor interaction, packaging, performance work, and editor-side MCP validation.</p>
+                    <p class="section-intro" data-i18n="home.status.intro">On Windows x64 the whole loop works: create a project, write Python, render, package, ship it. Next that same loop has to run on Android, Web and Linux, with Torch wired into the engine's data plane along the way.</p>
                 </div>
                 <div class="status-grid">
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card1.tag">CHECKPOINT · 0.3.4</div>
-                        <h3 data-i18n="home.status.card1.title">Runtime, editor, and animation foundation</h3>
-                        <div class="status-value">v0.3.4</div>
-                        <p data-i18n="home.status.card1.body">Scene documents, serialization, assets, rendering, particles, physics, interaction, UI, animation, build output and distribution were reworked around stricter ownership.</p>
+                        <div class="mini-tag" data-i18n="home.status.card1.tag">SHIPPED · 0.3.6</div>
+                        <h3 data-i18n="home.status.card1.title">One Hierarchy, and Hub updates that work</h3>
+                        <div class="status-value">v0.3.6</div>
+                        <p data-i18n="home.status.card1.body">0.3.6 drops the separate Hierarchy UI mode, fixes update checks in packaged Hub builds, and starts publishing full Hub packages you can install standalone.</p>
                     </article>
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card2.tag">NEXT · TRANSIT</div>
-                        <h3 data-i18n="home.status.card2.title">Rendering, VFX, interaction, and Player runtime</h3>
-                        <div class="status-value" data-i18n="home.status.card2.value">v0.3.4</div>
-                        <p data-i18n="home.status.card2.body">GPU Particle Graph, programmable render routes, shared editor interaction, and a Library-only Player cook are part of this version.</p>
+                        <div class="mini-tag" data-i18n="home.status.card2.tag">IN PROGRESS · TO 0.5.2</div>
+                        <h3 data-i18n="home.status.card2.title">Cross-platform builds, and contracts a model can use</h3>
+                        <div class="status-value" data-i18n="home.status.card2.value">→ 0.5.2</div>
+                        <p data-i18n="home.status.card2.body">Android and Web game packages plus Torch workflows first. Then Linux and windowless execution, authoritative schemas, replayable batch worlds, the tensor data plane, and Engine Tools that carry permissions and tests.</p>
                     </article>
                 </div>
             </section>
 
             <section class="cta-panel">
                 <div>
-                    <h2 data-i18n="cta.title">Build something that belongs to you.</h2>
-                    <p class="copy-body" data-i18n="cta.desc">熔炉 exists for teams who want source access, architectural clarity, and a workflow they can actually reshape. Start with the docs, inspect the code, and push the engine further.</p>
+                    <h2 data-i18n="cta.title">Come throw something on the fire.</h2>
+                    <p class="copy-body" data-i18n="cta.desc">Source, architecture and roadmap are all sitting on GitHub under MIT. Take it and make a game. Send a patch. Or go argue on the forum about a design you think is wrong. Any of those beats an engine nobody uses.</p>
                 </div>
                 <div class="cta-buttons">
                     <a href="download.html" class="btn btn-primary">
                         <i class="fas fa-download"></i>
-                        <span data-i18n="download.hubInstaller">Download Hub installer</span>
+                        <span data-i18n="download.hubInstaller">Download InfernuxHub</span>
                     </a>
                     <a href="https://github.com/ChenlizheMe/Infernux" class="btn btn-secondary" target="_blank" rel="noopener">
                         <i class="fab fa-github"></i>
@@ -321,7 +343,7 @@
                         <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
                         <span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span>
                     </div>
-                    <p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p>
+                    <p data-i18n="footer.tagline">Source fully open, architecture written down, and when something breaks you can chase it all the way to the bottom.</p>
                 </div>
                 <div class="footer-links">
                     <div class="footer-column">
@@ -367,7 +389,7 @@
           "alternateName": "熔炉",
           "applicationCategory": "DeveloperApplication",
           "operatingSystem": "Windows 10, Windows 11",
-          "softwareVersion": "0.3.4",
+          "softwareVersion": "0.3.6",
           "license": "https://opensource.org/licenses/MIT",
           "url": "https://infernux-engine.com/",
           "downloadUrl": "https://github.com/ChenlizheMe/Infernux/releases/latest",

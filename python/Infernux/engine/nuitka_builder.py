@@ -973,11 +973,13 @@ class NuitkaBuilder:
     _ENGINE_MANAGED_RUNTIME_PACKAGES = frozenset(
         {"infernux", "mcp", "fastmcp", "numba", "llvmlite", "numpy"}
     )
-    # glslang and SPIRV-Tools are linked into InfernuxShaderCompiler. These
-    # historical shared-library copies may survive an older wheel install but
-    # are not runtime dependencies and must never enter a new Player pack.
-    _LEGACY_STATIC_SHADER_DLLS = frozenset(
+    # glslang and SPIRV-Tools are linked into InfernuxShaderCompiler, while the
+    # former monolithic InfernuxRuntime DLL is now a private static archive.
+    # Historical copies may survive an older wheel and must never enter a new
+    # Player pack or its cache fingerprint.
+    _FORBIDDEN_LEGACY_NATIVE_DLLS = frozenset(
         {
+            "infernuxruntime.dll",
             "spirv.dll",
             "spvremapper.dll",
             "glslang-default-resource-limits.dll",
@@ -1351,7 +1353,7 @@ class NuitkaBuilder:
                 or path.suffix.lower()
                 in {".pyc", ".pdb", ".lib", ".exp", ".meta", ".bak"}
                 or relative.endswith(".pyi")
-                or path.name.casefold() in self._LEGACY_STATIC_SHADER_DLLS
+                or path.name.casefold() in self._FORBIDDEN_LEGACY_NATIVE_DLLS
             ):
                 continue
             digest.update(relative.encode("utf-8"))
@@ -2431,7 +2433,7 @@ print(json.dumps({{
         for path in lib_dir.iterdir():
             if not path.is_file() or path in {module_file, bootstrap_module}:
                 continue
-            if path.name.casefold() in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+            if path.name.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
                 continue
             # Never mix a stale short-name extension with the selected
             # ABI-tagged module. Nuitka creates the short name itself.
@@ -2489,7 +2491,7 @@ print(json.dumps({{
 
         # Remove stale copies left by older installed wheels or Nuitka output
         # before injecting the current native closure.
-        for legacy_name in self._LEGACY_STATIC_SHADER_DLLS:
+        for legacy_name in self._FORBIDDEN_LEGACY_NATIVE_DLLS:
             for stale_path in (dist_root / legacy_name, target_dir / legacy_name):
                 try:
                     stale_path.unlink()

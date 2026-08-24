@@ -63,7 +63,6 @@ RUNTIME_REQUIRED_NATIVE_FILES = frozenset(
         "Infernux/lib/InfernuxParticleRuntime.dll",
         "Infernux/lib/InfernuxRenderCore.dll",
         "Infernux/lib/InfernuxRendererRuntime.dll",
-        "Infernux/lib/InfernuxRuntime.dll",
         "Infernux/lib/InfernuxShaderCompiler.dll",
         "Infernux/lib/InfernuxVulkanBackend.dll",
         "Infernux/lib/assimp-vc143-mt.dll",
@@ -73,6 +72,7 @@ RUNTIME_REQUIRED_NATIVE_FILES = frozenset(
 )
 RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset(
     {
+        "Infernux/lib/InfernuxRuntime.dll",
         "Infernux/lib/SPIRV.dll",
         "Infernux/lib/SPVRemapper.dll",
         "Infernux/lib/glslang-default-resource-limits.dll",

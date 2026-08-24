@@ -403,14 +403,14 @@ def _write_toolchain_receipt(
 def _build_hub(
     source_root: Path,
     build_dir: Path,
-    dist_dir: Path,
+    package_dir: Path,
     *,
     cmake_generator: str,
     build_env: Mapping[str, str] | None,
     tools: Mapping[str, str] | None,
 ) -> None:
     packaging_dir = source_root / "packaging"
-    runtime_bundle = packaging_dir / "runtime" / "runtime_bundle.zip"
+    runtime_bundle = package_dir / "runtime" / "runtime_bundle.zip"
     notification_file = packaging_dir / "resources" / "hub_notifications.json"
     if not runtime_bundle.is_file():
         raise RuntimeError(
@@ -462,7 +462,7 @@ def _build_hub(
             f"Nuitka did not produce a standalone Hub under {output_dir}"
         )
 
-    destination = dist_dir / "Infernux Hub"
+    destination = package_dir / "hub"
     shutil.rmtree(destination, ignore_errors=True)
     if produced.is_dir():
         shutil.copytree(produced, destination)
@@ -490,12 +490,12 @@ def _build_hub(
 def _build_installer(
     source_root: Path,
     build_dir: Path,
-    dist_dir: Path,
+    package_dir: Path,
     *,
     build_env: Mapping[str, str] | None,
 ) -> None:
     packaging_dir = source_root / "packaging"
-    hub_payload = dist_dir / "Infernux Hub"
+    hub_payload = package_dir / "hub"
     if not hub_payload.is_dir():
         raise RuntimeError(f"Hub payload does not exist: {hub_payload}")
 
@@ -537,7 +537,7 @@ def _build_installer(
     produced = output_dir / filename
     if not produced.is_file():
         raise RuntimeError(f"Nuitka did not produce the Hub installer at {produced}")
-    destination_dir = dist_dir / "installer"
+    destination_dir = package_dir / "installer"
     shutil.rmtree(destination_dir, ignore_errors=True)
     destination_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(produced, destination_dir / filename)
@@ -552,15 +552,15 @@ def main() -> int:
     parser.add_argument("--target", choices=("hub", "installer"), required=True)
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--build-dir", required=True)
-    parser.add_argument("--dist-dir", required=True)
+    parser.add_argument("--package-dir", required=True)
     parser.add_argument("--cmake-generator", default="")
     args = parser.parse_args()
 
     source_root = Path(args.source_root).resolve()
     build_dir = Path(args.build_dir).resolve()
-    dist_dir = Path(args.dist_dir).resolve()
+    package_dir = Path(args.package_dir).resolve()
     build_dir.mkdir(parents=True, exist_ok=True)
-    dist_dir.mkdir(parents=True, exist_ok=True)
+    package_dir.mkdir(parents=True, exist_ok=True)
 
     _require_msbuild_generator(args.cmake_generator)
     build_env: Mapping[str, str] | None = None
@@ -572,7 +572,7 @@ def main() -> int:
         _build_hub(
             source_root,
             build_dir,
-            dist_dir,
+            package_dir,
             cmake_generator=args.cmake_generator,
             build_env=build_env,
             tools=tools,
@@ -581,7 +581,7 @@ def main() -> int:
         _build_installer(
             source_root,
             build_dir,
-            dist_dir,
+            package_dir,
             build_env=build_env,
         )
     return 0

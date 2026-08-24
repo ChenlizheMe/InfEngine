@@ -11,7 +11,7 @@
 刚体组件。让物体受物理引擎控制——牛顿看了都点头。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.4
+**状态：** Preview · **验证版本：** 0.3.6
 
 动态刚体应使用力或速度，不要每帧写 Transform。运动学刚体使用移动操作，仿真命令从固定更新发出。
 <!-- USER CONTENT END -->

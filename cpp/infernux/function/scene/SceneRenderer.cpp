@@ -137,6 +137,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     const bool worldMatches = cameraCache.worldId == result.worldOwner->WorldId();
     const bool structuralMatches = cameraCache.structuralRevision == result.worldOwner->StructuralRevision();
     const bool transformMatches = cameraCache.transformRevision == result.worldOwner->TransformRevision();
+    const bool contentMatches = cameraCache.contentRevision == result.worldOwner->ContentRevision();
     const bool maskMatches = cameraCache.cullingMask == camera.cullingMask;
     const bool frustumMatches = cameraCache.frustumCulling == m_frustumCulling;
     const bool viewProjectionMatches =
@@ -157,6 +158,27 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     }
 #endif
     if (cacheHit) {
+        if (!contentMatches) {
+            if (!cameraCache.usesWorldDrawCalls) {
+                const size_t patchCount =
+                    std::min(cameraCache.visibleDrawCalls.size(), cameraCache.visibleDrawCallSourceIndices.size());
+                for (size_t index = 0; index < patchCount; ++index) {
+                    const size_t sourceIndex = cameraCache.visibleDrawCallSourceIndices[index];
+                    if (sourceIndex >= cachedResult.drawCalls.size())
+                        continue;
+                    DrawCall &destination = cameraCache.visibleDrawCalls[index];
+                    const DrawCall &source = cachedResult.drawCalls[sourceIndex];
+                    destination.skinBoneMatricesOwner = source.skinBoneMatricesOwner;
+                    destination.skinBoneMatrices = source.skinBoneMatrices;
+                    destination.previousSkinBoneMatricesOwner = source.previousSkinBoneMatricesOwner;
+                    destination.previousSkinBoneMatrices = source.previousSkinBoneMatrices;
+                }
+            }
+            cameraCache.contentRevision = result.worldOwner->ContentRevision();
+            cameraCache.visibleListRevision = m_nextCameraCullRevision++;
+            if (m_nextCameraCullRevision == 0)
+                m_nextCameraCullRevision = 1;
+        }
         cameraCache.worldOwner = result.worldOwner;
         result.visibleDrawCallsRef =
             cameraCache.usesWorldDrawCalls ? &cachedResult.drawCalls : &cameraCache.visibleDrawCalls;
@@ -175,6 +197,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     }
 
     cameraCache.visibleDrawCalls.clear();
+    cameraCache.visibleDrawCallSourceIndices.clear();
     const uint32_t cullingMask = camera.cullingMask;
     Frustum frustum;
     if (m_frustumCulling)
@@ -215,6 +238,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         cameraCache.worldId = result.worldOwner->WorldId();
         cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
         cameraCache.transformRevision = result.worldOwner->TransformRevision();
+        cameraCache.contentRevision = result.worldOwner->ContentRevision();
         cameraCache.viewProjection = camera.viewProjection;
         cameraCache.cullingMask = camera.cullingMask;
         cameraCache.frustumCulling = m_frustumCulling;
@@ -275,6 +299,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
             DrawCall drawCall = cachedResult.drawCalls[drawCallIndex];
             drawCall.frustumVisible = true;
             cameraCache.visibleDrawCalls.push_back(drawCall);
+            cameraCache.visibleDrawCallSourceIndices.push_back(drawCallIndex);
             if (includeShadowDrawCalls && !allLayersVisible)
                 result.shadowDrawCalls.push_back(std::move(drawCall));
         }
@@ -295,6 +320,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     cameraCache.worldId = result.worldOwner->WorldId();
     cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
     cameraCache.transformRevision = result.worldOwner->TransformRevision();
+    cameraCache.contentRevision = result.worldOwner->ContentRevision();
     cameraCache.viewProjection = camera.viewProjection;
     cameraCache.cullingMask = camera.cullingMask;
     cameraCache.frustumCulling = m_frustumCulling;

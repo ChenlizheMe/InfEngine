@@ -2008,8 +2008,14 @@ def test_color_inspector_respects_field_hdr_metadata(monkeypatch):
 
     def render(hdr: bool):
         calls.clear()
+        ctx = SimpleNamespace(
+            align_text_to_frame_padding=lambda: None,
+            label=lambda _value: None,
+            same_line=lambda _width: None,
+            set_next_item_width=lambda _width: None,
+        )
         inspector_utils.render_serialized_field(
-            SimpleNamespace(),
+            ctx,
             "##tint",
             "Tint",
             FieldMetadata(

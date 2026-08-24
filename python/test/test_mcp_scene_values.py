@@ -4,6 +4,7 @@ from Infernux.components import InxComponent, serialized_field
 from Infernux.lib import Vector3
 from Infernux.mcp.tools.scene import (
     _add_component_through_editor_transaction,
+    _all_components,
     _component_snapshot,
     _coerce_component_property_value,
     _coerce_property_value,
@@ -14,6 +15,34 @@ from Infernux.mcp.tools.scene import (
 )
 from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.render_stack import RenderStack
+
+
+def test_component_summary_keeps_native_and_python_components():
+    class NativeComponent:
+        type_name = "Light"
+        component_id = 17
+
+    class PythonComponent:
+        type_name = "GameplayProbe"
+        component_id = 23
+        _script_guid = "script-guid"
+
+    class Object:
+        @staticmethod
+        def get_components():
+            return [NativeComponent()]
+
+        @staticmethod
+        def get_py_components():
+            return [PythonComponent()]
+
+    components = _all_components(Object())
+
+    assert [(item["type"], item["component_id"]) for item in components] == [
+        ("Light", 17),
+        ("GameplayProbe", 23),
+    ]
+    assert components[1]["python"] is True
 
 
 def test_property_coercion_uses_current_vector3_type_for_array_input():

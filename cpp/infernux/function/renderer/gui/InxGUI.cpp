@@ -629,8 +629,8 @@ void InxGUI::BuildFrameInternal()
             ImGui::DockBuilderDockWindow("###animtimeline_editor", dockScene);
             ImGui::DockBuilderDockWindow("###particle_graph_editor", dockScene);
             // Dock Scene last so it is the selected central tab on a fresh
-            // workspace. UI Editor then remains hidden and cannot switch the
-            // Hierarchy into UI mode during the first editor frame.
+            // workspace. UI Editor remains available as another view while
+            // Hierarchy keeps one stable scene tree for every central tab.
             ImGui::DockBuilderDockWindow("###scene_view", dockScene);
             ImGui::DockBuilderDockWindow("###console", dockBottom);
             ImGui::DockBuilderDockWindow("###project", dockBottom);

@@ -5,6 +5,14 @@ All panels should inherit from this class and override
 ``on_render_content(ctx)``. The base class handles window frame management,
 style push/pop, lifecycle hooks, and service access.
 
+The editor UI boundary is intentionally hybrid. Inspector, Console, Project,
+and other always-hot framework surfaces keep their traversal, clipping, and
+draw-data preparation in native code; rebuilding those paths through Python at
+editor frame rate is measurably too expensive. This Python base remains the
+supported extension boundary so projects and plug-ins can add panels without
+compiling or linking against editor internals. Native core panels and Python
+custom panels therefore share the same window and interaction contracts.
+
 Creating a custom panel::
 
     from Infernux.engine.ui import EditorPanel, editor_panel

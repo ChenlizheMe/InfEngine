@@ -6,6 +6,8 @@ import os
 import shutil
 import tempfile
 
+from .path_utils import relative_path
+
 _log = logging.getLogger("Infernux.library_sync")
 
 _SKIP = {"__pycache__", "__init__.py", "__init__.pyi", "icons.zip"}
@@ -26,13 +28,21 @@ def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
             if filename in _SKIP or filename.endswith(".meta"):
                 continue
             source = os.path.join(directory, filename)
-            relative = os.path.relpath(source, root).replace("\\", "/")
+            relative = relative_path(source, root)
             stat = os.stat(source)
             snapshot[relative] = {
                 "size": int(stat.st_size),
                 "modified_ns": int(stat.st_mtime_ns),
             }
     return snapshot
+
+
+def _destination_files(root: str) -> set[str]:
+    files: set[str] = set()
+    for directory, _folders, filenames in os.walk(root):
+        for filename in filenames:
+            files.add(relative_path(os.path.join(directory, filename), root))
+    return files
 
 
 def _read_sync_manifest(path: str) -> dict[str, dict[str, int]]:
@@ -99,7 +109,10 @@ def sync_resources(project_path: str) -> str:
         changed += 1
 
     removed = 0
-    for relative in previous_entries.keys() - source_entries.keys():
+    # Library/Resources is an engine-owned mirror.  Enumerating destination
+    # names keeps upgrades from retaining files produced before the manifest
+    # existed, or other residue that was never recorded in it.
+    for relative in _destination_files(dst) - source_entries.keys():
         target = os.path.join(dst, *relative.split("/"))
         try:
             os.remove(target)

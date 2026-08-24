@@ -1,3 +1,15 @@
+.pillar-card-accent {
+    border-color: var(--border-accent);
+    background:
+        linear-gradient(160deg, var(--accent-soft) 0%, transparent 60%),
+        var(--bg-panel);
+}
+
+.pillar-card-accent .mini-tag {
+    color: var(--accent);
+    border-color: var(--accent-line);
+}
+
 .code-copy-action {
     min-height: 44px;
     margin-left: auto;

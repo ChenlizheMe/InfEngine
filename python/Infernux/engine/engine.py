@@ -42,9 +42,10 @@ class Engine():
         self._gui_objects = {}
         self._play_mode_manager = None
         self._player_runtime = None
-        # Editor and Player share the same on-demand Python phase-plan service.
-        # Native Scene remains the single lifecycle executor and does not yet
-        # consume this plan, so steady frames must not prepare it.
+        # Editor and Player share one on-demand Python dispatch plan. Native
+        # SceneManager consumes its revision/count summary and owns phase order;
+        # Python retains arbitrary user callables and publishes a new immutable
+        # snapshot only when component structure changes.
         from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
         self._runtime_scheduler = RuntimeExecutionScheduler(
             name=self._application_role,

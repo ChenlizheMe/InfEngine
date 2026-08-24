@@ -68,7 +68,6 @@ std::unordered_map<std::string, double> HierarchyPanel::ConsumeSubTimings()
     out["header"] = m_subHeader;
     out["search"] = m_subSearch;
     out["refresh"] = m_subRefreshRoots;
-    out["canvasRoots"] = m_subCanvasRoots;
     out["filterRoots"] = m_subFilterRoots;
     out["flatBuild"] = m_subFlatBuild;
     out["rows"] = m_subRows;
@@ -82,7 +81,6 @@ std::unordered_map<std::string, double> HierarchyPanel::ConsumeSubTimings()
     m_subHeader = 0.0;
     m_subSearch = 0.0;
     m_subRefreshRoots = 0.0;
-    m_subCanvasRoots = 0.0;
     m_subFilterRoots = 0.0;
     m_subFlatBuild = 0.0;
     m_subRows = 0.0;
@@ -111,21 +109,12 @@ const std::string &HierarchyPanel::Tr(const std::string &key)
 // Public API
 // ════════════════════════════════════════════════════════════════════
 
-void HierarchyPanel::SetUiMode(bool enabled)
-{
-    if (m_uiMode == enabled)
-        return;
-    m_uiMode = enabled;
-    InvalidateSceneStructureCache();
-}
-
 void HierarchyPanel::InvalidateSceneStructureCache()
 {
     m_cachedSceneKey.clear();
     m_cachedStructureVer = UINT64_MAX;
     m_lastRootRefreshTime = 0.0f;
     m_orderedIdsDirty = true;
-    m_canvasRootsDirty = true;
     m_searchVisCache.clear();
     m_itemHeightMeasured = false;
     m_flatItems.clear();
@@ -331,7 +320,6 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
         (ver != m_cachedStructureVer && !canReuseStale)) {
         m_cachedRoots = FilterHidden(scene->GetRootObjects());
         m_orderedIdsDirty = true;
-        m_canvasRootsDirty = true;
         m_searchVisCache.clear();
         m_itemHeightMeasured = false;
         m_flatListDirty = true;
@@ -461,40 +449,6 @@ void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth, std::vecto
 }
 
 // ════════════════════════════════════════════════════════════════════
-// Canvas helpers
-// ════════════════════════════════════════════════════════════════════
-
-bool HierarchyPanel::IsInCanvasTree(GameObject *obj) const
-{
-    // Walk to root and check if that root is in canvas root set
-    GameObject *cur = obj;
-    while (true) {
-        GameObject *p = cur->GetParent();
-        if (!p)
-            break;
-        cur = p;
-    }
-    return m_canvasRootIds.count(cur->GetID()) > 0;
-}
-
-void HierarchyPanel::RefreshCanvasRootIds(const std::vector<GameObject *> &roots)
-{
-    if (!m_canvasRootsDirty)
-        return;
-    m_canvasRootIds.clear();
-    if (getCanvasRootIds) {
-        auto rootIds = getCanvasRootIds();
-        m_canvasRootIds.insert(rootIds.begin(), rootIds.end());
-    } else if (hasCanvasDescendant) {
-        for (auto *go : roots) {
-            if (hasCanvasDescendant(go->GetID()))
-                m_canvasRootIds.insert(go->GetID());
-        }
-    }
-    m_canvasRootsDirty = false;
-}
-
-// ════════════════════════════════════════════════════════════════════
 // Keyboard helpers
 // ════════════════════════════════════════════════════════════════════
 
@@ -594,21 +548,27 @@ bool HierarchyPanel::IsDescendantOf(GameObject *potentialChild, GameObject *pote
     return false;
 }
 
+bool HierarchyPanel::HasUiScreenComponentInSubtree(GameObject *obj) const
+{
+    if (!obj)
+        return false;
+    if (goHasUiScreenComponent && goHasUiScreenComponent(obj->GetID()))
+        return true;
+    for (const auto &child : obj->GetChildren()) {
+        if (HasUiScreenComponentInSubtree(child.get()))
+            return true;
+    }
+    return false;
+}
+
 bool HierarchyPanel::ValidateReparent(GameObject *obj, uint64_t newParentId, GameObject *newParent)
 {
-    if (m_uiMode) {
-        if (!IsInCanvasTree(obj))
-            return false;
-        if (goHasCanvas && goHasCanvas(obj->GetID())) {
-            if (showWarning)
-                showWarning("Canvas can only be a root object.");
-            return false;
-        }
-    } else {
-        if (IsInCanvasTree(obj))
-            return false;
+    if (goHasCanvas && goHasCanvas(obj->GetID())) {
+        if (showWarning)
+            showWarning("Canvas can only be a root object.");
+        return false;
     }
-    if (goHasUiScreenComponent && goHasUiScreenComponent(obj->GetID())) {
+    if (HasUiScreenComponentInSubtree(obj)) {
         if (newParent == nullptr || (parentHasCanvasAncestor && !parentHasCanvasAncestor(newParentId))) {
             if (showWarning)
                 showWarning("UI components must be placed under a Canvas.");
@@ -620,24 +580,13 @@ bool HierarchyPanel::ValidateReparent(GameObject *obj, uint64_t newParentId, Gam
 
 bool HierarchyPanel::ValidateMoveAdjacent(GameObject *obj, uint64_t newParentId, GameObject *newParent)
 {
-    if (m_uiMode) {
-        if (!IsInCanvasTree(obj))
-            return false;
-        if (goHasCanvas && goHasCanvas(obj->GetID()) && newParentId != 0) {
-            if (showWarning)
-                showWarning("Canvas can only be a root object.");
-            return false;
-        }
-        if (goHasCanvas && !goHasCanvas(obj->GetID()) && newParentId == 0) {
-            if (showWarning)
-                showWarning("UI elements must be placed under a Canvas.");
-            return false;
-        }
-    } else {
-        if (IsInCanvasTree(obj))
-            return false;
+    const bool isCanvas = goHasCanvas && goHasCanvas(obj->GetID());
+    if (isCanvas && newParentId != 0) {
+        if (showWarning)
+            showWarning("Canvas can only be a root object.");
+        return false;
     }
-    if (goHasUiScreenComponent && goHasUiScreenComponent(obj->GetID())) {
+    if (!isCanvas && HasUiScreenComponentInSubtree(obj)) {
         if (newParentId == 0 || (newParent && parentHasCanvasAncestor && !parentHasCanvasAncestor(newParentId))) {
             if (showWarning)
                 showWarning("UI components must be placed under a Canvas.");
@@ -734,19 +683,8 @@ void HierarchyPanel::ReparentToRoot(uint64_t draggedId)
         auto *obj = SceneManager::Instance().FindRuntimeObjectByID(did);
         if (!obj)
             continue;
-        if (m_uiMode) {
-            if (!IsInCanvasTree(obj))
-                continue;
-            if (goHasCanvas && !goHasCanvas(obj->GetID())) {
-                if (showWarning)
-                    showWarning("UI elements must be placed under a Canvas.");
-                continue;
-            }
-        } else {
-            if (IsInCanvasTree(obj))
-                continue;
-        }
-        if (goHasUiScreenComponent && goHasUiScreenComponent(obj->GetID())) {
+        const bool isCanvas = goHasCanvas && goHasCanvas(obj->GetID());
+        if (!isCanvas && HasUiScreenComponentInSubtree(obj)) {
             if (showWarning)
                 showWarning("UI components must be placed under a Canvas.");
             continue;
@@ -941,7 +879,7 @@ void HierarchyPanel::RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj)
 {
     if (!obj || !renderContextMenu)
         return;
-    renderContextMenu(ctx, obj->GetID(), obj->IsPrefabInstance(), obj->GetID(), false);
+    renderContextMenu(ctx, obj->GetID(), obj->IsPrefabInstance(), obj->GetID());
 }
 
 bool HierarchyPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument,
@@ -1038,16 +976,9 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
         displayName = &prefabDisplayName;
     }
 
-    // Dim objects that don't belong to the current mode's domain
-    bool uiDimmed = false;
-    if (m_uiMode) {
-        uiDimmed = !IsInCanvasTree(obj);
-    } else if (!m_canvasRootIds.empty()) {
-        uiDimmed = IsInCanvasTree(obj);
-    }
     const bool inactiveDimmed = !obj->IsActiveInHierarchy();
     int textColorPushed = 0;
-    if (uiDimmed || inactiveDimmed) {
+    if (inactiveDimmed) {
         ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
                             EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
         textColorPushed = 1;
@@ -1173,18 +1104,6 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
             if (!ctx->IsMouseDragging(0)) {
                 uint64_t pid = m_pendingSelectId;
 
-                // In UI mode, block selection of non-canvas objects
-                if (m_uiMode) {
-                    Scene *scene = SceneManager::Instance().GetActiveScene();
-                    auto *go = SceneManager::Instance().FindRuntimeObjectByID(pid);
-                    if (go && !IsInCanvasTree(go)) {
-                        m_pendingSelectId = 0;
-                        m_pendingCtrl = false;
-                        m_pendingShift = false;
-                        return;
-                    }
-                }
-
                 if (m_pendingCtrl) {
                     if (toggleId)
                         toggleId(pid);
@@ -1231,11 +1150,9 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     };
 
-    // ── Header: scene name / prefab mode / ui mode ──────────────
+    // ── Header: scene name / prefab mode ────────────────────────
     auto headerStart = Clock::now();
-    if (m_uiMode) {
-        ctx->Label(Tr("hierarchy.ui_mode"));
-    } else if (IsPrefabModeActive()) {
+    if (IsPrefabModeActive()) {
         std::string prefabName = PrefabDisplayName();
         ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT.x, EditorTheme::PREFAB_TEXT.y,
                             EditorTheme::PREFAB_TEXT.z, EditorTheme::PREFAB_TEXT.w);
@@ -1295,13 +1212,6 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         if (ownedRootsEnd != m_cachedRoots.end()) {
             m_cachedRoots.erase(ownedRootsEnd, m_cachedRoots.end());
             m_flatListDirty = true;
-        }
-
-        // Refresh canvas roots
-        {
-            auto t0 = Clock::now();
-            RefreshCanvasRootIds(m_cachedRoots);
-            m_subCanvasRoots += msSince(t0);
         }
 
         // Transfer legacy pending-expand IDs into the new expand tracking
@@ -1615,7 +1525,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     if (backgroundContextOpen) {
         ctx->RecordSemanticWindow("context_menu", "Hierarchy Create", "hierarchy.context.root");
         if (renderContextMenu)
-            renderContextMenu(ctx, 0, false, parentIdForNew, m_uiMode);
+            renderContextMenu(ctx, 0, false, parentIdForNew);
         ctx->EndPopup();
     }
 }

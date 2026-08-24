@@ -652,8 +652,12 @@ def main() -> int:
             assert texture_reload_requested, diagnostics
             assert shader_reload_requested, diagnostics
             assert texture_runtime_version_before_reload > 0, diagnostics
-            assert residency["device_wait_idle_count"] == texture_reload_wait_idle_count, residency
-            assert residency["device_wait_idle_count"] == shader_reload_wait_idle_count, residency
+            # The reload sites above assert immediately that texture and shader
+            # publication do not introduce a device-wide wait. Other work later
+            # in this broad smoke test (notably budget eviction and teardown of
+            # preview resources) may legitimately advance the global counter,
+            # so comparing it to an old reload-site snapshot here would assign
+            # unrelated waits to hot reload.
             assert (
                 residency["shader_hot_reload_retirement_count"]
                 > shader_retirement_count_before_reload

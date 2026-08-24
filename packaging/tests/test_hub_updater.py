@@ -50,6 +50,32 @@ def test_check_falls_back_to_full_asset(monkeypatch):
     assert update.asset_name == full
 
 
+def test_packaged_updater_requests_elevation(tmp_path: Path, monkeypatch):
+    staged = tmp_path / "update"
+    (staged / "stage").mkdir(parents=True)
+    (staged / "hub-update.json").write_text("{}", encoding="utf-8")
+    observed = {}
+
+    monkeypatch.setattr(hub_updater.sys, "platform", "win32")
+    monkeypatch.setattr(hub_updater, "is_frozen", lambda: True)
+    monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(tmp_path / "installed"))
+
+    def launch(script, arguments, working_directory):
+        observed["script"] = script
+        observed["arguments"] = arguments
+        observed["working_directory"] = working_directory
+
+    monkeypatch.setattr(hub_updater, "_launch_elevated_powershell", launch)
+
+    hub_updater.launch_external_updater(staged)
+
+    assert observed["script"] == staged / "apply-update.ps1"
+    assert observed["working_directory"] == staged
+    assert "-InstallDir" in observed["arguments"]
+    assert "-StageDir" in observed["arguments"]
+    assert "-MetadataPath" in observed["arguments"]
+
+
 def test_stage_full_update_verifies_every_file(tmp_path: Path, monkeypatch):
     payload = tmp_path / "payload"
     payload.mkdir()

@@ -11,7 +11,7 @@
 音频监听器组件。场景中的耳朵——通常挂在主摄像机上。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.4
+**状态：** Preview · **验证版本：** 0.3.6
 
 在场景收听位置保留一个预期活动 Listener，通常位于活动 Camera 或玩家头部。Source 距离以它为基准。
 <!-- USER CONTENT END -->

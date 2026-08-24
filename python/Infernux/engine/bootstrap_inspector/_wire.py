@@ -189,8 +189,8 @@ def _wire_component_list(ctx):
                 continue
 
             if _is_py_entry(comp):
-                # CastToPython already resolved PyComponentProxy to the
-                # actual Python instance, so *comp* IS the Python component.
+                # The public GameObject component facade has already unwrapped
+                # any PyComponentProxy, so *comp* is the Python component.
                 py_comp = comp
                 cid = getattr(py_comp, 'component_id', id(py_comp))
                 ci = InspectorComponentInfo()

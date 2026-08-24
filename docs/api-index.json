@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "generated_for_release": "0.3.4",
+  "generated_for_release": "0.3.6",
   "status_default": "stable",
   "symbol_count": 158,
   "curated_example_count": 28,

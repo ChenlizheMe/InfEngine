@@ -85,7 +85,7 @@ def test_player_audit_allows_equal_compiled_assets_with_distinct_runtime_paths()
     assert not player_package_audit_module._is_logically_distinct_asset_payload(
         [
             *distinct_assets,
-            "Game_Data/Runtime.inxrt::Infernux/lib/InfernuxRuntime.dll",
+            "Game_Data/Runtime.inxrt::Infernux/lib/InfernuxRendererRuntime.dll",
         ],
         data_root,
     )
@@ -1249,13 +1249,13 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     data_root.mkdir(parents=True)
     (package_lib / "_Infernux.pyd").write_bytes(b"full bridge")
     (package_lib / "InfernuxFoundation.dll").write_bytes(b"foundation")
-    (package_lib / "InfernuxRuntime.dll").write_bytes(b"runtime")
-    for legacy_name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+    (package_lib / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
+    for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
         (package_lib / legacy_name).write_bytes(b"legacy static dependency")
         (final_dir / legacy_name).write_bytes(b"legacy root dependency")
     (final_dir / "_InfernuxBootstrap.pyd").write_bytes(b"bootstrap")
     (final_dir / "InfernuxFoundation.dll").write_bytes(b"foundation")
-    (final_dir / "InfernuxRuntime.dll").write_bytes(b"runtime")
+    (final_dir / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
     (final_dir / "python312.dll").write_bytes(b"python")
     (final_dir / "_ctypes.pyd").write_bytes(b"ctypes ABI")
     (final_dir / "ffi.dll").write_bytes(b"libffi ABI")
@@ -1269,7 +1269,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     }
     assert "Infernux/lib/_Infernux.pyd" in paths
     assert "Infernux/lib/InfernuxFoundation.dll" in paths
-    assert "Infernux/lib/InfernuxRuntime.dll" in paths
+    assert "Infernux/lib/InfernuxRendererRuntime.dll" in paths
     assert "stdlib/_socket.pyd" in paths
     assert (final_dir / "_InfernuxBootstrap.pyd").is_file()
     assert (final_dir / "InfernuxFoundation.dll").is_file()
@@ -1279,15 +1279,15 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "stdlib/_ctypes.pyd" not in paths
     assert "stdlib/ffi.dll" not in paths
     assert not {
-        f"Infernux/lib/{name}" for name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS
+        f"Infernux/lib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
     } & paths
     assert not {
-        f"stdlib/{name}" for name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS
+        f"stdlib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
     } & paths
-    assert not (final_dir / "InfernuxRuntime.dll").exists()
+    assert not (final_dir / "InfernuxRendererRuntime.dll").exists()
     assert all(
         not (final_dir / name).exists()
-        for name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS
+        for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
     )
     assert not (final_dir / "Infernux").exists()
 
@@ -1644,7 +1644,9 @@ def test_runtime_engine_fingerprint_tracks_loaded_native_payload(tmp_path, monke
     )
     (native_root / bootstrap_module).write_bytes(b"bootstrap")
     companion = native_root / (
-        "InfernuxRuntime.dll" if sys.platform == "win32" else "libInfernuxRuntime.so"
+        "InfernuxRendererRuntime.dll"
+        if sys.platform == "win32"
+        else "libInfernuxRendererRuntime.so"
     )
     companion.write_bytes(b"first")
     monkeypatch.setattr(Infernux, "__file__", str(package_init))
@@ -1675,7 +1677,9 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         else "_Infernux.so"
     )
     companion = (
-        "InfernuxRuntime.dll" if sys.platform == "win32" else "libInfernuxRuntime.so"
+        "InfernuxRendererRuntime.dll"
+        if sys.platform == "win32"
+        else "libInfernuxRendererRuntime.so"
     )
     (native_root / native_module).write_bytes(b"current-module")
     bootstrap_module = (
@@ -1699,7 +1703,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     if python_runtime is not None:
         python_runtime.write_bytes(b"python-runtime")
         (native_root / "zlib.dll").write_bytes(b"runtime-zlib")
-        for legacy_name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
             (native_root / legacy_name).write_bytes(b"legacy static dependency")
     monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
 
@@ -1712,7 +1716,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     (package_lib / companion).write_bytes(b"stale-runtime")
     if sys.platform == "win32":
         (dist / companion).write_bytes(b"stale-root-runtime")
-        for legacy_name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
             (dist / legacy_name).write_bytes(b"stale root legacy")
             (package_lib / legacy_name).write_bytes(b"stale package legacy")
 
@@ -1730,7 +1734,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         assert not (package_lib / "python312.dll").exists()
         assert (package_lib / "zlib.dll").read_bytes() == b"runtime-zlib"
         assert not (dist / "zlib.dll").exists()
-        for legacy_name in NuitkaBuilder._LEGACY_STATIC_SHADER_DLLS:
+        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
             assert not (dist / legacy_name).exists()
             assert not (package_lib / legacy_name).exists()
 

@@ -6,7 +6,7 @@ block_cipher = None
 
 _PACKAGING_DIR = os.path.dirname(os.path.abspath(SPEC))
 _ROOT_DIR = os.path.dirname(_PACKAGING_DIR)
-_PAYLOAD_DIR = os.path.join(_ROOT_DIR, "dist", "Infernux Hub")
+_PAYLOAD_DIR = os.path.join(_ROOT_DIR, "out", "package", "hub")
 
 # Locate OpenSSL DLLs required by _ssl.pyd — PyInstaller often misses these in conda envs.
 import sys as _sys

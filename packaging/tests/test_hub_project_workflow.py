@@ -35,10 +35,10 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
 
 
 def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path, monkeypatch):
-    output = tmp_path / "out" / "build" / "python_wheel"
-    dist = tmp_path / "dist"
+    output = tmp_path / "out" / "build" / "release" / "python_wheel"
+    dist = tmp_path / "dist" / "releases" / "0.2.9"
     output.mkdir(parents=True)
-    dist.mkdir()
+    dist.mkdir(parents=True)
     old_wheel = dist / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
     new_wheel = output / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
     old_wheel.write_bytes(b"old")
@@ -266,6 +266,39 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert (Path(result) / "Assets" / "Rendering" / "Bloom.effect").is_file()
     assert (Path(result) / "Assets" / "Rendering" / "ACES Tone Mapping.effect").is_file()
     assert (Path(result) / "Assets" / "Rendering" / "Default Post Processing.effectgroup").is_file()
+    bloom = json.loads(
+        (Path(result) / "Assets" / "Rendering" / "Bloom.effect.meta").read_text(encoding="utf-8")
+    )
+    tone_mapping = json.loads(
+        (Path(result) / "Assets" / "Rendering" / "ACES Tone Mapping.effect.meta").read_text(encoding="utf-8")
+    )
+    effect_group_meta = json.loads(
+        (
+            Path(result)
+            / "Assets"
+            / "Rendering"
+            / "Default Post Processing.effectgroup.meta"
+        ).read_text(encoding="utf-8")
+    )
+    bloom_guid = bloom["metadata"]["guid"]["value"]
+    tone_mapping_guid = tone_mapping["metadata"]["guid"]["value"]
+    effect_group_guid = effect_group_meta["metadata"]["guid"]["value"]
+    assert all(
+        len(guid) == 32 and set(guid) <= set("0123456789abcdef")
+        for guid in (bloom_guid, tone_mapping_guid, effect_group_guid)
+    )
+    effect_group = json.loads(
+        (
+            Path(result)
+            / "Assets"
+            / "Rendering"
+            / "Default Post Processing.effectgroup"
+        ).read_text(encoding="utf-8")
+    )
+    assert [entry["asset"]["guid"] for entry in effect_group["entries"]] == [
+        bloom_guid,
+        tone_mapping_guid,
+    ]
     build_settings = json.loads(
         (Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8")
     )
@@ -287,6 +320,11 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         "Directional Light",
         "RenderStack",
     ]
+    assert (
+        scene["objects"][2]["components"][0]["data"]["effect_slots"][0]
+        ["fields"]["effect"]["guid"]
+        == effect_group_guid
+    )
     camera_data = scene["objects"][0]["components"][0]["data"]
     assert camera_data["projectionMode"] == 0
     assert set(camera_data) == {

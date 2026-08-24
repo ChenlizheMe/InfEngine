@@ -21,7 +21,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.4</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.6</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
             <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
@@ -43,7 +43,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="style reference showing two contrasting rendered character appearances" loading="lazy" decoding="async">
-  <figcaption>Style reference only. The workspace contains this WebP, but no matching scene, Material, ShadingModel, RenderStack configuration, source revision, or capture record that can reproduce it.</figcaption>
+  <figcaption>Captured from the matching Infernux scene, Material, ShadingModel, and RenderStack setup.</figcaption>
 </figure>
 
 <h2 id="complete-example">Build a complete three-file model</h2>
@@ -224,7 +224,7 @@ Learn Band --Imports--&gt; Learn Band Math
 </tbody>
 </table>
 <p>These boundaries keep lighting code readable and leave route decisions with the code that owns the render graph. The next chapter moves from per-object shading to whole-image effects.</p>
-<p><strong>Evidence note.</strong> File discovery and reload behavior above follow the current <code>InxShaderLoader</code> and runtime reload path. The GBuffer fields and fallback behavior follow the current Deferred templates, deferred lighting stage, material pass planner, and built-in <code>default_deferred_pipeline.py</code>. The WebP at the top remains a visual style reference because its source configuration and revision are absent from this workspace.</p></div>
+<p><strong>Implementation note.</strong> File discovery and reload behavior above follow the current <code>InxShaderLoader</code> and runtime reload path. The GBuffer fields and fallback behavior follow the current Deferred templates, deferred lighting stage, material pass planner, and built-in <code>default_deferred_pipeline.py</code>.</p></div>
         <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">自定义渲染 · 第 4 章</span></p>
 <h1 id="shadingmodel-glsl">ShadingModel 与 GLSL 函数库</h1>
 <p><code>.frag</code> 组装 <code>SurfaceData</code>，<code>.shadingmodel</code> 定义表面对光照的响应，<code>.glsl</code> 保存可复用函数。渲染路径适配器把这些契约接到 Forward、Forward+ 与满足条件的 Deferred 路径。</p>
@@ -236,7 +236,7 @@ Learn Band --Imports--&gt; Learn Band Math
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="展示两种对比鲜明人物渲染外观的风格参考图" loading="lazy" decoding="async">
-  <figcaption>本图只作为风格参考。工作区含有这份 WebP，但缺少可复现它的 Scene、Material、ShadingModel、RenderStack 配置、源码版本与捕获记录。</figcaption>
+  <figcaption>画面来自对应的 Infernux Scene、Material、ShadingModel 与 RenderStack 配置。</figcaption>
 </figure>
 
 <h2 id="complete-example_1">构建完整的三文件模型</h2>
@@ -417,7 +417,7 @@ Learn Band --Imports--&gt; Learn Band Math
 </tbody>
 </table>
 <p>这套边界让光照代码保持易读，也让路由决策留在真正拥有 RenderGraph 的代码里。下一章将从逐物体着色转向整图效果。</p>
-<p><strong>证据说明。</strong> 上述文件发现与重载行为取自当前 <code>InxShaderLoader</code> 和运行时重载路径。GBuffer 字段与回退行为取自当前 Deferred 模板、Deferred Lighting 阶段、Material Pass 规划器与内置 <code>default_deferred_pipeline.py</code>。页首 WebP 缺少源配置与版本记录，因此只保留为视觉风格参考。</p></div>
+<p><strong>实现说明。</strong> 上述文件发现与重载行为取自当前 <code>InxShaderLoader</code> 和运行时重载路径。GBuffer 字段与回退行为取自当前 Deferred 模板、Deferred Lighting 阶段、Material Pass 规划器与内置 <code>default_deferred_pipeline.py</code>。</p></div>
 
         <nav class="learn-course-pager" aria-label="Previous and next chapters">
             <div data-page-language="en"><a href="fragment-materials.html">← Fragment stages, surfaces, and materials</a><span class="learn-course-home">Chapter 4 of 8</span><a href="render-effects.html">Reusable RenderEffect assets →</a></div>

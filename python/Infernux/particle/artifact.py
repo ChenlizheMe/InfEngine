@@ -576,6 +576,7 @@ class ParticleArtifactRegistry:
         *,
         guid: str = "",
         force_recompile: bool = False,
+        runtime_artifact_path: str = "",
     ) -> ParticleArtifact:
         source_path = resolved_path(path)
         try:
@@ -620,7 +621,11 @@ class ParticleArtifactRegistry:
                 return alias
 
         owner = cls._resolve_source_guid(source_path, guid)
-        publish_path = cls._artifact_path(owner or stable_id)
+        publish_path = (
+            resolved_path(runtime_artifact_path)
+            if str(runtime_artifact_path or "").strip()
+            else cls._artifact_path(owner or stable_id)
+        )
         artifact_path = (
             cls._existing_artifact_path(
                 guid=owner, source_path=source_path, stable_id=stable_id

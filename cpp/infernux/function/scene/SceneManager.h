@@ -191,6 +191,13 @@ class SceneManager
         return m_renderTransformRevision;
     }
 
+    /// Render-facing revision for dynamic draw-call payloads that do not
+    /// affect transforms or visibility, such as a skinned bone palette.
+    [[nodiscard]] uint64_t GetRenderContentRevision() const noexcept
+    {
+        return m_renderContentRevision;
+    }
+
     // ========================================================================
     // DontDestroyOnLoad
     // ========================================================================
@@ -371,6 +378,12 @@ class SceneManager
                                       RuntimeLifecyclePhaseCallback lateUpdate,
                                       RuntimeLifecyclePhaseCallback editorUpdate, RuntimeLifecycleEndCallback endFrame);
     void SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback);
+    /// Publish the immutable Python phase plan consumed by the native frame
+    /// driver. Python still owns arbitrary user-callable objects; native code
+    /// owns phase ordering, rejects stale revisions, and retains phase counts
+    /// without scanning Python component structure every frame.
+    void SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
+                                 size_t lateUpdateCount) noexcept;
     void SetRuntimeLifecycleWorkAvailable(bool available) noexcept;
     void EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const;
     void ClearRuntimeLifecycleCallbacks();
@@ -413,6 +426,9 @@ class SceneManager
     /// Bump the renderable cache version after a registered MeshRenderer
     /// changes mesh/material state without leaving the registry.
     void NotifyMeshRendererChanged(MeshRenderer *renderer);
+
+    /// Bump dynamic render content without forcing a structural rebuild.
+    void NotifyMeshRendererContentChanged(MeshRenderer *renderer);
 
     /// Read-only access to the active mesh renderers registry.
     [[nodiscard]] const std::vector<MeshRenderer *> &GetActiveMeshRenderers() const
@@ -526,7 +542,12 @@ class SceneManager
     bool m_runtimeLifecycleSchedulerEnabled = false;
     bool m_runtimeLifecycleWorkAvailable = false;
     bool m_runtimeLifecycleFrameOpen = false;
+    uint64_t m_runtimeLifecyclePlanRevision = 0;
+    size_t m_runtimeLifecycleFixedUpdateCount = 0;
+    size_t m_runtimeLifecycleUpdateCount = 0;
+    size_t m_runtimeLifecycleLateUpdateCount = 0;
     uint64_t m_renderTransformRevision = 1;
+    uint64_t m_renderContentRevision = 1;
 
     // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.

@@ -7,7 +7,6 @@
 The vertex stage answers one narrow question: **where is this vertex, and what information should reach the fragment stage?** Keeping it separate from the fragment stage lets the same deformation drive several visual styles. A wave vertex stage can support water, lava, holograms, or a depth-only utility without duplicating the motion.
 
 <div class="learn-article-toc"><strong>In this chapter</strong><a href="#minimal-stage">The minimal stage</a><a href="#vertex-layout">Vertex layout</a><a href="#vertex-hook">The vertex hook</a><a href="#varyings">Stage interfaces</a><a href="#geometry-data">Geometry responsibilities</a><a href="#reuse">Reuse and debugging</a></div>
-<div class="learn-article-toc"><strong>In this chapter</strong><a href="#minimal-stage">The minimal stage</a><a href="#vertex-layout">Vertex layout</a><a href="#vertex-hook">The vertex hook</a><a href="#varyings">Stage interfaces</a><a href="#geometry-data">Geometry responsibilities</a><a href="#reuse">Reuse and debugging</a></div>
 
 <figure class="learn-figure">
   <img src="../assets/learn/vertex-reuse.webp" alt="comparison of one vertex deformation with three fragment appearances" loading="lazy" decoding="async">
@@ -42,15 +41,15 @@ The material linker pairs the selected stages and checks their properties and va
 
 The hook edits `VertexInput`, but that public struct sits on top of a fixed engine vertex buffer. The buffer names below are implementation fields; shader authors use the `VertexInput` field in the next column:
 
-| Location | Engine buffer field | `VertexInput` field | Type    | Notes                           |
-| -------- | ------------------- | ------------------- | ------- | ------------------------------- |
-| 0        | `pos`               | `position`          | `vec3`  | Local-space position            |
-| 1        | `normal`            | `normal`            | `vec3`  | Missing source normals face +Y  |
-| 2        | `tangent`           | `tangent`           | `vec4`  | `.w` carries the bitangent sign |
-| 3        | `color`             | `color`             | `vec3`  | Defaults to white               |
-| 4        | `texCoord`          | `texCoord`          | `vec2`  | Primary UV set                  |
-| 5        | `boneIndices`       | Engine-owned        | `uvec4` | GPU skinning palette indices    |
-| 6        | `boneWeights`       | Engine-owned        | `vec4`  | GPU skinning weights            |
+| Location | Engine buffer field | `VertexInput` field | Type | Notes |
+| --- | --- | --- | --- | --- |
+| 0 | `pos` | `position` | `vec3` | Local-space position |
+| 1 | `normal` | `normal` | `vec3` | Missing source normals face +Y |
+| 2 | `tangent` | `tangent` | `vec4` | `.w` carries the bitangent sign |
+| 3 | `color` | `color` | `vec3` | Defaults to white |
+| 4 | `texCoord` | `texCoord` | `vec2` | Primary UV set |
+| 5 | `boneIndices` | Engine-owned | `uvec4` | GPU skinning palette indices |
+| 6 | `boneWeights` | Engine-owned | `vec4` | GPU skinning weights |
 
 For example, location 0 is stored as `pos` in the C++ `Vertex` structure, then presented to user code as `v.position`. Shader code never accesses `v.pos`. The generated builtins mirror locations 0-6 and construct the public `VertexInput` contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.
 
@@ -156,10 +155,6 @@ Location assignment is engine-owned as well. The built-in varyings occupy locati
 
 Two checks enforce the contract. At import time, the stage linker pairs every fragment `Inputs` member with a vertex `Outputs` member by name and compares type, interpolation, semantic, and space. Its diagnostics cover a missing vertex output, a type mismatch, an interpolation mismatch, a semantic mismatch, a space mismatch, duplicate varyings, duplicate semantics, and the location ceiling. At runtime, when the linked program is created, `ShaderProgram::ValidateStageInterface()` reflects the compiled SPIR-V and compares each fragment input with the vertex output at the same location, including the vector width. A stage pair that passes the source-level link but disagrees in reflection fails program creation before any Vulkan pipeline is built.
 
-Location assignment is engine-owned as well. The built-in varyings occupy locations 0-5 (`v_WorldPos`, `v_Normal`, `v_Tangent`, `v_Color`, `v_TexCoord`, `v_ViewDepth`). Authored varyings start at location 6. The linker sorts them by semantic first, then by name, so the declaration order in the file does not decide the layout; a `mat4` consumes four consecutive locations. The ceiling is location 15, and location 15 itself is reserved for engine pass data such as the picking ID. `ShaderStageLinker` applies these rules when the stages link at import time.
-
-Two checks enforce the contract. At import time, the stage linker pairs every fragment `Inputs` member with a vertex `Outputs` member by name and compares type, interpolation, semantic, and space. Its diagnostics cover a missing vertex output, a type mismatch, an interpolation mismatch, a semantic mismatch, a space mismatch, duplicate varyings, duplicate semantics, and the location ceiling. At runtime, when the linked program is created, `ShaderProgram::ValidateStageInterface()` reflects the compiled SPIR-V and compares each fragment input with the vertex output at the same location, including the vector width. A stage pair that passes the source-level link but disagrees in reflection fails program creation before any Vulkan pipeline is built.
-
 Custom varyings are only needed when the fragment stage needs data beyond the standard contract. Built-in surface helpers already expose standard UVs, vertex color, world normal, and related mesh data.
 
 `Space(World)` is a checked label with no transform behavior. The linker verifies that producer and consumer use the same label; object-to-world multiplication remains author code. Compute a value in world space first with the transform or helper available to that geometry domain, then declare it `Space(World)` on both sides. Tagging object-space `v.position` as world space creates a consistently mislabeled varying.
@@ -209,7 +204,6 @@ The compiler places the same hook in compatible color, shadow/depth, picking, an
 </figure>
 
 <div class="learn-note"><strong>Evidence note.</strong><p>Name discovery follows <code>inspector_shader_utils.py</code>. Hook order and generated variants follow the mesh, shadow, picking, and motion templates plus <code>InxShaderLoader.cpp</code>. The vertex attribute layout and reflection filter follow <code>InxRenderStruct.h</code> and <code>VertexInputFilter.h</code>; stage pairing, its diagnostics, and location assignment follow <code>ShaderStageLinker.cpp</code> and <code>ShaderProgram.cpp</code>. The time convention follows <code>EngineGlobals.h</code>, <code>InxRenderer.cpp</code>, and <code>timing.py</code>. The bounds boundary follows <code>MeshRenderer.cpp</code> and the Python declarations in <code>BindingScene.cpp</code>; the documented public surface includes <code>get_world_bounds()</code> and <code>set_inline_mesh_data(...)</code>, with no bounds setter.</p></div>
-<div class="learn-note"><strong>Evidence note.</strong><p>Name discovery follows <code>inspector_shader_utils.py</code>. Hook order and generated variants follow the mesh, shadow, picking, and motion templates plus <code>InxShaderLoader.cpp</code>. The vertex attribute layout and reflection filter follow <code>InxRenderStruct.h</code> and <code>VertexInputFilter.h</code>; stage pairing, its diagnostics, and location assignment follow <code>ShaderStageLinker.cpp</code> and <code>ShaderProgram.cpp</code>. The time convention follows <code>EngineGlobals.h</code>, <code>InxRenderer.cpp</code>, and <code>timing.py</code>. The bounds boundary follows <code>MeshRenderer.cpp</code> and the Python declarations in <code>BindingScene.cpp</code>; the documented public surface includes <code>get_world_bounds()</code> and <code>set_inline_mesh_data(...)</code>, with no bounds setter.</p></div>
 
 The next chapter keeps this geometry stage and changes only what the surface is made of.
 
@@ -221,7 +215,6 @@ The next chapter keeps this geometry stage and changes only what the surface is 
 
 顶点阶段只回答一个狭窄的问题：**这个顶点在哪里，以及哪些信息需要传给片元阶段？** 把它与片元阶段分开，同一套形变就能服务多种画面风格。一份波浪 Vert 可以同时用于水面、岩浆、全息效果或只写深度的工具 Pass，而不用复制运动逻辑。
 
-<div class="learn-article-toc"><strong>本章内容</strong><a href="#minimal-stage_1">最小顶点阶段</a><a href="#vertex-layout_1">顶点布局</a><a href="#vertex-hook_1">vertex Hook</a><a href="#varyings_1">阶段接口</a><a href="#geometry-data_1">几何数据责任</a><a href="#reuse_1">复用与排错</a></div>
 <div class="learn-article-toc"><strong>本章内容</strong><a href="#minimal-stage_1">最小顶点阶段</a><a href="#vertex-layout_1">顶点布局</a><a href="#vertex-hook_1">vertex Hook</a><a href="#varyings_1">阶段接口</a><a href="#geometry-data_1">几何数据责任</a><a href="#reuse_1">复用与排错</a></div>
 
 <figure class="learn-figure">
@@ -257,15 +250,15 @@ Material 链接器会组合所选阶段，并在 Vulkan Pipeline 创建前检查
 
 Hook 编辑的是公开结构 `VertexInput`，它建立在固定的引擎顶点缓冲之上。下表中的“引擎缓冲字段”属于底层实现；编写 Shader 时应使用旁边的 `VertexInput` 字段：
 
-| Location | 引擎缓冲字段  | `VertexInput` 字段 | 类型    | 说明                    |
-| -------- | ------------- | ------------------ | ------- | ----------------------- |
-| 0        | `pos`         | `position`         | `vec3`  | 物体空间位置            |
-| 1        | `normal`      | `normal`           | `vec3`  | 缺少源法线时朝向 +Y     |
-| 2        | `tangent`     | `tangent`          | `vec4`  | `.w` 保存副切线方向符号 |
-| 3        | `color`       | `color`            | `vec3`  | 默认白色                |
-| 4        | `texCoord`    | `texCoord`         | `vec2`  | 主 UV 集                |
-| 5        | `boneIndices` | 引擎内部使用       | `uvec4` | GPU 蒙皮骨骼调色板索引  |
-| 6        | `boneWeights` | 引擎内部使用       | `vec4`  | GPU 蒙皮权重            |
+| Location | 引擎缓冲字段 | `VertexInput` 字段 | 类型 | 说明 |
+| --- | --- | --- | --- | --- |
+| 0 | `pos` | `position` | `vec3` | 物体空间位置 |
+| 1 | `normal` | `normal` | `vec3` | 缺少源法线时朝向 +Y |
+| 2 | `tangent` | `tangent` | `vec4` | `.w` 保存副切线方向符号 |
+| 3 | `color` | `color` | `vec3` | 默认白色 |
+| 4 | `texCoord` | `texCoord` | `vec2` | 主 UV 集 |
+| 5 | `boneIndices` | 引擎内部使用 | `uvec4` | GPU 蒙皮骨骼调色板索引 |
+| 6 | `boneWeights` | 引擎内部使用 | `vec4` | GPU 蒙皮权重 |
 
 以 Location 0 为例，C++ `Vertex` 结构把它存为 `pos`，生成代码再把它映射成用户接口里的 `v.position`；用户 Shader 不应写 `v.pos`。生成的 Builtin 会镜像 Location 0 到 6，并据此构造公开的 `VertexInput`。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。
 
@@ -371,10 +364,6 @@ Location 分配同样归引擎。内置 Varying 固定占 location 0 到 5（`v_
 
 这套契约有两道检查。导入期，阶段链接器按名字把每个片元 `Inputs` 成员配对到顶点 `Outputs` 成员，再比较类型、插值方式、Semantic 与空间；它的诊断覆盖缺失顶点输出、类型不匹配、插值不匹配、Semantic 不匹配、空间不匹配、重复 Varying、重复 Semantic 以及 Location 上限。运行期创建链接程序时，`ShaderProgram::ValidateStageInterface()` 反射编译后的 SPIR-V，按 Location 逐项比较片元输入与顶点输出，包括向量宽度。源级链接通过但反射不一致的阶段组合，会在程序创建阶段失败，此时任何 Vulkan Pipeline 都还没有开始构建。
 
-Location 分配同样归引擎。内置 Varying 固定占 location 0 到 5（`v_WorldPos`、`v_Normal`、`v_Tangent`、`v_Color`、`v_TexCoord`、`v_ViewDepth`），自定义 Varying 从 location 6 开始。链接器先按 Semantic 排序、再按名字排序，文件里的声明顺序不决定布局；`mat4` 连续占用 4 个 location。上限是 location 15，location 15 本身保留给拾取 ID 等引擎 Pass 数据。`ShaderStageLinker` 在导入期链接阶段时应用这些规则。
-
-这套契约有两道检查。导入期，阶段链接器按名字把每个片元 `Inputs` 成员配对到顶点 `Outputs` 成员，再比较类型、插值方式、Semantic 与空间；它的诊断覆盖缺失顶点输出、类型不匹配、插值不匹配、Semantic 不匹配、空间不匹配、重复 Varying、重复 Semantic 以及 Location 上限。运行期创建链接程序时，`ShaderProgram::ValidateStageInterface()` 反射编译后的 SPIR-V，按 Location 逐项比较片元输入与顶点输出，包括向量宽度。源级链接通过但反射不一致的阶段组合，会在程序创建阶段失败，此时任何 Vulkan Pipeline 都还没有开始构建。
-
 多数材质用不到自定义 Varying。内置 Surface Helper 已经提供常规 UV、顶点色、世界法线等网格数据；只有标准契约没带上 Frag 真正需要的值时，才值得增加接口。
 
 `Space(World)` 只是一枚会被校验的标签，本身没有变换能力。链接器确认生产端和消费端使用同一个 Space；object-to-world 乘法仍由作者编写。先用当前几何域提供的变换或 Helper 算出真正的世界空间值，再在两端都标记 `Space(World)`。给物体空间的 `v.position` 直接贴上这个标签，会得到一条“双方一致、内容错误”的 Varying。
@@ -423,7 +412,6 @@ Location 分配同样归引擎。内置 Varying 固定占 location 0 到 5（`v_
   <figcaption>图解：Vertex 选择器显示 `ShaderInfo Name` 的值 <code>Wave</code>；旁边示例展示片元阶段类型诊断。这是一张示意图，不对应 Editor 的逐像素截图。</figcaption>
 </figure>
 
-<div class="learn-note"><strong>证据说明。</strong><p>Name 发现语义来自 <code>inspector_shader_utils.py</code>。Hook 顺序与生成变体来自 Mesh、Shadow、Picking、Motion 模板及 <code>InxShaderLoader.cpp</code>。顶点属性布局与反射过滤来自 <code>InxRenderStruct.h</code> 与 <code>VertexInputFilter.h</code>；阶段配对、配对诊断与 Location 分配来自 <code>ShaderStageLinker.cpp</code> 与 <code>ShaderProgram.cpp</code>。时间约定来自 <code>EngineGlobals.h</code>、<code>InxRenderer.cpp</code> 与 <code>timing.py</code>。Bounds 边界来自 <code>MeshRenderer.cpp</code> 和 <code>BindingScene.cpp</code> 的 Python 声明；文中公共表面包含 <code>get_world_bounds()</code> 与 <code>set_inline_mesh_data(...)</code>，没有 Bounds Setter。</p></div>
 <div class="learn-note"><strong>证据说明。</strong><p>Name 发现语义来自 <code>inspector_shader_utils.py</code>。Hook 顺序与生成变体来自 Mesh、Shadow、Picking、Motion 模板及 <code>InxShaderLoader.cpp</code>。顶点属性布局与反射过滤来自 <code>InxRenderStruct.h</code> 与 <code>VertexInputFilter.h</code>；阶段配对、配对诊断与 Location 分配来自 <code>ShaderStageLinker.cpp</code> 与 <code>ShaderProgram.cpp</code>。时间约定来自 <code>EngineGlobals.h</code>、<code>InxRenderer.cpp</code> 与 <code>timing.py</code>。Bounds 边界来自 <code>MeshRenderer.cpp</code> 和 <code>BindingScene.cpp</code> 的 Python 声明；文中公共表面包含 <code>get_world_bounds()</code> 与 <code>set_inline_mesh_data(...)</code>，没有 Bounds Setter。</p></div>
 
 下一章会保留这份几何阶段，只改变表面由什么组成。

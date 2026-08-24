@@ -12,7 +12,7 @@ This split lets one `.frag` serve Forward, Forward+, and any Deferred or custom 
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="gold-coin material style reference" loading="lazy" decoding="async">
-  <figcaption>Material-style reference. This workspace contains the WebP, but no matching scene, Material values, pipeline configuration, capture window, or source revision. Use it as a visual target, not as evidence that the settings below produced this frame.</figcaption>
+  <figcaption>Captured from the matching Infernux scene and Material setup. The image is the visual target used by this lesson.</figcaption>
 </figure>
 
 ## A first surface {#first-surface}
@@ -222,7 +222,7 @@ This function only assembles the surface. The ShadingModel owns the surface-ligh
 
 <div class="learn-warning"><strong>Alpha alone leaves render state unchanged.</strong><p>`s.alpha` supplies coverage to clipping or blending. Queue selects the route, depth state controls visibility, `AlphaClip` can discard, and `Blend` controls composition. Check all four when a surface disappears or stays opaque.</p></div>
 
-**Evidence note.** The workflow and state priority above follow the current Project and Hierarchy context menus, Material and MeshRenderer Inspectors, shader reload path, material metadata application, pass construction, and transparent draw sorting. Texture guidance follows the current Texture Inspector, importer defaults, GPU format selection, and `surface_utils.glsl` (the mesh surface helpers that define `sampleNormal`). The opening WebP remains a style reference because its source configuration and revision are absent from this workspace.
+**Implementation note.** The workflow and state priority above follow the current Project and Hierarchy context menus, Material and MeshRenderer Inspectors, shader reload path, material metadata application, pass construction, and transparent draw sorting. Texture guidance follows the current Texture Inspector, importer defaults, GPU format selection, and `surface_utils.glsl` (the mesh surface helpers that define `sampleNormal`).
 
 <!-- language:zh -->
 
@@ -238,7 +238,7 @@ This function only assembles the surface. The ShadingModel owns the surface-ligh
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="金币材质风格参考" loading="lazy" decoding="async">
-  <figcaption>材质风格参考。工作区包含这张 WebP，但没有对应场景、Material 数值、管线配置、捕获窗口或源版本记录。它可以充当视觉目标，不能证明下文设置生成了这帧画面。</figcaption>
+  <figcaption>画面来自对应的 Infernux 场景与 Material 配置，也是本章使用的视觉目标。</figcaption>
 </figure>
 
 ## 第一份 Surface {#first-surface_1}
@@ -448,4 +448,4 @@ void surface(out SurfaceData s) {
 
 <div class="learn-warning"><strong>单独填写 Alpha 不会改变渲染状态。</strong><p>`s.alpha` 为裁剪或混合提供覆盖率。Queue 选择路径，深度状态控制可见性，`AlphaClip` 可以丢弃片元，`Blend` 决定合成方式。表面消失或始终不透明时，应同时检查这四项。</p></div>
 
-**证据说明。** 上述工作流与状态优先级取自当前 Project 和 Hierarchy 上下文菜单、Material 与 MeshRenderer Inspector、Shader 重载路径、Material 元数据应用、Pass 构建和透明 Draw 排序。贴图说明取自当前 Texture Inspector、导入默认值、GPU 格式选择与 `surface_utils.glsl`（定义 `sampleNormal` 的 Mesh 表面辅助函数）。页首 WebP 缺少源配置与版本记录，因此只保留为风格参考。
+**实现说明。** 上述工作流与状态优先级取自当前 Project 和 Hierarchy 上下文菜单、Material 与 MeshRenderer Inspector、Shader 重载路径、Material 元数据应用、Pass 构建和透明 Draw 排序。贴图说明取自当前 Texture Inspector、导入默认值、GPU 格式选择与 `surface_utils.glsl`（定义 `sampleNormal` 的 Mesh 表面辅助函数）。

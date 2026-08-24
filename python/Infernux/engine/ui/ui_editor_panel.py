@@ -86,10 +86,8 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
         # ── External references ──
         self._engine = None                  # Engine instance (for game texture)
-        self._on_request_ui_mode = None      # Callback(bool) to toggle hierarchy UI mode
 
         # ── Shared Hierarchy presentation ──
-        self._hierarchy_mode_active: bool = False
         self._settings_loaded: bool = False
         self._active_alignment_guides: list[tuple[str, float, float, float]] = []
 
@@ -117,10 +115,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     def set_engine(self, engine):
         """Set engine instance (needed for Game background mode)."""
         self._engine = engine
-
-    def set_on_request_ui_mode(self, callback):
-        """callback(enter: bool) — ask hierarchy to enter/exit UI mode."""
-        self._on_request_ui_mode = callback
 
     def current_child_context_id(self) -> str:
         return (
@@ -553,19 +547,10 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
     def _on_visible_pre(self, ctx):
         self._load_view_settings()
-        # Hierarchy mode follows the visible central workspace, not keyboard
-        # focus. Clicking Hierarchy/Inspector must not make a still-visible UI
-        # Editor suddenly present the normal scene tree.
-        if not self._hierarchy_mode_active and self._on_request_ui_mode:
-            self._on_request_ui_mode(True)
-        self._hierarchy_mode_active = True
 
     def _on_not_visible(self, ctx):
         self._commit_pending_view_edits()
         self._finish_element_manipulation(commit=True)
-        if self._hierarchy_mode_active and self._on_request_ui_mode:
-            self._on_request_ui_mode(False)
-        self._hierarchy_mode_active = False
 
     def on_disable(self) -> None:
         self._commit_pending_view_edits()
