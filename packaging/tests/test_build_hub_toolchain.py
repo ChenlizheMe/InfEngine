@@ -54,7 +54,8 @@ def test_hub_build_embeds_the_private_runtime_bundle(
 ):
     source_root = tmp_path / "source"
     packaging_dir = source_root / "packaging"
-    runtime_bundle = packaging_dir / "runtime" / "runtime_bundle.zip"
+    package_dir = tmp_path / "dist"
+    runtime_bundle = package_dir / "runtime" / "runtime_bundle.zip"
     runtime_bundle.parent.mkdir(parents=True)
     archive = runtime_archive_for_machine()
     marker = {
@@ -69,7 +70,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
             "python312/.infernux-private-python-runtime.json",
             json.dumps(marker),
         )
-    (packaging_dir / "resources").mkdir()
+    (packaging_dir / "resources").mkdir(parents=True)
     (packaging_dir / "resources" / "icon.png").write_bytes(b"icon")
     (packaging_dir / "resources" / "hub_notifications.json").write_text(
         '{"schema": 1, "notifications": []}\n', encoding="utf-8"
@@ -97,7 +98,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     build_hub._build_hub(
         source_root,
         build_dir,
-        tmp_path / "dist",
+        package_dir,
         cmake_generator="Visual Studio 17 2022",
         build_env={},
         tools={"visual_studio": "", "msbuild": "", "cl": "", "link": ""},
@@ -119,7 +120,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
 
 def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
     source_root = tmp_path / "source"
-    runtime_bundle = source_root / "packaging" / "runtime" / "runtime_bundle.zip"
+    runtime_bundle = tmp_path / "dist" / "runtime" / "runtime_bundle.zip"
     runtime_bundle.parent.mkdir(parents=True)
     with zipfile.ZipFile(runtime_bundle, "w") as bundle:
         bundle.writestr(

@@ -1,13 +1,13 @@
 @echo off
 setlocal EnableExtensions
-cd /d "%~dp0"
+cd /d "%~dp0\..\.."
 
 rem Maintainer release commands:
-rem   release_hub.bat 0.3.6                 Build every package and publish a new release.
-rem   release_hub.bat 0.3.6 --force         Rebuild and replace an existing release.
-rem   release_hub.bat 0.3.6 --overwrite     Alias for --force.
-rem   release_hub.bat 0.3.6 --build-only    Build every package without uploading.
-rem   release_hub.bat 0.3.6 --upload-only   Upload an already completed local build.
+rem   scripts\release\release_hub.bat 0.3.6                 Build and publish.
+rem   scripts\release\release_hub.bat 0.3.6 --force         Replace a release.
+rem   scripts\release\release_hub.bat 0.3.6 --overwrite     Alias for --force.
+rem   scripts\release\release_hub.bat 0.3.6 --build-only    Build without upload.
+rem   scripts\release\release_hub.bat 0.3.6 --upload-only   Upload an existing build.
 
 set "VERSION=%~1"
 if not defined VERSION set /p "VERSION=Infernux version (for example 0.2.2): "
@@ -44,5 +44,5 @@ for %%A in (%*) do (
     if /I "%%~A"=="--upload-only" set "UPLOAD_ONLY_ARG=-UploadOnly"
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0packaging\release_hub.ps1" -Version "%VERSION%" %PUBLISH_ARG% %FORCE_ARG% %UPLOAD_ONLY_ARG%
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0release_hub.ps1" -Version "%VERSION%" %PUBLISH_ARG% %FORCE_ARG% %UPLOAD_ONLY_ARG%
 exit /b %ERRORLEVEL%

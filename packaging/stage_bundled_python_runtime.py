@@ -536,7 +536,7 @@ def main() -> int:
         return 0
 
     raise SystemExit(
-        "Unable to prepare a usable bundled Python 3.12 runtime under packaging/runtime/python312."
+        "Unable to prepare a usable bundled Python 3.12 runtime under out/package/runtime/python312."
     )
 
 

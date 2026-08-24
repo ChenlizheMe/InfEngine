@@ -5,122 +5,119 @@
 <h1 align="center">Infernux · 熔炉</h1>
 
 <p align="center">
-  <strong>A Python-native game engine with a C++17 / Vulkan runtime.</strong>
+  <strong>An experimental general-purpose game engine with a C++/GPU runtime and Python as a first-class development interface.</strong>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/version-0.3.6-orange.svg" alt="Version 0.3.6" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
-  <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
-  <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
-  <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++ 17" />
+  <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="Current platform: Windows" />
+  <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/graphics-Vulkan-red.svg" alt="Vulkan" />
 </p>
 
 <p align="center">
-  <a href="README-zh.md">中文</a> ·
+  <a href="README-zh.md">简体中文</a> ·
   <a href="https://infernux-engine.com/">Website</a> ·
   <a href="https://infernux-engine.com/wiki.html">Documentation</a> ·
-  <a href="https://infernux-engine.discourse.group/">Community</a> ·
-  <a href="https://github.com/ChenlizheMe/Infernux/releases">Releases</a> ·
-  <a href="https://arxiv.org/pdf/2604.10263">Technical Report</a>
+  <a href="https://infernux-engine.discourse.group/">Forum</a> ·
+  <a href="https://github.com/ChenlizheMe/Infernux/releases">Releases</a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="Infernux 0.3.4 editor rendering a 65,536-object voxel continent with a custom RenderStack" width="100%" />
+  <img src="docs/assets/demo.png" alt="Infernux editor rendering a 65,536-object voxel scene with a custom RenderStack" width="100%" />
 </p>
 
-The capture above is a real 1920×1032 editor session: 65,536 regular GameObjects share one mesh and material to form a lit voxel continent while a programmable RenderStack applies tilt-shift focus, atmospheric fog, color treatment, and MSAA in real time.
+The image above is a real editor capture from the 0.3.4 showcase: 65,536
+ordinary GameObjects share a mesh and material while a programmable RenderStack
+applies lighting, fog, color treatment, tilt-shift depth of field, and MSAA.
 
-## What Infernux Is
+## What Infernux is
 
-Infernux is an open-source game engine built around a native C++ runtime and a public Python production layer. Rendering, resource ownership, physics, scene state, and platform work stay native; gameplay, editor extensions, content workflows, render authoring, and external tools remain easy to inspect and iterate in Python through pybind11.
+Infernux is being built as a general-purpose game engine, not as an AI wrapper
+around an existing editor. Performance-sensitive runtime work lives in C++17
+and Vulkan. Gameplay, components, editor extensions, content workflows,
+automation, and render orchestration use Python 3.12 through pybind11.
 
-The project is intentionally not a sealed editor with a scripting attachment. Python is a first-class engine surface, which makes ordinary game code approachable and gives projects direct access to the wider Python ecosystem, including AI, vision, simulation, and data tooling.
-
-Infernux is currently Windows-first and under active development. Version `0.3.6` unifies the editor Hierarchy and restores automatic update discovery in packaged Hub builds. The project still deliberately accepts breaking data-format and API changes while the architecture is young.
+The long-term thesis is that an engine for the AI era needs more than a chat
+panel. Models and agents need explicit access to engine semantics, world state,
+high-throughput data, reproducible execution, and governed tools. Infernux has
+some useful foundations for that direction today, but most of that system is
+still planned work. The project does not claim otherwise.
 
 ## 0.3.6
 
-Version `0.3.6` removes the separate Hierarchy UI mode, restores packaged Hub update checks, and switches Hub releases to independently installable full packages.
+The current public release is a Windows-first development baseline. It can be
+used to author and package games on Windows x64, and it establishes a broad but
+young set of traditional engine tools. Version 0.3.6 unifies scene and UI
+objects in one Hierarchy, restores update discovery in packaged Hub builds, and
+publishes independently installable full Hub packages.
 
-## 0.3.5
+| Available now | Planned for the 0.5.2 cycle |
+|:--------------|:----------------------------|
+| Windows x64 editor and Player export | Android APK/AAB and Web game packages |
+| C++17/Vulkan runtime with Python 3.12 APIs | Linux Player and windowless/offscreen execution |
+| Scene, components, assets, physics, audio, UI, animation, VFX, and editor workflows | Host-side Torch workflows and platform-specific Player inference |
+| Hub, installer, wheel, runtime pack, and standalone game packaging | Authoritative reflection and Command/Query schemas |
+| Editor-side MCP development and validation harness | Snapshot/delta, deterministic replay, batch worlds, and tensor data paths |
+| Numba opt-in with pure-Python fallback | Permissioned, tested, lifecycle-managed Engine Tools |
 
-Version `0.3.5` includes a few small fixes and stability improvements.
-
-## 0.3.4
-
-Version `0.3.4` is a broad engine update, not only an MCP or VFX release. Scene documents, serialization, assets, rendering, particles, physics, editor interaction, runtime execution, automation, and game distribution were reworked around stricter ownership and more predictable runtime boundaries.
-
-Highlights include:
-
-- Typed Scene and Component documents with stable identities, validation, missing-script recovery, and transactional publication or rollback.
-- Indexed asset records, dependency tracking, artifact-backed imports, and safer material, mesh, texture, and physical-material references.
-- A programmable Python RenderStack, reusable Effect assets, explicit mount points, Forward/Forward+/Deferred routes, and stronger RenderGraph/RHI ownership across multiple cameras.
-- A GPU ParticleGraph pipeline with typed nodes, emitter stages, AOT graph-to-IR compilation, sprite and mesh outputs, editor preview, and live runtime parameter control.
-- Structured GLSL authoring that keeps vertex, fragment, and shading-model responsibilities explicit without requiring users to hand-write descriptor layouts.
-- Batched native transform and Jolt physics paths for large scenes, including more reliable Play/Stop restoration and scene reloads.
-- A shared interaction core for selection, commands, shortcuts, undo/redo, document ownership, dirty state, Save, Save As, close, and exit behavior across authoring panels.
-- A smaller, structured game export with a native launcher, private runtime, compressed `Content.inxpkg`, and a wheel-distributed Player Runtime Pack.
-- Engine-native capture for the full editor, individual views, and game cameras without relying on desktop screenshots.
-
-See [UpdateLog.md](UpdateLog.md) for the complete release notes and migration warnings.
+Android, Web, and Linux Player builds are **not available in 0.3.6**. Infernux
+also does not currently provide a general PyTorch Vulkan backend, arbitrary
+Python-package compatibility in exported mobile/Web games, or a finished VLM/
+LLM benchmark platform.
 
 ## Architecture
 
 | Layer | Responsibility |
 |:------|:---------------|
-| C++17 / Vulkan | Rendering, resource ownership, scene state, physics, audio, platform services |
+| C++17 / Vulkan | Rendering, resource ownership, scene state, physics, audio, and platform services |
 | pybind11 | Typed native handles and APIs exposed to Python |
-| Python | Gameplay, components, editor logic, automation, content pipelines, render authoring |
+| Python | Gameplay, components, editor logic, automation, asset pipelines, and render authoring |
 
-The rule is simple: performance-sensitive state belongs to C++, while the public production workflow remains in Python. Native handles use stable identity and generation checks; document and asset changes cross explicit transaction boundaries instead of depending on arbitrary Python object lifetime.
+The intended boundary is simple: performance-sensitive state belongs to the
+native runtime, while the public production workflow remains programmable from
+Python. Stable identities, generation checks, document ownership, and explicit
+transactions are used where arbitrary Python object lifetime would be unsafe.
 
-## Systems
+Current subsystems include Vulkan Forward/Forward+/Deferred rendering, PBR,
+RenderGraph and programmable RenderStack paths; Jolt physics; GUID-based asset
+records and import artifacts; 2D/3D animation foundations; runtime Canvas UI;
+GPU Particle Graph; prefabs; hot reload; and a multi-panel editor with shared
+command, document, save, and undo/redo services.
 
-| Area | Current scope |
-|:-----|:--------------|
-| Rendering | Vulkan Forward/Forward+/Deferred paths, PBR, per-camera lighting and shadows, MSAA, reusable effects, RenderGraph, programmable RenderStack |
-| Physics | Jolt rigidbodies, primitive and mesh colliders, physical materials, queries, callbacks, layer filtering |
-| Assets | GUID identity, dependency indexing, import artifacts, materials, prefabs, scenes, animation and VFX assets |
-| Editor | Hierarchy, Inspector, Scene/Game views, Project, Console, UI editor, animation, Timeline, Particle Graph, unified commands/documents, build settings |
-| Animation | 2D clips, skeletal playback, skinned meshes, FBX takes, state machines, timeline workflows |
-| Runtime UI | Canvas, Text, Image, Button, pointer input, persistent component-method event bindings |
-| VFX | GPU simulation, emitter/Init/Update/Rendering stages, typed graph IR, sprite and mesh particles, Scene/Game preview, live parameters |
-| Python | Component lifecycle, serialized fields, coroutines, Play-mode reload support, public render, VFX, physics, and editor APIs |
-| Distribution | Hub, Windows installer, wheel, compressed runtime pack, standalone game export |
+## Why the next cycle is different
 
-Compute-shader authoring is not part of the public shader workflow. Internal GPU systems can still use Vulkan compute through the RHI when that is the right implementation detail; projects author particle behavior through Particle Graph or its Python-facing asset API instead of binding engine compute passes directly.
+The road from 0.3.6 to 0.5.2 is organized around three connected delivery
+tracks:
 
-## MCP Harness
+1. **Ship games beyond Windows.** Android and Web Player packages are the first
+   product gate; Linux and headless rendering follow for deployment, CI, and
+   simulation. Cross-platform Players may omit Numba and use an explicitly
+   documented portable Python subset.
+2. **Connect the existing ML ecosystem.** The Host/Editor should use standard
+   PyTorch for development, training, and export. Shipped Players should carry
+   only a suitable inference runtime and model, not a permanent CUDA Toolkit or
+   the complete training stack. Android and Web providers will be selected from
+   measured integration spikes rather than promised in advance.
+3. **Make worlds and tools machine-usable.** Authoritative schemas,
+   snapshot/replay, batched worlds, Torch/DLPack/buffer exchange, and formal
+   Engine Tools are meant to serve editor UI, Python users, automation, and
+   agents from the same semantics instead of accumulating parallel APIs.
 
-The repository includes an editor-side MCP Harness for deterministic engine development and validation. It was created to reduce the testing bottleneck of a project that is, in the strict sense, still maintained by one person.
+Version 0.5.2 is the convergence point for this development cycle, not 1.0 and
+not a claim that Infernux already replaces Unity, Unreal Engine, or Godot. See
+the [public roadmap](https://infernux-engine.com/roadmap.html) for milestones.
 
-The current workflow is deliberately restrained: AI may perform small implementation and test iterations, while a human reviews the changes and makes the engineering decisions. The Harness began as a way to let a developer agent operate a project through public engine APIs, but the same feedback loop also proved useful for finding and iterating engine defects.
+## Start using the engine
 
-It supports two distinct modes:
+For most users, download the current Windows x64 installer from
+[GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) and
+let InfernuxHub install and manage engine versions.
 
-- **Developer assistance:** inspect semantic editor state, edit assets and scenes through public APIs, and help build a project.
-- **Validation and blocker reporting:** inject frame/time-bounded input, pause deterministically, inspect state, create checkpoints, and report where a normal developer workflow becomes blocked.
-
-Capture and recording are optional evidence for human review, not the primary control loop. MCP remains an editor development service and is not embedded into exported games.
-
-## Quick Start
-
-### Requirements
-
-| Dependency | Windows |
-|:-----------|:--------|
-| OS | Windows 10/11, 64-bit |
-| Python | 3.12+ |
-| Vulkan SDK | 1.3+ |
-| CMake | 3.22+ |
-| Compiler | Visual Studio 2022, MSVC v143 |
-
-This preview currently supports Windows development and distribution. Linux support is future work and is not exposed as a usable build path yet.
-
-### Clone and prepare
+To build from source, use Windows 10/11 x64, Python 3.12+, Vulkan SDK 1.3+,
+CMake 3.22+, Visual Studio 2022, and the MSVC v143 toolset:
 
 ```bash
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
@@ -128,75 +125,44 @@ cd Infernux
 conda create -n infernux python=3.12 -y
 conda activate infernux
 pip install -r requirements.txt
-```
-
-If the repository was cloned without submodules:
-
-```bash
-git submodule update --init --recursive
-```
-
-### Configure and build
-
-Use the checked-in CMake presets rather than an ad hoc build directory:
-
-```bash
-conda activate infernux
 cmake --preset release
 cmake --build --preset release
 ```
 
-For a development build, use the Windows `debug` configure and build presets.
-
-### Launch the Hub
+Launch the Hub from source:
 
 ```bash
-conda activate infernux
 python packaging/launcher.py
 ```
 
-### Run tests
+Run Python and native test suites from the repository root:
 
 ```bash
-conda activate infernux
 python -m pytest python/test/ -v
+cmake --preset native-tests
+cmake --build --preset native-tests
+ctest --preset native-tests --output-on-failure
 ```
 
-Run the command from the repository root. `pytest.ini` adds the source package
-to `PYTHONPATH`, while source-audit tests resolve `cpp/` from that same root.
-Native correctness tests use `cmake --preset native-tests`,
-`cmake --build --preset native-tests`, and `ctest --preset native-tests`.
+## Documentation and maintenance
 
-## Documentation
+- [Documentation hub](https://infernux-engine.com/wiki.html)
+- [API reference](https://infernux-engine.com/wiki/site/en/api/index.html)
+- [Release notes](UpdateLog.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Repository automation](scripts/README.md)
+- [Technical report](https://arxiv.org/pdf/2604.10263)
 
-- Website: <https://infernux-engine.com/>
-- Documentation hub: <https://infernux-engine.com/wiki.html>
-- Community forum: <https://infernux-engine.discourse.group/>
-- Technical report: [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting](https://arxiv.org/pdf/2604.10263)
-- API reference: published under `docs/wiki/site/`
+Repository-level commands live under `scripts/`; website-only deterministic
+generators and contract tests live under `docs/tools/`. Build and package output
+goes to `out/`, while final local release artifacts go to
+`dist/releases/<version>/`.
 
-The publishing workflow consumes the checked-in API Markdown and regenerates the static documentation, indexes, localized bundles, sitemap, and service worker. Regenerate API source Markdown intentionally with `update_api_docs.bat`; website publication does not silently rewrite the public API baseline.
+Regenerate the checked-in API documentation intentionally with:
 
-Local static documentation build:
-
-```bash
-conda activate infernux
-python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
+```bat
+scripts\docs\update_api_docs.bat
 ```
-
-Equivalent CMake targets include `generate_api_docs` and `build_wiki_html`.
-
-## Packaging
-
-Release builds prepare the native wheel and compressed Player Runtime Pack. Optional parallel-runtime payloads are prepared by Release builds but are included in a game only when its build settings require them.
-
-```bash
-conda activate infernux
-cmake --build --preset packaging
-cmake --build --preset packaging-installer
-```
-
-The first command builds the portable Hub bundle. The second builds the Windows installer. Exported games use a native launcher and a private runtime instead of exposing the repository's Python package layout.
 
 ## Citation
 
@@ -206,17 +172,16 @@ The first command builds the portable Hub bundle. The second builds the Windows 
   title   = {Infernux},
   year    = {2026},
   version = {0.3.6},
-  url     = {https://github.com/ChenlizheMe/Infernux},
-  note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
+  url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```
 
-## Contributing
+## Contributing and license
 
-Bug reports, feature requests, and workflow feedback are welcome. Include the engine version, environment, reproduction steps, and whether the problem appears in the native runtime, Python layer, editor, or packaging path.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [SUPPORT.md](SUPPORT.md).
-
-## License
+Bug reports, feature requests, reproducible tests, platform bring-up work, and
+workflow feedback are welcome. Because the engine is still young, include the
+exact engine version, environment, reproduction steps, and affected layer in an
+issue. Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+[SUPPORT.md](SUPPORT.md) before submitting sensitive or large changes.
 
 Infernux is released under the [MIT License](LICENSE).

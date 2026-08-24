@@ -57,7 +57,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r docs/wiki/requirements.txt
 
-      # API Markdown is intentionally maintained only through update_api_docs.bat.
+      # API Markdown is intentionally maintained only through
+      # scripts/docs/update_api_docs.bat.
       # Publishing consumes the checked-in result and never scans engine sources.
       - name: Verify checked-in Wiki configuration
         run: node docs/tools/normalize-wiki-config.mjs --check

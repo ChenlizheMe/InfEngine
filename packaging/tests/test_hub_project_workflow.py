@@ -35,10 +35,10 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
 
 
 def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path, monkeypatch):
-    output = tmp_path / "out" / "build-release" / "python_wheel"
-    dist = tmp_path / "dist"
+    output = tmp_path / "out" / "build" / "release" / "python_wheel"
+    dist = tmp_path / "dist" / "releases" / "0.2.9"
     output.mkdir(parents=True)
-    dist.mkdir()
+    dist.mkdir(parents=True)
     old_wheel = dist / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
     new_wheel = output / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
     old_wheel.write_bytes(b"old")

@@ -5,16 +5,15 @@
 <h1 align="center">熔炉 · Infernux</h1>
 
 <p align="center">
-  <strong>以 C++17 / Vulkan 为原生运行时、以 Python 为生产层的开源游戏引擎。</strong>
+  <strong>以 C++/GPU 为运行时、以 Python 为一等开发界面的实验性通用游戏引擎。</strong>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/version-0.3.6-orange.svg" alt="Version 0.3.6" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
-  <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
-  <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
-  <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++ 17" />
+  <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="当前平台：Windows" />
+  <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/graphics-Vulkan-red.svg" alt="Vulkan" />
 </p>
 
@@ -22,105 +21,86 @@
   <a href="README.md">English</a> ·
   <a href="https://infernux-engine.com/">官网</a> ·
   <a href="https://infernux-engine.com/wiki.html">文档</a> ·
-  <a href="https://infernux-engine.discourse.group/">社区论坛</a> ·
-  <a href="https://github.com/ChenlizheMe/Infernux/releases">下载</a> ·
-  <a href="https://arxiv.org/pdf/2604.10263">技术报告</a>
+  <a href="https://infernux-engine.discourse.group/">论坛</a> ·
+  <a href="https://github.com/ChenlizheMe/Infernux/releases">Release</a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="Infernux 0.3.4 编辑器通过自定义 RenderStack 渲染由 65536 个物体组成的体素大陆" width="100%" />
+  <img src="docs/assets/demo.png" alt="Infernux 编辑器使用自定义 RenderStack 渲染 65,536 个物体的体素场景" width="100%" />
 </p>
 
-上图来自真实的 1920×1032 编辑器会话：65,536 个标准 GameObject 共享一套网格与材质构成受光体素大陆，同时由可编程 RenderStack 实时完成移轴景深、大气雾、色彩处理与 MSAA。
+上图是 0.3.4 技术展示的真实编辑器截图：65,536 个普通 GameObject
+共享网格与材质，可编程 RenderStack 同时处理光照、雾、色彩、移轴景深与 MSAA。
 
 ## Infernux 是什么
 
-Infernux 是一个从零构建的开源游戏引擎。它使用 C++ 维护渲染、资源、物理、场景状态和平台服务等原生热路径，再通过 pybind11 把稳定的能力暴露给 Python；玩法、编辑器扩展、内容工作流、渲染编排和外部工具都可以直接在 Python 层开发。
+Infernux 的目标是通用游戏引擎，而不是在既有编辑器外面套一层 AI。性能敏感的运行时工作由
+C++17 与 Vulkan 承担；玩法、组件、编辑器扩展、内容工作流、自动化和渲染编排通过
+pybind11 使用 Python 3.12。
 
-这里的 Python 不是附加在封闭编辑器上的脚本语言，而是引擎的一等生产界面。这让常规游戏逻辑更容易编写和检查，也让项目可以原生接入 Python 生态中的 AI、视觉、仿真和数据工具。
-
-Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶段。`0.3.6` 统一了编辑器 Hierarchy，并恢复打包版 Hub 的自动更新发现能力；项目仍很年轻，现阶段会主动接受必要的破坏性数据格式与 API 更新。
+项目的长期判断是：AI 时代的引擎不能只增加一个聊天框。模型与 Agent 需要明确的引擎语义、
+世界状态、高吞吐数据、可复现执行和受治理工具。Infernux 当前已经有一些可用于这个方向的基础，
+但大多数 AI-native 系统仍属于计划，而不是已经交付的能力。
 
 ## 0.3.6
 
-`0.3.6` 移除了独立的 Hierarchy UI 模式，恢复打包版 Hub 更新检查，并将 Hub Release 改为可独立安装的完整包。
+当前公开版本是 Windows-first 开发基线，可以在 Windows x64 上创作和打包游戏，
+并覆盖了一套广泛但仍年轻的传统引擎工具。0.3.6 把场景与 UI 对象统一到同一个
+Hierarchy，恢复打包版 Hub 的更新发现，并改为发布可独立安装的完整 Hub 包。
 
-## 0.3.5
+| 当前可用 | 0.5.2 周期计划 |
+|:---------|:---------------|
+| Windows x64 编辑器与 Player 导出 | Android APK/AAB 与 Web 游戏包体 |
+| C++17/Vulkan 运行时与 Python 3.12 API | Linux Player 与无窗口/离屏运行 |
+| 场景、组件、资产、物理、音频、UI、动画、VFX 与编辑器工作流 | Host 侧 Torch 工作流与各平台 Player 推理 |
+| Hub、安装器、wheel、运行时包与独立游戏打包 | 权威反射与 Command/Query schema |
+| 编辑器侧 MCP 开发和验证 Harness | snapshot/delta、确定性 replay、批量世界与张量数据面 |
+| Numba 可选加速与纯 Python fallback | 带权限、测试和生命周期的正式 Engine Tool |
 
-`0.3.5` 做了一些小修复与稳定性改进。
+Android、Web 和 Linux Player 构建在 **0.3.6 中尚不可用**。当前也没有通用 PyTorch
+Vulkan backend、移动/Web 包体中的任意 Python 包兼容能力，或已经完成的 VLM/LLM
+benchmark 平台。
 
-## 0.3.4
-
-`0.3.4` 是一次覆盖面很广的引擎更新，并不只是 MCP 或 VFX 更新：场景文档、序列化、资产、渲染、粒子、物理、编辑器交互、运行时执行、自动化和游戏分发都围绕更严格的数据所有权与运行时边界进行了重构。
-
-这一版的主要变化包括：
-
-- 引入带稳定对象/组件身份的 Scene 与 Component 类型化文档，并增加严格校验、脚本缺失恢复和事务式发布/回滚。
-- 重构资产索引、依赖追踪与导入产物，改善材质、网格、纹理和物理材质引用的稳定性。
-- 加入可由 Python 编排的 RenderStack、可复用 Effect 资产、显式挂载点以及 Forward/Forward+/Deferred 路由，并整理多相机下的 RenderGraph/RHI 所有权。
-- 建立 GPU ParticleGraph 管线：类型化节点、发射阶段、Graph 到 IR 的 AOT 编译、Sprite/Mesh 输出、编辑器预览与运行时参数控制。
-- 引入结构化 GLSL 写法，明确区分顶点、片元与 Shading Model，同时不要求用户手写 Descriptor Layout。
-- 批处理原生 Transform 与 Jolt 物理路径，改善大场景、Play/Stop 恢复和场景重载。
-- 建立共享 Interaction Core，统一选择、命令、快捷键、撤销回退、文档所有权、脏状态、保存、另存为、关闭与退出行为。
-- 重组游戏导出：原生启动器、私有运行时、压缩的 `Content.inxpkg`，以及随 wheel 分发的 Player Runtime Pack。
-- 增加引擎内置画面捕获，可截取整个编辑器、子视图或游戏相机，不依赖桌面截图。
-
-完整变更、兼容性提示和验证记录见 [UpdateLog.md](UpdateLog.md)。
-
-## 架构
+## 架构边界
 
 | 层级 | 负责内容 |
 |:-----|:---------|
-| C++17 / Vulkan | 渲染、资源所有权、场景状态、物理、音频、平台服务 |
+| C++17 / Vulkan | 渲染、资源所有权、场景状态、物理、音频与平台服务 |
 | pybind11 | 向 Python 暴露带类型的原生句柄与 API |
-| Python | 玩法、组件、编辑器逻辑、自动化、内容管线、渲染编排 |
+| Python | 玩法、组件、编辑器逻辑、自动化、资产管线与渲染创作 |
 
-基本原则很直接：性能敏感状态归 C++，日常生产接口保留在 Python。原生句柄使用稳定身份和代际检查；文档与资产变更通过明确的事务边界提交，而不是依赖任意 Python 对象的生命周期。
+基本原则是：性能敏感状态属于原生运行时，公开生产工作流保持 Python 可编程。
+当任意 Python 对象生命周期不够安全时，引擎使用稳定身份、代际检查、文档所有权和显式事务。
 
-## 当前系统
+当前子系统包括 Vulkan Forward/Forward+/Deferred、PBR、RenderGraph 和可编程
+RenderStack；Jolt 物理；基于 GUID 的资产记录与导入制品；2D/3D 动画基础；
+Canvas 运行时 UI；GPU Particle Graph；Prefab；热重载；以及共享命令、文档、保存和
+撤销回退服务的多面板编辑器。
 
-| 领域 | 当前范围 |
-|:-----|:---------|
-| 渲染 | Vulkan Forward/Forward+/Deferred、PBR、逐相机光照与阴影、MSAA、可复用 Effect、RenderGraph、可编程 RenderStack |
-| 物理 | Jolt 刚体、基础/网格碰撞体、物理材质、查询、回调、层过滤 |
-| 资产 | GUID 身份、依赖索引、导入产物、材质、Prefab、场景、动画与 VFX 资产 |
-| 编辑器 | Hierarchy、Inspector、Scene/Game、Project、Console、UI、动画、Timeline、Particle Graph、统一命令/文档、构建设置 |
-| 动画 | 2D 动画片段、骨骼动画、蒙皮网格、FBX Take、状态机、Timeline |
-| 运行时 UI | Canvas、Text、Image、Button、指针输入、持久化的组件方法事件绑定 |
-| VFX | GPU 模拟、Emitter/Init/Update/Rendering 阶段、类型化图 IR、Sprite/Mesh 粒子、Scene/Game 预览、实时参数 |
-| Python | 组件生命周期、序列化字段、协程、Play 态热重载，以及公开渲染、VFX、物理和编辑器 API |
-| 分发 | Hub、Windows 安装器、wheel、压缩运行时包、独立游戏导出 |
+## 为什么下一阶段不同
 
-公开 Shader 工作流不再提供 Compute Shader 编排。引擎内部仍可在合适时通过 RHI 使用 Vulkan Compute；项目侧通过 Particle Graph 或对应的 Python 资产 API 描述粒子行为，不需要直接绑定引擎内部计算 Pass。
+0.3.6 到 0.5.2 由三条彼此连接的交付线组成：
 
-## MCP Harness
+1. **把游戏发布到 Windows 之外。** Android 和 Web Player 包体是第一个产品关口；
+   Linux 与 Headless 随后服务部署、CI 和仿真。跨平台 Player 可以不带 Numba，并使用
+   明确记录的可移植 Python 子集。
+2. **接入现有机器学习生态。** Host/Editor 侧应直接使用标准 PyTorch 做开发、训练和导出；
+   构建好的 Player 只携带适合目标平台的推理运行时与模型，不永久包含 CUDA Toolkit，
+   也不携带完整训练栈。Android/Web provider 必须由真实集成 spike 和测量结果决定。
+3. **让世界与工具真正可被机器使用。** 权威 schema、snapshot/replay、批量世界、
+   Torch/DLPack/buffer 交换和正式 Engine Tool，应让编辑器 UI、Python、自动化与 Agent
+   共用同一份语义，而不是继续积累平行 API。
 
-仓库内包含一套仅用于编辑器开发侧的 MCP Harness，用来做可重复、可控的引擎开发和验证。它最现实的出发点，是缓解一个严格意义上仍只有一人维护的项目所面临的测试瓶颈。
+0.5.2 是本轮建设的收束点，不是 1.0，也不代表 Infernux 已经能够替代 Unity、Unreal
+Engine 或 Godot。具体版本关口见[公开路线图](https://infernux-engine.com/roadmap.html)。
 
-目前的工作流依然非常克制：AI 可以承担小规模编写、巡检和复现，人类负责审核改动并做工程决策。Harness 最初用于让开发者 Agent 通过公开 API 操作一个项目；一次偶然实验后，我发现同样的反馈循环也可以用于定位和迭代引擎自身的问题。
+## 开始使用
 
-它区分两种模式：
+普通用户可以从 [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest)
+下载当前 Windows x64 安装器，由 InfernuxHub 安装和管理引擎版本。
 
-- **开发辅助模式：** 读取语义化编辑器状态，通过公开 API 修改资产和场景，并协助搭建项目。
-- **全局验证与卡点反馈模式：** 按帧或时间注入输入、确定性暂停、检查状态、建立检查点，并报告正常开发流程卡在哪里。
-
-截图和录制是可选的人类审核材料，不是 Agent 的主要控制回路。MCP 只存在于编辑器开发环境，不会被塞进导出的游戏。
-
-## 快速开始
-
-### 环境要求
-
-| 依赖 | Windows |
-|:-----|:--------|
-| 系统 | Windows 10/11，64 位 |
-| Python | 3.12+ |
-| Vulkan SDK | 1.3+ |
-| CMake | 3.22+ |
-| 编译器 | Visual Studio 2022，MSVC v143 |
-
-当前预览版只支持 Windows 开发与分发。Linux 适配属于后续工作，目前不作为可用的构建路径提供。
-
-### 克隆并准备环境
+从源码构建需要 Windows 10/11 x64、Python 3.12+、Vulkan SDK 1.3+、CMake 3.22+、
+Visual Studio 2022 与 MSVC v143：
 
 ```bash
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
@@ -128,75 +108,42 @@ cd Infernux
 conda create -n infernux python=3.12 -y
 conda activate infernux
 pip install -r requirements.txt
-```
-
-如果克隆时没有获取子模块：
-
-```bash
-git submodule update --init --recursive
-```
-
-### 配置与构建
-
-请使用仓库内的 CMake Preset，不要自行拼接另一套构建目录：
-
-```bash
-conda activate infernux
 cmake --preset release
 cmake --build --preset release
 ```
 
-开发构建请使用 Windows 的 `debug` 配置与构建预设。
-
-### 启动 Hub
+从源码启动 Hub：
 
 ```bash
-conda activate infernux
 python packaging/launcher.py
 ```
 
-### 运行测试
+在仓库根目录运行 Python 与原生测试：
 
 ```bash
-conda activate infernux
 python -m pytest python/test/ -v
+cmake --preset native-tests
+cmake --build --preset native-tests
+ctest --preset native-tests --output-on-failure
 ```
 
-请从仓库根目录运行这条命令。`pytest.ini` 会把源码包加入
-`PYTHONPATH`，源码审计测试也会从同一个根目录解析 `cpp/`。原生正确性测试使用
-`cmake --preset native-tests`、`cmake --build --preset native-tests` 和
-`ctest --preset native-tests`。
+## 文档与仓库维护
 
-## 文档
+- [文档入口](https://infernux-engine.com/wiki.html)
+- [API 参考](https://infernux-engine.com/wiki/site/zh/api/index.html)
+- [版本记录](UpdateLog-zh.md)
+- [贡献指南](CONTRIBUTING.md)
+- [仓库脚本索引](scripts/README.md)
+- [技术报告](https://arxiv.org/pdf/2604.10263)
 
-- 官网：<https://infernux-engine.com/>
-- 文档入口：<https://infernux-engine.com/wiki.html>
-- 社区论坛：<https://infernux-engine.discourse.group/>
-- 技术报告：[Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting](https://arxiv.org/pdf/2604.10263)
-- API 参考：发布于 `docs/wiki/site/`
+仓库级命令统一放在 `scripts/`；官网专用的确定性生成器和契约测试放在 `docs/tools/`。
+构建与打包中间产物进入 `out/`，最终本地发布物进入 `dist/releases/<version>/`。
 
-网站发布工作流使用已经提交的 API Markdown，再生成静态文档、索引、多语言分包、站点地图和 Service Worker。需要更新 API 源 Markdown 时，应显式运行 `update_api_docs.bat`；网站发布不会悄悄重写公开 API 基线。
+需要显式更新已经提交的 API 文档时运行：
 
-本地构建静态文档：
-
-```bash
-conda activate infernux
-python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
+```bat
+scripts\docs\update_api_docs.bat
 ```
-
-对应的 CMake 目标包括 `generate_api_docs` 与 `build_wiki_html`。
-
-## 打包与分发
-
-Release 构建会准备原生 wheel 和压缩的 Player Runtime Pack。可选的并行运行时会在 Release 阶段准备好，但只有项目构建设置确实需要时才会进入游戏包体。
-
-```bash
-conda activate infernux
-cmake --build --preset packaging
-cmake --build --preset packaging-installer
-```
-
-第一条命令构建便携 Hub，第二条构建 Windows 安装器。导出的游戏使用原生启动器和私有运行时，不会直接暴露代码仓库里的 Python 包组织。
 
 ## 引用
 
@@ -206,17 +153,14 @@ cmake --build --preset packaging-installer
   title   = {Infernux},
   year    = {2026},
   version = {0.3.6},
-  url     = {https://github.com/ChenlizheMe/Infernux},
-  note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
+  url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```
 
-## 参与贡献
+## 参与贡献与许可证
 
-欢迎提交 Bug、功能建议和工作流反馈。请尽量附上引擎版本、环境、复现步骤，以及问题更可能位于原生运行时、Python 层、编辑器还是打包链路。
-
-参见 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 和 [SUPPORT.md](SUPPORT.md)。
-
-## 许可证
+欢迎提交 Bug、功能建议、可复现测试、平台适配和工作流反馈。引擎仍很年轻，Issue 中请附上
+准确版本、运行环境、复现步骤和受影响层级。敏感问题或大型修改前请阅读
+[CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 和 [SUPPORT.md](SUPPORT.md)。
 
 Infernux 使用 [MIT License](LICENSE) 发布。

@@ -537,8 +537,8 @@ def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
     """
     engine_root = _engine_root()
     wheel_dirs = [
-        *glob.glob(os.path.join(engine_root, "out", "build*", "python_wheel")),
-        os.path.join(engine_root, "dist"),
+        *glob.glob(os.path.join(engine_root, "out", "build", "*", "python_wheel")),
+        *glob.glob(os.path.join(engine_root, "dist", "releases", "*")),
     ]
     wheels = [
         wheel
@@ -554,7 +554,7 @@ def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
         if strict:
             available = ", ".join(os.path.basename(wheel) for wheel in sorted(wheels))
             raise RuntimeError(
-                f"No prebuilt Infernux wheel compatible with Python {python_tag} was found in dist/.\n"
+                f"No prebuilt Infernux wheel compatible with Python {python_tag} was found in the canonical build or release directories.\n"
                 f"Available wheels: {available}"
             )
     return ""
@@ -971,7 +971,7 @@ class ProjectModel:
                     "Open the Installs page and install that engine version first."
                 )
             raise RuntimeError(
-                "No prebuilt Infernux wheel was found in dist/.\n"
+                "No prebuilt Infernux wheel was found in out/build or dist/releases.\n"
                 "Build a wheel first; project creation will not fall back to a source build."
             )
 

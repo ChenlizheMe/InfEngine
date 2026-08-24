@@ -10,7 +10,7 @@ on:
       - ".github/workflows/website-health.yml"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/DISCUSSION_TEMPLATE/**"
-      - "update_api_docs.bat"
+      - "scripts/docs/update_api_docs.bat"
   push:
     branches:
       - main
@@ -23,7 +23,7 @@ on:
       - ".github/workflows/website-health.yml"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/DISCUSSION_TEMPLATE/**"
-      - "update_api_docs.bat"
+      - "scripts/docs/update_api_docs.bat"
   workflow_dispatch:
 
 permissions:

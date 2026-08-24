@@ -10,7 +10,7 @@
       "displayName": "Release Preset (Windows / MSVC)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/out/build-release",
+      "binaryDir": "${sourceDir}/out/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "INFERNUX_BUILD_PLAYER_HOST": "ON",
@@ -21,7 +21,7 @@
       "name": "debug",
       "displayName": "Debug Preset (Windows, RelWithDebInfo + Profiling)",
       "inherits": "release",
-      "binaryDir": "${sourceDir}/out/build",
+      "binaryDir": "${sourceDir}/out/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "INFERNUX_BUILD_PLAYER_HOST": "OFF"
@@ -31,7 +31,7 @@
       "name": "debug-profile",
       "displayName": "Debug Profile Preset (Windows, terminal frame profiling)",
       "inherits": "debug",
-      "binaryDir": "${sourceDir}/out/build-profile",
+      "binaryDir": "${sourceDir}/out/build/debug-profile",
       "cacheVariables": {
         "INFERNUX_FRAME_PROFILE_TERMINAL": "ON"
       }
@@ -40,7 +40,7 @@
       "name": "debug-no-vulkan-validation",
       "displayName": "Debug Preset (Windows, RelWithDebInfo, Vulkan validation off)",
       "inherits": "debug",
-      "binaryDir": "${sourceDir}/out/build-debug-no-vulkan-validation",
+      "binaryDir": "${sourceDir}/out/build/debug-no-vulkan-validation",
       "cacheVariables": {
         "INFERNUX_ENABLE_VULKAN_VALIDATION": "OFF"
       }
@@ -49,28 +49,28 @@
       "name": "native-dev",
       "displayName": "Native Development Preset (Windows, engine module only)",
       "inherits": "debug",
-      "binaryDir": "${sourceDir}/out/build-native-dev",
+      "binaryDir": "${sourceDir}/out/build/native-dev",
       "cacheVariables": {
         "INFERNUX_BUILD_TESTS": "OFF",
-        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build-native-dev/python-sync"
+        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build/native-dev/python-sync"
       }
     },
     {
       "name": "native-tests",
       "displayName": "Native Test Preset (Windows, RelWithDebInfo)",
       "inherits": "debug",
-      "binaryDir": "${sourceDir}/out/build-native-tests",
+      "binaryDir": "${sourceDir}/out/build/native-tests",
       "cacheVariables": {
         "INFERNUX_BUILD_TESTS": "ON",
         "INFERNUX_RUNTIME_STATIC": "OFF",
-        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build-native-tests/python-sync"
+        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build/native-tests/python-sync"
       }
     },
     {
       "name": "release-macos",
       "displayName": "Release Preset (macOS / Ninja)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build-macos-release",
+      "binaryDir": "${sourceDir}/out/build/macos-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
@@ -79,7 +79,7 @@
       "name": "debug-macos",
       "displayName": "Debug Preset (macOS, RelWithDebInfo + Profiling)",
       "inherits": "release-macos",
-      "binaryDir": "${sourceDir}/out/build-macos-debug",
+      "binaryDir": "${sourceDir}/out/build/macos-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }

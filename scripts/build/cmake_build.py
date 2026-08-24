@@ -8,9 +8,9 @@ case-insensitive and keeps only one entry per key, which is exactly what
 we need.
 
 Usage (drop-in replacement for ``cmake --build``):
-    python build.py --preset release
-    python build.py --preset debug
-    python build.py --preset release --target _Infernux
+    python scripts/build/cmake_build.py --preset release
+    python scripts/build/cmake_build.py --preset debug
+    python scripts/build/cmake_build.py --preset release --target _Infernux
 """
 
 import os

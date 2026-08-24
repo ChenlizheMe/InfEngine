@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="Infernux is an MIT-licensed C++17/Vulkan game engine with a Python production layer for gameplay, editor tooling, assets, physics, and render authoring.">
+    <meta name="description" content="Infernux is an experimental general-purpose game engine with a C++/Vulkan runtime, Python-first authoring, and a roadmap for cross-platform shipping and AI-native workflows.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
     <meta property="og:title" content="Infernux · 熔炉 — Open game engine">
-    <meta property="og:description" content="A C++17/Vulkan native runtime with a Python production layer, an integrated editor, and an inspectable MIT-licensed architecture.">
+    <meta property="og:description" content="Build games with Python and run them on a native core. Windows x64 is available now; Android, Web, Linux, and deeper AI workflows are planned.">
     <meta property="og:url" content="https://infernux-engine.com/">
     <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta property="og:image:type" content="image/jpeg">
@@ -21,7 +21,7 @@
     <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · 熔炉 — Open game engine">
-    <meta name="twitter:description" content="C++17/Vulkan runtime · Python production layer · MIT licensed.">
+    <meta name="twitter:description" content="Python-first game authoring · C++/Vulkan runtime · explicit 0.5.2 roadmap.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status">
     <title>Infernux · 熔炉 — Open game engine</title>
@@ -83,12 +83,12 @@
                 <div class="hero-grid">
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.6 · UNIFIED HIERARCHY</span>
-                            <span data-i18n="home.hero.kicker">OPEN-SOURCE · MIT · WIN64</span>
+                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.6 · CURRENT WINDOWS BASELINE</span>
+                            <span data-i18n="home.hero.kicker">OPEN SOURCE · MIT · WINDOWS X64 AVAILABLE NOW</span>
                         </div>
-                        <h1 class="hero-title" data-i18n="home.hero.title">An engine you can <span class="accent">disassemble</span>, extend, and ship.</h1>
-                        <p class="hero-subtitle" data-i18n="hero.subtitle">C++ / Vulkan core · Python production layer · repository-first</p>
-                        <p class="hero-description" data-i18n="home.hero.description">Infernux pairs a C++17/Vulkan runtime with a Python 3.12 production layer. Version 0.3.6 unifies scene and UI authoring and restores automatic Hub update discovery.</p>
+                        <h1 class="hero-title" data-i18n="home.hero.title">Build games with <span class="accent">Python</span>. Run them on a native core.</h1>
+                        <p class="hero-subtitle" data-i18n="hero.subtitle">C++/Vulkan runtime today · Python-first authoring · multi-platform roadmap</p>
+                        <p class="hero-description" data-i18n="home.hero.description">Infernux is an experimental general-purpose game engine: a C++17/Vulkan runtime with Python 3.12 as a first-class development interface. Android, Web, Linux, and the deeper AI data plane are roadmap work, not current claims.</p>
                         <div class="hero-actions">
                             <a href="start.html" class="btn btn-primary">
                                 <i class="fas fa-rocket" aria-hidden="true"></i>
@@ -160,8 +160,8 @@
             </section>
 
             <section class="manifesto-strip">
-                <span class="manifesto-tag" data-i18n="home.manifesto.tag">FLIGHT NOTE</span>
-                <p data-i18n="home.manifesto">熔炉 is shaped around a simple position: keep the hot path native, keep the workflow scriptable, and keep the architecture readable enough that a team can actually take ownership of it instead of negotiating with a vendor.</p>
+                <span class="manifesto-tag" data-i18n="home.manifesto.tag">PRODUCT THESIS</span>
+                <p data-i18n="home.manifesto">An AI-native engine needs more than a chat panel. It needs authoritative semantics, reproducible worlds, high-throughput model data, and governed tools. Infernux is building those foundations on top of a usable general game engine.</p>
             </section>
 
             <section class="section" id="runtime-capture">
@@ -193,26 +193,26 @@
             <section id="system" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.system.kicker">Operating principles</div>
-                        <h2 class="section-title" data-i18n="home.system.title">Three rules that decide what enters the engine.</h2>
+                        <div class="section-kicker" data-i18n="home.system.kicker">Product architecture</div>
+                        <h2 class="section-title" data-i18n="home.system.title">One engine, three non-negotiable boundaries.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.system.intro">The engine is shaped around engineering control rather than platform lock-in. Each principle reduces hidden cost for teams building real games and real tools.</p>
+                    <p class="section-intro" data-i18n="home.system.intro">The architecture is meant to join ordinary game production with model and agent workflows without confusing current features with future research goals.</p>
                 </div>
                 <div class="grid-3">
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-bolt"></i></div>
-                        <h3 data-i18n="home.system.card1.title">PRINCIPLE I · Fast inner loop</h3>
-                        <p data-i18n="home.system.card1.body">Python scripts, hot-reload, asset previews, and editor-side tooling keep the iteration loop under a second without weakening the native runtime core.</p>
+                        <h3 data-i18n="home.system.card1.title">Principle I · General engine first</h3>
+                        <p data-i18n="home.system.card1.body">Scenes, assets, rendering, physics, UI, animation, editor workflows, and Player packaging remain the product foundation. AI work must improve this engine rather than become a disconnected demo stack.</p>
                     </article>
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-project-diagram"></i></div>
-                        <h3 data-i18n="home.system.card2.title">PRINCIPLE II · Transparent render</h3>
-                        <p data-i18n="home.system.card2.body">RenderGraph, RenderStack, and material descriptors are inspectable and scriptable from Python. The render path is meant to be extended, not hidden.</p>
+                        <h3 data-i18n="home.system.card2.title">Principle II · Python is a production interface</h3>
+                        <p data-i18n="home.system.card2.body">Python is the public development surface for gameplay, tools, automation, render authoring, and ML workflows; native code owns the performance-sensitive runtime and deployment boundary.</p>
                     </article>
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-unlock"></i></div>
-                        <h3 data-i18n="home.system.card3.title">PRINCIPLE III · No business trap</h3>
-                        <p data-i18n="home.system.card3.body">MIT licensing and repository-first development keep the cost model simple: the work is in the code, not in negotiating with a vendor.</p>
+                        <h3 data-i18n="home.system.card3.title">Principle III · AI enters through contracts</h3>
+                        <p data-i18n="home.system.card3.body">UI, Python, MCP, and future agents should consume shared schemas, state transitions, observations, and permissions instead of duplicating engine behavior behind separate adapters.</p>
                     </article>
                 </div>
             </section>
@@ -273,9 +273,9 @@
                 <div class="section-head">
                     <div>
                         <div class="section-kicker" data-i18n="home.status.kicker">Project status</div>
-                        <h2 class="section-title" data-i18n="home.status.title">Infernux 0.3.6: one Hierarchy and a working upgrade path.</h2>
+                        <h2 class="section-title" data-i18n="home.status.title">A verified baseline and an explicit next gate.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.status.intro">Version 0.3.6 simplifies the editor model and repairs the Hub upgrade path. The current public baseline remains Windows-first while the next platform plan is prepared.</p>
+                    <p class="section-intro" data-i18n="home.status.intro">Use 0.3.6 as a Windows x64 foundation. Treat Android, Web, Linux, Torch Player inference, replay, batch simulation, and formal Agent tools as planned until their release gates pass.</p>
                 </div>
                 <div class="status-grid">
                     <article class="status-card" data-reveal>
@@ -285,10 +285,10 @@
                         <p data-i18n="home.status.card1.body">Version 0.3.6 removes the separate Hierarchy UI mode, restores packaged Hub update checks, and publishes independently installable full Hub packages.</p>
                     </article>
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card2.tag">FOUNDATION · 0.3.4</div>
-                        <h3 data-i18n="home.status.card2.title">Rendering, VFX, interaction, and Player runtime</h3>
-                        <div class="status-value" data-i18n="home.status.card2.value">v0.3.4</div>
-                        <p data-i18n="home.status.card2.body">GPU Particle Graph, programmable render routes, shared editor interaction, and a Library-only Player cook are part of this version.</p>
+                        <div class="mini-tag" data-i18n="home.status.card2.tag">PLANNED · CURRENT CYCLE</div>
+                        <h3 data-i18n="home.status.card2.title">Cross-platform shipping and AI-native contracts</h3>
+                        <div class="status-value" data-i18n="home.status.card2.value">→ 0.5.2</div>
+                        <p data-i18n="home.status.card2.body">The current cycle prioritizes Android/Web game packages and Torch workflows, then Linux/headless, authoritative schemas, replayable batch worlds, tensor exchange, and governed Engine Tools.</p>
                     </article>
                 </div>
             </section>

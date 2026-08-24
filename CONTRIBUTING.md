@@ -13,8 +13,8 @@ Thanks for contributing.
 The most common workflow in this repository uses Conda:
 
 ```bash
-conda create -n infengine python=3.12 -y
-conda activate infengine
+conda create -n infernux python=3.12 -y
+conda activate infernux
 pip install -r requirements.txt
 cmake --preset release
 cmake --build --preset release
@@ -23,9 +23,24 @@ cmake --build --preset release
 For Hub development:
 
 ```bash
-conda activate infengine
+conda activate infernux
 python packaging/launcher.py
 ```
+
+## Workspace output layout
+
+Generated files have one canonical home:
+
+- `out/build/<preset>/` contains CMake configure and build trees.
+- `out/package/` contains disposable Hub and installer staging output.
+- `dist/releases/<version>/` contains final, upload-ready release assets only.
+- `dev/` contains private plans and drafts; it is not a build-output directory.
+
+Do not create new top-level `build-*`, `release-*`, or package-output directories.
+Run `./scripts/maintenance/clean_workspace.ps1` from PowerShell to remove all
+disposable output while preserving `dist/releases` and `dev`. Repository-level
+automation is indexed in `scripts/README.md`; website-only tools remain under
+`docs/tools/`.
 
 ## What to include in a change
 
@@ -45,9 +60,8 @@ The right validation depends on what you changed:
 Documentation regeneration:
 
 ```bash
-conda activate infengine
-python docs/wiki/generate_api_docs.py
-python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
+conda activate infernux
+scripts\docs\update_api_docs.bat
 ```
 
 ## Pull request guidance

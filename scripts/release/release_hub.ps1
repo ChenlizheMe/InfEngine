@@ -22,8 +22,8 @@ function Get-Sha256([string]$Path) {
     }
 }
 
-$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $Root "dist\release"))
+$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $Root "dist\releases"))
 $ReleaseDir = [IO.Path]::GetFullPath((Join-Path $ReleaseRoot $Version))
 if (-not $ReleaseDir.StartsWith($ReleaseRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Unsafe release output path: $ReleaseDir"
@@ -130,8 +130,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Wheel build failed.' }
 Write-Host "[3/6] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
 & cmake --build --preset packaging-installer
 if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
-$HubDir = Join-Path $Root 'dist\Infernux Hub'
-$Installer = Join-Path $Root 'dist\installer\InfernuxHubInstaller.exe'
+$HubDir = Join-Path $Root 'out\package\hub'
+$Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
 if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub output not found: $HubDir" }
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
 Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe")
@@ -229,5 +229,5 @@ if ($Publish) {
     }
     Write-Host "Published GitHub Release $Tag." -ForegroundColor Green
 } else {
-    Write-Host 'Publish was skipped. Run release_hub.bat <version> to rebuild and publish while the tag is still absent.' -ForegroundColor Yellow
+    Write-Host 'Publish was skipped. Run scripts\release\release_hub.bat <version> to rebuild and publish while the tag is still absent.' -ForegroundColor Yellow
 }

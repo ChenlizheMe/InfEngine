@@ -77,7 +77,7 @@ node_modules/
 x64/
 x86/
 Debug/
-Release/
+/Release/
 *.ipch
 ipch/
 

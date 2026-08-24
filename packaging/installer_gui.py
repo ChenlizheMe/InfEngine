@@ -42,7 +42,9 @@ def _payload_dir() -> str:
         return os.path.join(sys._MEIPASS, "payload")
     if "__compiled__" in globals():
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "payload")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dist", "Infernux Hub")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "out", "package", "hub"
+    )
 
 
 _UNINSTALL_REG_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\InfernuxHub"

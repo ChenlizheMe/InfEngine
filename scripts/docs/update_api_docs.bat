@@ -5,7 +5,7 @@ rem Incrementally regenerate Infernux API Markdown and every derived website art
 rem The Python generator preserves USER CONTENT blocks, skips byte-identical files,
 rem creates missing symbol pages, and deletes stale pages for removed symbols.
 
-cd /d "%~dp0"
+cd /d "%~dp0\..\.."
 
 where conda >nul 2>&1
 if errorlevel 1 (
