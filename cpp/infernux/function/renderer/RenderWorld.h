@@ -97,6 +97,11 @@ class RenderWorldFrame final
         return m_transformRevision;
     }
 
+    [[nodiscard]] uint64_t ContentRevision() const noexcept
+    {
+        return m_contentRevision;
+    }
+
     [[nodiscard]] uint64_t FrameRevision() const noexcept
     {
         return m_frameRevision;
@@ -117,6 +122,7 @@ class RenderWorldFrame final
     uint64_t m_worldId = 0;
     uint64_t m_structuralRevision = 0;
     uint64_t m_transformRevision = 0;
+    uint64_t m_contentRevision = 0;
     uint64_t m_frameRevision = 0;
 };
 
@@ -145,6 +151,7 @@ class RenderWorldSnapshot final
         frame.m_worldId = 0;
         frame.m_structuralRevision = 0;
         frame.m_transformRevision = 0;
+        frame.m_contentRevision = 0;
         Publish();
     }
 
@@ -158,6 +165,12 @@ class RenderWorldSnapshot final
     {
         const auto frame = Acquire();
         return frame ? frame->StructuralRevision() : 0;
+    }
+
+    [[nodiscard]] uint64_t ContentRevision() const noexcept
+    {
+        const auto frame = Acquire();
+        return frame ? frame->ContentRevision() : 0;
     }
 
     [[nodiscard]] uint64_t FrameRevision() const noexcept

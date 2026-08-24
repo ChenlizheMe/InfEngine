@@ -57,6 +57,7 @@ class SceneRenderExtractor final
     std::vector<SceneRenderSource> m_sceneSources;
     size_t m_visibleCount = 0;
     uint64_t m_lastTransformRevision = 0;
+    uint64_t m_lastContentRevision = 0;
     bool m_allRenderersStatic = false;
 
 #if INFERNUX_FRAME_PROFILE

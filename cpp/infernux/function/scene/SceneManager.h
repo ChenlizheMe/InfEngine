@@ -191,6 +191,13 @@ class SceneManager
         return m_renderTransformRevision;
     }
 
+    /// Render-facing revision for dynamic draw-call payloads that do not
+    /// affect transforms or visibility, such as a skinned bone palette.
+    [[nodiscard]] uint64_t GetRenderContentRevision() const noexcept
+    {
+        return m_renderContentRevision;
+    }
+
     // ========================================================================
     // DontDestroyOnLoad
     // ========================================================================
@@ -420,6 +427,9 @@ class SceneManager
     /// changes mesh/material state without leaving the registry.
     void NotifyMeshRendererChanged(MeshRenderer *renderer);
 
+    /// Bump dynamic render content without forcing a structural rebuild.
+    void NotifyMeshRendererContentChanged(MeshRenderer *renderer);
+
     /// Read-only access to the active mesh renderers registry.
     [[nodiscard]] const std::vector<MeshRenderer *> &GetActiveMeshRenderers() const
     {
@@ -537,6 +547,7 @@ class SceneManager
     size_t m_runtimeLifecycleUpdateCount = 0;
     size_t m_runtimeLifecycleLateUpdateCount = 0;
     uint64_t m_renderTransformRevision = 1;
+    uint64_t m_renderContentRevision = 1;
 
     // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.

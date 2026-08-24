@@ -51,6 +51,17 @@ int main()
     CameraDrawCallResult leftCachedResult = bridge.CullAndBuildForCamera(leftCamera, false);
     assert(leftCachedResult.visibleDrawCallsRef && leftCachedResult.visibleDrawCallsRef->size() == 1);
     assert(leftCachedResult.visibleDrawCallsRef->front().objectId == leftCube->GetID());
+    assert(leftCachedResult.visibleListRevision == leftResult.visibleListRevision);
+
+    // Skinning changes dynamic draw-call payload without changing camera
+    // visibility. A new content publication must still invalidate a graph's
+    // cached submission, or Game View will keep the first (bind) pose.
+    manager.NotifyMeshRendererContentChanged(leftCube->GetComponent<MeshRenderer>());
+    bridge.PrepareFrame(false);
+    CameraDrawCallResult leftContentChanged = bridge.CullAndBuildForCamera(leftCamera, false);
+    assert(leftContentChanged.visibleDrawCallsRef && leftContentChanged.visibleDrawCallsRef->size() == 1);
+    assert(leftContentChanged.visibleDrawCallsRef->front().objectId == leftCube->GetID());
+    assert(leftContentChanged.visibleListRevision != leftCachedResult.visibleListRevision);
 
     manager.UnloadAllScenes();
     return 0;

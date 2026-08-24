@@ -27,6 +27,7 @@ int main()
     assert(world.IsPublished());
     assert(world.WorldId() == 0);
     assert(world.StructuralRevision() == 0);
+    assert(world.ContentRevision() == 0);
     assert(world.MatchesSource(0, 0));
     assert(world.Acquire()->Proxies().empty());
 
