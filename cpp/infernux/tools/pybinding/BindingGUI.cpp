@@ -1343,9 +1343,6 @@ void RegisterGUIBindings(py::module_ &m)
     py::class_<HierarchyPanel, EditorPanel, std::shared_ptr<HierarchyPanel>>(m, "HierarchyPanel")
         .def(py::init<>())
         // Public API
-        .def("set_ui_mode", &HierarchyPanel::SetUiMode, py::arg("enabled"))
-        .def("get_ui_mode", &HierarchyPanel::GetUiMode)
-        .def_property("ui_mode", &HierarchyPanel::GetUiMode, &HierarchyPanel::SetUiMode)
         .def("clear_search", &HierarchyPanel::ClearSearch)
         .def("request_search_focus", &HierarchyPanel::RequestSearchFocus)
         .def("clear_selection_and_notify", &HierarchyPanel::ClearSelectionAndNotify)
@@ -1378,12 +1375,10 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_prefab_display_name", &HierarchyPanel::getPrefabDisplayName)
         // Runtime hidden
         .def_readwrite("get_runtime_hidden_ids", &HierarchyPanel::getRuntimeHiddenIds)
-        // Canvas / UI-mode queries
+        // UI structure queries
         .def_readwrite("go_has_canvas", &HierarchyPanel::goHasCanvas)
         .def_readwrite("go_has_ui_screen_component", &HierarchyPanel::goHasUiScreenComponent)
         .def_readwrite("parent_has_canvas_ancestor", &HierarchyPanel::parentHasCanvasAncestor)
-        .def_readwrite("has_canvas_descendant", &HierarchyPanel::hasCanvasDescendant)
-        .def_readwrite("get_canvas_root_ids", &HierarchyPanel::getCanvasRootIds)
         // Unified commands
         .def_readwrite("render_context_menu", &HierarchyPanel::renderContextMenu)
         // Translation

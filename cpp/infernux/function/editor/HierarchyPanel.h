@@ -20,10 +20,10 @@ class GameObject;
 class Scene;
 
 /// C++ native Hierarchy panel — Unity-style scene tree with drag-drop,
-/// inline rename, virtual scrolling, search filtering, and UI mode.
+/// inline rename, virtual scrolling, and search filtering.
 ///
 /// Heavy-lift rendering happens entirely in C++.  Python-only managers
-/// (Undo, Prefab, Clipboard, UICanvas queries) are reached via
+/// (Undo, Prefab, Clipboard, UI structure queries) are reached via
 /// std::function callbacks set from the bootstrap layer.
 class HierarchyPanel : public EditorPanel
 {
@@ -32,12 +32,6 @@ class HierarchyPanel : public EditorPanel
     std::unordered_map<std::string, double> ConsumeSubTimings() override;
 
     // ── Public API (called from Python bootstrap / other panels) ─────
-
-    void SetUiMode(bool enabled);
-    [[nodiscard]] bool GetUiMode() const
-    {
-        return m_uiMode;
-    }
 
     void ClearSearch();
     void RequestSearchFocus()
@@ -85,19 +79,17 @@ class HierarchyPanel : public EditorPanel
 
     std::function<std::unordered_set<uint64_t>()> getRuntimeHiddenIds;
 
-    // ── Canvas / UI-mode queries (need Python py_components) ────────
+    // ── UI structure queries (need Python py_components) ───────────
 
     std::function<bool(uint64_t)> goHasCanvas;
     std::function<bool(uint64_t)> goHasUiScreenComponent;
     std::function<bool(uint64_t)> parentHasCanvasAncestor;
-    std::function<bool(uint64_t)> hasCanvasDescendant;
-    std::function<std::vector<uint64_t>()> getCanvasRootIds;
 
     // ── Unified editor command entry points ─────────────────────────
 
     /// Draw the popup body from a frozen
-    /// (targetId, targetIsPrefab, createParentId, uiMode) snapshot.
-    std::function<void(InxGUIContext *, uint64_t, bool, uint64_t, bool)> renderContextMenu;
+    /// (targetId, targetIsPrefab, createParentId) snapshot.
+    std::function<void(InxGUIContext *, uint64_t, bool, uint64_t)> renderContextMenu;
 
     // ── Translation ──────────────────────────────────────────────────
 
@@ -154,18 +146,11 @@ class HierarchyPanel : public EditorPanel
     std::vector<uint64_t> m_cachedOrderedIds;
     bool m_orderedIdsDirty = true;
 
-    // ── Canvas root IDs ──────────────────────────────────────────────
-    std::unordered_set<uint64_t> m_canvasRootIds;
-    bool m_canvasRootsDirty = true;
-
     // ── Search ───────────────────────────────────────────────────────
     char m_searchBuf[256] = {};
     EditorSearchModel m_search;
     std::unordered_map<uint64_t, bool> m_searchVisCache;
     bool m_focusSearchNextFrame = false;
-
-    // ── UI mode ──────────────────────────────────────────────────────
-    bool m_uiMode = false;
 
     // ── Virtual scrolling ────────────────────────────────────────────
     float m_cachedItemHeight = 18.0f;
@@ -220,7 +205,6 @@ class HierarchyPanel : public EditorPanel
     double m_subHeader = 0.0;
     double m_subSearch = 0.0;
     double m_subRefreshRoots = 0.0;
-    double m_subCanvasRoots = 0.0;
     double m_subFilterRoots = 0.0;
     double m_subFlatBuild = 0.0;
     double m_subRows = 0.0;
@@ -244,10 +228,6 @@ class HierarchyPanel : public EditorPanel
     bool IsVisibleInSearch(GameObject *obj);
     std::vector<GameObject *> FilterForSearch(const std::vector<GameObject *> &objects);
 
-    // Canvas helpers
-    [[nodiscard]] bool IsInCanvasTree(GameObject *obj) const;
-    void RefreshCanvasRootIds(const std::vector<GameObject *> &roots);
-
     // Tree rendering
     void RenderRenameInput(InxGUIContext *ctx, GameObject *obj);
     void RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj);
@@ -270,6 +250,7 @@ class HierarchyPanel : public EditorPanel
     bool ValidateReparent(GameObject *obj, uint64_t newParentId, GameObject *newParent);
     bool ValidateMoveAdjacent(GameObject *obj, uint64_t newParentId, GameObject *newParent);
     static bool IsDescendantOf(GameObject *potentialChild, GameObject *potentialParent);
+    [[nodiscard]] bool HasUiScreenComponentInSubtree(GameObject *obj) const;
 
     // Rename
     void BeginRename(uint64_t objId);

@@ -136,6 +136,8 @@ imgui.ini
 *.build/
 *.dist/
 *.onefile-build/
+/packaging/Nuitka/
+/packaging/nuitka-crash-report.xml
 # Global staging directory used by GameBuilder
 # (usually C:\_InfBuild, but ignore any local leftovers)
 _InfBuild/

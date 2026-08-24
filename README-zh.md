@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.3.5-orange.svg" alt="Version 0.3.5" />
+  <img src="https://img.shields.io/badge/version-0.3.6-orange.svg" alt="Version 0.3.6" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
@@ -39,7 +39,11 @@ Infernux 是一个从零构建的开源游戏引擎。它使用 C++ 维护渲染
 
 这里的 Python 不是附加在封闭编辑器上的脚本语言，而是引擎的一等生产界面。这让常规游戏逻辑更容易编写和检查，也让项目可以原生接入 Python 生态中的 AI、视觉、仿真和数据工具。
 
-Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶段。`0.3.5` 是继 0.3.4 大版本更新之后的一次小型维护版本；项目仍很年轻，现阶段会主动接受必要的破坏性数据格式与 API 更新。
+Infernux 当前仍以 Windows 为主要开发平台，并处于快速迭代阶段。`0.3.6` 统一了编辑器 Hierarchy，并恢复打包版 Hub 的自动更新发现能力；项目仍很年轻，现阶段会主动接受必要的破坏性数据格式与 API 更新。
+
+## 0.3.6
+
+`0.3.6` 移除了独立的 Hierarchy UI 模式，恢复打包版 Hub 更新检查，并将 Hub Release 改为可独立安装的完整包。
 
 ## 0.3.5
 
@@ -201,7 +205,7 @@ cmake --build --preset packaging-installer
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.5},
+  version = {0.3.6},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

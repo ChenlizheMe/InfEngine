@@ -136,42 +136,18 @@ if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub outp
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
 Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe")
 
-Write-Host "[4/6] Looking for a previous Hub manifest..." -ForegroundColor Cyan
-$BaseManifest = $null
-if (Get-Command gh -ErrorAction SilentlyContinue) {
-    try {
-        $PreviousTags = & gh release list --repo ChenlizheMe/Infernux --limit 20 --exclude-drafts --exclude-pre-releases --json tagName | ConvertFrom-Json
-        $PreviousTag = $PreviousTags | Where-Object { $_.tagName -ne "v$Version" } | Select-Object -First 1
-        if ($PreviousTag) {
-            $PreviousRelease = & gh release view $PreviousTag.tagName --repo ChenlizheMe/Infernux --json assets | ConvertFrom-Json
-            if ($PreviousRelease.assets.name -contains 'InfernuxHub-manifest.json') {
-                $BaseDir = Join-Path $ReleaseDir '.base'
-                New-Item -ItemType Directory -Path $BaseDir -Force | Out-Null
-                & gh release download $PreviousTag.tagName --repo ChenlizheMe/Infernux --pattern 'InfernuxHub-manifest.json' --dir $BaseDir
-                if ($LASTEXITCODE -eq 0) {
-                    $Candidate = Join-Path $BaseDir 'InfernuxHub-manifest.json'
-                    if (Test-Path -LiteralPath $Candidate -PathType Leaf) { $BaseManifest = $Candidate }
-                }
-            }
-        }
-    } catch {
-        Write-Warning "Previous release manifest was not available; this release will contain the full package only. $($_.Exception.Message)"
-    }
-}
+Write-Host "[4/6] Using standalone full-package Hub updates..." -ForegroundColor Cyan
+Write-Host "       Release assets are independently installable; incremental patches are not published." -ForegroundColor DarkGray
 
-Write-Host "[5/6] Generating full and incremental Hub assets..." -ForegroundColor Cyan
+Write-Host "[5/6] Generating standalone Hub assets..." -ForegroundColor Cyan
 $Arguments = @(
     (Join-Path $Root 'packaging\incremental_update.py'),
     '--hub-dir', $HubDir,
     '--version', $Version,
     '--output-dir', $ReleaseDir
 )
-if ($BaseManifest) { $Arguments += @('--base-manifest', $BaseManifest) }
 & python @Arguments
 if ($LASTEXITCODE -ne 0) { throw 'Hub update artifact generation failed.' }
-if (Test-Path -LiteralPath (Join-Path $ReleaseDir '.base')) {
-    Remove-Item -LiteralPath (Join-Path $ReleaseDir '.base') -Recurse -Force
-}
 
 $ChecksumPath = Join-Path $ReleaseDir 'SHA256SUMS.txt'
 $Artifacts = Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name

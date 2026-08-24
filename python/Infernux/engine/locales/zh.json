@@ -450,7 +450,6 @@
   "hierarchy.prefab_mode_header": "[预制体] {name}",
   "hierarchy.delete": "删除",
   "hierarchy.rename": "重命名",
-  "hierarchy.ui_mode": "UI 模式",
   "hierarchy.no_scene": "(无场景)",
   "hierarchy.search_placeholder": "搜索场景物体...",
   "hierarchy.no_search_results": "没有匹配的物体。",

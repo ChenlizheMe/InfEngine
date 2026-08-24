@@ -35,23 +35,18 @@ def _panel_with_persistence_spy():
     return panel, writes
 
 
-def test_visible_ui_editor_owns_hierarchy_mode_independent_of_focus():
+def test_ui_editor_visibility_has_no_hierarchy_mode_side_effects():
     from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
 
     panel = UIEditorPanel()
-    mode_requests = []
     panel._load_view_settings = lambda: None
-    panel.set_on_request_ui_mode(mode_requests.append)
 
     panel._on_visible_pre(None)
     panel._on_visible_pre(None)
-    assert mode_requests == [True]
-
     panel._on_not_visible(None)
-    assert mode_requests == [True, False]
 
-    panel._on_visible_pre(None)
-    assert mode_requests == [True, False, True]
+    assert not hasattr(panel, "_on_request_ui_mode")
+    assert not hasattr(panel, "_hierarchy_mode_active")
 
 
 def test_ui_editor_pan_is_one_non_dirty_command_without_frame_writes(

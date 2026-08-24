@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
-from hub_utils import get_app_dir, is_frozen, merge_child_env_utf8
+from hub_utils import get_app_dir, is_frozen
 
 
 GITHUB_LATEST_RELEASE = "https://api.github.com/repos/ChenlizheMe/Infernux/releases/latest"
@@ -233,21 +233,48 @@ def launch_external_updater(staged_root: str | Path) -> None:
     root = Path(staged_root).resolve()
     script = root / "apply-update.ps1"
     script.write_text(_POWERSHELL_UPDATER, encoding="utf-8-sig")
-    subprocess.Popen(
+    _launch_elevated_powershell(
+        script,
         [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", str(script),
             "-ParentPid", str(os.getpid()),
             "-InstallDir", str(Path(get_app_dir()).resolve()),
             "-StageDir", str((root / "stage").resolve()),
             "-MetadataPath", str((root / "hub-update.json").resolve()),
         ],
-        close_fds=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
-        env=merge_child_env_utf8(),
+        root,
     )
+
+
+def _launch_elevated_powershell(
+    script: Path,
+    arguments: list[str],
+    working_directory: Path,
+) -> None:
+    """Launch the verified replacement step with the installer's privileges."""
+    import ctypes
+
+    parameters = subprocess.list2cmdline(
+        [
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", str(script),
+            *arguments,
+        ]
+    )
+    # The installer defaults to Program Files.  A normally launched Hub can
+    # download and verify an update there, but it cannot replace its installed
+    # files without a UAC grant.  SW_HIDE suppresses the console window; the
+    # updater script presents its own progress window.
+    result = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        "powershell.exe",
+        parameters,
+        str(working_directory),
+        0,
+    )
+    if int(result) <= 32:
+        raise OSError(int(result), "Could not start the elevated Hub updater")
 
 
 _POWERSHELL_UPDATER = r'''param(

@@ -24,7 +24,7 @@ def _get_hierarchy_scene():
     return _SM.instance().get_active_scene()
 
 
-# ═══════ Canvas / UI-mode queries ══════════════════════════════
+# ═══════ UI structure queries ══════════════════════════════════
 
 def _wire_canvas_queries(ctx):
     """Wire canvas and UI-component detection callbacks."""
@@ -36,8 +36,6 @@ def _wire_canvas_queries(ctx):
         "canvas_list_token": 0,
         "canvas_object_ids": set(),
         "canvas_tree_ids": set(),
-        "canvas_ancestor_ids": set(),
-        "canvas_root_ids": set(),
     }
 
     def _clear_query_cache():
@@ -46,8 +44,6 @@ def _wire_canvas_queries(ctx):
         query_cache["canvas_list_token"] = 0
         query_cache["canvas_object_ids"] = set()
         query_cache["canvas_tree_ids"] = set()
-        query_cache["canvas_ancestor_ids"] = set()
-        query_cache["canvas_root_ids"] = set()
 
     def _ensure_query_cache(scene):
         if scene is None:
@@ -75,8 +71,6 @@ def _wire_canvas_queries(ctx):
 
         canvas_object_ids = set()
         canvas_tree_ids = set()
-        canvas_ancestor_ids = set()
-        canvas_root_ids = set()
 
         for canvas_go, _canvas in canvases_with_go:
             if canvas_go is None or getattr(canvas_go, "scene", None) is not scene:
@@ -85,22 +79,6 @@ def _wire_canvas_queries(ctx):
             canvas_go_id = int(getattr(canvas_go, "id", 0) or 0)
             if canvas_go_id:
                 canvas_object_ids.add(canvas_go_id)
-
-            cur = canvas_go
-            top_root_id = 0
-            while cur is not None:
-                cur_id = int(getattr(cur, "id", 0) or 0)
-                if cur_id:
-                    canvas_ancestor_ids.add(cur_id)
-                    top_root_id = cur_id
-                try:
-                    cur = cur.get_parent()
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    cur = None
-
-            if top_root_id:
-                canvas_root_ids.add(top_root_id)
 
             pending = [canvas_go]
             while pending:
@@ -117,16 +95,7 @@ def _wire_canvas_queries(ctx):
         query_cache["canvas_list_token"] = canvas_list_token
         query_cache["canvas_object_ids"] = canvas_object_ids
         query_cache["canvas_tree_ids"] = canvas_tree_ids
-        query_cache["canvas_ancestor_ids"] = canvas_ancestor_ids
-        query_cache["canvas_root_ids"] = canvas_root_ids
         return query_cache
-
-    def _get_canvas_root_ids():
-        scene = _get_hierarchy_scene()
-        if not scene:
-            return []
-        cache = _ensure_query_cache(scene)
-        return list(cache["canvas_root_ids"])
 
     def _go_has_canvas(oid):
         scene = _get_hierarchy_scene()
@@ -155,18 +124,9 @@ def _wire_canvas_queries(ctx):
         cache = _ensure_query_cache(scene)
         return int(oid) in cache["canvas_tree_ids"]
 
-    def _has_canvas_descendant(oid):
-        scene = _get_hierarchy_scene()
-        if not scene:
-            return False
-        cache = _ensure_query_cache(scene)
-        return int(oid) in cache["canvas_ancestor_ids"]
-
     hp.go_has_canvas = _go_has_canvas
     hp.go_has_ui_screen_component = _go_has_ui_screen_component
     hp.parent_has_canvas_ancestor = _parent_has_canvas_ancestor
-    hp.has_canvas_descendant = _has_canvas_descendant
-    hp.get_canvas_root_ids = _get_canvas_root_ids
 
 
 # ═══════ Main entry point ══════════════════════════════════════
@@ -331,7 +291,6 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         target_id,
         target_is_prefab,
         create_parent_id,
-        ui_mode,
     ):
         from Infernux.engine.interaction import ContextMenuBuilder
         from Infernux.engine.ui.core_context_menus import hierarchy_context_menu
@@ -343,7 +302,6 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
                 target_id=int(target_id or 0),
                 target_is_prefab=bool(target_is_prefab),
                 create_parent_id=int(create_parent_id or 0),
-                ui_mode=bool(ui_mode),
             ),
         )
 

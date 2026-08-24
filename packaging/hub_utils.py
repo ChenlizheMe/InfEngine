@@ -8,7 +8,18 @@ import sys
 
 def is_frozen() -> bool:
     """Return *True* inside a PyInstaller or Nuitka standalone build."""
-    return bool(getattr(sys, "frozen", False) or "__compiled__" in globals())
+    if getattr(sys, "frozen", False):
+        return True
+
+    # Nuitka defines ``__compiled__`` on the executable's main module.  It is
+    # not guaranteed to copy that marker into imported modules such as this
+    # one, so checking only ``globals()`` makes a standalone Hub look like a
+    # source checkout.  The launcher then skips packaged-only startup work,
+    # including the automatic update check.
+    if "__compiled__" in globals():
+        return True
+    main_module = sys.modules.get("__main__")
+    return bool(main_module and "__compiled__" in vars(main_module))
 
 
 def get_bundle_dir() -> str:

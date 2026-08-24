@@ -2655,9 +2655,6 @@ class HierarchyPanel(EditorPanel):
 
     def __init__(self) -> None: ...
 
-    def set_ui_mode(self, enabled: bool) -> None: ...
-    def get_ui_mode(self) -> bool: ...
-    ui_mode: bool
     def clear_search(self) -> None: ...
     def request_search_focus(self) -> None: ...
     def clear_selection_and_notify(self) -> None: ...
@@ -2702,12 +2699,10 @@ class HierarchyPanel(EditorPanel):
     # Runtime hidden
     get_runtime_hidden_ids: Any
 
-    # Canvas / UI-mode queries
+    # UI structure queries
     go_has_canvas: Any
     go_has_ui_screen_component: Any
     parent_has_canvas_ancestor: Any
-    has_canvas_descendant: Any
-    get_canvas_root_ids: Any
 
     # Translation
     translate: Any

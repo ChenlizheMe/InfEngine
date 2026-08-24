@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QMessageBox, QProgressBar, QVBoxLayout
 
 from hub_updater import check_for_update, launch_external_updater, stage_update
 from i18n import tr
+
+
+def _write_update_trace(payload: dict) -> None:
+    """Write an opt-in packaged-update diagnostic for release verification."""
+    destination = os.environ.get("INFERNUX_HUB_UPDATE_TRACE", "").strip()
+    if not destination:
+        return
+    try:
+        path = Path(destination).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
 
 
 class _CheckWorker(QObject):
@@ -15,8 +32,18 @@ class _CheckWorker(QObject):
 
     def run(self):
         try:
-            self.finished.emit(check_for_update())
+            update = check_for_update()
+            _write_update_trace(
+                {
+                    "status": "update_available" if update is not None else "up_to_date",
+                    "current_version": update.current_version if update is not None else "",
+                    "target_version": update.target_version if update is not None else "",
+                    "asset_name": update.asset_name if update is not None else "",
+                }
+            )
+            self.finished.emit(update)
         except Exception as exc:
+            _write_update_trace({"status": "failed", "error": str(exc)})
             self.failed.emit(str(exc))
 
 
@@ -138,7 +165,7 @@ class UpdateController(QObject):
             tr("Hub Update Available"),
             tr(
                 "Infernux Hub {version} is available. Update now?\n\n"
-                "Hub will close, install the verified incremental update, and restart automatically.",
+                "Hub will close, install the verified update, and restart automatically.",
                 version=update.target_version,
             ),
         )

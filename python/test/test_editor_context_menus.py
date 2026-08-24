@@ -312,6 +312,21 @@ def test_hierarchy_menu_freezes_target_and_create_parent_payloads():
     assert prefab.payload["object_id"] == 42
 
 
+def test_hierarchy_root_menu_exposes_scene_and_ui_creation_together():
+    from Infernux.engine.ui.core_context_menus import hierarchy_context_menu
+
+    leaves = _flatten_menu_entries(hierarchy_context_menu(lambda key: key))
+    kinds = {
+        entry.payload["kind"]
+        for entry in leaves
+        if entry.command_id == "scene.create_object"
+    }
+
+    assert "empty" in kinds
+    assert "primitive.cube" in kinds
+    assert "ui.canvas" in kinds
+
+
 def test_project_menu_freezes_logical_and_reveal_paths_separately():
     from Infernux.engine.ui.core_context_menus import project_context_menu
 

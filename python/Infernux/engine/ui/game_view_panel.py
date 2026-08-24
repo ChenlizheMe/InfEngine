@@ -116,7 +116,7 @@ class GameViewPanel(EditorPanel):
         self._cached_ui_canvases = ()
         self._cached_ui_sort_signature = ()
 
-        # Focus tracking for auto-exit UI Mode
+        # Focus tracking for view-owned interactions
         self._was_focused: bool = False
         self._on_focus_gained = None   # callback() when panel gains focus
 

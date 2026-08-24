@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.3.5-orange.svg" alt="Version 0.3.5" />
+  <img src="https://img.shields.io/badge/version-0.3.6-orange.svg" alt="Version 0.3.6" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
@@ -39,7 +39,11 @@ Infernux is an open-source game engine built around a native C++ runtime and a p
 
 The project is intentionally not a sealed editor with a scripting attachment. Python is a first-class engine surface, which makes ordinary game code approachable and gives projects direct access to the wider Python ecosystem, including AI, vision, simulation, and data tooling.
 
-Infernux is currently Windows-first and under active development. Version `0.3.5` is a small maintenance release following the broad 0.3.4 engine update. The project still deliberately accepts breaking data-format and API changes while the architecture is young.
+Infernux is currently Windows-first and under active development. Version `0.3.6` unifies the editor Hierarchy and restores automatic update discovery in packaged Hub builds. The project still deliberately accepts breaking data-format and API changes while the architecture is young.
+
+## 0.3.6
+
+Version `0.3.6` removes the separate Hierarchy UI mode, restores packaged Hub update checks, and switches Hub releases to independently installable full packages.
 
 ## 0.3.5
 
@@ -201,7 +205,7 @@ The first command builds the portable Hub bundle. The second builds the Windows 
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.5},
+  version = {0.3.6},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

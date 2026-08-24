@@ -1172,19 +1172,11 @@ def test_ui_editor_projects_directly_from_typed_selection(monkeypatch):
     monkeypatch.setattr(native, "SceneManager", _SceneManager)
 
     projected = []
-    callbacks = {}
     ui_editor = SimpleNamespace(
-        set_on_request_ui_mode=lambda callback: callbacks.__setitem__(
-            "mode", callback
-        ),
         project_global_selection=projected.append,
     )
     bootstrap = BootstrapWiringMixin()
     bootstrap.ui_editor = ui_editor
-    bootstrap.hierarchy = SimpleNamespace(set_ui_mode=lambda _enabled: None)
-    bootstrap.scene_view = SimpleNamespace()
-    bootstrap.game_view = SimpleNamespace()
-    bootstrap.window_manager = None
 
     service = SelectionService()
     bootstrap._wire_ui_editor()

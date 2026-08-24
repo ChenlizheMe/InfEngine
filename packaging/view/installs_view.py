@@ -16,6 +16,15 @@ from i18n import tr
 from view.hover_widgets import AnimatedSurfaceFrame
 
 
+def _configure_install_scroll_area(scroll: QScrollArea, container: QWidget) -> None:
+    """Keep install lists on the Hub palette instead of the OS viewport palette."""
+    scroll.setObjectName("installScrollArea")
+    scroll.viewport().setObjectName("installViewport")
+    scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    container.setObjectName("installListContainer")
+    container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+
 # ─── Version card (one per installed version) ────────────────────────
 
 class _VersionCard(AnimatedSurfaceFrame):
@@ -257,6 +266,7 @@ class InstallEditorDialog(QDialog):
         self._scroll.setWidgetResizable(True)
         self._scroll.hide()
         self._container = QWidget()
+        _configure_install_scroll_area(self._scroll, self._container)
         self._list_layout = QVBoxLayout(self._container)
         self._list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._list_layout.setSpacing(4)
@@ -464,13 +474,11 @@ class InstallsView(QWidget):
 
         # ── Version list (scrollable) ────────────────────────────────
         scroll = QScrollArea()
-        scroll.setObjectName("installScrollArea")
-        scroll.viewport().setObjectName("installViewport")
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll, 1)
 
         self._container = QWidget()
-        self._container.setObjectName("installListContainer")
+        _configure_install_scroll_area(scroll, self._container)
         self._card_layout = QVBoxLayout(self._container)
         self._card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._card_layout.setSpacing(6)
