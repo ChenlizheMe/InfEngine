@@ -4040,6 +4040,60 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
     assert scene["unresolved_dependencies"] == []
 
 
+def test_animclip3d_catalog_depends_on_independent_animation_model():
+    clip_guid = "1" * 32
+    animation_model_guid = "2" * 32
+    clip_payload = json.dumps(
+        {
+            "name": "Run",
+            "source_model_guid": animation_model_guid,
+            "source_model_path": "Assets/Animations/Run.fbx",
+            "take_name": "Run",
+            "bind_pose_bone_names": [],
+            "duration_hint": 0.0,
+            "events": [],
+        }
+    ).encode("utf-8")
+    mesh_payload = b"mesh"
+    entries = [
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": f"Library/Artifacts/Document/{clip_guid}.animclip3d",
+            "bytes": len(clip_payload),
+            "sha256": hashlib.sha256(clip_payload).hexdigest(),
+            "payload": clip_payload,
+            "asset_binding": {
+                "source_guid": clip_guid,
+                "source_path": "Assets/Animations/Run.animclip3d",
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": f"Library/Artifacts/Mesh/{animation_model_guid}.inxmesh",
+            "bytes": len(mesh_payload),
+            "sha256": hashlib.sha256(mesh_payload).hexdigest(),
+            "asset_binding": {
+                "source_guid": animation_model_guid,
+                "source_path": "Assets/Animations/Run.fbx",
+                "dependencies": [],
+            },
+        },
+    ]
+
+    catalog = build_catalog(
+        entries,
+        player_host={"executable": "Game.exe", "sha256": "a" * 64},
+        package_records=[],
+    )
+
+    by_path = {artifact["runtime_path"]: artifact for artifact in catalog["artifacts"]}
+    model = by_path[f"Library/Artifacts/Mesh/{animation_model_guid}.inxmesh"]
+    clip = by_path[f"Library/Artifacts/Document/{clip_guid}.animclip3d"]
+    assert clip["dependencies"] == [model["runtime_artifact_id"]]
+    assert clip["unresolved_dependencies"] == []
+
+
 def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
     scene_guid = "11111111111111111111111111111111"
     material_guid = "22222222222222222222222222222222"

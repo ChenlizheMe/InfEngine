@@ -25,11 +25,6 @@ from Infernux.engine.path_utils import lexical_path, portable_path
 from Infernux.graph.types import ValueType
 
 
-def _normalize_guid_key(s: str) -> str:
-    """Case-insensitive, hyphen-insensitive key for comparing asset GUIDs."""
-    return (s or "").replace("-", "").strip().lower()
-
-
 def _try_guid_for_model_path(db, path: str) -> str:
     """Resolve a model file path to its asset GUID via the database, if available."""
     if not db or not (path or "").strip():
@@ -53,53 +48,15 @@ def _try_guid_for_model_path(db, path: str) -> str:
     return ""
 
 
-def _model_keys_for_source(db, source_guid: str, source_path: str) -> tuple:
-    """
-    Return (key, had_explicit_guid) where key is the normalized 32-hex id when known.
-    Uses serialized GUID first, then path→GUID from the database.
-    """
-    g = (source_guid or "").strip()
-    k = _normalize_guid_key(g)
-    if k:
-        return (k, True)
-    g2 = _try_guid_for_model_path(db, source_path) if db else ""
-    k2 = _normalize_guid_key(g2)
-    if k2:
-        return (k2, False)
-    return ("", False)
-
-
-def _skinned_mismatch_message(
-    db,
-    clip: AnimationClip3D,
-    source_model_guid: str,
-) -> str:
-    """
-    If clip and renderer are definitely different model assets, return a warning string.
-    Prefers GUID and path→GUID; does not use raw path comparison when both GUID keys match.
-    """
-    p_clip = (getattr(clip, "source_model_path", "") or "").strip()
-    g_clip = (getattr(clip, "source_model_guid", "") or "").strip()
-    g_rend = (source_model_guid or "").strip()
-
-    k_clip, _ = _model_keys_for_source(db, g_clip, p_clip)
-    k_rend = _normalize_guid_key(g_rend)
-
-    if k_clip and k_rend and k_clip != k_rend:
-        return (
-            f"[SkeletalAnimator] Clip source model does not match SkinnedMeshRenderer "
-            f"(clip guid≈{g_clip!r} path='{p_clip}' vs renderer guid≈{g_rend!r})."
-        )
-    if k_clip and k_rend:
+def _animation_source_guid(clip: Optional[AnimationClip3D]) -> str:
+    """Return the runtime model GUID that owns *clip*'s animation take."""
+    if clip is None:
         return ""
-
-    if k_clip or k_rend:
-        return ""
-
-    # SkinnedMeshRenderer intentionally exposes only the source-model GUID. If
-    # neither side can provide a GUID, there is no renderer path to compare and
-    # therefore no definite mismatch to report.
-    return ""
+    guid = str(getattr(clip, "source_model_guid", "") or "").strip()
+    if guid:
+        return guid
+    path = str(getattr(clip, "source_model_path", "") or "").strip()
+    return _try_guid_for_model_path(_get_asset_database(), path)
 
 
 def _get_asset_database():
@@ -224,7 +181,8 @@ class SkeletalAnimator(InxComponent):
     _blend_duration: float = 0.0
     _last_native_take_name: str = ""
     _last_native_pose_key = None
-    _duration_cache: Dict[str, float] = {}
+    _last_native_submission_error: str = ""
+    _duration_cache: Dict[tuple[str, str], float] = {}
     _current_timeline = None
     _timeline_cache: Dict[str, object] = {}
     _timeline_base = None
@@ -238,6 +196,7 @@ class SkeletalAnimator(InxComponent):
         self._timeline_base = None
         self._last_native_take_name = ""
         self._last_native_pose_key = None
+        self._last_native_submission_error = ""
         self._current_state_name = ""
         self._current_clip = None
         self._elapsed = 0.0
@@ -419,6 +378,7 @@ class SkeletalAnimator(InxComponent):
         self._timeline_base = None
         self._last_native_take_name = ""
         self._last_native_pose_key = None
+        self._last_native_submission_error = ""
         self._parameters = {}
         self._clear_blend_state()
 
@@ -589,8 +549,10 @@ class SkeletalAnimator(InxComponent):
         """Submit a blend-state pose (clip A lerp clip B). Returns True if handled."""
         clip_a = self._current_clip
         take_a = str(getattr(clip_a, "take_name", "") or "") if clip_a is not None else ""
+        source_a = _animation_source_guid(clip_a)
         clip_b = self._resolve_clip_b(state)
         take_b = str(getattr(clip_b, "take_name", "") or "") if clip_b is not None else ""
+        source_b = _animation_source_guid(clip_b)
         if not take_a and not take_b:
             return False
         lerp = self._blend_state_lerp(state)
@@ -604,39 +566,49 @@ class SkeletalAnimator(InxComponent):
         if not native_renderers:
             return False
         if take_a and take_b and all(callable(getattr(cpp, "submit_pose_stack", None)) for cpp in native_renderers):
-            pose_key = ("stack", self._playing, take_a, take_b, t, lerp, loop)
+            pose_key = ("stack", self._playing, take_a, source_a, take_b, source_b, t, lerp, loop)
             if pose_key == self._last_native_pose_key:
                 return True
             try:
                 layers = [
-                    {"take_name": take_a, "time": t, "weight": 1.0 - lerp, "loop": loop},
-                    {"take_name": take_b, "time": t, "weight": lerp, "loop": loop},
+                    {"take_name": take_a, "source_model_guid": source_a,
+                     "time": t, "weight": 1.0 - lerp, "loop": loop},
+                    {"take_name": take_b, "source_model_guid": source_b,
+                     "time": t, "weight": lerp, "loop": loop},
                 ]
                 for cpp in native_renderers:
                     cpp.submit_pose_stack(layers)
+                self._last_native_submission_error = ""
                 self._last_native_take_name = take_a
                 self._last_native_pose_key = pose_key
                 return True
             except Exception as exc:
-                Debug.log_suppressed("SkeletalAnimator._submit_blend_state.pose_stack", exc)
+                self._report_native_submission_error(exc)
 
         if all(callable(getattr(cpp, "submit_animation_pose", None)) for cpp in native_renderers):
             pose_key = (
                 "blend", self._playing, take_a or take_b, t, normalized,
-                take_b if take_a else "", lerp if take_a else 0.0, loop,
+                take_b if take_a else "", lerp if take_a else 0.0, loop, source_a, source_b,
             )
             if pose_key == self._last_native_pose_key:
                 return True
-            for cpp in native_renderers:
-                cpp.submit_animation_pose(
-                    take_a or take_b,
-                    t,
-                    normalized,
-                    take_b if take_a else "",
-                    t,
-                    lerp if take_a else 0.0,
-                    loop,
-                )
+            try:
+                for cpp in native_renderers:
+                    cpp.submit_animation_pose(
+                        take_a or take_b,
+                        t,
+                        normalized,
+                        take_b if take_a else "",
+                        t,
+                        lerp if take_a else 0.0,
+                        loop,
+                        source_a if take_a else source_b,
+                        source_b if take_a else "",
+                    )
+                self._last_native_submission_error = ""
+            except Exception as exc:
+                self._report_native_submission_error(exc)
+                return True
             self._last_native_take_name = take_a or take_b
             self._last_native_pose_key = pose_key
             return True
@@ -718,13 +690,15 @@ class SkeletalAnimator(InxComponent):
         take_name = str(getattr(clip, "take_name", "") or "")
         if not take_name:
             return 0.0
-        if take_name in self._duration_cache:
-            return self._duration_cache[take_name]
+        source_guid = _animation_source_guid(clip)
+        cache_key = (source_guid, take_name)
+        if cache_key in self._duration_cache:
+            return self._duration_cache[cache_key]
         try:
             get_duration = getattr(cpp, "get_animation_duration_seconds", None)
             if callable(get_duration):
-                duration = max(float(get_duration(take_name) or 0.0), 0.0)
-                self._duration_cache[take_name] = duration
+                duration = max(float(get_duration(take_name, source_guid) or 0.0), 0.0)
+                self._duration_cache[cache_key] = duration
                 return duration
         except Exception:
             return 0.0
@@ -837,34 +811,17 @@ class SkeletalAnimator(InxComponent):
         return renderers[0] if renderers else None
 
     def _apply_active_take(self):
-        renderers = self._resolve_skinned_renderers()
-        if not renderers:
-            return
-        take_name = ""
-        clip = self._current_clip
-        if clip is not None:
-            take_name = str(getattr(clip, "take_name", "") or "")
-            if take_name == self._last_native_take_name:
-                return
+        # The source model and take form one atomic native submission. Setting
+        # active_take_name first would briefly look the take up on the render
+        # model and recreate the old mesh/animation coupling. The following
+        # _sync_native_runtime_playback call performs the complete update.
+        return
 
-            db = _get_asset_database()
-            warned = set()
-            for renderer in renderers:
-                try:
-                    renderer_guid = str(getattr(renderer, "source_model_guid", "") or "")
-                except ReferenceError:
-                    continue
-                msg = _skinned_mismatch_message(db, clip, renderer_guid)
-                if msg and msg not in warned:
-                    Debug.log_warning(msg)
-                    warned.add(msg)
-
-        for renderer in renderers:
-            try:
-                renderer.active_take_name = take_name
-            except ReferenceError:
-                pass
-        self._last_native_take_name = take_name
+    def _report_native_submission_error(self, exc: Exception) -> None:
+        message = f"[SkeletalAnimator] Animation retarget failed: {exc}"
+        if message != self._last_native_submission_error:
+            Debug.log_warning(message)
+            self._last_native_submission_error = message
 
     def _sync_native_runtime_playback(self) -> None:
         renderers = self._resolve_skinned_renderers()
@@ -890,6 +847,7 @@ class SkeletalAnimator(InxComponent):
         # runtime_animation_time assignment is reserved for discontinuous seek.
         has_clip = self._current_clip is not None and bool(self.current_take_name)
         take_name = self.current_take_name if has_clip else ""
+        source_guid = _animation_source_guid(self._current_clip) if take_name else ""
         state = self._get_current_state()
         loop = bool(state.loop) if state is not None else True
         normalized = float(self.normalized_time) if take_name else 0.0
@@ -901,22 +859,30 @@ class SkeletalAnimator(InxComponent):
             blend_take = self._blend_from_take_name
             blend_time = float(self._blend_from_elapsed)
             blend_weight = float(1.0 - progress)
+        blend_source_guid = _animation_source_guid(self._blend_from_clip) if blend_take else ""
         pose_key = (
             "clip", self._playing, take_name, float(self._elapsed), normalized,
-            blend_take, blend_time, blend_weight, loop,
+            blend_take, blend_time, blend_weight, loop, source_guid, blend_source_guid,
         )
         if pose_key == self._last_native_pose_key:
             return
-        for cpp in native_renderers:
-            cpp.submit_animation_pose(
-                take_name,
-                float(self._elapsed) if take_name else 0.0,
-                normalized,
-                blend_take,
-                blend_time,
-                blend_weight,
-                loop,
-            )
+        try:
+            for cpp in native_renderers:
+                cpp.submit_animation_pose(
+                    take_name,
+                    float(self._elapsed) if take_name else 0.0,
+                    normalized,
+                    blend_take,
+                    blend_time,
+                    blend_weight,
+                    loop,
+                    source_guid,
+                    blend_source_guid,
+                )
+            self._last_native_submission_error = ""
+        except Exception as exc:
+            self._report_native_submission_error(exc)
+            return
         self._last_native_take_name = take_name
         self._last_native_pose_key = pose_key
 

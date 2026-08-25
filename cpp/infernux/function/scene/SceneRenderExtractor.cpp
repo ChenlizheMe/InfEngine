@@ -317,18 +317,20 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
 
         // Detect transform change: skip bounds + draw-call patch for static objects.
         const bool transformChanged = std::memcmp(&worldMatrix, &frameData.worldMatrix, sizeof(glm::mat4)) != 0;
+        const bool dynamicSkinBounds = source.skinnedRenderer && source.skinnedRenderer->HasRuntimeSkinnedMesh();
         const bool bufferDirty = mr->ConsumeMeshBufferDirty();
         if (bufferDirty && mr->HasInlineMesh()) {
             CaptureOrReferenceInlineMesh(*mr, source.inlineVertices, source.inlineIndices, source.inlineMeshOwner);
         }
 
-        if (transformChanged) {
+        if (transformChanged || dynamicSkinBounds) {
             const bool translationOnly =
-                std::memcmp(&worldMatrix[0], &frameData.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
+                transformChanged && std::memcmp(&worldMatrix[0], &frameData.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
             const glm::vec3 translationDelta = glm::vec3(worldMatrix[3] - frameData.worldMatrix[3]);
-            frameData.worldMatrix = worldMatrix;
+            if (transformChanged)
+                frameData.worldMatrix = worldMatrix;
 
-            if (translationOnly) {
+            if (translationOnly && !dynamicSkinBounds) {
                 frameData.worldBounds.min += translationDelta;
                 frameData.worldBounds.max += translationDelta;
             } else {
@@ -375,8 +377,9 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                 }
             }
 
-            if (transformChanged || bufferDirty) {
-                // Full patch: transform changed or dynamic mesh data needs a GPU re-upload.
+            if (transformChanged || bufferDirty || dynamicSkinBounds) {
+                // Full patch: transform/bounds changed or dynamic mesh data
+                // needs a GPU re-upload.
                 const glm::vec3 &pivot = mr->GetMeshPivotOffset();
                 glm::mat4 drawWorldMatrix = worldMatrix;
                 if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {

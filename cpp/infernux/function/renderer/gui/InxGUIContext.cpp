@@ -2807,8 +2807,8 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
         const ImVec4 &pickerFill =
             pickerPressed ? buttonActiveColor : (pickerHovered ? buttonHoverColor : buttonIdleColor);
         drawList->AddRectFilled(pickerMin, pickerMax, ImGui::ColorConvertFloat4ToU32(pickerFill), 0.0f);
-        const float drawSize = (std::max)(0.0f, (std::min)(10.0f, (std::min)(pickerMax.x - pickerMin.x - 6.0f,
-                                                                             pickerMax.y - pickerMin.y - 4.0f)));
+        const float drawSize = (std::max)(
+            0.0f, (std::min)(10.0f, (std::min)(pickerMax.x - pickerMin.x - 6.0f, pickerMax.y - pickerMin.y - 4.0f)));
         const ImVec2 drawMin{pickerMin.x + ((pickerMax.x - pickerMin.x) - drawSize) * 0.5f,
                              pickerMin.y + ((pickerMax.y - pickerMin.y) - drawSize) * 0.5f};
         if (pickerTextureId != 0 && drawSize > 0.0f) {

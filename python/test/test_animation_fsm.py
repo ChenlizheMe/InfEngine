@@ -41,10 +41,11 @@ def _condition(parameter: AnimParameter, operator: str = "==", threshold: float 
 
 
 class _FakeClip:
-    def __init__(self, take_name="Walk", duration_hint=2.0):
+    def __init__(self, take_name="Walk", duration_hint=2.0, source_model_guid=""):
         self.take_name = take_name
         self.duration_hint = duration_hint
-        self.source_model_guid = ""
+        self.source_model_guid = source_model_guid
+        self.source_model_path = ""
 
 
 class _RendererBinding:
@@ -170,13 +171,25 @@ def test_skeletal_animator_submits_same_pose_to_all_descendant_renderers(monkeyp
     assert visor_native.calls == body_native.calls
 
 
-def test_skeletal_mismatch_check_is_inconclusive_when_renderer_has_no_guid():
-    from Infernux.components.skeletal_animator import _skinned_mismatch_message
+def test_skeletal_animator_submits_clip_source_separately_from_render_model(monkeypatch):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator._fsm = AnimStateMachine(
+        states=[AnimState(name="Walk", loop=True)],
+        default_state="Walk",
+    )
+    animator._current_state_name = "Walk"
+    animator._current_clip = _FakeClip("Walk", source_model_guid="animation-fbx-guid")
+    animator._elapsed = 0.5
+    animator._playing = True
+    animator._last_native_pose_key = None
 
-    clip = _FakeClip()
-    clip.source_model_path = "Assets/Models/Driver.fbx"
+    animator._sync_native_runtime_playback()
 
-    assert _skinned_mismatch_message(None, clip, "") == ""
+    assert len(native.calls) == 1
+    assert native.calls[0][7] == "animation-fbx-guid"
 
 
 class TestTriggerConsumption:

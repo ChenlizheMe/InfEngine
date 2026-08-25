@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
@@ -40,6 +41,14 @@ class SkinnedMeshRenderer : public MeshRenderer
         return GetMeshAssetGuid();
     }
 
+    /// Model asset that owns the currently sampled animation take. Empty uses
+    /// the render model itself. This is runtime state driven by SkeletalAnimator.
+    void SetAnimationSourceGuid(const std::string &guid);
+    [[nodiscard]] const std::string &GetAnimationSourceGuid() const
+    {
+        return m_animationSourceGuid;
+    }
+
     [[nodiscard]] const std::vector<std::string> &GetAnimationTakeNames() const
     {
         return m_animationTakeNames;
@@ -70,7 +79,8 @@ class SkinnedMeshRenderer : public MeshRenderer
     /// loop=false clamps sampling time so a finished clip holds its end pose.
     void SubmitAnimationPose(const std::string &takeName, float timeSeconds, float normalizedTime,
                              const std::string &blendTakeName, float blendTimeSeconds, float blendWeight,
-                             bool loop = true);
+                             bool loop = true, const std::string &animationSourceGuid = {},
+                             const std::string &blendAnimationSourceGuid = {});
     void SetBlendTakeName(const std::string &name);
     [[nodiscard]] const std::string &GetBlendTakeName() const
     {
@@ -102,9 +112,11 @@ class SkinnedMeshRenderer : public MeshRenderer
     {
         return !m_animationTakeNames.empty();
     }
-    [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName) const;
+    [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName,
+                                                    const std::string &animationSourceGuid = {}) const;
 
     void ReloadSourceModel();
+    [[nodiscard]] bool ReferencesModelGuid(const std::string &guid) const;
 
     [[nodiscard]] bool HasRuntimeSkinnedMesh() const;
     [[nodiscard]] const std::vector<Vertex> &GetRuntimeSkinnedVertices() const;
@@ -128,6 +140,11 @@ class SkinnedMeshRenderer : public MeshRenderer
         return m_skinPoseHistory.Acquire();
     }
 
+    /// Animated geometry can leave the imported bind-pose AABB even when the
+    /// GameObject Transform is unchanged. Culling therefore uses the current
+    /// skin palette rather than MeshRenderer's static mesh bounds.
+    void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const override;
+
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
     static void ValidateSerializedDocument(const nlohmann::json &document);
     bool DeserializeDocument(const nlohmann::json &document) override;
@@ -137,9 +154,13 @@ class SkinnedMeshRenderer : public MeshRenderer
     void RefreshRuntimeSkinnedMesh();
     void ClearRuntimeSkinnedMesh();
     [[nodiscard]] std::shared_ptr<const InxSkinnedMesh> GetOrLoadRuntimeModel() const;
+    [[nodiscard]] std::shared_ptr<const InxSkinnedMesh>
+    LoadCompatibleAnimationSource(const std::string &guid, const std::string &takeName = {}) const;
 
     std::vector<std::string> m_animationTakeNames;
     std::string m_activeTakeName;
+    std::string m_animationSourceGuid;
+    std::string m_blendAnimationSourceGuid;
     float m_runtimeAnimationTime = 0.0f;
     float m_runtimeAnimationNormalized = 0.0f;
     std::string m_blendTakeName;
@@ -147,9 +168,13 @@ class SkinnedMeshRenderer : public MeshRenderer
     float m_blendWeight = 0.0f;
     bool m_runtimeAnimationLoop = true;
     std::vector<PoseStackLayer> m_poseStack;
+    std::vector<std::shared_ptr<const InxSkinnedMesh>> m_poseStackAnimationSources;
     bool m_usePoseStack = false;
     SkinPoseHistory m_skinPoseHistory;
     mutable std::shared_ptr<const InxSkinnedMesh> m_runtimeModel;
+    mutable std::shared_ptr<const InxSkinnedMesh> m_animationSourceModel;
+    mutable std::shared_ptr<const InxSkinnedMesh> m_blendAnimationSourceModel;
+    mutable std::unordered_set<std::string> m_reportedRetargetWarnings;
 };
 
 } // namespace infernux

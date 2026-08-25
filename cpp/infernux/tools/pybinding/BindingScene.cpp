@@ -1219,6 +1219,9 @@ void RegisterSceneBindings(py::module_ &m)
         .def(py::init<>())
         .def_property_readonly("source_model_guid", &SkinnedMeshRenderer::GetSourceModelGuid,
                                "GUID of the animated source model asset")
+        .def_property("animation_source_guid", &SkinnedMeshRenderer::GetAnimationSourceGuid,
+                      &SkinnedMeshRenderer::SetAnimationSourceGuid,
+                      "GUID of the independently imported model that owns the active animation take")
         .def(
             "set_source_model_guid",
             [](SkinnedMeshRenderer &sr, const std::string &guid) {
@@ -1240,10 +1243,11 @@ void RegisterSceneBindings(py::module_ &m)
             "get_animation_take_names", [](const SkinnedMeshRenderer &sr) { return sr.GetAnimationTakeNames(); },
             "Get imported animation take names from the source model")
         .def("get_animation_duration_seconds", &SkinnedMeshRenderer::GetAnimationDurationSeconds, py::arg("take_name"),
-             "Get imported animation take duration in seconds")
+             py::arg("animation_source_guid") = "", "Get imported animation take duration in seconds")
         .def("submit_animation_pose", &SkinnedMeshRenderer::SubmitAnimationPose, py::arg("take_name"),
              py::arg("time_seconds"), py::arg("normalized_time"), py::arg("blend_take_name") = "",
              py::arg("blend_time_seconds") = 0.0f, py::arg("blend_weight") = 0.0f, py::arg("loop") = true,
+             py::arg("animation_source_guid") = "", py::arg("blend_animation_source_guid") = "",
              "Submit active and blend animation state in one native call. "
              "Empty take_name renders the bind pose; loop=False holds the end pose.")
         .def_property(
@@ -1276,6 +1280,8 @@ void RegisterSceneBindings(py::module_ &m)
                     PoseStackLayer layer;
                     if (d.contains("take_name"))
                         layer.takeName = d["take_name"].cast<std::string>();
+                    if (d.contains("source_model_guid"))
+                        layer.sourceModelGuid = d["source_model_guid"].cast<std::string>();
                     if (d.contains("time"))
                         layer.timeSeconds = d["time"].cast<float>();
                     if (d.contains("weight"))
@@ -1292,7 +1298,8 @@ void RegisterSceneBindings(py::module_ &m)
             },
             py::arg("layers"),
             "Submit a multi-layer pose stack (AnimationTree output). Each layer is a dict: "
-            "{take_name:str, time:float, weight:float, additive:bool, loop:bool, bone_mask:list[str]}. "
+            "{take_name:str, source_model_guid:str, time:float, weight:float, additive:bool, loop:bool, "
+            "bone_mask:list[str]}. "
             "Enables N-way weighted + additive + bone-masked blending beyond the 2-clip crossfade.")
         .def("clear_pose_stack", &SkinnedMeshRenderer::ClearPoseStack,
              "Clear the pose stack and revert to the single-clip / crossfade path")

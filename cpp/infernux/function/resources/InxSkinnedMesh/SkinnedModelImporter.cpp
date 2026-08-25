@@ -95,7 +95,7 @@ unsigned int BuildAssimpFlags()
 
 void CollectNodes(const aiNode &node, int parent, const glm::mat4 &parentGlobal, InxSkinnedMesh &output)
 {
-    const int index = static_cast<int>(output.nodes.size());
+    const int index = static_cast<int>(output.skeleton.nodes.size());
     SkinnedRuntimeNode runtimeNode;
     runtimeNode.name = node.mName.C_Str();
     runtimeNode.parent = parent;
@@ -103,9 +103,9 @@ void CollectNodes(const aiNode &node, int parent, const glm::mat4 &parentGlobal,
     runtimeNode.bindGlobal = parentGlobal * runtimeNode.bindLocal;
     if (!IsFinite(runtimeNode.bindLocal) || !IsFinite(runtimeNode.bindGlobal))
         throw std::runtime_error("Skinned model contains a non-finite node transform: " + runtimeNode.name);
-    if (runtimeNode.name.empty() || !output.nodeByName.emplace(runtimeNode.name, index).second)
+    if (runtimeNode.name.empty() || !output.skeleton.nodeByName.emplace(runtimeNode.name, index).second)
         throw std::runtime_error("Skinned model contains an empty or duplicate node name");
-    output.nodes.push_back(runtimeNode);
+    output.skeleton.nodes.push_back(runtimeNode);
 
     for (unsigned int childIndex = 0; childIndex < node.mNumChildren; ++childIndex) {
         if (!node.mChildren[childIndex])
@@ -117,8 +117,8 @@ void CollectNodes(const aiNode &node, int parent, const glm::mat4 &parentGlobal,
 void CollectMeshNodes(const aiNode &node, const InxSkinnedMesh &model, std::vector<std::pair<uint32_t, int>> &output)
 {
     int nodeIndex = -1;
-    const auto found = model.nodeByName.find(node.mName.C_Str());
-    if (found != model.nodeByName.end())
+    const auto found = model.skeleton.nodeByName.find(node.mName.C_Str());
+    if (found != model.skeleton.nodeByName.end())
         nodeIndex = found->second;
     for (unsigned int meshIndex = 0; meshIndex < node.mNumMeshes; ++meshIndex)
         output.push_back({node.mMeshes[meshIndex], nodeIndex});
@@ -167,11 +167,11 @@ uint32_t GetOrCreateBone(InxSkinnedMesh &model, const aiBone &source, const glm:
     if (!IsFinite(inverseBind))
         throw std::runtime_error("Skinned model contains a non-finite inverse bind transform for bone: " + sourceName);
 
-    const auto node = model.nodeByName.find(sourceName);
-    const int nodeIndex = node != model.nodeByName.end() ? node->second : -1;
+    const auto node = model.skeleton.nodeByName.find(sourceName);
+    const int nodeIndex = node != model.skeleton.nodeByName.end() ? node->second : -1;
     const std::string meshAliasPrefix = sourceName + "__mesh_";
-    for (uint32_t index = 0; index < model.bones.size(); ++index) {
-        const auto &existing = model.bones[index];
+    for (uint32_t index = 0; index < model.skeleton.bones.size(); ++index) {
+        const auto &existing = model.skeleton.bones[index];
         const bool sameSourceBone =
             existing.name == sourceName || existing.name.compare(0, meshAliasPrefix.size(), meshAliasPrefix) == 0;
         if (sameSourceBone && existing.nodeIndex == nodeIndex && MatricesNearlyEqual(existing.inverseBind, inverseBind))
@@ -179,9 +179,10 @@ uint32_t GetOrCreateBone(InxSkinnedMesh &model, const aiBone &source, const glm:
     }
 
     std::string runtimeName = sourceName;
-    if (model.boneByName.find(runtimeName) != model.boneByName.end()) {
+    if (model.skeleton.boneByName.find(runtimeName) != model.skeleton.boneByName.end()) {
         runtimeName += "__mesh_" + std::to_string(meshIndex);
-        for (uint32_t suffix = 1; model.boneByName.find(runtimeName) != model.boneByName.end(); ++suffix)
+        for (uint32_t suffix = 1; model.skeleton.boneByName.find(runtimeName) != model.skeleton.boneByName.end();
+             ++suffix)
             runtimeName = sourceName + "__mesh_" + std::to_string(meshIndex) + "_" + std::to_string(suffix);
     }
 
@@ -189,25 +190,25 @@ uint32_t GetOrCreateBone(InxSkinnedMesh &model, const aiBone &source, const glm:
     bone.name = runtimeName;
     bone.nodeIndex = nodeIndex;
     bone.inverseBind = inverseBind;
-    const uint32_t index = static_cast<uint32_t>(model.bones.size());
-    model.boneByName.emplace(runtimeName, index);
-    model.bones.push_back(std::move(bone));
+    const uint32_t index = static_cast<uint32_t>(model.skeleton.bones.size());
+    model.skeleton.boneByName.emplace(runtimeName, index);
+    model.skeleton.bones.push_back(std::move(bone));
     return index;
 }
 
 uint32_t GetOrCreateMeshNodeFallbackBone(InxSkinnedMesh &model, int nodeIndex, const glm::mat4 &inverseBind)
 {
     const std::string name = "__mesh_node_fallback_" + std::to_string(nodeIndex);
-    const auto found = model.boneByName.find(name);
-    if (found != model.boneByName.end())
+    const auto found = model.skeleton.boneByName.find(name);
+    if (found != model.skeleton.boneByName.end())
         return found->second;
     SkinnedRuntimeBone bone;
     bone.name = name;
     bone.nodeIndex = nodeIndex;
     bone.inverseBind = inverseBind;
-    const uint32_t index = static_cast<uint32_t>(model.bones.size());
-    model.boneByName.emplace(name, index);
-    model.bones.push_back(std::move(bone));
+    const uint32_t index = static_cast<uint32_t>(model.skeleton.bones.size());
+    model.skeleton.boneByName.emplace(name, index);
+    model.skeleton.bones.push_back(std::move(bone));
     return index;
 }
 
@@ -262,7 +263,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
         const uint32_t vertexStart = vertexOffset;
         const uint32_t indexStart = indexOffset;
         const glm::mat4 meshToModel =
-            nodeIndex >= 0 ? model->nodes[static_cast<size_t>(nodeIndex)].bindGlobal : glm::mat4(1.0f);
+            nodeIndex >= 0 ? model->skeleton.nodes[static_cast<size_t>(nodeIndex)].bindGlobal : glm::mat4(1.0f);
         if (!IsFinite(meshToModel) || std::abs(glm::determinant(glm::mat3(meshToModel))) <= 1e-12f)
             throw std::runtime_error("Skinned model mesh node has a non-invertible bind transform: " +
                                      std::string(sourceMesh.mName.C_Str()));
@@ -391,13 +392,18 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
                 ? sourceAnimation.mTicksPerSecond
                 : 25.0;
         animation.tracks.reserve(sourceAnimation.mNumChannels);
+        animation.trackByNodeIndex.assign(model->skeleton.nodes.size(), -1);
         for (unsigned int channelIndex = 0; channelIndex < sourceAnimation.mNumChannels; ++channelIndex) {
             if (!sourceAnimation.mChannels[channelIndex])
                 throw std::runtime_error("Skinned model animation contains a null channel");
             const aiNodeAnim &channel = *sourceAnimation.mChannels[channelIndex];
             SkinnedRuntimeTrack track;
-            track.nodeName = channel.mNodeName.C_Str();
-            if (track.nodeName.empty() || animation.trackByNode.find(track.nodeName) != animation.trackByNode.end())
+            const std::string channelNodeName = channel.mNodeName.C_Str();
+            const auto sourceNode = model->skeleton.nodeByName.find(channelNodeName);
+            if (channelNodeName.empty() || sourceNode == model->skeleton.nodeByName.end())
+                throw std::runtime_error("Skinned model animation targets a node outside its source skeleton");
+            track.nodeIndex = sourceNode->second;
+            if (animation.trackByNodeIndex[static_cast<size_t>(track.nodeIndex)] >= 0)
                 throw std::runtime_error("Skinned model animation contains an invalid duplicate node track");
             track.positions.reserve(channel.mNumPositionKeys);
             track.rotations.reserve(channel.mNumRotationKeys);
@@ -417,13 +423,14 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
                 if (std::isfinite(channel.mScalingKeys[key].mTime) && IsFinite(value))
                     track.scales.push_back({channel.mScalingKeys[key].mTime, value});
             }
-            animation.trackByNode.emplace(track.nodeName, animation.tracks.size());
+            animation.trackByNodeIndex[static_cast<size_t>(track.nodeIndex)] =
+                static_cast<int>(animation.tracks.size());
             animation.tracks.push_back(std::move(track));
         }
         model->animations.push_back(std::move(animation));
     }
-    if (!model->IsValid())
-        throw std::runtime_error("Skinned model conversion produced no renderable geometry");
+    if (!model->IsAssetPayloadValid())
+        throw std::runtime_error("Skinned model conversion produced neither renderable geometry nor animation data");
     return model;
 }
 

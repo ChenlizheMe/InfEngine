@@ -1245,17 +1245,17 @@ void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, c
     if (meshGuid.empty())
         return;
     for (auto *renderer : m_activeMeshRenderers) {
-        if (renderer && renderer->HasMeshAsset() && renderer->GetMeshAssetGuid() == meshGuid) {
-            renderer->MarkMeshBufferDirty();
-            // Update local bounds from the reloaded mesh
-            auto mesh = renderer->GetMeshAssetRef().Get();
-            if (mesh)
-                renderer->SetLocalBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax());
-        }
-        if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer)) {
-            if (skinned->GetSourceModelGuid() == meshGuid)
-                skinned->ReloadSourceModel();
-        }
+        if (!renderer)
+            continue;
+        // ReloadAsset advances the registry version even though MeshLoader
+        // preserves the InxMesh pointer. Refresh the AssetRef publication now;
+        // otherwise draw extraction rejects the existing scene instance as a
+        // stale version until the user assigns the mesh again.
+        if (renderer->HasMeshAsset() && renderer->GetMeshAssetGuid() == meshGuid)
+            renderer->OnMeshAssetEvent(AssetEvent::Modified);
+        if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer);
+            skinned && skinned->ReferencesModelGuid(meshGuid))
+            skinned->ReloadSourceModel();
     }
 }
 

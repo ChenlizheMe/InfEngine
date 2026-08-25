@@ -34,6 +34,14 @@ class SkinnedMeshRenderer(MeshRenderer):
         default="",
         tooltip="Currently selected animation take name",
     )
+    animation_source_guid = CppProperty(
+        "animation_source_guid",
+        FieldType.STRING,
+        default="",
+        readonly=True,
+        visible_when=lambda _c: False,
+        tooltip="GUID of the model that owns the active animation take",
+    )
 
     def get_animation_take_names(self) -> List[str]:
         cpp = self._cpp_component
