@@ -61,14 +61,19 @@ def _has_mesh_pick_geometry(object_id: int) -> bool:
     """True when the object has mesh bounds that participate in CPU ray picks."""
     try:
         from Infernux.lib import SceneManager
-        from Infernux.components.builtin import MeshRenderer
+        from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
 
         scene = SceneManager.instance().get_active_scene()
         obj = scene.find_by_id(int(object_id)) if scene else None
         if obj is None:
             return False
-        # SkinnedMeshRenderer subclasses MeshRenderer.
-        return obj.get_component(MeshRenderer) is not None
+        # Native component lookup is exact by C++ type name.  The Python
+        # SkinnedMeshRenderer wrapper inherits MeshRenderer, but asking for the
+        # latter does not find a native SkinnedMeshRenderer.
+        return (
+            obj.get_component(MeshRenderer) is not None
+            or obj.get_component(SkinnedMeshRenderer) is not None
+        )
     except Exception as exc:
         Debug.log_internal(f"Mesh pick geometry check failed: {exc}")
         return False

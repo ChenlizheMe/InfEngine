@@ -3386,6 +3386,38 @@ class TestPanelFocusEvents:
 
 
 class TestSceneViewPicking:
+    def test_skinned_renderer_counts_as_mesh_pick_geometry(self, monkeypatch):
+        import Infernux.lib as infernux_lib
+        from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
+        from Infernux.engine.ui import _scene_view_picking as picking
+
+        class Object:
+            requested_types = []
+
+            @classmethod
+            def get_component(cls, component_type):
+                cls.requested_types.append(component_type)
+                return object() if component_type is SkinnedMeshRenderer else None
+
+        class Scene:
+            @staticmethod
+            def find_by_id(object_id):
+                return Object if object_id == 42 else None
+
+        class SceneManager:
+            @staticmethod
+            def instance():
+                return SceneManager()
+
+            @staticmethod
+            def get_active_scene():
+                return Scene()
+
+        monkeypatch.setattr(infernux_lib, "SceneManager", SceneManager)
+
+        assert picking._has_mesh_pick_geometry(42) is True
+        assert Object.requested_types == [MeshRenderer, SkinnedMeshRenderer]
+
     def test_scene_click_keeps_immediate_cpu_pick_and_queues_gpu_refinement(self):
         from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
 
