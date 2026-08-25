@@ -6,6 +6,57 @@
 #include <stdexcept>
 #include <type_traits>
 
+/**
+ * CDS Debug trace
+ */
+#include <InxLog.h>
+#include <cstdlib>
+#include <thread>
+#include <unistd.h>
+
+namespace infernux::cds_trace
+{
+inline bool enabled()
+{
+    static const bool on = []() {
+        const char *e = std::getenv("INFX_CDS_TRACE");
+        return e && e[0] != '\0' && e[0] != '0';
+    };
+    return on;
+}
+inline thread_local int depth = 0;
+inline long tid()
+{
+#ifdef __linux__
+    return static_cast<long>(::gettid());
+#else
+    return static_cast<long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
+}
+struct Scope
+{
+    const char *op;
+    Scope(const char *o) : op(o)
+    {
+        if (!enabled())
+            return;
+        ++depth;
+        INXLOG_INFO("[CDS %s -30s] + tid=%ld depth=%d", op, tid(), depth);
+        if (depth > 1) {
+            INXLOG_INFO("[CDS !!REENTRANT!!] %s at depth %d", op, depth);
+        }
+    }
+    ~Scope()
+    {
+        if (!enabled())
+            return;
+        INXLOG_INFO("[CDS %-30s] - tid=%ld depth=%d", op, tid(), depth);
+        --depth;
+    }
+};
+
+} // namespace infernux::cds_trace
+
 namespace infernux
 {
 
