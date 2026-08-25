@@ -123,9 +123,20 @@ class SceneViewPickingMixin:
                 and not self._box_select_active):
             ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
             picked_id = self._pick_scene_object(ctx, vp)
-            if self._on_object_picked:
+            defer_mesh_selection = (
+                not ctrl
+                and picked_id > 0
+                and _has_mesh_pick_geometry(picked_id)
+            )
+            if self._on_object_picked and not defer_mesh_selection:
                 self._on_object_picked(picked_id, ctrl)
-            self._request_scene_pick_refinement(ctx, vp, picked_id, ctrl)
+            self._request_scene_pick_refinement(
+                ctx,
+                vp,
+                picked_id,
+                ctrl,
+                selection_deferred=defer_mesh_selection,
+            )
 
         # Box-select
         if self._box_select_active:
@@ -156,15 +167,24 @@ class SceneViewPickingMixin:
                 thickness=Theme.BORDER_THICKNESS,
             )
 
-    def _request_scene_pick_refinement(self, ctx, vp, cpu_picked_id: int, ctrl: bool) -> None:
+    def _request_scene_pick_refinement(
+        self,
+        ctx,
+        vp,
+        cpu_picked_id: int,
+        ctrl: bool,
+        *,
+        selection_deferred: bool = False,
+    ) -> None:
         """Queue an authoritative GPU object-ID readback for the clicked pixel.
 
-        The immediate CPU ray result keeps clicks responsive and supports scene
-        icons, colliders and depth cycling. Its mesh test is necessarily based on
-        AABBs, though, so imported characters can contain large empty regions.
-        The one-frame-late GPU result corrects those mesh false positives and also
-        makes GPU-only particle output clickable. Icon-only targets — including
-        particle systems without mesh geometry — keep the click they already won.
+        CPU ray results keep scene icons, colliders and depth cycling available.
+        Mesh candidates are not published until the one-frame-late GPU result
+        confirms a visible pixel, because their CPU test is necessarily based on
+        AABBs and imported characters can contain large empty regions. The GPU
+        pass also makes GPU-only particle output clickable. Icon-only targets —
+        including particle systems without mesh geometry — keep the click they
+        already won.
         """
         self._pending_scene_pick = None
         # Additive picking builds a multi-selection; a deferred correction would
@@ -192,6 +212,8 @@ class SceneViewPickingMixin:
             "cpu_id": int(cpu_picked_id),
             "cpu_candidates": list(self._pick_cycle_candidates),
             "cpu_cycle_index": int(self._pick_cycle_index),
+            "selection_deferred": bool(selection_deferred),
+            "selection_primary": selection.primary_scene_object_id(),
             "selection_revision": selection.revision,
             "document_id": str(getattr(self, "document_id", "") or ""),
         }
@@ -258,11 +280,6 @@ class SceneViewPickingMixin:
         if status == "pending":
             return
         self._pending_scene_pick = None
-        if status != "completed":
-            # The ray pick already selected something; a failed readback simply
-            # means no refinement is available.
-            Debug.log_internal(f"Scene GPU picking failed: {result.get('error', status)}")
-            return
 
         from Infernux.engine.interaction import SelectionService
         selection = SelectionService.instance()
@@ -278,8 +295,20 @@ class SceneViewPickingMixin:
         ):
             return
         cpu_id = int(pending["cpu_id"])
-        if selection.primary_scene_object_id() != cpu_id:
+        selection_deferred = bool(pending.get("selection_deferred", False))
+        expected_selection = (
+            pending.get("selection_primary") if selection_deferred else cpu_id
+        )
+        if selection.primary_scene_object_id() != expected_selection:
             # Selection moved on since the click; don't fight the user.
+            return
+
+        if status != "completed":
+            Debug.log_internal(f"Scene GPU picking failed: {result.get('error', status)}")
+            # GPU picking is authoritative for mesh pixels, but a device or
+            # readback failure must not make meshes impossible to select.
+            if selection_deferred and cpu_id > 0 and self._on_object_picked:
+                self._on_object_picked(cpu_id, False)
             return
 
         gpu_id = int(result.get("object_id", 0) or 0)
@@ -343,10 +372,12 @@ class SceneViewPickingMixin:
         cpu_cycle_index = int(pending.get("cpu_cycle_index", -1))
         if gpu_id in cpu_candidates and cpu_id != gpu_id and cpu_cycle_index > 0:
             self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
+            if selection_deferred and self._on_object_picked:
+                self._on_object_picked(cpu_id, False)
             return
 
         self._pick_cycle_index = merged.index(gpu_id) if gpu_id in merged else 0
-        if cpu_id == gpu_id:
+        if cpu_id == gpu_id and not selection_deferred:
             return
         if self._on_object_picked:
             self._on_object_picked(gpu_id, False)

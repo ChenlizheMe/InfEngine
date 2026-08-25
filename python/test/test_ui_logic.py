@@ -3477,6 +3477,106 @@ class TestSceneViewPicking:
         assert probe._pending_scene_pick["cpu_id"] == 42
         assert probe._pending_scene_pick["cpu_candidates"] == [42]
 
+    def test_scene_click_defers_mesh_selection_until_gpu_refinement(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.interaction import SelectionService
+
+        class Context:
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return True
+
+            @staticmethod
+            def is_key_down(_key):
+                return False
+
+        class Viewport:
+            width = 100.0
+            height = 80.0
+
+            @staticmethod
+            def mouse_local(_ctx):
+                return 10.0, 12.0
+
+        class Engine:
+            @staticmethod
+            def request_scene_object_pick(*_args):
+                return 7
+
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 42}
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._box_select_active = False
+                self._pending_scene_pick = None
+                self._pick_cycle_candidates = [42]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (10.0, 12.0)
+                self._pick_cycle_last_viewport = (100, 80)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+            @staticmethod
+            def _pick_scene_object(_ctx, _viewport):
+                return 42
+
+        monkeypatch.setattr(picking, "_has_mesh_pick_geometry", lambda object_id: object_id == 42)
+
+        selection = SelectionService.instance()
+        previous = selection.snapshot
+        selection.clear(reason="mesh_pick_test", record_history=False)
+        try:
+            probe = PickingProbe()
+            probe._handle_picking_and_selection(
+                Context(), Viewport(), gizmo_consumed=False, overlay_hovered=False,
+                is_scene_hovered=True, play_border_clr=None,
+            )
+            assert probe.picked == []
+            assert probe._pending_scene_pick["selection_deferred"] is True
+
+            probe._poll_scene_object_pick()
+            assert probe.picked == [(42, False)]
+        finally:
+            selection.apply_snapshot(previous, record_history=False)
+
+    def test_deferred_mesh_selection_falls_back_when_gpu_pick_fails(self):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.interaction import SelectionService
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "failed", "error": "readback unavailable"}
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self, selection):
+                self._engine = Engine()
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "cpu_id": 42,
+                    "cpu_candidates": [42],
+                    "selection_deferred": True,
+                    "selection_primary": selection.primary_scene_object_id(),
+                    "selection_revision": selection.revision,
+                    "document_id": "",
+                }
+                self.document_id = ""
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+        selection = SelectionService.instance()
+        previous = selection.snapshot
+        selection.clear(reason="mesh_pick_failure_test", record_history=False)
+        try:
+            probe = PickingProbe(selection)
+            probe._poll_scene_object_pick()
+            assert probe.picked == [(42, False)]
+        finally:
+            selection.apply_snapshot(previous, record_history=False)
+
     def test_particle_refinement_keeps_icon_selection_but_joins_cycle(self, monkeypatch):
         from Infernux.engine.ui import _scene_view_picking as picking
         from Infernux.engine.interaction import SelectionService
