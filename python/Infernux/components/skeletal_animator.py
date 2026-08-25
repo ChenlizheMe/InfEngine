@@ -13,7 +13,7 @@ from typing import Dict, Optional
 
 from Infernux.components.component import InxComponent
 from Infernux.components.fields import serialized_field
-from Infernux.components.decorators import require_component, disallow_multiple, add_component_menu
+from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
 from Infernux.core.anim_state_machine import (
     AnimStateMachine, AnimState, AnimTransition,
@@ -177,7 +177,6 @@ def _clip_duration_hint(clip: Optional[AnimationClip3D]) -> float:
 _DEFAULT_PLAYBACK_SEC_WHEN_UNKNOWN_DURATION = 1.0
 
 
-@require_component(SkinnedMeshRenderer)
 @disallow_multiple
 @add_component_menu("Animation/Skeletal Animator")
 class SkeletalAnimator(InxComponent):
@@ -210,6 +209,7 @@ class SkeletalAnimator(InxComponent):
 
     _fsm: Optional[AnimStateMachine] = None
     _skinned_renderer: Optional[SkinnedMeshRenderer] = None
+    _skinned_renderers: list[SkinnedMeshRenderer] = []
     _clip_cache: Dict[str, Optional[AnimationClip3D]] = {}
 
     _current_state_name: str = ""
@@ -242,6 +242,8 @@ class SkeletalAnimator(InxComponent):
         self._current_clip = None
         self._elapsed = 0.0
         self._playing = False
+        self._skinned_renderer = None
+        self._skinned_renderers = []
         self._clear_blend_state()
 
     def start(self):
@@ -249,9 +251,12 @@ class SkeletalAnimator(InxComponent):
         # the Python component has already been restored.  Resolve through the
         # live GameObject instead of trusting a serialized/cached wrapper.
         self._skinned_renderer = None
-        self._skinned_renderer = self._resolve_skinned_renderer(force=True)
-        if not self._skinned_renderer:
-            Debug.log_warning("[SkeletalAnimator] No SkinnedMeshRenderer found on this GameObject.")
+        self._skinned_renderers = []
+        renderers = self._resolve_skinned_renderers(force=True)
+        if not renderers:
+            Debug.log_warning(
+                "[SkeletalAnimator] No SkinnedMeshRenderer found on this GameObject or its descendants."
+            )
             return
 
         self._load_controller()
@@ -580,7 +585,7 @@ class SkeletalAnimator(InxComponent):
                 pass
         return max(0.0, min(1.0, lerp))
 
-    def _submit_blend_state(self, cpp, state: AnimState) -> bool:
+    def _submit_blend_state(self, native_renderers, state: AnimState) -> bool:
         """Submit a blend-state pose (clip A lerp clip B). Returns True if handled."""
         clip_a = self._current_clip
         take_a = str(getattr(clip_a, "take_name", "") or "") if clip_a is not None else ""
@@ -595,32 +600,43 @@ class SkeletalAnimator(InxComponent):
 
         # Preferred: a 2-layer pose stack (correct per-bone N-way blend, needs the
         # native pose-stack API); otherwise fall back to the 2-clip crossfade slot.
-        submit_stack = getattr(cpp, "submit_pose_stack", None)
-        if callable(submit_stack) and take_a and take_b:
+        native_renderers = [cpp for cpp in native_renderers if cpp is not None]
+        if not native_renderers:
+            return False
+        if take_a and take_b and all(callable(getattr(cpp, "submit_pose_stack", None)) for cpp in native_renderers):
             pose_key = ("stack", self._playing, take_a, take_b, t, lerp, loop)
             if pose_key == self._last_native_pose_key:
                 return True
             try:
-                submit_stack([
+                layers = [
                     {"take_name": take_a, "time": t, "weight": 1.0 - lerp, "loop": loop},
                     {"take_name": take_b, "time": t, "weight": lerp, "loop": loop},
-                ])
+                ]
+                for cpp in native_renderers:
+                    cpp.submit_pose_stack(layers)
                 self._last_native_take_name = take_a
                 self._last_native_pose_key = pose_key
                 return True
             except Exception as exc:
                 Debug.log_suppressed("SkeletalAnimator._submit_blend_state.pose_stack", exc)
 
-        submit_pose = getattr(cpp, "submit_animation_pose", None)
-        if callable(submit_pose):
+        if all(callable(getattr(cpp, "submit_animation_pose", None)) for cpp in native_renderers):
             pose_key = (
                 "blend", self._playing, take_a or take_b, t, normalized,
                 take_b if take_a else "", lerp if take_a else 0.0, loop,
             )
             if pose_key == self._last_native_pose_key:
                 return True
-            submit_pose(take_a or take_b, t, normalized,
-                        take_b if take_a else "", t, lerp if take_a else 0.0, loop)
+            for cpp in native_renderers:
+                cpp.submit_animation_pose(
+                    take_a or take_b,
+                    t,
+                    normalized,
+                    take_b if take_a else "",
+                    t,
+                    lerp if take_a else 0.0,
+                    loop,
+                )
             self._last_native_take_name = take_a or take_b
             self._last_native_pose_key = pose_key
             return True
@@ -763,14 +779,17 @@ class SkeletalAnimator(InxComponent):
         if self._blend_elapsed >= self._blend_duration:
             self._clear_blend_state()
 
-    def _resolve_skinned_renderer(self, *, force: bool = False):
-        renderer = None if force else getattr(self, "_skinned_renderer", None)
-        if renderer is not None:
-            try:
-                if renderer._get_bound_native_component() is not None:
-                    return renderer
-            except (AttributeError, ReferenceError):
-                pass
+    @staticmethod
+    def _renderer_is_live(renderer) -> bool:
+        try:
+            return renderer is not None and renderer._get_bound_native_component() is not None
+        except (AttributeError, ReferenceError):
+            return False
+
+    def _resolve_skinned_renderers(self, *, force: bool = False):
+        cached = [] if force else list(getattr(self, "_skinned_renderers", []) or [])
+        if cached and all(self._renderer_is_live(renderer) for renderer in cached):
+            return cached
 
         try:
             game_object = self.game_object
@@ -778,17 +797,48 @@ class SkeletalAnimator(InxComponent):
             game_object = None
         if game_object is None:
             self._skinned_renderer = None
-            return None
+            self._skinned_renderers = []
+            return []
+
+        local_renderer = None
         try:
-            renderer = game_object.get_component(SkinnedMeshRenderer)
+            local_renderer = game_object.get_component(SkinnedMeshRenderer)
         except (AttributeError, ReferenceError):
-            renderer = None
-        self._skinned_renderer = renderer
-        return renderer
+            pass
+
+        descendants = []
+        try:
+            pending = list(game_object.get_children() or [])
+        except (AttributeError, ReferenceError, RuntimeError):
+            pending = []
+        while pending:
+            child = pending.pop(0)
+            try:
+                renderer = child.get_component(SkinnedMeshRenderer)
+            except (AttributeError, ReferenceError):
+                renderer = None
+            if self._renderer_is_live(renderer):
+                descendants.append(renderer)
+            try:
+                pending.extend(list(child.get_children() or []))
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+
+        renderers = []
+        if self._renderer_is_live(local_renderer):
+            renderers.append(local_renderer)
+        renderers.extend(renderer for renderer in descendants if renderer not in renderers)
+        self._skinned_renderers = renderers
+        self._skinned_renderer = renderers[0] if renderers else None
+        return renderers
+
+    def _resolve_skinned_renderer(self, *, force: bool = False):
+        renderers = self._resolve_skinned_renderers(force=force)
+        return renderers[0] if renderers else None
 
     def _apply_active_take(self):
-        renderer = self._resolve_skinned_renderer()
-        if renderer is None:
+        renderers = self._resolve_skinned_renderers()
+        if not renderers:
             return
         take_name = ""
         clip = self._current_clip
@@ -797,33 +847,44 @@ class SkeletalAnimator(InxComponent):
             if take_name == self._last_native_take_name:
                 return
 
-            try:
-                renderer_guid = str(getattr(renderer, "source_model_guid", "") or "")
-            except ReferenceError:
-                renderer = self._resolve_skinned_renderer(force=True)
-                if renderer is None:
-                    return
-                renderer_guid = str(getattr(renderer, "source_model_guid", "") or "")
             db = _get_asset_database()
-            msg = _skinned_mismatch_message(db, clip, renderer_guid)
-            if msg:
-                Debug.log_warning(msg)
+            warned = set()
+            for renderer in renderers:
+                try:
+                    renderer_guid = str(getattr(renderer, "source_model_guid", "") or "")
+                except ReferenceError:
+                    continue
+                msg = _skinned_mismatch_message(db, clip, renderer_guid)
+                if msg and msg not in warned:
+                    Debug.log_warning(msg)
+                    warned.add(msg)
 
-        renderer.active_take_name = take_name
+        for renderer in renderers:
+            try:
+                renderer.active_take_name = take_name
+            except ReferenceError:
+                pass
         self._last_native_take_name = take_name
 
     def _sync_native_runtime_playback(self) -> None:
-        renderer = self._resolve_skinned_renderer()
-        if renderer is None:
+        renderers = self._resolve_skinned_renderers()
+        if not renderers:
             return
-        cpp = renderer._get_bound_native_component()
-        if cpp is None:
+        native_renderers = []
+        for renderer in renderers:
+            try:
+                cpp = renderer._get_bound_native_component()
+            except (AttributeError, ReferenceError):
+                cpp = None
+            if cpp is not None:
+                native_renderers.append(cpp)
+        if not native_renderers:
             return
         # Blend states output a continuous A↔B lerp via their own Lerp value,
         # independent of transition crossfades.
         state = self._get_current_state()
         if state is not None and getattr(state, "kind", "clip") == "blend":
-            if self._submit_blend_state(cpp, state):
+            if self._submit_blend_state(native_renderers, state):
                 return
         # Continuous playback has one current native submission path. Explicit
         # runtime_animation_time assignment is reserved for discontinuous seek.
@@ -846,15 +907,16 @@ class SkeletalAnimator(InxComponent):
         )
         if pose_key == self._last_native_pose_key:
             return
-        cpp.submit_animation_pose(
-            take_name,
-            float(self._elapsed) if take_name else 0.0,
-            normalized,
-            blend_take,
-            blend_time,
-            blend_weight,
-            loop,
-        )
+        for cpp in native_renderers:
+            cpp.submit_animation_pose(
+                take_name,
+                float(self._elapsed) if take_name else 0.0,
+                normalized,
+                blend_take,
+                blend_time,
+                blend_weight,
+                loop,
+            )
         self._last_native_take_name = take_name
         self._last_native_pose_key = pose_key
 
