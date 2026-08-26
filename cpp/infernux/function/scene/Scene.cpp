@@ -1588,13 +1588,11 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
             for (auto &pending : staging.m_pendingPyComponents) {
                 auto field = pending.fieldsDocument.find("__component_id__");
                 if (field == pending.fieldsDocument.end() || !field->is_number_unsigned())
-                    throw std::invalid_argument(
-                        "pending Python component is missing an unsigned __component_id__");
+                    throw std::invalid_argument("pending Python component is missing an unsigned __component_id__");
                 const uint64_t documentId = field->get<uint64_t>();
                 const auto remapped = pythonComponentIdRemap.find(documentId);
                 if (remapped == pythonComponentIdRemap.end())
-                    throw std::logic_error(
-                        "pending Python component id was not indexed for fresh allocation");
+                    throw std::logic_error("pending Python component id was not indexed for fresh allocation");
                 *field = remapped->second;
             }
         }
