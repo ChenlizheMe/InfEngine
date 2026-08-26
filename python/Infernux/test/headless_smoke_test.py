@@ -10,9 +10,9 @@ import time
 from pathlib import Path
 
 from Infernux import Engine, RigidbodyInterpolation, Time, run_headless
+from Infernux import resources as engine_resources
 from Infernux.lib import AssetRegistry, Physics, RuntimeMode, SceneManager, Vector3
 from Infernux.physics.settings import DEFAULT_PHYSICS_SETTINGS, save as save_physics_settings
-from Infernux.resources import resources_path
 
 assert not any(
     name == "Infernux.engine.ui" or name.startswith("Infernux.engine.ui.")
@@ -46,8 +46,9 @@ def _owned_window_count() -> int:
 
 def main() -> None:
     initial_windows = _owned_window_count()
-    builtin_meta_before = {str(path) for path in Path(resources_path).rglob("*.meta")}
-    builtin_shader = Path(resources_path) / "shaders" / "standard.vert"
+    package_resources = Path(engine_resources.get_package_resources_path())
+    builtin_meta_before = {str(path) for path in package_resources.rglob("*.meta")}
+    builtin_shader = Path(engine_resources.resources_path) / "shaders" / "standard.vert"
 
     with tempfile.TemporaryDirectory(prefix="infernux-headless-") as root:
         project = Path(root)
@@ -180,8 +181,13 @@ def main() -> None:
 
         def update(second_engine, frame):
             if frame == 0:
+                active_builtin_shader = (
+                    Path(engine_resources.resources_path) / "shaders" / "standard.vert"
+                )
                 second_lifetime_guids.append(
-                    second_engine.get_asset_database().get_guid_from_path(str(builtin_shader))
+                    second_engine.get_asset_database().get_guid_from_path(
+                        str(active_builtin_shader)
+                    )
                 )
                 model_meta = second_engine.get_asset_database().get_meta_by_path(str(pending_model))
                 second_lifetime_models.append(
@@ -195,7 +201,10 @@ def main() -> None:
             fixed_delta=0.01,
         )
         assert frames == 2
-        assert second_lifetime_guids == [first_builtin_guid]
+        assert second_lifetime_guids == [first_builtin_guid], (
+            first_builtin_guid,
+            second_lifetime_guids,
+        )
         assert second_lifetime_models[0][0]
         assert second_lifetime_models[0][1] == 1
 
@@ -220,7 +229,7 @@ def main() -> None:
         )
         assert restarted_frames == 1
 
-    builtin_meta_after = {str(path) for path in Path(resources_path).rglob("*.meta")}
+    builtin_meta_after = {str(path) for path in package_resources.rglob("*.meta")}
     assert builtin_meta_after == builtin_meta_before
 
     print("Headless runtime smoke test passed")
