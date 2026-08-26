@@ -55,6 +55,11 @@ from .project_index import project_guid_paths
 from .registry import PluginRegistry
 
 
+_URL_PACKAGE_TIMEOUT_SECONDS = 30.0
+_URL_PACKAGE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
+
+
 class PackageConflictError(RuntimeError):
     """Raised when installation would overwrite a different durable asset."""
 
@@ -535,7 +540,7 @@ class PluginManager:
         if source_type == "url":
             with tempfile.TemporaryDirectory(prefix="infernux-plugin-url-") as workspace:
                 target = os.path.join(workspace, "download.inxpkg")
-                urllib.request.urlretrieve(location, target)
+                _download_url_package(location, target)
                 return self.install_package(
                     target,
                     install_dependencies=install_dependencies,
@@ -1425,6 +1430,50 @@ def _python_environment_changes(
         for name in sorted(set(before) | set(after))
         if before.get(name, "") != after.get(name, "")
     )
+
+
+def _download_url_package(location: str, destination: str) -> None:
+    request = urllib.request.Request(
+        str(location),
+        headers={"User-Agent": f"Infernux/{ENGINE_VERSION}"},
+    )
+    partial = f"{destination}.{uuid.uuid4().hex}.part"
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=_URL_PACKAGE_TIMEOUT_SECONDS,
+        ) as response:
+            raw_length = response.headers.get("Content-Length")
+            if raw_length:
+                try:
+                    advertised_length = int(raw_length)
+                except (TypeError, ValueError):
+                    advertised_length = -1
+                if advertised_length > _URL_PACKAGE_MAX_BYTES:
+                    raise ValueError(
+                        "Remote InxPackage exceeds the download limit of "
+                        f"{_URL_PACKAGE_MAX_BYTES} bytes"
+                    )
+
+            received = 0
+            with open(partial, "wb") as stream:
+                while True:
+                    chunk = response.read(_URL_PACKAGE_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > _URL_PACKAGE_MAX_BYTES:
+                        raise ValueError(
+                            "Remote InxPackage exceeds the download limit of "
+                            f"{_URL_PACKAGE_MAX_BYTES} bytes"
+                        )
+                    stream.write(chunk)
+        os.replace(partial, destination)
+    finally:
+        try:
+            os.remove(partial)
+        except FileNotFoundError:
+            pass
 
 
 def _pip_requirement_targets(

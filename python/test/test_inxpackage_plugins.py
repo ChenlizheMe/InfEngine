@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import Infernux.plugins.manager as plugin_manager_module
 import Infernux.plugins.preload as preload_module
 from Infernux.engine import player_package_native
 from Infernux.plugins import (
@@ -543,9 +544,8 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
         def retrieve(_url, destination):
             shutil.copy2(package, destination)
             _FakeInxPack.archives[str(Path(destination).resolve())] = dict(expected_archive)
-            return destination, None
 
-        monkeypatch.setattr("urllib.request.urlretrieve", retrieve)
+        monkeypatch.setattr(plugin_manager_module, "_download_url_package", retrieve)
         state = manager.install_source(descriptor, install_dependencies=False)
         assert state.reference == "vendor/distributed"
         record = manager.registry.installed_record("vendor/distributed")
@@ -559,6 +559,71 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
         )
         manager.shutdown()
     assert all(inventory == inventories[0] for inventory in inventories)
+
+
+def test_http_package_download_has_timeout_and_streaming_size_limit(
+    tmp_path, monkeypatch
+):
+    class Response:
+        def __init__(self, chunks, content_length=""):
+            self.headers = {"Content-Length": content_length} if content_length else {}
+            self._chunks = iter(chunks)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return next(self._chunks, b"")
+
+    observed = {}
+
+    def urlopen(request, *, timeout):
+        observed["url"] = request.full_url
+        observed["timeout"] = timeout
+        return Response((b"1234", b"5678", b"9"))
+
+    monkeypatch.setattr(plugin_manager_module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(plugin_manager_module, "_URL_PACKAGE_MAX_BYTES", 8)
+    destination = tmp_path / "download.inxpkg"
+
+    with pytest.raises(ValueError, match="download limit"):
+        plugin_manager_module._download_url_package(
+            "https://packages.example/plugin.inxpkg",
+            str(destination),
+        )
+
+    assert observed == {
+        "url": "https://packages.example/plugin.inxpkg",
+        "timeout": plugin_manager_module._URL_PACKAGE_TIMEOUT_SECONDS,
+    }
+    assert not destination.exists()
+
+    monkeypatch.setattr(plugin_manager_module, "_URL_PACKAGE_MAX_BYTES", 9)
+    plugin_manager_module._download_url_package(
+        "https://packages.example/plugin.inxpkg",
+        str(destination),
+    )
+    assert destination.read_bytes() == b"123456789"
+
+    def oversized_header(_request, *, timeout):
+        assert timeout == plugin_manager_module._URL_PACKAGE_TIMEOUT_SECONDS
+        return Response((), content_length="9")
+
+    monkeypatch.setattr(
+        plugin_manager_module.urllib.request,
+        "urlopen",
+        oversized_header,
+    )
+    monkeypatch.setattr(plugin_manager_module, "_URL_PACKAGE_MAX_BYTES", 8)
+    with pytest.raises(ValueError, match="download limit"):
+        plugin_manager_module._download_url_package(
+            "https://packages.example/oversized.inxpkg",
+            str(destination),
+        )
+    assert destination.read_bytes() == b"123456789"
 
 
 def test_uninstall_follows_guid_after_user_moves_asset_and_preserves_modification(tmp_path):
