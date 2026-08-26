@@ -561,7 +561,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
     assert all(inventory == inventories[0] for inventory in inventories)
 
 
-def test_http_package_download_has_no_forced_timeout_and_has_streaming_size_limit(
+def test_http_package_download_streams_without_forced_time_or_size_limits(
     tmp_path, monkeypatch
 ):
     class Response:
@@ -582,40 +582,35 @@ def test_http_package_download_has_no_forced_timeout_and_has_streaming_size_limi
 
     def urlopen(request):
         observed["url"] = request.full_url
-        return Response((b"1234", b"5678", b"9"))
+        return Response((b"1234", b"5678", b"9"), content_length="999999999999")
 
     monkeypatch.setattr(plugin_manager_module.urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr(plugin_manager_module, "_URL_PACKAGE_MAX_BYTES", 8)
     destination = tmp_path / "download.inxpkg"
-
-    with pytest.raises(ValueError, match="download limit"):
-        plugin_manager_module._download_url_package(
-            "https://packages.example/plugin.inxpkg",
-            str(destination),
-        )
-
-    assert observed == {"url": "https://packages.example/plugin.inxpkg"}
-    assert not destination.exists()
-
-    monkeypatch.setattr(plugin_manager_module, "_URL_PACKAGE_MAX_BYTES", 9)
     plugin_manager_module._download_url_package(
         "https://packages.example/plugin.inxpkg",
         str(destination),
     )
+    assert observed == {"url": "https://packages.example/plugin.inxpkg"}
     assert destination.read_bytes() == b"123456789"
 
-    def oversized_header(_request):
-        return Response((), content_length="9")
+    class FailedResponse(Response):
+        def read(self, _size):
+            chunk = next(self._chunks, None)
+            if chunk is None:
+                raise OSError("connection lost")
+            return chunk
+
+    def interrupted(_request):
+        return FailedResponse((b"partial",))
 
     monkeypatch.setattr(
         plugin_manager_module.urllib.request,
         "urlopen",
-        oversized_header,
+        interrupted,
     )
-    monkeypatch.setattr(plugin_manager_module, "_URL_PACKAGE_MAX_BYTES", 8)
-    with pytest.raises(ValueError, match="download limit"):
+    with pytest.raises(OSError, match="connection lost"):
         plugin_manager_module._download_url_package(
-            "https://packages.example/oversized.inxpkg",
+            "https://packages.example/interrupted.inxpkg",
             str(destination),
         )
     assert destination.read_bytes() == b"123456789"
