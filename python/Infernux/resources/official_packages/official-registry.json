@@ -11,8 +11,8 @@
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "artifact_sha256": "9eacf53cbb5fc5143591bf8370fe96200cc4b2bb32c9765f76bec523fbfd78a3",
-      "artifact_size": 553984,
+      "artifact_sha256": "a8d9fa54659a93782c72f9c9df92013a7e6bb8196ef0fbf7a228ed8bbd2f52d3",
+      "artifact_size": 546752,
       "engine": ">=0.3.7,<0.4",
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
