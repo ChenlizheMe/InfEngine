@@ -55,7 +55,6 @@ from .project_index import project_guid_paths
 from .registry import PluginRegistry
 
 
-_URL_PACKAGE_TIMEOUT_SECONDS = 30.0
 _URL_PACKAGE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 _URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
 
@@ -1439,10 +1438,7 @@ def _download_url_package(location: str, destination: str) -> None:
     )
     partial = f"{destination}.{uuid.uuid4().hex}.part"
     try:
-        with urllib.request.urlopen(
-            request,
-            timeout=_URL_PACKAGE_TIMEOUT_SECONDS,
-        ) as response:
+        with urllib.request.urlopen(request) as response:
             raw_length = response.headers.get("Content-Length")
             if raw_length:
                 try:
