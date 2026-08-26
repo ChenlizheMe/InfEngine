@@ -534,6 +534,18 @@ def test_build_preparation_flushes_writes_before_publishing_asset_index(
         classmethod(lambda cls: events.append("flush_writes")),
     )
     monkeypatch.setattr(
+        "Infernux.engine.runtime_artifact_catalog.load_asset_index",
+        lambda _root: [],
+    )
+    monkeypatch.setattr(
+        "Infernux.renderstack.discovery.discover_effect_features",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "Infernux.particle.artifact.ParticleArtifactRegistry.ensure_project_compiled",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         "Infernux.engine.ui.build_settings_panel.get_project_root",
         lambda: str(tmp_path),
     )

@@ -466,6 +466,22 @@ class UndoManager:
         self._journal.clear()
         self._fire_state_changed()
 
+    def shutdown(self) -> None:
+        """Release journal callbacks and the process-wide manager identity."""
+        self._enabled = False
+        self._pending_replay = None
+        self._user_action_depth = 0
+        self._user_action_id = ""
+        self._user_action_description = ""
+        self._user_action_command_id = ""
+        self._user_action_before_context = None
+        self._context_provider = None
+        self._context_restorer = None
+        self._on_state_changed = None
+        self._journal.clear()
+        if UndoManager._instance is self:
+            UndoManager._instance = None
+
     def set_on_state_changed(self, callback: Optional[Callable[[], None]]) -> None:
         self._on_state_changed = callback
 

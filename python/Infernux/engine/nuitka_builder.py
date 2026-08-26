@@ -946,9 +946,9 @@ class NuitkaBuilder:
     """Wraps Nuitka compilation for Infernux standalone builds."""
 
     # Packages that are excluded from Nuitka compilation and injected as raw
-    # site-packages. NumPy is an engine runtime dependency; Numba/llvmlite
-    # additionally require Python bytecode for LLVM JIT operation.
-    _JIT_NOFOLLOW_PACKAGES = frozenset({"numba", "llvmlite", "numpy"})
+    # site-packages. NumPy and packaging are engine runtime dependencies;
+    # Numba/llvmlite additionally require Python bytecode for LLVM JIT.
+    _JIT_NOFOLLOW_PACKAGES = frozenset({"numba", "llvmlite", "numpy", "packaging"})
     # Build/publish helpers run in the authoring process and are not part of
     # the generated Player import graph. Changing them must not invalidate
     # the expensive Nuitka runtime cache.
@@ -959,7 +959,6 @@ class NuitkaBuilder:
             "engine/build_cancellation.py",
             "engine/game_builder.py",
             "engine/player_package_audit.py",
-            "engine/player_package_native.py",
             "engine/prebuilt_runtime.py",
         }
     )
@@ -967,9 +966,9 @@ class NuitkaBuilder:
     # Keep this separate from _PLAYER_POST_BUILD_ONLY_FILES so changes to the
     # compiler policy continue to invalidate the prebuilt runtime cache.
     _PLAYER_RUNTIME_EXCLUDED_FILES = frozenset({"engine/nuitka_builder.py"})
-    _GAME_BUILD_EXCLUDED_PACKAGES = frozenset({"mcp", "fastmcp"})
+    _GAME_BUILD_EXCLUDED_PACKAGES = frozenset()
     _ENGINE_MANAGED_RUNTIME_PACKAGES = frozenset(
-        {"infernux", "mcp", "fastmcp", "numba", "llvmlite", "numpy"}
+        {"infernux", "numba", "llvmlite", "numpy", "packaging"}
     )
     # glslang and SPIRV-Tools are linked into InfernuxShaderCompiler, while the
     # former monolithic InfernuxRuntime DLL is now a private static archive.
@@ -984,14 +983,7 @@ class NuitkaBuilder:
             "glslang.dll",
         }
     )
-    _GAME_BUILD_NOFOLLOW_MODULES = frozenset({
-        "Infernux.mcp",
-        "Infernux.mcp.server",
-        "Infernux.mcp.threading",
-        "Infernux.mcp.tools",
-        "mcp",
-        "fastmcp",
-    })
+    _GAME_BUILD_NOFOLLOW_MODULES = frozenset()
     # Keep the Player import graph explicit. PlayerGUI legitimately uses the
     # small viewport utility module, but none of the authoring panels,
     # previews, dialogs, or project/file-management services belong in a
@@ -1307,7 +1299,7 @@ class NuitkaBuilder:
             "lto": bool(self.lto),
             "player_module": bool(getattr(self, "player_module", False)),
             "archive_format": "infernux-native-inxpack",
-            # NumPy, Numba, llvmlite and MCP are engine-managed closures.
+            # NumPy, Numba and llvmlite are engine-managed closures.
             # Branding/data post-processing also happens after core compile.
             "custom_include_packages": custom_packages(self.extra_include_packages),
             "custom_raw_packages": custom_packages(self.raw_copy_packages),
@@ -2744,7 +2736,6 @@ print(json.dumps({{
             "__pycache__",
             "_runtime_modules",
             "_runtime_packs",
-            "mcp",
             "test",
         }
         excluded_suffixes = {

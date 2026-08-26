@@ -2096,11 +2096,17 @@ uint64_t SceneRenderGraph::ComputeShadowContentSignature(bool &hasDynamicCaster)
         HashShadowValue(hash, assignment.viewCount);
     }
 
-    // Transform revisions cover ordinary moving renderers. GPU skinning and
-    // shadow-casting particles mutate device buffers without necessarily
-    // changing that revision, so those paths deliberately remain dynamic.
+    // A renderer that is not explicitly marked static remains a dynamic
+    // shadow caster even while its transform happens to be unchanged.  The
+    // first atlas publication after a view/graph boundary can precede the
+    // next frame-local transform publication; freezing that one result made
+    // Edit mode keep a corrupted low-resolution cascade while Play mode
+    // repaired it immediately as gameplay advanced transform revisions.
+    // Explicitly-static renderers still use the signature cache. GPU skinning
+    // and particles mutate device buffers without necessarily changing the
+    // ordinary transform revision, so they remain dynamic as well.
     for (const DrawCall &drawCall : m_cachedShadowRenderers.DrawCalls()) {
-        if (drawCall.skinBoneMatrices != nullptr) {
+        if (ShadowCasterRequiresContinuousUpdate(drawCall)) {
             hasDynamicCaster = true;
             break;
         }

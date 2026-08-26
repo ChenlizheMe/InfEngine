@@ -73,10 +73,6 @@ class BuildDependencyMixin:
         }
 
     def _write_filtered_game_requirements(self, req_path: str) -> str:
-        excluded = self._game_build_excluded_packages()
-        if not excluded:
-            return req_path
-
         with open(req_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
 
@@ -92,9 +88,17 @@ class BuildDependencyMixin:
         filtered_path = os.path.join(temp_dir, "requirements.game.txt")
         with open(filtered_path, "w", encoding="utf-8", newline="\n") as f:
             f.writelines(filtered)
+        removed = sorted(
+            {
+                self._normalized_requirement_name(line)
+                for line in lines
+                if self._is_game_build_excluded_requirement(line)
+                and self._normalized_requirement_name(line)
+            }
+        )
         Debug.log_internal(
-            "Filtered game-build-only packages from requirements.txt: "
-            + ", ".join(sorted(excluded))
+            "Filtered non-runtime requirements from requirements.txt: "
+            + ", ".join(removed)
         )
         return filtered_path
 

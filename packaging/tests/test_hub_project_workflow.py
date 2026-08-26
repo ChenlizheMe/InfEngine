@@ -245,12 +245,19 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
 
     monkeypatch.setattr(model, "_create_project_runtime", create_runtime)
     monkeypatch.setattr(model, "_install_infernux_in_runtime", lambda *_args, **_kwargs: None)
+    default_library_locations = []
+    monkeypatch.setattr(
+        model,
+        "_install_default_libraries",
+        lambda project, on_status=None: default_library_locations.append(Path(project)),
+    )
     monkeypatch.setattr(model, "_create_vscode_workspace", lambda project: (Path(project) / ".vscode").mkdir())
 
     result = model.init_project_folder("SafeProject", str(tmp_path), "0.2.1")
 
     assert Path(result) == (tmp_path / "SafeProject").resolve()
     assert runtime_locations == [Path(result)]
+    assert default_library_locations == [Path(result)]
     assert (Path(result) / "Assets").is_dir()
     gitignore = (Path(result) / ".gitignore").read_text(encoding="utf-8")
     assert "/Library/" in gitignore

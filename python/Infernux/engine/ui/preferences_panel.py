@@ -1,5 +1,5 @@
 """
-Preferences — floating editor preferences window.
+Preferences — dockable editor preferences panel.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from Infernux.engine.interaction import (
     PanelInteractionDescriptor,
     submit_preferences_command,
 )
-from .editor_panel import FloatingEditorPanel
+from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .project_utils import detect_available_ides
 
@@ -29,21 +29,20 @@ _LOCALE_LABELS = ["English", "简体中文"]
     menu_path="",
     interaction=PanelInteractionDescriptor(),
 )
-class PreferencesPanel(FloatingEditorPanel):
+class PreferencesPanel(EditorPanel):
     """User Preferences utility surface hosted by the global panel lifecycle."""
 
     def __init__(self) -> None:
-        super().__init__(
-            title="Preferences",
-            window_id="preferences",
-            size=(980.0, 720.0),
-        )
+        super().__init__(title="Preferences", window_id="preferences")
         self._shortcut_search = ""
         self._shortcut_new_profile_name = ""
         self._shortcut_profile_name_buffers: dict[str, str] = {}
         self._shortcut_binding_buffers: dict[str, str] = {}
         self._shortcut_error = ""
         self._shortcut_profile_revision = -1
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 980.0, 720.0
 
     # ------------------------------------------------------------------
     # Rendering

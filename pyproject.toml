@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "Infernux"
-version = "0.3.6"
+version = "0.3.7"
 description = "Infernux (熔炉) — open-source game engine with a C++17 / Vulkan runtime and a Python layer for gameplay, tools, and render authoring."
 authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
 readme = "README.md"
@@ -22,14 +22,13 @@ classifiers = [
     "Topic :: Games/Entertainment",
 ]
 dependencies = [
+    "packaging>=24.0",
     "numpy>=1.21.0",
     "numba>=0.61.0",
     "watchdog>=1.0.0",
     "Pillow>=10.4.0",
     "imageio>=2.34.0",
     "av>=12.0.0",
-    "mcp>=1.24,<2",
-    "fastmcp",
 ]
 
 [project.urls]
@@ -40,9 +39,6 @@ Issues = "https://github.com/ChenlizheMe/Infernux/issues"
 
 [project.optional-dependencies]
 launcher = ["PySide6>=6.5.0"]
-
-[project.scripts]
-infernux-mcp = "Infernux.mcp.client:main"
 
 [tool.setuptools]
 packages = {find = {where = ["python"], exclude = ["test", "test.*", "*.test", "*.test.*", "*.tests", "*.tests.*", "*.__pycache__", "*.__pycache__.*"]}}
@@ -65,7 +61,7 @@ Infernux = [
     "_runtime_packs/*/Runtime.inxrt",
     "_runtime_modules/*/Player.inxmanifest",
     "_runtime_modules/*/Parallel.inxmod",
-    "resources/player/*.exe",
+    "resources/player_runtime/*.exe",
     "resources/icons/*.png",
     "resources/icons/*.ico",
     "resources/icons/components/*.png",
@@ -74,7 +70,9 @@ Infernux = [
     "resources/fonts/*.txt",
     "resources/pictures/*.png",
     "resources/schemas/*.json",
-    "resources/supports/*.txt",
+    "resources/project_templates/*.txt",
+    "resources/official_packages/*.json",
+    "resources/official_packages/*.inxpkg",
 ]
 
 [tool.setuptools.exclude-package-data]

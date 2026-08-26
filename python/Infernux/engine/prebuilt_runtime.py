@@ -88,7 +88,11 @@ def build_prebuilt_runtime(
         )
         builder.build(force_runtime_rebuild=force)
         exported_path = builder.export_runtime_pack(output_root)
-        player_host = Path(get_package_resources_path()) / "player" / "InfernuxPlayerHost.exe"
+        player_host = (
+            Path(get_package_resources_path())
+            / "player_runtime"
+            / "InfernuxPlayerHost.exe"
+        )
         if sys.platform == "win32" and not player_host.is_file():
             raise RuntimeError(
                 "Release Runtime Pack cannot be exported without InfernuxPlayerHost.exe"

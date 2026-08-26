@@ -33,10 +33,26 @@ def run_headless(
     if max_frames is not None and max_frames < 0:
         raise ValueError("max_frames cannot be negative")
 
-    engine = Engine(engine_log_level, RuntimeMode.Headless)
-    engine.init_headless(str(project_path))
+    # Headless is an Editor host without a window.  Prepare the same mirrored
+    # resources as the graphical Editor before plugin discovery so a clean
+    # project sees the same official/default package catalog.
+    from Infernux import resources as engine_resources
+    from Infernux.engine.library_sync import sync_resources
+    from Infernux.engine import _acquire_project_lock, _remove_project_lock
+
+    project = str(project_path)
+    sync_resources(project)
+    engine_resources.activate_library(project)
+    lock_path, lock_token = _acquire_project_lock(project, "headless")
+    engine = None
+    plugin_manager = None
     frames = 0
     try:
+        engine = Engine(engine_log_level, RuntimeMode.Headless)
+        engine.init_headless(project)
+        from Infernux.plugins import PluginManager
+
+        plugin_manager = PluginManager.startup(project, engine=engine, runtime=False)
         native = engine.get_native_engine()
         while max_frames is None or frames < max_frames:
             if update(engine, frames) is False or native.exit_requested:
@@ -45,4 +61,8 @@ def run_headless(
             frames += 1
         return frames
     finally:
-        engine.exit()
+        if plugin_manager is not None:
+            plugin_manager.shutdown()
+        if engine is not None:
+            engine.exit()
+        _remove_project_lock(lock_path, lock_token)

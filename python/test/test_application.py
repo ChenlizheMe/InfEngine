@@ -99,6 +99,18 @@ def test_editor_quit_is_ignored():
     Application._unbind_engine(engine)
 
 
+def test_headless_runtime_kind_is_public_and_distinct():
+    engine = _Engine()
+    Application._bind_engine(engine, "headless")
+
+    assert Application.is_headless() is True
+    assert Application.is_editor() is False
+    assert Application.is_player() is False
+
+    Application._unbind_engine(engine)
+    assert Application.is_headless() is False
+
+
 def test_player_quit_requests_exit_and_keeps_exit_code():
     engine = _Engine()
     Application._bind_engine(engine, "player")

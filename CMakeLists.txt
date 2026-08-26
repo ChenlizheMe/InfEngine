@@ -175,7 +175,7 @@ if(WIN32 AND INFERNUX_BUILD_PLAYER_HOST)
         cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc
     )
     set(INFERNUX_PLAYER_HOST_DIR
-        "${CMAKE_SOURCE_DIR}/python/Infernux/resources/player"
+        "${CMAKE_SOURCE_DIR}/python/Infernux/resources/player_runtime"
     )
     set_target_properties(InfernuxPlayerHost PROPERTIES
         OUTPUT_NAME "InfernuxPlayerHost"
@@ -1589,6 +1589,8 @@ add_custom_target(clang_format
 # ------------------------------------------------------------------------------
 # Python Packaging and Installation
 # ------------------------------------------------------------------------------
+add_subdirectory(external/plugins)
+
 set(INFERNUX_PYTHON_WHEEL_DIR "${CMAKE_BINARY_DIR}/python_wheel")
 
 add_custom_target(package_and_install_python
@@ -1647,7 +1649,11 @@ add_custom_target(package_and_install_python
 # Keep packaging behind one ordered dependency chain. The native Python
 # modules already depend on clean_python_pycache; adding cleanup here as a
 # second root allows it to race runtime staging under parallel MSBuild.
-add_dependencies(package_and_install_python prebuild_player_runtime)
+add_dependencies(
+    package_and_install_python
+    prebuild_player_runtime
+    infernux_official_plugins
+)
 
 # ------------------------------------------------------------------------------
 # API Reference Generation (auto-introspect Python package → Markdown)

@@ -68,6 +68,12 @@ class Engine():
         self._gizmos_uploaded = False
         self._resources_manager = None  # Set in init_renderer (editor only)
         self._screen_ui_submission = None
+        # Headless is an editor-capable runtime without panels.  It owns the
+        # same panel-independent authoring services used by the graphical
+        # editor so automation can perform real project and scene mutations.
+        self._headless_interaction_core = None
+        self._headless_undo_manager = None
+        self._headless_scene_file_manager = None
         self._before_exit_callback = None
         self._editor_frame_sync_callback = None
         from Infernux.application import Application
@@ -200,8 +206,55 @@ class Engine():
         self._play_mode_manager = PlayModeManager()
         self._play_mode_manager.set_asset_database(self.get_asset_database())
         self._play_mode_manager._native_engine = self._engine
+        self._initialize_headless_authoring(project_path)
         self._install_pre_scene_time_callback()
         Debug.log_internal("Headless engine initialized")
+
+    def _initialize_headless_authoring(self, project_path) -> None:
+        """Create the non-visual editor services required for authoring.
+
+        Headless deliberately does not initialize windows, panels, fonts, or
+        render-preview services.  The interaction core itself is UI-agnostic
+        and is the canonical owner of project/scene commands in every editor
+        host, including automation and remote clients.
+        """
+        from Infernux.engine.hierarchy_creation_service import (
+            HierarchyCreationService,
+        )
+        from Infernux.engine.interaction import EditorInteractionCore
+        from Infernux.engine.interaction import DocumentKind
+        from Infernux.engine.scene_manager import SceneFileManager
+        from Infernux.engine.undo import UndoManager
+
+        if EditorInteractionCore.instance() is not None:
+            raise RuntimeError(
+                "Headless authoring requires an isolated interaction session."
+            )
+        core = EditorInteractionCore()
+        try:
+            core.project_assets.configure(
+                str(project_path),
+                self.get_asset_database(),
+            )
+            undo = UndoManager(core.action_journal)
+            scene_files = SceneFileManager()
+            scene_files.set_asset_database(self.get_asset_database())
+            scene_files.set_engine(self.get_native_engine())
+            core.document_open.register(
+                DocumentKind.SCENE,
+                lambda locator: scene_files.restore_document_locator(locator),
+                replace=True,
+            )
+            HierarchyCreationService.instance().configure(
+                selection_service=core.selection,
+                navigation_service=core.navigation,
+            )
+        except Exception:
+            core.shutdown()
+            raise
+        self._headless_interaction_core = core
+        self._headless_undo_manager = undo
+        self._headless_scene_file_manager = scene_files
 
     def _install_pre_scene_time_callback(self):
         """Install timing and the shared Python lifecycle bridge.
@@ -399,7 +452,7 @@ class Engine():
                 except Exception as exc:
                     Debug.log_suppressed("Engine.pre_gui_tick.DeferredTaskRunner", exc)
                 try:
-                    from Infernux.mcp.threading import MainThreadCommandQueue
+                    from Infernux.host import MainThreadCommandQueue
                     MainThreadCommandQueue.instance().drain()
                 except Exception as exc:
                     Debug.log_suppressed("Engine.pre_gui_tick.MainThreadCommandQueue", exc)
@@ -441,6 +494,7 @@ class Engine():
         }
         _asset_import_progress = None
         _build_preflight_progress = None
+        _plugin_reload_progress = None
         if not _PLAYER_MODE:
             from Infernux.engine.ui.asset_import_progress import (
                 AssetImportProgressService,
@@ -448,10 +502,22 @@ class Engine():
             from Infernux.engine.ui.build_preflight_progress import (
                 BuildPreflightProgressService,
             )
+            from Infernux.engine.ui.plugin_reload_progress import (
+                PluginReloadProgressService,
+            )
             _asset_import_progress = AssetImportProgressService.instance()
             _build_preflight_progress = BuildPreflightProgressService.instance()
+            _plugin_reload_progress = PluginReloadProgressService.instance()
 
         def _post_draw_tick():
+            if _plugin_reload_progress is not None:
+                try:
+                    _plugin_reload_progress.post_present_tick()
+                except Exception as exc:
+                    Debug.log_suppressed(
+                        "Engine.post_draw_tick.plugin_reload_progress",
+                        exc,
+                    )
             if _build_preflight_progress is not None:
                 try:
                     _build_preflight_progress.post_present_tick()
@@ -548,8 +614,23 @@ class Engine():
         from Infernux.engine.deferred_task import DeferredTaskRunner
         DeferredTaskRunner.instance().tick()
 
-        from Infernux.mcp.threading import MainThreadCommandQueue
+        from Infernux.host import MainThreadCommandQueue
         MainThreadCommandQueue.instance().drain()
+
+        # Headless has no post-present phase, so advance the same scene
+        # document work that the graphical editor drains between frames here.
+        # This keeps scene.new/open/save semantics host-independent for MCP and
+        # other automation clients without introducing a second persistence
+        # path.
+        if self._headless_scene_file_manager is not None:
+            self._headless_scene_file_manager.poll_deferred_load()
+
+        from Infernux.core.assets import AssetManager
+        AssetManager.flush_scheduled_saves()
+        AssetManager.poll_pending_asset_writes()
+        from Infernux.engine.interaction import DocumentRegistry
+        DocumentRegistry.instance().process_deferred_saves()
+        DocumentRegistry.instance().process_pending_saves()
 
         self._engine.tick(float(delta_time))
 
@@ -794,6 +875,22 @@ class Engine():
             self._shutdown_play_mode()
 
         try:
+            from Infernux.host import MainThreadCommandQueue
+
+            MainThreadCommandQueue.instance().release_owner("Engine is exiting.")
+        except Exception as exc:
+            Debug.log_suppressed("Engine.exit.MainThreadCommandQueue", exc)
+
+        try:
+            from Infernux.plugins import PluginManager
+
+            plugin_manager = PluginManager.instance()
+            if plugin_manager is not None:
+                plugin_manager.shutdown()
+        except Exception as exc:
+            Debug.log_suppressed("Engine.exit.PluginManager", exc)
+
+        try:
             from Infernux.lib import SceneManager
 
             clear_bridge = getattr(SceneManager.instance(), "clear_runtime_lifecycle_callbacks", None)
@@ -815,6 +912,45 @@ class Engine():
                 DocumentRegistry.instance().process_pending_saves()
             except Exception as exc:
                 Debug.log_error(f"Failed to flush pending asset writes during shutdown: {exc}")
+
+        # Plugins are already stopped and pending writes are committed.  The
+        # remaining headless authoring singletons must be released before the
+        # native scene and AssetDatabase they reference are destroyed.
+        headless_interaction_core = getattr(self, "_headless_interaction_core", None)
+        if headless_interaction_core is not None:
+            try:
+                from Infernux.engine.hierarchy_creation_service import (
+                    HierarchyCreationService,
+                )
+
+                HierarchyCreationService.instance().configure(
+                    selection_service=None,
+                    navigation_service=None,
+                )
+                headless_interaction_core.shutdown()
+            except Exception as exc:
+                Debug.log_suppressed("Engine.exit.HeadlessInteractionCore", exc)
+            finally:
+                self._headless_interaction_core = None
+        headless_scene_file_manager = getattr(self, "_headless_scene_file_manager", None)
+        if headless_scene_file_manager is not None:
+            try:
+                from Infernux.engine.scene_manager import SceneFileManager
+
+                if SceneFileManager.instance() is headless_scene_file_manager:
+                    SceneFileManager._instance = None
+            except Exception as exc:
+                Debug.log_suppressed("Engine.exit.HeadlessSceneFileManager", exc)
+            finally:
+                self._headless_scene_file_manager = None
+        headless_undo_manager = getattr(self, "_headless_undo_manager", None)
+        if headless_undo_manager is not None:
+            try:
+                headless_undo_manager.shutdown()
+            except Exception as exc:
+                Debug.log_suppressed("Engine.exit.HeadlessUndoManager", exc)
+            finally:
+                self._headless_undo_manager = None
 
         # 1. Stop the observer and commit any events it already delivered while
         #    AssetDatabase, AssetRegistry, renderer, and editor caches are alive.

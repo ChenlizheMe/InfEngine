@@ -1568,6 +1568,35 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         if (requiresFreshComponentIds) {
             for (auto &[component, componentId] : componentIdAssignments)
                 componentId = component->GetComponentID();
+
+            // Python components do not have native proxies during staging, so
+            // they cannot inherit the fresh IDs allocated to staged native
+            // components. Keeping their document IDs here can collide with a
+            // freshly allocated Transform/native component (for example a
+            // template RenderStack id colliding with a staged Light id), and
+            // the next save then produces a scene that strict validation can
+            // no longer reopen. Reserve fresh IDs from the same process-wide
+            // allocator and publish them through the pending field document
+            // consumed by Python restore.
+            std::unordered_map<uint64_t, uint64_t> pythonComponentIdRemap;
+            pythonComponentIdRemap.reserve(pythonComponentIds.size());
+            for (uint64_t &componentId : pythonComponentIds) {
+                const uint64_t freshId = Component::GenerateComponentID();
+                pythonComponentIdRemap.emplace(componentId, freshId);
+                componentId = freshId;
+            }
+            for (auto &pending : staging.m_pendingPyComponents) {
+                auto field = pending.fieldsDocument.find("__component_id__");
+                if (field == pending.fieldsDocument.end() || !field->is_number_unsigned())
+                    throw std::invalid_argument(
+                        "pending Python component is missing an unsigned __component_id__");
+                const uint64_t documentId = field->get<uint64_t>();
+                const auto remapped = pythonComponentIdRemap.find(documentId);
+                if (remapped == pythonComponentIdRemap.end())
+                    throw std::logic_error(
+                        "pending Python component id was not indexed for fresh allocation");
+                *field = remapped->second;
+            }
         }
 
         auto &componentRegistry = Component::GetInstanceRegistry();
