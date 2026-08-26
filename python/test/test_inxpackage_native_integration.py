@@ -16,6 +16,7 @@ import pytest
 
 from Infernux.engine import player_package_native
 from Infernux.plugins import InxPackage, PluginManager
+from Infernux.plugins.content import parse_markdown_blocks
 from Infernux.plugins.official import install_default_libraries
 
 
@@ -127,6 +128,25 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     assert "preload" not in preview.metadata
     assert "plugin_root" not in preview.metadata
     assert {item["role"] for item in preview.file_records} == {"editor", "control"}
+    assert {
+        (page["id"], page.get("locale", "")) for page in preview.metadata["pages"]
+    } >= {
+        ("intro", ""),
+        ("intro", "zh-CN"),
+        ("operations", ""),
+        ("operations", "zh-CN"),
+        ("trust", ""),
+        ("trust", "zh-CN"),
+    }
+    assert {
+        item["logical_path"]
+        for item in preview.file_records
+        if item["logical_path"].startswith("InxPluginPages/media/")
+    } >= {
+        "InxPluginPages/media/agent-loop.png",
+        "InxPluginPages/media/system-overview.png",
+        "InxPluginPages/media/trust-gates.png",
+    }
 
     project = tmp_path / "project"
     (project / "Assets").mkdir(parents=True)
@@ -188,6 +208,20 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     assert {item["reference"] for item in manager.registry.available()} == {
         "infernux/mcp"
     }
+    record = manager.registry.installed_record("infernux/mcp")
+    localized_pages = manager.content_pages(record, locale="zh")
+    assert [page["id"] for page in localized_pages] == [
+        "intro",
+        "operations",
+        "trust",
+        "license",
+    ]
+    for page in localized_pages:
+        for block in parse_markdown_blocks(page["content"]):
+            if block["kind"] == "image":
+                assert Path(
+                    manager.content_asset_path(record, page, block["source"])
+                ).is_file()
 
     health = None
     for _ in range(100):
