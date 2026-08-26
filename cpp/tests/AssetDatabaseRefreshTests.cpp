@@ -216,8 +216,7 @@ void TestProjectPackagesScanRootSharesTheGuidCatalog()
         database->Initialize(infernux::FromFsPath(root));
         auto &registry = infernux::AssetRegistry::Instance();
         registry.Initialize(std::move(database));
-        registry.RegisterLoader(infernux::ResourceType::Script,
-                                std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
         registry.PopulateAssetDatabaseLoaders();
         auto *assetDatabase = registry.GetAssetDatabase();
         assetDatabase->AddScanRoot(infernux::FromFsPath(root / "Packages"));
