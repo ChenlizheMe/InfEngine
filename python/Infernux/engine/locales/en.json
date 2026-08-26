@@ -1093,6 +1093,7 @@
   "asset.import_progress.complete": "Import complete",
   "panel.plugins": "Plugins",
   "panel.inxpackage_import": "Import InxPackage",
+  "project.import_inxpackage": "Import InxPackage...",
   "project.export_inxpackage": "Export InxPackage...",
   "plugins.unavailable": "The project plugin manager is unavailable.",
   "plugins.official_unavailable": "The official plugin registry is unavailable. Local packages, Git sources, and pip remain available.",
@@ -1161,5 +1162,12 @@
   "inxpackage.select_none": "Select None",
   "inxpackage.import": "Import",
   "inxpackage.imported": "Imported {reference}",
+  "inxpackage.import_failed": "InxPackage import failed.",
+  "inxpackage.import_busy": "Another import is already in progress.",
+  "inxpackage.import_progress.title": "Importing InxPackage",
+  "inxpackage.import_progress.preparing": "Preparing the package import...",
+  "inxpackage.import_progress.processing": "Installing package files and dependencies...",
+  "inxpackage.import_progress.publishing": "Refreshing project assets...",
+  "inxpackage.import_progress.complete": "InxPackage import complete",
   "inxpackage.entries_count": "Selected {selected} of {total} files"
 }

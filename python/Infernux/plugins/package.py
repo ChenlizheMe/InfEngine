@@ -96,8 +96,9 @@ class InxPackage:
         """Export selected sources into a deterministic package-source tree.
 
         Selecting one directory that contains ``InxPackage.json`` treats that
-        directory as the package source root. Other selections are wrapped by
-        their basename, which is the useful behavior for Project-panel exports.
+        directory as the package source root. A single ordinary directory
+        exports its contents directly under the generated plugin reference;
+        multi-selection keeps each selected basename.
         """
 
         project = resolved_path(project_root)
@@ -446,16 +447,28 @@ class InxPackage:
     def _default_reference(sources: Sequence[str]) -> str:
         stem = Path(sources[0]).stem if len(sources) == 1 else "selection"
         normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.").lower()
-        return f"local/{normalized or 'package'}"
+        return normalized or "package"
 
     @staticmethod
     def _collect_logical_files(
         sources: Sequence[str], source_root: str
     ) -> list[tuple[str, str]]:
         collected: dict[str, str] = {}
+        unwrap_single_directory = bool(
+            not source_root and len(sources) == 1 and os.path.isdir(sources[0])
+        )
         for source in sources:
             if os.path.isdir(source):
-                root = source_root or os.path.dirname(source)
+                # A manifest-backed source owns an explicit package layout.
+                # For an ordinary folder exported from Project view, the
+                # generated reference already supplies the destination folder;
+                # wrapping the selection again would produce
+                # Assets/Plugins/materials/Materials/... style duplication.
+                root = (
+                    source
+                    if unwrap_single_directory
+                    else source_root or os.path.dirname(source)
+                )
                 for walk_root, dirs, names in os.walk(source):
                     dirs[:] = sorted(
                         name

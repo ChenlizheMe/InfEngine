@@ -697,6 +697,52 @@ class InxPackageImportPanel(EditorPanel):
         self._selected = {path: True for path in self._preview.project_entries}
         self._message = ""
 
+    def _begin_import(self) -> bool:
+        manager = PluginManager.instance()
+        if manager is None:
+            self._message = t("plugins.unavailable")
+            return False
+        selected = tuple(
+            path for path, enabled in self._selected.items() if enabled
+        )
+        if not selected:
+            return False
+
+        from .asset_import_progress import AssetImportProgressService
+
+        result: dict[str, object] = {}
+
+        def work() -> bool:
+            result["state"] = manager.install_package(
+                self.package_path,
+                selected=selected,
+            )
+            return True
+
+        def complete(ok: bool, message: str) -> None:
+            if not ok:
+                self._message = message or t("inxpackage.import_failed")
+                return
+            state = result.get("state")
+            reference = str(getattr(state, "reference", ""))
+            self._message = t("inxpackage.imported").format(reference=reference)
+
+        started = AssetImportProgressService.instance().begin(
+            title=t("inxpackage.import_progress.title"),
+            path=self.package_path,
+            work=work,
+            is_published=lambda: True,
+            complete=complete,
+            owner_id="inxpackage_import",
+            preparing_message=t("inxpackage.import_progress.preparing"),
+            processing_message=t("inxpackage.import_progress.processing"),
+            publishing_message=t("inxpackage.import_progress.publishing"),
+            complete_message=t("inxpackage.import_progress.complete"),
+        )
+        if not started:
+            self._message = t("inxpackage.import_busy")
+        return started
+
     def on_render_content(self, ctx) -> None:
         if self._preview is None:
             ctx.text_wrapped(t("inxpackage.no_package"))
@@ -771,16 +817,7 @@ class InxPackageImportPanel(EditorPanel):
             ctx.same_line(action_x)
             ctx.begin_disabled(not any(self._selected.values()))
             if self._primary_button(ctx, t("inxpackage.import") + "##inxpackage_import"):
-                manager = PluginManager.instance()
-                if manager is None:
-                    self._message = t("plugins.unavailable")
-                else:
-                    try:
-                        selected = [path for path, enabled in self._selected.items() if enabled]
-                        state = manager.install_package(self.package_path, selected=selected)
-                        self._message = t("inxpackage.imported").format(reference=state.reference)
-                    except Exception as exc:
-                        self._message = f"{type(exc).__name__}: {exc}"
+                self._begin_import()
             ctx.end_disabled()
         ctx.end_child()
         ctx.pop_style_color()

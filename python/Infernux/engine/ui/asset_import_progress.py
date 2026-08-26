@@ -18,6 +18,11 @@ class _ImportTransaction:
     work: Callable[[], bool]
     is_published: Callable[[], bool]
     complete: Callable[[bool, str], None]
+    owner_id: str = "asset_inspector"
+    preparing_message: str = ""
+    processing_message: str = ""
+    publishing_message: str = ""
+    complete_message: str = ""
     phase: str = "opening"
     progress: float = 0.05
     message: str = ""
@@ -80,6 +85,11 @@ class AssetImportProgressService:
         work: Callable[[], bool],
         is_published: Callable[[], bool],
         complete: Callable[[bool, str], None],
+        owner_id: str = "asset_inspector",
+        preparing_message: str = "",
+        processing_message: str = "",
+        publishing_message: str = "",
+        complete_message: str = "",
     ) -> bool:
         if self._transaction is not None:
             return False
@@ -91,11 +101,24 @@ class AssetImportProgressService:
             work=work,
             is_published=is_published,
             complete=complete,
-            message=t("asset.import_progress.preparing"),
+            owner_id=str(owner_id or "asset_inspector"),
+            preparing_message=str(
+                preparing_message or t("asset.import_progress.preparing")
+            ),
+            processing_message=str(
+                processing_message or t("asset.import_progress.processing")
+            ),
+            publishing_message=str(
+                publishing_message or t("asset.import_progress.publishing")
+            ),
+            complete_message=str(
+                complete_message or t("asset.import_progress.complete")
+            ),
         )
+        self._transaction.message = self._transaction.preparing_message
         if not modals.activate(
             self.MODAL_ID,
-            owner_id="asset_inspector",
+            owner_id=self._transaction.owner_id,
             parent_id=parent,
         ):
             self._transaction = None
@@ -116,13 +139,17 @@ class AssetImportProgressService:
         modals = self._ensure_registered()
         if self.MODAL_ID not in {entry.modal_id for entry in modals.active_stack}:
             parent = modals.active_modal_id
-            modals.activate(self.MODAL_ID, owner_id="asset_inspector", parent_id=parent)
+            modals.activate(
+                self.MODAL_ID,
+                owner_id=transaction.owner_id,
+                parent_id=parent,
+            )
 
         try:
             if transaction.phase == "opening":
                 transaction.phase = "importing"
                 transaction.progress = 0.2
-                transaction.message = t("asset.import_progress.processing")
+                transaction.message = transaction.processing_message
                 # Present the processing state before entering blocking work.
                 return
 
@@ -132,12 +159,12 @@ class AssetImportProgressService:
                     return
                 transaction.phase = "publishing"
                 transaction.progress = 0.82
-                transaction.message = t("asset.import_progress.publishing")
+                transaction.message = transaction.publishing_message
 
             if transaction.phase == "publishing" and transaction.is_published():
                 transaction.phase = "complete"
                 transaction.progress = 1.0
-                transaction.message = t("asset.import_progress.complete")
+                transaction.message = transaction.complete_message
                 return
 
             if transaction.phase == "complete":

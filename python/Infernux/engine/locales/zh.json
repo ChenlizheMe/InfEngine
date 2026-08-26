@@ -1093,6 +1093,7 @@
   "asset.import_progress.complete": "导入完成",
   "panel.plugins": "插件",
   "panel.inxpackage_import": "导入 InxPackage",
+  "project.import_inxpackage": "导入 InxPackage...",
   "project.export_inxpackage": "导出 InxPackage...",
   "plugins.unavailable": "项目插件管理器不可用。",
   "plugins.official_unavailable": "官方插件目录不可用；仍可使用本地包、Git 来源和 pip。",
@@ -1161,5 +1162,12 @@
   "inxpackage.select_none": "全不选",
   "inxpackage.import": "导入",
   "inxpackage.imported": "已导入 {reference}",
+  "inxpackage.import_failed": "InxPackage 导入失败。",
+  "inxpackage.import_busy": "已有其他导入任务正在进行。",
+  "inxpackage.import_progress.title": "正在导入 InxPackage",
+  "inxpackage.import_progress.preparing": "正在准备插件包导入...",
+  "inxpackage.import_progress.processing": "正在安装插件文件和依赖...",
+  "inxpackage.import_progress.publishing": "正在刷新项目资产...",
+  "inxpackage.import_progress.complete": "InxPackage 导入完成",
   "inxpackage.entries_count": "已选择 {selected} / {total} 个文件"
 }

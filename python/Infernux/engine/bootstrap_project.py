@@ -387,10 +387,36 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         request_delete=ProjectDeleteConfirmationCoordinator.instance().request,
     )
 
-    # InxPackage export is an ordinary global command so pointer menus,
+    # InxPackage import/export are ordinary global commands so pointer menus,
     # shortcuts and automation all enter through the same command authority.
     from Infernux.engine.interaction import EditorCommand
     from Infernux.engine.path_utils import is_path_within, resolved_path
+
+    def _can_import_inxpackage(_context):
+        return bool(bs.project_path and os.path.isdir(bs.project_path))
+
+    def _import_inxpackage(_context):
+        from Infernux.engine.ui._dialogs import pick_file_dialog
+
+        package_path = pick_file_dialog(
+            title=_t("project.import_inxpackage"),
+            win32_filter="InxPackage (*.inxpkg)\0*.inxpkg\0All files (*.*)\0*.*\0\0",
+            tk_filetypes=[("InxPackage", "*.inxpkg"), ("All Files", "*.*")],
+        )
+        if not package_path:
+            return False
+        return _open_asset("inxpackage", package_path)
+
+    bs.interaction_core.commands.register(
+        EditorCommand(
+            "inxpackage.import",
+            _import_inxpackage,
+            display_name="Import InxPackage",
+            category="Assets",
+            can_execute=_can_import_inxpackage,
+        ),
+        replace=True,
+    )
 
     def _can_export_inxpackage(context):
         path = resolved_path(str(context.payload.get("path", "") or ""))

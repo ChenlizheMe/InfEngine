@@ -117,6 +117,24 @@ def _export(source: Path, package: Path) -> Path:
     return package
 
 
+def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path):
+    project = _project(tmp_path / "project")
+    materials = project / "Assets" / "Materials"
+    materials.mkdir()
+    asset = materials / "Neon.mat"
+    asset.write_text("material", encoding="utf-8")
+    guid = "0123456789abcdef0123456789abcdef"
+    (materials / "Neon.mat.meta").write_text(_meta(guid), encoding="utf-8")
+
+    package = tmp_path / "Materials.inxpkg"
+    preview = InxPackage.export(str(project), [str(materials)], str(package))
+
+    assert preview.metadata["reference"] == "materials"
+    assert preview.logical_entries == ("Neon.mat",)
+    assert preview.project_entries == ("Assets/Plugins/materials/Neon.mat",)
+    assert preview.file_records[0]["guid"] == guid
+
+
 def test_v2_layout_routes_code_control_content_and_nested_packages(tmp_path):
     source = _source(tmp_path / "source", "aabbc/physics/jolt")
     (source / "Runtime").mkdir()
