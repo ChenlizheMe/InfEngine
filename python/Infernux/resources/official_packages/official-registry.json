@@ -1,0 +1,55 @@
+{
+  "$schema": "infernux.official_plugin_registry",
+  "catalog_version": 1,
+  "packages": [
+    {
+      "reference": "infernux/mcp",
+      "name": "Infernux MCP",
+      "version": "0.1.0",
+      "intro": "Default schema-driven MCP Host integration for Infernux Editor.",
+      "intros": {
+        "zh-CN": "Infernux MCP 用于把兼容 MCP 的 AI Agent 连接到 Infernux 编辑器。Agent\n可以读取项目状态、编辑场景和资产、控制 Play Mode、通过合成输入操作编辑器、\n读取语义 UI、捕获引擎渲染目标，并验证独立运行的 Player。"
+      },
+      "artifact": "infernux.mcp.inxpkg",
+      "artifact_sha256": "85ada3cf0214e5f99044da4c198288ae8d2635df65be3d7a73327afba250f8ed",
+      "artifact_size": 98240,
+      "engine": ">=0.3.7,<0.4",
+      "dependencies": [],
+      "repository": "https://github.com/ChenlizheMe/infernux_mcp",
+      "pages": [
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.md",
+          "format": "markdown"
+        },
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        },
+        {
+          "id": "operations",
+          "title": "Operation catalog",
+          "path": "InxPluginPages/Operations.md",
+          "format": "markdown"
+        },
+        {
+          "id": "operations",
+          "title": "Operation 目录",
+          "path": "InxPluginPages/Operations.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        },
+        {
+          "id": "license",
+          "title": "License",
+          "path": "LICENSE",
+          "format": "text"
+        }
+      ]
+    }
+  ]
+}

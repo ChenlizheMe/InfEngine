@@ -1,0 +1,11 @@
+{
+  "$schema": "infernux.official_plugin_sources",
+  "catalog_version": 1,
+  "plugins": [
+    {
+      "path": "infernux_mcp",
+      "repository": "https://github.com/ChenlizheMe/infernux_mcp",
+      "default": true
+    }
+  ]
+}
