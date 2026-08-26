@@ -16,6 +16,8 @@ class _AutomationHost(EditorAutomationHost):
         self.events = []
         self.sequence = 0
         self.capture_enabled = False
+        self.runtime_state = "edit"
+        self.runtime_target = "edit"
 
     def queue_input(self, kind: str, **arguments):
         self.sequence += 1
@@ -87,6 +89,20 @@ class _AutomationHost(EditorAutomationHost):
             "surface": "console",
             "status_bar": {"surface": "status_bar", "message": "profile"},
         }
+
+    def runtime_transition(self, method: str):
+        self.runtime_target = {
+            "enter_play_mode": "playing",
+            "exit_play_mode": "edit",
+            "pause": "paused",
+            "resume": "playing",
+            "step_frame": "paused",
+        }[method]
+        return {"accepted": True, "runtime": {"state": self.runtime_state}}
+
+    def runtime_status(self):
+        self.runtime_state = self.runtime_target
+        return {"state": self.runtime_state}
 
 
 def _operations(tmp_path):
@@ -160,6 +176,18 @@ def test_capture_returns_review_artifact_metadata_without_pixels(tmp_path):
         EditorAutomationHost.set_provider(None)
 
 
+def test_runtime_transition_waits_for_the_deferred_target_state(tmp_path):
+    operations, host = _operations(tmp_path)
+    try:
+        result = operations["infernux.runtime.play"](timeout_seconds=1.0)
+        assert result["accepted"] is True
+        assert result["transition_complete"] is True
+        assert result["runtime"]["state"] == "playing"
+        assert host.runtime_state == "playing"
+    finally:
+        EditorAutomationHost.set_provider(None)
+
+
 def test_operation_handlers_depend_on_host_api_not_editor_implementation():
     plugin = (
         Path(__file__).parents[2]
@@ -187,6 +215,61 @@ def test_operation_handlers_depend_on_host_api_not_editor_implementation():
                     if alias.name.startswith(forbidden):
                         violations.append((path.name, node.lineno, alias.name))
     assert violations == []
+
+
+def test_editor_host_deduplicates_components_and_prefers_api_wrappers(monkeypatch):
+    from Infernux.components.builtin_component import BuiltinComponent
+
+    class RawLight:
+        component_id = 7
+        type_name = "HostTestLight"
+
+    class RawPythonProxy:
+        component_id = 8
+        type_name = "PyComponentProxy"
+
+    class PythonComponent:
+        component_id = 8
+        type_name = "Controller"
+
+    wrapped = type(
+        "WrappedLight",
+        (),
+        {
+            "component_id": 7,
+            "type_name": "HostTestLight",
+            "_is_builtin_component_wrapper": True,
+        },
+    )()
+
+    class WrapperType:
+        @classmethod
+        def _get_or_create_wrapper(cls, value, owner):
+            assert isinstance(value, RawLight)
+            assert owner is game_object
+            return wrapped
+
+    game_object = type(
+        "GameObject",
+        (),
+        {
+            "get_py_components": lambda self: [PythonComponent()],
+            "get_components": lambda self: [RawLight(), RawPythonProxy()],
+        },
+    )()
+    scene = type("Scene", (), {"find_by_id": lambda self, _id: game_object})()
+    host = EditorAutomationHost()
+    monkeypatch.setattr(host, "active_scene", lambda: scene)
+    monkeypatch.setitem(
+        BuiltinComponent._builtin_registry, "HostTestLight", WrapperType
+    )
+
+    values = host.scene_components(42)
+
+    assert len(values) == 2
+    assert isinstance(values[0], PythonComponent)
+    assert values[1] is wrapped
+    assert [value.component_id for value in values] == [8, 7]
 
 
 def test_capture_surface_cannot_fall_back_to_operating_system_pixels():
@@ -235,8 +318,18 @@ def test_player_schema_exposes_managed_input_and_motion_capture(tmp_path, monkey
             return {"capture_id": capture_id, "cancelled": True}
 
     monkeypatch.setattr(
-        "infernux_mcp.player_operations.SupervisorSession.resume",
+        "infernux_mcp.player_operations.SupervisorSession.attach_current_host",
         lambda *args, **kwargs: _Supervisor(),
+    )
+    from infernux_mcp import player_operations
+
+    player_operations._LOCAL_SUPERVISORS.clear()
+    session.configure(
+        str(tmp_path),
+        {
+            "profile": "developer_assist",
+            "session": {"build_profile": "debug_feedback"},
+        },
     )
     try:
         pointer = operations["infernux.player.validation.pointer.button"](0, True, 10, 20)
@@ -247,5 +340,39 @@ def test_player_schema_exposes_managed_input_and_motion_capture(tmp_path, monkey
         assert armed["capture_id"] == "motion-1"
         assert operations["infernux.player.validation.motion.status"]("motion-1")["status"] == "sampling"
         assert operations["infernux.player.validation.motion.cancel"]("motion-1")["cancelled"] is True
+    finally:
+        player_operations._LOCAL_SUPERVISORS.clear()
+        EditorAutomationHost.set_provider(None)
+
+
+def test_player_build_is_available_without_global_validation(tmp_path):
+    session.configure(
+        str(tmp_path),
+        {
+            "profile": "developer_assist",
+            "session": {"build_profile": "debug_feedback"},
+        },
+    )
+    queue = MainThreadCommandQueue()
+    queue._main_thread_id = threading.get_ident()
+    MainThreadCommandQueue._instance = queue
+    host = _AutomationHost(tmp_path / "capture.png")
+    received = {}
+
+    def build_player(project_root, **arguments):
+        received.update({"project_root": project_root, **arguments})
+        return {"output_dir": str(tmp_path / "Build"), "executable_exists": True}
+
+    host.build_player = build_player
+    EditorAutomationHost.set_provider(host)
+    try:
+        operations = {item.schema.id: item.handler for item in build_operations(str(tmp_path))}
+        result = operations["infernux.player.build"](
+            game_name="BalanceBall", debug_mode=True
+        )
+        assert result["executable_exists"] is True
+        assert received["project_root"] == str(tmp_path)
+        assert received["game_name"] == "BalanceBall"
+        assert received["debug_mode"] is True
     finally:
         EditorAutomationHost.set_provider(None)

@@ -168,3 +168,29 @@ def test_path_reference_does_not_fall_back_to_an_unrelated_basename(tmp_path):
         ) is None
     finally:
         set_project_root(previous_root)
+
+
+def test_scene_reload_requires_explicit_discard_and_uses_deferred_path(tmp_path, monkeypatch):
+    from Infernux.engine.scene_manager import SceneFileManager
+
+    scene_path = tmp_path / "Assets" / "Scenes" / "Start.scene"
+    scene_path.parent.mkdir(parents=True)
+    scene_path.write_text("{}", encoding="utf-8")
+    previous = SceneFileManager._instance
+    manager = SceneFileManager()
+    calls = []
+    try:
+        manager._current_scene_path = str(scene_path)
+        monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
+        monkeypatch.setattr(manager, "_stage_scene_navigation", lambda: calls.append("stage"))
+        monkeypatch.setattr(manager, "_save_camera_state", lambda path: calls.append(("camera", path)))
+        monkeypatch.setattr(manager, "_begin_deferred_open", lambda path: calls.append(("open", path)))
+
+        manager.mark_dirty()
+        assert manager.reload_current_scene() is False
+        assert calls == []
+        assert manager.reload_current_scene(discard_changes=True) is True
+        assert calls[0] == "stage"
+        assert calls[-1] == ("open", str(scene_path))
+    finally:
+        SceneFileManager._instance = previous
