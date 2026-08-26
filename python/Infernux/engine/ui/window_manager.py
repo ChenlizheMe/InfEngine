@@ -611,6 +611,35 @@ class WindowManager:
             menu_path=menu_path,
         )
         self._notify_type_changed()
+
+    def unregister_window_type(self, type_id: str) -> bool:
+        """Remove one dynamic window type and close all of its live views."""
+
+        identifier = str(type_id or "").strip()
+        if identifier not in self._registered_types:
+            return False
+        if identifier in self._builtin_defaults:
+            raise RuntimeError(
+                f"Builtin window types cannot be unregistered: {identifier}"
+            )
+        view_ids = [
+            window_id
+            for window_id, registered_type in self._window_type_ids.items()
+            if registered_type == identifier
+        ]
+        if identifier in self._window_states and identifier not in view_ids:
+            view_ids.append(identifier)
+        for window_id in view_ids:
+            if (
+                self._window_states.get(window_id, WindowState.CLOSED)
+                not in {WindowState.CLOSED, WindowState.CLOSING}
+                and not self.close_window(window_id)
+            ):
+                return False
+        self._registered_types.pop(identifier, None)
+        self._default_instances.pop(identifier, None)
+        self._notify_type_changed()
+        return True
     
     def open_window(self, type_id: str, instance_id: Optional[str] = None) -> Optional[InxGUIRenderable]:
         """

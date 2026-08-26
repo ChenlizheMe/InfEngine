@@ -16,7 +16,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
 from packaging.specifiers import SpecifierSet
@@ -56,6 +56,27 @@ from .registry import PluginRegistry
 
 
 _URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
+_InstallProgress = Callable[[str, float], None]
+
+
+def _report_progress(
+    callback: _InstallProgress | None,
+    stage: str,
+    progress: float,
+) -> None:
+    if callback is not None:
+        callback(str(stage), max(0.0, min(1.0, float(progress))))
+
+
+def _scaled_progress(
+    callback: _InstallProgress | None,
+    start: float,
+    end: float,
+) -> _InstallProgress | None:
+    if callback is None:
+        return None
+    span = float(end) - float(start)
+    return lambda stage, value: callback(stage, float(start) + span * float(value))
 
 
 class PackageConflictError(RuntimeError):
@@ -304,7 +325,9 @@ class PluginManager:
         selected: Iterable[str] | None = None,
         install_dependencies: bool = True,
         source: Mapping[str, object] | None = None,
+        progress: _InstallProgress | None = None,
     ) -> PluginState:
+        _report_progress(progress, "inspect_package", 0.36)
         package_path = resolved_path(package_path)
         expected_sha256 = str((source or {}).get("sha256", "")).strip().casefold()
         package_sha256 = _file_hash(package_path)
@@ -345,15 +368,32 @@ class PluginManager:
             resolved_source["cache_location"] = cache_relative
             dependencies: list[str] = []
             if install_dependencies:
+                _report_progress(progress, "resolve_dependencies", 0.48)
+                dependencies.extend(
+                    self._install_manifest_dependencies(
+                        preview,
+                        progress=_scaled_progress(progress, 0.48, 0.57),
+                    )
+                )
                 requirement_dependencies, pip_effect = self._install_requirements(
-                    preview
+                    preview,
+                    progress=_scaled_progress(progress, 0.57, 0.66),
                 )
                 dependencies.extend(requirement_dependencies)
+                dependencies = list(
+                    dict.fromkeys(
+                        str(value)
+                        for value in dependencies
+                        if str(value).casefold() != key
+                    )
+                )
+            _report_progress(progress, "plan_assets", 0.68)
             planned, control = self._plan_install(preview, selected)
             transaction = _InstallTransaction(self.project_root)
             registry_before = self.registry.load()
             registry_changed = False
             try:
+                _report_progress(progress, "write_assets", 0.76)
                 for item in planned:
                     if not item.owned:
                         continue
@@ -387,6 +427,7 @@ class PluginManager:
                     "role": "control",
                     "owned": bool(control["owned"]),
                 }
+                _report_progress(progress, "update_registry", 0.84)
                 registry_changed = True
                 self.registry.record_install(
                     preview.metadata,
@@ -417,8 +458,12 @@ class PluginManager:
                     self.registry.save(registry_before)
                 self._rollback_pip_effect(pip_effect)
                 raise
+            _report_progress(progress, "refresh_assets", 0.90)
             self._refresh_editor_assets()
-            return self.reload(reference)
+            _report_progress(progress, "preload_plugin", 0.95)
+            state = self.reload(reference)
+            _report_progress(progress, "complete", 1.0)
+            return state
         except BaseException as install_error:
             self._rollback_pip_effect(pip_effect)
             rollback_errors = self._rollback_new_plugin_dependencies(
@@ -490,7 +535,11 @@ class PluginManager:
         return tuple(failures)
 
     def install_reference(
-        self, reference: str, *, install_dependencies: bool = True
+        self,
+        reference: str,
+        *,
+        install_dependencies: bool = True,
+        progress: _InstallProgress | None = None,
     ) -> PluginState:
         record = self.registry.find(reference)
         if record is None:
@@ -513,36 +562,53 @@ class PluginManager:
                 cached["type"] = "local"
                 cached["location"] = cache_path
                 return self.install_source(
-                    cached, install_dependencies=install_dependencies
+                    cached,
+                    install_dependencies=install_dependencies,
+                    progress=progress,
                 )
-        return self.install_source(descriptor, install_dependencies=install_dependencies)
+        return self.install_source(
+            descriptor,
+            install_dependencies=install_dependencies,
+            progress=progress,
+        )
 
     def install_source(
         self,
         source: Mapping[str, object] | str,
         *,
         install_dependencies: bool = True,
+        progress: _InstallProgress | None = None,
     ) -> PluginState:
+        _report_progress(progress, "resolve_source", 0.04)
         descriptor = self._source_descriptor(source)
         source_type = str(descriptor["type"])
         location = str(descriptor["location"])
         if source_type == "local":
+            _report_progress(progress, "read_local_source", 0.16)
             local = resolved_path(
                 location
                 if os.path.isabs(location)
                 else os.path.join(self.project_root, location)
             )
             return self._install_local(
-                local, descriptor, install_dependencies=install_dependencies
+                local,
+                descriptor,
+                install_dependencies=install_dependencies,
+                progress=progress,
             )
         if source_type == "url":
             with tempfile.TemporaryDirectory(prefix="infernux-plugin-url-") as workspace:
                 target = os.path.join(workspace, "download.inxpkg")
-                _download_url_package(location, target)
+                _report_progress(progress, "download_package", 0.08)
+                if progress is None:
+                    _download_url_package(location, target)
+                else:
+                    _download_url_package(location, target, progress=progress)
                 return self.install_package(
                     target,
                     install_dependencies=install_dependencies,
                     source=descriptor,
+                    progress=progress,
                 )
         with tempfile.TemporaryDirectory(prefix="infernux-plugin-git-") as workspace:
             command = ["git", "clone", "--depth", "1"]
@@ -550,7 +616,9 @@ class PluginManager:
             if revision:
                 command.extend(["--branch", revision])
             command.extend([location, workspace])
+            _report_progress(progress, "clone_repository", 0.08)
             self._run_process(command)
+            _report_progress(progress, "read_repository", 0.28)
             subdirectory = portable_path(str(descriptor.get("subdirectory", ""))).strip(
                 "/"
             )
@@ -564,10 +632,19 @@ class PluginManager:
             package_path = portable_path(str(descriptor.get("package", ""))).strip("/")
             target = os.path.join(root, *package_path.split("/")) if package_path else root
             return self._install_local(
-                target, descriptor, install_dependencies=install_dependencies
+                target,
+                descriptor,
+                install_dependencies=install_dependencies,
+                progress=progress,
             )
 
-    def install_pip(self, syntax: str) -> dict[str, object]:
+    def install_pip(
+        self,
+        syntax: str,
+        *,
+        progress: _InstallProgress | None = None,
+    ) -> dict[str, object]:
+        _report_progress(progress, "parse_pip", 0.08)
         raw = str(syntax or "").strip()
         if not raw:
             raise ValueError("pip syntax cannot be empty")
@@ -584,10 +661,13 @@ class PluginManager:
         if not arguments:
             raise ValueError("pip install syntax contains no arguments")
         executable = self._project_python_executable()
+        _report_progress(progress, "inspect_python_environment", 0.22)
         before = self._python_environment_snapshot(executable)
         command = [executable, "-m", "pip", "install", *arguments]
         try:
+            _report_progress(progress, "install_python_dependencies", 0.46)
             result = self._run_process(command, cwd=self.project_root)
+            _report_progress(progress, "verify_python_environment", 0.86)
             after = self._python_environment_snapshot(executable)
             requirements = _pip_requirement_targets(arguments)
             changes = _python_environment_changes(before, after)
@@ -609,6 +689,7 @@ class PluginManager:
                     f"incomplete: {rollback_error}"
                 ) from install_error
             raise
+        _report_progress(progress, "complete", 1.0)
         return {
             "ok": True,
             "command": command,
@@ -934,6 +1015,7 @@ class PluginManager:
         source: Mapping[str, object],
         *,
         install_dependencies: bool,
+        progress: _InstallProgress | None = None,
     ) -> PluginState:
         if os.path.isfile(path):
             if not path.casefold().endswith(PACKAGE_EXTENSION):
@@ -942,6 +1024,7 @@ class PluginManager:
                 path,
                 install_dependencies=install_dependencies,
                 source=source,
+                progress=progress,
             )
         if not os.path.isdir(path):
             raise FileNotFoundError(path)
@@ -951,6 +1034,7 @@ class PluginManager:
                 os.path.join(path, *configured.split("/")),
                 install_dependencies=install_dependencies,
                 source=source,
+                progress=progress,
             )
         packages = sorted(Path(path).glob(f"*{PACKAGE_EXTENSION}"))
         if len(packages) == 1 and not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
@@ -958,20 +1042,26 @@ class PluginManager:
                 str(packages[0]),
                 install_dependencies=install_dependencies,
                 source=source,
+                progress=progress,
             )
         if not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
             raise ValueError("Plugin source must contain InxPackage.json or one .inxpkg")
         with tempfile.TemporaryDirectory(prefix="infernux-plugin-source-") as workspace:
             package = os.path.join(workspace, "Source.inxpkg")
+            _report_progress(progress, "build_source_package", 0.28)
             InxPackage.export_source(path, package)
             return self.install_package(
                 package,
                 install_dependencies=install_dependencies,
                 source=source,
+                progress=progress,
             )
 
     def _install_requirements(
-        self, preview: InxPackagePreview
+        self,
+        preview: InxPackagePreview,
+        *,
+        progress: _InstallProgress | None = None,
     ) -> tuple[tuple[str, ...], _PipInstallEffect | None]:
         requirement_name = portable_path(
             str(preview.metadata.get("requirements", "requirements.txt"))
@@ -1003,19 +1093,45 @@ class PluginManager:
                 with tempfile.TemporaryDirectory(prefix="infernux-nested-package-") as workspace:
                     path = os.path.join(workspace, "nested.inxpkg")
                     Path(path).write_bytes(nested)
-                    state = self.install_package(path)
+                    state = self.install_package(path, progress=progress)
                     dependencies.append(state.reference)
                 continue
             reference = self._registry_reference_for_requirement(stripped)
             if reference is not None:
-                self.install_reference(reference)
+                self.install_reference(reference, progress=progress)
                 dependencies.append(reference)
             else:
                 pip_lines.append(line)
         effect = None
         if any(line.strip() and not line.lstrip().startswith("#") for line in pip_lines):
+            _report_progress(progress, "install_python_dependencies", 0.58)
             effect = self._install_pip_lines(pip_lines)
         return tuple(dict.fromkeys(dependencies)), effect
+
+    def _install_manifest_dependencies(
+        self,
+        preview: InxPackagePreview,
+        *,
+        progress: _InstallProgress | None = None,
+    ) -> tuple[str, ...]:
+        """Resolve the package dependency manifest through the plugin registry."""
+
+        resolved: list[str] = []
+        for value in preview.metadata.get("dependencies", []):
+            reference = validate_reference(str(value))
+            installed = self.registry.installed_record(reference)
+            if installed is None:
+                state = self.install_reference(reference, progress=progress)
+                resolved.append(state.reference)
+                continue
+            installed_reference = str(installed.get("reference", reference))
+            if not bool(installed.get("enabled", True)):
+                self.set_enabled(installed_reference, True)
+            resolved.append(installed_reference)
+        unique: dict[str, str] = {}
+        for value in resolved:
+            unique.setdefault(value.casefold(), value)
+        return tuple(unique.values())
 
     def _nested_requirement(
         self, preview: InxPackagePreview, requirement_name: str, requirement: str
@@ -1430,7 +1546,12 @@ def _python_environment_changes(
     )
 
 
-def _download_url_package(location: str, destination: str) -> None:
+def _download_url_package(
+    location: str,
+    destination: str,
+    *,
+    progress: _InstallProgress | None = None,
+) -> None:
     request = urllib.request.Request(
         str(location),
         headers={"User-Agent": f"Infernux/{ENGINE_VERSION}"},
@@ -1438,12 +1559,21 @@ def _download_url_package(location: str, destination: str) -> None:
     partial = f"{destination}.{uuid.uuid4().hex}.part"
     try:
         with urllib.request.urlopen(request) as response:
+            total = int(response.headers.get("Content-Length", "0") or 0)
+            received = 0
             with open(partial, "wb") as stream:
                 while True:
                     chunk = response.read(_URL_PACKAGE_CHUNK_BYTES)
                     if not chunk:
                         break
                     stream.write(chunk)
+                    received += len(chunk)
+                    fraction = min(1.0, received / total) if total else 0.0
+                    _report_progress(
+                        progress,
+                        "download_package",
+                        0.08 + 0.22 * fraction,
+                    )
         os.replace(partial, destination)
     finally:
         try:

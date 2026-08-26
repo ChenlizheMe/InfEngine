@@ -1229,6 +1229,127 @@ def test_package_dependency_preload_and_reverse_unload_order(tmp_path):
     ]
 
 
+def test_manifest_dependencies_are_installed_and_recorded(tmp_path):
+    dependency = _source(tmp_path / "dependency", "vendor/manifest-child")
+    (dependency / "Child.bin").write_bytes(b"child")
+    dependency_package = _export(dependency, tmp_path / "manifest-child.inxpkg")
+    parent = _source(tmp_path / "parent", "vendor/manifest-parent")
+    manifest_path = parent / "InxPackage.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dependencies"] = ["vendor/manifest-child"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (parent / "Parent.bin").write_bytes(b"parent")
+    parent_package = _export(parent, tmp_path / "manifest-parent.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.registry.add_package(
+        "vendor/manifest-child",
+        source={"type": "local", "location": str(dependency_package)},
+    )
+
+    manager.install_package(str(parent_package))
+
+    assert {item["reference"] for item in manager.registry.installed()} == {
+        "vendor/manifest-child",
+        "vendor/manifest-parent",
+    }
+    installed = manager.registry.installed_record("vendor/manifest-parent")
+    assert installed["dependencies"] == ["vendor/manifest-child"]
+    with pytest.raises(RuntimeError, match="required by"):
+        manager.uninstall("vendor/manifest-child")
+
+
+def test_manifest_dependency_failure_rolls_back_new_dependencies(tmp_path, monkeypatch):
+    dependency = _source(tmp_path / "dependency", "vendor/rollback-child")
+    (dependency / "Child.bin").write_bytes(b"child")
+    dependency_package = _export(dependency, tmp_path / "rollback-child.inxpkg")
+    parent = _source(tmp_path / "parent", "vendor/rollback-parent")
+    manifest_path = parent / "InxPackage.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dependencies"] = ["vendor/rollback-child"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (parent / "Parent.bin").write_bytes(b"parent")
+    parent_package = _export(parent, tmp_path / "rollback-parent.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.registry.add_package(
+        "vendor/rollback-child",
+        source={"type": "local", "location": str(dependency_package)},
+    )
+    original_plan = manager._plan_install
+
+    def fail_parent(preview, selected):
+        if preview.metadata["reference"] == "vendor/rollback-parent":
+            raise RuntimeError("simulated parent planning failure")
+        return original_plan(preview, selected)
+
+    monkeypatch.setattr(manager, "_plan_install", fail_parent)
+
+    with pytest.raises(RuntimeError, match="planning failure"):
+        manager.install_package(str(parent_package))
+
+    assert manager.registry.installed() == ()
+    assert not (project / "Assets/Plugins/vendor/rollback-child/Child.bin").exists()
+
+
+def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
+    from Infernux.engine.interaction import PanelInteractionRegistry
+    from Infernux.engine.ui.panel_registry import PanelRegistry
+
+    class WindowManagerStub:
+        def __init__(self):
+            self.registered = []
+            self.removed = []
+
+        def register_window_type(self, **kwargs):
+            self.registered.append(kwargs["type_id"])
+
+        def unregister_window_type(self, type_id):
+            self.removed.append(type_id)
+            return True
+
+    source = _source(tmp_path / "source", "vendor/live-panel")
+    runtime = source / "Runtime"
+    runtime.mkdir()
+    (runtime / "startup.py").write_text(
+        "from Infernux.engine.interaction import PanelInteractionDescriptor\n"
+        "from Infernux.engine.ui.panel_registry import editor_panel\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "@editor_panel('Live Tool', type_id='vendor.live_tool', "
+        "interaction=PanelInteractionDescriptor())\n"
+        "class LiveTool: pass\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context): pass\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "live-panel.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    windows = WindowManagerStub()
+    interactions = PanelInteractionRegistry()
+    PanelRegistry.bind_live(windows, interactions)
+    try:
+        manager.install_package(str(package), install_dependencies=False)
+        assert windows.registered == ["vendor.live_tool"]
+        assert interactions.descriptor("vendor.live_tool") is not None
+
+        manager.uninstall("vendor/live-panel")
+        assert windows.removed == ["vendor.live_tool"]
+        assert interactions.descriptor("vendor.live_tool") is None
+    finally:
+        owner = next(
+            (
+                item.owner
+                for item in PanelRegistry.get_registrations()
+                if item.type_id == "vendor.live_tool"
+            ),
+            "",
+        )
+        if owner:
+            PanelRegistry.remove_owner(owner)
+        PanelRegistry.unbind_live()
+
+
 def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatch):
     dependency = _source(tmp_path / "dependency", "vendor/dependency", version="2.1.0")
     (dependency / "Runtime").mkdir()

@@ -494,6 +494,7 @@ class Engine():
         }
         _asset_import_progress = None
         _build_preflight_progress = None
+        _plugin_install_progress = None
         _plugin_reload_progress = None
         if not _PLAYER_MODE:
             from Infernux.engine.ui.asset_import_progress import (
@@ -505,11 +506,23 @@ class Engine():
             from Infernux.engine.ui.plugin_reload_progress import (
                 PluginReloadProgressService,
             )
+            from Infernux.engine.ui.plugin_install_progress import (
+                PluginInstallProgressService,
+            )
             _asset_import_progress = AssetImportProgressService.instance()
             _build_preflight_progress = BuildPreflightProgressService.instance()
+            _plugin_install_progress = PluginInstallProgressService.instance()
             _plugin_reload_progress = PluginReloadProgressService.instance()
 
         def _post_draw_tick():
+            if _plugin_install_progress is not None:
+                try:
+                    _plugin_install_progress.post_present_tick()
+                except Exception as exc:
+                    Debug.log_suppressed(
+                        "Engine.post_draw_tick.plugin_install_progress",
+                        exc,
+                    )
             if _plugin_reload_progress is not None:
                 try:
                     _plugin_reload_progress.post_present_tick()

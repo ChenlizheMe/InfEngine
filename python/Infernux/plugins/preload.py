@@ -66,6 +66,7 @@ class PreloadState:
     module_names: tuple[str, ...] = ()
     restart_required: bool = False
     restart_reason: str = ""
+    contribution_owner: str = ""
     instance: InxPreload | None = field(default=None, repr=False)
 
     def snapshot(self) -> dict[str, object]:
@@ -84,6 +85,7 @@ class PreloadState:
             "module_names": list(self.module_names),
             "restart_required": self.restart_required,
             "restart_reason": self.restart_reason,
+            "contribution_owner": self.contribution_owner,
         }
 
 
@@ -584,11 +586,21 @@ class PreloadManager:
         script_guid = _ensure_script_guid(path, self.project_root)
         package_reference = self._package_for_path(path)
         module_name = f"_infernux_preload_{script_guid}"
+        contribution_owner = f"preload:{script_guid}"
         modules_before = set(sys.modules)
         started = time.perf_counter()
         try:
-            module = _load_module(module_name, path, self.project_root, package_reference)
+            from Infernux.engine.ui.panel_registry import PanelRegistry
+
+            with PanelRegistry.contribution_scope(contribution_owner):
+                module = _load_module(
+                    module_name, path, self.project_root, package_reference
+                )
         except Exception as exc:
+            try:
+                PanelRegistry.remove_owner(contribution_owner)
+            except Exception:
+                pass
             self.failures[path_key(path)] = f"{type(exc).__name__}: {exc}"
             Debug.log_error(f"InxPreload import failed [{path}]: {exc}")
             return []
@@ -621,6 +633,7 @@ class PreloadManager:
                 package_reference,
                 import_ms=import_ms,
                 module_name=module_name,
+                contribution_owner=contribution_owner,
             )
             try:
                 instance = preload_type()
@@ -637,10 +650,11 @@ class PreloadManager:
                     ),
                 )
                 started = time.perf_counter()
-                with _temporary_import_paths(
-                    path, self.project_root, package_reference
-                ):
-                    instance.preload(context)
+                with PanelRegistry.contribution_scope(contribution_owner):
+                    with _temporary_import_paths(
+                        path, self.project_root, package_reference
+                    ):
+                        instance.preload(context)
                 state.preload_ms = (time.perf_counter() - started) * 1000.0
                 state.instance = instance
                 state.loaded = True
@@ -685,6 +699,13 @@ class PreloadManager:
                 state.unload_ms = (time.perf_counter() - started) * 1000.0
                 return False
             state.unload_ms = (time.perf_counter() - started) * 1000.0
+        if state.contribution_owner:
+            from Infernux.engine.ui.panel_registry import PanelRegistry
+
+            if not PanelRegistry.remove_owner(state.contribution_owner):
+                state.error = "unload failed: contributed editor panel refused to close"
+                _mark_restart_required(state, state.error)
+                return False
         state.instance = None
         state.loaded = False
         if state.module_name:

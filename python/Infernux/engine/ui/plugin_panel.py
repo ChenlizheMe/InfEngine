@@ -146,7 +146,8 @@ class PluginPanel(EditorPanel):
             2048,
         )
         if ctx.button(t("plugins.install_source") + "##plugin_install_source", width=150.0):
-            self._run(lambda: manager.install_source(self._source), "source")
+            self._request_install(manager, "source", self._source)
+            ctx.close_current_popup()
         ctx.separator()
         ctx.label(t("plugins.python_dependencies"))
         ctx.text_wrapped(t("plugins.pip_not_plugin"))
@@ -158,7 +159,8 @@ class PluginPanel(EditorPanel):
             4096,
         )
         if ctx.button(t("plugins.run_pip") + "##plugin_run_pip", width=150.0):
-            self._run(lambda: manager.install_pip(self._pip), "pip")
+            self._request_install(manager, "pip", self._pip)
+            ctx.close_current_popup()
         if self._message:
             ctx.separator()
             ctx.text_wrapped(self._message)
@@ -531,7 +533,14 @@ class PluginPanel(EditorPanel):
                 if blocked:
                     ctx.begin_disabled(True)
                 if self._primary_button(ctx, t("plugins.install") + f"##plugin_install_{key}"):
-                    self._run(lambda ref=reference: manager.install_reference(ref), "install")
+                    self._begin_install(
+                        label=reference,
+                        work=lambda report, ref=reference: manager.install_reference(
+                            ref,
+                            progress=report,
+                        ),
+                        action="install",
+                    )
                 if blocked:
                     ctx.end_disabled()
         ctx.end_child()
@@ -650,6 +659,53 @@ class PluginPanel(EditorPanel):
             complete=complete,
         ):
             self._message = t("plugins.reload_busy")
+
+    def _request_install(self, manager: PluginManager, kind: str, value: str) -> None:
+        syntax = str(value or "").strip()
+        if not syntax:
+            self._message = t("plugins.install_confirm.empty")
+            return
+        from .plugin_install_confirmation import (
+            PluginInstallConfirmationCoordinator,
+        )
+
+        requested = PluginInstallConfirmationCoordinator.instance().request(
+            kind,
+            syntax,
+            lambda: self._begin_install(
+                label=syntax,
+                work=(
+                    (lambda report: manager.install_source(syntax, progress=report))
+                    if kind == "source"
+                    else (lambda report: manager.install_pip(syntax, progress=report))
+                ),
+                action=kind,
+            ),
+        )
+        if not requested:
+            self._message = t("plugins.install_progress.busy")
+
+    def _begin_install(self, *, label: str, work, action: str) -> None:
+        from .plugin_install_progress import PluginInstallProgressService
+
+        def complete(ok: bool, result: object | None, message: str) -> None:
+            if not ok:
+                self._message = message or t("plugins.install_progress.failed")
+                return
+            reference = str(getattr(result, "reference", ""))
+            if reference:
+                self._selected_reference = reference
+            self._message = t("plugins.action_ok").format(
+                action=action,
+                reference=reference,
+            )
+
+        if not PluginInstallProgressService.instance().begin(
+            label=label,
+            work=work,
+            complete=complete,
+        ):
+            self._message = t("plugins.install_progress.busy")
 
     def _run(self, callback, action: str) -> None:
         try:
