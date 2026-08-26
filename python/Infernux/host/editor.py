@@ -534,6 +534,168 @@ class EditorAutomationHost:
             selection_reason="host_create_game_object",
         )
 
+    def scene_object(self, object_id: int):
+        """Resolve one live scene object without exposing SceneManager lookup rules."""
+        normalized = int(object_id)
+        value = self.active_scene().find_by_id(normalized)
+        if value is None:
+            raise OperationError(
+                "scene.object_not_found", f"GameObject was not found: {normalized}"
+            )
+        return value
+
+    def scene_components(self, object_id: int) -> list[Any]:
+        """Return each logical component once, preferring Python API wrappers."""
+        from Infernux.components.builtin_component import BuiltinComponent
+
+        owner = self.scene_object(object_id)
+        result: list[Any] = []
+        seen: set[int] = set()
+        for value in list(owner.get_py_components()) + list(owner.get_components()):
+            component_id = int(getattr(value, "component_id", 0) or 0)
+            if component_id > 0 and component_id in seen:
+                continue
+            if not bool(getattr(value, "_is_builtin_component_wrapper", False)):
+                wrapper_type = BuiltinComponent._builtin_registry.get(
+                    str(getattr(value, "type_name", "") or "")
+                )
+                if wrapper_type is not None:
+                    value = wrapper_type._get_or_create_wrapper(value, owner)
+            if component_id > 0:
+                seen.add(component_id)
+            result.append(value)
+        return result
+
+    def scene_component(self, object_id: int, component_id: int):
+        target_id = int(component_id)
+        for value in self.scene_components(object_id):
+            if int(getattr(value, "component_id", 0) or 0) == target_id:
+                return value
+        raise OperationError(
+            "scene.component_not_found",
+            f"Component {target_id} was not found on GameObject {int(object_id)}.",
+        )
+
+    def scene_component_schema(
+        self, object_id: int, component_id: int
+    ) -> dict[str, object]:
+        """Describe writable component fields using authoritative serializer metadata."""
+        from Infernux.components.fields import get_serialized_fields
+
+        value = self.scene_component(object_id, component_id)
+        fields: list[dict[str, object]] = []
+        for name, metadata in get_serialized_fields(type(value)).items():
+            enum_type = getattr(metadata, "enum_type", None)
+            if isinstance(enum_type, str):
+                try:
+                    import Infernux.lib as native
+
+                    enum_type = getattr(native, enum_type, None)
+                except (ImportError, AttributeError):
+                    enum_type = None
+            members = getattr(enum_type, "__members__", {}) or {}
+            field_type = getattr(getattr(metadata, "field_type", None), "name", "unknown")
+            entry: dict[str, object] = {
+                "name": str(name),
+                "type": str(field_type).lower(),
+                "readonly": bool(getattr(metadata, "readonly", False)),
+                "hidden": bool(getattr(metadata, "hidden", False)),
+            }
+            value_range = getattr(metadata, "range", None)
+            if value_range is not None:
+                entry["range"] = [float(item) for item in value_range]
+            if members:
+                entry["enum"] = [
+                    {
+                        "name": str(member_name),
+                        "value": int(getattr(member, "value", member)),
+                    }
+                    for member_name, member in members.items()
+                ]
+            fields.append(entry)
+        if not fields:
+            serializer = getattr(value, "serialize_document", None)
+            document = serializer() if callable(serializer) else {}
+            if isinstance(document, dict):
+                fields = [
+                    {
+                        "name": str(name),
+                        "type": self._json_type(field_value),
+                        "readonly": False,
+                        "hidden": False,
+                    }
+                    for name, field_value in document.items()
+                ]
+        return {
+            "object_id": int(object_id),
+            "component_id": int(component_id),
+            "component_type": str(
+                getattr(value, "type_name", "") or type(value).__name__
+            ),
+            "python_type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "fields": fields,
+        }
+
+    def delete_scene_objects(self, object_ids: Iterable[int]) -> list[int]:
+        values = [int(value) for value in object_ids]
+        if not self.interaction_core().scene_objects.delete_ids(values):
+            raise OperationError("scene.edit_rejected", "No GameObjects were deleted.")
+        return values
+
+    def set_scene_object_property(
+        self, object_id: int, property_name: str, value: object
+    ) -> None:
+        if not self.interaction_core().scene_objects.set_object_property(
+            int(object_id), str(property_name), value
+        ):
+            raise OperationError(
+                "scene.edit_rejected", "GameObject property edit was rejected or unchanged."
+            )
+
+    def set_scene_transforms(self, object_id: int, transform: dict[str, object]) -> None:
+        if not self.interaction_core().scene_objects.set_transforms(
+            [int(object_id)], [dict(transform)]
+        ):
+            raise OperationError(
+                "scene.edit_rejected", "Transform edit was rejected or unchanged."
+            )
+
+    def set_scene_parent(self, object_ids: Iterable[int], parent_id: int = 0) -> None:
+        values = [int(value) for value in object_ids]
+        target = int(parent_id)
+        mode = "parent" if target else "root"
+        if not self.interaction_core().scene_objects.move_hierarchy(values, mode, target):
+            raise OperationError(
+                "scene.edit_rejected", "Hierarchy edit was rejected or unchanged."
+            )
+
+    def add_scene_component(
+        self, object_id: int, component_type: str, *, script_guid: str = ""
+    ):
+        return self.interaction_core().components.add(
+            self.scene_object(object_id),
+            str(component_type),
+            script_guid=str(script_guid or ""),
+        )
+
+    def remove_scene_component(self, object_id: int, component_id: int) -> None:
+        owner = self.scene_object(object_id)
+        value = self.scene_component(object_id, component_id)
+        if not self.interaction_core().components.remove(owner, value):
+            raise OperationError(
+                "scene.edit_rejected", "Component removal was rejected or unchanged."
+            )
+
+    def set_scene_component_field(
+        self, object_id: int, component_id: int, field: str, value: object
+    ):
+        target = self.scene_component(object_id, component_id)
+        if not self.interaction_core().components.set_field(target, str(field), value):
+            raise OperationError(
+                "scene.edit_rejected", "Component field edit was rejected or unchanged."
+            )
+        return target
+
     def open_scene(self, path: str) -> bool:
         from Infernux.engine.scene_manager import SceneFileManager
 
@@ -549,6 +711,165 @@ class EditorAutomationHost:
                 "scene.save_rejected", "The active scene could not be saved synchronously."
             )
         return str(manager.current_scene_path or "")
+
+    def reload_scene(self, *, discard_changes: bool = False) -> dict[str, object]:
+        """Reload the active scene through the normal deferred scene swap."""
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        manager = SceneFileManager.instance()
+        path = str(manager.current_scene_path or "") if manager is not None else ""
+        if manager is None or not manager.reload_current_scene(
+            discard_changes=bool(discard_changes)
+        ):
+            raise OperationError(
+                "scene.reload_rejected",
+                "The active scene could not be reloaded. Stop Play Mode and pass "
+                "discard_changes=true when the document is dirty or conflicted.",
+            )
+        return {
+            "scheduled": True,
+            "path": path,
+            "discarded_changes": bool(discard_changes),
+        }
+
+    @staticmethod
+    def _json_type(value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "number"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, (list, tuple)):
+            return "array"
+        if isinstance(value, dict):
+            return "object"
+        return type(value).__name__
+
+    def build_player(
+        self,
+        project_root: str,
+        *,
+        output_dir: str = "",
+        game_name: str = "",
+        debug_mode: bool | None = None,
+        lto: bool | None = None,
+        enable_jit: bool | None = None,
+        persist_settings: bool = True,
+    ) -> dict[str, object]:
+        """Build one Player from project Build Settings outside editor state."""
+        import json
+        import os
+        import tempfile
+        import time
+
+        from Infernux.engine.game_builder import GameBuilder
+        from Infernux.engine.path_utils import resolved_path
+
+        root = resolved_path(project_root)
+        settings_path = os.path.join(root, "ProjectSettings", "BuildSettings.json")
+        try:
+            with open(settings_path, "r", encoding="utf-8") as stream:
+                settings = json.load(stream)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise OperationError(
+                "player.build_settings",
+                f"Build Settings could not be read: {settings_path}",
+            ) from exc
+        if not isinstance(settings, dict):
+            raise OperationError("player.build_settings", "Build Settings must be an object.")
+
+        raw_output = str(output_dir or settings.get("output_dir", "") or "").strip()
+        final_output = resolved_path(raw_output) if raw_output else ""
+        final_name = str(game_name or settings.get("game_name", "") or "").strip()
+        if not final_output or not final_name:
+            raise OperationError(
+                "player.build_settings",
+                "Player build requires output_dir and game_name.",
+            )
+        final_debug = bool(settings.get("debug_mode", False)) if debug_mode is None else bool(debug_mode)
+        final_lto = bool(settings.get("lto", True)) if lto is None else bool(lto)
+        final_jit = bool(settings.get("enable_jit", False)) if enable_jit is None else bool(enable_jit)
+        progress: list[dict[str, object]] = []
+
+        def record(message: str, fraction: float) -> None:
+            entry = {"message": str(message), "progress": float(fraction)}
+            if progress and progress[-1] == entry:
+                return
+            if progress and progress[-1]["message"] == entry["message"]:
+                progress[-1] = entry
+            else:
+                progress.append(entry)
+            if len(progress) > 64:
+                del progress[:-64]
+
+        started = time.perf_counter()
+        builder = GameBuilder(
+            root,
+            final_output,
+            game_name=final_name,
+            icon_path=str(settings.get("icon_path", "") or "") or None,
+            display_mode=str(settings.get("display_mode", "windowed") or "windowed"),
+            window_width=int(settings.get("window_width", 1280)),
+            window_height=int(settings.get("window_height", 720)),
+            window_resizable=bool(settings.get("window_resizable", True)),
+            splash_items=list(settings.get("splash_items", []) or []),
+            debug_mode=final_debug,
+            lto=final_lto,
+            enable_jit=final_jit,
+        )
+        result = resolved_path(builder.build(record))
+
+        if persist_settings:
+            settings.update(
+                {
+                    "output_dir": result,
+                    "game_name": final_name,
+                    "debug_mode": final_debug,
+                    "lto": final_lto,
+                    "enable_jit": final_jit,
+                }
+            )
+            os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix=".build-settings-",
+                suffix=".tmp",
+                dir=os.path.dirname(settings_path),
+                text=True,
+            )
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+                    json.dump(settings, stream, indent=2, ensure_ascii=False)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary_path, settings_path)
+            except Exception:
+                try:
+                    os.remove(temporary_path)
+                except OSError:
+                    pass
+                raise
+
+        executable = os.path.join(
+            result,
+            final_name + (".exe" if os.name == "nt" else ""),
+        )
+        return {
+            "output_dir": result,
+            "game_name": final_name,
+            "executable_path": executable,
+            "executable_exists": os.path.isfile(executable),
+            "debug_mode": final_debug,
+            "lto": final_lto,
+            "enable_jit": final_jit,
+            "elapsed_seconds": time.perf_counter() - started,
+            "progress": progress,
+        }
 
     @staticmethod
     def _canonical_level(value: object) -> str:

@@ -69,6 +69,7 @@ class ComponentCommandService:
         game_object: Any,
         component_type: str,
         *,
+        script_guid: str = "",
         python_instance: Any = None,
         native_document: Optional[dict] = None,
         initializer: Optional[Callable[[Any], None]] = None,
@@ -91,6 +92,7 @@ class ComponentCommandService:
             game_object,
             type_name,
             python_instance,
+            script_guid=script_guid,
         )
         command = AddComponentTransactionCommand(
             object_id,
@@ -115,12 +117,15 @@ class ComponentCommandService:
         game_object: Any,
         type_name: str,
         python_instance: Any,
+        *,
+        script_guid: str = "",
     ) -> Any:
         """Resolve and validate one add request for every editor caller."""
         if python_instance is None:
             from Infernux.components.registry import (
                 ensure_engine_component_catalog_loaded,
                 get_type,
+                get_type_registration,
             )
 
             ensure_engine_component_catalog_loaded()
@@ -128,7 +133,65 @@ class ComponentCommandService:
             if component_class is not None and not bool(
                 getattr(component_class, "_cpp_type_name", "")
             ):
-                python_instance = component_class()
+                registration = get_type_registration(type_name)
+                requested_guid = str(script_guid or "").strip()
+                script_path = str(
+                    getattr(registration, "script_path", "") or ""
+                ).strip()
+                if requested_guid or (
+                    registration is not None
+                    and registration.project_script
+                    and script_path
+                ):
+                    from Infernux.engine.interaction import EditorInteractionCore
+
+                    core = EditorInteractionCore.instance()
+                    database = (
+                        core.project_assets.asset_database
+                        if core is not None
+                        else None
+                    )
+                    if database is None:
+                        raise RuntimeError(
+                            "project Python component attachment requires AssetDatabase"
+                        )
+                    if requested_guid:
+                        resolved = str(database.get_path_from_guid(requested_guid) or "")
+                        if not resolved:
+                            raise ValueError(
+                                f"component script GUID was not found: {requested_guid}"
+                            )
+                        from Infernux.engine.path_utils import same_path
+
+                        if script_path and not same_path(resolved, script_path):
+                            raise ValueError(
+                                f"component type '{type_name}' is not owned by script GUID {requested_guid}"
+                            )
+                        script_path = resolved
+                    else:
+                        requested_guid = str(
+                            database.get_guid_from_path(script_path) or ""
+                        ).strip()
+                    if not requested_guid:
+                        raise RuntimeError(
+                            f"project component script has no AssetDatabase GUID: {script_path}"
+                        )
+                    from Infernux.components.script_loader import (
+                        load_and_create_component,
+                    )
+
+                    python_instance = load_and_create_component(
+                        script_path,
+                        asset_database=database,
+                        type_name=type_name,
+                        script_guid=requested_guid,
+                    )
+                    if python_instance is None:
+                        raise ValueError(
+                            f"component type '{type_name}' was not found in {script_path}"
+                        )
+                else:
+                    python_instance = component_class()
 
         if python_instance is not None:
             from Infernux.components.registry import get_python_attachment_blockers

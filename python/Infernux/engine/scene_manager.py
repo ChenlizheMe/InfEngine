@@ -574,6 +574,37 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
         return self._continue_open_scene(path)
 
+    def reload_current_scene(self, *, discard_changes: bool = False) -> bool:
+        """Schedule a reload of the active scene from its durable file.
+
+        Automation cannot answer a desktop confirmation popup reliably.  This
+        explicit API therefore requires ``discard_changes=True`` whenever the
+        in-memory document is dirty or externally conflicted.  The actual
+        scene replacement remains deferred through the normal GPU-safe path.
+        """
+        if (
+            self.is_loading
+            or self.is_prefab_mode
+            or self._is_play_mode()
+            or not self._current_scene_path
+        ):
+            return False
+        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        document = DocumentRegistry.instance().get(self._scene_document_id)
+        conflicted = bool(
+            document is not None and document.state is DocumentState.CONFLICT
+        )
+        if (self._dirty or conflicted) and not bool(discard_changes):
+            return False
+        path = resolved_path(self._current_scene_path)
+        if not os.path.isfile(path):
+            return False
+        self._stage_scene_navigation()
+        self._save_camera_state(path)
+        self._begin_deferred_open(path)
+        return True
+
     def _continue_open_scene(self, path: str) -> bool:
         """Resolve the active Scene document before scheduling a replacement."""
         if self.is_prefab_mode:
