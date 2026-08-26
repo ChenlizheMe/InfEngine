@@ -6,13 +6,13 @@
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
       "version": "0.1.0",
-      "intro": "Default schema-driven MCP Host integration for Infernux Editor.",
+      "intro": "Schema-driven local control plane connecting AI agents to the Infernux Editor.",
       "intros": {
-        "zh-CN": "Infernux MCP 用于把兼容 MCP 的 AI Agent 连接到 Infernux 编辑器。Agent\n可以读取项目状态、编辑场景和资产、控制 Play Mode、通过合成输入操作编辑器、\n读取语义 UI、捕获引擎渲染目标，并验证独立运行的 Player。"
+        "zh-CN": "Infernux MCP 是连接兼容 MCP 的 AI Agent 与 Infernux 编辑器的本地控制面。\nAgent 可以通过一套有类型、可发现的接口理解项目、创作内容、运行游戏，并从\n编辑器或独立 Debug Player 中取得可验证的结果。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "artifact_sha256": "6a085c22fac7446a14c73cc70a28a20bef444ba72e1f07eba3dbb2ca1377e788",
-      "artifact_size": 107264,
+      "artifact_sha256": "9d40436e2f0994222c8e266c01c7a199ed5c557c50c4a94b9d226cd325b48b4c",
+      "artifact_size": 561664,
       "engine": ">=0.3.7,<0.4",
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
@@ -32,14 +32,27 @@
         },
         {
           "id": "operations",
-          "title": "Operation catalog",
+          "title": "Operations and agent workflow",
           "path": "InxPluginPages/Operations.md",
           "format": "markdown"
         },
         {
           "id": "operations",
-          "title": "Operation 目录",
+          "title": "Operation 与 Agent 工作流",
           "path": "InxPluginPages/Operations.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        },
+        {
+          "id": "trust",
+          "title": "Trust gates",
+          "path": "InxPluginPages/Trust.md",
+          "format": "markdown"
+        },
+        {
+          "id": "trust",
+          "title": "信任门禁",
+          "path": "InxPluginPages/Trust.zh-CN.md",
           "format": "markdown",
           "locale": "zh-CN"
         },
