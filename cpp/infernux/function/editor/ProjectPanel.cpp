@@ -1937,6 +1937,8 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
             openKind = "timeline";
         } else if (item.ext == ".timelinefsm") {
             openKind = "timeline_fsm";
+        } else if (item.ext == ".inxpkg") {
+            openKind = "inxpackage";
         }
         ExecuteEditorCommand("asset.open", MakeAssetOpenCommandArgument(openKind, item.path), "pointer");
     }

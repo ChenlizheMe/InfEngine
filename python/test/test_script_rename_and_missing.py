@@ -189,13 +189,6 @@ def test_missing_script_placeholder_preserves_identity_and_fields():
     assert encoded["speed"] == 3.5
     assert encoded["__type_name__"] == "Gone"
 
-    from Infernux.mcp.tools.common import serialize_component
-
-    snapshot = serialize_component(missing)
-    assert snapshot["broken_script"] is True
-    assert snapshot["broken_error"] == "file missing"
-
-
 def test_vec3_writeback_proxy_is_subscriptable():
     class _Vec:
         def __init__(self, x=0.0, y=0.0, z=0.0):

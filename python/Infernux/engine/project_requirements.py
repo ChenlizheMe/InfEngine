@@ -38,7 +38,9 @@ def _bundled_requirements_path() -> str:
     # the full Infernux import chain (which needs the native C++ module).
     _engine_dir = os.path.dirname(resolved_path(__file__))
     _infernux_dir = os.path.dirname(_engine_dir)
-    return os.path.join(_infernux_dir, "resources", "supports", "requirements.txt")
+    return os.path.join(
+        _infernux_dir, "resources", "project_templates", "requirements.txt"
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

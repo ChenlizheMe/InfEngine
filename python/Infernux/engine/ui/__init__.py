@@ -29,6 +29,8 @@ _EXPORTS = {
     "BuildSettingsPanel": (".build_settings_panel", "BuildSettingsPanel"),
     "PreferencesPanel": (".preferences_panel", "PreferencesPanel"),
     "HistoryPanel": (".history_panel", "HistoryPanel"),
+    "PluginPanel": (".plugin_panel", "PluginPanel"),
+    "InxPackageImportPanel": (".plugin_panel", "InxPackageImportPanel"),
     "EnvironmentSettingsPanel": (".environment_settings_panel", "EnvironmentSettingsPanel"),
     "ViewportInfo": (".viewport_utils", "ViewportInfo"),
     "capture_viewport_info": (".viewport_utils", "capture_viewport_info"),

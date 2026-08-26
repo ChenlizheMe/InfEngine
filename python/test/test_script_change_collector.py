@@ -61,7 +61,7 @@ def test_effective_catalog_event_preserves_explicit_created_over_watchdog_modifi
     first = collector.submit(
         str(path),
         b"value = 1\n",
-        origin="mcp",
+        origin="automation",
         transaction_id="mcp-tx",
         catalog_event="created",
         change_kind="created",
@@ -88,7 +88,7 @@ def test_watcher_echo_with_same_source_is_merged_without_force(tmp_path):
     first = collector.submit(
         str(path),
         b"value = 1\n",
-        origin="mcp",
+        origin="automation",
         transaction_id="mcp-tx",
         catalog_event="created",
         change_kind="created",

@@ -5,10 +5,10 @@ import zipfile
 
 import pytest
 
-from Infernux.mcp import checkpoints as checkpoint_store
-from Infernux.mcp import session
-from Infernux.mcp.project_tools import trace
-from Infernux.mcp.tools import _trace_public_tool_call
+from infernux_mcp import checkpoints as checkpoint_store
+from infernux_mcp import session
+from infernux_mcp import session_identity
+from infernux_mcp import trace
 
 
 def _config(mode: str = "developer_assist", **session_overrides):
@@ -54,11 +54,12 @@ def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_p
 
     session.start_attempt("lease trace redaction", "before-normal-shutdown")
 
-    wrapped = _trace_public_tool_call(
-        "mcp_supervisor_shutdown",
-        lambda lease_token: {"ok": True, "data": {"closed": True}},
+    trace.record_operation(
+        "infernux.mcp.supervisor.shutdown",
+        ok=True,
+        arguments={"lease_token": lease},
+        result={"close_requested": True},
     )
-    wrapped(lease)
     stopped = session.stop_attempt()
 
     with open(tmp_path / stopped["trace_path"], "r", encoding="utf-8") as f:
@@ -217,7 +218,7 @@ def test_managed_attempt_still_requires_a_supervisor_checkpoint(tmp_path):
         _config("global_validation", managed_checkpoints_required=True),
     )
 
-    with pytest.raises(session.McpPolicyError, match="mcp_checkpoint_list"):
+    with pytest.raises(session.McpPolicyError, match="infernux.mcp.checkpoint.list"):
         session.start_attempt("validate particles", "")
 
 
@@ -243,16 +244,16 @@ def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
     }
 
 
-def test_global_validation_trace_persists_compact_tool_results(tmp_path, monkeypatch):
+def test_global_validation_trace_persists_compact_operation_results(tmp_path, monkeypatch):
     session.configure(str(tmp_path), _config("global_validation"))
     monkeypatch.setattr(
-        "Infernux.mcp.capabilities.limit",
+        "infernux_mcp.capabilities.limit",
         lambda name, default=None: 12 if name == "trace_result_max_string" else default,
     )
 
     session.start_attempt("runtime assertion evidence", "before-runtime-assertion")
-    trace.record_tool_call(
-        "runtime_assert",
+    trace.record_operation(
+        "infernux.runtime.assert",
         ok=True,
         arguments={"assertions": [{"kind": "scene_name", "equals": "Results"}]},
         result={"ok": True, "data": {"passed": True, "detail": "0123456789abcdef"}},
@@ -307,7 +308,7 @@ def test_cmake_identity_uses_build_preset_configuration(tmp_path):
     cache_dir.mkdir(parents=True)
     (cache_dir / "CMakeCache.txt").write_text("CMAKE_BUILD_TYPE:UNINITIALIZED=Release\n", encoding="utf-8")
 
-    identity = session._cmake_identity(str(tmp_path), {}, "debug_feedback")
+    identity = session_identity._cmake_identity(str(tmp_path), {}, "debug_feedback")
 
     assert identity["build_preset"] == "debug"
     assert identity["build_configuration"] == "RelWithDebInfo"
@@ -316,9 +317,13 @@ def test_cmake_identity_uses_build_preset_configuration(tmp_path):
 
 
 def test_package_version_falls_back_to_installed_distribution(monkeypatch):
-    monkeypatch.setattr(session.importlib_metadata, "version", lambda _name: "0.2.1-installed")
+    monkeypatch.setattr(
+        session_identity.importlib_metadata,
+        "version",
+        lambda _name: "0.2.1-installed",
+    )
 
-    assert session._read_package_version("") == "0.2.1-installed"
+    assert session_identity._read_package_version("") == "0.2.1-installed"
 
 
 def test_python_package_identity_hashes_actual_runtime_sources(tmp_path):
@@ -333,11 +338,11 @@ def test_python_package_identity_hashes_actual_runtime_sources(tmp_path):
     bytecode = cache / "runtime.pyc"
     bytecode.write_bytes(b"first")
 
-    first = session._python_package_identity(str(tmp_path), package_root)
+    first = session_identity._python_package_identity(str(tmp_path), package_root)
     bytecode.write_bytes(b"second")
-    cache_only_change = session._python_package_identity(str(tmp_path), package_root)
+    cache_only_change = session_identity._python_package_identity(str(tmp_path), package_root)
     source.write_text("VALUE = 2\n", encoding="utf-8")
-    source_change = session._python_package_identity(str(tmp_path), package_root)
+    source_change = session_identity._python_package_identity(str(tmp_path), package_root)
 
     assert first["available"] is True
     assert first["path"] == "Infernux"
@@ -386,9 +391,8 @@ def test_blocker_report_contract_exposes_trace_first_workflow():
         "logic_evidence",
         "persistence_proof",
     }
-    assert contract["required_sequence"][0].startswith("Call mcp_attempt_start")
-    assert "mcp_attempt_stop" in contract["required_sequence"][2]
-    assert "editor_ui_wait_for_target" in contract["post_action_observation_rule"]
+    assert "infernux.mcp.attempt.start" in contract["required_sequence"][0]
+    assert "infernux.mcp.attempt.stop" in contract["required_sequence"][2]
 
 
 def test_release_wheel_source_requires_allowlist_and_audits_read(tmp_path):

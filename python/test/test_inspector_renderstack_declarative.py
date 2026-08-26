@@ -581,7 +581,6 @@ def test_renderstack_effect_slots_use_shared_command_service(action_journal):
     action_journal.undo()
     assert stack.get_effect_stage_slots(stage_id) == ()
 
-
 def test_renderstack_inspector_stage_list_uses_global_command_registry(action_journal):
     from Infernux.renderstack.effect_slot import EffectSlot
 
@@ -604,32 +603,3 @@ def test_renderstack_inspector_stage_list_uses_global_command_registry(action_jo
 
     action_journal.undo()
     assert stack.get_effect_stage_slots(stage_id) == ()
-
-
-def test_renderstack_mcp_mutations_do_not_write_stack_or_scene_dirty_directly():
-    import os
-
-    source_path = os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "Infernux",
-        "mcp",
-        "tools",
-        "renderstack.py",
-    )
-    with open(source_path, "r", encoding="utf-8") as stream:
-        source = stream.read()
-
-    mutation_slice = source[
-        source.index('    @mcp.tool(name="renderstack_set_pipeline")') :
-        source.index("def _find_stack")
-    ]
-    assert "_mark_scene_dirty" not in mutation_slice
-    assert "stack.set_pipeline(" not in mutation_slice
-    assert "stack.set_effect_stage_slots(" not in mutation_slice
-    assert "stack.add_effect_slot(" not in mutation_slice
-    assert "RenderStackCommandService" not in mutation_slice
-    assert "submit_renderstack_command" in mutation_slice
-    assert '"renderstack.set_pipeline"' in mutation_slice
-    assert '"renderstack.set_parameter"' in mutation_slice
-    assert '"renderstack.set_effect_slots"' in mutation_slice

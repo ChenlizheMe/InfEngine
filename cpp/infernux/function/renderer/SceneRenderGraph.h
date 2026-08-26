@@ -518,6 +518,14 @@ class SceneRenderGraph
     /// orthographic matrix layout. Culling continues to use the source matrix.
     [[nodiscard]] static glm::mat4 ApplyTemporalJitter(const glm::mat4 &projection, const glm::vec2 &jitterNdc);
 
+    /// A caster may be frozen in the atlas only when its authoring contract
+    /// explicitly declares it static and it has no frame-varying skin pose.
+    [[nodiscard]] static bool ShadowCasterRequiresContinuousUpdate(const DrawCall &drawCall) noexcept
+    {
+        return !drawCall.isStatic || drawCall.skinBoneMatrices != nullptr ||
+               drawCall.previousSkinBoneMatrices != nullptr;
+    }
+
     /// Upload this view's camera constants into its current frame-local buffer.
     /// This is host-side preparation and must happen before graph recording.
     bool StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj, const glm::mat4 *previousViewProj = nullptr);

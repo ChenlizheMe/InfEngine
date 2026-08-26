@@ -26,6 +26,16 @@ def test_sync_rebuilds_library_without_packaged_metadata(tmp_path: Path, monkeyp
     shader_dir.mkdir(parents=True)
     (shader_dir / "surface.glsl").write_text("void main() {}", encoding="utf-8")
     (shader_dir / "surface.glsl.meta").write_text('{"meta_version": 2}', encoding="utf-8")
+    (source / "official_packages").mkdir()
+    (source / "official_packages" / "official-registry.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (source / "player_runtime").mkdir()
+    (source / "player_runtime" / "InfernuxPlayerHost.exe").write_bytes(b"host")
+    (source / "project_templates").mkdir()
+    (source / "project_templates" / "requirements.txt").write_text(
+        "Infernux", encoding="utf-8"
+    )
     (source / "__init__.py").write_text("", encoding="utf-8")
 
     project = tmp_path / "project"
@@ -53,3 +63,6 @@ def test_sync_rebuilds_library_without_packaged_metadata(tmp_path: Path, monkeyp
     assert not (result / "stale.txt").exists()
     assert not (result / "surface.glsl.meta").exists()
     assert not (result / "__init__.py").exists()
+    assert (result / "official_packages" / "official-registry.json").is_file()
+    assert not (result / "player_runtime").exists()
+    assert not (result / "project_templates").exists()

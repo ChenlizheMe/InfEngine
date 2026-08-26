@@ -201,6 +201,50 @@ void TestLegacySidecarWithoutContentHashIsRebuilt()
     std::filesystem::remove_all(root);
 }
 
+void TestProjectPackagesScanRootSharesTheGuidCatalog()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-packages-root";
+    std::filesystem::remove_all(root);
+    const auto assetScript = root / "Assets" / "Scripts" / "Gameplay.py";
+    const auto packageScript = root / "Packages" / "vendor" / "tool" / "Runtime" / "Lifecycle.py";
+    WriteText(assetScript, "class Gameplay:\n    pass\n");
+    WriteText(packageScript, "class Lifecycle:\n    pass\n");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script,
+                                std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->AddScanRoot(infernux::FromFsPath(root / "Packages"));
+        assetDatabase->Refresh();
+
+        const std::string assetGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(assetScript));
+        const std::string packageGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(packageScript));
+        Require(!assetGuid.empty(), "Assets script was not registered in the shared catalog");
+        Require(!packageGuid.empty(), "Packages script was not registered in the shared catalog");
+        Require(assetGuid != packageGuid, "Assets and Packages scripts received the same GUID");
+        Require(assetDatabase->GetPathFromGuid(packageGuid) == infernux::FromFsPath(packageScript),
+                "Packages GUID did not resolve to its current path");
+        Require(std::filesystem::is_regular_file(packageScript.string() + ".meta"),
+                "Packages scan root did not persist stable GUID metadata");
+
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestStartupCatalogSurvivesLiveIndexInvalidation()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-startup-catalog";
@@ -404,6 +448,7 @@ int main()
         TestImporterExtensionsAreCaseInsensitive();
         TestPathOnlyDependencyIsRejectedOnInitialRefresh();
         TestLegacySidecarWithoutContentHashIsRebuilt();
+        TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();

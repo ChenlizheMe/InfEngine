@@ -166,6 +166,17 @@ int main()
     assert(std::abs(jitteredOrthographic[3][0] - 0.01f) < 1e-7f);
     assert(std::abs(jitteredOrthographic[3][1] + 0.02f) < 1e-7f);
 
+    DrawCall dynamicCaster;
+    assert(SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
+    dynamicCaster.isStatic = true;
+    assert(!SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
+    std::vector<glm::mat4> skinPose{glm::mat4(1.0f)};
+    dynamicCaster.skinBoneMatrices = &skinPose;
+    assert(SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
+    dynamicCaster.skinBoneMatrices = nullptr;
+    dynamicCaster.previousSkinBoneMatrices = &skinPose;
+    assert(SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
+
     SceneRenderGraph graph;
     graph.SetCachedRendererList(RendererList{});
     graph.SetCachedSubmissionSignature(42, {}, 7);

@@ -889,12 +889,14 @@ class TestWindowManager:
             FocusService._instance = previous_focus
             WindowManager._instance = previous_manager
 
-    def test_utility_settings_share_the_floating_editor_panel_contract(self):
+    def test_utility_settings_use_the_regular_dockable_panel_contract(self):
         from Infernux.engine.interaction import PanelInteractionDescriptor
         from Infernux.engine.ui import (
             BuildSettingsPanel,
+            EditorPanel,
             EnvironmentSettingsPanel,
             FloatingEditorPanel,
+            InxPackageImportPanel,
             PhysicsLayerMatrixPanel,
             PreferencesPanel,
         )
@@ -904,9 +906,11 @@ class TestWindowManager:
             PreferencesPanel: "preferences",
             PhysicsLayerMatrixPanel: "physics_settings",
             EnvironmentSettingsPanel: "environment_settings",
+            InxPackageImportPanel: "inxpackage_import",
         }
         for panel_class, expected_id in expected_ids.items():
-            assert issubclass(panel_class, FloatingEditorPanel)
+            assert issubclass(panel_class, EditorPanel)
+            assert not issubclass(panel_class, FloatingEditorPanel)
             assert panel_class.WINDOW_TYPE_ID == expected_id
             assert panel_class._panel_menu_path == ""
             assert isinstance(panel_class.PANEL_INTERACTION, PanelInteractionDescriptor)

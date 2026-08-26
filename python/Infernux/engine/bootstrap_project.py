@@ -335,6 +335,11 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_path = str(file_path or "").strip()
         if not kind or not file_path:
             return False
+        # Older native ProjectPanel builds report unknown archive extensions as
+        # ``system``.  Normalize at the command boundary so .inxpkg never falls
+        # through to ShellExecute / the Windows "choose an app" dialog.
+        if kind == "system" and os.path.splitext(file_path)[1].casefold() == ".inxpkg":
+            kind = "inxpackage"
         if kind == "system":
             return bool(
                 project_utils.open_file_with_system(
@@ -345,6 +350,12 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             return _open_scene(file_path)
         if kind == "prefab":
             return bool(bs.interaction_core.prefabs.open(path=file_path))
+        if kind == "inxpackage":
+            panel = bs.window_manager.open_window("inxpackage_import")
+            if panel is None or not hasattr(panel, "open_package"):
+                return False
+            panel.open_package(file_path)
+            return True
         document_kinds = {
             "animation_clip": "animation_clip",
             "animation_fsm": "animation_fsm",
@@ -374,6 +385,46 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         reveal=_reveal_project_asset,
         read_external_clipboard=pp.get_os_clipboard_files,
         request_delete=ProjectDeleteConfirmationCoordinator.instance().request,
+    )
+
+    # InxPackage export is an ordinary global command so pointer menus,
+    # shortcuts and automation all enter through the same command authority.
+    from Infernux.engine.interaction import EditorCommand
+    from Infernux.engine.path_utils import is_path_within, resolved_path
+
+    def _can_export_inxpackage(context):
+        path = resolved_path(str(context.payload.get("path", "") or ""))
+        return bool(path and os.path.exists(path) and is_path_within(path, bs.project_path, allow_root=False))
+
+    def _export_inxpackage(context):
+        from Infernux.engine.ui._dialogs import save_file_dialog
+        from Infernux.plugins import InxPackage
+
+        source = resolved_path(str(context.payload.get("path", "") or ""))
+        default_name = os.path.basename(source.rstrip("\\/")) + ".inxpkg"
+        destination = save_file_dialog(
+            title=_t("project.export_inxpackage"),
+            win32_filter="InxPackage (*.inxpkg)\0*.inxpkg\0All files (*.*)\0*.*\0\0",
+            initial_dir=os.path.dirname(source),
+            default_filename=default_name,
+            default_ext="inxpkg",
+            tk_filetypes=[("InxPackage", "*.inxpkg"), ("All Files", "*.*")],
+        )
+        if not destination:
+            return False
+        InxPackage.export(bs.project_path, [source], destination)
+        pp.invalidate_dir_cache()
+        return True
+
+    bs.interaction_core.commands.register(
+        EditorCommand(
+            "inxpackage.export",
+            _export_inxpackage,
+            display_name="Export InxPackage",
+            category="Assets",
+            can_execute=_can_export_inxpackage,
+        ),
+        replace=True,
     )
 
     # -- Inspector invalidation --

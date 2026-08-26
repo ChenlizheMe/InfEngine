@@ -411,6 +411,13 @@ def project_context_menu(
         entries.extend(
             (
                 ContextMenuCommand(
+                    "inxpackage.export",
+                    label=translate("project.export_inxpackage"),
+                    payload={"path": target_path},
+                    separator_before=True,
+                    semantic_id="project.context.export_inxpackage",
+                ),
+                ContextMenuCommand(
                     "edit.copy",
                     label=translate("project.copy"),
                     payload={"target_id": target_path},

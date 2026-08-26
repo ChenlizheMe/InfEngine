@@ -30,6 +30,8 @@ from Infernux.engine.ui import (
     BuildSettingsPanel,
     PreferencesPanel,
     HistoryPanel,
+    PluginPanel,
+    InxPackageImportPanel,
     PhysicsLayerMatrixPanel,
     EnvironmentSettingsPanel,
     UIEditorPanel,

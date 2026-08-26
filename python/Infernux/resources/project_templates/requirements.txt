@@ -1,0 +1,4 @@
+# Project Python dependencies — one package per line.
+# The engine checks these on every startup and auto-installs missing ones.
+# You can add your own packages here; lines starting with '#' are ignored.
+numba>=0.61.0

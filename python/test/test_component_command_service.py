@@ -207,26 +207,6 @@ def test_rejected_live_component_batch_rolls_back_model():
         UndoManager._instance = previous_manager
 
 
-def test_mcp_component_mutations_do_not_own_private_undo_paths():
-    from pathlib import Path
-    import Infernux.mcp.tools.particle as particle_tools
-    import Infernux.mcp.tools.scene as scene_tools
-
-    scene_source = Path(scene_tools.__file__).read_text(encoding="utf-8")
-    particle_source = Path(particle_tools.__file__).read_text(encoding="utf-8")
-    forbidden = (
-        "_record_property",
-        "_notify_scene_modified",
-        "AddComponentTransactionCommand",
-        "RemoveNativeComponentCommand",
-        "RemovePyComponentCommand",
-        "GenericComponentCommand",
-    )
-    assert all(token not in scene_source for token in forbidden)
-    assert "_notify_scene_modified" not in particle_source
-    assert "core.components.edit_document(" in particle_source
-
-
 def test_light_cpp_properties_are_not_python_document_fields():
     from Infernux.components.builtin.light import Light
     from Infernux.engine.interaction.components import ComponentCommandService

@@ -816,6 +816,8 @@ class ProjectModel:
             self._create_project_runtime(final_dir, on_status=on_status)
             self._install_infernux_in_runtime(final_dir, engine_version, on_status=on_status)
 
+            self._install_default_libraries(final_dir, on_status=on_status)
+
             if on_status:
                 on_status("Writing project editor settings...")
             self._create_vscode_workspace(final_dir)
@@ -827,6 +829,23 @@ class ProjectModel:
     # -----------------------------------------------------------------
     # Private helpers
     # -----------------------------------------------------------------
+
+    def _install_default_libraries(self, project_dir: str, *, on_status=None) -> None:
+        """Install the selected engine version's first-project library list."""
+
+        if on_status:
+            on_status("Installing default project libraries...")
+        project_python = self._get_project_python(project_dir)
+        _run_hidden(
+            [
+                project_python,
+                "-m",
+                "Infernux.plugins.official",
+                "--project",
+                project_dir,
+            ],
+            timeout=300,
+        )
 
     def _copy_bundled_support_file(
         self,
@@ -843,7 +862,7 @@ class ProjectModel:
             "python",
             "Infernux",
             "resources",
-            "supports",
+            "project_templates",
             source_name,
         )
         if os.path.isfile(source_path):
@@ -858,7 +877,7 @@ class ProjectModel:
         if wheel and os.path.isfile(wheel):
             try:
                 with zipfile.ZipFile(wheel) as zf:
-                    archive_suffix = f"resources/supports/{source_name}"
+                    archive_suffix = f"resources/project_templates/{source_name}"
                     for name in zf.namelist():
                         if name.endswith(archive_suffix):
                             with zf.open(name) as src, open(dest_path, "wb") as dst:

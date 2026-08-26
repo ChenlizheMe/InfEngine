@@ -157,8 +157,8 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
 def test_dev_wheel_selection_matches_current_python_tag(tmp_path, monkeypatch):
     project_model = _load_project_model(monkeypatch)
     monkeypatch.setattr(project_model, "_engine_root", lambda: str(tmp_path))
-    dist_dir = tmp_path / "dist"
-    dist_dir.mkdir(exist_ok=True)
+    dist_dir = tmp_path / "dist" / "releases" / "test"
+    dist_dir.mkdir(parents=True)
     old_wheel = dist_dir / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
     new_wheel = dist_dir / "infernux-0.1.6-cp313-cp313-win_amd64.whl"
     old_wheel.write_bytes(b"old")

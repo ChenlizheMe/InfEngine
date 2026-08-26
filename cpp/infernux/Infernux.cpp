@@ -2942,6 +2942,10 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         // so that Library/Resources assets (materials, etc.) get GUIDs.
         if (!builtinResourcePath.empty())
             registry.GetAssetDatabase()->AddReadOnlyScanRoot(builtinResourcePath);
+        // Package Runtime/Editor sources are first-class project assets. Their
+        // paths may move, while serialized references and Player staging are
+        // always resolved through the GUID catalog.
+        registry.GetAssetDatabase()->AddScanRoot(JoinPath({projectPath, "Packages"}));
 
         const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
         const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
@@ -3260,6 +3264,7 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
         InxShaderLoader::AddShaderSearchPath(JoinPath({builtinResourcePath, "shaders"}));
         registry.GetAssetDatabase()->AddReadOnlyScanRoot(builtinResourcePath);
     }
+    registry.GetAssetDatabase()->AddScanRoot(JoinPath({projectPath, "Packages"}));
     registry.GetAssetDatabase()->Refresh();
 
     RegisterPhysicMaterialAssetCallback();

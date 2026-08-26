@@ -1246,10 +1246,16 @@ def _engine_service_records(engine: Any) -> list[dict[str, Any]]:
             }
         )
     try:
-        from Infernux.mcp.server import is_running
+        from Infernux.plugins import PluginManager
 
+        manager = PluginManager.instance()
         records.append(
-            {"id": "mcp_server", "active": bool(is_running()), "type": "MCP"}
+            {
+                "id": "project_preloads",
+                "active": manager is not None,
+                "type": "InxPreload",
+                "count": 0 if manager is None else len(manager.preloads.snapshots()),
+            }
         )
     except ImportError:
         pass

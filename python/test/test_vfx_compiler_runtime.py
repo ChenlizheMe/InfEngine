@@ -413,6 +413,26 @@ def test_particle_system_throttles_repeated_compile_failures(scene, monkeypatch)
     assert len(errors) == 2
 
 
+def test_headless_particle_system_preserves_authored_state_without_gpu_publication(
+    scene, monkeypatch
+):
+    component = ParticleSystem()
+    component.graph = ParticleGraphAsset(stable_id="headless-authoring-graph")
+    scene.create_game_object("HeadlessParticleProbe").add_py_component(component)
+    component.awake()
+    publications = []
+    monkeypatch.setattr(Application, "is_headless", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        component,
+        "_load_particle_graph_artifact",
+        lambda graph: publications.append(graph) or True,
+    )
+
+    assert component._load_saved_artifact() is False
+    assert publications == []
+    assert component.graph.stable_id == "headless-authoring-graph"
+
+
 class _GpuParticleNative:
     def __init__(self):
         self.program_batches = []

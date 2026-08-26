@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from Infernux.mcp import supervisor as supervisor_module
-from Infernux.mcp.supervisor import SupervisorSession
+from infernux_mcp import supervisor as supervisor_module
+from infernux_mcp.supervisor import SupervisorSession
 
 
 class _RunningProcess:
@@ -64,9 +66,13 @@ def test_supervisor_prepares_desktop_style_project_and_persists_policy(tmp_path)
     handoff = status["agent_handoff"]
     assert handoff["working_directory"] == str(project.resolve())
     assert handoff["endpoint"] == "http://127.0.0.1:9713/mcp"
-    assert handoff["probe_argv"][-4:] == ["call", "mcp_session_status", "--args", "{}"]
-    assert handoff["checkpoint_list_argv"][-3:] == ["mcp_checkpoint_list", "--args", "{}"]
-    assert "mcp_checkpoint_list" in handoff["instructions"][-1]
+    assert handoff["probe_argv"][-4:] == ["call", "host_session_status", "--args", "{}"]
+    assert handoff["checkpoint_list_argv"][-4:-2] == ["call", "operation_query_execute"]
+    assert json.loads(handoff["checkpoint_list_argv"][-1]) == {
+        "operation": "infernux.mcp.checkpoint.list",
+        "arguments": {},
+    }
+    assert "infernux.mcp.checkpoint.list" in handoff["instructions"][-1]
     assert "lease" not in json.dumps(handoff).lower()
     persisted_handoff = json.loads((project / ".infernux" / "mcp_sessions" / supervisor.session_id / "agent-handoff.json").read_text(encoding="utf-8"))
     assert persisted_handoff == handoff
@@ -297,7 +303,7 @@ def test_supervisor_handoff_rejects_dirty_running_editor(tmp_path, monkeypatch):
     supervisor = SupervisorSession(str(tmp_path / "DirtyPilot"))
     supervisor._process = _RunningProcess()
     monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
-    monkeypatch.setattr(supervisor, "_read_mcp_session_status", lambda **_: {"attempt_active": False})
+    monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": False})
     monkeypatch.setattr(
         supervisor,
         "_read_project_info",
@@ -370,6 +376,45 @@ def test_supervisor_resume_ignores_stale_persisted_pid(tmp_path, monkeypatch):
     assert resumed.status()["mcp_ready"] is False
 
 
+def test_supervisor_attaches_current_locked_headless_host_without_loopback_probe(tmp_path):
+    project = tmp_path / "Desktop" / "CurrentHeadlessHost"
+    original = SupervisorSession(
+        str(project),
+        mode="global_validation",
+        session_id="current-headless-session",
+        mcp_port=9841,
+    )
+    original.prepare_project()
+    lock_path = project / "ProjectSettings" / ".infernux-engine-lock.json"
+    lock_path.write_text(
+        json.dumps({
+            "pid": os.getpid(),
+            "token": "headless-lock-token",
+            "mode": "headless",
+            "state": "running",
+            "project_path": str(project.resolve()),
+        }),
+        encoding="utf-8",
+    )
+
+    attached = SupervisorSession.attach_current_host(
+        str(project),
+        "current-headless-session",
+        mode="global_validation",
+        build_profile="debug_feedback",
+        editor_instance_id="headless-editor-instance",
+        mcp_port=9841,
+    )
+
+    status = attached.status()
+    assert status["editor_pid"] == os.getpid()
+    assert status["editor_running"] is True
+    assert status["mcp_ready"] is True
+    state = json.loads(Path(attached.state_path).read_text(encoding="utf-8"))
+    assert state["editor_instance_id"] == "headless-editor-instance"
+    assert state["project_lock_token"] == "headless-lock-token"
+
+
 def test_supervisor_resume_observes_matching_manual_editor_after_stale_pid(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "ManualValidationPilot"
     original = SupervisorSession(str(project), session_id="manual-validation-session")
@@ -386,7 +431,7 @@ def test_supervisor_resume_observes_matching_manual_editor_after_stale_pid(tmp_p
     monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: True)
     monkeypatch.setattr(
         SupervisorSession,
-        "_read_mcp_session_status",
+        "_read_host_session_status",
         lambda self, **_: {
             "project_root": str(project),
             "session_id": "manual-validation-session",
@@ -413,7 +458,7 @@ def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(t
     alive = {"value": True}
     monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda pid: int(pid) == 5151 and alive["value"])
     monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
-    monkeypatch.setattr(supervisor, "_read_mcp_session_status", lambda **_: {"attempt_active": False})
+    monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": False})
     monkeypatch.setattr(
         supervisor,
         "_read_project_info",
@@ -452,16 +497,16 @@ def test_supervisor_normal_stop_uses_lease_tool_without_force_termination(tmp_pa
     supervisor._supervisor_lease = "secret-lease"
     supervisor._project_lock_token = "lease-lock"
     alive = {"value": True}
-    calls: list[tuple[str, dict[str, str]]] = []
+    calls: list[tuple[str, str, dict[str, str]]] = []
     monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda pid: int(pid) == 6116 and alive["value"])
     monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
 
-    def _call(tool_name, arguments, *, timeout_seconds):
-        calls.append((tool_name, arguments))
+    def _call(gateway_name, operation, arguments, *, timeout_seconds):
+        calls.append((gateway_name, operation, arguments))
         alive["value"] = False
         return {"close_requested": True}
 
-    monkeypatch.setattr(supervisor, "_call_mcp_tool", _call)
+    monkeypatch.setattr(supervisor, "_call_mcp_operation", _call)
     monkeypatch.setattr(supervisor, "_wait_for_clean_editor_shutdown", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(supervisor_module, "_terminate_pid", lambda _pid: pytest.fail("normal handoff must not force-terminate"))
 
@@ -469,8 +514,64 @@ def test_supervisor_normal_stop_uses_lease_tool_without_force_termination(tmp_pa
 
     assert result["stopped"] is True
     assert "forced" not in result
-    assert calls == [("mcp_supervisor_shutdown", {"lease_token": "secret-lease"})]
+    assert calls == [
+        (
+            "operation_command_execute",
+            "infernux.mcp.supervisor.shutdown",
+            {"lease_token": "secret-lease"},
+        )
+    ]
     assert result["editor_running"] is False
+
+
+def test_supervisor_calls_schema_gateways_with_formal_operation_ids(tmp_path, monkeypatch):
+    supervisor = SupervisorSession(str(tmp_path / "SchemaGateway"))
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Client:
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            if name == "host_session_status":
+                return SimpleNamespace(
+                    data={"ok": True, "data": {"session": {"attempt_active": False}}}
+                )
+            return SimpleNamespace(
+                data={
+                    "ok": True,
+                    "data": {
+                        "operation": "infernux.project.info",
+                        "result": {
+                            "active_scene": {"dirty": False},
+                            "play_state": "edit",
+                        },
+                    },
+                }
+            )
+
+    class _ClientContext:
+        async def __aenter__(self):
+            return _Client()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        supervisor,
+        "create_loopback_client",
+        lambda **_: _ClientContext(),
+    )
+
+    assert supervisor._read_host_session_status(timeout_seconds=1.0) == {
+        "attempt_active": False
+    }
+    assert supervisor._read_project_info(timeout_seconds=1.0)["play_state"] == "edit"
+    assert calls == [
+        ("host_session_status", {}),
+        (
+            "operation_query_execute",
+            {"operation": "infernux.project.info", "arguments": {}},
+        ),
+    ]
 
 
 def test_supervisor_releases_its_stale_lock_after_the_editor_process_exits(tmp_path, monkeypatch):
@@ -492,7 +593,7 @@ def test_supervisor_handoff_rejects_active_validation_attempt(tmp_path, monkeypa
     supervisor = SupervisorSession(str(tmp_path / "ActiveAttempt"))
     supervisor._process = _RunningProcess()
     monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
-    monkeypatch.setattr(supervisor, "_read_mcp_session_status", lambda **_: {"attempt_active": True})
+    monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": True})
 
     with pytest.raises(RuntimeError, match="attempt"):
         supervisor.handoff_mode(
@@ -511,7 +612,7 @@ def test_supervisor_identity_verification_rejects_wrong_mode_or_instance(tmp_pat
     monkeypatch.setattr(supervisor, "wait_for_mcp_ready", lambda **_: {"mcp_ready": True})
     monkeypatch.setattr(
         supervisor,
-        "_read_mcp_session_status",
+        "_read_host_session_status",
         lambda **_: {
             "project_root": supervisor.project_root,
             "session_id": supervisor.session_id,
@@ -673,6 +774,58 @@ def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, 
     assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(executable.parent)
     assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_data)
     assert captured["env"]["_INFERNUX_PLAYER_MODULE_ROOT"] == str(expected_data / "RuntimeModules")
+    supervisor._close_player_log()
+
+
+def test_supervisor_player_logs_only_report_current_launch(tmp_path, monkeypatch):
+    local_state = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_state))
+    project = tmp_path / "Desktop" / "CurrentLogsPilot"
+    supervisor = SupervisorSession(str(project), session_id="current-player-logs")
+    supervisor.prepare_project()
+    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    logs_root = local_state / "Infernux" / "Players" / "Pilot" / "Logs"
+    logs_root.mkdir(parents=True)
+    runtime_log = logs_root / "player.log"
+    debug_log = logs_root / "Pilot_debug.log"
+    crash_log = logs_root / "crash.log"
+    runtime_log.write_text("stale runtime\n", encoding="utf-8")
+    debug_log.write_text("stale debug output\n", encoding="utf-8")
+    crash_log.write_text("stale crash traceback\n", encoding="utf-8")
+    Path(supervisor.player_stdout_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(supervisor.player_stdout_path).write_text("stale stdout\n", encoding="utf-8")
+
+    class _PlayerProcess:
+        pid = 8451
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _popen(_argv, **kwargs):
+        kwargs["stdout"].write("current native stdout\n")
+        kwargs["stdout"].flush()
+        with open(kwargs["env"]["_INFERNUX_READY_FILE"], "w", encoding="utf-8") as stream:
+            stream.write("ENGINE_LOADED\n")
+        return _PlayerProcess()
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
+    supervisor.launch_player(str(executable), timeout_seconds=1.0)
+    with runtime_log.open("a", encoding="utf-8") as stream:
+        stream.write("current runtime\n")
+    debug_log.write_text("current debug output\n", encoding="utf-8")
+
+    logs = supervisor.player_read_logs()
+
+    assert logs["runtime_lines"] == ["current runtime"]
+    assert logs["debug_lines"] == ["current debug output"]
+    assert logs["crash_lines"] == []
+    assert logs["stdout_lines"] == ["current native stdout"]
+    persisted = json.loads(Path(supervisor.state_path).read_text(encoding="utf-8"))
+    assert set(persisted["player_log_baselines"]) == {"runtime", "debug", "crash"}
+
+    crash_log.write_text("current crash traceback\n", encoding="utf-8")
+    assert supervisor.player_read_logs()["crash_lines"] == ["current crash traceback"]
     supervisor._close_player_log()
 
 
