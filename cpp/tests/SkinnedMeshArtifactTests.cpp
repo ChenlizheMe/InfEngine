@@ -145,25 +145,19 @@ int main()
     assert(restoredAnimation && restoredAnimation->IsAnimationSource() && !restoredAnimation->IsValid());
     assert(restoredAnimation->animations.front().name == "ExternalMove");
 
-    // Cross-skeleton correspondence must not use names in either direction:
-    // an entirely renamed but structurally identical rig remains compatible.
+    // An entirely renamed rig is not guessed from geometry. Symmetric limbs
+    // and fingers require an explicit Avatar/Rig-style mapping.
     infernux::Skeleton renamedSkeleton = animationOnly.skeleton;
     renamedSkeleton.nodeByName.clear();
     renamedSkeleton.nodes.front().name = "CompletelyDifferentJointName";
     renamedSkeleton.nodeByName.emplace(renamedSkeleton.nodes.front().name, 0);
     infernux::SkinnedRuntimeAnimation renamedAnimation = externalAnimation;
-    assert(source.skeleton.IsAnimationCompatible(renamedSkeleton, renamedAnimation, &compatibilityReason));
-    assert(compatibilityReason.empty());
-    infernux::InxSkinnedMesh renamedAnimationOnly = animationOnly;
-    renamedAnimationOnly.skeleton = renamedSkeleton;
-    renamedAnimationOnly.animations = {renamedAnimation};
-    const auto renamedPalette = restored->BuildGpuBonePalette({"ExternalMove", 0.25f}, &renamedAnimationOnly);
-    assert(renamedPalette.size() == 1);
-    assert(NearlyEqual(renamedPalette.front()[3].x, 0.02f));
+    assert(!source.skeleton.IsAnimationCompatible(renamedSkeleton, renamedAnimation, &compatibilityReason));
+    assert(compatibilityReason.find("exactly named target joint") != std::string::npos);
 
-    // Deceptive names must not override bind-pose geometry.  The source has
-    // deliberately swapped labels, while its left/right branch positions
-    // still identify the correct structural correspondence.
+    // Exact joint identity wins over geometric guessing. Symmetric branches
+    // cannot be safely disambiguated by bind-pose position when exporters use
+    // different coordinate systems or proportions.
     infernux::Skeleton targetFork;
     infernux::Skeleton sourceFork;
     for (int index = 0; index < 3; ++index) {
@@ -193,8 +187,76 @@ int main()
     forkAnimation.tracks.push_back(forkTrack);
     forkAnimation.trackByNodeIndex = {-1, 0, -1};
     const infernux::SkeletonRetargetMap forkMap = targetFork.BuildRetargetMap(sourceFork, forkAnimation);
-    assert(forkMap.targetToSourceNode == std::vector<int>({0, 1, 2}));
+    assert(forkMap.targetToSourceNode == std::vector<int>({-1, 2, 1}));
+    assert(forkMap.exactNameMatches == 2);
     assert(forkMap.mappedAnimatedNodes == 1);
+    assert(!forkMap.identicalTopology);
+    assert(!targetFork.IsAnimationCompatible(sourceFork, forkAnimation, &compatibilityReason));
+    assert(compatibilityReason.find("same mapped hierarchy") != std::string::npos);
+
+    // Assimp expands FBX pivots into helper nodes in animation files. The
+    // helper's channel must drive an exactly named deform joint even though
+    // the render-model hierarchy does not contain that helper node.
+    infernux::InxSkinnedMesh pivotTarget;
+    pivotTarget.scaleFactor = 1.0f;
+    infernux::SkinnedRuntimeNode targetRig;
+    targetRig.name = "Rig";
+    pivotTarget.skeleton.nodeByName.emplace(targetRig.name, 0);
+    pivotTarget.skeleton.nodes.push_back(targetRig);
+    infernux::SkinnedRuntimeNode targetJoint;
+    targetJoint.name = "Joint";
+    targetJoint.parent = 0;
+    targetJoint.bindLocal[3] = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+    targetJoint.bindGlobal = targetJoint.bindLocal;
+    pivotTarget.skeleton.nodeByName.emplace(targetJoint.name, 1);
+    pivotTarget.skeleton.nodes.push_back(targetJoint);
+    infernux::SkinnedRuntimeBone targetBone;
+    targetBone.name = targetJoint.name;
+    targetBone.nodeIndex = 1;
+    targetBone.inverseBind = glm::inverse(targetJoint.bindGlobal);
+    pivotTarget.skeleton.boneByName.emplace(targetBone.name, 0);
+    pivotTarget.skeleton.bones.push_back(targetBone);
+
+    infernux::InxSkinnedMesh pivotSource;
+    pivotSource.scaleFactor = 1.0f;
+    pivotSource.skeleton.nodeByName.emplace(targetRig.name, 0);
+    pivotSource.skeleton.nodes.push_back(targetRig);
+    infernux::SkinnedRuntimeNode pivotHelper;
+    pivotHelper.name = "Joint_$AssimpFbx$_Rotation";
+    pivotHelper.parent = 0;
+    pivotSource.skeleton.nodeByName.emplace(pivotHelper.name, 1);
+    pivotSource.skeleton.nodes.push_back(pivotHelper);
+    infernux::SkinnedRuntimeNode sourceJoint = targetJoint;
+    sourceJoint.parent = 1;
+    pivotSource.skeleton.nodeByName.emplace(sourceJoint.name, 2);
+    pivotSource.skeleton.nodes.push_back(sourceJoint);
+    infernux::SkinnedRuntimeAnimation pivotAnimation;
+    pivotAnimation.name = "PivotRotation";
+    pivotAnimation.durationTicks = 1.0;
+    pivotAnimation.ticksPerSecond = 1.0;
+    infernux::SkinnedRuntimeTrack pivotTrack;
+    pivotTrack.nodeIndex = 1;
+    constexpr float kSqrtHalf = 0.70710678118f;
+    pivotTrack.rotations = {
+        {0.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f)},
+        {1.0, glm::quat(kSqrtHalf, 0.0f, 0.0f, kSqrtHalf)},
+    };
+    pivotAnimation.trackByNodeIndex = {-1, 0, -1};
+    pivotAnimation.tracks.push_back(pivotTrack);
+    pivotSource.animations.push_back(pivotAnimation);
+
+    const auto pivotMap = pivotTarget.skeleton.BuildRetargetMap(pivotSource.skeleton, pivotAnimation);
+    assert(pivotMap.targetToSourceNode == std::vector<int>({-1, 2}));
+    assert(pivotMap.exactNameMatches == 1);
+    assert(pivotMap.mappedAnimationTracks == 1);
+    assert(pivotMap.missingTargetDeformJoints == 0);
+    assert(pivotMap.topologyDifferences == 0);
+    assert(pivotTarget.skeleton.IsAnimationCompatible(pivotSource.skeleton, pivotAnimation, &compatibilityReason));
+    assert(compatibilityReason.empty());
+    const auto pivotPalette = pivotTarget.BuildGpuBonePalette({"PivotRotation", 1.0f, false}, &pivotSource);
+    assert(pivotPalette.size() == 1);
+    assert(std::abs(pivotPalette.front()[0][0]) < 1.0e-5f);
+    assert(std::abs(std::abs(pivotPalette.front()[0][1]) - 1.0f) < 1.0e-5f);
 
     infernux::Skeleton relatedTarget = source.skeleton;
     infernux::SkinnedRuntimeNode extraNode;
@@ -207,8 +269,8 @@ int main()
     extraBone.nodeIndex = 1;
     relatedTarget.boneByName.emplace(extraBone.name, 1);
     relatedTarget.bones.push_back(extraBone);
-    assert(relatedTarget.IsAnimationCompatible(animationOnly.skeleton, externalAnimation, &compatibilityReason));
-    assert(compatibilityReason.find("structure/rest-pose retarget") != std::string::npos);
+    assert(!relatedTarget.IsAnimationCompatible(animationOnly.skeleton, externalAnimation, &compatibilityReason));
+    assert(compatibilityReason.find("exact joint identities") != std::string::npos);
 
     infernux::SkinPoseHistory poseHistory;
     auto firstPose = restored->GetOrBuildGpuBonePalette({"Move", 0.0f});

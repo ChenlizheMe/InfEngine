@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <limits>
 
 namespace infernux
@@ -132,96 +131,6 @@ static SkinnedNodePose BlendNodePose(const SkinnedNodePose &a, const SkinnedNode
     return pose;
 }
 
-struct SkeletonTopologyInfo
-{
-    std::vector<std::vector<int>> children;
-    std::vector<int> parent;
-    std::vector<size_t> subtreeSize;
-    std::vector<glm::vec3> modelPosition;
-    float spatialScale = 1.0f;
-    std::vector<int> roots;
-};
-
-static SkeletonTopologyInfo BuildTopologyInfo(const Skeleton &skeleton, const std::vector<bool> &relevant)
-{
-    SkeletonTopologyInfo info;
-    info.children.resize(skeleton.nodes.size());
-    info.parent.assign(skeleton.nodes.size(), -1);
-    info.subtreeSize.assign(skeleton.nodes.size(), 0);
-    info.modelPosition.resize(skeleton.nodes.size(), glm::vec3(0.0f));
-    glm::vec3 minimum(std::numeric_limits<float>::max());
-    glm::vec3 maximum(std::numeric_limits<float>::lowest());
-    for (size_t index = 0; index < skeleton.nodes.size(); ++index) {
-        const auto &node = skeleton.nodes[index];
-        const glm::vec3 position(node.bindGlobal[3]);
-        info.modelPosition[index] = position;
-        if (index >= relevant.size() || !relevant[index])
-            continue;
-        int relevantParent = node.parent;
-        while (relevantParent >= 0 && (static_cast<size_t>(relevantParent) >= relevant.size() ||
-                                       !relevant[static_cast<size_t>(relevantParent)]))
-            relevantParent = skeleton.nodes[static_cast<size_t>(relevantParent)].parent;
-        info.parent[index] = relevantParent;
-        if (relevantParent >= 0)
-            info.children[static_cast<size_t>(relevantParent)].push_back(static_cast<int>(index));
-        else
-            info.roots.push_back(static_cast<int>(index));
-        info.subtreeSize[index] = 1;
-        minimum = glm::min(minimum, position);
-        maximum = glm::max(maximum, position);
-    }
-    for (size_t index = skeleton.nodes.size(); index-- > 0;) {
-        const int parent = info.parent[index];
-        if (parent >= 0)
-            info.subtreeSize[static_cast<size_t>(parent)] += info.subtreeSize[index];
-    }
-    const float extent = glm::length(maximum - minimum);
-    if (std::isfinite(extent) && extent > kEpsilon)
-        info.spatialScale = extent;
-    return info;
-}
-
-static float NodeMatchCost(const Skeleton &target, const SkeletonTopologyInfo &targetInfo, int targetIndex,
-                           const Skeleton &source, const SkeletonTopologyInfo &sourceInfo, int sourceIndex)
-{
-    (void)target;
-    (void)source;
-    const float childCost =
-        3.0f * std::abs(static_cast<float>(targetInfo.children[static_cast<size_t>(targetIndex)].size()) -
-                        static_cast<float>(sourceInfo.children[static_cast<size_t>(sourceIndex)].size()));
-    const float subtreeCost =
-        std::abs(std::log((static_cast<float>(targetInfo.subtreeSize[static_cast<size_t>(targetIndex)]) + 1.0f) /
-                          (static_cast<float>(sourceInfo.subtreeSize[static_cast<size_t>(sourceIndex)]) + 1.0f)));
-
-    const int targetParent = targetInfo.parent[static_cast<size_t>(targetIndex)];
-    const int sourceParent = sourceInfo.parent[static_cast<size_t>(sourceIndex)];
-    const glm::vec3 targetOffset = targetParent >= 0 ? targetInfo.modelPosition[static_cast<size_t>(targetIndex)] -
-                                                           targetInfo.modelPosition[static_cast<size_t>(targetParent)]
-                                                     : glm::vec3(0.0f);
-    const glm::vec3 sourceOffset = sourceParent >= 0 ? sourceInfo.modelPosition[static_cast<size_t>(sourceIndex)] -
-                                                           sourceInfo.modelPosition[static_cast<size_t>(sourceParent)]
-                                                     : glm::vec3(0.0f);
-    const float targetLength = glm::length(targetOffset) / targetInfo.spatialScale;
-    const float sourceLength = glm::length(sourceOffset) / sourceInfo.spatialScale;
-    float directionCost = 0.0f;
-    if (targetLength > kEpsilon && sourceLength > kEpsilon)
-        directionCost = 2.0f * (1.0f - glm::clamp(glm::dot(glm::normalize(targetOffset), glm::normalize(sourceOffset)),
-                                                  -1.0f, 1.0f));
-    const float lengthCost = std::abs(std::log((targetLength + 1.0e-4f) / (sourceLength + 1.0e-4f)));
-    return childCost + subtreeCost + directionCost + lengthCost;
-}
-
-static bool HasIdenticalTopology(const Skeleton &left, const Skeleton &right)
-{
-    if (left.nodes.size() != right.nodes.size())
-        return false;
-    for (size_t index = 0; index < left.nodes.size(); ++index) {
-        if (left.nodes[index].parent != right.nodes[index].parent)
-            return false;
-    }
-    return true;
-}
-
 } // namespace
 
 float SkinnedRuntimeAnimation::DurationSeconds() const
@@ -252,85 +161,80 @@ SkeletonRetargetMap Skeleton::BuildRetargetMap(const Skeleton &source, const Ski
     if (!IsValid() || !source.IsValid() || animation.tracks.empty())
         return mapping;
 
-    // Match the deformation graph to the animated graph. Exporters commonly
-    // insert arbitrary model/armature/mesh containers, so raw scene-tree
-    // depth is not part of skeleton identity.
+    // Automatic compatibility is intentionally strict: authored joint names
+    // establish identity. FBX importers may insert pivot/helper nodes in an
+    // animation-only file, so hierarchy comparison skips unmatched containers,
+    // but it never guesses a joint from geometry. Cross-rig animation needs an
+    // explicit Avatar/Rig-style mapping rather than silently swapping symmetric
+    // limbs or fingers.
     std::vector<bool> targetRelevant(nodes.size(), false);
     for (const auto &bone : bones) {
         if (bone.nodeIndex >= 0 && static_cast<size_t>(bone.nodeIndex) < targetRelevant.size())
             targetRelevant[static_cast<size_t>(bone.nodeIndex)] = true;
     }
-    std::vector<bool> sourceRelevant(source.nodes.size(), false);
-    for (const auto &track : animation.tracks) {
-        if (track.nodeIndex >= 0 && static_cast<size_t>(track.nodeIndex) < sourceRelevant.size())
-            sourceRelevant[static_cast<size_t>(track.nodeIndex)] = true;
-    }
     if (std::none_of(targetRelevant.begin(), targetRelevant.end(), [](bool value) { return value; })) {
         // Skeleton-only callers have no deformation stream to define the
         // target graph. Preserve the complete hierarchy in that case.
         std::fill(targetRelevant.begin(), targetRelevant.end(), true);
-        std::fill(sourceRelevant.begin(), sourceRelevant.end(), true);
     }
-    const SkeletonTopologyInfo targetInfo = BuildTopologyInfo(*this, targetRelevant);
-    const SkeletonTopologyInfo sourceInfo = BuildTopologyInfo(source, sourceRelevant);
-    mapping.identicalTopology = HasIdenticalTopology(*this, source);
-
     std::vector<bool> sourceUsed(source.nodes.size(), false);
-    std::vector<std::pair<int, int>> pending;
-    const auto pairSets = [&](const std::vector<int> &targetSet, const std::vector<int> &sourceSet) {
-        std::vector<bool> localTargetUsed(targetSet.size(), false);
-        std::vector<bool> localSourceUsed(sourceSet.size(), false);
-        const size_t pairCount = std::min(targetSet.size(), sourceSet.size());
-        for (size_t pairIndex = 0; pairIndex < pairCount; ++pairIndex) {
-            float bestCost = std::numeric_limits<float>::max();
-            size_t bestTarget = 0;
-            size_t bestSource = 0;
-            for (size_t ti = 0; ti < targetSet.size(); ++ti) {
-                if (localTargetUsed[ti])
-                    continue;
-                for (size_t si = 0; si < sourceSet.size(); ++si) {
-                    if (localSourceUsed[si] || sourceUsed[static_cast<size_t>(sourceSet[si])])
-                        continue;
-                    const float cost =
-                        NodeMatchCost(*this, targetInfo, targetSet[ti], source, sourceInfo, sourceSet[si]);
-                    if (cost < bestCost) {
-                        bestCost = cost;
-                        bestTarget = ti;
-                        bestSource = si;
-                    }
-                }
-            }
-            if (!std::isfinite(bestCost))
-                break;
-            localTargetUsed[bestTarget] = true;
-            localSourceUsed[bestSource] = true;
-            sourceUsed[static_cast<size_t>(sourceSet[bestSource])] = true;
-            pending.emplace_back(targetSet[bestTarget], sourceSet[bestSource]);
-        }
-    };
-
-    pairSets(targetInfo.roots, sourceInfo.roots);
-    for (size_t cursor = 0; cursor < pending.size(); ++cursor) {
-        const auto [targetIndex, sourceIndex] = pending[cursor];
-        mapping.targetToSourceNode[static_cast<size_t>(targetIndex)] = sourceIndex;
-        ++mapping.mappedNodes;
-        if (targetInfo.children[static_cast<size_t>(targetIndex)].size() !=
-            sourceInfo.children[static_cast<size_t>(sourceIndex)].size())
-            ++mapping.topologyDifferences;
-        pairSets(targetInfo.children[static_cast<size_t>(targetIndex)],
-                 sourceInfo.children[static_cast<size_t>(sourceIndex)]);
+    for (size_t targetIndex = 0; targetIndex < nodes.size(); ++targetIndex) {
+        if (!targetRelevant[targetIndex])
+            continue;
+        const auto sourceNode = source.nodeByName.find(nodes[targetIndex].name);
+        if (sourceNode == source.nodeByName.end() || sourceNode->second < 0 ||
+            static_cast<size_t>(sourceNode->second) >= source.nodes.size() ||
+            sourceUsed[static_cast<size_t>(sourceNode->second)])
+            continue;
+        mapping.targetToSourceNode[targetIndex] = sourceNode->second;
+        sourceUsed[static_cast<size_t>(sourceNode->second)] = true;
     }
 
-    for (const int sourceIndex : mapping.targetToSourceNode) {
+    std::vector<int> sourceToTarget(source.nodes.size(), -1);
+    std::vector<bool> animatedSourceAncestors(source.nodes.size(), false);
+    for (size_t targetIndex = 0; targetIndex < mapping.targetToSourceNode.size(); ++targetIndex) {
+        const int sourceIndex = mapping.targetToSourceNode[targetIndex];
+        if (sourceIndex < 0 || static_cast<size_t>(sourceIndex) >= source.nodes.size())
+            continue;
+        ++mapping.mappedNodes;
+        ++mapping.exactNameMatches;
+        sourceToTarget[static_cast<size_t>(sourceIndex)] = static_cast<int>(targetIndex);
         if (sourceIndex >= 0 && static_cast<size_t>(sourceIndex) < animation.trackByNodeIndex.size() &&
             animation.trackByNodeIndex[static_cast<size_t>(sourceIndex)] >= 0)
             ++mapping.mappedAnimatedNodes;
+        for (int ancestor = sourceIndex; ancestor >= 0; ancestor = source.nodes[static_cast<size_t>(ancestor)].parent)
+            animatedSourceAncestors[static_cast<size_t>(ancestor)] = true;
+    }
+    for (const auto &track : animation.tracks) {
+        if (track.nodeIndex >= 0 && static_cast<size_t>(track.nodeIndex) < animatedSourceAncestors.size() &&
+            animatedSourceAncestors[static_cast<size_t>(track.nodeIndex)])
+            ++mapping.mappedAnimationTracks;
+    }
+
+    // Compare the mapped deformation hierarchy while deliberately skipping
+    // importer-created helper nodes. This is the topology users authored.
+    for (size_t targetIndex = 0; targetIndex < mapping.targetToSourceNode.size(); ++targetIndex) {
+        const int sourceIndex = mapping.targetToSourceNode[targetIndex];
+        if (sourceIndex < 0)
+            continue;
+        int targetAncestor = nodes[targetIndex].parent;
+        while (targetAncestor >= 0 && mapping.targetToSourceNode[static_cast<size_t>(targetAncestor)] < 0)
+            targetAncestor = nodes[static_cast<size_t>(targetAncestor)].parent;
+        int sourceAncestor = source.nodes[static_cast<size_t>(sourceIndex)].parent;
+        while (sourceAncestor >= 0 && sourceToTarget[static_cast<size_t>(sourceAncestor)] < 0)
+            sourceAncestor = source.nodes[static_cast<size_t>(sourceAncestor)].parent;
+        const int mappedSourceAncestor = sourceAncestor >= 0 ? sourceToTarget[static_cast<size_t>(sourceAncestor)] : -1;
+        if (targetAncestor != mappedSourceAncestor)
+            ++mapping.topologyDifferences;
     }
     for (const auto &bone : bones) {
         if (bone.nodeIndex < 0 || static_cast<size_t>(bone.nodeIndex) >= mapping.targetToSourceNode.size() ||
             mapping.targetToSourceNode[static_cast<size_t>(bone.nodeIndex)] < 0)
             ++mapping.missingTargetDeformJoints;
     }
+    const size_t relevantTargetCount =
+        static_cast<size_t>(std::count(targetRelevant.begin(), targetRelevant.end(), true));
+    mapping.identicalTopology = mapping.mappedNodes == relevantTargetCount && mapping.topologyDifferences == 0;
     return mapping;
 }
 
@@ -350,16 +254,23 @@ bool Skeleton::IsAnimationCompatible(const Skeleton &source, const SkinnedRuntim
     if (animation.tracks.empty())
         return reject("animation has no transform tracks");
     const SkeletonRetargetMap mapping = BuildRetargetMap(source, animation);
-    if (mapping.mappedAnimatedNodes == 0)
-        return reject("animation has no structurally mappable tracks for the target skeleton");
+    if (mapping.mappedAnimationTracks == 0)
+        return reject("animation has no tracks affecting an exactly named target joint");
+    if (!mapping.identicalTopology) {
+        return reject("automatic retarget requires exact joint identities and the same mapped hierarchy; mapped " +
+                      std::to_string(mapping.exactNameMatches) + " joints, missing " +
+                      std::to_string(mapping.missingTargetDeformJoints) + "/" + std::to_string(bones.size()) +
+                      " target deform joints, and found " + std::to_string(mapping.topologyDifferences) +
+                      " mapped hierarchy differences");
+    }
     if (reason) {
         if (mapping.missingTargetDeformJoints > 0 || mapping.topologyDifferences > 0 ||
-            mapping.mappedAnimatedNodes < animation.tracks.size()) {
-            *reason = "structure/rest-pose retarget maps " + std::to_string(mapping.mappedAnimatedNodes) + "/" +
-                      std::to_string(animation.tracks.size()) + " animation tracks; missing " +
-                      std::to_string(mapping.missingTargetDeformJoints) + "/" + std::to_string(bones.size()) +
-                      " target deform joints; " + std::to_string(mapping.topologyDifferences) +
-                      " topology differences; node names were not used";
+            mapping.mappedAnimationTracks < animation.tracks.size()) {
+            *reason = "identity retarget maps " + std::to_string(mapping.exactNameMatches) + " joints and uses " +
+                      std::to_string(mapping.mappedAnimationTracks) + "/" + std::to_string(animation.tracks.size()) +
+                      " animation tracks; missing " + std::to_string(mapping.missingTargetDeformJoints) + "/" +
+                      std::to_string(bones.size()) + " target deform joints; " +
+                      std::to_string(mapping.topologyDifferences) + " mapped hierarchy differences";
         } else {
             reason->clear();
         }
