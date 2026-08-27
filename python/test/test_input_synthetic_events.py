@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -411,11 +412,24 @@ def test_floating_window_is_recovered_and_close_button_is_semantic(engine):
             ctx.end_window()
 
     probe = _ClosableProbe()
-    state = {"frame": 0, "phase": "find", "window": None, "close": None, "last_targets": []}
+    state = {
+        "frame": 0,
+        "semantic_frame": 0,
+        "semantic_frames_seen": 0,
+        "phase": "find",
+        "window": None,
+        "close": None,
+        "last_targets": [],
+    }
+    deadline = time.monotonic() + 10.0
     set_gui_semantic_capture_enabled(True)
 
     def _targets():
         snapshot = get_gui_semantic_snapshot()
+        semantic_frame = int(snapshot.get("frame", 0) or 0)
+        if semantic_frame and semantic_frame != state["semantic_frame"]:
+            state["semantic_frame"] = semantic_frame
+            state["semantic_frames_seen"] += 1
         state["last_targets"] = [
             {
                 "semantic_id": target.get("semantic_id"),
@@ -461,7 +475,7 @@ def test_floating_window_is_recovered_and_close_button_is_semantic(engine):
             state["phase"] = "released"
         elif state["phase"] == "released" and not probe.open:
             engine.exit()
-        elif state["frame"] >= 48:
+        elif state["semantic_frames_seen"] >= 8 or time.monotonic() >= deadline:
             engine.exit()
 
     engine.register_gui_renderable("test.synthetic_closable_probe", probe)

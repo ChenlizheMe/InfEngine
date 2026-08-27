@@ -40,9 +40,16 @@ $UpdateLog = Join-Path $Root 'UpdateLog.md'
 if (-not (Test-Path -LiteralPath $UpdateLog -PathType Leaf) -or (Get-Item $UpdateLog).Length -eq 0) {
     throw 'UpdateLog.md is required and must not be empty.'
 }
-if (-not ((Get-Content -LiteralPath $UpdateLog -Raw).Contains($Version))) {
+$UpdateLogText = [IO.File]::ReadAllText($UpdateLog, [Text.Encoding]::UTF8).Replace("`r`n", "`n")
+if (-not $UpdateLogText.Contains($Version)) {
     throw "UpdateLog.md must mention release version $Version."
 }
+$CurrentReleaseNotes = [regex]::Split($UpdateLogText, '(?m)^\s*---\s*$')[0].Trim()
+if (-not $CurrentReleaseNotes.StartsWith("# Infernux v$Version", [StringComparison]::Ordinal)) {
+    throw "The first UpdateLog.md release block must describe Infernux v$Version."
+}
+$ReleaseNotesFile = Join-Path ([IO.Path]::GetTempPath()) "infernux-release-notes-$Version.md"
+[IO.File]::WriteAllText($ReleaseNotesFile, "$CurrentReleaseNotes`n", [Text.UTF8Encoding]::new($false))
 
 function Test-TrustedSignature([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
@@ -196,7 +203,7 @@ if ($Publish) {
     $Files = @(Get-ChildItem -LiteralPath $ReleaseDir -File | ForEach-Object { $_.FullName })
     if (-not $ReleaseExists) {
         Invoke-GhWithRetry "Creating GitHub Release $Tag" {
-            & gh release create $Tag --repo ChenlizheMe/Infernux --title "Infernux v$Version" --notes-file $UpdateLog --latest
+            & gh release create $Tag --repo ChenlizheMe/Infernux --title "Infernux v$Version" --notes-file $ReleaseNotesFile --latest
             if ($LASTEXITCODE -ne 0) {
                 & gh release view $Tag --repo ChenlizheMe/Infernux *> $null
             }
@@ -225,7 +232,7 @@ if ($Publish) {
     }
 
     Invoke-GhWithRetry "Updating metadata for $Tag" {
-        & gh release edit $Tag --repo ChenlizheMe/Infernux --title "Infernux v$Version" --notes-file $UpdateLog --latest
+        & gh release edit $Tag --repo ChenlizheMe/Infernux --title "Infernux v$Version" --notes-file $ReleaseNotesFile --latest
     }
     Write-Host "Published GitHub Release $Tag." -ForegroundColor Green
 } else {

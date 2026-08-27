@@ -48,6 +48,8 @@ This tree is **0.3.7**. It runs on Windows x64. Android, Web, and Linux Players 
 
 MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.
 
+In 0.3.7, animation-only FBX files can drive a matching skinned model without geometrically guessing joint correspondence; Assimp pivot helpers are handled, while incompatible rigs fail explicitly.
+
 ## Plugins
 
 An Infernux plugin is an InxPackage. Drop a `.inxpkg`, point at a folder, paste a GitHub URL, or install from the official list.

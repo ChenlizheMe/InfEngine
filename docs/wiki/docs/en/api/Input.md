@@ -9,7 +9,7 @@ class in <b>Infernux.input</b>
 Interface for reading input from keyboard, mouse, and touch.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.6
+**Status:** Preview · **Verified with:** 0.3.7
 
 Use held-state queries for continuous actions and down/up queries for one-frame edges. Gameplay mouse work should use Game viewport coordinates and respect Game focus.
 <!-- USER CONTENT END -->

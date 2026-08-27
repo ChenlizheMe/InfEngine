@@ -14,7 +14,7 @@ wrapper (or ``clip.native``) to ``AudioSource.set_track_clip`` or
 still using it.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.6
+**Status:** Preview · **Verified with:** 0.3.7
 
 The current reliable decoder supports WAV. Keep a loaded clip alive while an AudioSource track or one-shot may still reference it.
 <!-- USER CONTENT END -->

@@ -41,8 +41,8 @@ struct SkinnedRuntimeNode
 
 struct SkinnedRuntimeTrack
 {
-    /// Source-skeleton node targeted by this channel.  FBX channel names are
-    /// resolved once during import and never participate in retargeting.
+    /// Source-skeleton node targeted by this channel. FBX channel names are
+    /// resolved once during import; skeleton node names establish retarget identity.
     int nodeIndex = -1;
     std::vector<std::pair<double, glm::vec3>> positions;
     std::vector<std::pair<double, glm::quat>> rotations;
@@ -66,7 +66,12 @@ struct SkeletonRetargetMap
     /// Target node index -> source node index; -1 leaves the target at bind pose.
     std::vector<int> targetToSourceNode;
     size_t mappedNodes = 0;
+    /// Mappings established by exact skeleton node identity.
+    size_t exactNameMatches = 0;
     size_t mappedAnimatedNodes = 0;
+    /// Source animation tracks that affect at least one mapped target node,
+    /// including FBX pivot/helper tracks above an exactly matched joint.
+    size_t mappedAnimationTracks = 0;
     size_t missingTargetDeformJoints = 0;
     size_t topologyDifferences = 0;
     bool identicalTopology = false;
@@ -74,11 +79,13 @@ struct SkeletonRetargetMap
 
 /**
  * Runtime skeleton shared by a renderable skin and independently imported
- * animation sources.  Geometry,
- * inverse-bind data and animation tracks no
- * longer define asset identity together. Animation tracks are mapped to
- * this
- * target skeleton independently, with partial humanoid matches supported.
+ * animation sources. Geometry, inverse-bind
+ * data, and animation tracks no
+ * longer define one asset identity. Automatic retargeting requires exact joint
+ *
+ * names and the same mapped deformation hierarchy, while allowing unmatched
+ * importer helper nodes between those
+ * joints.
  */
 class Skeleton
 {

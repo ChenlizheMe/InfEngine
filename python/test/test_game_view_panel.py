@@ -348,6 +348,35 @@ def test_game_texture_handle_refreshes_after_resize_or_camera_change(monkeypatch
     assert engine.texture_queries == 3
 
 
+def test_game_texture_handle_refreshes_when_fallback_camera_is_created(monkeypatch):
+    class _CountingEngine(_Engine):
+        def __init__(self):
+            super().__init__()
+            self.texture_queries = 0
+            self.texture_id = 0
+
+        def get_game_texture_id(self) -> int:
+            self.texture_queries += 1
+            return self.texture_id
+
+    scene = SimpleNamespace(main_camera=None, structure_version=1)
+    engine = _CountingEngine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(panel, "_game_texture_render_revision", lambda: (4, 8))
+
+    assert panel._get_game_texture_id(scene) == 0
+    assert panel._get_game_texture_id(scene) == 0
+    assert engine.texture_queries == 1
+
+    # Adding a Camera bumps native Scene.structure_version even when no
+    # explicit Scene.main_camera preference has been authored.
+    engine.texture_id = 73
+    scene.structure_version += 1
+    assert panel._get_game_texture_id(scene) == 73
+    assert panel._get_game_texture_id(scene) == 73
+    assert engine.texture_queries == 2
+
+
 def test_game_texture_handle_refreshes_when_native_target_generation_changes(monkeypatch):
     class _CountingEngine(_Engine):
         def __init__(self):

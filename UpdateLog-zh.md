@@ -1,10 +1,10 @@
-# Infernux v0.3.7 · 插件
+# Infernux v0.3.7 · 插件系统与骨骼动画
 
-0.3.7 加了 InxPackage 插件。MCP 不再焊在引擎核心里。
+0.3.7 加入 InxPackage 插件系统，把 MCP 从引擎核心中拆出，并修复从独立 FBX 文件导入的骨骼动画。
 
 [English release notes](UpdateLog.md)
 
-**版本对比：** [`v0.3.6...HEAD`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...HEAD)
+**版本对比：** [`v0.3.6...v0.3.7`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...v0.3.7)
 
 ### 插件
 
@@ -13,10 +13,15 @@
 - 插件窗口里的说明来自 `README.md`、`LICENSE` 和 `InxPluginPages/`。
 - MCP 变成官方默认插件 `infernux/mcp`。新项目会带上，可以禁用或卸载。
 
-### 编辑器
+### 骨骼动画
 
-- 插件窗口：安装、启用、禁用、重载、卸载。
-- Headless 走和编辑器同一套场景与撤销。
+- 独立动画 FBX 通过精确关节名称映射，同时允许 Assimp 在对应关节之间插入 pivot 和辅助节点。
+- 对关节改名或层级不兼容的骨架明确拒绝自动重定向，不再按几何形状猜测并错误驱动肢体。
+
+### 编辑器与创作流程
+
+- 插件窗口支持安装、启用、禁用、重载和卸载，并从下载开始持续显示进度直到激活完成。
+- Headless 和 MCP 创作走与编辑器相同的场景、命令、权限和撤销路径。
 
 ---
 

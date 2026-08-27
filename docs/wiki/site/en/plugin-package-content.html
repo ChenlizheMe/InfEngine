@@ -279,8 +279,7 @@
 </code></pre></div>
 <p>Disabled packages are skipped. If <code>unload</code> fails, the engine stops and asks you to restart. It will not pretend the plugin is gone.</p>
 <h2 id="dependencies">Dependencies<a class="headerlink" href="#dependencies" title="Permanent link">&para;</a></h2>
-<p>Names in <code>requirements.txt</code> are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin.</p>
-<p>Pip rollback is best-effort. Infernux records installed distribution names and versions, removes distributions added by a failed transaction, and asks pip to reinstall changed baseline versions. This cannot faithfully recreate every local wheel, Git/VCS URL, editable install, custom build, or file overwritten in place by pip. Plugin files and the InxPackage registry are still transactional. Use a reproducible project environment or an external environment lock when exact Python recovery matters.</p>
+<p>Names in <code>requirements.txt</code> are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin. If pip fails, Infernux tries to remove what that install added. Local wheels and git installs may not come back exactly.</p>
 <h2 id="player-builds">Player builds<a class="headerlink" href="#player-builds" title="Permanent link">&para;</a></h2>
 <p><code>Runtime</code> and regular assets go into the game. <code>Editor</code>, README, license, and doc pages stay out. There is no include/exclude list.</p>
 <h2 id="install-uninstall-moving-files">Install, uninstall, moving files<a class="headerlink" href="#install-uninstall-moving-files" title="Permanent link">&para;</a></h2>
