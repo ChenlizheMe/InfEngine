@@ -28,6 +28,58 @@ def test_line_renderer_is_available_through_the_component_system(scene):
     assert line._cpp_component.index_count == 6
 
 
+def test_line_renderer_inspector_uses_specialized_curve_gradient_and_position_editors(
+    scene, monkeypatch
+):
+    from Infernux.engine.ui import inspector_components, inspector_utils
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    line = scene.create_game_object("InspectedLine").add_component("LineRenderer")
+    visited = []
+
+    class Context:
+        def collapsing_header(self, label):
+            visited.append(label)
+            return True
+
+        def vector3(self, _label, x, y, z, _speed, _label_width):
+            return (x, y, z)
+
+    monkeypatch.setattr(
+        inspector_components,
+        "render_builtin_via_setters",
+        lambda *_args, **_kwargs: visited.append("Built-in Properties"),
+    )
+    monkeypatch.setattr(inspector_utils, "max_label_w", lambda *_args: 120.0)
+    monkeypatch.setattr(
+        ParticleGraphEditorPanel,
+        "_render_curve_property",
+        lambda _ctx, _uid, _key, value, **_kwargs: (
+            visited.append("Curve Editor") or value
+        ),
+    )
+    monkeypatch.setattr(
+        ParticleGraphEditorPanel,
+        "_render_gradient_property",
+        lambda _ctx, _uid, _key, value, **_kwargs: (
+            visited.append("Gradient Editor") or value
+        ),
+    )
+
+    line.render_inspector(Context())
+
+    assert visited == [
+        "Built-in Properties",
+        "Width Curve",
+        "Curve Editor",
+        "Color Gradient",
+        "Gradient Editor",
+        "Positions",
+    ]
+
+
 def test_line_renderer_point_edits_rebuild_only_derived_geometry(scene):
     line = scene.create_game_object("Polyline").add_component("LineRenderer")
     line.set_positions([(0, 0, 0), (1, 1, 0), (2, 0, 0)])
