@@ -21,6 +21,7 @@
 #include "function/scene/CylinderCollider.h"
 #include "function/scene/GameObject.h"
 #include "function/scene/Light.h"
+#include "function/scene/LineRenderer.h"
 #include "function/scene/MeshCollider.h"
 #include "function/scene/MeshRenderer.h"
 #include "function/scene/ObjectHandle.h"
@@ -1212,6 +1213,44 @@ void RegisterSceneBindings(py::module_ &m)
             },
             "Get world-space AABB as (min_x, min_y, min_z, max_x, max_y, max_z)");
 
+    py::enum_<LineAlignment>(m, "LineAlignment")
+        .value("View", LineAlignment::View)
+        .value("TransformZ", LineAlignment::TransformZ)
+        .export_values();
+
+    py::enum_<LineTextureMode>(m, "LineTextureMode")
+        .value("Stretch", LineTextureMode::Stretch)
+        .value("Tile", LineTextureMode::Tile)
+        .export_values();
+
+    py::class_<LineRenderer, MeshRenderer>(m, "LineRenderer")
+        .def(py::init<>())
+        .def_property(
+            "position_count", &LineRenderer::GetPositionCount,
+            [](LineRenderer &renderer, py::ssize_t count) {
+                if (count < 0)
+                    throw py::value_error("position_count must be non-negative");
+                renderer.SetPositionCount(static_cast<size_t>(count));
+            },
+            "Number of authored line positions")
+        .def("get_position", &LineRenderer::GetPosition, py::arg("index"), "Get one authored position")
+        .def("set_position", &LineRenderer::SetPosition, py::arg("index"), py::arg("position"),
+             "Set one authored position")
+        .def("get_positions", &LineRenderer::GetPositions, py::return_value_policy::copy, "Get all authored positions")
+        .def("set_positions", &LineRenderer::SetPositions, py::arg("positions"), "Replace all authored positions")
+        .def_property("start_width", &LineRenderer::GetStartWidth, &LineRenderer::SetStartWidth)
+        .def_property("end_width", &LineRenderer::GetEndWidth, &LineRenderer::SetEndWidth)
+        .def_property("width_multiplier", &LineRenderer::GetWidthMultiplier, &LineRenderer::SetWidthMultiplier)
+        .def_property("start_color", &LineRenderer::GetStartColor, &LineRenderer::SetStartColor)
+        .def_property("end_color", &LineRenderer::GetEndColor, &LineRenderer::SetEndColor)
+        .def_property("loop", &LineRenderer::GetLoop, &LineRenderer::SetLoop)
+        .def_property("use_world_space", &LineRenderer::GetUseWorldSpace, &LineRenderer::SetUseWorldSpace)
+        .def_property("alignment", &LineRenderer::GetAlignment, &LineRenderer::SetAlignment)
+        .def_property("texture_mode", &LineRenderer::GetTextureMode, &LineRenderer::SetTextureMode)
+        .def_property("texture_scale", &LineRenderer::GetTextureScale, &LineRenderer::SetTextureScale)
+        .def("simplify", &LineRenderer::Simplify, py::arg("tolerance"),
+             "Reduce the position list using Ramer-Douglas-Peucker simplification");
+
     // ========================================================================
     // SkinnedMeshRenderer — animated model placeholder, inherits MeshRenderer
     // ========================================================================
@@ -1488,6 +1527,9 @@ void RegisterSceneBindings(py::module_ &m)
     auto &registry = ComponentBindingRegistry::Instance();
     registry.Register("MeshRenderer", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<MeshRenderer *>(c), py::return_value_policy::reference);
+    });
+    registry.Register("LineRenderer", [](Component *c) -> py::object {
+        return py::cast(dynamic_cast<LineRenderer *>(c), py::return_value_policy::reference);
     });
     registry.Register("SkinnedMeshRenderer", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<SkinnedMeshRenderer *>(c), py::return_value_policy::reference);

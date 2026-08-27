@@ -55,6 +55,7 @@ layout(location = 2) out vec4 v_Tangent;
 layout(location = 3) out vec3 v_Color;
 layout(location = 4) out vec2 v_TexCoord;
 layout(location = 5) out float v_ViewDepth;
+layout(location = 6) out vec4 v_LineColor;
 
 // Vertex input structure (same as forward — user vertex() functions work unchanged)
 struct VertexInput {

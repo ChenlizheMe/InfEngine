@@ -134,11 +134,11 @@ void surface(out SurfaceData s)
     assert(artifact.shadingModel == "PBR");
     assert(artifact.varyings.size() == 3);
     assert(artifact.varyings[0].name == "waveUV");
-    assert(artifact.varyings[0].location == 6);
+    assert(artifact.varyings[0].location == 7);
     assert(artifact.varyings[1].name == "waveBand");
-    assert(artifact.varyings[1].location == 7);
+    assert(artifact.varyings[1].location == 8);
     assert(artifact.varyings[2].name == "waveHeight");
-    assert(artifact.varyings[2].location == 8);
+    assert(artifact.varyings[2].location == 9);
 
     const auto &amplitude = RequireProperty(artifact, "amplitude");
     assert(amplitude.visibility ==
@@ -225,9 +225,9 @@ void surface(out SurfaceData s)
     duplicateVariantArtifact.variants.push_back(*forwardVariant);
     assert(!duplicateVariantArtifact.IsValid());
     assert(runtimeArtifact.key.ToString().find("Tests/WaveDeform|Tests/OceanSurface@") == 0);
-    assert(compiledProgram.generatedVertexSource.find("layout(location = 6) smooth out vec2 _inx_v_waveUV;") !=
+    assert(compiledProgram.generatedVertexSource.find("layout(location = 7) smooth out vec2 _inx_v_waveUV;") !=
            std::string::npos);
-    assert(compiledProgram.generatedFragmentSource.find("layout(location = 7) flat in int _inx_v_waveBand;") !=
+    assert(compiledProgram.generatedFragmentSource.find("layout(location = 8) flat in int _inx_v_waveBand;") !=
            std::string::npos);
     assert(compiledProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
            std::string::npos);
@@ -295,7 +295,7 @@ void surface(out SurfaceData s)
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
     assert(shadowCompilation != completeCompilation.compiledVariants.end());
-    assert(shadowCompilation->generatedVertexSource.find("layout(location = 6) smooth out vec2 _inx_v_waveUV;") !=
+    assert(shadowCompilation->generatedVertexSource.find("layout(location = 7) smooth out vec2 _inx_v_waveUV;") !=
            std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find(
                "layout(set = 2, binding = 0) uniform sampler2D displacement;") != std::string::npos);
@@ -304,7 +304,7 @@ void surface(out SurfaceData s)
     assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 3") != std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find("InstanceAuxBuffer") == std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 4") == std::string::npos);
-    assert(shadowCompilation->generatedFragmentSource.find("layout(location = 6) smooth in vec2 _inx_v_waveUV;") !=
+    assert(shadowCompilation->generatedFragmentSource.find("layout(location = 7) smooth in vec2 _inx_v_waveUV;") !=
            std::string::npos);
 
     const auto depthCompilation =

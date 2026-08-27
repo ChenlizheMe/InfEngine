@@ -1605,7 +1605,8 @@ bool ProjectPanel::IsUiPrefabFile(const std::string &filePath, uint64_t cachedMt
                type == "InxUIComponent" || type == "InxUIScreenComponent" || type == "InxUISelectable";
     };
     const auto isSceneMeshComponent = [](const std::string &type) {
-        return type == "MeshRenderer" || type == "SkinnedMeshRenderer" || type == "SpriteRenderer";
+        return type == "MeshRenderer" || type == "SkinnedMeshRenderer" || type == "SpriteRenderer" ||
+               type == "LineRenderer";
     };
 
     std::function<void(const nlohmann::json &)> walk = [&](const nlohmann::json &node) {

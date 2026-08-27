@@ -312,6 +312,14 @@ class MeshRenderer : public Component
     /// @brief Compute world bounds from a pre-computed world matrix (avoids double GetWorldMatrix)
     virtual void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;
 
+    /// @brief Resolve the matrix submitted to rendering for this renderer.
+    /// Procedural renderers may override this when their authored geometry is
+    /// already expressed in world space.
+    [[nodiscard]] virtual glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const
+    {
+        return objectWorldMatrix;
+    }
+
     /// @brief Recompute local bounds from inline vertex positions.
     void ComputeLocalBoundsFromInlineVertices();
 
@@ -329,6 +337,17 @@ class MeshRenderer : public Component
 
   protected:
     static void ValidateSerializedDocumentForType(const nlohmann::json &document, std::string_view expectedType);
+
+    /// Derived renderers may generate their inline mesh entirely from their
+    /// authored fields and omit that cache from scene documents.
+    [[nodiscard]] virtual bool ShouldSerializeInlineMeshData() const
+    {
+        return true;
+    }
+
+    /// Replace derived procedural geometry without changing renderer
+    /// membership. This keeps per-frame edits on the render-content fast path.
+    void SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices);
 
   private:
     MeshRef m_mesh;

@@ -20,7 +20,15 @@ from Infernux.components import serialized_field
 from Infernux.components import *
 from Infernux import core
 from Infernux.core import *
-from Infernux.lib import GameObject, Transform, Component, Space, PrimitiveType
+from Infernux.lib import (
+    Component,
+    GameObject,
+    LineAlignment,
+    LineTextureMode,
+    PrimitiveType,
+    Space,
+    Transform,
+)
 from Infernux.debug import Debug, debug, log, log_warning, log_error, log_exception
 from Infernux import scene
 from Infernux.scene import GameObjectQuery, LayerMask, SceneManager
@@ -93,6 +101,8 @@ __all__ = [
     "Component",
     "Space",
     "PrimitiveType",
+    "LineAlignment",
+    "LineTextureMode",
     # Components — user-facing
     "InxComponent",
     "serialized_field",
@@ -112,6 +122,7 @@ __all__ = [
     # Builtin components
     "Light",
     "MeshRenderer",
+    "LineRenderer",
     "SkinnedMeshRenderer",
     "Camera",
     "Collider",

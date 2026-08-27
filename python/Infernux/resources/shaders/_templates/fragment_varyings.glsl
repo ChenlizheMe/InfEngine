@@ -11,3 +11,4 @@ layout(location = 2) in vec4 v_Tangent;
 layout(location = 3) in vec3 v_Color;
 layout(location = 4) in vec2 v_TexCoord;
 layout(location = 5) in float v_ViewDepth;
+layout(location = 6) in vec4 v_LineColor;

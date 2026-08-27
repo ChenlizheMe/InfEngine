@@ -1186,7 +1186,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 
     // Standalone passes declare their stage interfaces in ShaderInfo. Linked
     // material programs use the stage linker path above instead.
-    // Surface/vertex() stages already occupy locations 0-5 with engine
+    // Surface/vertex() stages already occupy locations 0-6 with engine
     // varyings. Runtime import validates those files before pair linking, so
     // ShaderInfo Inputs/Outputs must not reuse those locations.
     const bool explicitVertexInterface =

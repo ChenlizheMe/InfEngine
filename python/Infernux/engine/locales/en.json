@@ -1040,6 +1040,7 @@
   "particle_system.manual_bounds_center": "Manual Bounds Center",
   "particle_system.manual_bounds_size": "Manual Bounds Size",
   "component.camera": "Camera",
+  "component.line_renderer": "Line Renderer",
   "camera.section.clipping": "Clipping Planes",
   "camera.section.clear": "Environment",
   "camera.section.output": "Output",
