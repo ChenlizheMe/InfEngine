@@ -4,8 +4,6 @@ import json
 
 from Infernux.engine.ui import inspector_shader_utils
 from Infernux.engine.ui import inspector_material
-from Infernux.mcp.tools import api as mcp_api
-from Infernux.mcp.tools import material as mcp_material
 
 
 def _write_meta(path, metadata):
@@ -337,66 +335,3 @@ def test_shader_catalog_cache_tracks_project_search_roots(monkeypatch, tmp_path)
     assert inspector_shader_utils._get_shader_catalog(".frag")["items"] == [
         ("Tests/Second", "Tests/Second")
     ]
-
-
-def test_mcp_catalog_consumes_native_shader_metadata(tmp_path):
-    shader = tmp_path / "structured.frag"
-    shader.write_text(
-        'ShaderInfo { Name "Source/ShouldNotBeParsed" }\nvoid main() {}\n',
-        encoding="utf-8",
-    )
-    _write_meta(
-        shader,
-        {
-            "shader_id": "Imported/McpShader",
-            "shader_schema_format": "ShaderInfo",
-            "shader_hidden": False,
-            "shader_lighting_type": "unlit",
-            "shader_queue": "2010",
-            "shader_imports": json.dumps(["lib/common"]),
-            "shader_requirements": json.dumps(["Lighting"]),
-            "shader_capabilities": json.dumps(["ForwardPlus"]),
-            "shader_unsupported": json.dumps(["Deferred"]),
-            "shader_inputs": json.dumps([{"name": "uv", "type": "Float2"}]),
-            "shader_outputs": json.dumps([]),
-            "shader_entries": json.dumps({"Surface": "surface"}),
-            "properties": json.dumps([]),
-        },
-    )
-
-    annotations = mcp_api._parse_shader_annotations(str(shader))
-    assert annotations["shader_id"] == "Imported/McpShader"
-    assert annotations["imports"] == ["lib/common"]
-    assert annotations["requirements"] == ["Lighting"]
-    assert annotations["capabilities"] == ["ForwardPlus"]
-    assert annotations["unsupported"] == ["Deferred"]
-    assert annotations["targets"] == ["Surface"]
-    assert annotations["schema_format"] == "ShaderInfo"
-
-
-def test_mcp_shader_examples_prefer_structured_schema():
-    examples = mcp_api._shader_examples()
-    assert "ShaderInfo {" in examples["surface_fragment"]
-    assert "@" not in examples["surface_fragment"]
-    assert "fullscreen_effect_fragment" not in examples
-
-
-def test_material_shader_stage_validation_uses_imported_catalog(monkeypatch):
-    monkeypatch.setattr(
-        mcp_api,
-        "_scan_shaders",
-        lambda: [
-            {"shader_id": "standard", "kind": "vertex"},
-            {"shader_id": "Imported/McpShader", "kind": "fragment"},
-        ],
-    )
-
-    mcp_material._require_shader_stage("standard", "vertex")
-    mcp_material._require_shader_stage("imported/mcpshader", "fragment")
-
-    try:
-        mcp_material._require_shader_stage("standard", "fragment")
-    except ValueError as exc:
-        assert "not a fragment shader" in str(exc)
-    else:
-        raise AssertionError("A vertex shader was accepted as a fragment shader")

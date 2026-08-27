@@ -363,26 +363,3 @@ def test_native_project_drop_has_no_filesystem_copy_fallback():
     assert "class ProjectAssetInteractionService" in interactions
     assert "self._assets.import_external(" in interactions
     assert "self._assets.transfer_to_directory(" in interactions
-
-
-def test_mcp_structural_asset_tools_have_no_raw_filesystem_fallbacks():
-    source = (
-        os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "Infernux",
-            "mcp",
-            "tools",
-            "assets.py",
-        )
-    )
-    text = open(source, "r", encoding="utf-8").read()
-    structural = text[text.index('    @mcp.tool(name="asset_delete")') : text.index('    @mcp.tool(name="asset_get_meta")')]
-
-    assert "project_file_ops import delete_item" not in structural
-    assert "project_file_ops import move_path" not in structural
-    assert "project_file_ops import do_rename" not in structural
-    assert "project_file_ops import copy_path_as_new_asset" not in structural
-    assert "shutil.rmtree" not in structural
-    assert "os.rename" not in structural
-    assert "_project_asset_commands(project_path)" in structural

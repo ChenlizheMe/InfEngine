@@ -232,8 +232,14 @@ void ConstrainNextFloatingWindowToMainViewport(const std::string &name, int flag
         std::abs(constrainedPos.x - window->Pos.x) > 0.5f || std::abs(constrainedPos.y - window->Pos.y) > 0.5f;
     if (sizeChanged)
         ImGui::SetNextWindowSize(constrainedSize, ImGuiCond_Always);
-    if (positionChanged || sizeChanged)
+    if (positionChanged || sizeChanged) {
         ImGui::SetNextWindowPos(constrainedPos, ImGuiCond_Always);
+        // A recovered floating window may still sit behind the dock host that
+        // previously covered its off-screen position. Bring it forward at the
+        // same one-shot recovery boundary so its title bar and close control
+        // are immediately reachable again.
+        ImGui::SetNextWindowFocus();
+    }
 }
 
 bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *data, const void *minimum,

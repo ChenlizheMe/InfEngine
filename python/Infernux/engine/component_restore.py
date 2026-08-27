@@ -632,13 +632,25 @@ def _publish_prepared_scene_python_components(
         raise PythonComponentRestoreError("native pending Python component count changed after preflight")
 
     targets = []
+    pending_component_ids: set[int] = set()
     for pc, item in zip(pending, prepared):
         fields = pc.fields_document
         if not isinstance(fields, dict):
             raise PythonComponentRestoreError("native pending fields document must be an object")
+        pending_component_id = fields.get("__component_id__")
+        if type(pending_component_id) is not int or pending_component_id <= 0:
+            raise PythonComponentRestoreError(
+                "native pending Python component has an invalid __component_id__"
+            )
+        if pending_component_id in pending_component_ids:
+            raise PythonComponentRestoreError(
+                "native pending Python components use a duplicate __component_id__"
+            )
+        pending_component_ids.add(pending_component_id)
         comparable_fields = dict(fields)
-        if item.component_id is None:
-            comparable_fields.pop("__component_id__", None)
+        comparable_fields.pop("__component_id__", None)
+        prepared_fields = dict(item.fields_document)
+        prepared_fields.pop("__component_id__", None)
         if (
             (item.game_object_id is not None and pc.game_object_id != item.game_object_id)
             or pc.type_name != item.type_name
@@ -646,9 +658,19 @@ def _publish_prepared_scene_python_components(
             or (getattr(pc, "type_guid", "") or "") != item.type_guid
             or bool(pc.enabled) != item.enabled
             or int(pc.execution_order) != item.execution_order
-            or comparable_fields != item.fields_document
+            or comparable_fields != prepared_fields
         ):
             raise PythonComponentRestoreError("native pending Python descriptor changed after preflight")
+        # Scene::DeserializeDocument may have to allocate fresh native IDs
+        # when another live Scene occupies document IDs. Python proxies do not
+        # exist during native staging, so the pending descriptor carries the
+        # authoritative freshly reserved ID into this publication phase.
+        if item.component_id is not None:
+            item.component_id = pending_component_id
+            item.fields_document = {
+                **item.fields_document,
+                "__component_id__": pending_component_id,
+            }
         target = scene.find_by_id(pc.game_object_id)
         if target is None:
             raise PythonComponentRestoreError(

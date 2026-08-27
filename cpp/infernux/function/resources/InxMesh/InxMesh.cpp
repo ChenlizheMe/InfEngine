@@ -32,7 +32,7 @@ size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
 
 void InxMesh::SetSkinnedData(std::shared_ptr<const InxSkinnedMesh> skinnedData)
 {
-    if (skinnedData && !skinnedData->IsValid())
+    if (skinnedData && !skinnedData->IsAssetPayloadValid())
         throw std::invalid_argument("InxMesh cannot attach invalid skinned data");
     m_skinnedData = std::move(skinnedData);
     ++m_generation;

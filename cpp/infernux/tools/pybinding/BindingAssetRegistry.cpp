@@ -49,7 +49,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("skinned_bone_count",
                                [](const InxMesh &mesh) {
                                    const auto &skinned = mesh.GetSkinnedData();
-                                   return skinned ? skinned->bones.size() : size_t{0};
+                                   return skinned ? skinned->skeleton.bones.size() : size_t{0};
                                })
         .def_property_readonly("skinned_animation_count",
                                [](const InxMesh &mesh) {

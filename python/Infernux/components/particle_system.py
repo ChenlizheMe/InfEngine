@@ -1562,6 +1562,12 @@ class ParticleSystem(InxComponent):
     def _load_saved_artifact(self, *, force: bool = False) -> bool:
         if self._try_get_game_object() is None:
             return False
+        # Headless is an authoring/simulation host with no graphical renderer.
+        # ParticleGraph source and AOT assets remain available to tooling, but
+        # a ParticleSystem must not repeatedly attempt to publish a GPU batch
+        # while a scene is restored or ticked there.
+        if Application.is_headless():
+            return False
         self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
         graph_ref = get_raw_field_value(self, "graph")
         now = time.monotonic()
@@ -2807,8 +2813,16 @@ class ParticleSystem(InxComponent):
                     depth_write_enabled=bool(material.depth_write_enable),
                     native=material.native,
                 )
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-            pass
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"GPU particle output {getattr(output, 'output_id', '<unknown>')!r} "
+                f"could not create its {getattr(output, 'shader', '<unknown>')!r} material: {exc}"
+            ) from exc
+        if state["native"] is None:
+            raise RuntimeError(
+                f"GPU particle output {getattr(output, 'output_id', '<unknown>')!r} "
+                "did not produce a native material"
+            )
         if not is_mesh and bool(getattr(output, "soft_particles", False)):
             from Infernux.lib import EngineConfig
 

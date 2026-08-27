@@ -17,6 +17,18 @@ const pyproject = await readFile(path.resolve("pyproject.toml"), "utf8");
 const packageVersion = pyproject.match(/^version\s*=\s*"([^"]+)"/m)?.[1] || "";
 const currentVersion = String(release.version || "").trim();
 
+function parseVersion(value) {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(value || "").trim());
+    return match ? match.slice(1).map(Number) : null;
+}
+
+function compareVersions(left, right) {
+    for (let index = 0; index < 3; index += 1) {
+        if (left[index] !== right[index]) return left[index] - right[index];
+    }
+    return 0;
+}
+
 if (!currentVersion) fail("release.json: missing the current release version");
 if (release.tag !== `v${currentVersion}`) fail(`release.json: tag '${release.tag}' does not match version ${currentVersion}`);
 for (const asset of release.assets || []) {
@@ -27,8 +39,14 @@ for (const asset of release.assets || []) {
 if (docsManifest.documented_release !== currentVersion) {
     fail(`docs-manifest.json: documented_release ${docsManifest.documented_release} does not match release.json ${currentVersion}`);
 }
-if (packageVersion !== currentVersion) {
-    fail(`pyproject.toml: package version ${packageVersion || "<missing>"} does not match release.json ${currentVersion}`);
+const packageVersionParts = parseVersion(packageVersion);
+const currentVersionParts = parseVersion(currentVersion);
+if (!packageVersionParts) {
+    fail(`pyproject.toml: package version ${packageVersion || "<missing>"} is invalid`);
+} else if (!currentVersionParts) {
+    fail(`release.json: release version ${currentVersion || "<missing>"} is invalid`);
+} else if (compareVersions(packageVersionParts, currentVersionParts) < 0) {
+    fail(`pyproject.toml: package version ${packageVersion} is older than published release ${currentVersion}`);
 }
 if (releaseNotes.version !== currentVersion || releaseNotes.tag !== `v${currentVersion}`) {
     fail(`release-notes.json: version/tag does not match current release ${currentVersion}`);
@@ -48,25 +66,25 @@ else if (currentSnapshot.release !== currentVersion) {
     fail(`api-snapshots/${currentVersion}.json: snapshot release ${currentSnapshot.release} does not match ${currentVersion}`);
 }
 
-const versionContracts = [
-    ["README.md", `version-${currentVersion}-orange.svg`],
-    ["README.md", `## ${currentVersion}`],
-    ["README.md", `version = {${currentVersion}}`],
-    ["README-zh.md", `version-${currentVersion}-orange.svg`],
-    ["README-zh.md", `## ${currentVersion}`],
-    ["README-zh.md", `version = {${currentVersion}}`],
-    ["packaging/windows_version_info.txt", `'${currentVersion}.0'`],
-    ["packaging/windows_version_info.txt", `filevers=(${currentVersion.replaceAll(".", ", ")}, 0)`],
-    ["packaging/windows_version_info.txt", `prodvers=(${currentVersion.replaceAll(".", ", ")}, 0)`],
-    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `"${currentVersion}.0"`],
-    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `FILEVERSION ${currentVersion.replaceAll(".", ",")},0`],
-    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `PRODUCTVERSION ${currentVersion.replaceAll(".", ",")},0`],
-    ["python/Infernux/mcp/tools/common.py", `MCP_SERVER_VERSION = "${currentVersion}"`],
-    ["python/Infernux/mcp/tools/project.py", `"engine_version": "${currentVersion}"`],
+const readmeVersionContracts = [
+    ["README.md", `version-${packageVersion}-orange.svg`],
+    ["README.md", `**${packageVersion}**`],
+    ["README.md", `version = {${packageVersion}}`],
+    ["README-zh.md", `version-${packageVersion}-orange.svg`],
+    ["README-zh.md", `**${packageVersion}**`],
+    ["README-zh.md", `version = {${packageVersion}}`],
 ];
-for (const [relative, token] of versionContracts) {
+const packageVersionContracts = [
+    ["packaging/windows_version_info.txt", `'${packageVersion}.0'`],
+    ["packaging/windows_version_info.txt", `filevers=(${packageVersion.replaceAll(".", ", ")}, 0)`],
+    ["packaging/windows_version_info.txt", `prodvers=(${packageVersion.replaceAll(".", ", ")}, 0)`],
+    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `"${packageVersion}.0"`],
+    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `FILEVERSION ${packageVersion.replaceAll(".", ",")},0`],
+    ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `PRODUCTVERSION ${packageVersion.replaceAll(".", ",")},0`],
+];
+for (const [relative, token] of [...readmeVersionContracts, ...packageVersionContracts]) {
     const content = await readFile(path.resolve(relative), "utf8");
-    if (!content.includes(token)) fail(`${relative}: missing current-version contract '${token}'`);
+    if (!content.includes(token)) fail(`${relative}: missing version contract '${token}'`);
 }
 
 async function exists(relative) {

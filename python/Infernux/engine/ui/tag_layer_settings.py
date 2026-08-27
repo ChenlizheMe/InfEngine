@@ -1,8 +1,7 @@
 """
 Tag & Layer Settings Panel — project-wide tag/layer management and physics settings.
 
-Tags/Layers remain a dockable editor panel.
-Physics settings are exposed through a separate standalone floating window.
+Tags/Layers and physics settings are regular dockable editor panels.
 """
 
 from Infernux.engine.i18n import t
@@ -12,7 +11,7 @@ from Infernux.engine.interaction import (
 )
 from Infernux.lib import InxGUIContext
 from Infernux.physics import settings as _phys_settings
-from .editor_panel import EditorPanel, FloatingEditorPanel
+from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiWindowFlags
 from .igui import IGUI
@@ -262,15 +261,11 @@ class TagLayerSettingsPanel(EditorPanel):
     menu_path="",
     interaction=PanelInteractionDescriptor(document_backed=True),
 )
-class PhysicsLayerMatrixPanel(FloatingEditorPanel):
+class PhysicsLayerMatrixPanel(EditorPanel):
     """Project physics utility surface and collision matrix."""
 
     def __init__(self):
-        super().__init__(
-            title="Physics Layer Matrix",
-            window_id="physics_settings",
-            size=(980.0, 720.0),
-        )
+        super().__init__(title="Physics Layer Matrix", window_id="physics_settings")
         self._project_path = ""
         self._mgr = None
         self._gravity = list(_phys_settings.DEFAULT_PHYSICS_SETTINGS["gravity"])
@@ -278,6 +273,9 @@ class PhysicsLayerMatrixPanel(FloatingEditorPanel):
         self._max_fixed_delta_time = float(_phys_settings.DEFAULT_PHYSICS_SETTINGS["max_fixed_delta_time"])
         self._physics_settings = dict(_phys_settings.DEFAULT_PHYSICS_SETTINGS)
         self._settings_controller = None
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 980.0, 720.0
 
     def set_project_path(self, path: str):
         self._project_path = path

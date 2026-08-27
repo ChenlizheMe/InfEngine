@@ -1145,7 +1145,7 @@ def test_internal_asset_script_ingress_uses_collector_and_origin_mapping(
     handler.process_script_worker()
     first = handler._script_change_collector.drain_completed()
     assert len(first) == 1
-    assert first[0].change.origin == "mcp"
+    assert first[0].change.origin == "automation"
 
     script.write_text("value = 2\n", encoding="utf-8")
     with action_origin_scope(ActionOrigin.EXTERNAL):
@@ -1206,7 +1206,7 @@ def test_duplicate_script_transaction_echo_keeps_canonical_publication_owner(
 
     first = handler._check_script(
         path,
-        origin="mcp",
+        origin="automation",
         transaction_id="canonical-write",
     )
     echo = handler._check_script(

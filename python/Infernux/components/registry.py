@@ -597,6 +597,23 @@ def get_type(name: str) -> Optional[Type['InxComponent']]:
     return matches[-1] if matches else None
 
 
+def get_type_registration(name: str) -> Optional[ComponentRegistration]:
+    """Return the newest registration for one exact component type name.
+
+    Unlike the Add Component catalog this includes multi-type project scripts.
+    Callers that instantiate an explicitly requested Python component need the
+    owning script path so they can bind the class to its AssetDatabase GUID
+    before the component enters scene history.
+    """
+    with _registration_lock:
+        matches = [
+            entry
+            for entry in _type_registrations.values()
+            if entry.type_name == name and entry.component_type is not None
+        ]
+    return matches[-1] if matches else None
+
+
 def get_type_by_identity(
     name: str,
     script_guid: str,

@@ -481,10 +481,9 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
             animationName = "Anim_" + std::to_string(animationIndex);
         result.animationNames.push_back(std::move(animationName));
     }
-    // Assimp marks valid animation-only FBX files as incomplete because they
-    // contain no renderable meshes.  Preserve their take metadata in the
-    // model artifact, but do not manufacture an invalid skinned companion.
-    if (scene->mNumMeshes > 0 && SkinnedModelImporter::HasSkinningData(*scene))
+    // Animation-only FBX files are first-class sources: their skeleton and
+    // tracks can drive a compatible render model even when they have no mesh.
+    if (SkinnedModelImporter::HasSkinningData(*scene))
         result.skinnedMesh = SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor);
     return result;
 }

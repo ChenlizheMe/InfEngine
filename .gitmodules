@@ -22,3 +22,6 @@
 [submodule "external/VulkanMemoryAllocator"]
 	path = external/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "external/plugins/infernux_mcp"]
+	path = external/plugins/infernux_mcp
+	url = https://github.com/ChenlizheMe/infernux_mcp.git

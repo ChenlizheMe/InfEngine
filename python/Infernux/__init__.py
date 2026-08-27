@@ -6,6 +6,10 @@ user scripts can simply do ``from Infernux import *``.
 
 import importlib
 
+from Infernux.version import ENGINE_VERSION
+
+__version__ = ENGINE_VERSION
+
 # ── Runtime API (used by game scripts) ─────────────────────────────
 from Infernux.engine import release_engine, run_headless, Engine, LogLevel
 from Infernux.application import Application
@@ -64,6 +68,7 @@ def __getattr__(name: str):
 # Internal / advanced helpers stay accessible via their submodules
 # (e.g. ``from Infernux.debug import debug``).
 __all__ = [
+    "__version__",
     # Engine
     "Engine",
     "Application",

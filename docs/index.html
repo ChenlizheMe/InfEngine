@@ -40,7 +40,7 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip">
             <div class="mission-ribbon-inner">
-                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.6</span>
+                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span>
                 <span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span>
                 <span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span>
             </div>
@@ -83,7 +83,7 @@
                 <div class="hero-grid">
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.6 · A GAME ENGINE REWRITTEN FOR AI</span>
+                            <span class="badge" data-i18n="home.hero.badge">INFERNUX 0.3.7 · A GAME ENGINE REWRITTEN FOR AI</span>
                             <span data-i18n="home.hero.kicker">MIT · open source · Windows x64, downloadable right now</span>
                         </div>
                         <h1 class="hero-title" data-i18n="home.hero.title">The <span class="accent">forge</span> is lit. Come feed the fire.</h1>
@@ -99,7 +99,7 @@
                                 <span data-i18n="download.hubInstaller">Download InfernuxHub</span>
                             </a>
                         </div>
-                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · Infernux 0.3.6 · Android, Web and Linux are next in line</p>
+                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Windows 10/11 x64 · Infernux 0.3.7 · Android, Web and Linux are next in line</p>
                         <div class="hero-text-links" aria-label="More ways to explore Infernux" data-i18n-aria-label="home.hero.moreActions">
                             <a href="#runtime-capture" data-i18n="home.hero.browseDemo">See what it renders</a>
                             <span aria-hidden="true">/</span>
@@ -237,10 +237,10 @@
             <section id="capabilities" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.capabilities.kicker">What is in 0.3.6</div>
+                        <div class="section-kicker" data-i18n="home.capabilities.kicker">What is in 0.3.7</div>
                         <h2 class="section-title" data-i18n="home.capabilities.title">The parts you can already work with.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.capabilities.intro">0.3.6 merged scene and UI authoring into one Hierarchy and fixed automatic updates in packaged Hub builds. The engine still moves fast, and we still change an interface when it turns out to be wrong.</p>
+                    <p class="section-intro" data-i18n="home.capabilities.intro">0.3.7 adds a real plugin distribution and lifecycle system, moves MCP into a default package, and fixes skeletal animation imported from separate FBX files. The engine still moves fast, and we still change an interface when it turns out to be wrong.</p>
                 </div>
                 <div class="capability-grid">
                     <article class="capability-card" data-reveal>
@@ -261,7 +261,7 @@
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.animation.tag">PREVIEW · ANIMATION</div>
                         <h3 data-i18n="home.capabilities.animation.title">2D and 3D animation</h3>
-                        <p data-i18n="home.capabilities.animation.body">2D clips and sprite playback, embedded FBX takes, skeletal animation, skinned meshes, state-machine graphs, Timeline. All of it hangs off the same document and undo services, so the pieces do not fight each other.</p>
+                        <p data-i18n="home.capabilities.animation.body">2D clips and sprite playback, embedded or separate FBX takes, skeletal animation, skinned meshes, state-machine graphs, Timeline. 0.3.7 maps matching FBX joints exactly, handles importer pivot helpers and rejects incompatible rigs instead of guessing.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.editor.tag">SUBSYSTEM · EDITOR</div>
@@ -284,9 +284,9 @@
                         <p data-i18n="home.capabilities.data.body"><code>batch_read(cubes, "position")</code> hands you an (N, 3) numpy array in one call. The C++ side keeps that data as a struct of arrays and the GIL stays released for the trip. Writing back works the same way. This is what makes world state visible to a model at all.</p>
                     </article>
                     <article class="capability-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.capabilities.ai.tag">EXTENSION · MCP · AGENTS</div>
-                        <h3 data-i18n="home.capabilities.ai.title">MCP Harness</h3>
-                        <p data-i18n="home.capabilities.ai.body">An agent opens a real project window and drives it through the public workflows: frame-bounded input, semantic state reads, and a straight answer about where it got stuck. Development-time tool. It never ships inside your game.</p>
+                        <div class="mini-tag" data-i18n="home.capabilities.ai.tag">SUBSYSTEM · PLUGINS · MCP</div>
+                        <h3 data-i18n="home.capabilities.ai.title">InxPackage plugins and MCP</h3>
+                        <p data-i18n="home.capabilities.ai.body">Install an InxPackage from a file, folder, Git URL or the official registry. The default MCP package gives agents schema-driven, permission-gated access to the same scene commands and undo path as the editor, without welding agent tooling into the engine core.</p>
                     </article>
                 </div>
             </section>
@@ -295,16 +295,16 @@
                 <div class="section-head">
                     <div>
                         <div class="section-kicker" data-i18n="home.status.kicker">Where this is now</div>
-                        <h2 class="section-title" data-i18n="home.status.title">0.3.6 can finish a game. Next it has to leave Windows.</h2>
+                        <h2 class="section-title" data-i18n="home.status.title">0.3.7 can extend the engine without welding features into its core.</h2>
                     </div>
                     <p class="section-intro" data-i18n="home.status.intro">On Windows x64 the whole loop works: create a project, write Python, render, package, ship it. Next that same loop has to run on Android, Web and Linux, with Torch wired into the engine's data plane along the way.</p>
                 </div>
                 <div class="status-grid">
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card1.tag">SHIPPED · 0.3.6</div>
-                        <h3 data-i18n="home.status.card1.title">One Hierarchy, and Hub updates that work</h3>
-                        <div class="status-value">v0.3.6</div>
-                        <p data-i18n="home.status.card1.body">0.3.6 drops the separate Hierarchy UI mode, fixes update checks in packaged Hub builds, and starts publishing full Hub packages you can install standalone.</p>
+                        <div class="mini-tag" data-i18n="home.status.card1.tag">SHIPPED · 0.3.7</div>
+                        <h3 data-i18n="home.status.card1.title">Plugins in their own system, animation on the right bones</h3>
+                        <div class="status-value">v0.3.7</div>
+                        <p data-i18n="home.status.card1.body">0.3.7 ships InxPackage installation from files, folders, Git and the official registry; MCP is now a removable default package, and separate FBX animation retargeting no longer guesses joints from geometry.</p>
                     </article>
                     <article class="status-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.status.card2.tag">IN PROGRESS · TO 0.5.2</div>
@@ -389,7 +389,7 @@
           "alternateName": "熔炉",
           "applicationCategory": "DeveloperApplication",
           "operatingSystem": "Windows 10, Windows 11",
-          "softwareVersion": "0.3.6",
+          "softwareVersion": "0.3.7",
           "license": "https://opensource.org/licenses/MIT",
           "url": "https://infernux-engine.com/",
           "downloadUrl": "https://github.com/ChenlizheMe/Infernux/releases/latest",

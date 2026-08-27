@@ -212,8 +212,10 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
         bootstrap.engine.run()
     finally:
         try:
-            from Infernux.mcp import stop_server
-            stop_server()
+            from Infernux.plugins import PluginManager
+            manager = PluginManager.instance()
+            if manager is not None:
+                manager.shutdown()
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         _remove_project_lock(lock_path, lock_token)

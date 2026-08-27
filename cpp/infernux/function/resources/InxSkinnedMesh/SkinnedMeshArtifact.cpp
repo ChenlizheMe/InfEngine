@@ -12,7 +12,10 @@ namespace infernux
 {
 namespace
 {
-constexpr std::string_view Magic = "INXSKINART";
+// V2 stores animation channels by source-skeleton node index.  V1 stored
+// names, which made it too easy for runtime retargeting to inherit string
+// identity accidentally.  Old artifacts are deliberately reimported.
+constexpr std::string_view Magic = "INXSKINAR2";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumVertices = 10'000'000U;
 constexpr uint32_t MaximumIndices = 30'000'000U;
@@ -309,7 +312,7 @@ std::vector<std::pair<double, Value>> ReadKeys(Reader &reader, ReadValue readVal
 
 std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::string_view sourceContentHash)
 {
-    if (!mesh.IsValid() || mesh.influences.size() != mesh.baseVertices.size())
+    if (!mesh.IsAssetPayloadValid() || mesh.influences.size() != mesh.baseVertices.size())
         throw std::invalid_argument("cannot serialize invalid skinned Mesh data");
     if (sourceContentHash.empty() || sourceContentHash.size() > MaximumHashBytes)
         throw std::invalid_argument("skinned Mesh artifact requires a bounded source content hash");
@@ -348,10 +351,10 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         AppendString(bytes, subMesh.name);
     }
 
-    AppendCount(bytes, mesh.nodes.size(), MaximumObjects);
+    AppendCount(bytes, mesh.skeleton.nodes.size(), MaximumObjects);
     std::unordered_set<std::string> nodeNames;
-    for (size_t index = 0; index < mesh.nodes.size(); ++index) {
-        const auto &node = mesh.nodes[index];
+    for (size_t index = 0; index < mesh.skeleton.nodes.size(); ++index) {
+        const auto &node = mesh.skeleton.nodes[index];
         if (node.name.empty() || !nodeNames.insert(node.name).second || node.parent < -1 ||
             (node.parent >= 0 && static_cast<size_t>(node.parent) >= index))
             throw std::invalid_argument("skinned Mesh contains an invalid node hierarchy");
@@ -360,11 +363,11 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         AppendMat4(bytes, node.bindLocal);
     }
 
-    AppendCount(bytes, mesh.bones.size(), MaximumObjects);
+    AppendCount(bytes, mesh.skeleton.bones.size(), MaximumObjects);
     std::unordered_set<std::string> boneNames;
-    for (const auto &bone : mesh.bones) {
+    for (const auto &bone : mesh.skeleton.bones) {
         if (bone.name.empty() || !boneNames.insert(bone.name).second || bone.nodeIndex < -1 ||
-            (bone.nodeIndex >= 0 && static_cast<size_t>(bone.nodeIndex) >= mesh.nodes.size()))
+            (bone.nodeIndex >= 0 && static_cast<size_t>(bone.nodeIndex) >= mesh.skeleton.nodes.size()))
             throw std::invalid_argument("skinned Mesh contains an invalid bone");
         AppendString(bytes, bone.name, false);
         AppendI32(bytes, bone.nodeIndex);
@@ -375,7 +378,7 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         const SkinInfluence &influence = mesh.influences[vertexIndex];
         for (glm::length_t component = 0; component < vertex.boneWeights.length(); ++component) {
             const float weight = vertex.boneWeights[component];
-            if (weight < 0.0f || (weight > 0.0f && vertex.boneIndices[component] >= mesh.bones.size()))
+            if (weight < 0.0f || (weight > 0.0f && vertex.boneIndices[component] >= mesh.skeleton.bones.size()))
                 throw std::invalid_argument("skinned Mesh contains an invalid bone influence");
             if (vertex.boneIndices[component] != influence.boneIndex[component] ||
                 std::abs(weight - influence.weight[component]) > 1e-6f)
@@ -393,12 +396,12 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         AppendDouble(bytes, animation.durationTicks);
         AppendDouble(bytes, animation.ticksPerSecond);
         AppendCount(bytes, animation.tracks.size(), MaximumObjects);
-        std::unordered_set<std::string> trackNames;
+        std::unordered_set<int> trackNodes;
         for (const auto &track : animation.tracks) {
-            if (track.nodeName.empty() || mesh.nodeByName.find(track.nodeName) == mesh.nodeByName.end() ||
-                !trackNames.insert(track.nodeName).second)
+            if (track.nodeIndex < 0 || static_cast<size_t>(track.nodeIndex) >= mesh.skeleton.nodes.size() ||
+                !trackNodes.insert(track.nodeIndex).second)
                 throw std::invalid_argument("skinned Mesh contains an invalid animation track");
-            AppendString(bytes, track.nodeName, false);
+            AppendI32(bytes, track.nodeIndex);
             AppendKeys(bytes, track.positions,
                        [](std::string &output, const glm::vec3 &value) { AppendVec3(output, value); });
             AppendKeys(bytes, track.rotations,
@@ -500,36 +503,38 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     }
 
     const uint32_t nodeCount = reader.ReadCount(MaximumObjects);
-    mesh->nodes.reserve(nodeCount);
+    mesh->skeleton.nodes.reserve(nodeCount);
     for (uint32_t index = 0; index < nodeCount; ++index) {
         SkinnedRuntimeNode node;
         node.name = reader.ReadString(false);
         node.parent = reader.ReadI32();
         node.bindLocal = ReadMat4(reader);
         if (node.parent < -1 || (node.parent >= 0 && static_cast<size_t>(node.parent) >= index) ||
-            !mesh->nodeByName.emplace(node.name, static_cast<int>(index)).second)
+            !mesh->skeleton.nodeByName.emplace(node.name, static_cast<int>(index)).second)
             throw std::invalid_argument("skinned Mesh artifact contains an invalid node hierarchy");
-        node.bindGlobal = node.parent >= 0 ? mesh->nodes[static_cast<size_t>(node.parent)].bindGlobal * node.bindLocal
-                                           : node.bindLocal;
-        mesh->nodes.push_back(std::move(node));
+        node.bindGlobal = node.parent >= 0
+                              ? mesh->skeleton.nodes[static_cast<size_t>(node.parent)].bindGlobal * node.bindLocal
+                              : node.bindLocal;
+        mesh->skeleton.nodes.push_back(std::move(node));
     }
 
     const uint32_t boneCount = reader.ReadCount(MaximumObjects);
-    mesh->bones.reserve(boneCount);
+    mesh->skeleton.bones.reserve(boneCount);
     for (uint32_t index = 0; index < boneCount; ++index) {
         SkinnedRuntimeBone bone;
         bone.name = reader.ReadString(false);
         bone.nodeIndex = reader.ReadI32();
         bone.inverseBind = ReadMat4(reader);
-        if (bone.nodeIndex < -1 || (bone.nodeIndex >= 0 && static_cast<size_t>(bone.nodeIndex) >= mesh->nodes.size()) ||
-            !mesh->boneByName.emplace(bone.name, static_cast<uint32_t>(index)).second)
+        if (bone.nodeIndex < -1 ||
+            (bone.nodeIndex >= 0 && static_cast<size_t>(bone.nodeIndex) >= mesh->skeleton.nodes.size()) ||
+            !mesh->skeleton.boneByName.emplace(bone.name, static_cast<uint32_t>(index)).second)
             throw std::invalid_argument("skinned Mesh artifact contains an invalid bone");
-        mesh->bones.push_back(std::move(bone));
+        mesh->skeleton.bones.push_back(std::move(bone));
     }
     for (const Vertex &vertex : mesh->baseVertices) {
         for (glm::length_t component = 0; component < vertex.boneWeights.length(); ++component) {
             if (vertex.boneWeights[component] < 0.0f ||
-                (vertex.boneWeights[component] > 0.0f && vertex.boneIndices[component] >= mesh->bones.size()))
+                (vertex.boneWeights[component] > 0.0f && vertex.boneIndices[component] >= mesh->skeleton.bones.size()))
                 throw std::invalid_argument("skinned Mesh artifact contains an invalid bone influence");
         }
     }
@@ -547,12 +552,14 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
             throw std::invalid_argument("skinned Mesh artifact contains an invalid animation timing");
         const uint32_t trackCount = reader.ReadCount(MaximumObjects);
         animation.tracks.reserve(trackCount);
+        animation.trackByNodeIndex.assign(mesh->skeleton.nodes.size(), -1);
         for (uint32_t trackIndex = 0; trackIndex < trackCount; ++trackIndex) {
             SkinnedRuntimeTrack track;
-            track.nodeName = reader.ReadString(false);
-            if (mesh->nodeByName.find(track.nodeName) == mesh->nodeByName.end() ||
-                !animation.trackByNode.emplace(track.nodeName, trackIndex).second)
+            track.nodeIndex = reader.ReadI32();
+            if (track.nodeIndex < 0 || static_cast<size_t>(track.nodeIndex) >= mesh->skeleton.nodes.size() ||
+                animation.trackByNodeIndex[static_cast<size_t>(track.nodeIndex)] >= 0)
                 throw std::invalid_argument("skinned Mesh artifact contains an invalid animation track");
+            animation.trackByNodeIndex[static_cast<size_t>(track.nodeIndex)] = static_cast<int>(trackIndex);
             track.positions = ReadKeys<glm::vec3>(reader, [](Reader &input) { return ReadVec3(input); });
             track.rotations = ReadKeys<glm::quat>(reader, [](Reader &input) { return ReadQuat(input); });
             track.scales = ReadKeys<glm::vec3>(reader, [](Reader &input) { return ReadVec3(input); });
@@ -562,8 +569,8 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     }
     if (!reader.AtEnd())
         throw std::invalid_argument("skinned Mesh artifact contains trailing data");
-    if (!mesh->IsValid())
-        throw std::invalid_argument("skinned Mesh artifact contains no renderable geometry");
+    if (!mesh->IsAssetPayloadValid())
+        throw std::invalid_argument("skinned Mesh artifact contains neither geometry nor animation data");
     mesh->NormalizeInfluences();
     return mesh;
 }

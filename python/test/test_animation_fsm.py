@@ -19,6 +19,7 @@ from Infernux.core.anim_state_machine import (
 )
 from Infernux.graph import TypeRef, ValueType
 from Infernux.components.skeletal_animator import SkeletalAnimator
+from Infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
 from Infernux.components.spirit_animator import SpiritAnimator
 
 
@@ -40,10 +41,11 @@ def _condition(parameter: AnimParameter, operator: str = "==", threshold: float 
 
 
 class _FakeClip:
-    def __init__(self, take_name="Walk", duration_hint=2.0):
+    def __init__(self, take_name="Walk", duration_hint=2.0, source_model_guid=""):
         self.take_name = take_name
         self.duration_hint = duration_hint
-        self.source_model_guid = ""
+        self.source_model_guid = source_model_guid
+        self.source_model_path = ""
 
 
 class _RendererBinding:
@@ -63,6 +65,29 @@ class _RendererOwner:
         self.lookups += 1
         return self.renderer
 
+    def get_children(self):
+        return []
+
+
+class _HierarchyOwner:
+    def __init__(self, renderer=None, children=()):
+        self.renderer = renderer
+        self.children = list(children)
+
+    def get_component(self, _component_type):
+        return self.renderer
+
+    def get_children(self):
+        return list(self.children)
+
+
+class _NativePoseRecorder:
+    def __init__(self):
+        self.calls = []
+
+    def submit_animation_pose(self, *args):
+        self.calls.append(args)
+
 
 def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
     animator = _make_animator()
@@ -81,13 +106,90 @@ def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypat
     assert owner.lookups == 1
 
 
-def test_skeletal_mismatch_check_is_inconclusive_when_renderer_has_no_guid():
-    from Infernux.components.skeletal_animator import _skinned_mismatch_message
+def test_skeletal_animator_has_no_same_object_renderer_requirement():
+    assert SkinnedMeshRenderer not in tuple(
+        getattr(SkeletalAnimator, "_require_components_", ()) or ()
+    )
 
-    clip = _FakeClip()
-    clip.source_model_path = "Assets/Models/Driver.fbx"
 
-    assert _skinned_mismatch_message(None, clip, "") == ""
+def test_skeletal_animator_uses_local_renderer_for_single_node_model(monkeypatch):
+    animator = _make_animator()
+    local = _RendererBinding(object())
+    owner = _HierarchyOwner(renderer=local)
+    monkeypatch.setattr(
+        SkeletalAnimator,
+        "game_object",
+        property(lambda _self: owner),
+    )
+
+    assert animator._resolve_skinned_renderers(force=True) == [local]
+    assert animator._resolve_skinned_renderer() is local
+
+
+def test_skeletal_animator_collects_all_descendant_renderers_from_model_root(monkeypatch):
+    animator = _make_animator()
+    body = _RendererBinding(object())
+    visor = _RendererBinding(object())
+    nested = _HierarchyOwner(children=[_HierarchyOwner(renderer=visor)])
+    owner = _HierarchyOwner(children=[_HierarchyOwner(renderer=body), nested])
+    monkeypatch.setattr(
+        SkeletalAnimator,
+        "game_object",
+        property(lambda _self: owner),
+    )
+
+    assert animator._resolve_skinned_renderers(force=True) == [body, visor]
+    assert animator._resolve_skinned_renderer() is body
+
+
+def test_skeletal_animator_submits_same_pose_to_all_descendant_renderers(monkeypatch):
+    animator = _make_animator()
+    body_native = _NativePoseRecorder()
+    visor_native = _NativePoseRecorder()
+    owner = _HierarchyOwner(children=[
+        _HierarchyOwner(renderer=_RendererBinding(body_native)),
+        _HierarchyOwner(renderer=_RendererBinding(visor_native)),
+    ])
+    monkeypatch.setattr(
+        SkeletalAnimator,
+        "game_object",
+        property(lambda _self: owner),
+    )
+    animator._fsm = AnimStateMachine(
+        states=[AnimState(name="Walk", loop=True)],
+        default_state="Walk",
+    )
+    animator._current_state_name = "Walk"
+    animator._current_clip = _FakeClip("Walk", duration_hint=2.0)
+    animator._elapsed = 0.5
+    animator._playing = True
+    animator._last_native_pose_key = None
+
+    animator._sync_native_runtime_playback()
+
+    assert len(body_native.calls) == 1
+    assert visor_native.calls == body_native.calls
+
+
+def test_skeletal_animator_submits_clip_source_separately_from_render_model(monkeypatch):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator._fsm = AnimStateMachine(
+        states=[AnimState(name="Walk", loop=True)],
+        default_state="Walk",
+    )
+    animator._current_state_name = "Walk"
+    animator._current_clip = _FakeClip("Walk", source_model_guid="animation-fbx-guid")
+    animator._elapsed = 0.5
+    animator._playing = True
+    animator._last_native_pose_key = None
+
+    animator._sync_native_runtime_playback()
+
+    assert len(native.calls) == 1
+    assert native.calls[0][7] == "animation-fbx-guid"
 
 
 class TestTriggerConsumption:

@@ -10,7 +10,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: preset-ci-${{ github.ref }}
+  # Keep manual verification runs from cancelling the required push/PR check.
+  # Newer runs of the same event and ref may still replace stale work.
+  group: preset-ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

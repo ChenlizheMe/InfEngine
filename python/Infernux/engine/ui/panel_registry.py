@@ -26,6 +26,9 @@ Window menu and can be opened/closed.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterator
 from typing import Callable, Dict, List, Optional, Type, TYPE_CHECKING
 
 from Infernux.debug import Debug
@@ -51,6 +54,7 @@ class _PanelRegistration:
         "factory",
         "singleton",
         "interaction",
+        "owner",
     )
 
     def __init__(
@@ -63,6 +67,7 @@ class _PanelRegistration:
         singleton: bool,
         title_key: Optional[str] = None,
         interaction: Optional[PanelInteractionDescriptor] = None,
+        owner: str = "",
     ):
         self.panel_class = panel_class
         self.type_id = type_id
@@ -72,6 +77,7 @@ class _PanelRegistration:
         self.factory = factory
         self.singleton = singleton
         self.interaction = interaction
+        self.owner = str(owner or "")
 
 
 class PanelRegistry:
@@ -83,6 +89,9 @@ class PanelRegistry:
     """
 
     _registrations: List[_PanelRegistration] = []
+    _owner: ContextVar[str] = ContextVar("infernux_panel_owner", default="")
+    _live_window_manager: Optional[WindowManager] = None
+    _live_interaction_registry: Optional[PanelInteractionRegistry] = None
 
     # ------------------------------------------------------------------
     # API called by the decorator
@@ -90,7 +99,36 @@ class PanelRegistry:
 
     @classmethod
     def _register(cls, reg: _PanelRegistration) -> None:
+        if not reg.owner:
+            reg.owner = cls._owner.get()
+        if cls._live_window_manager is not None and any(
+            item.type_id == reg.type_id for item in cls._registrations
+        ):
+            raise RuntimeError(
+                f"duplicate editor panel type registration: {reg.type_id}"
+            )
         cls._registrations.append(reg)
+        if cls._live_window_manager is not None:
+            try:
+                cls._apply_registration(
+                    reg,
+                    cls._live_window_manager,
+                    cls._live_interaction_registry,
+                )
+            except BaseException:
+                cls._registrations.remove(reg)
+                raise
+
+    @classmethod
+    @contextmanager
+    def contribution_scope(cls, owner: str) -> Iterator[None]:
+        """Attribute registrations performed during one preload import."""
+
+        token = cls._owner.set(str(owner or ""))
+        try:
+            yield
+        finally:
+            cls._owner.reset(token)
 
     # ------------------------------------------------------------------
     # API called by release_engine()
@@ -145,20 +183,86 @@ class PanelRegistry:
 
         count = 0
         for reg in registrations:
-            window_manager.register_window_type(
-                type_id=reg.type_id,
-                window_class=reg.panel_class,
-                display_name=reg.display_name,
+            cls._apply_registration(
+                reg,
+                window_manager,
+                interaction_registry,
                 factory=overrides.get(reg.type_id, reg.factory),
-                singleton=reg.singleton,
-                title_key=reg.title_key,
-                menu_path=reg.menu_path,
             )
             count += 1
-            Debug.log_internal(
-                f"[PanelRegistry] Registered: {reg.display_name} ({reg.type_id})"
-            )
         return count
+
+    @classmethod
+    def bind_live(
+        cls,
+        window_manager: WindowManager,
+        interaction_registry: Optional[PanelInteractionRegistry] = None,
+    ) -> None:
+        """Bind registrations made after editor startup to the live UI."""
+
+        cls._live_window_manager = window_manager
+        cls._live_interaction_registry = interaction_registry
+
+    @classmethod
+    def unbind_live(cls) -> None:
+        cls._live_window_manager = None
+        cls._live_interaction_registry = None
+
+    @classmethod
+    def remove_owner(cls, owner: str) -> bool:
+        """Remove every panel type contributed by one preload source."""
+
+        identifier = str(owner or "")
+        registrations = [item for item in cls._registrations if item.owner == identifier]
+        if not registrations:
+            return True
+        manager = cls._live_window_manager
+        if manager is not None:
+            for reg in reversed(registrations):
+                if not manager.unregister_window_type(reg.type_id):
+                    return False
+        interaction_registry = cls._live_interaction_registry
+        if interaction_registry is not None:
+            for reg in reversed(registrations):
+                interaction_registry.unregister_type(reg.type_id)
+        cls._registrations = [
+            item for item in cls._registrations if item.owner != identifier
+        ]
+        return True
+
+    @classmethod
+    def _apply_registration(
+        cls,
+        reg: _PanelRegistration,
+        window_manager: WindowManager,
+        interaction_registry: Optional[PanelInteractionRegistry],
+        *,
+        factory: Optional[Callable] = None,
+    ) -> None:
+        if interaction_registry is not None:
+            if reg.interaction is None and interaction_registry.descriptor(reg.type_id) is None:
+                raise RuntimeError(
+                    "editor panels require a formal interaction descriptor before "
+                    f"registration: {reg.type_id}"
+                )
+            if reg.interaction is not None:
+                interaction_registry.register_type(
+                    reg.type_id,
+                    reg.interaction,
+                    replace=True,
+                )
+        window_manager.register_window_type(
+            type_id=reg.type_id,
+            window_class=reg.panel_class,
+            display_name=reg.display_name,
+            factory=factory if factory is not None else reg.factory,
+            singleton=reg.singleton,
+            title_key=reg.title_key,
+            menu_path=reg.menu_path,
+        )
+        Debug.log_internal(
+            f"[PanelRegistry] Registered: {reg.display_name} ({reg.type_id})"
+        )
 
     @classmethod
     def get_registrations(cls) -> List[_PanelRegistration]:

@@ -347,6 +347,24 @@ def test_project_menu_freezes_logical_and_reveal_paths_separately():
     assert rename.payload == {"target_id": "Assets/model.fbx::submesh:Body"}
 
 
+def test_project_menu_always_offers_inxpackage_import():
+    from Infernux.engine.ui.core_context_menus import project_context_menu
+
+    for target_path in ("", "Assets/Materials"):
+        leaves = _flatten_menu_entries(
+            project_context_menu(
+                lambda key: key,
+                target_path=target_path,
+                current_path="C:/Game/Assets",
+            )
+        )
+        entry = next(
+            item for item in leaves if item.command_id == "inxpackage.import"
+        )
+        assert entry.label == "project.import_inxpackage"
+        assert entry.semantic_id == "project.context.import_inxpackage"
+
+
 def test_native_hierarchy_and_project_menus_are_presentation_only():
     root = Path(__file__).resolve().parents[2]
     hierarchy = (

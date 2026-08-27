@@ -30,6 +30,8 @@ from Infernux.engine.ui import (
     BuildSettingsPanel,
     PreferencesPanel,
     HistoryPanel,
+    PluginPanel,
+    InxPackageImportPanel,
     PhysicsLayerMatrixPanel,
     EnvironmentSettingsPanel,
     UIEditorPanel,
@@ -262,6 +264,7 @@ class BootstrapPanelsMixin:
         panel_interactions.require_types(
             BUILTIN_EDITOR_WINDOW_TYPE_IDS | PERMANENT_EDITOR_SURFACE_TYPE_IDS
         )
+        PanelRegistry.bind_live(wm, self.interaction_core.panels)
 
     def _create_tag_layer_panel(self):
         panel = TagLayerSettingsPanel()

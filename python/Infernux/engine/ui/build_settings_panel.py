@@ -1,5 +1,5 @@
 """
-Build Settings — Unity-style floating window for managing game builds.
+Build Settings — dockable editor panel for managing game builds.
 
 Features:
   * Scene list (drag-drop from Project panel or "Add Open Scene")
@@ -44,7 +44,7 @@ from Infernux.engine.interaction import (
     ensure_project_settings_document,
     normalize_build_settings,
 )
-from .editor_panel import FloatingEditorPanel
+from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from ._dialogs import pick_folder_dialog, pick_file_dialog
@@ -117,15 +117,11 @@ _BUILD_SETTINGS_INTERACTION = PanelInteractionDescriptor(
     menu_path="",
     interaction=_BUILD_SETTINGS_INTERACTION,
 )
-class BuildSettingsPanel(FloatingEditorPanel):
+class BuildSettingsPanel(EditorPanel):
     """Build Settings utility surface hosted by the global panel lifecycle."""
 
     def __init__(self):
-        super().__init__(
-            title="Build Settings",
-            window_id="build_settings",
-            size=(980.0, 720.0),
-        )
+        super().__init__(title="Build Settings", window_id="build_settings")
         self._game_name: str = ""
         self._scenes: List[str] = []
         self._output_dir: str = ""
@@ -148,6 +144,9 @@ class BuildSettingsPanel(FloatingEditorPanel):
         self._build_error: Optional[str] = None
         self._build_output_dir: Optional[str] = None
         self._cancel_event: threading.Event = threading.Event()
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 980.0, 720.0
 
     def on_enable(self) -> None:
         self._bind_project_settings_document()
@@ -1139,34 +1138,11 @@ class BuildSettingsPanel(FloatingEditorPanel):
         catalog on the editor thread before handing immutable inputs to the
         background builder.
         """
-        from Infernux.core.assets import AssetManager
-        from Infernux.renderstack.discovery import discover_effect_features
-
-        AssetManager.flush_all_asset_writes()
-        discover_effect_features()
         database = self.services.asset_database
-        if database is None:
-            raise RuntimeError("The editor asset database is unavailable")
-        database.refresh()
         project_root = get_project_root()
-        if not project_root:
-            raise RuntimeError("No project root found")
-        from Infernux.particle.artifact import ParticleArtifactRegistry
+        from Infernux.engine.player_build_preflight import publish_player_asset_catalog
 
-        try:
-            ParticleArtifactRegistry.ensure_project_compiled(
-                project_root,
-                raise_on_error=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"Particle artifact compile failed: {exc}") from exc
-        database.flush_derived_index()
-        index_path = str(getattr(database, "asset_index_path", "") or "")
-        if not index_path or not os.path.isfile(index_path):
-            raise RuntimeError(
-                "The editor could not publish the current Library/AssetIndex.json"
-            )
-        return index_path
+        return str(publish_player_asset_catalog(project_root, database)["path"])
 
     def _bind_published_player_catalog(self, catalog):
         """Freeze the preflight AssetIndex even if the live file vanished.

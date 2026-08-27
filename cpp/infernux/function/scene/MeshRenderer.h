@@ -310,7 +310,7 @@ class MeshRenderer : public Component
     [[nodiscard]] void GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
 
     /// @brief Compute world bounds from a pre-computed world matrix (avoids double GetWorldMatrix)
-    void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;
+    virtual void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;
 
     /// @brief Recompute local bounds from inline vertex positions.
     void ComputeLocalBoundsFromInlineVertices();

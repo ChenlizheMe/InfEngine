@@ -1,5 +1,5 @@
 """
-Environment Settings — floating per-scene environment (lighting) window.
+Environment Settings — dockable per-scene environment (lighting) panel.
 
 Unity URP-style "Lighting > Environment" panel:
   - Skybox material slot (any .mat asset; empty = builtin procedural sky)
@@ -10,7 +10,7 @@ The settings live on the active C++ Scene (``scene.get_environment()`` /
 ``scene.set_environment()``) and are serialized into the .scene file, so
 every scene keeps its own environment — like Unity's per-scene lighting.
 
-Hosted as a non-dockable utility surface by the global panel lifecycle.
+Hosted as a regular panel by the global editor lifecycle.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Optional
 
 from Infernux.engine.i18n import t
 from Infernux.engine.interaction import PanelInteractionDescriptor
-from .editor_panel import FloatingEditorPanel
+from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol
 
@@ -48,18 +48,17 @@ _SOURCE_KEYS = (
     menu_path="",
     interaction=PanelInteractionDescriptor(),
 )
-class EnvironmentSettingsPanel(FloatingEditorPanel):
+class EnvironmentSettingsPanel(EditorPanel):
     """Per-scene Environment utility surface."""
 
     def __init__(self) -> None:
-        super().__init__(
-            title="Environment Settings",
-            window_id="environment_settings",
-            size=(560.0, 640.0),
-        )
+        super().__init__(title="Environment Settings", window_id="environment_settings")
         # Material wrapper cache: guid -> Infernux.core.material.Material
         self._mat_cache_guid: Optional[str] = None
         self._mat_cache = None
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 560.0, 640.0
 
     def request_close(self) -> bool:
         from Infernux.engine.interaction import ContinuousEditService

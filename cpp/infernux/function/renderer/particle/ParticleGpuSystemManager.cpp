@@ -943,7 +943,7 @@ struct ParticleGpuSystemManager::Impl
                 const auto snapshot = skinnedMeshResolver(mesh.skinnedRenderer);
                 if (!snapshot || !snapshot->mesh || snapshot->mesh.get() != mesh.mesh.get() || !snapshot->model ||
                     !snapshot->currentPalette || snapshot->currentPalette->empty() ||
-                    snapshot->currentPalette->size() != snapshot->model->bones.size() ||
+                    snapshot->currentPalette->size() != snapshot->model->skeleton.bones.size() ||
                     !meshResources->skinInfluences || !meshResources->skinInfluences->IsValid()) {
                     SetError(error, "GPU particle SkinnedMeshRenderer source has no valid live skin pose");
                     return false;

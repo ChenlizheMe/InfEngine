@@ -10,7 +10,15 @@ from .path_utils import relative_path
 
 _log = logging.getLogger("Infernux.library_sync")
 
-_SKIP = {"__pycache__", "__init__.py", "__init__.pyi", "icons.zip"}
+_SKIP = {
+    "__pycache__",
+    "__init__.py",
+    "__init__.pyi",
+    "icons.zip",
+    # These are wheel/build inputs, not project-visible engine resources.
+    "player_runtime",
+    "project_templates",
+}
 _SYNC_MANIFEST = ".InfernuxResources.json"
 _SYNC_SCHEMA = 1
 

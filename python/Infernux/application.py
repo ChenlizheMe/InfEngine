@@ -52,6 +52,12 @@ class Application:
             return _runtime_kind == "player"
 
     @staticmethod
+    def is_headless() -> bool:
+        """Return whether the process is running the renderer-free host."""
+        with _lock:
+            return _runtime_kind == "headless"
+
+    @staticmethod
     def data_path() -> str:
         """Return the active project root, or an empty string before startup."""
         from Infernux.engine.project_context import get_project_root

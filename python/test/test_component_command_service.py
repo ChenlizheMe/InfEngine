@@ -57,6 +57,64 @@ def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
         service.shutdown()
 
 
+def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path):
+    import types
+
+    import Infernux.components.registry as component_registry
+    import Infernux.components.script_loader as script_loader
+    import Infernux.engine.interaction as interaction_module
+    from Infernux.engine.interaction import ComponentCommandService
+
+    script_path = str(tmp_path / "Assets" / "Scripts" / "Controller.py")
+    script_guid = "a" * 32
+    loaded = object()
+    calls = {}
+
+    class ProjectController:
+        _cpp_type_name = ""
+
+    class Database:
+        @staticmethod
+        def get_guid_from_path(path):
+            assert path == script_path
+            return script_guid
+
+        @staticmethod
+        def get_path_from_guid(guid):
+            assert guid == script_guid
+            return script_path
+
+    core = types.SimpleNamespace(
+        project_assets=types.SimpleNamespace(asset_database=Database())
+    )
+    monkeypatch.setattr(component_registry, "ensure_engine_component_catalog_loaded", lambda: None)
+    monkeypatch.setattr(component_registry, "get_type", lambda _name: ProjectController)
+    monkeypatch.setattr(
+        component_registry,
+        "get_type_registration",
+        lambda _name: types.SimpleNamespace(
+            project_script=True,
+            script_path=script_path,
+        ),
+    )
+    monkeypatch.setattr(component_registry, "get_python_attachment_blockers", lambda *_args: ())
+    monkeypatch.setattr(interaction_module.EditorInteractionCore, "instance", lambda: core)
+
+    def load(path, **arguments):
+        calls.update({"path": path, **arguments})
+        return loaded
+
+    monkeypatch.setattr(script_loader, "load_and_create_component", load)
+    resolved = ComponentCommandService._resolve_add_target(
+        object(), "ProjectController", None
+    )
+
+    assert resolved is loaded
+    assert calls["path"] == script_path
+    assert calls["script_guid"] == script_guid
+    assert calls["asset_database"] is core.project_assets.asset_database
+
+
 def test_component_document_edit_is_atomic_and_replayable():
     from Infernux.engine.interaction import ComponentCommandService
     from Infernux.engine.undo import UndoManager
@@ -205,26 +263,6 @@ def test_rejected_live_component_batch_rolls_back_model():
     finally:
         service.shutdown()
         UndoManager._instance = previous_manager
-
-
-def test_mcp_component_mutations_do_not_own_private_undo_paths():
-    from pathlib import Path
-    import Infernux.mcp.tools.particle as particle_tools
-    import Infernux.mcp.tools.scene as scene_tools
-
-    scene_source = Path(scene_tools.__file__).read_text(encoding="utf-8")
-    particle_source = Path(particle_tools.__file__).read_text(encoding="utf-8")
-    forbidden = (
-        "_record_property",
-        "_notify_scene_modified",
-        "AddComponentTransactionCommand",
-        "RemoveNativeComponentCommand",
-        "RemovePyComponentCommand",
-        "GenericComponentCommand",
-    )
-    assert all(token not in scene_source for token in forbidden)
-    assert "_notify_scene_modified" not in particle_source
-    assert "core.components.edit_document(" in particle_source
 
 
 def test_light_cpp_properties_are_not_python_document_fields():

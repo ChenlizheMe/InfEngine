@@ -125,6 +125,11 @@ class EditorInteractionCore:
         self._window_locator_provider: Optional[
             Callable[[object], Optional[WindowLocator]]
         ] = None
+        # Some document models are useful in non-visual editor hosts (Headless
+        # automation, commandlets) even though their graphical view class also
+        # renders them. Keep those view/model owners alive for the session so
+        # DocumentRegistry controllers never retain a dead weak reference.
+        self._nonvisual_document_views: dict[str, object] = {}
         EditorInteractionCore._instance = self
 
     @classmethod
@@ -143,6 +148,7 @@ class EditorInteractionCore:
         self.selection.clear(reason="session_shutdown", record_history=False)
         self.clipboard.clear(reason="session_shutdown")
         self.documents.clear()
+        self._nonvisual_document_views.clear()
         self.external_conflicts.clear()
         self.authoring_mutations.shutdown()
         self.document_open.clear()
@@ -174,6 +180,31 @@ class EditorInteractionCore:
             )
         if EditorInteractionCore._instance is self:
             EditorInteractionCore._instance = None
+
+    def nonvisual_document_view(self, key: str):
+        return self._nonvisual_document_views.get(str(key or "").strip())
+
+    def retain_nonvisual_document_view(self, key: str, view: object):
+        identifier = str(key or "").strip()
+        if not identifier:
+            raise ValueError("non-visual document view key cannot be empty")
+        if view is None:
+            raise TypeError("non-visual document view cannot be None")
+        existing = self._nonvisual_document_views.get(identifier)
+        if existing is not None and existing is not view:
+            raise RuntimeError(
+                f"non-visual document view is already retained: {identifier}"
+            )
+        self._nonvisual_document_views[identifier] = view
+        return view
+
+    def release_nonvisual_document_view(self, key: str, *, expected=None) -> bool:
+        identifier = str(key or "").strip()
+        existing = self._nonvisual_document_views.get(identifier)
+        if existing is None or (expected is not None and existing is not expected):
+            return False
+        self._nonvisual_document_views.pop(identifier, None)
+        return True
 
     @property
     def can_cancel_active_interaction(self) -> bool:

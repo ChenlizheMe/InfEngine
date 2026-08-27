@@ -32,7 +32,7 @@ from Infernux.engine.script_candidate_policy import (
 
 
 ORIGINS = frozenset(
-    {"watchdog", "mcp", "editor", "rollback", "initial_scan", "dependency"}
+    {"watchdog", "automation", "editor", "rollback", "initial_scan", "dependency"}
 )
 CHANGE_KINDS = frozenset(
     {"created", "modified", "deleted", "moved", "renamed", "initial_scan", "dependency"}

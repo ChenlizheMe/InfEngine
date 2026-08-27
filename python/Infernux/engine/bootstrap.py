@@ -111,7 +111,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._progress_started_at = time.perf_counter()
         self._progress_phase_started_at = self._progress_started_at
         self._progress_phase_message = ""
-        self._mcp_start_thread = None
 
     @classmethod
     def instance(cls) -> Optional["EditorBootstrap"]:
@@ -129,6 +128,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self._report_progress("Creating managers\u2026")
         self._create_managers()
+
+        self._report_progress("Preloading project plugins\u2026")
+        self._load_plugins()
 
         self._report_progress("Loading layout\u2026")
         self._setup_layout_persistence()
@@ -158,12 +160,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         if self.engine:
             self.engine.prepare_startup_refresh()
 
-        # MCP is an editor automation service, not a prerequisite for the
-        # first interactive frame.  Importing FastMCP and its HTTP stack can
-        # take well over a second on a cold machine, so start it in parallel
-        # after all editor-owned state has been wired.
-        self._start_mcp_http_server_async()
-
         self._finish_progress()
 
         if self.engine:
@@ -177,27 +173,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                     ne.request_full_speed_frame()
             except Exception as _exc:
                 pass
-
-    def _start_mcp_http_server(self):
-        try:
-            from Infernux.mcp import start_server
-            host = os.environ.get("INFERNUX_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
-            port = int(os.environ.get("INFERNUX_MCP_PORT", "9713"))
-            start_server(self.project_path, host=host, port=port)
-        except Exception as exc:
-            Debug.log_warning(f"Failed to start Infernux MCP HTTP server: {exc}")
-
-    def _start_mcp_http_server_async(self):
-        thread = self._mcp_start_thread
-        if thread is not None and thread.is_alive():
-            return
-        thread = threading.Thread(
-            target=self._start_mcp_http_server,
-            name="InfernuxMCPStartup",
-            daemon=True,
-        )
-        self._mcp_start_thread = thread
-        thread.start()
 
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""
@@ -406,6 +381,15 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             EditorIcons.preload(self.engine.get_native_engine())
         except Exception as exc:
             Debug.log_warning(f"EditorIcons preload skipped: {exc}")
+
+    def _load_plugins(self):
+        from Infernux.plugins import PluginManager
+
+        self.plugin_manager = PluginManager.startup(
+            self.project_path,
+            engine=self.engine,
+            runtime=False,
+        )
 
     def _wire_toolbar_callbacks_on(self, tb, engine):
         """Shared helper: attach play/camera/grid callbacks to a ToolbarPanel."""

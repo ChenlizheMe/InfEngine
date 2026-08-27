@@ -394,7 +394,13 @@ def project_context_menu(
             translate("project.create_menu"),
             create_entries,
             semantic_id="project.context.create",
-        )
+        ),
+        ContextMenuCommand(
+            "inxpackage.import",
+            label=translate("project.import_inxpackage"),
+            separator_before=True,
+            semantic_id="project.context.import_inxpackage",
+        ),
     ]
     reveal_target = str(reveal_path or current_path or "").strip()
     if reveal_target:
@@ -410,6 +416,13 @@ def project_context_menu(
     if target_path:
         entries.extend(
             (
+                ContextMenuCommand(
+                    "inxpackage.export",
+                    label=translate("project.export_inxpackage"),
+                    payload={"path": target_path},
+                    separator_before=True,
+                    semantic_id="project.context.export_inxpackage",
+                ),
                 ContextMenuCommand(
                     "edit.copy",
                     label=translate("project.copy"),

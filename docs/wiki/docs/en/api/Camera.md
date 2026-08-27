@@ -11,7 +11,7 @@ class in <b>Infernux.components.builtin</b>
 A Camera component that renders a view of the scene.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.6
+**Status:** Preview · **Verified with:** 0.3.7
 
 Use a perspective Camera for normal 3D depth and an orthographic Camera for scale-stable 2D framing. Keep near/far clipping proportional to scene scale.
 <!-- USER CONTENT END -->

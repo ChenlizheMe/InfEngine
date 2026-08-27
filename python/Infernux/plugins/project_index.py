@@ -1,0 +1,119 @@
+"""Read the project GUID catalog through the native AssetDatabase when available."""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
+from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
+
+
+_SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", ".venv", "venv"})
+
+
+def project_guid_paths(
+    project_root: str,
+    *,
+    engine: Any = None,
+) -> tuple[dict[str, str], bool]:
+    """Return GUID-to-path mappings and whether the native index supplied them."""
+
+    project = resolved_path(project_root)
+    database = _asset_database(engine)
+    if database is not None:
+        try:
+            database_root = resolved_path(str(database.project_root or ""))
+            if not database_root or path_key(database_root) != path_key(project):
+                raise RuntimeError("AssetDatabase belongs to another project")
+            if bool(getattr(database, "refresh_pending", False)):
+                raise RuntimeError("AssetDatabase refresh has not committed")
+            result: dict[str, str] = {}
+            for raw_guid in database.get_all_guids():
+                guid = str(raw_guid).strip().casefold()
+                raw_path = str(database.get_path_from_guid(raw_guid) or "").strip()
+                if not guid or not raw_path:
+                    continue
+                path = resolved_path(
+                    raw_path if os.path.isabs(raw_path) else os.path.join(project, raw_path)
+                )
+                if not _active_project_path(path, project) or not os.path.isfile(path):
+                    continue
+                other = result.get(guid)
+                if other is not None and path_key(other) != path_key(path):
+                    raise ValueError(f"Project contains duplicate GUID {guid}: {other}, {path}")
+                result[guid] = path
+            return result, True
+        except (AttributeError, RuntimeError, ValueError):
+            pass
+    return _scan_guid_paths(project), False
+
+
+def _asset_database(engine: Any):
+    if engine is not None:
+        try:
+            database = engine.get_asset_database()
+            if database is not None:
+                return database
+        except (AttributeError, RuntimeError):
+            pass
+    try:
+        from Infernux.core.assets import AssetManager
+
+        if AssetManager._asset_database is not None:
+            return AssetManager._asset_database
+    except Exception:
+        pass
+    try:
+        from Infernux.lib import AssetRegistry
+
+        return AssetRegistry.instance().get_asset_database()
+    except Exception:
+        return None
+
+
+def _scan_guid_paths(project_root: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for root_name in ("Assets", "Packages"):
+        root = os.path.join(project_root, root_name)
+        if not os.path.isdir(root):
+            continue
+        for walk_root, dirs, names in os.walk(root):
+            dirs[:] = [
+                name
+                for name in dirs
+                if name not in _SKIPPED_DIRECTORIES and not name.startswith(".")
+            ]
+            for name in names:
+                if not name.endswith(".meta"):
+                    continue
+                asset = os.path.join(walk_root, name[:-5])
+                if not os.path.isfile(asset):
+                    continue
+                try:
+                    with open(os.path.join(walk_root, name), "r", encoding="utf-8") as stream:
+                        document = json.load(stream)
+                    guid = str(document["metadata"]["guid"]["value"]).strip().casefold()
+                except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                    continue
+                if not guid:
+                    continue
+                other = result.get(guid)
+                if other is not None and path_key(other) != path_key(asset):
+                    raise ValueError(f"Project contains duplicate GUID {guid}: {other}, {asset}")
+                result[guid] = asset
+    return result
+
+
+def _active_project_path(path: str, project_root: str) -> bool:
+    return any(
+        is_path_within(
+            path,
+            os.path.join(project_root, root_name),
+            allow_root=False,
+        )
+        for root_name in ("Assets", "Packages")
+    )
+
+
+__all__ = ["project_guid_paths"]

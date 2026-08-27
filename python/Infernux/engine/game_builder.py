@@ -390,7 +390,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         "Logs",
     }
     _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
-    _GAME_BUILD_EXCLUDED_PACKAGES = frozenset({"mcp", "fastmcp"})
+    # Editor-only package code is excluded structurally by package file roles.
+    # Do not reserve third-party names: user games may depend on any PyPI package.
+    _GAME_BUILD_EXCLUDED_PACKAGES = frozenset()
     _PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS = frozenset(
         {
             "ProjectSettings/.infernux-engine-lock.json",
@@ -663,6 +665,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         _p(t("build.step.compiling_scripts"), 0.91)
         self._compile_user_scripts(final_dir)
+        self._compile_player_plugin_scripts(final_dir)
         self._write_runtime_asset_records(final_dir)
 
         _p(t("build.step.processing_splash"), 0.93)
@@ -993,8 +996,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
     def _output_marker_path(self, directory: Optional[str] = None) -> str:
         target_dir = resolved_path(directory or self.output_dir)
-        if self._player_launcher_path():
-            target_dir = os.path.join(target_dir, f"{self.project_name}_Data")
         return os.path.join(target_dir, self.OUTPUT_MARKER_FILENAME)
 
     def _validate_output_directory(self) -> None:
@@ -1526,14 +1527,15 @@ finally:
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Invoke NuitkaBuilder. Returns the dist directory path."""
-        # NumPy is part of the engine runtime (batch APIs, textures, VFX and
-        # native ndarray bindings), so every Player must carry it. Numba and
-        # llvmlite remain conditional because only the public JIT path needs
-        # their bytecode-preserving raw package copies.
+        # NumPy and packaging are part of the engine runtime.  The latter is
+        # required by the runtime PluginManager for version/specifier checks;
+        # both must remain importable from the source-less runtime archive.
+        # Numba and llvmlite remain conditional because only the public JIT
+        # path needs their bytecode-preserving raw package copies.
         jit_set = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
         all_pkgs = user_packages or []
         compiled_pkgs = [p for p in all_pkgs if p not in jit_set]
-        raw_pkgs = {"numpy"}
+        raw_pkgs = {"numpy", "packaging"}
 
         player_icon = self.icon_path
         if not player_icon:
@@ -1589,12 +1591,6 @@ finally:
                 raise RuntimeError("Unable to stage the parallel Runtime Module")
         return dist_dir
 
-    def _player_launcher_path(self) -> str:
-        # PlayerRelease is a single-process/single-entry product.  The old
-        # thin launcher remains available as a legacy CMake target for
-        # migration diagnostics, but it must never be copied into a game.
-        return ""
-
     def _player_host_path(self) -> str:
         """Resolve the native single-process host; fail closed if absent."""
 
@@ -1603,7 +1599,7 @@ finally:
         candidate = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "resources",
-            "player",
+            "player_runtime",
             "InfernuxPlayerHost.exe",
         )
         if not os.path.isfile(candidate):
@@ -1758,7 +1754,7 @@ finally:
 
     @classmethod
     def _apply_windows_executable_icon(cls, executable: str, icon_path: str) -> None:
-        """Replace the copied thin launcher's icon without rebuilding the runtime."""
+        """Replace the copied PlayerHost icon without rebuilding the runtime."""
         if sys.platform != "win32":
             return
 
@@ -1893,6 +1889,7 @@ finally:
 
         self._copy_cooked_assets(data_dir)
         self._prune_player_editor_data(data_dir)
+        self._stage_player_plugins(data_dir)
         self._stage_library_runtime_artifacts(data_dir)
         self._stage_library_runtime_documents(data_dir)
 
@@ -1900,6 +1897,104 @@ finally:
         self._copy_particle_data_interface_artifacts(data_dir)
 
         self._filter_shipped_requirements(data_dir)
+
+    def _stage_player_plugins(self, data_dir: str) -> None:
+        """Stage enabled package files by GUID and structural Runtime policy."""
+
+        from Infernux.plugins.package import player_file_exported
+        from Infernux.plugins.registry import PluginRegistry
+
+        registry = PluginRegistry(self.project_path)
+        document = registry.load()
+        runtime_records: list[dict[str, object]] = []
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        packages_root = resolved_path(os.path.join(self.project_path, "Packages"))
+        indexed = {
+            str(entry.get("guid", "")).casefold(): entry
+            for entry in self._asset_index_entries()
+            if str(entry.get("guid", "")).strip()
+        }
+        for raw in document.get("installed", []):
+            if not isinstance(raw, dict) or not bool(raw.get("enabled", True)):
+                continue
+            record = dict(raw)
+            runtime_files: list[dict[str, object]] = []
+            for raw_file in record.get("files", []):
+                if not isinstance(raw_file, dict):
+                    continue
+                logical = portable_path(str(raw_file.get("logical_path", ""))).strip("/")
+                if not logical or not player_file_exported(record, logical):
+                    continue
+                guid = str(raw_file.get("guid", "")).casefold()
+                entry = indexed.get(guid)
+                if entry is None:
+                    raise RuntimeError(
+                        f"Player plugin asset GUID is absent from AssetIndex: "
+                        f"{record.get('reference', '')}:{guid}"
+                    )
+                source = self._library_source_entry_path(entry)
+                if not (
+                    is_path_within(source, assets_root, allow_root=False)
+                    or is_path_within(source, packages_root, allow_root=False)
+                ):
+                    raise RuntimeError(
+                        f"Player plugin GUID resolved outside Assets/Packages: {guid}: {source}"
+                    )
+                current_relative = portable_path(relative_path(source, self.project_path))
+                file_record = dict(raw_file)
+                file_record["path_hint"] = current_relative
+                runtime_files.append(file_record)
+                if is_path_within(source, packages_root, allow_root=False):
+                    destination = os.path.join(data_dir, *current_relative.split("/"))
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    shutil.copy2(source, destination)
+                    meta = source + ".meta"
+                    if not os.path.isfile(meta):
+                        raise RuntimeError(f"Player plugin asset has no GUID metadata: {source}")
+                    shutil.copy2(meta, destination + ".meta")
+            if not runtime_files:
+                continue
+            record["files"] = runtime_files
+            runtime_records.append(record)
+
+        runtime_registry = {
+            "$schema": document.get("$schema", "infernux.plugin_registry"),
+            "registry_version": document.get("registry_version", 2),
+            # Discovery/install sources are Editor concerns. A Player only
+            # needs the lifecycle records selected above.
+            "packages": [],
+            "installed": runtime_records,
+        }
+        _write_json_atomic(
+            os.path.join(data_dir, "ProjectSettings", "InxPlugins.json"),
+            runtime_registry,
+        )
+
+    @staticmethod
+    def _compile_player_plugin_scripts(final_dir: str) -> None:
+        """Compile exported package scripts without exposing source."""
+
+        root = os.path.join(final_dir, "Data", "Packages")
+        if not os.path.isdir(root):
+            return
+        for directory, _folders, filenames in os.walk(root):
+            for filename in filenames:
+                if not filename.endswith(".py"):
+                    continue
+                source = os.path.join(directory, filename)
+                try:
+                    py_compile.compile(
+                        source,
+                        cfile=source + "c",
+                        dfile=relative_path(source, os.path.join(final_dir, "Data")),
+                        optimize=2,
+                        doraise=True,
+                    )
+                    os.remove(source)
+                except py_compile.PyCompileError as exc:
+                    raise RuntimeError(
+                        f"Player plugin script compilation failed: {source}: {exc}"
+                    ) from exc
 
     def _copy_cooked_assets(self, data_dir: str) -> None:
         """Stage every current project asset selected from the AssetIndex."""
@@ -1918,9 +2013,7 @@ finally:
         self._cooked_asset_entries = dict(selected)
 
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
-        builtin_resources_root = resolved_path(
-            os.path.join(self.project_path, "Library", "Resources")
-        )
+        builtin_resources_roots = self._builtin_resource_roots()
         copied: set[str] = set()
 
         def copy_source(source_path: str, *, reason: str) -> None:
@@ -1947,8 +2040,18 @@ finally:
         for guid in sorted(selected):
             entry = selected[guid]
             source = self._library_source_entry_path(entry)
+            validation_root = self.project_path
+            if not is_path_within(source, validation_root, allow_root=False):
+                validation_root = next(
+                    (
+                        root
+                        for root in builtin_resources_roots
+                        if is_path_within(source, root, allow_root=False)
+                    ),
+                    validation_root,
+                )
             try:
-                source_fingerprint(self.project_path, entry)
+                source_fingerprint(validation_root, entry)
             except RuntimeArtifactError as exc:
                 raise RuntimeError(
                     f"Player asset cook rejected stale AssetIndex entry {guid}: {exc}"
@@ -1960,10 +2063,9 @@ finally:
             if is_path_within(source, assets_root, allow_root=False):
                 copy_source(source, reason=f"AssetIndex GUID {guid}")
                 continue
-            if bool(entry.get("read_only", False)) and is_path_within(
-                source,
-                builtin_resources_root,
-                allow_root=False,
+            if bool(entry.get("read_only", False)) and any(
+                is_path_within(source, root, allow_root=False)
+                for root in builtin_resources_roots
             ):
                 # Built-in resources are supplied once by Runtime.inxrt. They
                 # may participate in the GUID closure, but must never be
@@ -2048,6 +2150,41 @@ finally:
         candidate = raw if os.path.isabs(raw) else os.path.join(self.project_path, raw)
         return resolved_path(candidate)
 
+    def _builtin_resource_roots(self) -> tuple[str, ...]:
+        """Return every source root that may own indexed engine resources.
+
+        Graphical Editor startup mirrors resources into ``Library/Resources``
+        before importing them. A caller-controlled Headless host can index the
+        package resource tree directly instead. Both identities describe the
+        same immutable Runtime.inxrt payload and must produce the same cooked
+        GUID catalog.
+        """
+
+        candidates = (
+            os.path.join(self.project_path, "Library", "Resources"),
+            getattr(_resources, "resources_path", ""),
+            _resources.get_package_resources_path(),
+        )
+        roots: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate:
+                continue
+            root = resolved_path(candidate)
+            identity = path_key(root)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            roots.append(root)
+        return tuple(roots)
+
+    def _builtin_resource_relative_path(self, source_path: str) -> str:
+        source = resolved_path(source_path)
+        for root in self._builtin_resource_roots():
+            if is_path_within(source, root, allow_root=False):
+                return relative_path(source, root).replace("\\", "/")
+        return ""
+
     def _collect_library_asset_entries(self, entries: list[dict]) -> dict[str, dict]:
         """Select every current imported product beneath ``Assets``.
 
@@ -2090,18 +2227,22 @@ finally:
                 allow_root=False,
             )
         }
-        builtin_shader_root = resolved_path(
-            os.path.join(self.project_path, "Library", "Resources", "shaders")
+        builtin_shader_roots = tuple(
+            resolved_path(os.path.join(root, "shaders"))
+            for root in self._builtin_resource_roots()
         )
         roots.update(
             str(entry["guid"])
             for entry in entries
             if bool(entry.get("read_only", False))
             and logical_asset_type(entry) == "shader"
-            and is_path_within(
-                self._library_source_entry_path(entry),
-                builtin_shader_root,
-                allow_root=False,
+            and any(
+                is_path_within(
+                    self._library_source_entry_path(entry),
+                    builtin_shader_root,
+                    allow_root=False,
+                )
+                for builtin_shader_root in builtin_shader_roots
             )
         )
 
@@ -2436,8 +2577,10 @@ finally:
                 )
             return []
         try:
-            indexed_entries = self._asset_index_entries()
-            selected_entries = self._collect_library_asset_entries(indexed_entries)
+            selected_entries = getattr(self, "_cooked_asset_entries", None)
+            if selected_entries is None:
+                indexed_entries = self._asset_index_entries()
+                selected_entries = self._collect_library_asset_entries(indexed_entries)
         except RuntimeArtifactError as exc:
             raise RuntimeError(f"Particle runtime cook failed: {exc}") from exc
         for entry in selected_entries.values():
@@ -2700,9 +2843,8 @@ finally:
         *sys.stdlib_module_names,
         # Engine packages (already followed by Nuitka via boot.py)
         "Infernux",
-        # Excluded editor-only / build-only packages
+        # Editor-only / build-only packages owned by the engine itself.
         "watchdog", "PIL", "cv2", "imageio", "psd_tools",
-        "mcp", "fastmcp",
         "tkinter", "unittest", "test", "pip", "setuptools",
         "distutils", "ensurepip",
     })
@@ -2938,9 +3080,6 @@ finally:
 
         data_dir = os.path.join(final_dir, "Data")
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
-        builtin_resources_root = resolved_path(
-            os.path.join(self.project_path, "Library", "Resources")
-        )
         project_prefix = portable_path(resolved_path(self.project_path)).rstrip("/") + "/"
 
         def portable_metadata(value):
@@ -2975,12 +3114,19 @@ finally:
             is_project_asset = is_path_within(
                 source_path, assets_root, allow_root=False
             )
-            is_builtin_resource = bool(entry.get("read_only", False)) and is_path_within(
-                source_path, builtin_resources_root, allow_root=False
+            builtin_relative = (
+                self._builtin_resource_relative_path(source_path)
+                if bool(entry.get("read_only", False))
+                else ""
             )
+            is_builtin_resource = bool(builtin_relative)
             if not is_project_asset and not is_builtin_resource:
                 continue
-            runtime_path = relative_path(source_path, self.project_path).replace("\\", "/")
+            runtime_path = (
+                relative_path(source_path, self.project_path).replace("\\", "/")
+                if is_project_asset
+                else f"Library/Resources/{builtin_relative}"
+            )
             if runtime_path.casefold().endswith(".py"):
                 runtime_path += "c"
             compiled_bindings = sorted(
@@ -2995,9 +3141,6 @@ finally:
                 for path, _binding in compiled_bindings
             ]
             if not payloads and is_builtin_resource:
-                builtin_relative = relative_path(
-                    source_path, builtin_resources_root
-                ).replace("\\", "/")
                 payloads = [
                     {
                         "package": self._RUNTIME_ARCHIVE_FILENAME,
@@ -3406,9 +3549,8 @@ finally:
                         if directory.casefold() not in self._NUMPY_RUNTIME_EXCLUDED_DIRECTORIES
                     ]
                 for filename in filenames:
-                    # The legacy editor launcher can live below the engine
-                    # resource directory. A Player has one executable only;
-                    # do not hide another executable inside Runtime.inxrt.
+                    # A Player has one executable only. Never hide another
+                    # executable inside Runtime.inxrt.
                     if filename.casefold().endswith(".exe"):
                         continue
                     if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
@@ -4256,17 +4398,15 @@ finally:
         # gizmo textures during native startup, before Player mode is applied.
         # The complete directory is small and is an engine resource contract,
         # not disposable Editor cache data.
-        _queue_dir(os.path.join(final_dir, "Infernux", "resources", "supports"))
+        _queue_dir(
+            os.path.join(final_dir, "Infernux", "resources", "project_templates")
+        )
 
         # Build-time-only video packages — av (PyAV/ffmpeg) and imageio
         # are used only for splash video encoding at build time.  The
         # player reads pre-extracted .infsplash blobs via struct.
         for _build_pkg in ("av", "av.libs", "imageio"):
             _queue_dir(os.path.join(final_dir, _build_pkg))
-
-        for _mcp_pkg in self._GAME_BUILD_EXCLUDED_PACKAGES:
-            _queue_dir(os.path.join(final_dir, _mcp_pkg))
-        _queue_dir(os.path.join(final_dir, "Infernux", "mcp"))
 
         # Remove any leaked ffmpeg DLLs from the dist root that Nuitka's
         # DLL scanner may have copied from the av package.
@@ -4282,7 +4422,6 @@ finally:
 
         # Individual files not needed at runtime
         _queue_file(os.path.join(final_dir, "Infernux", "lib", "_Infernux.pyi"))
-        _queue_file(os.path.join(final_dir, "Infernux", "lib", "InfernuxLauncher.exe"))
         _queue_file(os.path.join(final_dir, "Data", "ProjectSettings", "EditorSettings.json"))
         _queue_file(os.path.join(final_dir, "Data", "ProjectSettings", "GameView.ini"))
         # A packaged Player reads the bundled Infernux/resources directory

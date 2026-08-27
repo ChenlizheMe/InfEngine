@@ -417,7 +417,7 @@ class AssetManager:
             action_origin = current_action_origin()
             origin_value = getattr(action_origin, "value", str(action_origin))
             collector_origin = {
-                "automation": "mcp",
+                "automation": "automation",
                 "external": "watchdog",
             }.get(origin_value, "editor")
             manager = ResourcesManager.instance()

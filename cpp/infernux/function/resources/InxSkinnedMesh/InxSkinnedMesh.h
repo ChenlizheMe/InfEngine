@@ -41,7 +41,9 @@ struct SkinnedRuntimeNode
 
 struct SkinnedRuntimeTrack
 {
-    std::string nodeName;
+    /// Source-skeleton node targeted by this channel. FBX channel names are
+    /// resolved once during import; skeleton node names establish retarget identity.
+    int nodeIndex = -1;
     std::vector<std::pair<double, glm::vec3>> positions;
     std::vector<std::pair<double, glm::quat>> rotations;
     std::vector<std::pair<double, glm::vec3>> scales;
@@ -53,9 +55,52 @@ struct SkinnedRuntimeAnimation
     double durationTicks = 0.0;
     double ticksPerSecond = 25.0;
     std::vector<SkinnedRuntimeTrack> tracks;
-    std::unordered_map<std::string, size_t> trackByNode;
+    /// Indexed by source-skeleton node; -1 means that node has no channel.
+    std::vector<int> trackByNodeIndex;
 
     [[nodiscard]] float DurationSeconds() const;
+};
+
+struct SkeletonRetargetMap
+{
+    /// Target node index -> source node index; -1 leaves the target at bind pose.
+    std::vector<int> targetToSourceNode;
+    size_t mappedNodes = 0;
+    /// Mappings established by exact skeleton node identity.
+    size_t exactNameMatches = 0;
+    size_t mappedAnimatedNodes = 0;
+    /// Source animation tracks that affect at least one mapped target node,
+    /// including FBX pivot/helper tracks above an exactly matched joint.
+    size_t mappedAnimationTracks = 0;
+    size_t missingTargetDeformJoints = 0;
+    size_t topologyDifferences = 0;
+    bool identicalTopology = false;
+};
+
+/**
+ * Runtime skeleton shared by a renderable skin and independently imported
+ * animation sources. Geometry, inverse-bind
+ * data, and animation tracks no
+ * longer define one asset identity. Automatic retargeting requires exact joint
+ *
+ * names and the same mapped deformation hierarchy, while allowing unmatched
+ * importer helper nodes between those
+ * joints.
+ */
+class Skeleton
+{
+  public:
+    std::vector<SkinnedRuntimeNode> nodes;
+    std::unordered_map<std::string, int> nodeByName;
+    std::vector<SkinnedRuntimeBone> bones;
+    std::unordered_map<std::string, uint32_t> boneByName;
+
+    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] SkeletonRetargetMap BuildRetargetMap(const Skeleton &source,
+                                                       const SkinnedRuntimeAnimation &animation) const;
+    [[nodiscard]] bool IsAnimationCompatible(const Skeleton &source, const SkinnedRuntimeAnimation &animation,
+                                             std::string *reason = nullptr) const;
+    [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
 };
 
 struct SkinnedNodePose
@@ -82,6 +127,8 @@ struct SkinnedSampleRequest
 struct PoseStackLayer
 {
     std::string takeName;
+    /// GUID of the model that owns this take. Empty means the render model.
+    std::string sourceModelGuid;
     float timeSeconds = 0.0f;
     float weight = 1.0f;
     bool additive = false;
@@ -100,31 +147,48 @@ class InxSkinnedMesh
     std::vector<SkinInfluence> influences;
     std::vector<uint32_t> indices;
     std::vector<SubMesh> subMeshes;
-    std::vector<SkinnedRuntimeNode> nodes;
-    std::unordered_map<std::string, int> nodeByName;
-    std::vector<SkinnedRuntimeBone> bones;
-    std::unordered_map<std::string, uint32_t> boneByName;
+    Skeleton skeleton;
     std::vector<SkinnedRuntimeAnimation> animations;
 
     [[nodiscard]] bool IsValid() const
     {
         return !baseVertices.empty() && !indices.empty();
     }
+    [[nodiscard]] bool IsAnimationSource() const
+    {
+        return skeleton.IsValid() && !animations.empty();
+    }
+    [[nodiscard]] bool IsAssetPayloadValid() const
+    {
+        return IsValid() || IsAnimationSource();
+    }
 
     [[nodiscard]] const SkinnedRuntimeAnimation *FindAnimation(const std::string &takeName) const;
     [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName) const;
-    [[nodiscard]] std::vector<glm::mat4> BuildGpuBonePalette(const SkinnedSampleRequest &request) const;
+    [[nodiscard]] std::vector<glm::mat4>
+    BuildGpuBonePalette(const SkinnedSampleRequest &request, const InxSkinnedMesh *animationSource = nullptr,
+                        const InxSkinnedMesh *blendAnimationSource = nullptr) const;
     [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>>
-    GetOrBuildGpuBonePalette(const SkinnedSampleRequest &request) const;
+    GetOrBuildGpuBonePalette(const SkinnedSampleRequest &request, const InxSkinnedMesh *animationSource = nullptr,
+                             const InxSkinnedMesh *blendAnimationSource = nullptr) const;
     [[nodiscard]] std::vector<Vertex> SampleVertices(const SkinnedSampleRequest &request) const;
+
+    /// Compute a conservative local-space AABB for a GPU-skinned pose.  The
+    /// palette already contains the model import scale, so the result is in
+    /// the same space as the rendered vertices rather than the unscaled FBX
+    /// bind-pose stream.
+    [[nodiscard]] bool ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin,
+                                            glm::vec3 &outMax) const;
 
     /// Build bone matrices from a multi-layer pose stack (N-way weighted +
     /// additive blending with optional per-layer bone masks). Used by the
     /// Python AnimationTree runtime. Not cached (the stack is dynamic).
-    [[nodiscard]] std::vector<glm::mat4>
-    BuildBoneMatricesFromPoseStack(const std::vector<PoseStackLayer> &layers) const;
-    [[nodiscard]] std::vector<glm::mat4>
-    BuildGpuBonePaletteFromPoseStack(const std::vector<PoseStackLayer> &layers) const;
+    [[nodiscard]] std::vector<glm::mat4> BuildBoneMatricesFromPoseStack(
+        const std::vector<PoseStackLayer> &layers,
+        const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources = {}) const;
+    [[nodiscard]] std::vector<glm::mat4> BuildGpuBonePaletteFromPoseStack(
+        const std::vector<PoseStackLayer> &layers,
+        const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources = {}) const;
 
     void NormalizeInfluences();
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
@@ -136,13 +200,16 @@ class InxSkinnedMesh
         int64_t timeMicros = 0;
         bool loop = true;
         std::string blendTakeName;
+        std::string animationSourceKey;
+        std::string blendAnimationSourceKey;
         int64_t blendTimeMicros = 0;
         int32_t blendWeightMicros = 0;
 
         bool operator==(const PaletteCacheKey &rhs) const
         {
             return takeName == rhs.takeName && timeMicros == rhs.timeMicros && loop == rhs.loop &&
-                   blendTakeName == rhs.blendTakeName && blendTimeMicros == rhs.blendTimeMicros &&
+                   blendTakeName == rhs.blendTakeName && animationSourceKey == rhs.animationSourceKey &&
+                   blendAnimationSourceKey == rhs.blendAnimationSourceKey && blendTimeMicros == rhs.blendTimeMicros &&
                    blendWeightMicros == rhs.blendWeightMicros;
         }
     };
@@ -152,10 +219,19 @@ class InxSkinnedMesh
         size_t operator()(const PaletteCacheKey &key) const;
     };
 
-    [[nodiscard]] SkinnedNodePose SampleNodePose(const SkinnedRuntimeAnimation *anim, const SkinnedRuntimeNode &node,
-                                                 double tTicks) const;
-    [[nodiscard]] std::vector<glm::mat4> BuildBoneMatrices(const SkinnedSampleRequest &request) const;
-    [[nodiscard]] static PaletteCacheKey MakePaletteCacheKey(const SkinnedSampleRequest &request);
+    [[nodiscard]] SkinnedNodePose SampleRetargetedNodePose(const SkinnedRuntimeAnimation *anim,
+                                                           const Skeleton &sourceSkeleton, size_t targetNodeIndex,
+                                                           int sourceNodeIndex, double tTicks) const;
+    [[nodiscard]] std::vector<SkinnedNodePose> BuildRetargetedLocalPoses(const Skeleton &sourceSkeleton,
+                                                                         const SkinnedRuntimeAnimation *animation,
+                                                                         const SkeletonRetargetMap &mapping,
+                                                                         double timeTicks) const;
+    [[nodiscard]] std::vector<glm::mat4> BuildBoneMatrices(const SkinnedSampleRequest &request,
+                                                           const InxSkinnedMesh *animationSource,
+                                                           const InxSkinnedMesh *blendAnimationSource) const;
+    [[nodiscard]] static PaletteCacheKey MakePaletteCacheKey(const SkinnedSampleRequest &request,
+                                                             const InxSkinnedMesh *animationSource,
+                                                             const InxSkinnedMesh *blendAnimationSource);
 
     mutable std::unordered_map<PaletteCacheKey, std::shared_ptr<const std::vector<glm::mat4>>, PaletteCacheKeyHash>
         m_gpuPaletteCache;

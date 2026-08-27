@@ -108,6 +108,7 @@ class PlayerBootstrap:
         phase("force player mode", self._force_player_mode)
         phase("load runtime contract", self._load_runtime_contract)
         phase("initialize engine", self._init_engine)
+        phase("preload project plugins", self._load_plugins)
         self._pump_startup_events()
         phase("load runtime asset catalog", self._load_runtime_asset_catalog)
         self._pump_startup_events()
@@ -459,6 +460,18 @@ class PlayerBootstrap:
         pump = getattr(engine, "pump_events", None)
         if callable(pump) and pump() is False:
             raise RuntimeError("Player startup cancelled")
+
+    def _load_plugins(self) -> None:
+        from Infernux.plugins import PluginManager
+
+        project_path = str(getattr(self, "project_path", "") or "")
+        if not project_path:
+            return
+        self.plugin_manager = PluginManager.startup(
+            project_path,
+            engine=self.engine,
+            runtime=True,
+        )
 
     def _create_managers(self):
         if self.engine is None or self._runtime_manifest is None:
