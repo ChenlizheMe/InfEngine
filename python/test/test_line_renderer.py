@@ -11,6 +11,7 @@ from Infernux.lib import (
     Vector3,
 )
 from Infernux.engine.ui._scene_view_line_tools import SceneViewLineToolsMixin
+from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
 
 def _xyz(value):
@@ -95,6 +96,29 @@ def test_line_renderer_serializes_authored_state_without_generated_mesh(scene):
     assert copy.use_world_space is True
     assert copy.alignment == LineAlignment.TransformZ
     assert copy.texture_mode == LineTextureMode.Tile
+
+
+def test_line_renderer_scene_snapshot_round_trips_through_validation(scene):
+    line = scene.create_game_object("SnapshotLine").add_component("LineRenderer")
+    line.set_positions([(0, 0, 0), (1, 2, 0), (3, 1, 0)])
+
+    transaction = SceneDocumentTransaction(scene, document=scene.serialize_document())
+
+    assert transaction.run_to_completion(raise_on_failure=False) is True
+    restored = scene.find("SnapshotLine").get_component("LineRenderer")
+    assert restored.position_count == 3
+
+
+def test_line_renderer_bounds_follow_cached_maximum_width(scene):
+    line = scene.create_game_object("BoundedLine").add_component("LineRenderer")
+    line.set_positions([(0, 0, 0), (2, 0, 0)])
+    line.start_width = 4.0
+    line.end_width = 4.0
+
+    bounds = line._cpp_component.get_world_bounds()
+
+    assert bounds[1] == pytest.approx(-2.0)
+    assert bounds[4] == pytest.approx(2.0)
 
 
 def test_line_renderer_supports_unity_texture_modes_curves_and_rounding(scene):
