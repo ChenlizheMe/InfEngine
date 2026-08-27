@@ -88,7 +88,7 @@
       "name": "release-linux",
       "displayName": "Release Preset (Linux / Ninja)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build-linux",
+      "binaryDir": "${sourceDir}/out/build/linux-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
@@ -97,6 +97,7 @@
       "name": "debug-linux",
       "displayName": "Debug Preset (Linux)",
       "inherits": "release-linux",
+      "binaryDir": "${sourceDir}/out/build/linux-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
