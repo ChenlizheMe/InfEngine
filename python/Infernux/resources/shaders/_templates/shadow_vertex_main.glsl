@@ -38,6 +38,18 @@ ${VERTEX_CALL}
         if (dot(side, side) < 1.0e-10)
             side = vec3(1.0, 0.0, 0.0);
         worldPos = vec4(centerWorld.xyz + normalize(side) * inBoneWeights.x, 1.0);
+        if (inBoneWeights.z > 0.0) {
+            vec3 towardLightCandidate = shadowUBO.light_vector.w < 0.5
+                ? shadowUBO.light_vector.xyz
+                : shadowUBO.light_vector.xyz - worldPos.xyz;
+            if (dot(towardLightCandidate, towardLightCandidate) > 1.0e-10) {
+                // Unity defines LineRenderer.shadowBias as a proportion of
+                // line width. Move only line casters away from the light;
+                // ordinary mesh shadows retain the shared raster bias path.
+                worldPos.xyz -= normalize(towardLightCandidate) *
+                    (2.0 * abs(inBoneWeights.x) * inBoneWeights.z);
+            }
+        }
         worldNormal = facing;
         worldTangent = vec4(tangentWorld, 1.0);
     } else {

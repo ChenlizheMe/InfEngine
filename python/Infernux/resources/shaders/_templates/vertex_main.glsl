@@ -50,8 +50,16 @@ ${VERTEX_CALL}
             side = vec3(1.0, 0.0, 0.0);
         side = normalize(side);
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
-        worldNormal = facing;
-        worldTangent = vec4(tangentWorld, 1.0);
+        if (inBoneIndices.y != 0u) {
+            worldNormal = facing;
+            worldTangent = vec4(tangentWorld, 1.0);
+        } else {
+            vec3 fallbackNormal = normalMatrix * v.normal;
+            worldNormal = dot(fallbackNormal, fallbackNormal) > 1.0e-10
+                ? normalize(fallbackNormal)
+                : vec3(0.0, 0.0, 1.0);
+            worldTangent = vec4(tangentWorld, 1.0);
+        }
     } else {
         if ((skin.flags & 1u) != 0u && skin.boneCount > 0u) {
             mat4 skinMat =

@@ -9,7 +9,7 @@ from typing import Any
 
 MAX_RAMP_KEYS = 16
 CURVE_WRAP_MODES = ("clamp", "repeat", "ping_pong")
-GRADIENT_MODES = ("linear", "fixed")
+GRADIENT_MODES = ("linear", "fixed", "perceptual_blend")
 
 
 def _number(value: Any, label: str) -> float:
@@ -148,7 +148,9 @@ class Gradient:
         if any(left.time >= right.time for left, right in zip(keys, keys[1:])):
             raise ValueError("gradient key times must be strictly increasing")
         if self.mode not in GRADIENT_MODES:
-            raise ValueError("gradient mode must be linear or fixed")
+            raise ValueError(
+                "gradient mode must be linear, fixed or perceptual_blend"
+            )
         object.__setattr__(self, "keys", keys)
 
     def to_dict(self) -> dict[str, Any]:

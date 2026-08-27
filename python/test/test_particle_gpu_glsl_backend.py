@@ -2500,7 +2500,7 @@ def test_geometry_and_particle_shadow_receivers_use_stable_pcf_without_blocker_s
     assert "sampler2D particle_shadow_map" in particle_source
 
 
-def test_shadow_vertex_keeps_directional_bias_out_of_caster_geometry():
+def test_shadow_vertex_keeps_shared_bias_out_of_caster_geometry_and_scopes_line_bias():
     python_root = Path(__file__).resolve().parents[1]
     template_root = python_root / "Infernux" / "resources" / "shaders" / "_templates"
     builtins = (template_root / "shadow_vertex_builtins.glsl").read_text(encoding="utf-8")
@@ -2509,7 +2509,9 @@ def test_shadow_vertex_keeps_directional_bias_out_of_caster_geometry():
     assert "vec4 light_vector" in builtins
     assert "vec4 bias" in builtins
     assert "transpose(inverse(mat3(instModel)))" in vertex
-    assert "worldPos.xyz -=" not in vertex
+    assert "bool inxLineVertex" in vertex
+    assert "if (inBoneWeights.z > 0.0)" in vertex
+    assert "2.0 * abs(inBoneWeights.x) * inBoneWeights.z" in vertex
     assert "shadowUBO.bias." not in vertex
     assert "if (shadowUBO.light_vector.w < 0.5)" in vertex
     assert "gl_Position.z = max(gl_Position.z, 0.0)" in vertex

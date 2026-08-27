@@ -52,6 +52,12 @@ class SceneViewOverlaysMixin:
         ctx.set_cursor_pos_x(cursor_start_x + 8)
         ctx.set_cursor_pos_y(cursor_start_y + 8)
         overlay_hovered = self._draw_gizmo_overlay(ctx)
+        overlay_hovered = self._draw_line_renderer_scene_tools(
+            ctx,
+            vp,
+            cursor_start_x,
+            cursor_start_y,
+        ) or overlay_hovered
 
         # Prefab mode overlay banner
         from Infernux.engine.scene_manager import SceneFileManager

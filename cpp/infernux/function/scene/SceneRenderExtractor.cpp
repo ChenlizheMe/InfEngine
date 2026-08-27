@@ -254,6 +254,8 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
 
         uint32_t objectLayerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
 
+        renderer->RefreshProceduralGeometry(obj->GetTransform()->GetWorldMatrix());
+
         // Check if renderer has inline mesh, asset mesh, or mesh reference
         if (!renderer->HasMeshAsset() && !renderer->HasInlineMesh() && !renderer->GetMesh().IsValid())
             continue;
@@ -312,6 +314,8 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
         Transform *transform = source.transform;
         if (!transform)
             continue;
+
+        mr->RefreshProceduralGeometry(transform->GetWorldMatrix());
 
         const glm::mat4 worldMatrix = mr->ResolveRenderWorldMatrix(transform->GetWorldMatrix());
 
