@@ -19,6 +19,18 @@ def _color_to_vec4(value):
     return value
 
 
+def _vec2_to_list(value):
+    return [float(value[0]), float(value[1])]
+
+
+def _list_to_vec2(value):
+    from Infernux.lib import Vector2
+
+    if isinstance(value, (list, tuple)):
+        return Vector2(float(value[0]), float(value[1]))
+    return value
+
+
 class LineRenderer(MeshRenderer):
     """Draw a continuous 3D ribbon through an ordered list of positions."""
 
@@ -34,28 +46,8 @@ class LineRenderer(MeshRenderer):
         range=(0, 1_000_000),
         tooltip="Number of control points in the line",
     )
-    start_width = CppProperty(
-        "start_width", FieldType.FLOAT, default=0.1, range=(0.0, 1000.0)
-    )
-    end_width = CppProperty(
-        "end_width", FieldType.FLOAT, default=0.1, range=(0.0, 1000.0)
-    )
     width_multiplier = CppProperty(
         "width_multiplier", FieldType.FLOAT, default=1.0, range=(0.0, 1000.0)
-    )
-    start_color = CppProperty(
-        "start_color",
-        FieldType.COLOR,
-        default=[1.0, 1.0, 1.0, 1.0],
-        get_converter=_vec4_to_color,
-        set_converter=_color_to_vec4,
-    )
-    end_color = CppProperty(
-        "end_color",
-        FieldType.COLOR,
-        default=[1.0, 1.0, 1.0, 1.0],
-        get_converter=_vec4_to_color,
-        set_converter=_color_to_vec4,
     )
     loop = CppProperty("loop", FieldType.BOOL, default=False)
     use_world_space = CppProperty("use_world_space", FieldType.BOOL, default=False)
@@ -71,11 +63,134 @@ class LineRenderer(MeshRenderer):
         FieldType.ENUM,
         default=None,
         enum_type="LineTextureMode",
-        enum_labels=["Stretch", "Tile"],
+        enum_labels=[
+            "Stretch",
+            "Tile",
+            "Distribute Per Segment",
+            "Repeat Per Segment",
+            "Static",
+        ],
     )
     texture_scale = CppProperty(
-        "texture_scale", FieldType.FLOAT, default=1.0, range=(0.0, 1000.0)
+        "texture_scale",
+        FieldType.VEC2,
+        default=[1.0, 1.0],
+        get_converter=_vec2_to_list,
+        set_converter=_list_to_vec2,
     )
+    num_corner_vertices = CppProperty(
+        "num_corner_vertices", FieldType.INT, default=0, range=(0, 1024)
+    )
+    num_cap_vertices = CppProperty(
+        "num_cap_vertices", FieldType.INT, default=0, range=(0, 1024)
+    )
+    shadow_bias = CppProperty(
+        "shadow_bias", FieldType.FLOAT, default=0.5, range=(0.0, 10.0)
+    )
+    generate_lighting_data = CppProperty(
+        "generate_lighting_data", FieldType.BOOL, default=False
+    )
+
+    @property
+    def start_width(self) -> float:
+        return float(self._require_cpp_component().start_width)
+
+    @start_width.setter
+    def start_width(self, value: float) -> None:
+        self._require_cpp_component().start_width = float(value)
+
+    @property
+    def end_width(self) -> float:
+        return float(self._require_cpp_component().end_width)
+
+    @end_width.setter
+    def end_width(self, value: float) -> None:
+        self._require_cpp_component().end_width = float(value)
+
+    @property
+    def start_color(self):
+        return _vec4_to_color(self._require_cpp_component().start_color)
+
+    @start_color.setter
+    def start_color(self, value) -> None:
+        self._require_cpp_component().start_color = _color_to_vec4(value)
+
+    @property
+    def end_color(self):
+        return _vec4_to_color(self._require_cpp_component().end_color)
+
+    @end_color.setter
+    def end_color(self, value) -> None:
+        self._require_cpp_component().end_color = _color_to_vec4(value)
+
+    @property
+    def width_curve(self):
+        from Infernux.graph.ramp import Curve, CurveKey
+
+        cpp = self._require_cpp_component()
+        wrap_names = ("clamp", "repeat", "ping_pong")
+        keys = tuple(
+            CurveKey(key.time, key.value, key.in_tangent, key.out_tangent)
+            for key in cpp.width_curve
+        )
+        return Curve(
+            keys,
+            wrap_names[int(cpp.width_curve_pre_wrap)],
+            wrap_names[int(cpp.width_curve_post_wrap)],
+        )
+
+    @width_curve.setter
+    def width_curve(self, value) -> None:
+        from Infernux.graph.ramp import Curve
+        from Infernux.lib import LineCurveWrapMode, LineWidthKey
+
+        curve = value if isinstance(value, Curve) else Curve.from_dict(value)
+        cpp = self._require_cpp_component()
+        cpp.width_curve = [
+            LineWidthKey(key.time, key.value, key.in_tangent, key.out_tangent)
+            for key in curve.keys
+        ]
+        modes = (
+            LineCurveWrapMode.Clamp,
+            LineCurveWrapMode.Repeat,
+            LineCurveWrapMode.PingPong,
+        )
+        wrap_names = ("clamp", "repeat", "ping_pong")
+        cpp.width_curve_pre_wrap = modes[wrap_names.index(curve.pre_wrap)]
+        cpp.width_curve_post_wrap = modes[wrap_names.index(curve.post_wrap)]
+
+    @property
+    def color_gradient(self):
+        from Infernux.graph.ramp import Gradient, GradientKey
+
+        cpp = self._require_cpp_component()
+        keys = tuple(
+            GradientKey(key.time, tuple(float(channel) for channel in key.color))
+            for key in cpp.color_gradient
+        )
+        return Gradient(
+            keys,
+            ("linear", "fixed", "perceptual_blend")[
+                int(cpp.color_gradient_mode)
+            ],
+        )
+
+    @color_gradient.setter
+    def color_gradient(self, value) -> None:
+        from Infernux.graph.ramp import Gradient
+        from Infernux.lib import LineColorKey, LineGradientMode
+
+        gradient = value if isinstance(value, Gradient) else Gradient.from_dict(value)
+        cpp = self._require_cpp_component()
+        cpp.color_gradient = [
+            LineColorKey(key.time, _color_to_vec4(key.color)) for key in gradient.keys
+        ]
+        modes = {
+            "linear": LineGradientMode.Linear,
+            "fixed": LineGradientMode.Fixed,
+            "perceptual_blend": LineGradientMode.PerceptualBlend,
+        }
+        cpp.color_gradient_mode = modes[gradient.mode]
 
     @property
     def positions(self):
@@ -112,6 +227,18 @@ class LineRenderer(MeshRenderer):
     def simplify(self, tolerance: float) -> None:
         self._require_cpp_component().simplify(float(tolerance))
 
+    def bake_mesh(self, target, camera=None, use_transform: bool = False) -> None:
+        """Bake a static snapshot into a MeshRenderer.
+
+        ``camera`` controls billboard orientation when alignment is ``View``.
+        ``use_transform`` includes this object's transform in the baked data.
+        """
+        target_cpp = getattr(target, "_cpp_component", target)
+        camera_cpp = getattr(camera, "_cpp_component", camera)
+        self._require_cpp_component().bake_mesh(
+            target_cpp, camera_cpp, bool(use_transform)
+        )
+
     def render_inspector(self, ctx) -> None:
         from Infernux.engine.ui._inspector_undo import _record_property
         from Infernux.engine.ui.inspector_components import render_builtin_via_setters
@@ -121,7 +248,49 @@ class LineRenderer(MeshRenderer):
             max_label_w,
         )
 
+        from Infernux.engine.ui.particle_graph_editor_panel import (
+            ParticleGraphEditorPanel,
+        )
+
         render_builtin_via_setters(ctx, self, type(self))
+        if ctx.collapsing_header("Width Curve"):
+            old_curve = self.width_curve
+            new_curve_document = ParticleGraphEditorPanel._render_curve_property(
+                ctx,
+                f"line_renderer_{self.component_id}",
+                "width_curve",
+                old_curve.to_dict(),
+                semantic_prefix=f"inspector.line_renderer.{self.component_id}.width_curve",
+            )
+            if new_curve_document != old_curve.to_dict():
+                from Infernux.graph.ramp import Curve
+
+                _record_property(
+                    self,
+                    "width_curve",
+                    old_curve,
+                    Curve.from_dict(new_curve_document),
+                    "Set Line Width Curve",
+                )
+        if ctx.collapsing_header("Color Gradient"):
+            old_gradient = self.color_gradient
+            new_gradient_document = ParticleGraphEditorPanel._render_gradient_property(
+                ctx,
+                f"line_renderer_{self.component_id}",
+                "color_gradient",
+                old_gradient.to_dict(),
+                semantic_prefix=f"inspector.line_renderer.{self.component_id}.color_gradient",
+            )
+            if new_gradient_document != old_gradient.to_dict():
+                from Infernux.graph.ramp import Gradient
+
+                _record_property(
+                    self,
+                    "color_gradient",
+                    old_gradient,
+                    Gradient.from_dict(new_gradient_document),
+                    "Set Line Color Gradient",
+                )
         if not ctx.collapsing_header("Positions"):
             return
 

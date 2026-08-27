@@ -739,9 +739,9 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
         required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
     } else if (expectedType == "LineRenderer") {
-        required.insert(required.end(),
-                        {"positions", "startWidth", "endWidth", "widthMultiplier", "startColor", "endColor", "loop",
-                         "useWorldSpace", "alignment", "textureMode", "textureScale"});
+        required.insert(required.end(), {"positions", "widthCurve", "widthMultiplier", "colorGradient", "loop",
+                                         "useWorldSpace", "alignment", "textureMode", "textureScale",
+                                         "numCornerVertices", "numCapVertices", "shadowBias", "generateLightingData"});
     } else if (expectedType == "SkinnedMeshRenderer") {
         optional.push_back("activeTakeName");
     } else if (expectedType != "MeshRenderer") {
@@ -885,25 +885,87 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
             }
         }
         const auto requireFiniteNonNegative = [&](const char *field) {
+            if (!j[field].is_number())
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " must be finite and non-negative");
             const double value = j[field].get<double>();
-            if (!j[field].is_number() || !std::isfinite(value) || value < 0.0)
+            if (!std::isfinite(value) || value < 0.0)
                 throw std::invalid_argument(std::string("LineRenderer.") + field + " must be finite and non-negative");
         };
-        requireFiniteNonNegative("startWidth");
-        requireFiniteNonNegative("endWidth");
         requireFiniteNonNegative("widthMultiplier");
-        requireFiniteNonNegative("textureScale");
-        RequireFiniteVector(j, "startColor", 4, expectedType);
-        RequireFiniteVector(j, "endColor", 4, expectedType);
+        requireFiniteNonNegative("shadowBias");
+        RequireFiniteVector(j, "textureScale", 2, expectedType);
         RequireBoolean(j, "loop", expectedType);
         RequireBoolean(j, "useWorldSpace", expectedType);
+        RequireBoolean(j, "generateLightingData", expectedType);
         const auto requireEnum = [&](const char *field, int maximum) {
             const int64_t value = RequireInteger(j, field, expectedType);
             if (value < 0 || value > maximum)
                 throw std::invalid_argument(std::string("LineRenderer.") + field + " is outside its enum range");
         };
         requireEnum("alignment", 1);
-        requireEnum("textureMode", 1);
+        requireEnum("textureMode", 4);
+        const auto requireRoundingCount = [&](const char *field) {
+            const uint64_t value = RequireUnsignedInteger(j, field, expectedType);
+            if (value > 1024u)
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " exceeds the supported limit");
+        };
+        requireRoundingCount("numCornerVertices");
+        requireRoundingCount("numCapVertices");
+
+        const auto &widthCurve = j["widthCurve"];
+        if (!widthCurve.is_object() || widthCurve.size() != 3 || !widthCurve.contains("keys") ||
+            !widthCurve.contains("preWrap") || !widthCurve.contains("postWrap") || !widthCurve["keys"].is_array() ||
+            widthCurve["keys"].empty())
+            throw std::invalid_argument("LineRenderer.widthCurve has invalid fields");
+        double previousTime = -std::numeric_limits<double>::infinity();
+        for (const auto &key : widthCurve["keys"]) {
+            if (!key.is_object() || key.size() != 4 || !key.contains("time") || !key.contains("value") ||
+                !key.contains("inTangent") || !key.contains("outTangent"))
+                throw std::invalid_argument("LineRenderer.widthCurve contains an invalid key");
+            for (const char *field : {"time", "value", "inTangent", "outTangent"}) {
+                if (!key[field].is_number() || !std::isfinite(key[field].get<double>()))
+                    throw std::invalid_argument("LineRenderer.widthCurve keys must contain finite numbers");
+            }
+            const double time = key["time"].get<double>();
+            if (time <= previousTime || key["value"].get<double>() < 0.0)
+                throw std::invalid_argument(
+                    "LineRenderer.widthCurve key times must increase and values must be non-negative");
+            previousTime = time;
+        }
+        const auto requireNestedEnum = [&](const nlohmann::json &object, const char *field, int maximum,
+                                           const char *label) {
+            if (!object[field].is_number_integer())
+                throw std::invalid_argument(std::string(label) + " must be an integer");
+            const int64_t value = object[field].get<int64_t>();
+            if (value < 0 || value > maximum)
+                throw std::invalid_argument(std::string(label) + " is outside its enum range");
+        };
+        requireNestedEnum(widthCurve, "preWrap", 2, "LineRenderer.widthCurve.preWrap");
+        requireNestedEnum(widthCurve, "postWrap", 2, "LineRenderer.widthCurve.postWrap");
+
+        const auto &gradient = j["colorGradient"];
+        if (!gradient.is_object() || gradient.size() != 2 || !gradient.contains("keys") || !gradient.contains("mode") ||
+            !gradient["keys"].is_array() || gradient["keys"].empty())
+            throw std::invalid_argument("LineRenderer.colorGradient has invalid fields");
+        previousTime = -std::numeric_limits<double>::infinity();
+        for (const auto &key : gradient["keys"]) {
+            if (!key.is_object() || key.size() != 2 || !key.contains("time") || !key.contains("color") ||
+                !key["time"].is_number())
+                throw std::invalid_argument("LineRenderer.colorGradient contains an invalid key");
+            const double time = key["time"].get<double>();
+            if (!std::isfinite(time) || time < 0.0 || time > 1.0 || time <= previousTime)
+                throw std::invalid_argument(
+                    "LineRenderer.colorGradient key times must strictly increase between zero and one");
+            const auto &color = key["color"];
+            if (!color.is_array() || color.size() != 4)
+                throw std::invalid_argument("LineRenderer.colorGradient colors require four channels");
+            for (const auto &channel : color) {
+                if (!channel.is_number() || !std::isfinite(channel.get<double>()))
+                    throw std::invalid_argument("LineRenderer.colorGradient colors must be finite");
+            }
+            previousTime = time;
+        }
+        requireNestedEnum(gradient, "mode", 2, "LineRenderer.colorGradient.mode");
     }
 }
 

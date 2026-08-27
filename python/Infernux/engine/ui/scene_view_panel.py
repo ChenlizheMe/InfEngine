@@ -125,9 +125,10 @@ from ._scene_view_camera import SceneViewCameraMixin
 from ._scene_view_overlays import SceneViewOverlaysMixin
 from ._scene_view_picking import SceneViewPickingMixin
 from ._scene_view_math import SceneViewMathMixin
+from ._scene_view_line_tools import SceneViewLineToolsMixin
 
 @editor_panel("Scene", type_id="scene_view", title_key="panel.scene")
-class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlaysMixin, SceneViewPickingMixin, SceneViewMathMixin, EditorPanel):
+class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlaysMixin, SceneViewPickingMixin, SceneViewMathMixin, SceneViewLineToolsMixin, EditorPanel):
     """
     Unity-style Scene View panel with 3D viewport and camera controls.
     
@@ -264,6 +265,26 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._particle_preview_resize_start_height = 0.0
         self._particle_preview_last_tick = 0.0
         self._particle_preview_selection_service = None
+
+        # LineRenderer scene authoring state.
+        self._line_edit_mode = 0  # 0=None, 1=Edit Points, 2=Create Points
+        self._line_active_component_id = 0
+        self._line_show_wireframe = True
+        self._line_simplify_preview = False
+        self._line_simplify_tolerance = 1.0
+        self._line_create_input = 0  # 0=mouse plane, 1=physics raycast
+        self._line_create_layer_mask = 0x7FFFFFFF
+        self._line_create_min_distance = 0.1
+        self._line_create_offset = 0.0
+        self._line_selected_points = set()
+        self._line_point_dragging = False
+        self._line_drag_plane_point = (0.0, 0.0, 0.0)
+        self._line_drag_plane_normal = (0.0, 0.0, 1.0)
+        self._line_drag_start_world = (0.0, 0.0, 0.0)
+        self._line_drag_start_positions = []
+        self._line_drag_before_document = None
+        self._line_create_dragging = False
+        self._line_create_before_document = None
     
     def set_engine(self, engine):
         """Set the engine reference for camera control."""

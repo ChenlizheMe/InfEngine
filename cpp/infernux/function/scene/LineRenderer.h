@@ -18,6 +18,37 @@ enum class LineTextureMode : uint8_t
 {
     Stretch = 0,
     Tile = 1,
+    DistributePerSegment = 2,
+    RepeatPerSegment = 3,
+    Static = 4,
+};
+
+enum class LineCurveWrapMode : uint8_t
+{
+    Clamp = 0,
+    Repeat = 1,
+    PingPong = 2,
+};
+
+enum class LineGradientMode : uint8_t
+{
+    Linear = 0,
+    Fixed = 1,
+    PerceptualBlend = 2,
+};
+
+struct LineWidthKey
+{
+    float time = 0.0f;
+    float value = 1.0f;
+    float inTangent = 0.0f;
+    float outTangent = 0.0f;
+};
+
+struct LineColorKey
+{
+    float time = 0.0f;
+    glm::vec4 color{1.0f};
 };
 
 /**
@@ -56,32 +87,45 @@ class LineRenderer final : public MeshRenderer
     }
     void SetPositions(const std::vector<glm::vec3> &positions);
 
-    [[nodiscard]] float GetStartWidth() const
-    {
-        return m_startWidth;
-    }
+    [[nodiscard]] float GetStartWidth() const;
     void SetStartWidth(float width);
-    [[nodiscard]] float GetEndWidth() const
-    {
-        return m_endWidth;
-    }
+    [[nodiscard]] float GetEndWidth() const;
     void SetEndWidth(float width);
     [[nodiscard]] float GetWidthMultiplier() const
     {
         return m_widthMultiplier;
     }
     void SetWidthMultiplier(float multiplier);
+    [[nodiscard]] const std::vector<LineWidthKey> &GetWidthCurve() const
+    {
+        return m_widthCurve;
+    }
+    void SetWidthCurve(const std::vector<LineWidthKey> &keys);
+    [[nodiscard]] LineCurveWrapMode GetWidthCurvePreWrap() const
+    {
+        return m_widthCurvePreWrap;
+    }
+    void SetWidthCurvePreWrap(LineCurveWrapMode mode);
+    [[nodiscard]] LineCurveWrapMode GetWidthCurvePostWrap() const
+    {
+        return m_widthCurvePostWrap;
+    }
+    void SetWidthCurvePostWrap(LineCurveWrapMode mode);
 
-    [[nodiscard]] const glm::vec4 &GetStartColor() const
-    {
-        return m_startColor;
-    }
+    [[nodiscard]] glm::vec4 GetStartColor() const;
     void SetStartColor(const glm::vec4 &color);
-    [[nodiscard]] const glm::vec4 &GetEndColor() const
-    {
-        return m_endColor;
-    }
+    [[nodiscard]] glm::vec4 GetEndColor() const;
     void SetEndColor(const glm::vec4 &color);
+    [[nodiscard]] const std::vector<LineColorKey> &GetColorGradient() const
+    {
+        return m_colorGradient;
+    }
+    void SetColorGradient(const std::vector<LineColorKey> &keys);
+    [[nodiscard]] LineGradientMode GetColorGradientMode() const
+    {
+        return m_colorGradientMode;
+    }
+    void SetColorGradientMode(LineGradientMode mode);
 
     [[nodiscard]] bool GetLoop() const
     {
@@ -103,15 +147,39 @@ class LineRenderer final : public MeshRenderer
         return m_textureMode;
     }
     void SetTextureMode(LineTextureMode mode);
-    [[nodiscard]] float GetTextureScale() const
+    [[nodiscard]] const glm::vec2 &GetTextureScale() const
     {
         return m_textureScale;
     }
-    void SetTextureScale(float scale);
+    void SetTextureScale(const glm::vec2 &scale);
+    [[nodiscard]] uint32_t GetNumCornerVertices() const
+    {
+        return m_numCornerVertices;
+    }
+    void SetNumCornerVertices(uint32_t count);
+    [[nodiscard]] uint32_t GetNumCapVertices() const
+    {
+        return m_numCapVertices;
+    }
+    void SetNumCapVertices(uint32_t count);
+    [[nodiscard]] float GetShadowBias() const
+    {
+        return m_shadowBias;
+    }
+    void SetShadowBias(float bias);
+    [[nodiscard]] bool GetGenerateLightingData() const
+    {
+        return m_generateLightingData;
+    }
+    void SetGenerateLightingData(bool generate);
+
+    /// Snapshot the expanded ribbon into another renderer's inline mesh.
+    void BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPosition, bool useTransform) const;
 
     void Simplify(float tolerance);
 
     [[nodiscard]] glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
+    void RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix) override;
     void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const override;
 
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
@@ -127,16 +195,22 @@ class LineRenderer final : public MeshRenderer
     void RebuildMesh();
 
     std::vector<glm::vec3> m_positions{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}};
-    float m_startWidth = 0.1f;
-    float m_endWidth = 0.1f;
     float m_widthMultiplier = 1.0f;
-    glm::vec4 m_startColor{1.0f};
-    glm::vec4 m_endColor{1.0f};
+    std::vector<LineWidthKey> m_widthCurve{{0.0f, 0.1f, 0.0f, 0.0f}, {1.0f, 0.1f, 0.0f, 0.0f}};
+    LineCurveWrapMode m_widthCurvePreWrap = LineCurveWrapMode::Clamp;
+    LineCurveWrapMode m_widthCurvePostWrap = LineCurveWrapMode::Clamp;
+    std::vector<LineColorKey> m_colorGradient{{0.0f, glm::vec4(1.0f)}, {1.0f, glm::vec4(1.0f)}};
+    LineGradientMode m_colorGradientMode = LineGradientMode::Linear;
     bool m_loop = false;
     bool m_useWorldSpace = false;
     LineAlignment m_alignment = LineAlignment::View;
     LineTextureMode m_textureMode = LineTextureMode::Stretch;
-    float m_textureScale = 1.0f;
+    glm::vec2 m_textureScale{1.0f};
+    uint32_t m_numCornerVertices = 0;
+    uint32_t m_numCapVertices = 0;
+    float m_shadowBias = 0.5f;
+    bool m_generateLightingData = false;
+    glm::mat4 m_geometryWorldMatrix{1.0f};
 };
 
 } // namespace infernux

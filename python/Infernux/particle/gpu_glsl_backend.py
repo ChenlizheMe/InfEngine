@@ -2918,8 +2918,13 @@ def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
                 f"(({sample_time} - {_float_literal(left.time)}) / "
                 f"{_float_literal(right.time - left.time)})"
             )
+            function = (
+                "inx_mix_perceptual_gradient"
+                if gradient.mode == "perceptual_blend"
+                else "mix"
+            )
             segment = (
-                f"mix({_vector_literal(left.color, 4)}, "
+                f"{function}({_vector_literal(left.color, 4)}, "
                 f"{_vector_literal(right.color, 4)}, {factor})"
             )
         expression = f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
@@ -5582,6 +5587,7 @@ def _shader_prelude(
         if parameter_slots
         else ""
     )
+    perceptual_gradient_glsl = _perceptual_gradient_glsl()
     ramp_parameter_glsl = _ramp_parameter_glsl(parameter_slots)
     contact_glsl = _contact_bindings_glsl(7) if contact_enabled else ""
     contact_store_call = (
@@ -5793,6 +5799,7 @@ layout(std430, set = 3, binding = 4) readonly buffer ParticleEmitterPlayingState
 }};
 {data_interface_glsl}
 {push_constants}
+{perceptual_gradient_glsl}
 {ramp_parameter_glsl}
 {contact_glsl}
 
@@ -7571,7 +7578,9 @@ vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
                 (time - left_time) / max(right_time - left_time, 0.0000001),
                 0.0,
                 1.0);
-            return mix(left_color, right_color, factor);
+            return header.y == 2u
+                ? inx_mix_perceptual_gradient(left_color, right_color, factor)
+                : mix(left_color, right_color, factor);
         }}
         left_time = right_time;
         left_color = right_color;
@@ -7581,6 +7590,47 @@ vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
 """
         )
     return "\n".join(parts)
+
+
+def _perceptual_gradient_glsl() -> str:
+    return r"""
+vec3 inx_linear_rgb_to_oklab(vec3 color) {
+    vec3 lms = mat3(
+        0.4122214708, 0.2119034982, 0.0883024619,
+        0.5363325363, 0.6806995451, 0.2817188376,
+        0.0514459929, 0.1073969566, 0.6299787005
+    ) * color;
+    vec3 root = sign(lms) * pow(abs(lms), vec3(1.0 / 3.0));
+    return mat3(
+        0.2104542553, 1.9779984951, 0.0259040371,
+        0.7936177850, -2.4285922050, 0.7827717662,
+        -0.0040720468, 0.4505937099, -0.8086757660
+    ) * root;
+}
+
+vec3 inx_oklab_to_linear_rgb(vec3 color) {
+    vec3 root = mat3(
+        1.0, 1.0, 1.0,
+        0.3963377774, -0.1055613458, -0.0894841775,
+        0.2158037573, -0.0638541728, -1.2914855480
+    ) * color;
+    vec3 lms = root * root * root;
+    return mat3(
+        4.0767416621, -1.2684380046, -0.0041960863,
+        -3.3077115913, 2.6097574011, -0.7034186147,
+        0.2309699292, -0.3413193965, 1.7076147010
+    ) * lms;
+}
+
+vec4 inx_mix_perceptual_gradient(vec4 left, vec4 right, float factor) {
+    vec3 color = inx_oklab_to_linear_rgb(mix(
+        inx_linear_rgb_to_oklab(left.rgb),
+        inx_linear_rgb_to_oklab(right.rgb),
+        factor
+    ));
+    return vec4(color, mix(left.a, right.a, factor));
+}
+"""
 
 
 def pack_gpu_particle_parameters(

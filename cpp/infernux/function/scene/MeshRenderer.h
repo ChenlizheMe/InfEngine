@@ -320,6 +320,12 @@ class MeshRenderer : public Component
         return objectWorldMatrix;
     }
 
+    /// Refresh transform-dependent procedural data before render extraction.
+    virtual void RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix)
+    {
+        (void)objectWorldMatrix;
+    }
+
     /// @brief Recompute local bounds from inline vertex positions.
     void ComputeLocalBoundsFromInlineVertices();
 

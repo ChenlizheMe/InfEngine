@@ -28,6 +28,12 @@ from Infernux.lib import Transform as Transform
 from Infernux.lib import Component as Component
 from Infernux.lib import Space as Space
 from Infernux.lib import PrimitiveType as PrimitiveType
+from Infernux.lib import LineAlignment as LineAlignment
+from Infernux.lib import LineTextureMode as LineTextureMode
+from Infernux.lib import LineCurveWrapMode as LineCurveWrapMode
+from Infernux.lib import LineGradientMode as LineGradientMode
+from Infernux.lib import LineWidthKey as LineWidthKey
+from Infernux.lib import LineColorKey as LineColorKey
 # Components — user-facing
 from Infernux.components import InxComponent as InxComponent
 from Infernux.components import int_field as int_field
@@ -72,6 +78,7 @@ def serialized_field(
 # Builtin components
 from Infernux.components import Light as Light
 from Infernux.components import MeshRenderer as MeshRenderer
+from Infernux.components import LineRenderer as LineRenderer
 from Infernux.components import SkinnedMeshRenderer as SkinnedMeshRenderer
 from Infernux.components import Camera as Camera
 from Infernux.components import Collider as Collider

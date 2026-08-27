@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .light import Light as Light
 from .mesh_renderer import MeshRenderer as MeshRenderer
+from .line_renderer import LineRenderer as LineRenderer
 from .skinned_mesh_renderer import SkinnedMeshRenderer as SkinnedMeshRenderer
 from .camera import Camera as Camera
 from .collider import Collider as Collider, PhysicsMaterialCombine as PhysicsMaterialCombine
@@ -23,6 +24,7 @@ from .sprite_renderer import SpriteRenderer as SpriteRenderer
 __all__ = [
     "Light",
     "MeshRenderer",
+    "LineRenderer",
     "SkinnedMeshRenderer",
     "Camera",
     "Collider",
