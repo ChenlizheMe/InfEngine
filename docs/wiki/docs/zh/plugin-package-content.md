@@ -89,9 +89,7 @@ class Bootstrap(InxPreload):
 
 ## 依赖
 
-`requirements.txt` 里写别的插件名，会先当插件装；对不上再交给 pip。pip 装进来的只是 Python 包，不会变成 Infernux 插件。
-
-pip 回滚是尽力而为。Infernux 会记录已安装 distribution 的名称和版本，移除失败事务新增的包，并让 pip 重新安装发生变化的基线版本；但它无法忠实重建所有本地 wheel、Git/VCS URL、editable install、自定义构建，也不能保证恢复被 pip 原地覆盖的文件。插件文件和 InxPackage 注册表本身仍然在事务内。需要精确恢复 Python 环境时，请使用可重现的项目环境或外部环境 lock。
+`requirements.txt` 里写别的插件名，会先当插件装；对不上再交给 pip。pip 装进来的只是 Python 包，不会变成 Infernux 插件。pip 失败时会尽量卸掉这次新装的东西，本地 wheel 或 git 装的不一定能原样恢复。
 
 ## 打包游戏
 

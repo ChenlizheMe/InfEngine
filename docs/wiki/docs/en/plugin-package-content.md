@@ -89,9 +89,7 @@ Disabled packages are skipped. If `unload` fails, the engine stops and asks you 
 
 ## Dependencies
 
-Names in `requirements.txt` are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin.
-
-Pip rollback is best-effort. Infernux records installed distribution names and versions, removes distributions added by a failed transaction, and asks pip to reinstall changed baseline versions. This cannot faithfully recreate every local wheel, Git/VCS URL, editable install, custom build, or file overwritten in place by pip. Plugin files and the InxPackage registry are still transactional. Use a reproducible project environment or an external environment lock when exact Python recovery matters.
+Names in `requirements.txt` are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin. If pip fails, Infernux tries to remove what that install added. Local wheels and git installs may not come back exactly.
 
 ## Player builds
 

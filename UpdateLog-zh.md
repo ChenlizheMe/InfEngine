@@ -1,8 +1,28 @@
+# Infernux v0.3.7 · 插件
+
+0.3.7 加了 InxPackage 插件。MCP 不再焊在引擎核心里。
+
+[English release notes](UpdateLog.md)
+
+**版本对比：** [`v0.3.6...HEAD`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...HEAD)
+
+### 插件
+
+- 可以装 `.inxpkg`、本地目录、Git，或从官方列表安装。
+- `Runtime/` 进游戏，`Editor/` 留在编辑器。
+- 插件窗口里的说明来自 `README.md`、`LICENSE` 和 `InxPluginPages/`。
+- MCP 变成官方默认插件 `infernux/mcp`。新项目会带上，可以禁用或卸载。
+
+### 编辑器
+
+- 插件窗口：安装、启用、禁用、重载、卸载。
+- Headless 走和编辑器同一套场景与撤销。
+
+---
+
 # Infernux v0.3.6 · 统一 Hierarchy 与 Hub 更新
 
 0.3.6 统一了编辑器 Hierarchy，并恢复打包版 Infernux Hub 的自动更新发现能力。
-
-[English release notes](UpdateLog.md)
 
 **版本对比：** [`v0.3.5...v0.3.6`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.5...v0.3.6)
 
