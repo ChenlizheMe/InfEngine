@@ -11,7 +11,7 @@ class in <b>Infernux.components.builtin</b>
 Controls physics simulation for the GameObject.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.6
+**Status:** Preview · **Verified with:** 0.3.7
 
 For dynamic bodies, use forces or velocity rather than writing Transform every frame. Use move operations for kinematic bodies and issue simulation commands from fixed updates.
 <!-- USER CONTENT END -->

@@ -18,9 +18,12 @@ function cleanInline(value) {
 }
 
 const markdown = (await readFile(path.join(repoRoot, "UpdateLog.md"), "utf8")).replace(/\r\n/g, "\n").trim();
+// UpdateLog.md is cumulative. Only the first release block belongs to the
+// currently documented release; later blocks are retained as history.
+const currentMarkdown = markdown.split(/^\s*---\s*$/m, 1)[0].trim();
 const release = JSON.parse(await readFile(path.join(docsRoot, "release.json"), "utf8"));
 const manifest = JSON.parse(await readFile(path.join(docsRoot, "docs-manifest.json"), "utf8"));
-const heading = markdown.match(/^#\s+Infernux\s+v([^\s·]+)(?:\s+·\s+(.+))?$/m);
+const heading = currentMarkdown.match(/^#\s+Infernux\s+v([^\s·]+)(?:\s+·\s+(.+))?$/m);
 if (!heading) throw new Error("UpdateLog.md must start with '# Infernux v<version> · <codename>'");
 const version = heading[1];
 if (version !== release.version || version !== manifest.documented_release) {
@@ -48,15 +51,15 @@ if (version !== release.version || version !== manifest.documented_release) {
   process.exit(0);
 }
 
-const bodyAfterTitle = markdown.slice(heading.index + heading[0].length).trim();
+const bodyAfterTitle = currentMarkdown.slice(heading.index + heading[0].length).trim();
 const firstSection = bodyAfterTitle.search(/^###\s+/m);
 const preamble = firstSection >= 0 ? bodyAfterTitle.slice(0, firstSection) : bodyAfterTitle;
 const summary = cleanInline(preamble.split(/\n\s*\n/).find((block) => block.trim() && !/Baseline for comparison|^---$/m.test(block)) || "");
-const comparison = markdown.match(/\*\*Baseline for comparison:\*\*\s+\[`v?([^`]+?)\.\.\.v?([^`]+)`\]\(([^)]+)\)/);
+const comparison = currentMarkdown.match(/\*\*Baseline for comparison:\*\*\s+\[`v?([^`]+?)\.\.\.v?([^`]+)`\]\(([^)]+)\)/);
 if (!comparison) throw new Error("UpdateLog.md must include a linked baseline comparison");
 
 const sections = [];
-for (const match of markdown.matchAll(/^###\s+(.+)\n([\s\S]*?)(?=^###\s+|(?![\s\S]))/gm)) {
+for (const match of currentMarkdown.matchAll(/^###\s+(.+)\n([\s\S]*?)(?=^###\s+|(?![\s\S]))/gm)) {
   const title = cleanInline(match[1]);
   const items = [];
   for (const line of match[2].split("\n")) {

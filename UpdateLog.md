@@ -1,10 +1,10 @@
-# Infernux v0.3.7 · Plugins
+# Infernux v0.3.7 · Plugins and Skeletal Animation
 
-0.3.7 adds InxPackage plugins. MCP is no longer part of the engine core.
+0.3.7 adds the InxPackage plugin system, moves MCP out of the engine core, and fixes skeletal animation imported from separate FBX files.
 
 [简体中文更新日志](UpdateLog-zh.md)
 
-**Baseline for comparison:** [`v0.3.6...HEAD`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...HEAD)
+**Baseline for comparison:** [`v0.3.6...v0.3.7`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...v0.3.7)
 
 ### Plugins
 
@@ -13,10 +13,15 @@
 - Package docs come from `README.md`, `LICENSE`, and `InxPluginPages/`.
 - MCP moved to the default official plugin `infernux/mcp`. New projects include it. You can disable or uninstall it.
 
-### Editor
+### Skeletal Animation
 
-- Plugins window for install, enable, disable, reload, and uninstall.
-- Headless authoring keeps the same scene and undo path used by the Editor.
+- Retarget animation-only FBX files through exact joint identities while accepting Assimp-generated pivot and helper nodes between mapped joints.
+- Reject renamed or structurally incompatible rigs instead of guessing from geometry and silently driving the wrong limbs.
+
+### Editor and Authoring
+
+- Use the Plugins window to install, enable, disable, reload, and uninstall packages with visible progress from download through activation.
+- Keep Headless and MCP authoring on the same scene, command, permission, and undo paths used by the Editor.
 
 ---
 

@@ -1,63 +1,80 @@
 {
   "schema_version": 1,
-  "version": "0.3.6",
-  "tag": "v0.3.6",
-  "title": "Infernux v0.3.6 · Unified Hierarchy and Hub Updates",
-  "codename": "Unified Hierarchy and Hub Updates",
+  "version": "0.3.7",
+  "tag": "v0.3.7",
+  "title": "Infernux v0.3.7 · Plugins and Skeletal Animation",
+  "codename": "Plugins and Skeletal Animation",
   "language": "en",
-  "published_at": "2026-08-24T02:46:50Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.6",
+  "published_at": "2026-08-27T10:37:33Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.7",
   "source": "UpdateLog.md",
-  "summary": "Version 0.3.6 unifies the editor Hierarchy and restores automatic update discovery for packaged Infernux Hub builds.",
+  "summary": "0.3.7 adds the InxPackage plugin system, moves MCP out of the engine core, and fixes skeletal animation imported from separate FBX files.",
   "comparison": {
-    "from": "0.3.5",
-    "to": "0.3.6",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.5...v0.3.6"
+    "from": "0.3.6",
+    "to": "0.3.7",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...v0.3.7"
   },
-  "section_count": 2,
-  "item_count": 6,
+  "section_count": 3,
+  "item_count": 8,
   "sections": [
     {
-      "id": "editor",
-      "title": "Editor",
+      "id": "plugins",
+      "title": "Plugins",
       "kind": "changes",
       "items": [
         {
-          "title": "Removed the separate Hierarchy UI mode. Scene and UI objects now share one tree, one selection model, and one context-menu path.",
+          "title": "Install from a .inxpkg, a local folder, Git, or the official list.",
           "detail": "",
-          "text": "Removed the separate Hierarchy UI mode. Scene and UI objects now share one tree, one selection model, and one context-menu path."
+          "text": "Install from a .inxpkg, a local folder, Git, or the official list."
         },
         {
-          "title": "Preserved Canvas root placement and UI Screen subtree constraints in the unified Hierarchy.",
+          "title": "Runtime/ ships with the game. Editor/ stays in the Editor.",
           "detail": "",
-          "text": "Preserved Canvas root placement and UI Screen subtree constraints in the unified Hierarchy."
+          "text": "Runtime/ ships with the game. Editor/ stays in the Editor."
+        },
+        {
+          "title": "Package docs come from README.md, LICENSE, and InxPluginPages/.",
+          "detail": "",
+          "text": "Package docs come from README.md, LICENSE, and InxPluginPages/."
+        },
+        {
+          "title": "MCP moved to the default official plugin infernux/mcp. New projects include it. You can disable or uninstall it.",
+          "detail": "",
+          "text": "MCP moved to the default official plugin infernux/mcp. New projects include it. You can disable or uninstall it."
         }
       ]
     },
     {
-      "id": "hub-updates",
-      "title": "Hub Updates",
+      "id": "skeletal-animation",
+      "title": "Skeletal Animation",
       "kind": "changes",
       "items": [
         {
-          "title": "Restored startup update checks in packaged Nuitka Hub builds.",
+          "title": "Retarget animation-only FBX files through exact joint identities while accepting Assimp-generated pivot and helper nodes between mapped joints.",
           "detail": "",
-          "text": "Restored startup update checks in packaged Nuitka Hub builds."
+          "text": "Retarget animation-only FBX files through exact joint identities while accepting Assimp-generated pivot and helper nodes between mapped joints."
         },
         {
-          "title": "Kept the Install Engine Version list on the selected Hub theme instead of inheriting the desktop system palette.",
+          "title": "Reject renamed or structurally incompatible rigs instead of guessing from geometry and silently driving the wrong limbs.",
           "detail": "",
-          "text": "Kept the Install Engine Version list on the selected Hub theme instead of inheriting the desktop system palette."
+          "text": "Reject renamed or structurally incompatible rigs instead of guessing from geometry and silently driving the wrong limbs."
+        }
+      ]
+    },
+    {
+      "id": "editor-and-authoring",
+      "title": "Editor and Authoring",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Use the Plugins window to install, enable, disable, reload, and uninstall packages with visible progress from download through activation.",
+          "detail": "",
+          "text": "Use the Plugins window to install, enable, disable, reload, and uninstall packages with visible progress from download through activation."
         },
         {
-          "title": "Added verified full-package update fallback and elevation for protected installation directories.",
+          "title": "Keep Headless and MCP authoring on the same scene, command, permission, and undo paths used by the Editor.",
           "detail": "",
-          "text": "Added verified full-package update fallback and elevation for protected installation directories."
-        },
-        {
-          "title": "Changed the release pipeline to publish independently installable full Hub packages instead of incremental patch assets.",
-          "detail": "",
-          "text": "Changed the release pipeline to publish independently installable full Hub packages instead of incremental patch assets."
+          "text": "Keep Headless and MCP authoring on the same scene, command, permission, and undo paths used by the Editor."
         }
       ]
     }
