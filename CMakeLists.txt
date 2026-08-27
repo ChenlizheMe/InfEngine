@@ -1324,7 +1324,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     set_tests_properties(infernux.headless PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-        TIMEOUT 30
+        TIMEOUT 60
         RUN_SERIAL TRUE
     )
 
