@@ -66,13 +66,13 @@ else if (currentSnapshot.release !== currentVersion) {
     fail(`api-snapshots/${currentVersion}.json: snapshot release ${currentSnapshot.release} does not match ${currentVersion}`);
 }
 
-const releaseVersionContracts = [
-    ["README.md", `version-${currentVersion}-orange.svg`],
-    ["README.md", `## ${currentVersion}`],
-    ["README.md", `version = {${currentVersion}}`],
-    ["README-zh.md", `version-${currentVersion}-orange.svg`],
-    ["README-zh.md", `## ${currentVersion}`],
-    ["README-zh.md", `version = {${currentVersion}}`],
+const readmeVersionContracts = [
+    ["README.md", `version-${packageVersion}-orange.svg`],
+    ["README.md", `**${packageVersion}**`],
+    ["README.md", `version = {${packageVersion}}`],
+    ["README-zh.md", `version-${packageVersion}-orange.svg`],
+    ["README-zh.md", `**${packageVersion}**`],
+    ["README-zh.md", `version = {${packageVersion}}`],
 ];
 const packageVersionContracts = [
     ["packaging/windows_version_info.txt", `'${packageVersion}.0'`],
@@ -82,7 +82,7 @@ const packageVersionContracts = [
     ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `FILEVERSION ${packageVersion.replaceAll(".", ",")},0`],
     ["cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc", `PRODUCTVERSION ${packageVersion.replaceAll(".", ",")},0`],
 ];
-for (const [relative, token] of [...releaseVersionContracts, ...packageVersionContracts]) {
+for (const [relative, token] of [...readmeVersionContracts, ...packageVersionContracts]) {
     const content = await readFile(path.resolve(relative), "utf8");
     if (!content.includes(token)) fail(`${relative}: missing version contract '${token}'`);
 }
