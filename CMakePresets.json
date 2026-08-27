@@ -83,6 +83,23 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
+    },
+    {
+      "name": "release-linux",
+      "displayName": "Release Preset (Linux / Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug-linux",
+      "displayName": "Debug Preset (Linux)",
+      "inherits": "release-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
     }
   ],
   "buildPresets": [
@@ -91,7 +108,11 @@
       "configurePreset": "release",
       "configuration": "Release",
       "jobs": 8,
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
       "targets": [
+        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -100,7 +121,11 @@
       "configurePreset": "debug",
       "configuration": "RelWithDebInfo",
       "jobs": 8,
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
       "targets": [
+        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -114,7 +139,11 @@
       "configurePreset": "debug-no-vulkan-validation",
       "configuration": "RelWithDebInfo",
       "jobs": 8,
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
       "targets": [
+        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -130,19 +159,44 @@
       "name": "native-tests",
       "configurePreset": "native-tests",
       "configuration": "RelWithDebInfo",
-      "jobs": 8
+      "jobs": 8,
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      }
     },
     {
       "name": "release-macos",
       "configurePreset": "release-macos",
       "jobs": 8,
-      "targets": ["package_and_install_python"]
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "debug-macos",
       "configurePreset": "debug-macos",
       "jobs": 8,
-      "targets": ["package_and_install_python"]
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
+    },
+    {
+      "name": "release-linux",
+      "configurePreset": "release-linux",
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
+    },
+    {
+      "name": "debug-linux",
+      "configurePreset": "debug-linux",
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "format",
@@ -220,6 +274,20 @@
     {
       "name": "debug-macos",
       "configurePreset": "debug-macos",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-linux",
+      "configurePreset": "release-linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-linux",
+      "configurePreset": "debug-linux",
       "output": {
         "outputOnFailure": true
       }
