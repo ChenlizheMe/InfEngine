@@ -9,7 +9,7 @@
 /**
  * CDS Debug trace
  */
-#include <InxLog.h>
+#include <core/log/InxLog.h>
 #include <cstdlib>
 #include <thread>
 #include <unistd.h>
