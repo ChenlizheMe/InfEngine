@@ -427,7 +427,14 @@ class GameViewPanel(EditorPanel):
         except (AttributeError, RuntimeError):
             camera = None
         if camera is None:
-            return None
+            # Scene.main_camera is the authored preference, while native game
+            # rendering also accepts the first active Camera as a fallback.
+            # Retain the structure revision in the no-preference state so a
+            # newly attached Camera invalidates a cached "no camera" result.
+            return (
+                "scene_structure",
+                int(getattr(scene, "structure_version", 0) or 0),
+            )
         try:
             owner = camera.game_object
         except (AttributeError, RuntimeError):
@@ -487,6 +494,7 @@ class GameViewPanel(EditorPanel):
             self._game_texture_refresh_required = (
                 self._cached_game_texture_id == 0
                 and camera_signature is not None
+                and camera_signature[0] != "scene_structure"
             )
         return self._cached_game_texture_id
 
