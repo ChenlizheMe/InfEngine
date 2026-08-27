@@ -27,6 +27,7 @@ Usage::
 
 from .light import Light
 from .mesh_renderer import MeshRenderer
+from .line_renderer import LineRenderer
 from .skinned_mesh_renderer import SkinnedMeshRenderer
 from .camera import Camera
 from .collider import Collider, PhysicsMaterialCombine
@@ -48,6 +49,7 @@ from .sprite_renderer import SpriteRenderer
 __all__ = [
     "Light",
     "MeshRenderer",
+    "LineRenderer",
     "SkinnedMeshRenderer",
     "Camera",
     "Collider",

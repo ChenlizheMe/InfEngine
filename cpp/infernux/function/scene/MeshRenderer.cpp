@@ -199,6 +199,27 @@ void MeshRenderer::SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> i
     NotifyCollisionGeometryChanged(this);
 }
 
+void MeshRenderer::SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices)
+{
+    const bool wasDrawable = m_useInlineMesh && !GetInlineVertices().empty() && !GetInlineIndices().empty();
+    if (m_meshAsset.HasGuid())
+        AssetDependencyGraph::Instance().RemoveRuntimeDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
+
+    m_sharedVertices = nullptr;
+    m_sharedIndices = nullptr;
+    m_inlineVertices = std::move(vertices);
+    m_inlineIndices = std::move(indices);
+    m_useInlineMesh = true;
+    m_meshAsset.Clear();
+    m_meshBufferDirty = true;
+    ComputeLocalBoundsFromInlineVertices();
+    const bool isDrawable = !m_inlineVertices.empty() && !m_inlineIndices.empty();
+    if (wasDrawable != isDrawable)
+        SceneManager::Instance().NotifyMeshRendererChanged(this);
+    else
+        SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+}
+
 void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                           const std::string &primitiveName)
 {
@@ -606,11 +627,12 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     // Mesh reference
     j["meshId"] = m_mesh.meshId;
 
+    const bool persistInlineMesh = ShouldSerializeInlineMeshData();
     const bool builtinPrimitive =
-        m_useInlineMesh && !m_inlineMeshName.empty() &&
+        persistInlineMesh && m_useInlineMesh && !m_inlineMeshName.empty() &&
         MatchesBuiltinPrimitiveMesh(m_inlineMeshName, GetInlineVertices(), GetInlineIndices());
     const std::string matchedInlineMeshGuid =
-        (!HasMeshAsset() && m_useInlineMesh && !builtinPrimitive)
+        (persistInlineMesh && !HasMeshAsset() && m_useInlineMesh && !builtinPrimitive)
             ? FindMatchingMeshAssetGuid(GetInlineVertices(), GetInlineIndices(), m_inlineMeshName)
             : std::string();
     const std::string serializedMeshGuid = HasMeshAsset() ? m_meshAsset.GetGuid() : matchedInlineMeshGuid;
@@ -668,9 +690,9 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     j["boundsMax"] = {m_localBoundsMax.x, m_localBoundsMax.y, m_localBoundsMax.z};
 
     // Inline mesh data (for primitives and procedural geometry)
-    const bool serializeInlineMesh = m_useInlineMesh && serializedMeshGuid.empty();
+    const bool serializeInlineMesh = persistInlineMesh && m_useInlineMesh && serializedMeshGuid.empty();
     j["useInlineMesh"] = serializeInlineMesh;
-    if (!m_inlineMeshName.empty()) {
+    if (persistInlineMesh && !m_inlineMeshName.empty()) {
         j["inlineMeshName"] = m_inlineMeshName;
     }
     if (serializeInlineMesh) {
@@ -716,6 +738,10 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     if (expectedType == "SpriteRenderer") {
         required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
+    } else if (expectedType == "LineRenderer") {
+        required.insert(required.end(),
+                        {"positions", "startWidth", "endWidth", "widthMultiplier", "startColor", "endColor", "loop",
+                         "useWorldSpace", "alignment", "textureMode", "textureScale"});
     } else if (expectedType == "SkinnedMeshRenderer") {
         optional.push_back("activeTakeName");
     } else if (expectedType != "MeshRenderer") {
@@ -845,6 +871,39 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
                 throw std::invalid_argument(
                     "SpriteRenderer.frameId must identify a persisted SpriteFrame when spriteGuid is set");
         }
+    }
+    if (expectedType == "LineRenderer") {
+        const auto &positions = j["positions"];
+        if (!positions.is_array())
+            throw std::invalid_argument("LineRenderer.positions must be an array");
+        for (size_t index = 0; index < positions.size(); ++index) {
+            if (!positions[index].is_array() || positions[index].size() != 3)
+                throw std::invalid_argument("LineRenderer.positions entries must contain three numbers");
+            for (const auto &coordinate : positions[index]) {
+                if (!coordinate.is_number() || !std::isfinite(coordinate.get<double>()))
+                    throw std::invalid_argument("LineRenderer.positions must contain finite numbers");
+            }
+        }
+        const auto requireFiniteNonNegative = [&](const char *field) {
+            const double value = j[field].get<double>();
+            if (!j[field].is_number() || !std::isfinite(value) || value < 0.0)
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " must be finite and non-negative");
+        };
+        requireFiniteNonNegative("startWidth");
+        requireFiniteNonNegative("endWidth");
+        requireFiniteNonNegative("widthMultiplier");
+        requireFiniteNonNegative("textureScale");
+        RequireFiniteVector(j, "startColor", 4, expectedType);
+        RequireFiniteVector(j, "endColor", 4, expectedType);
+        RequireBoolean(j, "loop", expectedType);
+        RequireBoolean(j, "useWorldSpace", expectedType);
+        const auto requireEnum = [&](const char *field, int maximum) {
+            const int64_t value = RequireInteger(j, field, expectedType);
+            if (value < 0 || value > maximum)
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " is outside its enum range");
+        };
+        requireEnum("alignment", 1);
+        requireEnum("textureMode", 1);
     }
 }
 

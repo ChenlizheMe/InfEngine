@@ -1040,6 +1040,7 @@
   "particle_system.manual_bounds_center": "手动边界中心",
   "particle_system.manual_bounds_size": "手动边界尺寸",
   "component.camera": "相机",
+  "component.line_renderer": "线渲染器",
   "camera.section.clipping": "裁剪平面",
   "camera.section.clear": "环境",
   "camera.section.output": "输出",

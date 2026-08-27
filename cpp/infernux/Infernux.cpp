@@ -298,7 +298,7 @@ bool AppendPrefabMeshComponent(const json &componentJson, const glm::mat4 &world
     if (!componentJson.is_object())
         return false;
     const std::string compType = componentJson.value("type", std::string());
-    if (compType != "MeshRenderer" && compType != "SkinnedMeshRenderer")
+    if (compType != "MeshRenderer" && compType != "SkinnedMeshRenderer" && compType != "LineRenderer")
         return false;
     if (!componentJson.value("enabled", true))
         return false;

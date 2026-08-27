@@ -47,6 +47,7 @@ ${VERTEX_CALL}
     v_Color = v.color;
     v_TexCoord = v.texCoord;
     v_ViewDepth = clipPosition.w;
+    v_LineColor = vec4(1.0);
     v_ParticleLocalTexCoord = particleLocalUv;
     v_ParticleFlipbookNextTexCoord = (particleLocalUv + nextFlipbookCell) / flipbookGrid;
     v_ParticleFlipbookBlend = fract(authoredFrame);

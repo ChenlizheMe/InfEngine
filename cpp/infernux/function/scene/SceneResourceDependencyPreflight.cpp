@@ -235,7 +235,8 @@ class ResourcePreflight
             return;
         }
 
-        if (type != "MeshRenderer" && type != "SkinnedMeshRenderer" && type != "SpriteRenderer")
+        if (type != "MeshRenderer" && type != "SkinnedMeshRenderer" && type != "SpriteRenderer" &&
+            type != "LineRenderer")
             return;
 
         if (data.contains("meshAssetGuid"))
