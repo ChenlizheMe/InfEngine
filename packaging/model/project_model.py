@@ -441,27 +441,30 @@ def _engine_root() -> str:
 
 
 def _iter_cmake_python_cache_entries() -> list[str]:
-    cache_path = os.path.join(_engine_root(), "out", "build", "CMakeCache.txt")
-    if not os.path.isfile(cache_path):
-        return []
-
+    """Scan all CMakeCache.txt files inside out/build/*/ for Python paths."""
+    engine_root = _engine_root()
+    cache_pattern = os.path.join(engine_root, "out", "build", "*", "CMakeCache.txt")
     keys = (
         "Python3_EXECUTABLE",
         "_Python3_EXECUTABLE",
         "PYBIND11_PYTHON_EXECUTABLE_LAST",
     )
     out: list[str] = []
-    try:
-        with open(cache_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if "=" not in line:
-                    continue
-                key_part, value = line.rstrip("\n").split("=", 1)
-                key = key_part.split(":", 1)[0]
-                if key in keys and value:
-                    out.append(os.path.normpath(value.strip()))
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+    
+    for cache_path in glob.glob(cache_pattern):
+        if not os.path.isfile(cache_path):
+            continue
+        try:
+            with open(cache_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "=" not in line:
+                        continue
+                    key_part, value = line.rstrip("\n").split("=", 1)
+                    key = key_part.split(":", 1)[0]
+                    if key in keys and value:
+                        out.append(os.path.normpath(value.strip()))
+        except OSError as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
     return out
 
 
@@ -531,20 +534,23 @@ def _wheel_matches_python(wheel_path: str, python_tag: str) -> bool:
 
 
 def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
-    """Find the newest compatible wheel produced by the local source tree.
-
-    Only used in dev mode (non-frozen).
-    """
+    """Find the newest compatible wheel in out/build/ or dist/releases/."""
     engine_root = _engine_root()
-    wheel_dirs = [
-        *glob.glob(os.path.join(engine_root, "out", "build", "*", "python_wheel")),
-        *glob.glob(os.path.join(engine_root, "dist", "releases", "*")),
-    ]
-    wheels = [
-        wheel
-        for wheel_dir in wheel_dirs
-        for wheel in glob.glob(os.path.join(wheel_dir, "infernux-*.whl"))
-    ]
+    
+    wheel_dirs = (
+        glob.glob(os.path.join(engine_root, "out", "build", "*")) +
+        glob.glob(os.path.join(engine_root, "out", "build", "*", "python_wheel")) +
+        glob.glob(os.path.join(engine_root, "dist", "releases", "*"))
+    )
+    unique_dirs = list(dict.fromkeys(wheel_dirs))
+    
+    wheels = []
+    for wheel_dir in unique_dirs:
+        if not os.path.isdir(wheel_dir):
+            continue
+        for wheel in glob.glob(os.path.join(wheel_dir, "infernux-*.whl")):
+            wheels.append(wheel)
+
     if wheels:
         python_tag = _python_cp_tag(python_exe)
         compatible = [wheel for wheel in wheels if _wheel_matches_python(wheel, python_tag)]
@@ -554,9 +560,15 @@ def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
         if strict:
             available = ", ".join(os.path.basename(wheel) for wheel in sorted(wheels))
             raise RuntimeError(
-                f"No prebuilt Infernux wheel compatible with Python {python_tag} was found in the canonical build or release directories.\n"
+                f"No prebuilt Infernux wheel compatible with Python {python_tag} found.\n"
                 f"Available wheels: {available}"
             )
+
+    if strict:
+        raise RuntimeError(
+            "No prebuilt Infernux wheel found in out/build/*/ or dist/releases/.\n"
+            "Make sure you have built the 'package_and_install_python' CMake target."
+        )
     return ""
 
 
