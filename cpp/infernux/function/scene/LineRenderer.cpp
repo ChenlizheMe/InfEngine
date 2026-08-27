@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cmath>
 #include <core/log/InxLog.h>
-#include <cstring>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -17,7 +16,20 @@ namespace
 {
 constexpr uint32_t LINE_VERTEX_MARKER = 0x4C494E45u;
 constexpr float DIRECTION_EPSILON = 1.0e-6f;
+constexpr float METRIC_EPSILON = 1.0e-5f;
 constexpr uint32_t MAX_ROUNDING_VERTICES = 1024u;
+
+bool ApproximatelyEqual(const glm::mat3 &left, const glm::mat3 &right)
+{
+    for (uint32_t column = 0; column < 3; ++column) {
+        for (uint32_t row = 0; row < 3; ++row) {
+            const float scale = std::max({1.0f, std::abs(left[column][row]), std::abs(right[column][row])});
+            if (std::abs(left[column][row] - right[column][row]) > METRIC_EPSILON * scale)
+                return false;
+        }
+    }
+    return true;
+}
 
 void RequireFinite(const glm::vec3 &value, const char *name)
 {
@@ -196,11 +208,14 @@ LineRenderer::LineRenderer()
 {
     SetCastShadows(false);
     SetInlineMeshName("Line");
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
 void LineRenderer::SetPositionCount(size_t count)
 {
+    if (m_positions.size() == count)
+        return;
     m_positions.resize(count, glm::vec3(0.0f));
     RebuildMesh();
 }
@@ -217,6 +232,8 @@ void LineRenderer::SetPosition(size_t index, const glm::vec3 &position)
     if (index >= m_positions.size())
         throw std::out_of_range("LineRenderer position index is out of range");
     RequireFinite(position, "LineRenderer position");
+    if (m_positions[index] == position)
+        return;
     m_positions[index] = position;
     RebuildMesh();
 }
@@ -225,6 +242,8 @@ void LineRenderer::SetPositions(const std::vector<glm::vec3> &positions)
 {
     for (const auto &position : positions)
         RequireFinite(position, "LineRenderer position");
+    if (m_positions == positions)
+        return;
     m_positions = positions;
     RebuildMesh();
 }
@@ -237,12 +256,15 @@ float LineRenderer::GetStartWidth() const
 void LineRenderer::SetStartWidth(float width)
 {
     width = RequireNonNegative(width, "LineRenderer start width");
+    if (std::abs(GetStartWidth() - width) <= DIRECTION_EPSILON)
+        return;
     const auto key = std::lower_bound(m_widthCurve.begin(), m_widthCurve.end(), 0.0f,
                                       [](const LineWidthKey &entry, float time) { return entry.time < time; });
     if (key != m_widthCurve.end() && std::abs(key->time) <= DIRECTION_EPSILON)
         key->value = width;
     else
         m_widthCurve.insert(key, LineWidthKey{0.0f, width, 0.0f, 0.0f});
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -254,18 +276,25 @@ float LineRenderer::GetEndWidth() const
 void LineRenderer::SetEndWidth(float width)
 {
     width = RequireNonNegative(width, "LineRenderer end width");
+    if (std::abs(GetEndWidth() - width) <= DIRECTION_EPSILON)
+        return;
     const auto key = std::lower_bound(m_widthCurve.begin(), m_widthCurve.end(), 1.0f,
                                       [](const LineWidthKey &entry, float time) { return entry.time < time; });
     if (key != m_widthCurve.end() && std::abs(key->time - 1.0f) <= DIRECTION_EPSILON)
         key->value = width;
     else
         m_widthCurve.insert(key, LineWidthKey{1.0f, width, 0.0f, 0.0f});
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
 void LineRenderer::SetWidthMultiplier(float multiplier)
 {
-    m_widthMultiplier = RequireNonNegative(multiplier, "LineRenderer width multiplier");
+    multiplier = RequireNonNegative(multiplier, "LineRenderer width multiplier");
+    if (m_widthMultiplier == multiplier)
+        return;
+    m_widthMultiplier = multiplier;
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -273,18 +302,25 @@ void LineRenderer::SetWidthCurve(const std::vector<LineWidthKey> &keys)
 {
     ValidateWidthCurve(keys);
     m_widthCurve = keys;
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
 void LineRenderer::SetWidthCurvePreWrap(LineCurveWrapMode mode)
 {
+    if (m_widthCurvePreWrap == mode)
+        return;
     m_widthCurvePreWrap = mode;
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
 void LineRenderer::SetWidthCurvePostWrap(LineCurveWrapMode mode)
 {
+    if (m_widthCurvePostWrap == mode)
+        return;
     m_widthCurvePostWrap = mode;
+    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -296,6 +332,8 @@ glm::vec4 LineRenderer::GetStartColor() const
 void LineRenderer::SetStartColor(const glm::vec4 &color)
 {
     RequireFinite(color, "LineRenderer start color");
+    if (GetStartColor() == color)
+        return;
     if (std::abs(m_colorGradient.front().time) <= DIRECTION_EPSILON)
         m_colorGradient.front().color = color;
     else
@@ -311,6 +349,8 @@ glm::vec4 LineRenderer::GetEndColor() const
 void LineRenderer::SetEndColor(const glm::vec4 &color)
 {
     RequireFinite(color, "LineRenderer end color");
+    if (GetEndColor() == color)
+        return;
     if (std::abs(m_colorGradient.back().time - 1.0f) <= DIRECTION_EPSILON)
         m_colorGradient.back().color = color;
     else
@@ -327,6 +367,8 @@ void LineRenderer::SetColorGradient(const std::vector<LineColorKey> &keys)
 
 void LineRenderer::SetColorGradientMode(LineGradientMode mode)
 {
+    if (m_colorGradientMode == mode)
+        return;
     m_colorGradientMode = mode;
     RebuildMesh();
 }
@@ -349,12 +391,16 @@ void LineRenderer::SetUseWorldSpace(bool useWorldSpace)
 
 void LineRenderer::SetAlignment(LineAlignment alignment)
 {
+    if (m_alignment == alignment)
+        return;
     m_alignment = alignment;
     RebuildMesh();
 }
 
 void LineRenderer::SetTextureMode(LineTextureMode mode)
 {
+    if (m_textureMode == mode)
+        return;
     m_textureMode = mode;
     RebuildMesh();
 }
@@ -362,6 +408,8 @@ void LineRenderer::SetTextureMode(LineTextureMode mode)
 void LineRenderer::SetTextureScale(const glm::vec2 &scale)
 {
     RequireFinite(scale, "LineRenderer texture scale");
+    if (m_textureScale == scale)
+        return;
     m_textureScale = scale;
     RebuildMesh();
 }
@@ -370,6 +418,8 @@ void LineRenderer::SetNumCornerVertices(uint32_t count)
 {
     if (count > MAX_ROUNDING_VERTICES)
         throw std::invalid_argument("LineRenderer corner vertex count exceeds the supported limit");
+    if (m_numCornerVertices == count)
+        return;
     m_numCornerVertices = count;
     RebuildMesh();
 }
@@ -378,13 +428,18 @@ void LineRenderer::SetNumCapVertices(uint32_t count)
 {
     if (count > MAX_ROUNDING_VERTICES)
         throw std::invalid_argument("LineRenderer cap vertex count exceeds the supported limit");
+    if (m_numCapVertices == count)
+        return;
     m_numCapVertices = count;
     RebuildMesh();
 }
 
 void LineRenderer::SetShadowBias(float bias)
 {
-    m_shadowBias = RequireNonNegative(bias, "LineRenderer shadow bias");
+    bias = RequireNonNegative(bias, "LineRenderer shadow bias");
+    if (m_shadowBias == bias)
+        return;
+    m_shadowBias = bias;
     RebuildMesh();
 }
 
@@ -485,10 +540,13 @@ glm::mat4 LineRenderer::ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMat
 
 void LineRenderer::RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix)
 {
-    if (m_useWorldSpace || m_textureMode != LineTextureMode::Tile ||
-        std::memcmp(&m_geometryWorldMatrix, &objectWorldMatrix, sizeof(glm::mat4)) == 0)
+    if (m_useWorldSpace || m_textureMode != LineTextureMode::Tile)
         return;
-    m_geometryWorldMatrix = objectWorldMatrix;
+    const glm::mat3 linearTransform(objectWorldMatrix);
+    const glm::mat3 metric = glm::transpose(linearTransform) * linearTransform;
+    if (ApproximatelyEqual(m_geometryMetric, metric))
+        return;
+    m_geometryMetric = metric;
     RebuildMesh();
 }
 
@@ -499,15 +557,20 @@ void LineRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &o
         return;
     }
     MeshRenderer::ComputeWorldBounds(ResolveRenderWorldMatrix(worldMatrix), outMin, outMax);
+    const float radius = 0.5f * m_maximumWidth;
+    outMin -= glm::vec3(radius);
+    outMax += glm::vec3(radius);
+}
+
+void LineRenderer::UpdateMaximumWidth()
+{
     float maximumWidth = 0.0f;
     for (uint32_t sample = 0; sample <= 64; ++sample) {
         const float t = static_cast<float>(sample) / 64.0f;
         maximumWidth =
             std::max(maximumWidth, EvaluateWidthCurve(m_widthCurve, t, m_widthCurvePreWrap, m_widthCurvePostWrap));
     }
-    const float radius = 0.5f * maximumWidth * m_widthMultiplier;
-    outMin -= glm::vec3(radius);
-    outMax += glm::vec3(radius);
+    m_maximumWidth = maximumWidth * m_widthMultiplier;
 }
 
 void LineRenderer::RebuildMesh()
@@ -533,17 +596,18 @@ void LineRenderer::RebuildMesh()
     const size_t authoredCount = m_positions.size();
     const size_t segmentCount = m_loop && authoredCount > 2 ? authoredCount : authoredCount - 1;
     std::vector<float> distances(authoredCount, 0.0f);
-    const auto metricPosition = [&](const glm::vec3 &position) {
-        return !m_useWorldSpace && m_textureMode == LineTextureMode::Tile
-                   ? glm::vec3(m_geometryWorldMatrix * glm::vec4(position, 1.0f))
-                   : position;
+    const auto metricLength = [&](const glm::vec3 &delta) {
+        if (!m_useWorldSpace && m_textureMode == LineTextureMode::Tile) {
+            const float squaredLength = glm::dot(delta, m_geometryMetric * delta);
+            return std::sqrt(std::max(0.0f, squaredLength));
+        }
+        return glm::length(delta);
     };
     for (size_t index = 1; index < authoredCount; ++index)
-        distances[index] = distances[index - 1] +
-                           glm::length(metricPosition(m_positions[index]) - metricPosition(m_positions[index - 1]));
+        distances[index] = distances[index - 1] + metricLength(m_positions[index] - m_positions[index - 1]);
     float totalLength = distances.back();
     if (m_loop && authoredCount > 2)
-        totalLength += glm::length(metricPosition(m_positions.front()) - metricPosition(m_positions.back()));
+        totalLength += metricLength(m_positions.front() - m_positions.back());
 
     const auto safeDirection = [&](const glm::vec3 &from, const glm::vec3 &to) {
         const glm::vec3 direction = to - from;
@@ -675,7 +739,7 @@ nlohmann::json LineRenderer::SerializeDocument() const
 {
     json document = MeshRenderer::SerializeDocument();
     document["type"] = "LineRenderer";
-    document["meshId"] = 0;
+    document["meshId"] = 0u;
     document["useInlineMesh"] = false;
     document.erase("meshAssetGuid");
     document.erase("inlineMeshName");
@@ -754,6 +818,7 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
         m_shadowBias = document["shadowBias"].get<float>();
         m_generateLightingData = document["generateLightingData"].get<bool>();
         SetInlineMeshName("Line");
+        UpdateMaximumWidth();
         RebuildMesh();
         return true;
     } catch (const std::exception &error) {
