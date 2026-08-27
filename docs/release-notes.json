@@ -5,7 +5,7 @@
   "title": "Infernux v0.3.7 · Plugins and Skeletal Animation",
   "codename": "Plugins and Skeletal Animation",
   "language": "en",
-  "published_at": "2026-08-27T10:37:33Z",
+  "published_at": "2026-08-27T11:35:29Z",
   "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.7",
   "source": "UpdateLog.md",
   "summary": "0.3.7 adds the InxPackage plugin system, moves MCP out of the engine core, and fixes skeletal animation imported from separate FBX files.",

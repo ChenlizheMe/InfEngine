@@ -40,7 +40,7 @@ $UpdateLog = Join-Path $Root 'UpdateLog.md'
 if (-not (Test-Path -LiteralPath $UpdateLog -PathType Leaf) -or (Get-Item $UpdateLog).Length -eq 0) {
     throw 'UpdateLog.md is required and must not be empty.'
 }
-$UpdateLogText = (Get-Content -LiteralPath $UpdateLog -Raw).Replace("`r`n", "`n")
+$UpdateLogText = [IO.File]::ReadAllText($UpdateLog, [Text.Encoding]::UTF8).Replace("`r`n", "`n")
 if (-not $UpdateLogText.Contains($Version)) {
     throw "UpdateLog.md must mention release version $Version."
 }

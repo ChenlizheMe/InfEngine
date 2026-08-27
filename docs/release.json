@@ -4,7 +4,7 @@
   "tag": "v0.3.7",
   "name": "Infernux v0.3.7",
   "channel": "stable",
-  "published_at": "2026-08-27T10:37:33Z",
+  "published_at": "2026-08-27T11:35:29Z",
   "platforms": ["Windows 10/11 x64"],
   "python_abi": "CPython 3.12 x64",
   "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.7",
@@ -17,15 +17,15 @@
     {
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.3.7.exe",
-      "size_bytes": null,
-      "sha256": null,
+      "size_bytes": 262786048,
+      "sha256": "26036298f6895e44ba92d147d7f811d8ef017e030a6b5bb3ed55427fce8d9a50",
       "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"
     },
     {
       "kind": "python-wheel",
       "name": "infernux-0.3.7-cp312-cp312-win_amd64.whl",
-      "size_bytes": null,
-      "sha256": null,
+      "size_bytes": 108946318,
+      "sha256": "9e1e7cc13fb2285aa6842b8d0d4894c768ff3d5d51311dd04b336a6555169951",
       "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/infernux-0.3.7-cp312-cp312-win_amd64.whl"
     }
   ]
