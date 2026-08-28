@@ -673,22 +673,9 @@ add_custom_command(TARGET _InfernuxBootstrap POST_BUILD
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxHub.cmake")
 
 # ------------------------------------------------------------------------------
-# Code Formatting Target (clang-format)
+# Developer maintenance targets
 # ------------------------------------------------------------------------------
-find_program(INFERNUX_CLANG_FORMAT_EXECUTABLE
-    NAMES clang-format clang-format-22
-    REQUIRED
-)
-
-add_custom_target(clang_format
-    COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/cmake/run_clang_format.py"
-        --clang-format "${INFERNUX_CLANG_FORMAT_EXECUTABLE}"
-        --source-root "${CMAKE_SOURCE_DIR}/cpp"
-    DEPENDS "${CMAKE_SOURCE_DIR}/cmake/run_clang_format.py"
-    COMMENT "Running clang-format on source files"
-    VERBATIM
-)
+include("${CMAKE_SOURCE_DIR}/cmake/InfernuxDeveloperTools.cmake")
 
 # ------------------------------------------------------------------------------
 # Python Packaging and Installation
@@ -758,24 +745,3 @@ add_dependencies(
     prebuild_player_runtime
     infernux_official_plugins
 )
-
-# ------------------------------------------------------------------------------
-# API Reference Generation (auto-introspect Python package → Markdown)
-# ------------------------------------------------------------------------------
-add_custom_target(generate_api_docs
-    COMMAND ${CMAKE_COMMAND} -E echo "Generating API reference docs..."
-    COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
-            python "${CMAKE_SOURCE_DIR}/docs/wiki/generate_api_docs.py"
-    COMMENT "Auto-generate API reference Markdown from Python stubs"
-)
-
-# ------------------------------------------------------------------------------
-# Wiki Build (MkDocs)
-# ------------------------------------------------------------------------------
-add_custom_target(build_wiki_html
-    COMMAND ${CMAKE_COMMAND} -E echo "Building MkDocs wiki..."
-    COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
-            python -m mkdocs build --clean -f "${CMAKE_SOURCE_DIR}/docs/wiki/mkdocs.yml"
-    COMMENT "Generate wiki HTML into docs/wiki/site"
-)
-add_dependencies(build_wiki_html generate_api_docs)
