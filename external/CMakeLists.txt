@@ -148,6 +148,11 @@ endif()
 
 # assimp
 add_subdirectory(assimp)
+if(TARGET assimp)
+    target_compile_options(assimp PRIVATE -Wno-error=array-bounds)
+elseif(TARGET ASSIMP)
+    target_compile_options(ASSIMP PRIVATE -Wno-error=array-bounds)
+endif()
 add_library(assimp::assimp ALIAS assimp)
 
 # glslang
