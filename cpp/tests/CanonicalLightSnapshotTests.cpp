@@ -72,7 +72,8 @@ struct FakeDevice final : infernux::rhi::Device
     }
     infernux::rhi::ShaderModuleHandle CreateShaderModule(const infernux::rhi::ShaderModuleDesc &desc) override
     {
-        assert(desc.spirv && desc.wordCount >= 5);
+        assert(desc.language == infernux::rhi::ShaderSourceLanguage::SpirV);
+        assert(desc.code && desc.byteSize >= 5 * sizeof(uint32_t));
         return {next++, 1};
     }
     infernux::rhi::BindingLayoutHandle CreateBindingLayout(const infernux::rhi::BindingLayoutDesc &desc) override

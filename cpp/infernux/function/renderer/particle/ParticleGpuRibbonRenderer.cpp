@@ -46,6 +46,7 @@ layout(location = 2) out vec4 out_tangent;
 layout(location = 3) out vec3 out_color;
 layout(location = 4) out vec2 out_uv;
 layout(location = 5) out float out_view_depth;
+layout(location = 6) out vec4 out_line_color;
 layout(location = 9) out vec2 out_particle_local_uv;
 layout(location = 10) out vec2 out_particle_next_uv;
 layout(location = 11) out float out_particle_blend;
@@ -130,6 +131,7 @@ void main() {
     out_color = particle_color.rgb;
     out_uv = ribbon_uv;
     out_view_depth = gl_Position.w;
+    out_line_color = vec4(1.0);
     out_particle_local_uv = segment_local_uv;
     out_particle_next_uv = segment_local_uv;
     out_particle_blend = 0.0;
@@ -387,18 +389,20 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     m_semantics.sortMode = ParticleSortMode::None;
     m_uvMode = desc.uvMode;
     m_uvScale = desc.uvScale;
-    m_vertexShader = device.CreateShaderModule({desc.program.vertex.words, desc.program.vertex.wordCount});
-    m_fragmentShader = device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()});
+    m_vertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.vertex.words, desc.program.vertex.wordCount));
+    m_fragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedFragmentWords.data(), linkedFragmentWords.size()));
     if (m_semantics.receiveSceneLighting) {
-        m_forwardPlusFragmentShader =
-            device.CreateShaderModule({linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+        m_forwardPlusFragmentShader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(
+            linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()));
     }
-    m_pickingFragmentShader =
-        device.CreateShaderModule({desc.program.pickingFragment.words, desc.program.pickingFragment.wordCount});
-    m_motionVertexShader =
-        device.CreateShaderModule({desc.program.motionVertex.words, desc.program.motionVertex.wordCount});
-    m_motionFragmentShader =
-        device.CreateShaderModule({desc.program.motionFragment.words, desc.program.motionFragment.wordCount});
+    m_pickingFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.pickingFragment.words, desc.program.pickingFragment.wordCount));
+    m_motionVertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.motionVertex.words, desc.program.motionVertex.wordCount));
+    m_motionFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.motionFragment.words, desc.program.motionFragment.wordCount));
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
         !m_motionVertexShader.IsValid() || !m_motionFragmentShader.IsValid() ||
         (m_semantics.receiveSceneLighting && !m_forwardPlusFragmentShader.IsValid())) {

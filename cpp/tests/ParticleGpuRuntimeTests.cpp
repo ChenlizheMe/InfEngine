@@ -154,7 +154,8 @@ struct FakeDevice final : rhi::Device
 
     rhi::ShaderModuleHandle CreateShaderModule(const rhi::ShaderModuleDesc &desc) override
     {
-        assert(desc.spirv && desc.wordCount > 0);
+        assert(desc.language == rhi::ShaderSourceLanguage::SpirV);
+        assert(desc.code && desc.byteSize > 0);
         ++shaderCreates;
         return {nextIndex++, 1};
     }

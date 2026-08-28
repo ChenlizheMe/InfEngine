@@ -297,7 +297,8 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
     const std::array<ShaderBytecode, 2> shaders = {desc.program.reset, desc.program.migrate};
     std::array<rhi::ComputePipelineHandle *, 2> pipelines = {&m_resetPipeline, &m_migratePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto module = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
+        const auto module =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
         if (!module.IsValid()) {
             Destroy();
             return false;

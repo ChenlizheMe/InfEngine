@@ -76,20 +76,22 @@ bool ParticleGpuMeshRenderer::Create(rhi::Device &device, const GpuMeshRendererD
         GpuParticleStaticBuffer{m_meshIndices, sourceIndices.size() * sizeof(uint32_t)},
     };
 
-    m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
-    m_fragmentShader = device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()});
-    m_shadowFragmentShader =
-        device.CreateShaderModule({desc.shadowFragmentShader.words, desc.shadowFragmentShader.wordCount});
+    m_vertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.vertexShader.words, desc.vertexShader.wordCount));
+    m_fragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedFragmentWords.data(), linkedFragmentWords.size()));
+    m_shadowFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.shadowFragmentShader.words, desc.shadowFragmentShader.wordCount));
     if (m_semantics.receiveSceneLighting) {
-        m_forwardPlusFragmentShader =
-            device.CreateShaderModule({linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+        m_forwardPlusFragmentShader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(
+            linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()));
     }
-    m_pickingFragmentShader =
-        device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
-    m_motionVertexShader =
-        device.CreateShaderModule({desc.motionVertexShader.words, desc.motionVertexShader.wordCount});
-    m_motionFragmentShader =
-        device.CreateShaderModule({desc.motionFragmentShader.words, desc.motionFragmentShader.wordCount});
+    m_pickingFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount));
+    m_motionVertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.motionVertexShader.words, desc.motionVertexShader.wordCount));
+    m_motionFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.motionFragmentShader.words, desc.motionFragmentShader.wordCount));
     if (!m_meshVertices.IsValid() || !m_meshIndices.IsValid() || !m_vertexShader.IsValid() ||
         !m_fragmentShader.IsValid() || !m_shadowFragmentShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
         !m_motionVertexShader.IsValid() || !m_motionFragmentShader.IsValid() ||

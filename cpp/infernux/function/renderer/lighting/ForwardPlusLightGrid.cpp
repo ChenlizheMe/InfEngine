@@ -102,7 +102,7 @@ bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlig
     consumerLayoutDesc.entryCount = 3;
     m_consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
 
-    const auto shader = device.CreateShaderModule({program.words, program.wordCount});
+    const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(program.words, program.wordCount));
     if (m_layout.IsValid() && m_consumerLayout.IsValid() && shader.IsValid()) {
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;

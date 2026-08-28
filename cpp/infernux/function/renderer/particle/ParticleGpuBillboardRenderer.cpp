@@ -72,23 +72,26 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_flipbookRows = desc.flipbookRows;
     m_instances = desc.instances;
     m_renderIndices = desc.renderIndices;
-    m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
-    m_fragmentShader = device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()});
-    m_motionVertexShader =
-        device.CreateShaderModule({desc.motionVertexShader.words, desc.motionVertexShader.wordCount});
-    m_motionFragmentShader =
-        device.CreateShaderModule({linkedMotionFragmentWords.data(), linkedMotionFragmentWords.size()});
+    m_vertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.vertexShader.words, desc.vertexShader.wordCount));
+    m_fragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedFragmentWords.data(), linkedFragmentWords.size()));
+    m_motionVertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.motionVertexShader.words, desc.motionVertexShader.wordCount));
+    m_motionFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedMotionFragmentWords.data(), linkedMotionFragmentWords.size()));
     if (linkedForwardPlusVariant) {
-        m_forwardPlusFragmentShader =
-            device.CreateShaderModule({linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+        m_forwardPlusFragmentShader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(
+            linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()));
     }
 
     // Picking stays output-specific. It does not consume the linked surface ABI.
     if (desc.vertexShader.words && desc.vertexShader.wordCount && desc.pickingFragmentShader.words &&
         desc.pickingFragmentShader.wordCount) {
-        m_pickingVertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
-        m_pickingFragmentShader =
-            device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
+        m_pickingVertexShader = device.CreateShaderModule(
+            rhi::ShaderModuleDesc::FromSpirV(desc.vertexShader.words, desc.vertexShader.wordCount));
+        m_pickingFragmentShader = device.CreateShaderModule(
+            rhi::ShaderModuleDesc::FromSpirV(desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount));
     }
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_motionVertexShader.IsValid() ||
         !m_motionFragmentShader.IsValid() ||

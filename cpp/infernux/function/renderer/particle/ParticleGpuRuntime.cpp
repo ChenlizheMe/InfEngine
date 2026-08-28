@@ -674,7 +674,8 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
             !m_supportsFusedUpdateRendering)
             continue;
-        const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
+        const auto shader = device.CreateShaderModule(
+            rhi::ShaderModuleDesc::FromSpirV(desc.kernels[index].words, desc.kernels[index].wordCount));
         if (!shader.IsValid()) {
             Destroy();
             return false;

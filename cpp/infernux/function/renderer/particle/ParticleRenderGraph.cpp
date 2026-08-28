@@ -259,7 +259,8 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     const std::array<ShaderBytecode, 2> shaders = {program.advance, program.prepare};
     std::array<rhi::ComputePipelineHandle *, 2> pipelines = {&m_advancePipeline, &m_preparePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto module = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
+        const auto module =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
         if (!module.IsValid()) {
             Destroy();
             return false;

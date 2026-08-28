@@ -535,7 +535,8 @@ void main() {
                              1};
     layoutDesc.entryCount = 4;
     const auto layout = rhi.CreateBindingLayout(layoutDesc);
-    const auto shader = rhi.CreateShaderModule({shaderWords.data(), shaderWords.size()});
+    const auto shader =
+        rhi.CreateShaderModule(infernux::rhi::ShaderModuleDesc::FromSpirV(shaderWords.data(), shaderWords.size()));
     infernux::rhi::ComputePipelineDesc pipelineDesc;
     pipelineDesc.computeShader = shader;
     pipelineDesc.bindingLayouts[0] = layout;
@@ -1899,7 +1900,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "RHI Texture2D/Texture3D staging uploads failed"))
         return false;
 
-    resources.computeShader = rhi.CreateShaderModule({computeCode.data(), computeCode.size()});
+    resources.computeShader =
+        rhi.CreateShaderModule(infernux::rhi::ShaderModuleDesc::FromSpirV(computeCode.data(), computeCode.size()));
     infernux::rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};
     layoutDesc.entryCount = 1;

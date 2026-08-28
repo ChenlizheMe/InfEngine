@@ -343,7 +343,8 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     const std::array<ShaderBytecode, 3> shaders = {desc.program.reset, desc.program.cull, desc.program.finalize};
     std::array<rhi::ComputePipelineHandle *, 3> pipelines = {&m_resetPipeline, &m_cullPipeline, &m_finalizePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto shader = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
+        const auto shader =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
         if (!shader.IsValid()) {
             Destroy();
             return false;

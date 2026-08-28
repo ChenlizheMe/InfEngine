@@ -217,10 +217,27 @@ struct TextureViewDesc
     uint32_t layerCount = 1;
 };
 
+enum class ShaderSourceLanguage : uint8_t
+{
+    SpirV,
+    Wgsl,
+};
+
 struct ShaderModuleDesc
 {
-    const uint32_t *spirv = nullptr;
-    size_t wordCount = 0;
+    ShaderSourceLanguage language = ShaderSourceLanguage::SpirV;
+    const void *code = nullptr;
+    size_t byteSize = 0;
+
+    [[nodiscard]] static constexpr ShaderModuleDesc FromSpirV(const uint32_t *words, size_t wordCount) noexcept
+    {
+        return {ShaderSourceLanguage::SpirV, words, wordCount * sizeof(uint32_t)};
+    }
+
+    [[nodiscard]] static constexpr ShaderModuleDesc FromWgsl(const char *text, size_t byteSize) noexcept
+    {
+        return {ShaderSourceLanguage::Wgsl, text, byteSize};
+    }
 };
 
 struct SamplerDesc

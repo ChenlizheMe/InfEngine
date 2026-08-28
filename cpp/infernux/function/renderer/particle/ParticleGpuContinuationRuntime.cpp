@@ -276,7 +276,7 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     }
 
     const auto createPipeline = [&](const GpuParticleContinuationShader &source, bool executionProgram) {
-        const auto shader = device.CreateShaderModule({source.words, source.wordCount});
+        const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(source.words, source.wordCount));
         if (!shader.IsValid())
             return rhi::ComputePipelineHandle{};
         rhi::ComputePipelineDesc pipelineDesc;
