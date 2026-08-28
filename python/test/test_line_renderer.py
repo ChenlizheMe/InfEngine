@@ -94,6 +94,23 @@ def test_line_renderer_point_edits_rebuild_only_derived_geometry(scene):
     assert line._cpp_component.index_count == 18
 
 
+def test_line_renderer_ignores_consecutive_duplicate_samples_in_generated_ribbon(scene):
+    line = scene.create_game_object("RuntimeTrail").add_component("LineRenderer")
+    line.set_positions(
+        [
+            (0, 0, 0),
+            (0, 0, 0),
+            (1, 0, 0),
+            (1, 0, 0),
+            (2, 0, 0),
+        ]
+    )
+
+    assert line.position_count == 5
+    assert line._cpp_component.vertex_count == 6
+    assert line._cpp_component.index_count == 12
+
+
 def test_line_renderer_serializes_authored_state_without_generated_mesh(scene):
     line = scene.create_game_object("SerializableLine").add_component("LineRenderer")
     line.set_positions([(0, 0, 0), (1, 2, 3), (4, 5, 6)])

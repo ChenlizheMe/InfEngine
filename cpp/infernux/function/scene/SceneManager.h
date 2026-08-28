@@ -430,6 +430,11 @@ class SceneManager
     /// Bump dynamic render content without forcing a structural rebuild.
     void NotifyMeshRendererContentChanged(MeshRenderer *renderer);
 
+    /// Publish procedural vertex/bounds changes without rebuilding the
+    /// renderer registry. Camera caches must recull these updates even when
+    /// the owning Transform did not move.
+    void NotifyMeshRendererGeometryChanged(MeshRenderer *renderer);
+
     /// Read-only access to the active mesh renderers registry.
     [[nodiscard]] const std::vector<MeshRenderer *> &GetActiveMeshRenderers() const
     {

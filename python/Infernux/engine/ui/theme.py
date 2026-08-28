@@ -423,6 +423,17 @@ class Theme:
     # -- List Body (Unity-style boxed area)
     INSPECTOR_LIST_BODY_BG      : RGBA = (0.10,  0.10,  0.10,  0.82)  # Distinct dark bg behind list items
     INSPECTOR_LIST_BODY_BORDER  : RGBA = (0.22,  0.22,  0.22,  1.0)  # Border separating list body from component bg
+
+    # -- Curve editor -------------------------------------------------
+    CURVE_EDITOR_BG             : RGBA = (0.13, 0.13, 0.13, 1.0)
+    CURVE_EDITOR_GRID           : RGBA = (0.28, 0.28, 0.28, 0.55)
+    CURVE_EDITOR_AXIS           : RGBA = (0.48, 0.48, 0.48, 0.72)
+    CURVE_EDITOR_LINE           : RGBA = (0.922, 0.341, 0.341, 1.0)
+    CURVE_EDITOR_KEY            : RGBA = (0.94, 0.94, 0.94, 1.0)
+    CURVE_EDITOR_KEY_SELECTED   : RGBA = (0.922, 0.341, 0.341, 1.0)
+    CURVE_EDITOR_TANGENT        : RGBA = (0.72, 0.54, 0.54, 0.90)
+    CURVE_EDITOR_PREVIEW_H      : float = 46.0
+    CURVE_EDITOR_CANVAS_H       : float = 220.0
     INSPECTOR_LIST_BODY_ROUNDING: float = 0.0   # Bottom corner rounding
     INSPECTOR_LIST_BODY_PAD_X   : float = 4.0   # Horizontal padding inside list body
     INSPECTOR_LIST_BODY_PAD_Y   : float = 2.0   # Vertical padding inside list body

@@ -39,16 +39,21 @@ ${VERTEX_CALL}
                 ? normalize(transformedFacing)
                 : vec3(0.0, 0.0, 1.0);
         }
+        mat4 cameraWorld = inverse(ubo.view);
+        vec3 cameraRight = normalize(cameraWorld[0].xyz);
         vec3 side = cross(facing, tangentWorld);
-        if (dot(side, side) < 1.0e-10) {
-            vec3 cameraUp = inverse(ubo.view)[1].xyz;
-            side = cross(cameraUp, tangentWorld);
-        }
+        // Near a camera-facing tangent, normalizing the tiny cross product
+        // amplifies frame noise and flips adjacent ribbon vertices. Project
+        // camera-right off the tangent in that singular region instead.
+        if (dot(side, side) < 1.0e-6)
+            side = cameraRight - tangentWorld * dot(cameraRight, tangentWorld);
         if (dot(side, side) < 1.0e-10)
-            side = cross(vec3(0.0, 1.0, 0.0), tangentWorld);
+            side = cross(cameraWorld[1].xyz, tangentWorld);
         if (dot(side, side) < 1.0e-10)
             side = vec3(1.0, 0.0, 0.0);
         side = normalize(side);
+        if (dot(side, cameraRight) < 0.0)
+            side = -side;
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneIndices.y != 0u) {
             worldNormal = facing;

@@ -327,9 +327,14 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
             CaptureOrReferenceInlineMesh(*mr, source.inlineVertices, source.inlineIndices, source.inlineMeshOwner);
         }
 
-        if (transformChanged || dynamicSkinBounds) {
+        // Procedural meshes can move their vertices while the owning Transform
+        // remains unchanged (LineRenderer world-space trails are the common
+        // case). Their cached bounds must follow the content publication or
+        // per-camera frustum culling will keep testing the previous shape.
+        if (transformChanged || bufferDirty || dynamicSkinBounds) {
             const bool translationOnly =
-                transformChanged && std::memcmp(&worldMatrix[0], &frameData.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
+                transformChanged && !bufferDirty &&
+                std::memcmp(&worldMatrix[0], &frameData.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
             const glm::vec3 translationDelta = glm::vec3(worldMatrix[3] - frameData.worldMatrix[3]);
             if (transformChanged)
                 frameData.worldMatrix = worldMatrix;

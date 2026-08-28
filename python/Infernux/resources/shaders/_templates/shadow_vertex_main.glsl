@@ -32,12 +32,19 @@ ${VERTEX_CALL}
         vec3 facing = dot(facingCandidate, facingCandidate) > 1.0e-10
             ? normalize(facingCandidate)
             : vec3(0.0, 0.0, 1.0);
+        mat4 lightViewWorld = inverse(shadowUBO.view);
+        vec3 viewRight = normalize(lightViewWorld[0].xyz);
         vec3 side = cross(facing, tangentWorld);
+        if (dot(side, side) < 1.0e-6)
+            side = viewRight - tangentWorld * dot(viewRight, tangentWorld);
         if (dot(side, side) < 1.0e-10)
-            side = cross(inverse(shadowUBO.view)[1].xyz, tangentWorld);
+            side = cross(lightViewWorld[1].xyz, tangentWorld);
         if (dot(side, side) < 1.0e-10)
             side = vec3(1.0, 0.0, 0.0);
-        worldPos = vec4(centerWorld.xyz + normalize(side) * inBoneWeights.x, 1.0);
+        side = normalize(side);
+        if (dot(side, viewRight) < 0.0)
+            side = -side;
+        worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneWeights.z > 0.0) {
             vec3 towardLightCandidate = shadowUBO.light_vector.w < 0.5
                 ? shadowUBO.light_vector.xyz

@@ -1239,6 +1239,20 @@ void SceneManager::NotifyMeshRendererContentChanged(MeshRenderer *renderer)
         m_renderContentRevision = 1;
 }
 
+void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)
+{
+    if (!renderer || m_activeMeshRendererSet.find(renderer) == m_activeMeshRendererSet.end())
+        return;
+    ++m_renderContentRevision;
+    if (m_renderContentRevision == 0)
+        m_renderContentRevision = 1;
+    // Camera visibility caches use this revision for every bounds-affecting
+    // change, including procedural geometry that moves in world space.
+    ++m_renderTransformRevision;
+    if (m_renderTransformRevision == 0)
+        m_renderTransformRevision = 1;
+}
+
 void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, const std::string &meshPath)
 {
     (void)meshPath;
