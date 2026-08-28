@@ -259,6 +259,10 @@ struct BindingLayoutEntry
     BindingType type = BindingType::UniformBuffer;
     ShaderStage visibility = ShaderStage::None;
     uint32_t count = 1;
+    /// WebGPU distinguishes depth textures from float sampled textures in the
+    /// immutable bind-group layout. Vulkan does not need this bit, but keeping
+    /// it in the shared contract lets both backends consume the same layout.
+    bool depthRead = false;
 };
 
 struct TextureBinding

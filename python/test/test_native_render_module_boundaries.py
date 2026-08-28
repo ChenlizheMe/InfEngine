@@ -222,7 +222,14 @@ def test_descriptor_pool_ownership_is_centralized() -> None:
 
 
 def test_native_render_dll_dependency_direction() -> None:
-    cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    cmake = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "CMakeLists.txt",
+            ROOT / "cmake" / "InfernuxSources.cmake",
+            ROOT / "cmake" / "InfernuxNativeTargets.cmake",
+        )
+    )
 
     assert re.search(
         r"target_link_libraries\(InfernuxRenderCore\s+PUBLIC\s+InfernuxFoundation\s*\)",
@@ -300,17 +307,22 @@ def test_standalone_shader_modules_remain_pipeline_manager_owned() -> None:
 
 def test_fullscreen_effect_shader_reload_retires_cached_pipeline_revision() -> None:
     fullscreen = (RENDERER / "FullscreenRenderer.cpp").read_text(encoding="utf-8")
+    vulkan_adapter = (RENDERER / "FullscreenRendererVkAdapter.cpp").read_text(
+        encoding="utf-8"
+    )
     renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     invalidate = _function_body(fullscreen, "void FullscreenRenderer::InvalidateShader")
-    retire = _function_body(fullscreen, "void RetirePipeline")
     renderer_invalidate = _function_body(
         renderer, "void InxRenderer::InvalidateShaderCache"
     )
 
-    assert "m_impl->RetirePipeline" in invalidate
-    assert "GetRetirementQueue().Retire" in retire
+    assert "m_impl->DestroyPipeline" in invalidate
+    assert "device->Release(entry.rhi.pipeline)" in fullscreen
     assert "vkDeviceWaitIdle" not in invalidate
-    assert "vkDeviceWaitIdle" not in retire
+    assert "vkDeviceWaitIdle" not in fullscreen
+    assert "VkPipeline" not in fullscreen
+    assert "VulkanRhiDevice" not in fullscreen
+    assert "VulkanFullscreenRendererHost" in vulkan_adapter
     assert renderer_invalidate.count("InvalidateFullscreenShader(shaderId)") == 2
     assert renderer_invalidate.index("InvalidateFullscreenShader(shaderId)") < (
         renderer_invalidate.index("m_vkCore->InvalidateShaderCache(shaderId)")
@@ -323,8 +335,10 @@ def test_fullscreen_passes_use_render_graph_dynamic_rendering_contract() -> None
     scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
 
     assert "bool useDynamicRendering = false;" in fullscreen_header
-    assert "BuildVkPipelineRenderingInfo" in fullscreen
-    assert "pipelineInfo.renderPass = key.useDynamicRendering ? VK_NULL_HANDLE : renderPass;" in fullscreen
+    assert "desc.useDynamicRendering = key.useDynamicRendering;" in fullscreen
+    assert "desc.renderingSignature.colorFormats[0] = key.colorFormat;" in fullscreen
+    assert "device->CreateGraphicsPipeline(desc)" in fullscreen
+    assert "VkRenderPass" not in fullscreen
     assert "const bool useDynamicFullscreen = m_renderGraph->SupportsDynamicRendering();" in scene_graph
     assert "key.useDynamicRendering = useDynamicFullscreen;" in scene_graph
     assert "perViewShadowTextureName" in scene_graph
@@ -1046,6 +1060,22 @@ def test_player_window_skips_startup_maximize() -> None:
     assert "SDL_MaximizeWindow" in body
     assert "_INFERNUX_PLAYER_MODE" in body
     assert body.index("_INFERNUX_PLAYER_MODE") < body.index("SDL_MaximizeWindow")
+
+
+def test_touch_events_wake_the_frame_loop_and_request_ui_refresh() -> None:
+    source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    process_events = _function_body(source, "void InxView::ProcessEvent")
+    process_one = _function_body(source, "bool InxView::ProcessOneEvent")
+    for event_name in (
+        "SDL_EVENT_FINGER_DOWN",
+        "SDL_EVENT_FINGER_MOTION",
+        "SDL_EVENT_FINGER_UP",
+        "SDL_EVENT_FINGER_CANCELED",
+    ):
+        assert event_name in process_events
+        assert event_name in process_one
 
 
 def test_prepare_pipeline_pumps_between_engine_shader_compiles() -> None:

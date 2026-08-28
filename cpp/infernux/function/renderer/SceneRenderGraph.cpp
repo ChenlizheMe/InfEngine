@@ -1503,8 +1503,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             auto colorOutputs = passDesc.writeColors;
             std::sort(colorOutputs.begin(), colorOutputs.end(),
                       [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
-            for (const auto &[slot, textureName] : colorOutputs) {
-                (void)slot;
+            for (const auto &colorOutput : colorOutputs) {
+                const std::string &textureName = colorOutput.second;
                 const auto texture = std::find_if(
                     normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
                     [&textureName](const GraphTextureDesc &textureDesc) { return textureDesc.name == textureName; });
@@ -3971,6 +3971,10 @@ void SceneRenderGraph::BuildRenderGraph()
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
                         key.inputTextureCount = inputCount;
+                        for (uint32_t i = 0; i < inputCount && i < 32; ++i) {
+                            if (inputs[i].depthRead)
+                                key.depthInputMask |= 1u << i;
+                        }
                         key.useDynamicRendering = useDynamicFullscreen;
 
                         const auto &entry = fsRenderer->EnsurePipeline(key);

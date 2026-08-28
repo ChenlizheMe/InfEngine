@@ -1,57 +1,21 @@
 #include "FullscreenRenderer.h"
 
-#include "InxVkCoreModular.h"
-#include "shader/ShaderProgram.h"
-#include "vk/RhiVulkanTypes.h"
-#include "vk/VkPipelineHelpers.h"
-#include "vk/VkSwapchainManager.h"
-#include "vk/VulkanRhiDevice.h"
+#include "rhi/RhiDevice.h"
 
 #include <algorithm>
-#include <array>
-#include <core/error/InxError.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace infernux
 {
 
-namespace
-{
-
-VkDescriptorSetLayout CreateDescriptorSetLayout(VkDevice device,
-                                                const std::vector<VkDescriptorSetLayoutBinding> &bindings)
-{
-    VkDescriptorSetLayoutCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info.bindingCount = static_cast<uint32_t>(bindings.size());
-    info.pBindings = bindings.empty() ? nullptr : bindings.data();
-
-    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-    return vkCreateDescriptorSetLayout(device, &info, nullptr, &layout) == VK_SUCCESS ? layout : VK_NULL_HANDLE;
-}
-
-VkSamplerCreateInfo MakeSamplerCreateInfo(VkFilter filter, VkSamplerMipmapMode mipmapMode)
-{
-    VkSamplerCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    info.magFilter = filter;
-    info.minFilter = filter;
-    info.mipmapMode = mipmapMode;
-    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.maxAnisotropy = 1.0f;
-    return info;
-}
-
-} // namespace
-
 bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const noexcept
 {
     return shaderName == other.shaderName && renderTargetLayout == other.renderTargetLayout &&
            samples == other.samples && colorFormat == other.colorFormat &&
-           inputTextureCount == other.inputTextureCount && useDynamicRendering == other.useDynamicRendering;
+           inputTextureCount == other.inputTextureCount && depthInputMask == other.depthInputMask &&
+           useDynamicRendering == other.useDynamicRendering;
 }
 
 size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) const noexcept
@@ -62,233 +26,127 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(static_cast<size_t>(key.samples));
     combine(static_cast<size_t>(key.colorFormat));
     combine(key.inputTextureCount);
+    combine(key.depthInputMask);
     combine(key.useDynamicRendering ? 1U : 0U);
     return hash;
 }
 
 struct FullscreenRenderer::Impl
 {
-    struct NativePipelineEntry
+    struct PipelineEntry
     {
         FullscreenPipelineEntry rhi;
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        VkPipelineLayout layout = VK_NULL_HANDLE;
-        VkDescriptorSetLayout inputLayout = VK_NULL_HANDLE;
-        VkDescriptorSetLayout emptyGapLayout = VK_NULL_HANDLE;
+        rhi::BindingLayoutHandle emptyGapLayout;
     };
 
-    InxVkCoreModular *core = nullptr;
-    vk::VulkanRhiDevice *rhiDevice = nullptr;
-    VkDevice device = VK_NULL_HANDLE;
-    VkSampler linearSampler = VK_NULL_HANDLE;
-    VkSampler nearestSampler = VK_NULL_HANDLE;
-    rhi::SamplerHandle linearSamplerHandle;
-    rhi::SamplerHandle nearestSamplerHandle;
-    std::unordered_map<FullscreenPipelineKey, NativePipelineEntry, FullscreenPipelineKeyHash> pipelines;
+    std::shared_ptr<FullscreenRendererHost> host;
+    rhi::Device *device = nullptr;
+    rhi::SamplerHandle linearSampler;
+    rhi::SamplerHandle nearestSampler;
+    std::unordered_map<FullscreenPipelineKey, PipelineEntry, FullscreenPipelineKeyHash> pipelines;
     std::vector<std::vector<rhi::BindGroupHandle>> frameBindGroups;
-    std::vector<rhi::BindGroupHandle> globalsGroups;
 
-    [[nodiscard]] uint32_t CurrentFrame() const
+    [[nodiscard]] uint32_t CurrentFrame() const noexcept
     {
-        if (!core || frameBindGroups.empty())
+        if (!host || frameBindGroups.empty())
             return 0;
-        return core->GetCurrentFrameSlot() % static_cast<uint32_t>(frameBindGroups.size());
+        return host->GetCurrentFrame() % static_cast<uint32_t>(frameBindGroups.size());
     }
 
     void ReleaseBindGroups(uint32_t frame)
     {
-        if (!rhiDevice || frame >= frameBindGroups.size())
+        if (!device || frame >= frameBindGroups.size())
             return;
         for (const auto handle : frameBindGroups[frame])
-            rhiDevice->Release(handle);
+            device->Release(handle);
         frameBindGroups[frame].clear();
     }
 
-    void DestroyPipeline(NativePipelineEntry &entry)
+    void DestroyPipeline(PipelineEntry &entry)
     {
-        if (rhiDevice) {
-            rhiDevice->Release(entry.rhi.pipeline);
-            rhiDevice->Release(entry.rhi.inputLayout);
+        if (device) {
+            device->Release(entry.rhi.pipeline);
+            device->Release(entry.rhi.inputLayout);
+            device->Release(entry.emptyGapLayout);
         }
-        if (entry.pipeline != VK_NULL_HANDLE)
-            vkDestroyPipeline(device, entry.pipeline, nullptr);
-        if (entry.layout != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(device, entry.layout, nullptr);
-        if (entry.inputLayout != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device, entry.inputLayout, nullptr);
-        if (entry.emptyGapLayout != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device, entry.emptyGapLayout, nullptr);
         entry = {};
     }
 
-    void RetirePipeline(NativePipelineEntry entry)
+    PipelineEntry CreatePipeline(const FullscreenPipelineKey &key)
     {
-        if (rhiDevice) {
-            rhiDevice->Release(entry.rhi.pipeline);
-            rhiDevice->Release(entry.rhi.inputLayout);
-        }
-
-        const VkDevice retiredDevice = device;
-        const VkPipeline pipeline = entry.pipeline;
-        const VkPipelineLayout layout = entry.layout;
-        const VkDescriptorSetLayout inputLayout = entry.inputLayout;
-        const VkDescriptorSetLayout emptyGapLayout = entry.emptyGapLayout;
-        auto destroy = [retiredDevice, pipeline, layout, inputLayout, emptyGapLayout] {
-            if (pipeline != VK_NULL_HANDLE)
-                vkDestroyPipeline(retiredDevice, pipeline, nullptr);
-            if (layout != VK_NULL_HANDLE)
-                vkDestroyPipelineLayout(retiredDevice, layout, nullptr);
-            if (inputLayout != VK_NULL_HANDLE)
-                vkDestroyDescriptorSetLayout(retiredDevice, inputLayout, nullptr);
-            if (emptyGapLayout != VK_NULL_HANDLE)
-                vkDestroyDescriptorSetLayout(retiredDevice, emptyGapLayout, nullptr);
-        };
-
-        if (core && core->GetRetirementQueue().HasSerialSource())
-            core->GetRetirementQueue().Retire(std::move(destroy));
-        else
-            destroy();
-    }
-
-    NativePipelineEntry CreatePipeline(const FullscreenPipelineKey &key)
-    {
-        NativePipelineEntry entry;
-        const VkRenderPass renderPass =
-            rhiDevice && !key.useDynamicRendering ? rhiDevice->Resolve(key.renderTargetLayout) : VK_NULL_HANDLE;
-        if (!core || (!key.useDynamicRendering && renderPass == VK_NULL_HANDLE))
+        PipelineEntry entry;
+        if (!host || !device || key.inputTextureCount > rhi::BindingLayoutDesc::MaxEntries ||
+            (!key.useDynamicRendering && !key.renderTargetLayout.IsValid()))
             return entry;
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-        bindings.reserve(key.inputTextureCount);
-        for (uint32_t i = 0; i < key.inputTextureCount; ++i) {
-            VkDescriptorSetLayoutBinding binding{};
-            binding.binding = i;
-            binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            binding.descriptorCount = 1;
-            binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings.push_back(binding);
+        rhi::BindingLayoutDesc inputLayoutDesc;
+        inputLayoutDesc.entryCount = key.inputTextureCount;
+        for (uint32_t index = 0; index < key.inputTextureCount; ++index) {
+            auto &binding = inputLayoutDesc.entries[index];
+            binding.binding = index;
+            binding.type = rhi::BindingType::CombinedTextureSampler;
+            binding.visibility = rhi::ShaderStage::Fragment;
+            binding.depthRead = (key.depthInputMask & (1u << index)) != 0;
         }
-
-        entry.inputLayout = CreateDescriptorSetLayout(device, bindings);
-        if (entry.inputLayout == VK_NULL_HANDLE)
+        entry.rhi.inputLayout = device->CreateBindingLayout(inputLayoutDesc);
+        if (!entry.rhi.inputLayout.IsValid())
             return entry;
 
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        pushRange.size = sizeof(FullscreenPushConstants);
+        rhi::GraphicsPipelineDesc desc;
+        desc.useDynamicRendering = key.useDynamicRendering;
+        desc.renderTargetLayout = key.renderTargetLayout;
+        desc.topology = rhi::PrimitiveTopology::TriangleList;
+        desc.raster.cullMode = rhi::CullMode::None;
+        desc.raster.frontFace = rhi::FrontFace::Clockwise;
+        desc.samples = key.samples;
+        desc.colorTargetCount = 1;
+        desc.colorTargets[0].format = key.colorFormat;
+        desc.bindingLayouts[desc.bindingLayoutCount++] = entry.rhi.inputLayout;
+        desc.pushConstantStages = rhi::ShaderStage::Fragment;
+        desc.pushConstantBytes = sizeof(FullscreenPushConstants);
+        if (key.useDynamicRendering) {
+            desc.renderingSignature.colorFormatCount = 1;
+            desc.renderingSignature.colorFormats[0] = key.colorFormat;
+            desc.renderingSignature.samples = key.samples;
+        }
 
-        std::vector<VkDescriptorSetLayout> setLayouts = {entry.inputLayout};
-        const VkDescriptorSetLayout perViewLayout = ShaderProgram::GetPerViewDescSetLayout();
-        const VkDescriptorSetLayout globalsLayout = ShaderProgram::GetGlobalsDescSetLayout();
-        if (perViewLayout != VK_NULL_HANDLE || globalsLayout != VK_NULL_HANDLE) {
-            if (perViewLayout != VK_NULL_HANDLE) {
-                setLayouts.push_back(perViewLayout);
+        const auto perViewLayout = host->GetPerViewLayout();
+        const auto globalsLayout = host->GetGlobalsLayout();
+        if (perViewLayout.IsValid() || globalsLayout.IsValid()) {
+            if (perViewLayout.IsValid()) {
+                desc.bindingLayouts[desc.bindingLayoutCount++] = perViewLayout;
             } else {
-                entry.emptyGapLayout = CreateDescriptorSetLayout(device, {});
-                if (entry.emptyGapLayout == VK_NULL_HANDLE) {
+                entry.emptyGapLayout = device->CreateBindingLayout({});
+                if (!entry.emptyGapLayout.IsValid()) {
                     DestroyPipeline(entry);
                     return {};
                 }
-                setLayouts.push_back(entry.emptyGapLayout);
+                desc.bindingLayouts[desc.bindingLayoutCount++] = entry.emptyGapLayout;
             }
         }
-        if (globalsLayout != VK_NULL_HANDLE)
-            setLayouts.push_back(globalsLayout);
+        if (globalsLayout.IsValid())
+            desc.bindingLayouts[desc.bindingLayoutCount++] = globalsLayout;
 
-        VkPipelineLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
-        layoutInfo.pSetLayouts = setLayouts.data();
-        layoutInfo.pushConstantRangeCount = 1;
-        layoutInfo.pPushConstantRanges = &pushRange;
-        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &entry.layout) != VK_SUCCESS) {
+        desc.vertexShader = host->AcquireShaderModule("Fullscreen Triangle", rhi::ShaderStage::Vertex);
+        desc.fragmentShader = host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment);
+        if (!desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid()) {
+            host->ReportError("FullscreenRenderer: missing shader modules for '" + key.shaderName + "'");
+            device->Release(desc.vertexShader);
+            device->Release(desc.fragmentShader);
             DestroyPipeline(entry);
             return {};
         }
 
-        // Fullscreen effects name their fragment program only. Their vertex
-        // stage is the engine's fixed fullscreen triangle; probing for a
-        // same-named vertex asset first produces false missing-shader warnings
-        // and makes packed pipelines depend on an asset that cannot exist.
-        VkShaderModule vertex = VK_NULL_HANDLE;
-        if (core->EnsureShaderAvailable("Fullscreen Triangle", "vertex"))
-            vertex = core->GetShaderModule("Fullscreen Triangle", "vertex");
-        VkShaderModule fragment = VK_NULL_HANDLE;
-        if (core->EnsureShaderAvailable(key.shaderName, "fragment")) {
-            fragment = core->GetShaderModule(key.shaderName, "fragment");
-        }
-        if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE) {
-            INXLOG_ERROR("FullscreenRenderer: missing shader modules for '", key.shaderName, "'");
+        entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
+        device->Release(desc.vertexShader);
+        device->Release(desc.fragmentShader);
+        if (!entry.rhi.pipeline.IsValid()) {
+            host->ReportError("FullscreenRenderer: failed to create pipeline for '" + key.shaderName + "'");
             DestroyPipeline(entry);
             return {};
         }
-
-        const auto shaderStages = vkrender::MakeVertFragStages(vertex, fragment);
-        VkPipelineVertexInputStateCreateInfo vertexInput{};
-        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        const auto inputAssembly = vkrender::MakeTriangleListInputAssembly();
-        vkrender::DynamicViewportScissorState dynamicState;
-
-        VkPipelineRasterizationStateCreateInfo rasterizer{};
-        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-        rasterizer.lineWidth = 1.0f;
-
-        const auto multisampling = vkrender::MakeMultisampleState(rhi::ToVkSampleCount(key.samples));
-        VkPipelineDepthStencilStateCreateInfo depthStencil{};
-        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-
-        VkPipelineColorBlendAttachmentState blendAttachment{};
-        blendAttachment.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        VkPipelineColorBlendStateCreateInfo colorBlending{};
-        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &blendAttachment;
-
-        VkGraphicsPipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-        pipelineInfo.pStages = shaderStages.data();
-        pipelineInfo.pVertexInputState = &vertexInput;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &dynamicState.viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.pDynamicState = &dynamicState.dynamicState;
-        pipelineInfo.layout = entry.layout;
-        std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
-        VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
-        if (key.useDynamicRendering) {
-            rhi::GraphicsRenderingSignature signature;
-            signature.colorFormatCount = 1;
-            signature.colorFormats[0] = key.colorFormat;
-            signature.samples = key.samples;
-            if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
-                INXLOG_ERROR("FullscreenRenderer: invalid Dynamic Rendering signature for '", key.shaderName, "'");
-                DestroyPipeline(entry);
-                return {};
-            }
-            pipelineInfo.pNext = &dynamicRenderingInfo;
-        }
-        pipelineInfo.renderPass = key.useDynamicRendering ? VK_NULL_HANDLE : renderPass;
-        pipelineInfo.subpass = 0;
-
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &entry.pipeline) !=
-            VK_SUCCESS) {
-            INXLOG_ERROR("FullscreenRenderer: failed to create pipeline for '", key.shaderName, "'");
-            DestroyPipeline(entry);
-            return {};
-        }
-
-        entry.rhi.pipeline = rhiDevice->RegisterGraphicsPipeline(entry.pipeline, entry.layout);
-        entry.rhi.inputLayout = rhiDevice->RegisterBindingLayout(entry.inputLayout);
-        entry.rhi.hasPerView = perViewLayout != VK_NULL_HANDLE;
-        entry.rhi.hasGlobals = globalsLayout != VK_NULL_HANDLE;
+        entry.rhi.hasPerView = perViewLayout.IsValid();
+        entry.rhi.hasGlobals = globalsLayout.IsValid();
         return entry;
     }
 };
@@ -299,54 +157,48 @@ FullscreenRenderer::~FullscreenRenderer()
     Destroy();
 }
 
-void FullscreenRenderer::Initialize(InxVkCoreModular *vkCore)
+void FullscreenRenderer::Initialize(std::shared_ptr<FullscreenRendererHost> host)
 {
     Destroy();
-    if (!vkCore)
+    if (!host)
         return;
 
     m_impl = std::make_unique<Impl>();
-    m_impl->core = vkCore;
-    m_impl->device = vkCore->GetDevice();
-    m_impl->rhiDevice = &vkCore->GetDeviceContext().GetRhiDevice();
+    m_impl->host = std::move(host);
+    m_impl->device = &m_impl->host->GetRhiDevice();
 
-    auto linearInfo = MakeSamplerCreateInfo(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR);
-    auto nearestInfo = MakeSamplerCreateInfo(VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST);
-    if (vkCreateSampler(m_impl->device, &linearInfo, nullptr, &m_impl->linearSampler) != VK_SUCCESS ||
-        vkCreateSampler(m_impl->device, &nearestInfo, nullptr, &m_impl->nearestSampler) != VK_SUCCESS) {
-        INXLOG_ERROR("FullscreenRenderer: failed to create samplers");
+    rhi::SamplerDesc linear;
+    linear.addressU = rhi::AddressMode::ClampToEdge;
+    linear.addressV = rhi::AddressMode::ClampToEdge;
+    linear.addressW = rhi::AddressMode::ClampToEdge;
+    rhi::SamplerDesc nearest = linear;
+    nearest.minFilter = rhi::FilterMode::Nearest;
+    nearest.magFilter = rhi::FilterMode::Nearest;
+    nearest.mipFilter = rhi::FilterMode::Nearest;
+    m_impl->linearSampler = m_impl->device->CreateSampler(linear);
+    m_impl->nearestSampler = m_impl->device->CreateSampler(nearest);
+    if (!m_impl->linearSampler.IsValid() || !m_impl->nearestSampler.IsValid()) {
+        m_impl->host->ReportError("FullscreenRenderer: failed to create RHI samplers");
         Destroy();
         return;
     }
-    m_impl->linearSamplerHandle = m_impl->rhiDevice->RegisterSampler(m_impl->linearSampler);
-    m_impl->nearestSamplerHandle = m_impl->rhiDevice->RegisterSampler(m_impl->nearestSampler);
 
-    const uint32_t frames = std::max(1u, vkCore->GetMaxFramesInFlight());
+    const uint32_t frames = std::max(1u, m_impl->host->GetFrameCount());
     m_impl->frameBindGroups.resize(frames);
-    m_impl->globalsGroups.resize(frames);
 }
 
 void FullscreenRenderer::Destroy()
 {
     if (!m_impl)
         return;
-    if (m_impl->device != VK_NULL_HANDLE)
-        vkDeviceWaitIdle(m_impl->device);
-
     for (uint32_t frame = 0; frame < m_impl->frameBindGroups.size(); ++frame)
         m_impl->ReleaseBindGroups(frame);
-    if (m_impl->rhiDevice) {
-        for (const auto group : m_impl->globalsGroups)
-            m_impl->rhiDevice->Release(group);
-        m_impl->rhiDevice->Release(m_impl->linearSamplerHandle);
-        m_impl->rhiDevice->Release(m_impl->nearestSamplerHandle);
-    }
     for (auto &[key, entry] : m_impl->pipelines)
         m_impl->DestroyPipeline(entry);
-    if (m_impl->linearSampler != VK_NULL_HANDLE)
-        vkDestroySampler(m_impl->device, m_impl->linearSampler, nullptr);
-    if (m_impl->nearestSampler != VK_NULL_HANDLE)
-        vkDestroySampler(m_impl->device, m_impl->nearestSampler, nullptr);
+    if (m_impl->device) {
+        m_impl->device->Release(m_impl->linearSampler);
+        m_impl->device->Release(m_impl->nearestSampler);
+    }
     m_impl.reset();
 }
 
@@ -375,29 +227,28 @@ void FullscreenRenderer::InvalidateShader(const std::string &shaderName)
         }
         auto pipeline = std::move(entry->second);
         entry = m_impl->pipelines.erase(entry);
-        m_impl->RetirePipeline(std::move(pipeline));
+        m_impl->DestroyPipeline(pipeline);
         ++retired;
     }
-    if (retired > 0)
-        INXLOG_INFO("FullscreenRenderer: retired ", retired, " pipeline revision(s) for shader '", shaderName, "'");
+    if (retired > 0) {
+        m_impl->host->ReportInfo("FullscreenRenderer: retired " + std::to_string(retired) +
+                                 " pipeline revision(s) for shader '" + shaderName + "'");
+    }
 }
 
 rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHandle layout,
                                                            const FullscreenTextureInput *inputs, uint32_t inputCount,
                                                            rhi::SamplerHandle colorSampler)
 {
-    if (!m_impl || m_impl->frameBindGroups.empty())
+    if (!m_impl || !m_impl->device || m_impl->frameBindGroups.empty())
         return {};
-    const VkDescriptorSetLayout nativeLayout = m_impl->rhiDevice->Resolve(layout);
     const uint32_t frame = m_impl->CurrentFrame();
-    if (nativeLayout == VK_NULL_HANDLE)
-        return {};
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = layout;
     groupDesc.lifetime = rhi::BindGroupLifetime::FrameTransient;
     groupDesc.textureCount = inputCount;
-    if (!inputs || inputCount > groupDesc.textures.size())
+    if (!layout.IsValid() || !inputs || inputCount > groupDesc.textures.size())
         return {};
     for (uint32_t i = 0; i < inputCount; ++i) {
         const auto &input = inputs[i];
@@ -406,13 +257,13 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
         texture.binding = i;
         texture.type = rhi::BindingType::CombinedTextureSampler;
         texture.texture = input.view;
-        texture.sampler = nearestSampling ? m_impl->nearestSamplerHandle : colorSampler;
+        texture.sampler = nearestSampling ? m_impl->nearestSampler : colorSampler;
         texture.depthRead = input.depthRead;
         if (!texture.texture.IsValid() || !texture.sampler.IsValid())
             return {};
     }
 
-    const auto handle = m_impl->rhiDevice->CreateBindGroup(groupDesc);
+    const auto handle = m_impl->device->CreateBindGroup(groupDesc);
     if (handle.IsValid())
         m_impl->frameBindGroups[frame].push_back(handle);
     return handle;
@@ -429,17 +280,10 @@ void FullscreenRenderer::Draw(rhi::GraphicsCommandEncoder &encoder, const Fullsc
         encoder.BindGroup(entry.pipeline, 0, inputGroup);
     if (entry.hasPerView && perViewGroup.IsValid())
         encoder.BindGroup(entry.pipeline, 1, perViewGroup);
-
     if (entry.hasGlobals) {
-        const uint32_t frame = m_impl->CurrentFrame();
-        const VkDescriptorSet currentGlobals = m_impl->core->GetCurrentGlobalsDescSet();
-        auto &globalsHandle = m_impl->globalsGroups[frame];
-        if (m_impl->rhiDevice->Resolve(globalsHandle) != currentGlobals) {
-            m_impl->rhiDevice->Release(globalsHandle);
-            globalsHandle = m_impl->rhiDevice->RegisterBindGroup(currentGlobals);
-        }
-        if (globalsHandle.IsValid())
-            encoder.BindGroup(entry.pipeline, 2, globalsHandle);
+        const auto globalsGroup = m_impl->host->GetCurrentGlobalsGroup();
+        if (globalsGroup.IsValid())
+            encoder.BindGroup(entry.pipeline, 2, globalsGroup);
     }
     encoder.PushConstants(entry.pipeline, rhi::ShaderStage::Fragment, pushConstantSize, pushConstants.values);
     encoder.Draw(3);
@@ -449,13 +293,12 @@ void FullscreenRenderer::ResetPool()
 {
     if (!m_impl || m_impl->frameBindGroups.empty())
         return;
-    const uint32_t frame = m_impl->CurrentFrame();
-    m_impl->ReleaseBindGroups(frame);
+    m_impl->ReleaseBindGroups(m_impl->CurrentFrame());
 }
 
 rhi::SamplerHandle FullscreenRenderer::GetLinearSampler() const noexcept
 {
-    return m_impl ? m_impl->linearSamplerHandle : rhi::SamplerHandle{};
+    return m_impl ? m_impl->linearSampler : rhi::SamplerHandle{};
 }
 
 } // namespace infernux
