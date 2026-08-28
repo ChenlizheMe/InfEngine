@@ -243,6 +243,31 @@ class CameraClearFlags(IntEnum):
     DontClear: int
 
 
+class LineAlignment(IntEnum):
+    View: int
+    TransformZ: int
+
+
+class LineTextureMode(IntEnum):
+    Stretch: int
+    Tile: int
+    DistributePerSegment: int
+    RepeatPerSegment: int
+    Static: int
+
+
+class LineCurveWrapMode(IntEnum):
+    Clamp: int
+    Repeat: int
+    PingPong: int
+
+
+class LineGradientMode(IntEnum):
+    Linear: int
+    Fixed: int
+    PerceptualBlend: int
+
+
 class RenderStateOverride(IntEnum):
     NONE: int
     CULL_MODE: int
@@ -930,6 +955,61 @@ class MeshRenderer(Component):
     def get_world_bounds(self) -> Tuple[float, float, float, float, float, float]: ...
     def serialize(self) -> str: ...
     def deserialize(self, json_str: str) -> None: ...
+
+
+class LineWidthKey:
+    def __init__(
+        self,
+        time: float,
+        value: float,
+        in_tangent: float = 0.0,
+        out_tangent: float = 0.0,
+    ) -> None: ...
+    time: float
+    value: float
+    in_tangent: float
+    out_tangent: float
+
+
+class LineColorKey:
+    def __init__(self, time: float, color: vec4f) -> None: ...
+    time: float
+    color: vec4f
+
+
+class LineRenderer(MeshRenderer):
+    position_count: int
+    start_width: float
+    end_width: float
+    width_multiplier: float
+    width_curve: List[LineWidthKey]
+    width_curve_pre_wrap: LineCurveWrapMode
+    width_curve_post_wrap: LineCurveWrapMode
+    start_color: vec4f
+    end_color: vec4f
+    color_gradient: List[LineColorKey]
+    color_gradient_mode: LineGradientMode
+    loop: bool
+    use_world_space: bool
+    alignment: LineAlignment
+    texture_mode: LineTextureMode
+    texture_scale: Vector2
+    num_corner_vertices: int
+    num_cap_vertices: int
+    shadow_bias: float
+    generate_lighting_data: bool
+
+    def get_position(self, index: int) -> Vector3: ...
+    def set_position(self, index: int, position: Vector3) -> None: ...
+    def get_positions(self) -> List[Vector3]: ...
+    def set_positions(self, positions: Sequence[Vector3]) -> None: ...
+    def bake_mesh(
+        self,
+        target: MeshRenderer,
+        camera: Camera | None = None,
+        use_transform: bool = False,
+    ) -> None: ...
+    def simplify(self, tolerance: float) -> None: ...
 
 
 class SpriteRenderer(MeshRenderer):

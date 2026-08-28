@@ -1084,7 +1084,12 @@ def _pack_vec_components(desc, current_value, n, default=0.0):
     """Pack *n* vector components into *desc* using standard keys."""
     for i in range(n):
         if current_value is not None:
-            desc[_VEC_KEYS[i]] = float(getattr(current_value, _VEC_ATTRS[i]))
+            attribute = _VEC_ATTRS[i]
+            if hasattr(current_value, attribute):
+                component = getattr(current_value, attribute)
+            else:
+                component = current_value[i]
+            desc[_VEC_KEYS[i]] = float(component)
         else:
             desc[_VEC_KEYS[i]] = default
 

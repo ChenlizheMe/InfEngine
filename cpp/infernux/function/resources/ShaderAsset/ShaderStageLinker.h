@@ -102,7 +102,7 @@ struct ShaderProgramInterfaceArtifact
     ShaderStageReference fragment;
     ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
     std::string shadingModel;
-    uint32_t firstUserVaryingLocation = 6;
+    uint32_t firstUserVaryingLocation = 7;
     uint32_t materialBufferSize = 0;
     std::optional<uint32_t> alphaClipThresholdOffset;
     std::vector<LinkedShaderVarying> varyings;
@@ -117,7 +117,7 @@ struct ShaderProgramInterfaceArtifact
 
 struct ShaderStageLinkOptions
 {
-    uint32_t firstUserVaryingLocation = 6;
+    uint32_t firstUserVaryingLocation = 7;
     // Location 15 is reserved for engine pass data such as the picking ID.
     uint32_t maximumVaryingLocations = 15;
     uint32_t maximumMaterialTextures = 12;

@@ -12,6 +12,8 @@ void main() {
     SurfaceData s = InitSurfaceData();
     s.normalWS = normalize(v_Normal);
 ${SURFACE_CALL}
+    s.albedo *= v_LineColor.rgb;
+    s.alpha *= v_LineColor.a;
     s.normalWS = ResolveSurfaceNormal(s.normalWS, v_Normal);
     // Unity-style double-sided normal fix: when the fragment is a back-face,
     // negate the world-space normal so lighting evaluates correctly regardless

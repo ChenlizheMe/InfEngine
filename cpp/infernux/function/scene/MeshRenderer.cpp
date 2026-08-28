@@ -199,6 +199,27 @@ void MeshRenderer::SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> i
     NotifyCollisionGeometryChanged(this);
 }
 
+void MeshRenderer::SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices)
+{
+    const bool wasDrawable = m_useInlineMesh && !GetInlineVertices().empty() && !GetInlineIndices().empty();
+    if (m_meshAsset.HasGuid())
+        AssetDependencyGraph::Instance().RemoveRuntimeDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
+
+    m_sharedVertices = nullptr;
+    m_sharedIndices = nullptr;
+    m_inlineVertices = std::move(vertices);
+    m_inlineIndices = std::move(indices);
+    m_useInlineMesh = true;
+    m_meshAsset.Clear();
+    m_meshBufferDirty = true;
+    ComputeLocalBoundsFromInlineVertices();
+    const bool isDrawable = !m_inlineVertices.empty() && !m_inlineIndices.empty();
+    if (wasDrawable != isDrawable)
+        SceneManager::Instance().NotifyMeshRendererChanged(this);
+    else
+        SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+}
+
 void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                           const std::string &primitiveName)
 {
@@ -606,11 +627,12 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     // Mesh reference
     j["meshId"] = m_mesh.meshId;
 
+    const bool persistInlineMesh = ShouldSerializeInlineMeshData();
     const bool builtinPrimitive =
-        m_useInlineMesh && !m_inlineMeshName.empty() &&
+        persistInlineMesh && m_useInlineMesh && !m_inlineMeshName.empty() &&
         MatchesBuiltinPrimitiveMesh(m_inlineMeshName, GetInlineVertices(), GetInlineIndices());
     const std::string matchedInlineMeshGuid =
-        (!HasMeshAsset() && m_useInlineMesh && !builtinPrimitive)
+        (persistInlineMesh && !HasMeshAsset() && m_useInlineMesh && !builtinPrimitive)
             ? FindMatchingMeshAssetGuid(GetInlineVertices(), GetInlineIndices(), m_inlineMeshName)
             : std::string();
     const std::string serializedMeshGuid = HasMeshAsset() ? m_meshAsset.GetGuid() : matchedInlineMeshGuid;
@@ -668,9 +690,9 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     j["boundsMax"] = {m_localBoundsMax.x, m_localBoundsMax.y, m_localBoundsMax.z};
 
     // Inline mesh data (for primitives and procedural geometry)
-    const bool serializeInlineMesh = m_useInlineMesh && serializedMeshGuid.empty();
+    const bool serializeInlineMesh = persistInlineMesh && m_useInlineMesh && serializedMeshGuid.empty();
     j["useInlineMesh"] = serializeInlineMesh;
-    if (!m_inlineMeshName.empty()) {
+    if (persistInlineMesh && !m_inlineMeshName.empty()) {
         j["inlineMeshName"] = m_inlineMeshName;
     }
     if (serializeInlineMesh) {
@@ -716,6 +738,10 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     if (expectedType == "SpriteRenderer") {
         required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
+    } else if (expectedType == "LineRenderer") {
+        required.insert(required.end(), {"positions", "widthCurve", "widthMultiplier", "colorGradient", "loop",
+                                         "useWorldSpace", "alignment", "textureMode", "textureScale",
+                                         "numCornerVertices", "numCapVertices", "shadowBias", "generateLightingData"});
     } else if (expectedType == "SkinnedMeshRenderer") {
         optional.push_back("activeTakeName");
     } else if (expectedType != "MeshRenderer") {
@@ -845,6 +871,101 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
                 throw std::invalid_argument(
                     "SpriteRenderer.frameId must identify a persisted SpriteFrame when spriteGuid is set");
         }
+    }
+    if (expectedType == "LineRenderer") {
+        const auto &positions = j["positions"];
+        if (!positions.is_array())
+            throw std::invalid_argument("LineRenderer.positions must be an array");
+        for (size_t index = 0; index < positions.size(); ++index) {
+            if (!positions[index].is_array() || positions[index].size() != 3)
+                throw std::invalid_argument("LineRenderer.positions entries must contain three numbers");
+            for (const auto &coordinate : positions[index]) {
+                if (!coordinate.is_number() || !std::isfinite(coordinate.get<double>()))
+                    throw std::invalid_argument("LineRenderer.positions must contain finite numbers");
+            }
+        }
+        const auto requireFiniteNonNegative = [&](const char *field) {
+            if (!j[field].is_number())
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " must be finite and non-negative");
+            const double value = j[field].get<double>();
+            if (!std::isfinite(value) || value < 0.0)
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " must be finite and non-negative");
+        };
+        requireFiniteNonNegative("widthMultiplier");
+        requireFiniteNonNegative("shadowBias");
+        RequireFiniteVector(j, "textureScale", 2, expectedType);
+        RequireBoolean(j, "loop", expectedType);
+        RequireBoolean(j, "useWorldSpace", expectedType);
+        RequireBoolean(j, "generateLightingData", expectedType);
+        const auto requireEnum = [&](const char *field, int maximum) {
+            const int64_t value = RequireInteger(j, field, expectedType);
+            if (value < 0 || value > maximum)
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " is outside its enum range");
+        };
+        requireEnum("alignment", 1);
+        requireEnum("textureMode", 4);
+        const auto requireRoundingCount = [&](const char *field) {
+            const uint64_t value = RequireUnsignedInteger(j, field, expectedType);
+            if (value > 1024u)
+                throw std::invalid_argument(std::string("LineRenderer.") + field + " exceeds the supported limit");
+        };
+        requireRoundingCount("numCornerVertices");
+        requireRoundingCount("numCapVertices");
+
+        const auto &widthCurve = j["widthCurve"];
+        if (!widthCurve.is_object() || widthCurve.size() != 3 || !widthCurve.contains("keys") ||
+            !widthCurve.contains("preWrap") || !widthCurve.contains("postWrap") || !widthCurve["keys"].is_array() ||
+            widthCurve["keys"].empty())
+            throw std::invalid_argument("LineRenderer.widthCurve has invalid fields");
+        double previousTime = -std::numeric_limits<double>::infinity();
+        for (const auto &key : widthCurve["keys"]) {
+            if (!key.is_object() || key.size() != 4 || !key.contains("time") || !key.contains("value") ||
+                !key.contains("inTangent") || !key.contains("outTangent"))
+                throw std::invalid_argument("LineRenderer.widthCurve contains an invalid key");
+            for (const char *field : {"time", "value", "inTangent", "outTangent"}) {
+                if (!key[field].is_number() || !std::isfinite(key[field].get<double>()))
+                    throw std::invalid_argument("LineRenderer.widthCurve keys must contain finite numbers");
+            }
+            const double time = key["time"].get<double>();
+            if (time <= previousTime || key["value"].get<double>() < 0.0)
+                throw std::invalid_argument(
+                    "LineRenderer.widthCurve key times must increase and values must be non-negative");
+            previousTime = time;
+        }
+        const auto requireNestedEnum = [&](const nlohmann::json &object, const char *field, int maximum,
+                                           const char *label) {
+            if (!object[field].is_number_integer())
+                throw std::invalid_argument(std::string(label) + " must be an integer");
+            const int64_t value = object[field].get<int64_t>();
+            if (value < 0 || value > maximum)
+                throw std::invalid_argument(std::string(label) + " is outside its enum range");
+        };
+        requireNestedEnum(widthCurve, "preWrap", 2, "LineRenderer.widthCurve.preWrap");
+        requireNestedEnum(widthCurve, "postWrap", 2, "LineRenderer.widthCurve.postWrap");
+
+        const auto &gradient = j["colorGradient"];
+        if (!gradient.is_object() || gradient.size() != 2 || !gradient.contains("keys") || !gradient.contains("mode") ||
+            !gradient["keys"].is_array() || gradient["keys"].empty())
+            throw std::invalid_argument("LineRenderer.colorGradient has invalid fields");
+        previousTime = -std::numeric_limits<double>::infinity();
+        for (const auto &key : gradient["keys"]) {
+            if (!key.is_object() || key.size() != 2 || !key.contains("time") || !key.contains("color") ||
+                !key["time"].is_number())
+                throw std::invalid_argument("LineRenderer.colorGradient contains an invalid key");
+            const double time = key["time"].get<double>();
+            if (!std::isfinite(time) || time < 0.0 || time > 1.0 || time <= previousTime)
+                throw std::invalid_argument(
+                    "LineRenderer.colorGradient key times must strictly increase between zero and one");
+            const auto &color = key["color"];
+            if (!color.is_array() || color.size() != 4)
+                throw std::invalid_argument("LineRenderer.colorGradient colors require four channels");
+            for (const auto &channel : color) {
+                if (!channel.is_number() || !std::isfinite(channel.get<double>()))
+                    throw std::invalid_argument("LineRenderer.colorGradient colors must be finite");
+            }
+            previousTime = time;
+        }
+        requireNestedEnum(gradient, "mode", 2, "LineRenderer.colorGradient.mode");
     }
 }
 

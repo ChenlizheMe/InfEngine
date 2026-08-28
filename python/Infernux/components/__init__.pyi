@@ -11,6 +11,7 @@ from .builtin_component import BuiltinComponent, CppProperty
 from .builtin import (
     Light as Light,
     MeshRenderer as MeshRenderer,
+    LineRenderer as LineRenderer,
     SkinnedMeshRenderer as SkinnedMeshRenderer,
     Camera as Camera,
     Collider as Collider,
@@ -134,6 +135,7 @@ __all__ = [
     "Transform",
     "Light",
     "MeshRenderer",
+    "LineRenderer",
     "SkinnedMeshRenderer",
     "Camera",
     "Collider",

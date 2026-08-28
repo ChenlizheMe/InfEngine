@@ -39,7 +39,7 @@ def _collect_material_renderers(items, native_map, obj):
     """Collect renderer tuples (MeshRenderer / SpriteRenderer) and their signature parts."""
     from Infernux.components.builtin_component import BuiltinComponent
 
-    _RENDERER_TYPES = {"MeshRenderer", "SkinnedMeshRenderer", "SpriteRenderer"}
+    _RENDERER_TYPES = {"MeshRenderer", "SkinnedMeshRenderer", "SpriteRenderer", "LineRenderer"}
 
     renderers = []
     signature_parts = []

@@ -254,6 +254,8 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
 
         uint32_t objectLayerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
 
+        renderer->RefreshProceduralGeometry(obj->GetTransform()->GetWorldMatrix());
+
         // Check if renderer has inline mesh, asset mesh, or mesh reference
         if (!renderer->HasMeshAsset() && !renderer->HasInlineMesh() && !renderer->GetMesh().IsValid())
             continue;
@@ -263,7 +265,7 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         renderable.structural.layerMask = objectLayerBit;
         renderable.structural.isStatic = obj->IsStatic() && dynamic_cast<SkinnedMeshRenderer *>(renderer) == nullptr;
         renderable.structural.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
-        renderable.frame.worldMatrix = obj->GetTransform()->GetWorldMatrix();
+        renderable.frame.worldMatrix = renderer->ResolveRenderWorldMatrix(obj->GetTransform()->GetWorldMatrix());
         renderable.structural.renderMaterial = renderer->GetEffectiveMaterial();
         renderable.structural.renderQueue =
             renderable.structural.renderMaterial ? renderable.structural.renderMaterial->GetRenderQueue() : 2000;
@@ -313,7 +315,9 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
         if (!transform)
             continue;
 
-        const glm::mat4 &worldMatrix = transform->GetWorldMatrix();
+        mr->RefreshProceduralGeometry(transform->GetWorldMatrix());
+
+        const glm::mat4 worldMatrix = mr->ResolveRenderWorldMatrix(transform->GetWorldMatrix());
 
         // Detect transform change: skip bounds + draw-call patch for static objects.
         const bool transformChanged = std::memcmp(&worldMatrix, &frameData.worldMatrix, sizeof(glm::mat4)) != 0;
@@ -374,6 +378,9 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                     dc.meshDataOwner = source.inlineMeshOwner;
                     dc.meshVertices = source.inlineVertices;
                     dc.meshIndices = source.inlineIndices;
+                    dc.indexStart = 0;
+                    dc.indexCount = source.inlineIndices ? static_cast<uint32_t>(source.inlineIndices->size()) : 0;
+                    dc.vertexStart = 0;
                 }
             }
 
