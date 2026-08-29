@@ -585,7 +585,15 @@ class PreloadManager:
     def _load_path(self, path: str, expected_classes: set[str]) -> list[PreloadState]:
         script_guid = _ensure_script_guid(path, self.project_root)
         package_reference = self._package_for_path(path)
-        module_name = f"_infernux_preload_{script_guid}"
+        # Package-owned lifecycle scripts keep their real import identity so
+        # normal Python package semantics (including ``from . import ...``)
+        # work during preload. Loose Assets scripts retain a GUID namespace to
+        # avoid colliding with gameplay modules that share a filename.
+        module_name = (
+            _module_name(path, self.project_root)
+            if package_reference
+            else f"_infernux_preload_{script_guid}"
+        )
         contribution_owner = f"preload:{script_guid}"
         modules_before = set(sys.modules)
         started = time.perf_counter()

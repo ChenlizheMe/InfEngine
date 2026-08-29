@@ -889,6 +889,36 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     assert not script.exists()
 
 
+def test_package_preload_supports_relative_imports(tmp_path):
+    source = _source(tmp_path / "source", "vendor/relative-preload")
+    package_module = source / "Editor" / "infernux_relative_preload"
+    package_module.mkdir(parents=True)
+    (package_module / "__init__.py").write_text("", encoding="utf-8")
+    (package_module / "service.py").write_text(
+        "VALUE = 'relative-import-ready'\n", encoding="utf-8"
+    )
+    (package_module / "lifecycle.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "from .service import VALUE\n"
+        "class RelativePreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'relative-preload.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "relative-preload.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+
+    state = manager.install_package(str(package), install_dependencies=False)
+
+    assert state.loaded
+    assert state.error == ""
+    assert (project / "relative-preload.txt").read_text(encoding="utf-8") == (
+        "relative-import-ready"
+    )
+
+
 def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
     tmp_path, monkeypatch
 ):
