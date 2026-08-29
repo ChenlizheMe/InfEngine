@@ -71,9 +71,9 @@ MyPlugin/
 
 从 [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) 下 Windows x64 安装器，让 InfernuxHub 管理引擎版本。
 
-全新安装的 Hub 会直接带上隔离的 Python 3.13 运行环境。每个引擎发行版仍严格使用
-wheel 自身声明的 Python ABI：当前 0.4 开发版使用 3.13；如果要安装旧的 `cp312`
-wheel，必须先在 Hub 的“安装”页面显式安装 Python 3.12。
+全新安装的 Hub 会直接带上隔离的 Python 3.13 运行环境。每个 Infernux 版本都严格
+绑定到 wheel 声明的 Python ABI；Hub 只有在对应的托管运行环境已经安装后，才允许
+安装该引擎版本。旧版本所需的其它运行环境可以在 Hub 的“安装”页面中按需安装。
 
 源码构建需要 Windows 10/11 x64、Python 3.13、Vulkan SDK 1.3+、CMake 3.25+、Visual Studio 2022、MSVC v143：
 

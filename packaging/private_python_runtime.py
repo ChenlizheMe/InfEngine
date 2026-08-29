@@ -250,12 +250,10 @@ def remove_legacy_installer_artifacts(
         if stale_runtime.is_dir():
             shutil.rmtree(stale_runtime)
 
-    for pattern in (
-        "python-3.12*.exe",
-        "python-3.12*.pkg",
-        "python-3.13*.exe",
-        "python-3.13*.pkg",
-    ):
+    # Current Hub runtimes are staged from verified install-only archives.
+    # Remove every obsolete python.org installer without encoding historical
+    # Python minors into the current packaging path.
+    for pattern in ("python-*.exe", "python-*.pkg", "python-*.msi"):
         for artifact in root.glob(pattern):
             if artifact.is_file():
                 artifact.unlink()

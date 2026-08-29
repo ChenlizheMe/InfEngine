@@ -63,6 +63,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
         "owner": "Infernux Hub",
         "kind": "private-python-runtime",
         "python_version": PYTHON_VERSION,
+        "python_series": DEFAULT_PYTHON_RUNTIME.series,
         "source_archive": archive.name,
         "source_archive_sha256": archive.sha256,
     }
@@ -130,8 +131,9 @@ def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
                 {
                     "owner": "Infernux Hub",
                     "kind": "private-python-runtime",
-                    "python_version": "3.12.8",
-                    "source_archive": "python-3.12.8-amd64.exe",
+                    "python_version": "3.11.9",
+                    "python_series": "3.11",
+                    "source_archive": "python-3.11.9-amd64.exe",
                     "source_archive_sha256": "revoked-installer",
                 }
             ),
@@ -157,6 +159,7 @@ def test_hub_build_rejects_extra_legacy_runtime_payload(tmp_path: Path):
         "owner": "Infernux Hub",
         "kind": "private-python-runtime",
         "python_version": PYTHON_VERSION,
+        "python_series": DEFAULT_PYTHON_RUNTIME.series,
         "source_archive": archive.name,
         "source_archive_sha256": archive.sha256,
     }
@@ -165,7 +168,7 @@ def test_hub_build_rejects_extra_legacy_runtime_payload(tmp_path: Path):
             f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
             json.dumps(marker),
         )
-        bundle.writestr("python312/python.exe", b"legacy runtime")
+        bundle.writestr("python311/python.exe", b"non-target runtime")
 
     with pytest.raises(RuntimeError, match="contains files outside"):
         build_hub._build_hub(

@@ -508,12 +508,12 @@ def test_android_python_runtime_rejects_non_313_prefix(monkeypatch, tmp_path):
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
     prefix = tmp_path / "python-prefix"
-    include = prefix / "include" / "python3.12"
-    stdlib = prefix / "lib" / "python3.12"
+    include = prefix / "include" / "python3.11"
+    stdlib = prefix / "lib" / "python3.11"
     include.mkdir(parents=True)
     (stdlib / "encodings").mkdir(parents=True)
     (include / "Python.h").write_text("fixture header\n", encoding="utf-8")
-    (prefix / "lib" / "libpython3.12.so").write_bytes(b"python")
+    (prefix / "lib" / "libpython3.11.so").write_bytes(b"python")
     request = BuildRequest(
         str(tmp_path / "project"),
         "android-x64-emulator",

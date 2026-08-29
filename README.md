@@ -71,10 +71,11 @@ Runtime code and regular assets go into a Player build. Editor scripts stay in t
 
 Download the Windows x64 installer from [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) and let InfernuxHub manage engine versions.
 
-A fresh Hub installation includes its isolated Python 3.13 runtime. Engine
-releases keep the Python ABI encoded by their wheel: current 0.4 development
-uses 3.13, while an older `cp312` wheel remains usable only after Python 3.12
-has been installed explicitly from the Hub's Installs page.
+A fresh Hub installation includes its isolated Python 3.13 runtime. Each
+Infernux release is bound to the Python ABI encoded by its wheel. Hub checks
+that matching managed runtime before it allows the engine version to be
+installed; additional runtimes for older releases are installed explicitly
+from the Hub's Installs page.
 
 From source you need Windows 10/11 x64, Python 3.13, Vulkan SDK 1.3+, CMake 3.25+, Visual Studio 2022, and MSVC v143:
 

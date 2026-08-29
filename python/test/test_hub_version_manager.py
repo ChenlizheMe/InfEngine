@@ -196,6 +196,28 @@ def test_local_engine_install_requires_its_exact_python_runtime(
     assert not (tmp_path / "versions" / "0.4.0").exists()
 
 
+def test_legacy_wheel_requires_its_legacy_runtime_before_local_import(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    wheel = tmp_path / "infernux-0.3.7-cp312-cp312-win_amd64.whl"
+    wheel.write_bytes(_make_wheel_bytes())
+
+    current_only = VersionManager(_RuntimeInventory("3.13"))
+    with pytest.raises(
+        ValueError,
+        match=r"Infernux 0\.3\.7 requires Python 3\.12.*install Python 3\.12",
+    ):
+        current_only.install_local_wheel(str(wheel))
+    assert not (tmp_path / "versions" / "0.3.7").exists()
+
+    with_legacy_runtime = VersionManager(_RuntimeInventory("3.13", "3.12"))
+    installed_version = with_legacy_runtime.install_local_wheel(str(wheel))
+
+    assert installed_version == "0.3.7"
+    assert with_legacy_runtime.get_wheel_path("0.3.7", "3.12") is not None
+
+
 def test_release_with_conflicting_python_abis_is_rejected(
     tmp_path, monkeypatch
 ):

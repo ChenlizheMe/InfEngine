@@ -65,6 +65,7 @@ def _validate_runtime_bundle(bundle_path: Path) -> None:
         marker.get("owner") == "Infernux Hub"
         and marker.get("kind") == "private-python-runtime"
         and marker.get("python_version") == PYTHON_VERSION
+        and marker.get("python_series") == DEFAULT_PYTHON_RUNTIME.series
         and marker.get("source_archive") == archive.name
         and marker.get("source_archive_sha256") == archive.sha256
     ):

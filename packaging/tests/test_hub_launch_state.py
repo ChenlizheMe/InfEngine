@@ -108,7 +108,7 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
     tmp_path: Path,
     monkeypatch,
 ):
-    runtime_python = tmp_path / ".runtime" / "python312" / "python.exe"
+    runtime_python = tmp_path / ".runtime" / "python313" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.write_bytes(b"")
 
