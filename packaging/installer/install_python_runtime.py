@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import logging
 import os
 import sys
 
@@ -11,7 +12,7 @@ if _PACKAGING_DIR not in sys.path:
     sys.path.insert(0, _PACKAGING_DIR)
 
 from embed_runtime_manager import PythonRuntimeManager
-import logging
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 def _show_message_box(title: str, message: str, icon: int = 0x40) -> None:
@@ -26,8 +27,15 @@ def _show_message_box(title: str, message: str, icon: int = 0x40) -> None:
 
 def install_runtime_for_app(app_dir: str, progress_callback=None) -> str:
     bundle_runtime_dir = os.path.join(app_dir, "InfernuxHubData", "runtime")
-    manager = PythonRuntimeManager(bundle_runtime_dir=bundle_runtime_dir)
-    return manager.ensure_runtime(on_status=progress_callback, allow_frozen_repair=True)
+    manager = PythonRuntimeManager(
+        bundle_runtime_dir=bundle_runtime_dir,
+        default_version=DEFAULT_PYTHON_RUNTIME,
+    )
+    return manager.ensure_runtime(
+        version=DEFAULT_PYTHON_RUNTIME,
+        on_status=progress_callback,
+        allow_frozen_repair=True,
+    )
 
 
 def main() -> int:

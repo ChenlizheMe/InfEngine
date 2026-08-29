@@ -186,7 +186,10 @@ class UpdateController(QObject):
                 return
         dialog = UpdateProgressDialog(update, self.main_window)
         result = dialog.exec()
-        if result == QDialog.Accepted or update.required:
+        # A required update removes the user's decline path, but a failed
+        # download must leave Hub open so the user can retry. Engine/runtime
+        # installation remains independently gated by VersionManager.
+        if result == QDialog.Accepted:
             self.main_window.hide()
             self.main_window.app.quit()
 

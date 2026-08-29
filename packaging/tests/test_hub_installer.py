@@ -5,12 +5,14 @@ from pathlib import Path
 import pytest
 
 from installer.install_application import HubInstallTransaction
+from installer import install_python_runtime
 from installer.payload import (
     HUB_EXECUTABLE,
     HUB_PAYLOAD_ARCHIVE,
     create_payload_archive,
 )
 from installer_safety import write_install_marker
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 def _make_payload(path: Path, executable: bytes = b"new hub executable") -> Path:
@@ -96,3 +98,34 @@ def test_archived_payload_preserves_and_installs_binary_files(tmp_path: Path):
     assert (install_dir / HUB_EXECUTABLE).read_bytes() == b"new hub executable"
     assert (install_dir / "Qt6Core.dll").read_bytes() == b"qt binary"
     assert (install_dir / "shiboken6.pyd").read_bytes() == b"python extension"
+
+
+def test_fresh_installer_deploys_only_the_default_python_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class _RuntimeManager:
+        def __init__(self, **kwargs):
+            observed["constructor"] = kwargs
+
+        def ensure_runtime(self, **kwargs):
+            observed["ensure"] = kwargs
+            return str(tmp_path / "python313" / "python.exe")
+
+    monkeypatch.setattr(
+        install_python_runtime, "PythonRuntimeManager", _RuntimeManager
+    )
+
+    result = install_python_runtime.install_runtime_for_app(str(tmp_path / "hub"))
+
+    assert result.endswith(str(Path("python313") / "python.exe"))
+    assert observed["constructor"] == {
+        "bundle_runtime_dir": str(tmp_path / "hub" / "InfernuxHubData" / "runtime"),
+        "default_version": DEFAULT_PYTHON_RUNTIME,
+    }
+    assert observed["ensure"] == {
+        "version": DEFAULT_PYTHON_RUNTIME,
+        "on_status": None,
+        "allow_frozen_repair": True,
+    }

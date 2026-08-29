@@ -73,15 +73,18 @@ MyPlugin/
 
 源码构建需要 Windows 10/11 x64、Python 3.13、Vulkan SDK 1.3+、CMake 3.25+、Visual Studio 2022、MSVC v143：
 
-```bash
+```powershell
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
-conda env create -f environment.yml
+./scripts/setup/configure_development.ps1
 conda activate infernux
 cmake --preset windows-msvc-release
 cmake --build --preset windows-msvc-wheel
 python packaging/launcher.py
 ```
+
+Linux 下请改为运行 `bash scripts/setup/configure_development.sh`。初始化脚本会补齐
+子模块，并按照 `environment.yml` 创建或更新项目统一使用的 Python 3.13 Conda 环境。
 
 ```bash
 python -m pytest python/test/ -v

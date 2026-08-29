@@ -73,15 +73,19 @@ Download the Windows x64 installer from [GitHub Releases](https://github.com/Che
 
 From source you need Windows 10/11 x64, Python 3.13, Vulkan SDK 1.3+, CMake 3.25+, Visual Studio 2022, and MSVC v143:
 
-```bash
+```powershell
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
-conda env create -f environment.yml
+./scripts/setup/configure_development.ps1
 conda activate infernux
 cmake --preset windows-msvc-release
 cmake --build --preset windows-msvc-wheel
 python packaging/launcher.py
 ```
+
+On Linux, run `bash scripts/setup/configure_development.sh` instead. The setup
+script initializes submodules and creates or updates the repository's Python
+3.13 Conda environment from `environment.yml`.
 
 ```bash
 python -m pytest python/test/ -v

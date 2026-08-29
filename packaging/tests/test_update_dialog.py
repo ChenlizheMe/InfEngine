@@ -49,9 +49,10 @@ def test_manual_update_check_returns_to_the_main_thread(monkeypatch):
     assert observed["main_thread"] is True
 
 
-def test_required_runtime_catalog_update_cannot_be_declined(monkeypatch):
+def test_required_runtime_catalog_update_starts_without_confirmation(monkeypatch):
     _app()
     window = QWidget()
+    window.show()
     observed = {"quit": False, "information": False, "question": False}
     window.app = SimpleNamespace(quit=lambda: observed.__setitem__("quit", True))
     controller = update_dialog.UpdateController(window)
@@ -79,5 +80,36 @@ def test_required_runtime_catalog_update_cannot_be_declined(monkeypatch):
 
     controller._checked(update)
 
-    assert observed == {"quit": True, "information": True, "question": False}
+    assert observed == {"quit": False, "information": True, "question": False}
+    assert not window.isHidden()
+
+
+def test_required_runtime_catalog_update_quits_after_success(monkeypatch):
+    _app()
+    window = QWidget()
+    window.show()
+    observed = {"quit": False, "question": False}
+    window.app = SimpleNamespace(quit=lambda: observed.__setitem__("quit", True))
+    controller = update_dialog.UpdateController(window)
+    update = SimpleNamespace(target_version="0.4.0", required=True)
+
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: observed.__setitem__("question", True),
+    )
+
+    class _AcceptedUpdateDialog:
+        def __init__(self, *_args):
+            pass
+
+        def exec(self):
+            return QDialog.Accepted
+
+    monkeypatch.setattr(update_dialog, "UpdateProgressDialog", _AcceptedUpdateDialog)
+
+    controller._checked(update)
+
+    assert observed == {"quit": True, "question": False}
     assert window.isHidden()
