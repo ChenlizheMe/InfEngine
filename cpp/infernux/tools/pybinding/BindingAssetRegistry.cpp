@@ -15,6 +15,21 @@ namespace infernux
 {
 void RegisterAssetRegistryBindings(py::module_ &m)
 {
+#if defined(INFERNUX_PYBIND_WEB_PLAYER)
+    // The browser Player owns this database through AssetRegistry. Expose only
+    // immutable runtime queries; authoring, refresh, and mutation APIs stay out
+    // of the Web profile.
+    py::class_<AssetDatabase>(m, "AssetDatabase")
+        .def("contains_guid", &AssetDatabase::ContainsGuid, py::arg("guid"))
+        .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"))
+        .def("get_guid_from_path", &AssetDatabase::GetGuidFromPath, py::arg("path"))
+        .def("get_path_from_guid", &AssetDatabase::GetPathFromGuid, py::arg("guid"))
+        .def("get_resource_type", &AssetDatabase::GetResourceTypeForPath, py::arg("file_path"))
+        .def("get_runtime_artifact_path", &AssetDatabase::GetRuntimeArtifactPath, py::arg("guid"), py::arg("type"))
+        .def_property_readonly("asset_count", &AssetDatabase::GetAssetCount)
+        .def_property_readonly("project_root", &AssetDatabase::GetProjectRoot);
+#endif
+
     py::class_<AssetLoadTicket, std::shared_ptr<AssetLoadTicket>>(m, "AssetLoadTicket")
         .def_property_readonly("guid", &AssetLoadTicket::GetGuid)
         .def_property_readonly("resource_type", &AssetLoadTicket::GetResourceType)

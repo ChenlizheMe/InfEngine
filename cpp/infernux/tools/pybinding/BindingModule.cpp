@@ -7,6 +7,7 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterVector2Bindings(module);
     infernux::RegisterVector3Bindings(module);
     infernux::RegisterVec4fBindings(module);
+    infernux::RegisterBatchBindings(module);
     infernux::RegisterResourceBindings(module);
     infernux::RegisterAssetRegistryBindings(module);
     infernux::RegisterSceneBindings(module);

@@ -5,6 +5,17 @@
 
 #include <platform/filesystem/InxPack.h>
 
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+#include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
+#include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
+#include <function/resources/InxMaterial/MaterialLoader.h>
+#include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxTexture/TextureLoader.h>
+#include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
+#endif
+
 #include <exception>
 #include <filesystem>
 #include <mutex>
@@ -110,12 +121,58 @@ PyObject *RegisterShader(PyObject *, PyObject *arguments)
     Py_RETURN_NONE;
 }
 
+PyObject *InitializeRuntimeAssets(PyObject *, PyObject *arguments)
+{
+#if !defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    PyErr_SetString(PyExc_RuntimeError, "the Web engine runtime is not linked");
+    return nullptr;
+#else
+    const char *projectRoot = nullptr;
+    const char *recordsPath = nullptr;
+    if (!PyArg_ParseTuple(arguments, "ss:initialize_runtime_assets", &projectRoot, &recordsPath))
+        return nullptr;
+
+    try {
+        auto &registry = infernux::AssetRegistry::Instance();
+        if (registry.IsInitialized())
+            throw std::logic_error("the Web runtime asset registry is already initialized");
+
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->InitializeRuntime(projectRoot);
+        database->InstallRuntimeAssetCatalog(recordsPath, true);
+        const auto assetCount = database->GetAssetCount();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Material, std::make_unique<infernux::MaterialLoader>());
+        registry.RegisterLoader(infernux::ResourceType::PhysicMaterial,
+                                std::make_unique<infernux::PhysicMaterialLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.RegisterLoader(infernux::ResourceType::DefaultText,
+                                std::make_unique<infernux::InxDefaultTextLoader>());
+        registry.RegisterLoader(infernux::ResourceType::RenderEffect,
+                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::RenderEffect));
+        registry.RegisterLoader(infernux::ResourceType::ParticleGraph, std::make_unique<infernux::InxDefaultTextLoader>(
+                                                                           infernux::ResourceType::ParticleGraph));
+        registry.RegisterLoader(infernux::ResourceType::DefaultBinary,
+                                std::make_unique<infernux::InxDefaultBinaryLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        return PyLong_FromSize_t(assetCount);
+    } catch (const std::exception &error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+#endif
+}
+
 PyMethodDef kMethods[] = {
     {"read_entry", ReadPackageEntry, METH_VARARGS,
      "Read and validate one entry from the native Infernux Player container."},
     {"extract_package", ExtractPackage, METH_VARARGS, "Validate and extract one native Infernux Player container."},
     {"register_shader", RegisterShader, METH_VARARGS,
      "Register one validated WGSL shader in the browser runtime catalog."},
+    {"initialize_runtime_assets", InitializeRuntimeAssets, METH_VARARGS,
+     "Install the immutable cooked GUID catalog and runtime asset loaders."},
     {nullptr, nullptr, 0, nullptr},
 };
 

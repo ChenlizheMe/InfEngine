@@ -10,6 +10,7 @@
 #include "ComponentBindingRegistry.h"
 #include "JsonPyBridge.h"
 #include "core/log/InxLog.h"
+#include "core/threading/JobSystem.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/resources/InxMesh/InxMesh.h"
@@ -2218,6 +2219,15 @@ void RegisterSceneBindings(py::module_ &m)
             "Consume and return the validated scene document");
     m.def("_schedule_scene_document_read", &ScheduleSceneDocumentRead, py::arg("path"),
           "Schedule scene file IO and structural validation on the native JobSystem");
+    m.def(
+        "_pump_inline_jobs",
+        [](uint32_t maxJobs) {
+            if (!JobSystem::IsAvailable() || !JobSystem::Get().IsInline())
+                return 0u;
+            return JobSystem::Get().RunPendingJobs(maxJobs);
+        },
+        py::arg("max_jobs") = 64,
+        "Run queued native jobs only when the JobSystem uses its owner-thread executor");
     m.def(
         "_preflight_scene_resource_dependencies",
         [](py::handle document) { PreflightSceneResourceDependencies(PythonToJson(document)); }, py::arg("document"),

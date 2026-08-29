@@ -47,10 +47,17 @@
     const statusNode = document.getElementById('status');
     const canvasNode = document.getElementById('canvas');
     const assetRevision = '@INFERNUX_WEB_ASSET_REVISION@';
+    const diagnosticsInTitle = new URLSearchParams(window.location.search).has('diagnostics');
+    const versionedAssets = Object.freeze({
+      'infernux-player.data': `infernux-player.${assetRevision}.data`,
+      'infernux-player.wasm': `infernux-player.${assetRevision}.wasm`
+    });
     const diagnostics = [];
     function recordDiagnostic(text) {
-      diagnostics.push(String(text));
+      const message = String(text);
+      diagnostics.push(message);
       canvasNode.dataset.infernuxDiagnostics = JSON.stringify(diagnostics);
+      if (diagnosticsInTitle) document.title = message.slice(0, 160);
     }
     function installTextInputBridge() {
       const input = document.getElementById('infernux-text-input');
@@ -76,8 +83,7 @@
     var Module = {
       canvas: canvasNode,
       locateFile(path) {
-        const separator = path.includes('?') ? '&' : '?';
-        return `${path}${separator}revision=${encodeURIComponent(assetRevision)}`;
+        return versionedAssets[path] || path;
       },
       postRun: [installTextInputBridge],
       print(text) {

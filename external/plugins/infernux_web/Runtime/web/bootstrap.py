@@ -9,13 +9,16 @@ import json
 import marshal
 import os
 import sys
-from types import CodeType
+from types import CodeType, ModuleType
 from typing import Any
 
 
 _events: deque[tuple[str, dict[str, Any]]] = deque(maxlen=4096)
 _seen_event_kinds: set[str] = set()
 _frame_count = 0
+_player_session: Any = None
+_player_scene_manager: Any = None
+_player_activated = False
 _player_root = "/infernux/player"
 _player_python = f"{_player_root}/python/site-packages"
 _runtime_data_root = ""
@@ -175,14 +178,273 @@ def _register_web_shaders() -> None:
 _register_web_shaders()
 
 
+def _read_json(path: str) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as stream:
+        document = json.load(stream)
+    if not isinstance(document, dict):
+        raise RuntimeError(f"Web Player document must be an object: {path}")
+    return document
+
+
+def _package_namespace(name: str, path: str) -> ModuleType:
+    module = ModuleType(name)
+    module.__file__ = os.path.join(path, "__init__.py")
+    module.__package__ = name
+    module.__path__ = [path]
+    sys.modules[name] = module
+    return module
+
+
+def _install_platform_runtime_api(native_module: Any) -> None:
+    """Assemble the game-facing package without importing editor bootstrap."""
+
+    package_root = os.path.join(_player_python, "Infernux")
+    package = _package_namespace("Infernux", package_root)
+    _package_namespace("Infernux.engine", os.path.join(package_root, "engine"))
+    _package_namespace("Infernux.core", os.path.join(package_root, "core"))
+    components = _package_namespace(
+        "Infernux.components", os.path.join(package_root, "components")
+    )
+    builtin = _package_namespace(
+        "Infernux.components.builtin",
+        os.path.join(package_root, "components", "builtin"),
+    )
+    sys.modules["Infernux.lib._Infernux"] = native_module
+
+    import importlib
+
+    lib = importlib.import_module("Infernux.lib")
+    math_module = importlib.import_module("Infernux.math")
+    debug_module = importlib.import_module("Infernux.debug")
+    component_module = importlib.import_module("Infernux.components.component")
+    fields_module = importlib.import_module("Infernux.components.fields")
+    lifecycle_module = importlib.import_module(
+        "Infernux.components._component_lifecycle"
+    )
+    particle_module = importlib.import_module("Infernux.components.particle_system")
+    builtin_modules = {
+        "Light": "light",
+        "MeshRenderer": "mesh_renderer",
+        "LineRenderer": "line_renderer",
+        "SkinnedMeshRenderer": "skinned_mesh_renderer",
+        "Camera": "camera",
+        "Collider": "collider",
+        "BoxCollider": "box_collider",
+        "SphereCollider": "sphere_collider",
+        "CapsuleCollider": "capsule_collider",
+        "CylinderCollider": "cylinder_collider",
+        "MeshCollider": "mesh_collider",
+        "Rigidbody": "rigidbody",
+        "RigidbodyConstraints": "rigidbody",
+        "CollisionDetectionMode": "rigidbody",
+        "RigidbodyInterpolation": "rigidbody",
+    }
+    for export_name, module_name in builtin_modules.items():
+        source = importlib.import_module(
+            f"Infernux.components.builtin.{module_name}"
+        )
+        value = getattr(source, export_name)
+        setattr(builtin, export_name, value)
+        setattr(components, export_name, value)
+    builtin.__all__ = tuple(builtin_modules)
+
+    component_exports = {
+        "InxComponent": component_module.InxComponent,
+        "serialized_field": fields_module.serialized_field,
+        "RuntimeExecutionScheduler": lifecycle_module.RuntimeExecutionScheduler,
+        "ParticleSystem": particle_module.ParticleSystem,
+        "ParticleBoundsMode": particle_module.ParticleBoundsMode,
+        "ParticleOffscreenPolicy": particle_module.ParticleOffscreenPolicy,
+    }
+    for name, value in component_exports.items():
+        setattr(components, name, value)
+    components.__all__ = tuple(component_exports) + tuple(builtin_modules)
+
+    for source in (lib, math_module):
+        exports = getattr(source, "__all__", None)
+        if exports is None:
+            exports = tuple(name for name in vars(source) if not name.startswith("_"))
+        for name in exports:
+            if hasattr(source, name):
+                setattr(package, name, getattr(source, name))
+    for name in components.__all__:
+        setattr(package, name, getattr(components, name))
+    package.Debug = debug_module.Debug
+    package.__version__ = "0.4.0"
+    package.__all__ = tuple(
+        sorted(
+            {
+                "Debug",
+                *getattr(math_module, "__all__", ()),
+                *components.__all__,
+                *(
+                    name
+                    for name in (
+                        "GameObject",
+                        "Transform",
+                        "Component",
+                        "Space",
+                        "PrimitiveType",
+                        "LineAlignment",
+                        "LineTextureMode",
+                        "LineGradientMode",
+                        "LineCurveWrapMode",
+                        "LineColorKey",
+                        "LineWidthKey",
+                    )
+                    if hasattr(lib, name)
+                ),
+            }
+        )
+    )
+
+
+def _install_runtime_lifecycle_bridge(scene_manager: Any, scheduler: Any) -> None:
+    from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+    from Infernux.lib import NativeRuntimeFrameBarrier
+
+    scene_manager.set_runtime_lifecycle_callbacks(
+        scheduler.begin_native_frame,
+        lambda delta: scheduler.execute_native_phase("fixed_update", delta),
+        lambda delta: scheduler.execute_native_phase("update", delta),
+        lambda delta: scheduler.execute_native_phase("late_update", delta),
+        scheduler.execute_native_editor_update,
+        scheduler.end_native_frame,
+    )
+    barrier_map = {
+        NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
+            RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
+        NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
+            RuntimeFrameBarrier.PHYSICS_SIMULATION,
+        NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
+            RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
+        NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
+            RuntimeFrameBarrier.TRANSFORM_RESOLVE,
+        NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
+            RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
+        NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
+            RuntimeFrameBarrier.ANIMATION_TIMELINE,
+        NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
+            RuntimeFrameBarrier.RENDER_EXTRACTION,
+        NativeRuntimeFrameBarrier.RENDER_GRAPH:
+            RuntimeFrameBarrier.RENDER_GRAPH,
+        NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
+            RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
+        NativeRuntimeFrameBarrier.PENDING_DESTROY:
+            RuntimeFrameBarrier.PENDING_DESTROY,
+    }
+    scene_manager.set_runtime_frame_barrier_callback(
+        lambda barrier: scheduler.consume_native_barrier(barrier_map[barrier])
+    )
+    scheduler.sync_native_work_availability()
+
+
+def _prepare_player_runtime() -> None:
+    global _player_session, _player_scene_manager
+
+    if not _runtime_data_root:
+        raise RuntimeError("Web Player has no extracted runtime data root")
+    os.environ["_INFERNUX_PLAYER_MODE"] = "1"
+    os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = _runtime_data_root
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
+
+    import _Infernux as native_module
+
+    _install_platform_runtime_api(native_module)
+    from _InfernuxWebHost import initialize_runtime_assets
+    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from Infernux.engine.player_service_graph import (
+        PlayerRuntimeAssetCatalog,
+        RuntimeProductManifest,
+    )
+    from Infernux.engine.project_context import set_project_root
+    from Infernux.engine.runtime_type_registry import install_runtime_type_registry
+    from Infernux.lib import AssetRegistry, SceneManager
+
+    set_project_root(_runtime_data_root)
+    manifest_document = _read_json(
+        os.path.join(_runtime_data_root, "Player.inxmanifest")
+    )
+    catalog_document = _read_json(
+        os.path.join(_runtime_data_root, "Library", "RuntimeAssetCatalog.json")
+    )
+    records_path = os.path.join(
+        _runtime_data_root, "Library", "RuntimeAssetRecords.json"
+    )
+    records_document = _read_json(records_path)
+    type_registry_path = os.path.join(
+        _runtime_data_root, "Library", "RuntimeTypeRegistry.json"
+    )
+    build_settings = _read_json(
+        os.path.join(_runtime_data_root, "ProjectSettings", "BuildSettings.json")
+    )
+    scenes = build_settings.get("scenes")
+    if not isinstance(scenes, list) or not scenes or not isinstance(scenes[0], str):
+        raise RuntimeError("Web Player BuildSettings has no initial scene")
+
+    asset_count = int(initialize_runtime_assets(_runtime_data_root, records_path))
+    print(f"INFERNUX_WEB_ASSET_REGISTRY_READY assets={asset_count}")
+    database = AssetRegistry.instance().get_asset_database()
+    if database is None or database.asset_count != asset_count:
+        raise RuntimeError("Web Player runtime asset database was not published")
+    print("INFERNUX_WEB_ASSET_DATABASE_READY")
+    type_count = install_runtime_type_registry(type_registry_path)
+    print(f"INFERNUX_WEB_TYPE_REGISTRY_READY types={type_count}")
+    runtime_manifest = RuntimeProductManifest.from_document(manifest_document)
+    runtime_catalog = PlayerRuntimeAssetCatalog.from_documents(
+        _runtime_data_root,
+        catalog_document,
+        records_document,
+    )
+    print("INFERNUX_WEB_RUNTIME_CONTRACT_READY")
+    import Infernux.components as runtime_components
+
+    if not hasattr(runtime_components, "ParticleSystem"):
+        raise RuntimeError("Web Player component surface omitted ParticleSystem")
+    print(
+        "INFERNUX_WEB_COMPONENT_SURFACE_READY "
+        "particle=true"
+    )
+    session = PlayerRuntimeSession(asset_database=database)
+    session.configure_runtime_contract(runtime_manifest, runtime_catalog)
+    scene_path = runtime_catalog.resolve_scene(scenes[0])
+    print(f"INFERNUX_WEB_SCENE_LOADING scene={scenes[0]}")
+    if scene_path is None or not session.load_scene(scene_path):
+        raise RuntimeError(
+            "Web Player could not load its initial scene: "
+            f"{session.last_scene_error or scenes[0]}"
+        )
+    scene_manager = SceneManager.instance()
+    _install_runtime_lifecycle_bridge(scene_manager, session.execution_scheduler)
+    active_scene = scene_manager.get_active_scene()
+    if active_scene is None:
+        raise RuntimeError("Web Player scene transaction published no active scene")
+    _player_session = session
+    _player_scene_manager = scene_manager
+    print(
+        "INFERNUX_WEB_SCENE_READY "
+        f"assets={asset_count} types={type_count} "
+        f"objects={len(active_scene.get_all_objects())} scene={scenes[0]}"
+    )
+
+
+_prepare_player_runtime()
+
+
 def infernux_web_ready(details: dict[str, Any]) -> None:
     """Receive the browser graphics and viewport contract from the native host."""
 
+    global _player_activated
     print(
         "INFERNUX_WEB_HOST_READY "
         f"python=3.13 graphics={details.get('graphics_api')} "
         f"viewport={details.get('width')}x{details.get('height')}"
     )
+    if _player_session is None or not _player_session.activate():
+        raise RuntimeError("Web Player runtime session could not be activated")
+    _player_activated = True
+    print("INFERNUX_WEB_RUNTIME_ACTIVE")
 
 
 def infernux_web_input(kind: str, payload: dict[str, Any]) -> None:
@@ -202,11 +464,16 @@ def infernux_web_drain_input() -> tuple[tuple[str, dict[str, Any]], ...]:
     return events
 
 
-def infernux_web_tick() -> None:
+def infernux_web_tick(delta_time: float) -> None:
     """Advance the Python side once per browser animation frame."""
 
     global _frame_count
+    if not _player_activated or _player_session is None:
+        return
+    _player_session.tick(max(0.0, min(float(delta_time), 0.25)))
     _frame_count += 1
+    if _frame_count == 1:
+        print("INFERNUX_WEB_FIRST_FRAME_READY")
 
 
-print("INFERNUX_WEB_PYTHON_READY version=3.13 runtime_stage=content-indexed")
+print("INFERNUX_WEB_PYTHON_READY version=3.13 runtime_stage=scene-prepared")

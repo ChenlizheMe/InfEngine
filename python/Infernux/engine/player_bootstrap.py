@@ -29,6 +29,7 @@ from Infernux.engine.path_utils import (
     is_path_within,
     resolved_path,
 )
+from Infernux.engine.player_log import write_player_log as _plog
 from Infernux.debug import Debug
 
 if TYPE_CHECKING:
@@ -38,25 +39,6 @@ if TYPE_CHECKING:
         PlayerRuntimeAssetCatalog,
         RuntimeProductManifest,
     )
-
-
-def _plog(msg):
-    """Write to player.log (only available in packaged builds)."""
-    path = os.environ.get("_INFERNUX_PLAYER_LOG")
-    if not path:
-        # Fallback: write into Data/Logs/ next to the executable
-        import sys as _sys
-        _exe = getattr(_sys, 'executable', '') or ''
-        _d = os.path.dirname(resolved_path(_exe))
-        _logs_dir = os.path.join(_d, "Data", "Logs")
-        os.makedirs(_logs_dir, exist_ok=True)
-        path = os.path.join(_logs_dir, "player.log")
-    try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(str(msg) + "\n")
-    except OSError as exc:
-        Debug.log_suppressed("player_bootstrap.write_player_log", exc)
-
 
 class PlayerBootstrap:
     """Orchestrates the standalone player startup sequence."""

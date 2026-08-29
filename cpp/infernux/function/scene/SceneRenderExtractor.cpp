@@ -49,6 +49,17 @@ void CaptureOrReferenceInlineMesh(const MeshRenderer &renderer, const std::vecto
 
 size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling)
 {
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    // Minimal platform players intentionally omit the editor-camera service.
+    // Keeping this symbol available lets the portable extractor compile while
+    // making accidental editor-view use fail closed.
+    (void)useActiveCameraCulling;
+    world.Clear();
+    m_activeCamera = nullptr;
+    m_sceneSources.clear();
+    m_visibleCount = 0;
+    return 0;
+#else
     // Extraction is deliberately camera-neutral. Scene, Game, previews, and
     // future stacked Game cameras all consume this same immutable world and
     // derive their own visible lists in SceneRenderer.
@@ -118,6 +129,7 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     m_lastContentRevision = currentContentRevision;
     world.Publish();
     return m_visibleCount;
+#endif
 }
 
 size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Camera *camera)

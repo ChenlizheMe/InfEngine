@@ -48,6 +48,7 @@ from .python_abi import (
     LINUX_PYTHON_SHARED_PREFIX,
     PYTHON_VERSION,
     WINDOWS_PYTHON_DLL,
+    is_windows_libffi_dll,
 )
 
 
@@ -86,7 +87,6 @@ if sys.platform == "win32":
     BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
         WINDOWS_PYTHON_DLL,
         "_ctypes.pyd",
-        "ffi.dll",
         "_InfernuxBootstrap.pyd",
         "Infernux/lib/InfernuxFoundation.dll",
         "stdlib/encodings/__init__.pyc",
@@ -951,7 +951,13 @@ def audit_player_package(
         for required in sorted(BOOTSTRAP_REQUIRED_ARCHIVE_FILES)
         if required.casefold() not in {path.casefold() for path in bootstrap_entry_paths}
     ]
-    if sys.platform.startswith("linux"):
+    bootstrap_names = {Path(path).name for path in bootstrap_entry_paths}
+    if sys.platform == "win32":
+        if not any(is_windows_libffi_dll(name) for name in bootstrap_names):
+            bootstrap_payload_gap.append(
+                "missing required bootstrap archive file: Windows libffi DLL"
+            )
+    elif sys.platform.startswith("linux"):
         linux_bootstrap_requirements = {
             f"CPython {PYTHON_VERSION} shared library": lambda name: name.startswith(
                 LINUX_PYTHON_SHARED_PREFIX
@@ -961,7 +967,6 @@ def audit_player_package(
             "_InfernuxBootstrap module": lambda name: name.startswith("_InfernuxBootstrap")
             and name.endswith(".so"),
         }
-        bootstrap_names = {Path(path).name for path in bootstrap_entry_paths}
         bootstrap_payload_gap.extend(
             f"missing required bootstrap archive file: {label}"
             for label, predicate in linux_bootstrap_requirements.items()

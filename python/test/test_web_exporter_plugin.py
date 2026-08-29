@@ -202,6 +202,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     cmake = (runtime / "CMakeLists.txt").read_text(encoding="utf-8")
     main = (runtime / "main.cpp").read_text(encoding="utf-8")
     rhi_backend = (runtime / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
+    scene_renderer = (runtime / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
     fullscreen = (
         ROOT / "cpp" / "infernux" / "function" / "renderer" / "FullscreenRenderer.cpp"
     ).read_text(encoding="utf-8")
@@ -216,6 +217,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "--use-port=emdawnwebgpu" in cmake
     assert "MAIN_MODULE" not in cmake
     assert "FullscreenRenderer.cpp" in cmake
+    assert "WebSceneRenderer.cpp" in cmake
+    assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake
     assert "InxPack.cpp" in cmake
     assert "35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad" in cmake
     assert "INFERNUX_WEB_ZSTD_SOURCE_DIR" in cmake
@@ -235,6 +238,12 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "IsBlockCompressedFormat" in rhi_backend
     assert "SampleCount::Four" not in rhi_backend
     assert "INFERNUX_WEBGPU_FULLSCREEN_RHI_READY" in main
+    assert "g_sceneRenderer.Render" in main
+    assert "INFERNUX_WEB_SCENE_RENDER_READY" in scene_renderer
+    assert "ExtractCameraFrame" in scene_renderer
+    assert "frame->DrawCalls()" in scene_renderer
+    assert "skinBoneMatrices" in scene_renderer
+    assert "SetDepthStencilAttachment" not in scene_renderer
     assert "ShaderModuleDesc::FromWgsl" in main
     assert "CreateRenderPipeline" not in main
     assert "CreateRenderPipeline" in rhi_backend
@@ -249,8 +258,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "viewport-fit=cover" in shell
     assert "locateFile(path)" in shell
     assert "assetRevision" in shell
+    assert "versionedAssets[path]" in shell
     assert "@INFERNUX_WEB_ASSET_REVISION@" in shell
-    assert "?revision=${INFERNUX_WEB_ASSET_REVISION}" in revision_stamp
+    assert "copy_if_different" in revision_stamp
+    assert "infernux-player.${INFERNUX_WEB_ASSET_REVISION}.js" in revision_stamp
     assert "INFERNUX_WEB_PYTHON_ARCHIVE_INVALID" in main
     assert "infernux_web_input" in bootstrap
     assert "INFERNUX_WEB_CONTENT_INDEX_READY" in bootstrap
@@ -264,7 +275,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "register_shader" in host_module
     assert "InfernuxWebFindShaderSource" in main
     assert "static constexpr char vertexSource" not in main
-    combined = "\n".join((cmake, main, rhi_backend, shell, bootstrap)).casefold()
+    combined = "\n".join(
+        (cmake, main, rhi_backend, scene_renderer, shell, bootstrap)
+    ).casefold()
     assert re.search(r"\bopengl\b", combined) is None
     assert re.search(r"\bwebgl\b", combined) is None
     assert re.search(r"\bgles\b", combined) is None
@@ -302,6 +315,11 @@ def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
     first = exporter_module._web_asset_revision(staging, player, runtime)
     (runtime / "main.cpp").write_bytes(b"runtime changed")
     second = exporter_module._web_asset_revision(staging, player, runtime)
+    bytecode = player / "python" / "site-packages" / "Infernux" / "__pycache__"
+    bytecode.mkdir(parents=True)
+    (bytecode / "runtime.cpython-313.opt-1.pyc").write_bytes(b"compiled")
+    third = exporter_module._web_asset_revision(staging, player, runtime)
 
     assert re.fullmatch(r"[0-9a-f]{24}", first)
     assert first != second
+    assert second != third

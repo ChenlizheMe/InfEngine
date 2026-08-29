@@ -123,6 +123,13 @@ class AssetDatabase
     /// Also creates and registers all built-in importers.
     void Initialize(const std::string &projectRoot);
 
+    /// @brief Initialize the immutable Player-side database without editor importers.
+    ///
+    /// Platform Players consume build-authored RuntimeAssetRecords and never
+    /// scan or mutate source assets. Keeping this entry point separate avoids
+    /// linking the authoring/import pipeline into constrained platform hosts.
+    void InitializeRuntime(const std::string &projectRoot);
+
     /// @brief Refresh all assets by scanning the Assets folder
     void Refresh();
 

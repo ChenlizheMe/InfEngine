@@ -14,7 +14,12 @@ import time
 from enum import Enum
 from typing import Optional
 
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError as exc:
+    if exc.name != "numpy":
+        raise
+    np = None
 
 from Infernux.application import Application
 from Infernux.core.asset_ref import ParticleGraphRef

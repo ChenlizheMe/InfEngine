@@ -1,4 +1,9 @@
-import ctypes
+try:
+    import ctypes
+except ModuleNotFoundError:
+    # CPython's Emscripten build intentionally has no dynamic-loader module.
+    # All native Player bindings are statically registered by the browser host.
+    ctypes = None
 import glob
 import importlib
 import importlib.machinery
@@ -334,6 +339,7 @@ _collect_scene_resource_dependencies = (
     _native_module._collect_scene_resource_dependencies
 )
 _schedule_scene_document_read = _native_module._schedule_scene_document_read
+_pump_inline_jobs = _native_module._pump_inline_jobs
 
 # `import *` skips underscore-prefixed names.  Re-export internal C++
 # helpers so that `from Infernux import lib; lib._cds_register_class`

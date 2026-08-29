@@ -15,6 +15,13 @@
 
 namespace infernux
 {
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+void MeshLoader::CreateMeta(const char *, size_t, const std::string &, InxResourceMeta &) const
+{
+    throw std::logic_error("Mesh source import is unavailable in a minimal Player host");
+}
+#endif
+
 namespace
 {
 std::string ReadArtifactBytes(const std::string &path, std::string_view label)

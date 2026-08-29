@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.player_log import write_player_log
 from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
 
 if TYPE_CHECKING:
@@ -16,9 +17,7 @@ if TYPE_CHECKING:
 def _player_log(message: str) -> None:
     """Append packaged scene diagnostics without enabling release console spam."""
     try:
-        from Infernux.engine.player_bootstrap import _plog
-
-        _plog(message)
+        write_player_log(message)
     except Exception as exc:
         Debug.log_suppressed("player_scene.write_player_log", exc)
 

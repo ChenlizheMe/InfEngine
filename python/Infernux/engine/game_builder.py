@@ -90,6 +90,7 @@ from Infernux.engine.python_abi import (
     LINUX_PYTHON_SHARED_PREFIX,
     PYTHON_VERSION,
     WINDOWS_PYTHON_DLL,
+    is_windows_libffi_dll,
 )
 from Infernux.engine.runtime_type_registry import (
     RUNTIME_TYPE_REGISTRY_SCHEMA,
@@ -3649,10 +3650,15 @@ finally:
             "_infernuxplayer.pyd",
             WINDOWS_PYTHON_DLL.casefold(),
             "_ctypes.pyd",
-            "ffi.dll",
             "infernuxfoundation.dll",
         }
-        if sys.platform.startswith("linux"):
+        if sys.platform == "win32":
+            bootstrap_root_names.update(
+                filename.casefold()
+                for filename in os.listdir(final_dir)
+                if is_windows_libffi_dll(filename)
+            )
+        elif sys.platform.startswith("linux"):
             bootstrap_root_names.update(
                 filename.casefold()
                 for filename in os.listdir(final_dir)
@@ -3799,10 +3805,18 @@ finally:
             )
         player_module = player_modules[0]
         if sys.platform == "win32":
+            ffi_libraries = sorted(
+                path
+                for path in Path(final_dir).iterdir()
+                if path.is_file() and is_windows_libffi_dll(path.name)
+            )
+            if not ffi_libraries:
+                raise RuntimeError(
+                    "Bootstrap.inxrt requires a Windows libffi DLL"
+                )
             required = {
                 WINDOWS_PYTHON_DLL: os.path.join(final_dir, WINDOWS_PYTHON_DLL),
                 "_ctypes.pyd": os.path.join(final_dir, "_ctypes.pyd"),
-                "ffi.dll": os.path.join(final_dir, "ffi.dll"),
                 "_InfernuxBootstrap.pyd": os.path.join(
                     final_dir, "_InfernuxBootstrap.pyd"
                 ),
@@ -3811,6 +3825,7 @@ finally:
                     final_dir, "Infernux", "lib", "InfernuxFoundation.dll"
                 ),
             }
+            required.update({path.name: str(path) for path in ffi_libraries})
         elif sys.platform.startswith("linux"):
             def require_unique(pattern: str, label: str) -> Path:
                 matches = sorted(

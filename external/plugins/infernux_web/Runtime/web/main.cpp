@@ -8,9 +8,13 @@
 #include <core/threading/JobSystem.h>
 #include <function/renderer/FullscreenRenderer.h>
 #include <platform/input/InputManager.h>
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+#include <function/scene/SceneManager.h>
+#endif
 
 #include "InfernuxWebHostModule.h"
 #include "WebGpuRhiDevice.h"
+#include "WebSceneRenderer.h"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +41,7 @@ wgpu::Surface g_surface;
 std::unique_ptr<infernux::web::WebGpuRhiDevice> g_rhi;
 infernux::FullscreenRenderer g_fullscreenRenderer;
 infernux::FullscreenPipelineKey g_fullscreenPipelineKey;
+infernux::web::WebSceneRenderer g_sceneRenderer;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
 PyObject *g_input = nullptr;
@@ -46,6 +51,8 @@ double g_cssWidth = 1.0;
 double g_cssHeight = 1.0;
 std::array<double, 32> g_gamepadTimestamps{};
 std::unordered_map<long, std::pair<float, float>> g_touchPositions;
+double g_lastFrameTimeMilliseconds = 0.0;
+bool g_runtimeFrameFailed = false;
 
 int BrowserCodeToScancode(std::string_view code)
 {
@@ -262,6 +269,7 @@ void ResizeCanvas()
         config.alphaMode = wgpu::CompositeAlphaMode::Auto;
         config.presentMode = wgpu::PresentMode::Fifo;
         g_surface.Configure(&config);
+        g_sceneRenderer.Resize(g_width, g_height);
     }
 
     PyObject *payload = PyDict_New();
@@ -522,11 +530,32 @@ bool InitializePython()
 
 void Frame()
 {
+    const double frameTimeMilliseconds = emscripten_get_now();
+    const double deltaSeconds =
+        g_lastFrameTimeMilliseconds > 0.0 ? (frameTimeMilliseconds - g_lastFrameTimeMilliseconds) / 1000.0 : 0.0;
+    g_lastFrameTimeMilliseconds = frameTimeMilliseconds;
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
     if (infernux::JobSystem::IsAvailable())
         infernux::JobSystem::Get().RunPendingJobs(64);
 #endif
     PollGamepads();
+    if (g_tick != nullptr && !g_runtimeFrameFailed) {
+        PyObject *result = PyObject_CallFunction(g_tick, "d", deltaSeconds);
+        if (result == nullptr) {
+            PrintPythonError("frame");
+            g_runtimeFrameFailed = true;
+        } else
+            Py_DECREF(result);
+    }
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (!g_runtimeFrameFailed) {
+        auto &sceneManager = infernux::SceneManager::Instance();
+        const float delta = static_cast<float>(std::clamp(deltaSeconds, 0.0, 0.25));
+        sceneManager.Update(delta);
+        sceneManager.LateUpdate(delta);
+        sceneManager.EndFrame();
+    }
+#endif
     wgpu::SurfaceTexture surfaceTexture;
     g_surface.GetCurrentTexture(&surfaceTexture);
     if (surfaceTexture.texture) {
@@ -539,9 +568,18 @@ void Frame()
         wgpu::RenderPassDescriptor passDescriptor;
         passDescriptor.colorAttachmentCount = 1;
         passDescriptor.colorAttachments = &colorAttachment;
+        wgpu::RenderPassDepthStencilAttachment depthAttachment;
+        if (g_sceneRenderer.HasDepthTarget()) {
+            depthAttachment.view = g_sceneRenderer.GetDepthView();
+            depthAttachment.depthLoadOp = wgpu::LoadOp::Clear;
+            depthAttachment.depthStoreOp = wgpu::StoreOp::Store;
+            depthAttachment.depthClearValue = 1.0f;
+            passDescriptor.depthStencilAttachment = &depthAttachment;
+        }
         wgpu::CommandEncoder encoder = g_device.CreateCommandEncoder();
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDescriptor);
-        if (g_rhi) {
+        const bool renderedScene = g_sceneRenderer.Render(pass, g_width, g_height);
+        if (!renderedScene && g_rhi) {
             infernux::web::WebGpuGraphicsCommandContext context;
             auto commands = g_rhi->MakeGraphicsCommandEncoder(context, pass);
             const auto &pipeline = g_fullscreenRenderer.EnsurePipeline(g_fullscreenPipelineKey);
@@ -551,13 +589,6 @@ void Frame()
         pass.End();
         wgpu::CommandBuffer commands = encoder.Finish();
         g_queue.Submit(1, &commands);
-    }
-    if (g_tick != nullptr) {
-        PyObject *result = PyObject_CallNoArgs(g_tick);
-        if (result == nullptr)
-            PrintPythonError("frame");
-        else
-            Py_DECREF(result);
     }
     infernux::InputManager::Instance().BeginFrame();
 }
@@ -581,6 +612,10 @@ void StartSurface()
     if (!CreateRhiPipeline()) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_RHI_PIPELINE_FAILED %s\n",
                      g_rhi ? g_rhi->LastError().c_str() : "unsupported surface format");
+        return;
+    }
+    if (!g_sceneRenderer.Initialize(g_device, g_queue, g_surfaceFormat)) {
+        std::fprintf(stderr, "INFERNUX_WEBGPU_SCENE_PIPELINE_FAILED\n");
         return;
     }
     std::printf("INFERNUX_WEBGPU_FULLSCREEN_RHI_READY\n");
@@ -616,6 +651,7 @@ void StartSurface()
     Py_DECREF(details);
 
     std::printf("INFERNUX_WEBGPU_DEVICE_READY format=%d\n", static_cast<int>(g_surfaceFormat));
+    g_lastFrameTimeMilliseconds = emscripten_get_now();
     infernux::InputManager::Instance().BeginFrame();
     emscripten_set_main_loop(Frame, 0, false);
 }

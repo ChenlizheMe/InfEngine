@@ -589,6 +589,27 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     INXLOG_DEBUG("AssetDatabase initialized. ProjectRoot=", m_projectRoot, ", AssetsRoot=", m_assetsRoot);
 }
 
+void AssetDatabase::InitializeRuntime(const std::string &projectRoot)
+{
+    if (m_initialized)
+        throw std::logic_error("AssetDatabase::InitializeRuntime may only be called once");
+    m_projectRoot = FromFsPath(ToFsPath(projectRoot));
+    if (m_projectRoot.empty())
+        throw std::invalid_argument("AssetDatabase runtime project root cannot be empty");
+    if (m_projectRoot.back() == '/')
+        m_projectRoot.pop_back();
+
+    m_assetsRoot = FromFsPath(ToFsPath(m_projectRoot) / "Assets");
+    m_assetIndexPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.json");
+    m_assetStartupCachePath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.startup-cache.json");
+    m_assetTransactionJournalPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetRefresh.transaction");
+    m_ownerThread = std::this_thread::get_id();
+    m_initialized = true;
+    PublishQuerySnapshot(false);
+
+    INXLOG_DEBUG("Runtime AssetDatabase initialized. ProjectRoot=", m_projectRoot);
+}
+
 void AssetDatabase::AddScanRoot(const std::string &path)
 {
     AssertMutationThread("AddScanRoot");

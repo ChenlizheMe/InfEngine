@@ -164,7 +164,6 @@ class PlayerRuntimeSession:
             Debug.log_error("Player activation rejected: runtime contract is not configured")
             return False
         from Infernux.lib import SceneManager
-        from Infernux.renderstack.render_stack import RenderStack
 
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
@@ -172,7 +171,12 @@ class PlayerRuntimeSession:
             return False
         Time._reset()
         self._last_frame_time = time.time()
-        RenderStack._active_instance = None
+        from Infernux.lib import _Infernux as native_module
+
+        if getattr(native_module, "__runtime_profile__", "desktop") != "web-player":
+            from Infernux.renderstack.render_stack import RenderStack
+
+            RenderStack._active_instance = None
         from Infernux.scene import SceneManager as RuntimeSceneManager
 
         # Install the packaged scene owner before native ``play()`` dispatches

@@ -12,14 +12,36 @@ import json
 import math
 import os
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from concurrent.futures import Future
+    _MetaWriteFuture = Future[bool]
+else:
+    _MetaWriteFuture = Any
 
 # Shared IO thread pool for background file writes (meta, fallback saves).
-# Max 2 workers: meta writes and material-save fallback are infrequent.
-_io_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-io")
+# It is created only when editor authoring asks for an asynchronous write.
+# CPython/Emscripten intentionally omits concurrent.futures.thread, and a
+# Player must still be able to import immutable asset reference models.
+_io_pool: Any = None
+
+
+def _asset_io_pool():
+    global _io_pool
+    if _io_pool is not None:
+        return _io_pool
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+    except ImportError as exc:
+        raise RuntimeError(
+            "Asynchronous asset writes are unavailable on this platform."
+        ) from exc
+    # Max 2 workers: meta writes and material-save fallback are infrequent.
+    _io_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-io")
+    return _io_pool
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -610,14 +632,16 @@ def write_meta_fields(asset_path: str, updates: Dict[str, Any]) -> bool:
         return False
 
 
-def write_meta_fields_async(asset_path: str, updates: Dict[str, Any]) -> "Future[bool]":
+def write_meta_fields_async(
+    asset_path: str, updates: Dict[str, Any]
+) -> _MetaWriteFuture:
     """Fire-and-forget version of :func:`write_meta_fields`.
 
     Submits the read-modify-write to the shared IO thread pool and returns
     a :class:`~concurrent.futures.Future`.  Callers that need the result
     before proceeding can call ``future.result()``.
     """
-    return _io_pool.submit(write_meta_fields, asset_path, updates)
+    return _asset_io_pool().submit(write_meta_fields, asset_path, updates)
 
 
 def _python_type_to_meta_tag(value) -> str:

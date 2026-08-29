@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import compileall
 import hashlib
 import importlib.util
 import json
 import os
+import py_compile
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -272,6 +275,17 @@ def _stage_engine_python_package(
         site_packages / "packaging",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyi"),
     )
+    if sys.version_info[:2] != (3, 13):
+        raise RuntimeError(
+            "Web Player Python staging requires the engine's Python 3.13 runtime"
+        )
+    if not compileall.compile_dir(
+        site_packages,
+        quiet=1,
+        optimize=0,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    ):
+        raise RuntimeError("Web Player engine Python bytecode compilation failed")
     request.report("analyze", 2, 2, "Web Player Python modules staged")
 
 
@@ -418,6 +432,9 @@ def _configure_and_build_host(
         "infernux-player.js",
         "infernux-player.wasm",
         "infernux-player.data",
+        f"infernux-player.{asset_revision}.js",
+        f"infernux-player.{asset_revision}.wasm",
+        f"infernux-player.{asset_revision}.data",
     )
     missing = [name for name in required if not (build_root / name).is_file()]
     if missing:
@@ -448,7 +465,7 @@ def _web_asset_revision(
     player_assets: Path,
     runtime_source: Path,
 ) -> str:
-    """Hash every source that can change the browser's linked asset offsets."""
+    """Hash every staged byte that can change the browser asset bundle."""
 
     digest = hashlib.sha256()
     roots = (
@@ -461,7 +478,7 @@ def _web_asset_revision(
         if not root.is_dir():
             raise RuntimeError(f"Web asset revision input is missing: {root}")
         for path in root.rglob("*"):
-            if not path.is_file() or "__pycache__" in path.parts:
+            if not path.is_file():
                 continue
             files.append((f"{label}/{path.relative_to(root).as_posix()}", path))
     for relative, path in sorted(files, key=lambda item: item[0]):

@@ -108,6 +108,7 @@ add_executable(InfernuxWebPlayerHost
     main.cpp
     InfernuxWebHostModule.cpp
     WebGpuRhiDevice.cpp
+    WebSceneRenderer.cpp
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/platform/filesystem/InxPack.cpp"
@@ -133,7 +134,11 @@ target_include_directories(InfernuxWebPlayerHost PRIVATE
     "${INFERNUX_WEB_CPYTHON_SOURCE}/Include"
     "${INFERNUX_WEB_CPYTHON_BUILD}"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/glm"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/nlohmann/single_include"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/SDL/include"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/stb"
 )
 target_link_libraries(InfernuxWebPlayerHost PRIVATE
     "${_python_library}"
@@ -146,6 +151,9 @@ target_link_libraries(InfernuxWebPlayerHost PRIVATE
     m
 )
 target_compile_definitions(InfernuxWebPlayerHost PRIVATE
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    GLM_FORCE_LEFT_HANDED
+    INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME=1
     INFERNUX_INPUT_SEMANTIC_HOST=1
     INFERNUX_RUNTIME_MINIMAL_HOST=1
     INFERNUX_SINGLE_THREADED_RUNTIME=1
@@ -175,6 +183,7 @@ if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR
     set(_web_runtime_binding_sources
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingModule.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingAssetRegistry.cpp"
+        "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingBatch.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingInput.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingPhysics.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingResources.cpp"
@@ -201,7 +210,6 @@ if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR
     list(FILTER _web_scene_runtime_sources EXCLUDE REGEX "EditorCameraController\\.cpp$")
     list(FILTER _web_scene_runtime_sources EXCLUDE REGEX "SceneRenderBridge\\.cpp$")
     list(FILTER _web_scene_runtime_sources EXCLUDE REGEX "SceneRenderer\\.cpp$")
-    list(FILTER _web_scene_runtime_sources EXCLUDE REGEX "SceneRenderExtractor\\.cpp$")
     add_library(InfernuxWebSceneRuntimeProbe OBJECT EXCLUDE_FROM_ALL
         ${_web_scene_runtime_sources}
     )
@@ -329,6 +337,12 @@ if(INFERNUX_WEB_PLAYER_ASSETS)
         message(FATAL_ERROR
             "INFERNUX_WEB_PLAYER_ASSETS must name an existing directory")
     endif()
+    file(GLOB_RECURSE _web_player_asset_files CONFIGURE_DEPENDS
+        "${INFERNUX_WEB_PLAYER_ASSETS}/*"
+    )
+    set_property(TARGET InfernuxWebPlayerHost APPEND PROPERTY LINK_DEPENDS
+        ${_web_player_asset_files}
+    )
     target_link_options(InfernuxWebPlayerHost PRIVATE
         "--preload-file=${INFERNUX_WEB_PLAYER_ASSETS}@/infernux/player"
     )

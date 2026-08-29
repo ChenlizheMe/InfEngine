@@ -1132,7 +1132,7 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     sources = {}
-    for filename in ("python313.dll", "_ctypes.pyd", "ffi.dll", "zlib.dll"):
+    for filename in ("python313.dll", "_ctypes.pyd", "libffi-8.dll", "zlib.dll"):
         source = runtime / filename
         source.write_bytes(filename.encode("ascii"))
         sources[filename] = source
@@ -1152,6 +1152,40 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
         assert (dist / filename).read_bytes() == sources[filename].read_bytes()
     assert (dist / "stdlib" / "encodings" / "__init__.pyc").is_file()
     assert not list((dist / "stdlib" / "encodings").glob("*.py"))
+
+
+def test_python_bootstrap_runtime_accepts_standalone_libffi_name(tmp_path, monkeypatch):
+    python_root = tmp_path / "python313"
+    dll_root = python_root / "DLLs"
+    encodings = python_root / "Lib" / "encodings"
+    dll_root.mkdir(parents=True)
+    encodings.mkdir(parents=True)
+    python_executable = python_root / "python.exe"
+    python_executable.write_bytes(b"python")
+    (python_root / "python313.dll").write_bytes(b"python ABI")
+    ctypes_module = dll_root / "_ctypes.pyd"
+    ctypes_module.write_bytes(b"ctypes ABI")
+    libffi = dll_root / "libffi-8.dll"
+    libffi.write_bytes(b"libffi ABI")
+
+    def find_spec(name):
+        if name == "_ctypes":
+            return SimpleNamespace(origin=str(ctypes_module))
+        if name == "encodings":
+            return SimpleNamespace(submodule_search_locations=[str(encodings)])
+        return None
+
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")
+    monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
+    monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = str(python_executable)
+
+    sources, resolved_encodings = builder._python_bootstrap_runtime_sources()
+
+    assert sources["libffi-8.dll"] == libffi
+    assert "ffi.dll" not in sources
+    assert resolved_encodings == encodings
 
 
 def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
@@ -1454,7 +1488,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     (final_dir / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
     (final_dir / "python313.dll").write_bytes(b"python")
     (final_dir / "_ctypes.pyd").write_bytes(b"ctypes ABI")
-    (final_dir / "ffi.dll").write_bytes(b"libffi ABI")
+    (final_dir / "libffi-8.dll").write_bytes(b"libffi ABI")
     (final_dir / "_socket.pyd").write_bytes(b"socket")
 
     builder._pack_core_runtime_archive(str(final_dir))
@@ -1471,9 +1505,9 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert (final_dir / "InfernuxFoundation.dll").is_file()
     assert (final_dir / "python313.dll").is_file()
     assert (final_dir / "_ctypes.pyd").is_file()
-    assert (final_dir / "ffi.dll").is_file()
+    assert (final_dir / "libffi-8.dll").is_file()
     assert "stdlib/_ctypes.pyd" not in paths
-    assert "stdlib/ffi.dll" not in paths
+    assert "stdlib/libffi-8.dll" not in paths
     assert not {
         f"Infernux/lib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
     } & paths
@@ -1499,7 +1533,7 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
         bootstrap_files = (
             "python313.dll",
             "_ctypes.pyd",
-            "ffi.dll",
+            "libffi-8.dll",
             "_InfernuxBootstrap.pyd",
         )
         module_name = "_InfernuxPlayer.cp313-win_amd64.pyd"

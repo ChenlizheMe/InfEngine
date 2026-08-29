@@ -43,6 +43,7 @@ from Infernux.engine.python_abi import (
     LINUX_PYTHON_SHARED_PREFIX,
     PYTHON_RUNTIME_DIRECTORY,
     PYTHON_VERSION,
+    WINDOWS_LIBFFI_DLL_PATTERNS,
     WINDOWS_PYTHON_DLL,
 )
 
@@ -2611,8 +2612,21 @@ print(json.dumps({{
                     WINDOWS_PYTHON_DLL, required=True
                 ),
                 "_ctypes.pyd": ctypes_path,
-                "ffi.dll": find_runtime_file("ffi.dll", required=True),
             }
+            ffi_sources: dict[str, Path] = {}
+            for root in search_roots:
+                if not root.is_dir():
+                    continue
+                for pattern in WINDOWS_LIBFFI_DLL_PATTERNS:
+                    for source in sorted(root.glob(pattern)):
+                        if source.is_file():
+                            ffi_sources.setdefault(source.name.casefold(), source)
+            if not ffi_sources:
+                raise RuntimeError(
+                    "Builder Python bootstrap dependency is missing: Windows libffi DLL"
+                )
+            for source in ffi_sources.values():
+                sources[source.name] = source
             for optional_name in (
                 "python3.dll",
                 "zlib.dll",
@@ -2679,6 +2693,8 @@ print(json.dumps({{
                 "libbz2*.dll",
                 "libcrypto-*.dll",
                 "libexpat*.dll",
+                "ffi-*.dll",
+                "ffi.dll",
                 "libffi*.dll",
                 "liblzma*.dll",
                 "libssl-*.dll",

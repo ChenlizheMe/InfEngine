@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 from Infernux.lib import (
     _SceneDocumentReadTicket,
     _collect_scene_resource_dependencies,
+    _pump_inline_jobs,
     _schedule_scene_document_read,
 )
 from Infernux.engine.path_utils import resolved_path
@@ -515,9 +516,10 @@ class SceneDocumentTransaction:
         if self._state is SceneDocumentTransactionState.CREATED:
             self.start()
         while not self.poll():
+            inline_jobs = _pump_inline_jobs(64)
             if on_tick is not None:
                 on_tick()
-            if self._state is SceneDocumentTransactionState.READING:
+            if self._state is SceneDocumentTransactionState.READING and inline_jobs == 0:
                 time.sleep(0.001)
         if raise_on_failure and self._state is SceneDocumentTransactionState.FAILED:
             if self._failure_exception is not None:
