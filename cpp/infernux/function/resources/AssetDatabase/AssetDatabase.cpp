@@ -1261,9 +1261,16 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
                     preservedGuid = previousMetadata.GetGuid();
                 } else if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
                            item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
-                    RequireUnchangedFingerprint(item.file.path, item.file.source);
-                    item.metadata = std::move(loadedMetadata);
-                    return;
+                    // A sidecar can be structurally valid while its derived
+                    // source fields belong to an older copy of the asset. This
+                    // happens when a project is copied between platforms, or
+                    // when a document write completed before its watcher-driven
+                    // reimport. Rebuild derived metadata from the exact source
+                    // bytes while preserving the GUID and importer settings.
+                    item.mode = WorkerMetadataPrepare::Mode::Rebuild;
+                    previousMetadata = std::move(loadedMetadata);
+                    previousMetadataLoaded = true;
+                    preservedGuid = previousMetadata.GetGuid();
                 } else {
                     previousMetadata = std::move(loadedMetadata);
                     previousMetadataLoaded = true;

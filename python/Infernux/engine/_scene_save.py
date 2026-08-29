@@ -496,19 +496,31 @@ class SceneSaveMixin:
 
         self._current_scene_path = abs_path
 
-        # Save As publishes a brand-new asset through DocumentStore. Register
-        # it synchronously so the Project panel can expose it on the next frame;
-        # the file watcher remains a fallback for transient database contention.
-        if self._asset_database is not None and not self._asset_database.contains_path(abs_path):
+        # Scene persistence and AssetDatabase publication form one authoring
+        # transaction.  Waiting for the file watcher left an existing scene's
+        # sidecar/content hash stale long enough for an immediate Player build
+        # to reject it.  Publish both new and existing scenes synchronously;
+        # the watcher remains a fallback for transient database contention.
+        if self._asset_database is not None:
             try:
                 from Infernux.core.assets import AssetManager
 
-                result = AssetManager.import_asset(abs_path, database=self._asset_database)
+                registered = self._asset_database.contains_path(abs_path)
+                if registered:
+                    result = AssetManager.reimport_asset(
+                        abs_path,
+                        database=self._asset_database,
+                    )
+                else:
+                    result = AssetManager.import_asset(
+                        abs_path,
+                        database=self._asset_database,
+                    )
                 if not result:
                     detail = getattr(result, "error", "") or "asset import was rejected"
-                    Debug.log_warning(f"Scene saved but asset registration is pending: {detail}")
+                    Debug.log_warning(f"Scene saved but asset publication is pending: {detail}")
             except Exception as exc:
-                Debug.log_warning(f"Scene saved but asset registration is pending: {exc}")
+                Debug.log_warning(f"Scene saved but asset publication is pending: {exc}")
 
         # Persist editor camera state for this scene
         self._save_camera_state(self._current_scene_path)

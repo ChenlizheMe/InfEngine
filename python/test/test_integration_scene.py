@@ -2794,6 +2794,49 @@ class TestSceneSerialization:
             SceneFileManager._instance = previous_manager
             set_project_root(previous_root)
 
+    def test_scene_file_manager_reimports_existing_scene_after_save(
+        self,
+        scene,
+        tmp_path,
+        monkeypatch,
+    ):
+        from Infernux.engine.project_context import get_project_root, set_project_root
+
+        previous_root = get_project_root()
+        previous_manager = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        scene_path = project_root / "Assets" / "Existing.scene"
+        scene_path.parent.mkdir(parents=True)
+        scene_path.write_text("{}", encoding="utf-8")
+
+        try:
+            set_project_root(str(project_root))
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
+            reimported_paths = []
+
+            class _AssetDatabase:
+                @staticmethod
+                def contains_path(_path):
+                    return True
+
+            from Infernux.core.assets import AssetManager
+
+            manager._asset_database = _AssetDatabase()
+            monkeypatch.setattr(
+                AssetManager,
+                "reimport_asset",
+                classmethod(
+                    lambda _cls, path, **_kwargs: reimported_paths.append(path) or True
+                ),
+            )
+
+            assert manager._do_save_inner(str(scene_path)) is True
+            assert reimported_paths == [str(scene_path.resolve())]
+        finally:
+            SceneFileManager._instance = previous_manager
+            set_project_root(previous_root)
+
     def test_runtime_scene_publish_rebuilds_scaled_collider_from_current_world_transform(self, scene):
         from Infernux.lib import Physics
 

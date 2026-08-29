@@ -260,6 +260,62 @@ void TestLegacySidecarWithoutContentHashIsRebuilt()
     std::filesystem::remove_all(root);
 }
 
+void TestValidButStaleSidecarIsRebuiltFromCurrentSource()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-stale-sidecar";
+    std::filesystem::remove_all(root);
+    const auto script = root / "Assets" / "Scripts" / "Migrated.py";
+    const auto sidecar = root / "Assets" / "Scripts" / "Migrated.py.meta";
+    WriteText(script, "class Migrated:\n    VALUE = 2\n");
+    WriteText(sidecar, R"({
+  "metadata": {
+    "content_hash": {"type": "string", "value": "0123456789abcdef"},
+    "file_extension": {"type": "string", "value": ".py"},
+    "file_path": {"type": "string", "value": "D:/OldProject/Assets/Scripts/Migrated.py"},
+    "file_size": {"type": "size_t", "value": 12},
+    "file_type": {"type": "string", "value": "script"},
+    "guid": {"type": "string", "value": "fedcba0987654321fedcba0987654321"},
+    "language": {"type": "string", "value": "python"},
+    "resource_type": {"type": "enum infernux::ResourceType", "value": "Script"}
+  }
+})");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+
+        const std::string scriptPath = infernux::FromFsPath(script);
+        const std::string guid = assetDatabase->GetGuidFromPath(scriptPath);
+        const auto metadata = assetDatabase->GetMetaByGuid(guid);
+        Require(guid == "fedcba0987654321fedcba0987654321", "stale sidecar rebuild did not preserve its GUID");
+        Require(metadata != nullptr, "stale sidecar rebuild did not publish metadata");
+        Require(metadata->GetDataAs<std::string>("content_hash") != "0123456789abcdef",
+                "stale sidecar rebuild retained the old content hash");
+        Require(metadata->GetDataAs<size_t>("file_size") == std::filesystem::file_size(script),
+                "stale sidecar rebuild retained the old source size");
+        Require(metadata->GetDataAs<std::string>("file_path") ==
+                    infernux::InxResourceMeta::NormalizeFilePath(scriptPath),
+                "stale sidecar rebuild retained the old source path");
+
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestProjectPackagesScanRootSharesTheGuidCatalog()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-packages-root";
@@ -507,6 +563,7 @@ int main()
         TestPathOnlyDependencyIsRejectedOnInitialRefresh();
         TestScriptReimportRefreshesContentHashAndPreservesGuid();
         TestLegacySidecarWithoutContentHashIsRebuilt();
+        TestValidButStaleSidecarIsRebuiltFromCurrentSource();
         TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
