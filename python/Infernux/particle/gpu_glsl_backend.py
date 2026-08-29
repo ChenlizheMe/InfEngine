@@ -5640,8 +5640,10 @@ def _shader_prelude(
 } pc;"""
     )
     return f"""#version 450
+#ifndef INX_WEBGPU
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_ballot : require
+#endif
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -6755,10 +6757,17 @@ vec3 inx_sample_shape_position(uint kind, float radius, float angle_degrees, vec
     return inx_shape_direction(kind, angle_degrees, slots, particle_id, generation) * (pow(random_value.z, 1.0 / 3.0) * radius);
 }}
 
+#ifdef INX_WEBGPU
+bool inx_finite(float value) {{ return value == value && abs(value) <= 3.402823466e38; }}
+bool inx_finite(vec2 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec2(3.402823466e38))); }}
+bool inx_finite(vec3 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec3(3.402823466e38))); }}
+bool inx_finite(vec4 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec4(3.402823466e38))); }}
+#else
 bool inx_finite(float value) {{ return !isnan(value) && !isinf(value); }}
 bool inx_finite(vec2 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
 bool inx_finite(vec3 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
 bool inx_finite(vec4 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
+#endif
 """
 
 
@@ -6856,6 +6865,13 @@ void main() {{
 
 def _alive_compact_tail(candidate: str, particle_index: str) -> str:
     return f"""
+#ifdef INX_WEBGPU
+    if ({candidate}) {{
+        uint inx_particle_alive_output = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot], 1u);
+        inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
+    }}
+#else
     uvec4 inx_particle_alive_mask = subgroupBallot({candidate});
     uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
         inx_particle_alive_mask);
@@ -6881,6 +6897,7 @@ def _alive_compact_tail(candidate: str, particle_index: str) -> str:
             inx_particle_alive_group_base + inx_particle_alive_local_index;
         inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
     }}
+#endif
 """
 
 
@@ -7011,6 +7028,17 @@ def _render_instance_write(
 
 def _render_compact_tail(instance_write: str) -> str:
     return f"""
+#ifdef INX_WEBGPU
+    if (inx_particle_render_candidate) {{
+        uint output_index = atomicAdd(counters.visible_count, 1u);
+        if (output_index < pc.capacity) {{
+            atomicAdd(indirect_args.instance_count, 1u);
+{instance_write}
+        }} else {{
+            atomicAdd(counters.visible_count, 0xffffffffu);
+        }}
+    }}
+#else
     uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
     uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
         inx_particle_render_mask);
@@ -7041,11 +7069,28 @@ def _render_compact_tail(instance_write: str) -> str:
 {instance_write}
         }}
     }}
+#endif
 """
 
 
 def _fused_compact_tail(instance_write: str) -> str:
     return f"""
+#ifdef INX_WEBGPU
+    if (inx_particle_active_candidate) {{
+        uint alive_output = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot], 1u);
+        inx_store_alive(pc.alive_write_slot, alive_output, particle_index);
+    }}
+    if (inx_particle_render_candidate) {{
+        uint output_index = atomicAdd(counters.visible_count, 1u);
+        if (output_index < pc.capacity) {{
+            atomicAdd(indirect_args.instance_count, 1u);
+{instance_write}
+        }} else {{
+            atomicAdd(counters.visible_count, 0xffffffffu);
+        }}
+    }}
+#else
     uvec4 inx_particle_alive_mask = subgroupBallot(inx_particle_active_candidate);
     uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
     uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
@@ -7094,6 +7139,7 @@ def _fused_compact_tail(instance_write: str) -> str:
 {instance_write}
         }}
     }}
+#endif
 """
 
 

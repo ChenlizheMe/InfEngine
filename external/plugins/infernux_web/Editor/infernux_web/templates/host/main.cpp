@@ -14,6 +14,7 @@
 
 #include "InfernuxWebHostModule.h"
 #include "WebGpuRhiDevice.h"
+#include "WebParticleRuntime.h"
 #include "WebSceneRenderer.h"
 
 #include <algorithm>
@@ -42,6 +43,7 @@ std::unique_ptr<infernux::web::WebGpuRhiDevice> g_rhi;
 infernux::FullscreenRenderer g_fullscreenRenderer;
 infernux::FullscreenPipelineKey g_fullscreenPipelineKey;
 infernux::web::WebSceneRenderer g_sceneRenderer;
+infernux::web::WebParticleRuntime g_particleRuntime;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
 PyObject *g_input = nullptr;
@@ -577,6 +579,7 @@ void Frame()
             passDescriptor.depthStencilAttachment = &depthAttachment;
         }
         wgpu::CommandEncoder encoder = g_device.CreateCommandEncoder();
+        g_particleRuntime.RecordCompute(encoder);
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDescriptor);
         const bool renderedScene = g_sceneRenderer.Render(pass, g_width, g_height);
         if (!renderedScene && g_rhi) {
@@ -586,6 +589,7 @@ void Frame()
             infernux::FullscreenPushConstants pushConstants;
             g_fullscreenRenderer.Draw(commands, pipeline, {}, {}, pushConstants, sizeof(pushConstants));
         }
+        (void)g_particleRuntime.Render(pass, g_width, g_height);
         pass.End();
         wgpu::CommandBuffer commands = encoder.Finish();
         g_queue.Submit(1, &commands);
@@ -618,6 +622,11 @@ void StartSurface()
         std::fprintf(stderr, "INFERNUX_WEBGPU_SCENE_PIPELINE_FAILED\n");
         return;
     }
+    if (!g_particleRuntime.Initialize(*g_rhi, ToRhiFormat(g_surfaceFormat))) {
+        std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_RUNTIME_FAILED %s\n", g_particleRuntime.LastError().c_str());
+        return;
+    }
+    InfernuxWebSetParticleRuntime(&g_particleRuntime);
     std::printf("INFERNUX_WEBGPU_FULLSCREEN_RHI_READY\n");
     ResizeCanvas();
     emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false, OnResize);

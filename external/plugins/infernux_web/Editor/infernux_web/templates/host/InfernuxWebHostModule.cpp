@@ -2,6 +2,7 @@
 #include <Python.h>
 
 #include "InfernuxWebHostModule.h"
+#include "WebParticleRuntime.h"
 
 #include <platform/filesystem/InxPack.h>
 
@@ -27,6 +28,7 @@ namespace
 
 std::mutex g_shaderMutex;
 std::unordered_map<std::string, std::string> g_shaderSources;
+infernux::web::WebParticleRuntime *g_particleRuntime = nullptr;
 
 std::string ShaderKey(const std::string &name, const char *stage)
 {
@@ -165,6 +167,97 @@ PyObject *InitializeRuntimeAssets(PyObject *, PyObject *arguments)
 #endif
 }
 
+PyObject *ReplaceGpuParticleGraph(PyObject *, PyObject *arguments)
+{
+    unsigned long long graphId = 0;
+    PyObject *programs = nullptr;
+    PyObject *removeIds = nullptr;
+    if (!PyArg_ParseTuple(arguments, "KOO:_replace_gpu_particle_graph", &graphId, &programs, &removeIds))
+        return nullptr;
+    const std::string error = g_particleRuntime
+                                  ? g_particleRuntime->ReplaceGraph(static_cast<uint64_t>(graphId), programs, removeIds)
+                                  : "WebGPU particle runtime is not initialized";
+    return PyUnicode_FromString(error.c_str());
+}
+
+PyObject *ReplaceGpuParticleGraphs(PyObject *, PyObject *arguments)
+{
+    PyObject *graphs = nullptr;
+    if (!PyArg_ParseTuple(arguments, "O:_replace_gpu_particle_graphs", &graphs))
+        return nullptr;
+    if (!g_particleRuntime)
+        return PyUnicode_FromString("WebGPU particle runtime is not initialized");
+    PyObject *sequence = PySequence_Fast(graphs, "particle graphs must be a sequence");
+    if (!sequence)
+        return nullptr;
+    std::string error;
+    for (Py_ssize_t index = 0; error.empty() && index < PySequence_Fast_GET_SIZE(sequence); ++index) {
+        PyObject *graph = PySequence_Fast_GET_ITEM(sequence, index);
+        if (!PyDict_Check(graph)) {
+            error = "WebGPU particle graph batch entries must be dictionaries";
+            break;
+        }
+        unsigned long long graphId = PyLong_AsUnsignedLongLong(PyDict_GetItemString(graph, "graph_instance_id"));
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+            error = "WebGPU particle graph batch identity is invalid";
+            break;
+        }
+        error = g_particleRuntime->ReplaceGraph(static_cast<uint64_t>(graphId), PyDict_GetItemString(graph, "programs"),
+                                                PyDict_GetItemString(graph, "remove_ids"));
+    }
+    Py_DECREF(sequence);
+    return PyUnicode_FromString(error.c_str());
+}
+
+PyObject *UpdateGpuParticleParameters(PyObject *, PyObject *arguments)
+{
+    unsigned long long graphId = 0;
+    PyObject *words = nullptr;
+    if (!PyArg_ParseTuple(arguments, "KO:_update_gpu_particle_parameters", &graphId, &words))
+        return nullptr;
+    const std::string error = g_particleRuntime
+                                  ? g_particleRuntime->UpdateParameters(static_cast<uint64_t>(graphId), words)
+                                  : "WebGPU particle runtime is not initialized";
+    return PyUnicode_FromString(error.c_str());
+}
+
+PyObject *BeginGpuParticleBatch(PyObject *, PyObject *arguments)
+{
+    unsigned long long graphId = 0;
+    PyObject *items = nullptr;
+    if (!PyArg_ParseTuple(arguments, "KO:_begin_gpu_particle_batch", &graphId, &items))
+        return nullptr;
+    return PyBool_FromLong(g_particleRuntime && g_particleRuntime->BeginBatch(static_cast<uint64_t>(graphId), items));
+}
+
+PyObject *SetGpuParticleEmitterPlaying(PyObject *, PyObject *arguments)
+{
+    unsigned long long emitterId = 0;
+    int playing = 0;
+    if (!PyArg_ParseTuple(arguments, "Kp:_set_gpu_particle_emitter_playing", &emitterId, &playing))
+        return nullptr;
+    return PyBool_FromLong(g_particleRuntime &&
+                           g_particleRuntime->SetPlaying(static_cast<uint64_t>(emitterId), playing != 0));
+}
+
+PyObject *ResetGpuParticleEmitter(PyObject *, PyObject *arguments)
+{
+    unsigned long long emitterId = 0;
+    if (!PyArg_ParseTuple(arguments, "K:_reset_gpu_particle_emitter", &emitterId))
+        return nullptr;
+    return PyBool_FromLong(g_particleRuntime && g_particleRuntime->Reset(static_cast<uint64_t>(emitterId)));
+}
+
+PyObject *GpuParticleArtifactRevision(PyObject *, PyObject *arguments)
+{
+    unsigned long long emitterId = 0;
+    if (!PyArg_ParseTuple(arguments, "K:_gpu_particle_artifact_revision", &emitterId))
+        return nullptr;
+    return PyLong_FromUnsignedLongLong(
+        g_particleRuntime ? g_particleRuntime->ArtifactRevision(static_cast<uint64_t>(emitterId)) : 0);
+}
+
 PyMethodDef kMethods[] = {
     {"read_entry", ReadPackageEntry, METH_VARARGS,
      "Read and validate one entry from the native Infernux Player container."},
@@ -173,6 +266,13 @@ PyMethodDef kMethods[] = {
      "Register one validated WGSL shader in the browser runtime catalog."},
     {"initialize_runtime_assets", InitializeRuntimeAssets, METH_VARARGS,
      "Install the immutable cooked GUID catalog and runtime asset loaders."},
+    {"_replace_gpu_particle_graph", ReplaceGpuParticleGraph, METH_VARARGS, nullptr},
+    {"_replace_gpu_particle_graphs", ReplaceGpuParticleGraphs, METH_VARARGS, nullptr},
+    {"_update_gpu_particle_parameters", UpdateGpuParticleParameters, METH_VARARGS, nullptr},
+    {"_begin_gpu_particle_batch", BeginGpuParticleBatch, METH_VARARGS, nullptr},
+    {"_set_gpu_particle_emitter_playing", SetGpuParticleEmitterPlaying, METH_VARARGS, nullptr},
+    {"_reset_gpu_particle_emitter", ResetGpuParticleEmitter, METH_VARARGS, nullptr},
+    {"_gpu_particle_artifact_revision", GpuParticleArtifactRevision, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -199,4 +299,9 @@ bool InfernuxWebFindShaderSource(const std::string &name, const char *stage, std
         return false;
     source = found->second;
     return true;
+}
+
+void InfernuxWebSetParticleRuntime(infernux::web::WebParticleRuntime *runtime) noexcept
+{
+    g_particleRuntime = runtime;
 }

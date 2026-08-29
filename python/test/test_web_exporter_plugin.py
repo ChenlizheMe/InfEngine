@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -141,9 +142,27 @@ def test_web_exporter_plan_exposes_real_runtime_stages(monkeypatch, tmp_path):
     }
 
 
-def test_web_export_stages_cooked_host_then_fails_on_native_runtime(
-    monkeypatch, tmp_path
-):
+def test_web_staging_refresh_preserves_native_build_cache(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_web.exporter")
+    staging = tmp_path / "web-staging"
+    host_marker = staging / "host-build" / "CMakeCache.txt"
+    host_marker.parent.mkdir(parents=True)
+    host_marker.write_text("cache", encoding="utf-8")
+    for name in (".infernux-player-cook", "player-assets", "shader-cook"):
+        path = staging / name
+        path.mkdir()
+        (path / "stale.txt").write_text("stale", encoding="utf-8")
+
+    exporter_module._prepare_web_staging(staging)
+
+    assert host_marker.read_text(encoding="utf-8") == "cache"
+    assert not (staging / ".infernux-player-cook").exists()
+    assert not (staging / "player-assets").exists()
+    assert not (staging / "shader-cook").exists()
+
+
+def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     module = _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
     exporter = module.WebPlatformExporter()
@@ -156,6 +175,7 @@ def test_web_export_stages_cooked_host_then_fails_on_native_runtime(
                 "distribution": "fixture",
                 "emsdk_root": "/fixture/emsdk",
                 "cpython_root": "/fixture/cpython",
+                "source_root": str(ROOT),
             },
         ),
     )
@@ -170,28 +190,47 @@ def test_web_export_stages_cooked_host_then_fails_on_native_runtime(
     monkeypatch.setattr(
         exporter_module,
         "_stage_engine_python_package",
-        lambda _request, _assets: None,
+        lambda _request, _assets, _source_root: None,
     )
     monkeypatch.setattr(
         exporter_module,
         "_stage_web_shader_sources",
-        lambda _request, _staging: None,
+        lambda _request, _staging, _assets, _source_root: None,
     )
-    monkeypatch.setattr(
-        exporter_module,
-        "_configure_and_build_host",
-        lambda _request, _staging, _assets, _details: ("host built",),
-    )
+    revision = "1234567890abcdef12345678"
+
+    def _build_host(_request, staging, _assets, _details, _source_root):
+        host_build = staging / "host-build"
+        host_build.mkdir(parents=True)
+        (host_build / "infernux-player.html").write_text(
+            "\n".join(
+                (
+                    f"const assetRevision = '{revision}';",
+                    f"infernux-player.{revision}.js",
+                    "'infernux-player.wasm': `infernux-player.${assetRevision}.wasm`,",
+                    "'infernux-player.data': `infernux-player.${assetRevision}.data`,",
+                )
+            ),
+            encoding="utf-8",
+        )
+        for suffix in ("js", "wasm", "data"):
+            (host_build / f"infernux-player.{revision}.{suffix}").write_bytes(
+                suffix.encode("ascii")
+            )
+        return ("host built",)
+
+    monkeypatch.setattr(exporter_module, "_configure_and_build_host", _build_host)
 
     result = exporter.execute(request, exporter.create_plan(request))
 
-    assert not result.success
-    assert [item.code for item in result.diagnostics] == [
-        "web.engine.lifecycle-pending"
-    ]
-    assert result.artifacts == ()
-    assert result.manifest["scope"] == "engine-linked-host-ready"
+    assert result.success
+    assert result.diagnostics == ()
+    assert [item.kind for item in result.artifacts] == ["html", "js", "wasm", "data"]
+    assert all(Path(item.path).is_file() for item in result.artifacts)
+    assert result.manifest["scope"] == "cooked-player"
     assert result.manifest["game"] == "Balance"
+    assert result.manifest["asset_revision"] == revision
+    assert result.manifest["entry_point"] == "infernux-player.html"
     assert result.logs == ("host built",)
 
 
@@ -296,7 +335,6 @@ def test_web_host_build_templates_are_editor_only():
     host_templates = (
         plugin_root / "Editor" / "infernux_web" / "templates" / "host"
     )
-
     assert not (plugin_root / "Runtime" / "web").exists()
     assert (host_templates / "CMakeLists.txt").is_file()
     assert (host_templates / "main.cpp").is_file()
@@ -306,6 +344,79 @@ def test_web_host_build_templates_are_editor_only():
             relative = path.relative_to(plugin_root).as_posix()
             assert player_file_exported({}, relative) is False
 
+
+def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    native = importlib.import_module("Infernux.lib")._Infernux
+    monkeypatch.setattr(
+        native,
+        "_prepare_authored_shader_glsl",
+        lambda source, _path: source,
+    )
+    request = _request(tmp_path)
+    source_root = tmp_path / "source"
+    shader_dir = source_root / "python" / "Infernux" / "resources" / "shaders"
+    shader_dir.mkdir(parents=True)
+    (shader_dir / "fullscreen_triangle.vert").write_text(
+        "#version 450\nvoid main() {}\n", encoding="utf-8"
+    )
+    player_assets = tmp_path / "player-assets"
+    (player_assets / "Balance_Data").mkdir(parents=True)
+    particle_dir = (
+        Path(request.project_root) / "Library" / "Artifacts" / "Particle"
+    )
+    particle_dir.mkdir(parents=True)
+    kernel_hash = "a" * 64
+    stage_names = {
+        "bootstrap",
+        "init",
+        "update",
+        "update_rendering_fused",
+        "contact_prepare",
+        "contact_solve",
+        "contact_dispatch",
+        "render_reset",
+        "rendering",
+    }
+    emitters = []
+    for stable_id in ("emitter-b", "emitter-a"):
+        emitters.append(
+            {
+                "stable_id": stable_id,
+                "kernel_hash": kernel_hash,
+                "state_stride": 80,
+                "event_type_count": 0,
+                "collision_enabled": False,
+                "continuation": None,
+                "update_render_fusion": {"eligible": True},
+                "data_interface_layout": {
+                    "mesh_interfaces": [],
+                    "texture2d_parameters": [],
+                    "volume_interfaces": [],
+                },
+                "stages": {
+                    name: "#version 450\nlayout(local_size_x=1) in; void main() {}\n"
+                    for name in stage_names
+                },
+            }
+        )
+    (particle_dir / "shared.inxparticle").write_text(
+        json.dumps({"gpu_glsl": {"emitters": emitters}}), encoding="utf-8"
+    )
+
+    exporter._stage_web_shader_sources(
+        request, tmp_path / "staging", player_assets, source_root
+    )
+
+    catalog = json.loads(
+        (player_assets / "web-particles" / "catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(catalog["kernels"]) == 1
+    assert catalog["kernels"][0]["stable_ids"] == ["emitter-a", "emitter-b"]
+    assert len(catalog["kernels"][0]["stages"]) == len(stage_names)
 
 def test_web_exporter_reuses_verified_native_zstd_checkout(monkeypatch, tmp_path):
     _web_module(monkeypatch)

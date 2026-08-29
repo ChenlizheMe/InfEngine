@@ -19,7 +19,10 @@ std::string StageName(const std::string &prefix, const char *stage)
 
 bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
 {
-    return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
+    // The desktop spawn domain still enters Vulkan RenderGraph and therefore
+    // intentionally accepts SPIR-V only. Portable runtimes may use WGSL for
+    // emitter kernels without pretending this Vulkan-owned path is portable.
+    return bytecode.IsSpirV();
 }
 
 } // namespace

@@ -108,7 +108,11 @@ add_executable(InfernuxWebPlayerHost
     main.cpp
     InfernuxWebHostModule.cpp
     WebGpuRhiDevice.cpp
+    WebParticleRuntime.cpp
     WebSceneRenderer.cpp
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuContactRuntime.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/platform/filesystem/InxPack.cpp"
@@ -157,6 +161,7 @@ target_compile_definitions(InfernuxWebPlayerHost PRIVATE
     INFERNUX_INPUT_SEMANTIC_HOST=1
     INFERNUX_RUNTIME_MINIMAL_HOST=1
     INFERNUX_SINGLE_THREADED_RUNTIME=1
+    INFERNUX_WEBGPU_RUNTIME=1
 )
 
 if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR

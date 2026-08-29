@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import py_compile
+import re
 import shlex
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ import time
 from pathlib import Path
 
 from Infernux.engine.build import (
+    BuildArtifact,
     BuildDiagnostic,
     BuildPlan,
     BuildRequest,
@@ -114,16 +116,33 @@ class WebPlatformExporter(PlatformExporter):
                 elapsed_seconds=time.perf_counter() - started,
             )
         details = dict(report.details)
+        source_root = Path(str(details.get("source_root", ""))).resolve()
+        if not (source_root / "CMakeLists.txt").is_file():
+            return BuildResult(
+                request.target,
+                False,
+                diagnostics=(
+                    BuildDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        "web.source.checkout",
+                        "The Web build has no valid Infernux source checkout.",
+                        source=self.exporter_id,
+                    ),
+                ),
+                manifest={"toolchain": details},
+                elapsed_seconds=time.perf_counter() - started,
+            )
         staging = _web_staging_directory(request)
         logs: tuple[str, ...] = ()
         try:
             request.report("prepare", 0, 1, "Preparing Web Player staging")
-            shutil.rmtree(staging, ignore_errors=True)
-            staging.mkdir(parents=True)
+            _prepare_web_staging(staging)
             game_name, player_assets = _cook_web_player_assets(request, staging)
-            _stage_engine_python_package(request, player_assets)
-            _stage_web_shader_sources(request, staging)
-            logs = _configure_and_build_host(request, staging, player_assets, details)
+            _stage_engine_python_package(request, player_assets, source_root)
+            _stage_web_shader_sources(request, staging, player_assets, source_root)
+            logs = _configure_and_build_host(
+                request, staging, player_assets, details, source_root
+            )
             request.report("prepare", 1, 1, "Cooked Web Player host ready")
         except (OSError, RuntimeError, ValueError) as error:
             return BuildResult(
@@ -149,32 +168,120 @@ class WebPlatformExporter(PlatformExporter):
                 elapsed_seconds=time.perf_counter() - started,
             )
 
-        return BuildResult(
-            request.target,
-            False,
-            diagnostics=(
+        try:
+            artifacts, asset_revision = _publish_web_player(
+                request, staging / "host-build"
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            return BuildResult(
+                request.target,
+                False,
+                diagnostics=(
                     BuildDiagnostic(
                         DiagnosticSeverity.ERROR,
-                        "web.engine.lifecycle-pending",
-                        "The cooked content, CPython 3.13 runtime, WebGPU RHI host, "
-                        "and supported Infernux native gameplay module are linked, "
-                        "but scene/script/render lifecycle activation is not complete.",
-                    source=self.exporter_id,
+                        "web.player.publish-failed",
+                        str(error),
+                        source=self.exporter_id,
+                    ),
                 ),
-            ),
+                manifest={
+                    "exporter": self.exporter_id,
+                    "abi": "wasm32",
+                    "graphics_api": "webgpu",
+                    "python": "3.13",
+                    "scope": "publish-failed",
+                    "game": game_name,
+                    "staging": str(staging),
+                },
+                logs=logs,
+                elapsed_seconds=time.perf_counter() - started,
+            )
+
+        return BuildResult(
+            request.target,
+            True,
+            artifacts=artifacts,
             manifest={
                 "exporter": self.exporter_id,
+                "contract_version": self.contract_version,
                 "abi": "wasm32",
                 "graphics_api": "webgpu",
                 "python": "3.13",
-                "scope": "engine-linked-host-ready",
+                "scope": "cooked-player",
                 "game": game_name,
-                "staging": str(staging),
-                "player_assets": str(player_assets),
+                "asset_revision": asset_revision,
+                "entry_point": "infernux-player.html",
             },
             logs=logs,
             elapsed_seconds=time.perf_counter() - started,
         )
+
+
+def _publish_web_player(
+    request: BuildRequest, host_build: Path
+) -> tuple[tuple[BuildArtifact, ...], str]:
+    entry_point = host_build / "infernux-player.html"
+    if not entry_point.is_file():
+        raise RuntimeError("Web host build has no infernux-player.html entry point")
+    html = entry_point.read_text(encoding="utf-8")
+    match = re.search(r"assetRevision\s*=\s*['\"]([0-9a-f]{24})['\"]", html)
+    if match is None:
+        raise RuntimeError("Web host entry point has no valid asset revision")
+    revision = match.group(1)
+    names = (
+        "infernux-player.html",
+        f"infernux-player.{revision}.js",
+        f"infernux-player.{revision}.wasm",
+        f"infernux-player.{revision}.data",
+    )
+    missing = [name for name in names if not (host_build / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            "Web host publication is incomplete: " + ", ".join(missing)
+        )
+    if names[1] not in html:
+        raise RuntimeError(f"Web host entry point does not reference {names[1]}")
+    for suffix in ("wasm", "data"):
+        logical_name = f"infernux-player.{suffix}"
+        versioned_expression = f"infernux-player.${{assetRevision}}.{suffix}"
+        if logical_name not in html or versioned_expression not in html:
+            raise RuntimeError(
+                f"Web host entry point does not version-map {logical_name}"
+            )
+
+    output_root = Path(request.output_dir).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    for stale in output_root.glob("infernux-player.*"):
+        if stale.is_file() and stale.name not in names:
+            stale.unlink()
+
+    artifacts = []
+    for name in names:
+        source = host_build / name
+        destination = output_root / name
+        temporary = output_root / f".{name}.tmp"
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+        payload = destination.read_bytes()
+        artifacts.append(
+            BuildArtifact(
+                str(destination),
+                destination.suffix.lstrip("."),
+                hashlib.sha256(payload).hexdigest(),
+                len(payload),
+            )
+        )
+    request.report("package", 1, 1, "Web Player package published")
+    request.report("audit", 1, 1, "Web Player browser contract verified")
+    return tuple(artifacts), revision
+
+
+def _prepare_web_staging(staging: Path) -> None:
+    """Refresh volatile cook inputs without discarding the native build cache."""
+
+    staging.mkdir(parents=True, exist_ok=True)
+    for name in (".infernux-player-cook", "player-assets", "shader-cook"):
+        shutil.rmtree(staging / name, ignore_errors=True)
 
 
 def _web_staging_directory(request: BuildRequest) -> Path:
@@ -232,8 +339,8 @@ def _cook_web_player_assets(
 def _stage_engine_python_package(
     request: BuildRequest,
     player_assets: Path,
+    source_root: Path,
 ) -> None:
-    source_root = Path(__file__).resolve().parents[5]
     source_package = source_root / "python" / "Infernux"
     if not (source_package / "engine" / "platform_player_bootstrap.py").is_file():
         raise ValueError(f"Infernux Player Python sources are incomplete: {source_package}")
@@ -289,12 +396,16 @@ def _stage_engine_python_package(
     request.report("analyze", 2, 2, "Web Player Python modules staged")
 
 
-def _stage_web_shader_sources(request: BuildRequest, staging: Path) -> None:
+def _stage_web_shader_sources(
+    request: BuildRequest,
+    staging: Path,
+    player_assets: Path,
+    source_root: Path,
+) -> None:
     """Generate the shared renderer's GLSL inputs before WGSL translation."""
 
     from Infernux.lib import _Infernux as native
 
-    source_root = Path(__file__).resolve().parents[5]
     vertex_path = (
         source_root
         / "python"
@@ -318,7 +429,7 @@ void main() {
 }
 """
     shader_root = staging / "shader-cook"
-    shader_root.mkdir(parents=True)
+    shader_root.mkdir(parents=True, exist_ok=True)
     (shader_root / "fullscreen_triangle.vert").write_text(
         generated_vertex,
         encoding="utf-8",
@@ -329,24 +440,163 @@ void main() {
         encoding="utf-8",
         newline="\n",
     )
+    shader_entries = [
+        {
+            "name": "Fullscreen Triangle",
+            "stage": "vertex",
+            "source": "fullscreen_triangle.vert",
+        },
+        {
+            "name": "Web Host",
+            "stage": "fragment",
+            "source": "web_host.frag",
+        },
+    ]
+    particle_kernels: dict[str, dict[str, object]] = {}
+    data_roots = sorted(player_assets.glob("*_Data"))
+    if len(data_roots) != 1:
+        raise ValueError(
+            "Web Player shader cook requires exactly one staged *_Data directory"
+        )
+    # Particle AOT artifacts are build inputs, not loose Player files. The
+    # generic cooker seals runtime content into Content.inxpkg before Web
+    # shader translation runs, so consume the project's current artifact
+    # registry and stage only validated WGSL plus its compact catalog.
+    particle_root = (
+        Path(request.project_root).resolve()
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+    )
+    if particle_root.is_dir():
+        for artifact_path in sorted(particle_root.glob("*.inxparticle")):
+            try:
+                artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError(
+                    f"Web Particle artifact is unreadable: {artifact_path.name}: {error}"
+                ) from error
+            emitters = artifact.get("gpu_glsl", {}).get("emitters")
+            if not isinstance(emitters, list):
+                raise ValueError(
+                    f"Web Particle artifact has no GLSL emitters: {artifact_path.name}"
+                )
+            for emitter in emitters:
+                if not isinstance(emitter, dict):
+                    raise ValueError("Web Particle emitter metadata must be an object")
+                kernel_hash = str(emitter.get("kernel_hash", ""))
+                stable_id = str(emitter.get("stable_id", ""))
+                stages = emitter.get("stages")
+                data_layout = emitter.get("data_interface_layout")
+                if (
+                    not re.fullmatch(r"[0-9a-f]{64}", kernel_hash)
+                    or not stable_id
+                    or not isinstance(stages, dict)
+                ):
+                    raise ValueError("Web Particle emitter identity is invalid")
+                if emitter.get("collision_enabled") or emitter.get("continuation") is not None:
+                    raise ValueError(
+                        f"WebGPU Particle emitter {stable_id} uses collision or continuation, "
+                        "which is not portable yet"
+                    )
+                if not isinstance(data_layout, dict) or any(
+                    data_layout.get(name)
+                    for name in (
+                        "mesh_interfaces",
+                        "texture2d_parameters",
+                        "volume_interfaces",
+                    )
+                ):
+                    raise ValueError(
+                        f"WebGPU Particle emitter {stable_id} uses a data interface "
+                        "which is not portable yet"
+                    )
+                expected_stages = {
+                    "bootstrap",
+                    "init",
+                    "update",
+                    "update_rendering_fused",
+                    "contact_prepare",
+                    "contact_solve",
+                    "contact_dispatch",
+                    "render_reset",
+                    "rendering",
+                }
+                if set(stages) != expected_stages or any(
+                    not isinstance(stages[name], str) or not stages[name]
+                    for name in expected_stages
+                ):
+                    raise ValueError(
+                        f"WebGPU Particle emitter {stable_id} has incomplete compute stages"
+                    )
+                existing = particle_kernels.get(kernel_hash)
+                kernel_record = {
+                    "kernel_hash": kernel_hash,
+                    "stable_ids": [stable_id],
+                    "state_stride": int(emitter.get("state_stride", 0)),
+                    "event_type_count": int(emitter.get("event_type_count", 0)),
+                    "update_render_fusion": emitter.get("update_render_fusion"),
+                    "stages": {},
+                }
+                if existing is not None:
+                    comparable = {
+                        key: value
+                        for key, value in existing.items()
+                        if key not in {"stable_ids", "stages"}
+                    }
+                    expected = {
+                        key: value
+                        for key, value in kernel_record.items()
+                        if key not in {"stable_ids", "stages"}
+                    }
+                    if comparable != expected:
+                        raise ValueError(
+                            f"Conflicting Web Particle kernel identity: {kernel_hash}"
+                        )
+                    stable_ids = existing["stable_ids"]
+                    if stable_id not in stable_ids:
+                        stable_ids.append(stable_id)
+                        stable_ids.sort()
+                    continue
+                for stage_name in sorted(expected_stages):
+                    source_name = f"particle-{kernel_hash}-{stage_name}.comp"
+                    (shader_root / source_name).write_text(
+                        stages[stage_name], encoding="utf-8", newline="\n"
+                    )
+                    shader_name = f"Particle/{kernel_hash}/{stage_name}"
+                    shader_entries.append(
+                        {
+                            "name": shader_name,
+                            "stage": "compute",
+                            "source": source_name,
+                        }
+                    )
+                    kernel_record["stages"][stage_name] = shader_name
+                particle_kernels[kernel_hash] = kernel_record
+
     manifest = {
         "$schema": "infernux.web_shader_cook",
         "version": 1,
-        "shaders": [
-            {
-                "name": "Fullscreen Triangle",
-                "stage": "vertex",
-                "source": "fullscreen_triangle.vert",
-            },
-            {
-                "name": "Web Host",
-                "stage": "fragment",
-                "source": "web_host.frag",
-            },
-        ],
+        "shaders": shader_entries,
     }
     (shader_root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    particle_catalog = {
+        "$schema": "infernux.web_particle_catalog",
+        "version": 1,
+        "kernels": sorted(
+            particle_kernels.values(), key=lambda item: str(item["kernel_hash"])
+        ),
+    }
+    (player_assets / "web-particles").mkdir(parents=True, exist_ok=True)
+    (player_assets / "web-particles" / "catalog.json").write_text(
+        json.dumps(
+            particle_catalog, ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -358,13 +608,13 @@ def _configure_and_build_host(
     staging: Path,
     player_assets: Path,
     details: dict[str, object],
+    source_root: Path,
 ) -> tuple[str, ...]:
     if os.name != "nt":
         raise RuntimeError(
             "The current Web Player build executor is configured for the WSL2 toolchain"
         )
     distribution = str(details.get("distribution", "Ubuntu-22.04"))
-    source_root = Path(__file__).resolve().parents[5]
     host_template_source = Path(__file__).resolve().parent / "templates" / "host"
     build_root = staging / "host-build"
     wsl_source_root = _wsl_path(source_root, distribution)

@@ -96,8 +96,10 @@ def test_gpu_fused_update_rendering_stage_has_structured_symbols_and_workgroup_c
     }
     assert "shared uint inx_particle_render_local_count;" in fused
     assert "shared uint inx_particle_render_group_base;" in fused
-    assert len(re.findall(r"atomicAdd\s*\(\s*counters\.visible_count", fused)) == 1
-    assert len(re.findall(r"atomicAdd\s*\(\s*indirect_args\.instance_count", fused)) == 1
+    assert "#ifdef INX_WEBGPU" in fused
+    assert len(re.findall(r"atomicAdd\s*\(\s*counters\.visible_count", fused)) == 3
+    assert "atomicAdd(indirect_args.instance_count, 1u);" in fused
+    assert len(re.findall(r"atomicAdd\s*\(\s*indirect_args\.instance_count", fused)) == 2
     # Alive-list and render export share one subgroup prefix pass.  Keeping
     # this at two barriers is the performance contract for the fused kernel.
     fused_main = fused.rsplit("void main()", 1)[1]

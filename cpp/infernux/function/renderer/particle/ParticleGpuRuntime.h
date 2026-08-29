@@ -52,6 +52,33 @@ struct ShaderBytecode
 {
     const uint32_t *words = nullptr;
     size_t wordCount = 0;
+    const char *wgsl = nullptr;
+    size_t wgslByteSize = 0;
+
+    [[nodiscard]] static ShaderBytecode FromSpirV(const uint32_t *sourceWords, size_t sourceWordCount) noexcept
+    {
+        return {sourceWords, sourceWordCount, nullptr, 0};
+    }
+
+    [[nodiscard]] static ShaderBytecode FromWgsl(const char *source, size_t byteSize) noexcept
+    {
+        return {nullptr, 0, source, byteSize};
+    }
+
+    [[nodiscard]] bool IsSpirV() const noexcept
+    {
+        return words != nullptr && wordCount >= 5 && words[0] == 0x07230203u && wgsl == nullptr && wgslByteSize == 0;
+    }
+
+    [[nodiscard]] bool IsWgsl() const noexcept
+    {
+        return wgsl != nullptr && wgslByteSize != 0 && words == nullptr && wordCount == 0;
+    }
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return IsSpirV() || IsWgsl();
+    }
 };
 
 struct GpuMeshInterfaceDesc

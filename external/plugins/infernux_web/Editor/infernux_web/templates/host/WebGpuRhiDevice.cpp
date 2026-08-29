@@ -855,6 +855,12 @@ rhi::TransferCommandEncoder WebGpuRhiDevice::MakeTransferCommandEncoder(WebGpuTr
     return {&context, &s_transferDispatch};
 }
 
+wgpu::Buffer WebGpuRhiDevice::GetNativeBuffer(rhi::BufferHandle handle) const noexcept
+{
+    const auto *payload = Resolve(m_buffers, handle);
+    return payload ? payload->buffer : wgpu::Buffer{};
+}
+
 wgpu::Buffer WebGpuRhiDevice::CreatePushConstantBuffer(uint32_t byteSize, const void *data)
 {
     wgpu::BufferDescriptor desc;

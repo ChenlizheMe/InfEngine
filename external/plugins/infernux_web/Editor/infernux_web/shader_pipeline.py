@@ -231,6 +231,7 @@ def compile_glsl_to_wgsl(
                 "-V",
                 "--target-env",
                 "vulkan1.1",
+                "-DINX_WEBGPU=1",
                 str(source_path),
                 "-o",
                 str(spirv_path),

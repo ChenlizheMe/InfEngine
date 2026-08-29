@@ -260,6 +260,10 @@ def _install_platform_runtime_api(native_module: Any) -> None:
         setattr(components, name, value)
     components.__all__ = tuple(component_exports) + tuple(builtin_modules)
 
+    runtime_services = importlib.import_module("Infernux.runtime_services")
+    web_host = importlib.import_module("_InfernuxWebHost")
+    runtime_services.install_runtime_service("gpu-particles", web_host)
+
     for source in (lib, math_module):
         exports = getattr(source, "__all__", None)
         if exports is None:
@@ -429,9 +433,6 @@ def _prepare_player_runtime() -> None:
     )
 
 
-_prepare_player_runtime()
-
-
 def infernux_web_ready(details: dict[str, Any]) -> None:
     """Receive the browser graphics and viewport contract from the native host."""
 
@@ -441,6 +442,8 @@ def infernux_web_ready(details: dict[str, Any]) -> None:
         f"python=3.13 graphics={details.get('graphics_api')} "
         f"viewport={details.get('width')}x{details.get('height')}"
     )
+    if _player_session is None:
+        _prepare_player_runtime()
     if _player_session is None or not _player_session.activate():
         raise RuntimeError("Web Player runtime session could not be activated")
     _player_activated = True

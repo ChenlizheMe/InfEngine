@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Mapping
 
 from Infernux.engine.build import (
@@ -39,6 +41,15 @@ def inspect_web_toolchain(
         "emdawnwebgpu_version": EMDAWNWEBGPU_VERSION,
         "dawn_revision": DAWN_REVISION,
     }
+    source_root = _source_root(values)
+    details["source_root"] = str(source_root) if source_root is not None else ""
+    if source_root is None:
+        diagnostics.append(
+            _error(
+                "web.source.checkout",
+                "Set INFERNUX_SOURCE_ROOT to an Infernux source checkout for Web host bring-up.",
+            )
+        )
 
     result = _run_toolchain_probe(values)
     details.update(result["details"])
@@ -101,6 +112,29 @@ def inspect_web_toolchain(
         tuple(diagnostics),
         details,
     )
+
+
+def _source_root(values: Mapping[str, str]) -> Path | None:
+    explicit = str(values.get("INFERNUX_SOURCE_ROOT", "") or "").strip()
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+
+    spec = importlib.util.find_spec("Infernux")
+    if spec is not None and spec.origin:
+        package = Path(str(spec.origin)).resolve().parent
+        candidates.extend((package.parent.parent, package.parent))
+
+    candidates.extend(Path(__file__).resolve().parents)
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if (
+            (resolved / "CMakeLists.txt").is_file()
+            and (resolved / "python" / "Infernux" / "__init__.py").is_file()
+            and (resolved / "external" / "SDL" / "CMakeLists.txt").is_file()
+        ):
+            return resolved
+    return None
 
 
 def _run_toolchain_probe(values: Mapping[str, str]) -> dict[str, object]:

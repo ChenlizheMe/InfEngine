@@ -1251,7 +1251,7 @@ class ParticleSystem(InxComponent):
                 # paused still refreshes world-space particles without building
                 # controllers, bounds, and a full batch every frame.
                 emitter_to_world = self._emitter_matrix()
-                if self._emitter_to_world_cache is not None and np.array_equal(
+                if self._emitter_to_world_cache is not None and self._matrix_equal(
                     emitter_to_world, self._emitter_to_world_cache
                 ):
                     return
@@ -1879,6 +1879,7 @@ class ParticleSystem(InxComponent):
                     "owner_object_id": int(self.game_object.id),
                     "owner_layer_mask": 1 << int(self.game_object.layer),
                     "artifact_revision": artifact.revision,
+                    "kernel_hash": glsl_emitter["kernel_hash"],
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
@@ -2054,14 +2055,17 @@ class ParticleSystem(InxComponent):
         if native is None or metadata is None:
             return
         emitter_to_world = self._emitter_matrix()
-        if self._emitter_to_world_cache is None or not np.array_equal(
+        if self._emitter_to_world_cache is None or not self._matrix_equal(
             emitter_to_world, self._emitter_to_world_cache
         ):
             self._emitter_to_world_cache = emitter_to_world
             self._gpu_transform_buffers = {}
 
         frame_items = []
-        emitter_position = tuple(float(value) for value in emitter_to_world[0:3, 3])
+        if np is None:
+            emitter_position = tuple(float(emitter_to_world[index]) for index in (12, 13, 14))
+        else:
+            emitter_position = tuple(float(value) for value in emitter_to_world[0:3, 3])
         bounds_mode, manual_bounds_lower, manual_bounds_upper = (
             self._gpu_bounds_request(emitter_to_world)
         )
@@ -2287,9 +2291,7 @@ class ParticleSystem(InxComponent):
             remaining = max(0.0, remaining - delta_time)
         return result
 
-    def _gpu_bounds_request(
-        self, emitter_to_world: np.ndarray
-    ) -> tuple[str, list[float], list[float]]:
+    def _gpu_bounds_request(self, emitter_to_world) -> tuple[str, list[float], list[float]]:
         raw_mode = get_raw_field_value(self, "bounds_mode")
         try:
             mode = (
@@ -2304,14 +2306,44 @@ class ParticleSystem(InxComponent):
 
         center_value = get_raw_field_value(self, "manual_bounds_center")
         size_value = get_raw_field_value(self, "manual_bounds_size")
-        center = np.asarray(
-            [center_value.x, center_value.y, center_value.z], dtype=np.float32
-        )
-        half_size = np.abs(
-            np.asarray([size_value.x, size_value.y, size_value.z], dtype=np.float32)
-        ) * np.float32(0.5)
-        if not np.all(np.isfinite(center)) or not np.all(np.isfinite(half_size)):
+        center_values = tuple(float(value) for value in (center_value.x, center_value.y, center_value.z))
+        half_size_values = tuple(abs(float(value)) * 0.5 for value in (size_value.x, size_value.y, size_value.z))
+        if not all(math.isfinite(value) for value in center_values + half_size_values):
             raise ValueError("particle manual bounds must contain finite values")
+
+        if np is None:
+            matrix = tuple(float(value) for value in emitter_to_world)
+            world_corners = []
+            for sx, sy, sz in (
+                (-1.0, -1.0, -1.0),
+                (-1.0, -1.0, 1.0),
+                (-1.0, 1.0, -1.0),
+                (-1.0, 1.0, 1.0),
+                (1.0, -1.0, -1.0),
+                (1.0, -1.0, 1.0),
+                (1.0, 1.0, -1.0),
+                (1.0, 1.0, 1.0),
+            ):
+                x = center_values[0] + sx * half_size_values[0]
+                y = center_values[1] + sy * half_size_values[1]
+                z = center_values[2] + sz * half_size_values[2]
+                world_corners.append(
+                    (
+                        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+                        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+                        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+                    )
+                )
+            if not all(math.isfinite(value) for corner in world_corners for value in corner):
+                raise ValueError("particle manual bounds transform produced non-finite values")
+            return (
+                mode.value,
+                [min(corner[axis] for corner in world_corners) for axis in range(3)],
+                [max(corner[axis] for corner in world_corners) for axis in range(3)],
+            )
+
+        center = np.asarray(center_values, dtype=np.float32)
+        half_size = np.asarray(half_size_values, dtype=np.float32)
 
         signs = np.asarray(
             [
@@ -2657,17 +2689,42 @@ class ParticleSystem(InxComponent):
         loaded = self._load_saved_artifact(force=had_controllers)
         return bool(loaded and self._gpu_runtime_resident()), bool(loaded)
 
-    def _emitter_matrix(self) -> np.ndarray:
+    @staticmethod
+    def _matrix_equal(left, right) -> bool:
+        if np is None:
+            return tuple(left) == tuple(right)
+        return bool(np.array_equal(left, right))
+
+    def _emitter_matrix(self):
         flat = self.transform.local_to_world_matrix()
+        if np is None:
+            return tuple(float(value) for value in flat)
         return np.asarray(flat, dtype=np.float32).reshape((4, 4), order="F")
 
-    def _gpu_transform_buffer(self, local_simulation: bool) -> np.ndarray:
+    def _gpu_transform_buffer(self, local_simulation: bool):
         cached = self._gpu_transform_buffers.get(local_simulation)
         if cached is not None:
             return cached
         emitter_to_world = self._emitter_to_world_cache
         if emitter_to_world is None:
             emitter_to_world = self._emitter_matrix()
+        if np is None:
+            emitter_values = tuple(float(value) for value in emitter_to_world)
+            world_to_emitter = tuple(
+                float(value) for value in self.transform.world_to_local_matrix()
+            )
+            identity = (
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            )
+            simulation_to_world = emitter_values if local_simulation else identity
+            world_to_simulation = world_to_emitter if local_simulation else identity
+            result = emitter_values + world_to_emitter + simulation_to_world + world_to_simulation
+            self._gpu_transform_buffers[local_simulation] = result
+            return result
+
         try:
             world_to_emitter = np.linalg.inv(emitter_to_world).astype(np.float32)
         except np.linalg.LinAlgError:
@@ -3489,6 +3546,11 @@ class ParticleSystem(InxComponent):
 
     @staticmethod
     def _native_engine():
+        from Infernux.runtime_services import get_runtime_service
+
+        service = get_runtime_service("gpu-particles")
+        if service is not None:
+            return service
         from Infernux.application import Application
 
         engine = Application._current_engine()

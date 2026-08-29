@@ -1080,6 +1080,53 @@ def test_particle_system_manual_bounds_are_local_and_transform_to_world_aabb():
     )
 
 
+def test_particle_system_transform_payload_does_not_require_numpy(monkeypatch):
+    import Infernux.components.particle_system as particle_system_module
+    from Infernux.lib import Vector3
+
+    local_to_world = (
+        -2.0, 0.0, 0.0, 0.0,
+        0.0, 3.0, 0.0, 0.0,
+        0.0, 0.0, 4.0, 0.0,
+        10.0, -5.0, 2.0, 1.0,
+    )
+    world_to_local = (
+        -0.5, 0.0, 0.0, 0.0,
+        0.0, 1.0 / 3.0, 0.0, 0.0,
+        0.0, 0.0, 0.25, 0.0,
+        5.0, 5.0 / 3.0, -0.5, 1.0,
+    )
+
+    class _Transform:
+        def local_to_world_matrix(self):
+            return local_to_world
+
+        def world_to_local_matrix(self):
+            return world_to_local
+
+    class _ParticleSystem(ParticleSystem):
+        @property
+        def transform(self):
+            return _Transform()
+
+    component = _ParticleSystem()
+    component.bounds_mode = ParticleBoundsMode.MANUAL
+    component.manual_bounds_center = Vector3(1.0, 2.0, 3.0)
+    component.manual_bounds_size = Vector3(-4.0, 2.0, 6.0)
+    monkeypatch.setattr(particle_system_module, "np", None)
+
+    matrix = component._emitter_matrix()
+    mode, lower, upper = component._gpu_bounds_request(matrix)
+    component._emitter_to_world_cache = matrix
+    component._gpu_transform_buffers = {}
+    transforms = component._gpu_transform_buffer(local_simulation=True)
+
+    assert mode == "manual"
+    assert lower == pytest.approx([4.0, -2.0, 2.0])
+    assert upper == pytest.approx([12.0, 4.0, 26.0])
+    assert transforms == local_to_world + world_to_local + local_to_world + world_to_local
+
+
 def test_particle_emitter_lifecycle_is_serialized_on_the_component_instance(
     scene, monkeypatch
 ):

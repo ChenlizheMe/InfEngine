@@ -94,6 +94,18 @@ class WebGpuRhiDevice final : public rhi::Device
     [[nodiscard]] rhi::TransferCommandEncoder MakeTransferCommandEncoder(WebGpuTransferCommandContext &context,
                                                                          wgpu::CommandEncoder encoder) noexcept;
 
+    /// Narrow bridge for browser-native render passes that consume buffers
+    /// produced by backend-neutral compute systems.
+    [[nodiscard]] wgpu::Buffer GetNativeBuffer(rhi::BufferHandle handle) const noexcept;
+    [[nodiscard]] wgpu::Device NativeDevice() const noexcept
+    {
+        return m_device;
+    }
+    [[nodiscard]] wgpu::Queue NativeQueue() const noexcept
+    {
+        return m_queue;
+    }
+
     [[nodiscard]] const std::string &LastError() const noexcept;
     void ClearError() noexcept;
 
