@@ -54,14 +54,40 @@ public final class InfernuxActivity extends SDLActivity {
             throws IOException {
         File installedRoot = new File(getFilesDir(), assetRoot);
         File installedIdentity = new File(installedRoot, identityName);
+        File completionMarker = new File(installedRoot, identityName + ".complete");
         String packagedIdentity = readUtf8(getAssets().open(
                 assetRoot + "/" + identityName));
         String currentIdentity = installedIdentity.isFile()
                 ? readUtf8(new FileInputStream(installedIdentity))
                 : "";
-        if (!packagedIdentity.equals(currentIdentity)) {
+        String completedIdentity = completionMarker.isFile()
+                ? readUtf8(new FileInputStream(completionMarker))
+                : "";
+        if (!packagedIdentity.equals(currentIdentity)
+                || !packagedIdentity.equals(completedIdentity)) {
+            // Never extract directly into the published runtime. Android may
+            // terminate the process while an APK is being upgraded or while
+            // a large Python tree is copied. A completion marker written only
+            // after the staged tree is renamed makes the next launch repair an
+            // interrupted install instead of trusting an identity file that
+            // happened to be copied before the missing payload.
+            File stagingBase = new File(getFilesDir(), assetRoot + ".installing");
+            deleteRecursively(stagingBase);
+            extractAsset(assetRoot, stagingBase);
+            File stagedRoot = new File(stagingBase, assetRoot);
+            File stagedIdentity = new File(stagedRoot, identityName);
+            if (!stagedIdentity.isFile()
+                    || !packagedIdentity.equals(readUtf8(new FileInputStream(stagedIdentity)))) {
+                deleteRecursively(stagingBase);
+                throw new IOException("Staged asset identity mismatch for " + assetRoot);
+            }
             deleteRecursively(installedRoot);
-            extractAsset(assetRoot, getFilesDir());
+            if (!stagedRoot.renameTo(installedRoot)) {
+                deleteRecursively(stagingBase);
+                throw new IOException("Failed to publish staged assets for " + assetRoot);
+            }
+            writeUtf8(completionMarker, packagedIdentity);
+            deleteRecursively(stagingBase);
         }
         return installedRoot;
     }
@@ -75,6 +101,13 @@ public final class InfernuxActivity extends SDLActivity {
                 output.write(buffer, 0, count);
             }
             return new String(output.toByteArray(), StandardCharsets.UTF_8).trim();
+        }
+    }
+
+    private static void writeUtf8(File output, String value) throws IOException {
+        try (FileOutputStream stream = new FileOutputStream(output)) {
+            stream.write((value + "\n").getBytes(StandardCharsets.UTF_8));
+            stream.getFD().sync();
         }
     }
 

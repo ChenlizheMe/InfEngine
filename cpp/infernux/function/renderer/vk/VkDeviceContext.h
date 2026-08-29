@@ -168,6 +168,14 @@ class VkDeviceContext
         return m_surface;
     }
 
+    /// Replace the externally-created presentation surface without rebuilding
+    /// the logical device. The caller must retire the old swapchain and destroy
+    /// the old surface before publishing the replacement.
+    void SetExternalSurface(VkSurfaceKHR surface) noexcept
+    {
+        m_surface = surface;
+    }
+
     /// @brief Get graphics queue handle
     [[nodiscard]] VkQueue GetGraphicsQueue() const
     {

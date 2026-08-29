@@ -73,8 +73,8 @@
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
       },
       "artifact": "infernux.platform-android.inxpkg",
-      "artifact_sha256": "5536254921e7dd6bb06a01d08b2503d02260b1f642fbcee568532310ebff553c",
-      "artifact_size": 32384,
+      "artifact_sha256": "7c4ed8ac114f44d0856cb3b4d9653ff87c2d2c2cbf46402e7ea4a3ee8dee8ef0",
+      "artifact_size": 32768,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
       "repository": "",

@@ -1078,6 +1078,27 @@ def test_touch_events_wake_the_frame_loop_and_request_ui_refresh() -> None:
         assert event_name in process_one
 
 
+def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
+    view = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    core = (RENDERER / "InxVkCoreModular.cpp").read_text(encoding="utf-8")
+
+    assert "SDL_AddEventWatch(&InxView::WatchApplicationEvents" in view
+    assert "SDL_EVENT_WILL_ENTER_BACKGROUND" in view
+    assert "m_applicationInBackground.store(true" in view
+    assert "m_surfaceRecreationPending.store(true" in view
+    assert "NeedsSurfaceRecreation()" in renderer
+    assert "RecreatePresentationSurface" in renderer
+    assert core.index("m_backend.Presentation().Destroy()") < core.index(
+        "SDL_Vulkan_DestroySurface"
+    )
+    assert core.index("SDL_Vulkan_DestroySurface") < core.index(
+        "createSurface(m_instance"
+    )
+
+
 def test_prepare_pipeline_pumps_between_engine_shader_compiles() -> None:
     source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void InxRenderer::PreparePipeline")

@@ -1079,6 +1079,19 @@ void InxRenderer::DrawFrame()
         m_preGuiCallback();
     }
 
+    if (m_view->NeedsSurfaceRecreation() && !m_view->IsApplicationInBackground()) {
+        const bool recreated =
+            m_vkCore && m_vkCore->RecreatePresentationSurface([this](VkInstance instance, VkSurfaceKHR *surface) {
+                return m_view->TryCreateSurface(instance, surface);
+            });
+        if (recreated) {
+            m_view->AcknowledgeSurfaceRecreation();
+        } else {
+            SDL_Delay(16);
+            return;
+        }
+    }
+
     // A minimized swapchain has no presentable images, but Agent UI work must
     // remain independent from desktop presentation. Build an ImGui-only frame
     // when an on-demand semantic snapshot is pending; it consumes synthetic

@@ -125,7 +125,20 @@ class InxView
 
     bool IsMinimized() const
     {
-        return m_isMinimized;
+        return m_isMinimized || m_applicationInBackground.load(std::memory_order_acquire) ||
+               m_surfaceRecreationPending.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool IsApplicationInBackground() const noexcept
+    {
+        return m_applicationInBackground.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool NeedsSurfaceRecreation() const noexcept
+    {
+        return m_surfaceRecreationPending.load(std::memory_order_acquire);
+    }
+    void AcknowledgeSurfaceRecreation() noexcept
+    {
+        m_surfaceRecreationPending.store(false, std::memory_order_release);
     }
     // ---- Power-save / idle accessors ----
     FpsIdling &GetIdling()
@@ -171,6 +184,7 @@ class InxView
     void RequestExternalWake() noexcept;
 
     void CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface);
+    [[nodiscard]] bool TryCreateSurface(VkInstance vkInstance, VkSurfaceKHR *vkSurface) noexcept;
     void SetAppMetadata(InxAppMetadata appMetaData);
 
   private:
@@ -208,6 +222,9 @@ class InxView
     bool m_keepRunning;
     bool m_closeRequested = false;
     bool m_isMinimized = false;
+    std::atomic_bool m_applicationInBackground{false};
+    std::atomic_bool m_surfaceRecreationPending{false};
+    bool m_eventWatchInstalled = false;
     bool m_isPlayMode = false;
     bool m_needsImmediateGuiRefresh = false;
     InxAppMetadata m_appMetadata;
@@ -243,6 +260,7 @@ class InxView
     SDL_Keymod m_syntheticKeyModifiers = SDL_KMOD_NONE;
 
     void SDLInit();
+    static bool SDLCALL WatchApplicationEvents(void *userdata, SDL_Event *event);
     uint64_t QueueSyntheticInput(SyntheticInputEvent event);
     [[nodiscard]] bool HasPendingSyntheticInput() const;
     void DrainSyntheticInputEvents(bool &hadInputEvent);

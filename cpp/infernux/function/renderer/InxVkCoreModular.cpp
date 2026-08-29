@@ -22,6 +22,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <SDL3/SDL_vulkan.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -409,6 +411,59 @@ bool InxVkCoreModular::PrepareSurface()
     CreateUniformBuffers();
 
     INXLOG_INFO("Surface prepared successfully");
+    return true;
+}
+
+bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkInstance, VkSurfaceKHR *)> &createSurface)
+{
+    if (!createSurface || !m_backend.Device().IsValid() || m_instance == VK_NULL_HANDLE)
+        return false;
+
+    // Mobile surface replacement is rare and is a hard presentation boundary.
+    // A full drain is intentional: no command may retain an image from the
+    // Android SurfaceView that was destroyed while the app was backgrounded.
+    m_backend.Device().WaitIdle();
+    ReleaseMaterialPassResolutionCache();
+    DestroyGuiRenderGraphs();
+    m_depthImage.reset();
+    m_backend.Presentation().Destroy();
+
+    m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
+    if (m_surface != VK_NULL_HANDLE) {
+        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
+        m_surface = VK_NULL_HANDLE;
+    }
+
+    VkSurfaceKHR replacement = VK_NULL_HANDLE;
+    if (!createSurface(m_instance, &replacement) || replacement == VK_NULL_HANDLE) {
+        INXLOG_WARN("Platform presentation surface is not ready; recreation will be retried");
+        return false;
+    }
+    m_surface = replacement;
+    m_backend.Device().SetExternalSurface(replacement);
+
+    const auto support = m_backend.Device().QuerySwapchainSupport();
+    uint32_t width = support.capabilities.currentExtent.width;
+    uint32_t height = support.capabilities.currentExtent.height;
+    if (width == std::numeric_limits<uint32_t>::max() || height == std::numeric_limits<uint32_t>::max() || width == 0 ||
+        height == 0) {
+        width = m_windowWidth;
+        height = m_windowHeight;
+    }
+    if (width == 0 || height == 0 || !m_backend.Presentation().Create(m_backend.Device(), width, height)) {
+        INXLOG_WARN("Replacement presentation surface has no usable swapchain yet; recreation will be retried");
+        return false;
+    }
+
+    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    const VkExtent2D extent = m_backend.Presentation().GetExtent();
+    m_presentationView.width = extent.width;
+    m_presentationView.height = extent.height;
+    m_presentationView.colorFormat = rhi::FromVkFormat(m_backend.Presentation().GetImageFormat());
+    ++m_presentationView.revision;
+    m_renderGraph.SetRenderView(m_presentationView);
+    CreateDepthResources();
+    INXLOG_INFO("Platform presentation surface recreated: ", extent.width, "x", extent.height);
     return true;
 }
 

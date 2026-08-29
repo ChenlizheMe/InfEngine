@@ -723,6 +723,10 @@ void InxView::NotifyGuiFrameBuilt() noexcept
 
 void InxView::Quit()
 {
+    if (m_eventWatchInstalled) {
+        SDL_RemoveEventWatch(&InxView::WatchApplicationEvents, this);
+        m_eventWatchInstalled = false;
+    }
     if (m_window) {
         SDL_DestroyWindow(m_window);
         m_window = nullptr;
@@ -873,6 +877,11 @@ void InxView::SDLInit()
         throw std::runtime_error("SDL initialization failed: " + error);
     }
     INXLOG_DEBUG("SDL_Init succeeded.");
+    if (!SDL_AddEventWatch(&InxView::WatchApplicationEvents, this)) {
+        INXLOG_WARN("Could not install SDL application lifecycle watch: ", SDL_GetError());
+    } else {
+        m_eventWatchInstalled = true;
+    }
 
     INXLOG_DEBUG("Window engine: SDL Vulkan");
     m_window =
@@ -896,12 +905,52 @@ void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)
     if (!m_window || !vkInstance || *vkInstance == VK_NULL_HANDLE || !vkSurface) {
         throw std::runtime_error("Cannot create Vulkan surface before the window and instance are initialized");
     }
-    if (!SDL_Vulkan_CreateSurface(m_window, *vkInstance, nullptr, vkSurface)) {
+    if (!TryCreateSurface(*vkInstance, vkSurface)) {
         const std::string error = SDL_GetError();
         INXLOG_ERROR("Could not create Vulkan surface: ", error);
         throw std::runtime_error("Vulkan surface creation failed: " + error);
     }
     INXLOG_DEBUG("Vulkan surface created successfully.");
+}
+
+bool InxView::TryCreateSurface(VkInstance vkInstance, VkSurfaceKHR *vkSurface) noexcept
+{
+    if (!m_window || vkInstance == VK_NULL_HANDLE || !vkSurface)
+        return false;
+    *vkSurface = VK_NULL_HANDLE;
+    return SDL_Vulkan_CreateSurface(m_window, vkInstance, nullptr, vkSurface);
+}
+
+bool SDLCALL InxView::WatchApplicationEvents(void *userdata, SDL_Event *event)
+{
+    auto *view = static_cast<InxView *>(userdata);
+    if (!view || !event)
+        return true;
+
+    switch (event->type) {
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+        // SDL requires mobile lifecycle events to be handled from an event
+        // watch: Android may suspend the normal event loop immediately after
+        // delivering them. Stop presentation before SurfaceView tears down.
+        view->m_applicationInBackground.store(true, std::memory_order_release);
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+        // Android replaces the ANativeWindow while an Activity is backgrounded.
+        // The old VkSurfaceKHR and its swapchain cannot be reused on resume.
+        view->m_surfaceRecreationPending.store(true, std::memory_order_release);
+#endif
+        break;
+    case SDL_EVENT_WILL_ENTER_FOREGROUND:
+        // Keep presentation suspended until the new native surface is ready.
+        break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+        view->m_applicationInBackground.store(false, std::memory_order_release);
+        view->RequestExternalWake();
+        break;
+    default:
+        break;
+    }
+    return true;
 }
 
 void InxView::SetAppMetadata(InxAppMetadata appMetaData)

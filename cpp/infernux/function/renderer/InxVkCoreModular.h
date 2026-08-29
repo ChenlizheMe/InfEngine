@@ -157,6 +157,11 @@ class InxVkCoreModular
      */
     [[nodiscard]] bool PrepareSurface();
 
+    /// Rebind presentation to a replacement platform surface while retaining
+    /// the logical device and device-resident game resources.
+    [[nodiscard]] bool
+    RecreatePresentationSurface(const std::function<bool(VkInstance, VkSurfaceKHR *)> &createSurface);
+
     /**
      * @brief Prepare graphics pipeline
      */

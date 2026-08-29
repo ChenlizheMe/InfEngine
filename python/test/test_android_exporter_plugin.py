@@ -197,6 +197,10 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'SDL_setenv_unsafe("INFERNUX_NATIVE_MODULE_DIR"' in host_source
     assert "INFERNUX_PLAYER_ASSET_ROOT" in activity
     assert "infernux-content.id" in activity
+    assert 'identityName + ".complete"' in activity
+    assert 'assetRoot + ".installing"' in activity
+    assert "stagedRoot.renameTo(installedRoot)" in activity
+    assert "stream.getFD().sync()" in activity
     assert not list(project.rglob("*.in"))
     assert "@INFERNUX_" not in cmake + gradle + root_gradle
     assert "@ANDROID_" not in cmake + gradle + root_gradle
