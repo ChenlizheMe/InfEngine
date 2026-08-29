@@ -34,6 +34,7 @@ from enum import Enum
 from typing import Tuple, Union
 
 from Infernux.lib import InputManager as _NativeInputManager
+from Infernux.runtime_services import get_runtime_service
 from .ime import ImeInputState
 
 
@@ -58,6 +59,8 @@ class Touch:
     position: Tuple[float, float]
     delta_position: Tuple[float, float]
     pressure: float
+    contact_size: Tuple[float, float]
+    is_primary: bool
     phase: TouchPhase
 
 
@@ -489,8 +492,52 @@ class Input(metaclass=_InputMeta):
             position=(float(native_touch.x), float(native_touch.y)),
             delta_position=(float(native_touch.delta_x), float(native_touch.delta_y)),
             pressure=float(native_touch.pressure),
+            contact_size=(
+                float(native_touch.contact_width),
+                float(native_touch.contact_height),
+            ),
+            is_primary=bool(native_touch.is_primary),
             phase=TouchPhase(str(native_touch.phase)),
         )
+
+    @staticmethod
+    def begin_text_input(initial_value: str = "", input_type: str = "text") -> bool:
+        """Begin platform text input and show a software keyboard when available.
+
+        Browser Players use their DOM composition bridge; desktop and Android
+        Players use SDL's native text-input service. Only committed text appears
+        in :attr:`Input.input_string`.
+        """
+
+        service = get_runtime_service("text-input")
+        if service is not None:
+            begin = getattr(service, "begin_text_input", None)
+            if callable(begin):
+                return bool(begin(str(initial_value), str(input_type or "text")))
+        return bool(_NativeInputManager.instance().start_text_input())
+
+    @staticmethod
+    def end_text_input() -> None:
+        """End platform text input and dismiss its software keyboard."""
+
+        service = get_runtime_service("text-input")
+        if service is not None:
+            end = getattr(service, "end_text_input", None)
+            if callable(end):
+                end()
+                return
+        _NativeInputManager.instance().stop_text_input()
+
+    @staticmethod
+    def is_text_input_active() -> bool:
+        """Return whether gameplay has requested platform text input."""
+
+        service = get_runtime_service("text-input")
+        if service is not None:
+            query = getattr(service, "is_text_input_active", None)
+            if callable(query):
+                return bool(query())
+        return bool(_NativeInputManager.instance().is_text_input_active)
 
     @staticmethod
     def get_touch(index: int) -> Touch:

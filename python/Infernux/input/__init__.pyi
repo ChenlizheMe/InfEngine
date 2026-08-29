@@ -21,6 +21,8 @@ class Touch:
     position: Tuple[float, float]
     delta_position: Tuple[float, float]
     pressure: float
+    contact_size: Tuple[float, float]
+    is_primary: bool
     phase: TouchPhase
 
 
@@ -167,6 +169,19 @@ class Input:
     @staticmethod
     def get_touch(index: int) -> Touch:
         """Return one touch from the current frame snapshot."""
+        ...
+
+    @staticmethod
+    def begin_text_input(initial_value: str = ..., input_type: str = ...) -> bool:
+        """Begin platform text input and show a software keyboard when available."""
+        ...
+    @staticmethod
+    def end_text_input() -> None:
+        """End platform text input and dismiss its software keyboard."""
+        ...
+    @staticmethod
+    def is_text_input_active() -> bool:
+        """Return whether gameplay requested platform text input."""
         ...
 
     @staticmethod

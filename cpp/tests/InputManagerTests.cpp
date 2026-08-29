@@ -186,6 +186,11 @@ int main()
     assert(input.GetTouchCount() == 1);
     assert(input.GetTouch(0).phase == TouchPhase::Began);
 
+    input.ProcessTouchEvent(8, 42, 999, 0, 0.2f, 0.3f, 0.0f, 0.0f, 0.75f, TouchPhase::Moved, 0.04f, 0.06f, true);
+    assert(input.GetTouch(0).contactWidth == 0.04f);
+    assert(input.GetTouch(0).contactHeight == 0.06f);
+    assert(input.GetTouch(0).isPrimary);
+
     input.BeginFrame();
     input.ProcessKeyEvent(SDL_SCANCODE_A, false);
     input.ProcessPointerButtonEvent(1, false);

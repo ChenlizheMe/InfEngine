@@ -246,7 +246,8 @@ void InputManager::ProcessTextInputEvent(const std::string &text)
 }
 
 void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId,
-                                     float x, float y, float deltaX, float deltaY, float pressure, TouchPhase phase)
+                                     float x, float y, float deltaX, float deltaY, float pressure, TouchPhase phase,
+                                     float contactWidth, float contactHeight, bool isPrimary)
 {
     const auto existing = std::find_if(m_touches.begin(), m_touches.end(), [&](const TouchState &touch) {
         return touch.touchId == touchId && touch.fingerId == fingerId;
@@ -267,6 +268,9 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     touch->deltaX = deltaX;
     touch->deltaY = deltaY;
     touch->pressure = pressure;
+    touch->contactWidth = contactWidth;
+    touch->contactHeight = contactHeight;
+    touch->isPrimary = isPrimary;
     touch->phase = phase;
 }
 
@@ -274,11 +278,38 @@ void InputManager::ProcessFocusEvent(bool focused)
 {
     if (focused)
         return;
+    StopTextInput();
     m_editorMouseCaptured = false;
     ResetPhysicalInputForFocusLoss();
 #if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
     ApplyRelativeMouseMode();
 #endif
+}
+
+bool InputManager::StartTextInput()
+{
+    if (m_textInputActive)
+        return true;
+#if defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    m_textInputActive = true;
+    return true;
+#else
+    if (m_window == nullptr || !SDL_StartTextInput(m_window))
+        return false;
+    m_textInputActive = true;
+    return true;
+#endif
+}
+
+void InputManager::StopTextInput()
+{
+    if (!m_textInputActive)
+        return;
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    if (m_window != nullptr)
+        SDL_StopTextInput(m_window);
+#endif
+    m_textInputActive = false;
 }
 
 void InputManager::ProcessSDLEvent(const SDL_Event &event)

@@ -40,7 +40,7 @@
 <body>
   <main id="infernux-shell">
     <canvas id="canvas" tabindex="0" aria-label="Infernux game canvas"></canvas>
-    <textarea id="infernux-text-input" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+    <input id="infernux-text-input" type="text" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false">
     <div id="status" role="status">Starting Infernux…</div>
   </main>
   <script>
@@ -63,29 +63,131 @@
       const input = document.getElementById('infernux-text-input');
       if (!input || input.dataset.infernuxBound === 'true') return;
       input.dataset.infernuxBound = 'true';
-      input.addEventListener('input', () => {
-        if (input.value.length > 0) {
-          Module.ccall('InfernuxWebTextInput', null, ['string'], [input.value]);
-          input.value = '';
-        }
+      let composing = false;
+      let pendingComposition = '';
+      let compositionTicket = 0;
+      const commit = (value) => {
+        const text = String(value || '');
+        if (text.length > 0) Module.ccall('InfernuxWebTextInput', null, ['string'], [text]);
+        input.value = '';
+      };
+      input.addEventListener('compositionstart', () => {
+        composing = true;
+        pendingComposition = '';
+        compositionTicket += 1;
       });
-      Module.infernuxBeginTextInput = (initialValue = '') => {
-        input.value = String(initialValue);
+      input.addEventListener('compositionend', (event) => {
+        composing = false;
+        pendingComposition = String(event.data || input.value || '');
+        const ticket = ++compositionTicket;
+        setTimeout(() => {
+          if (ticket !== compositionTicket || !pendingComposition) return;
+          commit(pendingComposition);
+          pendingComposition = '';
+        }, 0);
+      });
+      input.addEventListener('input', (event) => {
+        if (composing || event.isComposing) return;
+        compositionTicket += 1;
+        const value = input.value || pendingComposition;
+        pendingComposition = '';
+        commit(value);
+      });
+      Module.infernuxBeginTextInput = (initialValue = '', inputType = 'text') => {
+        const allowedTypes = new Set(['text', 'email', 'url', 'tel', 'search', 'password']);
+        input.type = allowedTypes.has(inputType) ? inputType : 'text';
+        input.dataset.initialValue = String(initialValue);
+        input.value = '';
         input.focus({preventScroll: true});
-        input.setSelectionRange(input.value.length, input.value.length);
       };
       Module.infernuxEndTextInput = () => {
+        composing = false;
+        pendingComposition = '';
+        compositionTicket += 1;
         input.blur();
         input.value = '';
       };
       recordDiagnostic('INFERNUX_WEB_TEXT_BRIDGE_READY');
+    }
+    function installPointerBridge() {
+      if (canvasNode.dataset.infernuxPointerBound === 'true') return;
+      canvasNode.dataset.infernuxPointerBound = 'true';
+      const activePointers = new Set();
+      const pointerType = (type) => type === 'mouse' ? 0 : (type === 'pen' ? 2 : 1);
+      const eventKind = (type) => type === 'pointerdown' ? 0 : (type === 'pointerup' ? 2 : (type === 'pointercancel' ? 3 : 1));
+      const forward = (event, forcedKind = null) => {
+        const rect = canvasNode.getBoundingClientRect();
+        const kind = forcedKind === null ? eventKind(event.type) : forcedKind;
+        Module.ccall('InfernuxWebPointerEvent', null,
+          ['number','number','number','number','number','number','number','number','number','number','number','number','number'],
+          [kind, event.pointerId, pointerType(event.pointerType), event.clientX - rect.left,
+           event.clientY - rect.top, event.movementX || 0, event.movementY || 0,
+           Number.isFinite(event.pressure) ? event.pressure : 0,
+           Number.isFinite(event.width) ? event.width : 0,
+           Number.isFinite(event.height) ? event.height : 0,
+           event.button, event.buttons, event.isPrimary ? 1 : 0]);
+      };
+      canvasNode.addEventListener('pointerdown', (event) => {
+        activePointers.add(event.pointerId);
+        try { canvasNode.setPointerCapture(event.pointerId); } catch (_) { /* synthetic test event */ }
+        canvasNode.focus({preventScroll: true});
+        forward(event);
+        event.preventDefault();
+      });
+      canvasNode.addEventListener('pointermove', (event) => {
+        forward(event);
+        event.preventDefault();
+      });
+      for (const terminal of ['pointerup', 'pointercancel']) {
+        canvasNode.addEventListener(terminal, (event) => {
+          activePointers.delete(event.pointerId);
+          forward(event);
+          try {
+            if (canvasNode.hasPointerCapture(event.pointerId)) canvasNode.releasePointerCapture(event.pointerId);
+          } catch (_) { /* the platform already released this contact */ }
+          event.preventDefault();
+        });
+      }
+      canvasNode.addEventListener('lostpointercapture', (event) => {
+        if (!activePointers.delete(event.pointerId)) return;
+        forward(event, 3);
+      });
+      recordDiagnostic('INFERNUX_WEB_POINTER_BRIDGE_READY');
+    }
+    function installViewportBridge() {
+      const shell = document.getElementById('infernux-shell');
+      let scheduled = false;
+      const update = () => {
+        scheduled = false;
+        const viewport = window.visualViewport;
+        if (viewport) {
+          shell.style.left = `${viewport.offsetLeft}px`;
+          shell.style.top = `${viewport.offsetTop}px`;
+          shell.style.width = `${viewport.width}px`;
+          shell.style.height = `${viewport.height}px`;
+        }
+        Module.ccall('InfernuxWebResizeCanvas', null, [], []);
+      };
+      const schedule = () => {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(update);
+      };
+      window.addEventListener('resize', schedule, {passive: true});
+      window.addEventListener('orientationchange', schedule, {passive: true});
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', schedule, {passive: true});
+        window.visualViewport.addEventListener('scroll', schedule, {passive: true});
+      }
+      schedule();
+      recordDiagnostic('INFERNUX_WEB_VISUAL_VIEWPORT_READY');
     }
     var Module = {
       canvas: canvasNode,
       locateFile(path) {
         return versionedAssets[path] || path;
       },
-      postRun: [installTextInputBridge],
+      postRun: [installTextInputBridge, installPointerBridge, installViewportBridge],
       print(text) {
         recordDiagnostic(text);
         console.log(text);

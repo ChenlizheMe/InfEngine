@@ -60,6 +60,9 @@ struct TouchState
     float deltaX = 0.0f;
     float deltaY = 0.0f;
     float pressure = 0.0f;
+    float contactWidth = 0.0f;
+    float contactHeight = 0.0f;
+    bool isPrimary = false;
     TouchPhase phase = TouchPhase::Stationary;
 };
 
@@ -95,7 +98,8 @@ class InputManager
     void ProcessScrollEvent(float deltaX, float deltaY);
     void ProcessTextInputEvent(const std::string &text);
     void ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId, float x,
-                           float y, float deltaX, float deltaY, float pressure, TouchPhase phase);
+                           float y, float deltaX, float deltaY, float pressure, TouchPhase phase,
+                           float contactWidth = 0.0f, float contactHeight = 0.0f, bool isPrimary = false);
     void ProcessFocusEvent(bool focused);
 
     /// @brief Mark a trusted synthetic pointer position for the current GUI frame.
@@ -215,6 +219,21 @@ class InputManager
         return m_inputString;
     }
 
+    /// @brief Ask the current platform window to begin committed text input.
+    ///
+    /// Desktop and Android use SDL's platform text-input bridge. Browser hosts
+    /// install a DOM-backed runtime service and keep this logical state in sync.
+    bool StartTextInput();
+
+    /// @brief End platform text input and dismiss its software keyboard.
+    void StopTextInput();
+
+    /// @brief True while gameplay requested platform text input.
+    [[nodiscard]] bool IsTextInputActive() const
+    {
+        return m_textInputActive;
+    }
+
     // ---- Touch ----
 
     /// @brief Number of touch contacts reported by the current frame snapshot.
@@ -329,6 +348,7 @@ class InputManager
     SDL_Window *m_window = nullptr;
     bool m_cursorLocked = false;
     bool m_editorMouseCaptured = false;
+    bool m_textInputActive = false;
 
     // ---- Name → scancode lookup ----
     static std::unordered_map<std::string, int> s_nameToScancode;

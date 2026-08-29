@@ -73,8 +73,8 @@
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
       },
       "artifact": "infernux.platform-android.inxpkg",
-      "artifact_sha256": "eaab00db5b3eb6cd8511b90635e3cd8e86895f1b7fbd2746d4c20acbc80681d4",
-      "artifact_size": 32128,
+      "artifact_sha256": "5536254921e7dd6bb06a01d08b2503d02260b1f642fbcee568532310ebff553c",
+      "artifact_size": 32384,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
       "repository": "",
@@ -109,8 +109,8 @@
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
       },
       "artifact": "infernux.platform-web.inxpkg",
-      "artifact_sha256": "6fc0ddfa63564fcb78ad799b471f08b9a9b54787b4b28974bcc78e53170b7e94",
-      "artifact_size": 62336,
+      "artifact_sha256": "52d5c99fa9dfd81c0f0c4cdd7719b50ffe97634debd8b13e8caf5600896e9028",
+      "artifact_size": 78208,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
       "repository": "",

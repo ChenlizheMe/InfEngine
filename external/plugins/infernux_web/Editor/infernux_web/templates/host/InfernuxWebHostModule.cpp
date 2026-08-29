@@ -5,6 +5,9 @@
 #include "WebParticleRuntime.h"
 
 #include <platform/filesystem/InxPack.h>
+#include <platform/input/InputManager.h>
+
+#include <emscripten.h>
 
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -29,6 +32,7 @@ namespace
 std::mutex g_shaderMutex;
 std::unordered_map<std::string, std::string> g_shaderSources;
 infernux::web::WebParticleRuntime *g_particleRuntime = nullptr;
+bool g_textInputActive = false;
 
 std::string ShaderKey(const std::string &name, const char *stage)
 {
@@ -258,6 +262,41 @@ PyObject *GpuParticleArtifactRevision(PyObject *, PyObject *arguments)
         g_particleRuntime ? g_particleRuntime->ArtifactRevision(static_cast<uint64_t>(emitterId)) : 0);
 }
 
+PyObject *BeginTextInput(PyObject *, PyObject *arguments)
+{
+    const char *initialValue = nullptr;
+    const char *inputType = nullptr;
+    if (!PyArg_ParseTuple(arguments, "ss:begin_text_input", &initialValue, &inputType))
+        return nullptr;
+    const bool started = infernux::InputManager::Instance().StartTextInput();
+    if (!started)
+        Py_RETURN_FALSE;
+    EM_ASM(
+        {
+            if (Module.infernuxBeginTextInput)
+                Module.infernuxBeginTextInput(UTF8ToString($0), UTF8ToString($1));
+        },
+        initialValue, inputType);
+    g_textInputActive = true;
+    Py_RETURN_TRUE;
+}
+
+PyObject *EndTextInput(PyObject *, PyObject *)
+{
+    EM_ASM({
+        if (Module.infernuxEndTextInput)
+            Module.infernuxEndTextInput();
+    });
+    infernux::InputManager::Instance().StopTextInput();
+    g_textInputActive = false;
+    Py_RETURN_NONE;
+}
+
+PyObject *IsTextInputActive(PyObject *, PyObject *)
+{
+    return PyBool_FromLong(g_textInputActive ? 1 : 0);
+}
+
 PyMethodDef kMethods[] = {
     {"read_entry", ReadPackageEntry, METH_VARARGS,
      "Read and validate one entry from the native Infernux Player container."},
@@ -273,6 +312,9 @@ PyMethodDef kMethods[] = {
     {"_set_gpu_particle_emitter_playing", SetGpuParticleEmitterPlaying, METH_VARARGS, nullptr},
     {"_reset_gpu_particle_emitter", ResetGpuParticleEmitter, METH_VARARGS, nullptr},
     {"_gpu_particle_artifact_revision", GpuParticleArtifactRevision, METH_VARARGS, nullptr},
+    {"begin_text_input", BeginTextInput, METH_VARARGS, "Focus the browser text bridge and begin committed text input."},
+    {"end_text_input", EndTextInput, METH_NOARGS, "End browser text input and dismiss the software keyboard."},
+    {"is_text_input_active", IsTextInputActive, METH_NOARGS, "Return whether browser text input is active."},
     {nullptr, nullptr, 0, nullptr},
 };
 

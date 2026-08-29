@@ -295,13 +295,22 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "CreateRenderPipeline" not in main
     assert "CreateRenderPipeline" in rhi_backend
     assert "encoder.Draw(3)" in fullscreen
-    assert "emscripten_set_touchstart_callback" in main
+    assert "InfernuxWebPointerEvent" in main
+    assert "emscripten_set_touchstart_callback" not in main
+    assert "emscripten_set_mousedown_callback" not in main
     assert "emscripten_set_keydown_callback" in main
     assert "emscripten_set_wheel_callback" in main
     assert "emscripten_set_visibilitychange_callback" in main
     assert "emscripten_sample_gamepad_data" in main
     assert "InfernuxWebTextInput" in main
     assert "infernuxBeginTextInput" in shell
+    assert "setPointerCapture" in shell
+    assert "lostpointercapture" in shell
+    assert "compositionstart" in shell
+    assert "compositionend" in shell
+    assert "visualViewport" in shell
+    assert 'install_runtime_service("text-input", web_host)' in bootstrap
+    assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell
     assert "locateFile(path)" in shell
     assert "assetRevision" in shell

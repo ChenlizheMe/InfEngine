@@ -6,6 +6,7 @@ import pytest
 
 from Infernux.input import Input, KeyCode, Touch, TouchPhase
 from Infernux.lib import InputManager
+from Infernux.runtime_services import install_runtime_service, remove_runtime_service
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -235,10 +236,42 @@ class TestInputMetaclassProperties:
             position=(0.25, 0.75),
             delta_position=(0.1, -0.1),
             pressure=0.5,
+            contact_size=(0.02, 0.03),
+            is_primary=True,
             phase=TouchPhase.MOVED,
         )
         assert touch.phase is TouchPhase.MOVED
         assert touch.position == (0.25, 0.75)
+        assert touch.contact_size == (0.02, 0.03)
+        assert touch.is_primary
+
+    def test_platform_text_input_runtime_service(self):
+        class _TextInputService:
+            def __init__(self):
+                self.active = False
+                self.request = None
+
+            def begin_text_input(self, initial_value, input_type):
+                self.request = (initial_value, input_type)
+                self.active = True
+                return True
+
+            def end_text_input(self):
+                self.active = False
+
+            def is_text_input_active(self):
+                return self.active
+
+        service = _TextInputService()
+        install_runtime_service("text-input", service)
+        try:
+            assert Input.begin_text_input("hello", "email")
+            assert service.request == ("hello", "email")
+            assert Input.is_text_input_active()
+            Input.end_text_input()
+            assert not Input.is_text_input_active()
+        finally:
+            remove_runtime_service("text-input", service)
 
     def test_input_string_idle(self):
         Input._game_focused = True

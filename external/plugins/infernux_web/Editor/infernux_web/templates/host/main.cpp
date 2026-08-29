@@ -52,7 +52,7 @@ uint32_t g_height = 1;
 double g_cssWidth = 1.0;
 double g_cssHeight = 1.0;
 std::array<double, 32> g_gamepadTimestamps{};
-std::unordered_map<long, std::pair<float, float>> g_touchPositions;
+std::unordered_map<int, std::pair<float, float>> g_pointerPositions;
 double g_lastFrameTimeMilliseconds = 0.0;
 bool g_runtimeFrameFailed = false;
 
@@ -282,6 +282,11 @@ void ResizeCanvas()
     Py_XDECREF(payload);
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebResizeCanvas()
+{
+    ResizeCanvas();
+}
+
 EM_BOOL OnResize(int, const EmscriptenUiEvent *, void *)
 {
     ResizeCanvas();
@@ -291,6 +296,8 @@ EM_BOOL OnResize(int, const EmscriptenUiEvent *, void *)
 EM_BOOL OnFocus(int eventType, const EmscriptenFocusEvent *, void *)
 {
     infernux::InputManager::Instance().ProcessFocusEvent(eventType == EMSCRIPTEN_EVENT_FOCUS);
+    if (eventType != EMSCRIPTEN_EVENT_FOCUS)
+        g_pointerPositions.clear();
     PyObject *payload = PyDict_New();
     SetDictBool(payload, "focused", eventType == EMSCRIPTEN_EVENT_FOCUS);
     DispatchInput(eventType == EMSCRIPTEN_EVENT_FOCUS ? "focus" : "blur", payload);
@@ -302,6 +309,8 @@ EM_BOOL OnVisibility(int, const EmscriptenVisibilityChangeEvent *event, void *)
 {
     if (event->hidden)
         infernux::InputManager::Instance().ProcessFocusEvent(false);
+    if (event->hidden)
+        g_pointerPositions.clear();
     PyObject *payload = PyDict_New();
     SetDictBool(payload, "hidden", event->hidden != 0);
     SetDictInteger(payload, "state", event->visibilityState);
@@ -327,32 +336,6 @@ EM_BOOL OnKey(int eventType, const EmscriptenKeyboardEvent *event, void *)
     return EM_TRUE;
 }
 
-EM_BOOL OnMouse(int eventType, const EmscriptenMouseEvent *event, void *)
-{
-    auto &input = infernux::InputManager::Instance();
-    input.ProcessPointerMotionEvent(static_cast<float>(event->targetX), static_cast<float>(event->targetY),
-                                    static_cast<float>(event->movementX), static_cast<float>(event->movementY));
-    if (eventType == EMSCRIPTEN_EVENT_MOUSEDOWN || eventType == EMSCRIPTEN_EVENT_MOUSEUP) {
-        input.ProcessPointerButtonEvent(BrowserButtonToUnityButton(event->button),
-                                        eventType == EMSCRIPTEN_EVENT_MOUSEDOWN);
-    }
-    PyObject *payload = PyDict_New();
-    SetDictInteger(payload, "x", event->targetX);
-    SetDictInteger(payload, "y", event->targetY);
-    SetDictInteger(payload, "movement_x", event->movementX);
-    SetDictInteger(payload, "movement_y", event->movementY);
-    SetDictInteger(payload, "button", event->button);
-    SetDictInteger(payload, "buttons", event->buttons);
-    const char *kind = "pointer_move";
-    if (eventType == EMSCRIPTEN_EVENT_MOUSEDOWN)
-        kind = "pointer_down";
-    else if (eventType == EMSCRIPTEN_EVENT_MOUSEUP)
-        kind = "pointer_up";
-    DispatchInput(kind, payload);
-    Py_XDECREF(payload);
-    return EM_TRUE;
-}
-
 EM_BOOL OnWheel(int, const EmscriptenWheelEvent *event, void *)
 {
     infernux::InputManager::Instance().ProcessScrollEvent(static_cast<float>(event->deltaX),
@@ -366,54 +349,64 @@ EM_BOOL OnWheel(int, const EmscriptenWheelEvent *event, void *)
     return EM_TRUE;
 }
 
-EM_BOOL OnTouch(int eventType, const EmscriptenTouchEvent *event, void *)
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebPointerEvent(int eventKind, int pointerId, int pointerType,
+                                                             double xPixels, double yPixels, double movementXPixels,
+                                                             double movementYPixels, double pressure,
+                                                             double contactWidthPixels, double contactHeightPixels,
+                                                             int button, int buttons, int isPrimary)
 {
     auto &input = infernux::InputManager::Instance();
-    infernux::TouchPhase phase = infernux::TouchPhase::Moved;
-    if (eventType == EMSCRIPTEN_EVENT_TOUCHSTART)
-        phase = infernux::TouchPhase::Began;
-    else if (eventType == EMSCRIPTEN_EVENT_TOUCHEND)
-        phase = infernux::TouchPhase::Ended;
-    else if (eventType == EMSCRIPTEN_EVENT_TOUCHCANCEL)
-        phase = infernux::TouchPhase::Canceled;
-    PyObject *points = PyList_New(0);
-    for (int index = 0; index < event->numTouches; ++index) {
-        const EmscriptenTouchPoint &point = event->touches[index];
-        if (point.isChanged) {
-            const float x = static_cast<float>(point.targetX / g_cssWidth);
-            const float y = static_cast<float>(point.targetY / g_cssHeight);
-            const auto previous = g_touchPositions.find(point.identifier);
-            const float deltaX = previous == g_touchPositions.end() ? 0.0f : x - previous->second.first;
-            const float deltaY = previous == g_touchPositions.end() ? 0.0f : y - previous->second.second;
-            input.ProcessTouchEvent(0, static_cast<uint64_t>(point.identifier),
-                                    static_cast<uint64_t>(emscripten_get_now() * 1000000.0), 0, x, y, deltaX, deltaY,
-                                    1.0f, phase);
-            if (phase == infernux::TouchPhase::Ended || phase == infernux::TouchPhase::Canceled)
-                g_touchPositions.erase(point.identifier);
-            else
-                g_touchPositions[point.identifier] = {x, y};
-        }
-        PyObject *entry = PyDict_New();
-        SetDictInteger(entry, "id", point.identifier);
-        SetDictInteger(entry, "x", point.targetX);
-        SetDictInteger(entry, "y", point.targetY);
-        SetDictBool(entry, "changed", point.isChanged != 0);
-        PyList_Append(points, entry);
-        Py_DECREF(entry);
+    const float normalizedX = static_cast<float>(xPixels / g_cssWidth);
+    const float normalizedY = static_cast<float>(yPixels / g_cssHeight);
+    const auto previous = g_pointerPositions.find(pointerId);
+    const float deltaX = previous == g_pointerPositions.end() ? 0.0f : normalizedX - previous->second.first;
+    const float deltaY = previous == g_pointerPositions.end() ? 0.0f : normalizedY - previous->second.second;
+    const bool terminal = eventKind == 2 || eventKind == 3;
+
+    if (pointerType == 0) {
+        input.ProcessPointerMotionEvent(static_cast<float>(xPixels), static_cast<float>(yPixels),
+                                        static_cast<float>(movementXPixels), static_cast<float>(movementYPixels));
+        const int mappedButton = BrowserButtonToUnityButton(static_cast<unsigned short>(button));
+        if (mappedButton >= 0 && (eventKind == 0 || terminal))
+            input.ProcessPointerButtonEvent(mappedButton, eventKind == 0);
+    } else {
+        infernux::TouchPhase phase = infernux::TouchPhase::Moved;
+        if (eventKind == 0)
+            phase = infernux::TouchPhase::Began;
+        else if (eventKind == 2)
+            phase = infernux::TouchPhase::Ended;
+        else if (eventKind == 3)
+            phase = infernux::TouchPhase::Canceled;
+        input.ProcessTouchEvent(static_cast<uint64_t>(pointerType), static_cast<uint64_t>(pointerId),
+                                static_cast<uint64_t>(emscripten_get_now() * 1000000.0), 0, normalizedX, normalizedY,
+                                deltaX, deltaY, static_cast<float>(std::clamp(pressure, 0.0, 1.0)), phase,
+                                static_cast<float>(contactWidthPixels / g_cssWidth),
+                                static_cast<float>(contactHeightPixels / g_cssHeight), isPrimary != 0);
     }
+
+    if (terminal)
+        g_pointerPositions.erase(pointerId);
+    else
+        g_pointerPositions[pointerId] = {normalizedX, normalizedY};
+
     PyObject *payload = PyDict_New();
-    PyDict_SetItemString(payload, "points", points);
-    Py_DECREF(points);
-    const char *kind = "touch_move";
-    if (eventType == EMSCRIPTEN_EVENT_TOUCHSTART)
-        kind = "touch_start";
-    else if (eventType == EMSCRIPTEN_EVENT_TOUCHEND)
-        kind = "touch_end";
-    else if (eventType == EMSCRIPTEN_EVENT_TOUCHCANCEL)
-        kind = "touch_cancel";
-    DispatchInput(kind, payload);
+    SetDictInteger(payload, "id", pointerId);
+    SetDictInteger(payload, "pointer_type", pointerType);
+    SetDictNumber(payload, "x", xPixels);
+    SetDictNumber(payload, "y", yPixels);
+    SetDictNumber(payload, "normalized_x", normalizedX);
+    SetDictNumber(payload, "normalized_y", normalizedY);
+    SetDictNumber(payload, "movement_x", movementXPixels);
+    SetDictNumber(payload, "movement_y", movementYPixels);
+    SetDictNumber(payload, "pressure", pressure);
+    SetDictNumber(payload, "contact_width", contactWidthPixels);
+    SetDictNumber(payload, "contact_height", contactHeightPixels);
+    SetDictInteger(payload, "button", button);
+    SetDictInteger(payload, "buttons", buttons);
+    SetDictBool(payload, "primary", isPrimary != 0);
+    static constexpr const char *eventNames[] = {"pointer_down", "pointer_move", "pointer_up", "pointer_cancel"};
+    DispatchInput(eventKind >= 0 && eventKind < 4 ? eventNames[eventKind] : "pointer_move", payload);
     Py_DECREF(payload);
-    return EM_TRUE;
 }
 
 void PollGamepads()
@@ -635,14 +628,7 @@ void StartSurface()
     emscripten_set_visibilitychange_callback(nullptr, true, OnVisibility);
     emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, OnKey);
     emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, OnKey);
-    emscripten_set_mousedown_callback("#canvas", nullptr, true, OnMouse);
-    emscripten_set_mouseup_callback("#canvas", nullptr, true, OnMouse);
-    emscripten_set_mousemove_callback("#canvas", nullptr, true, OnMouse);
     emscripten_set_wheel_callback("#canvas", nullptr, true, OnWheel);
-    emscripten_set_touchstart_callback("#canvas", nullptr, true, OnTouch);
-    emscripten_set_touchend_callback("#canvas", nullptr, true, OnTouch);
-    emscripten_set_touchmove_callback("#canvas", nullptr, true, OnTouch);
-    emscripten_set_touchcancel_callback("#canvas", nullptr, true, OnTouch);
     PyObject *details = PyDict_New();
     SetDictString(details, "graphics_api", "webgpu");
     SetDictInteger(details, "width", g_width);

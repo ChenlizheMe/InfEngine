@@ -3789,6 +3789,10 @@ class InputManager:
     # Text input
     @property
     def input_string(self) -> str: ...
+    def start_text_input(self) -> bool: ...
+    def stop_text_input(self) -> None: ...
+    @property
+    def is_text_input_active(self) -> bool: ...
 
     # Touch
     @property
@@ -3826,6 +3830,9 @@ class TouchState:
     delta_x: float
     delta_y: float
     pressure: float
+    contact_width: float
+    contact_height: float
+    is_primary: bool
     phase: str
 
 

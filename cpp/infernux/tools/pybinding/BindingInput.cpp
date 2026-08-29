@@ -30,6 +30,9 @@ void RegisterInputBindings(py::module_ &m)
         .def_readonly("delta_x", &TouchState::deltaX, "Normalized horizontal movement this frame")
         .def_readonly("delta_y", &TouchState::deltaY, "Normalized vertical movement this frame")
         .def_readonly("pressure", &TouchState::pressure)
+        .def_readonly("contact_width", &TouchState::contactWidth, "Normalized contact width")
+        .def_readonly("contact_height", &TouchState::contactHeight, "Normalized contact height")
+        .def_readonly("is_primary", &TouchState::isPrimary, "True for the platform's primary contact")
         .def_property_readonly("phase", [](const TouchState &touch) {
             switch (touch.phase) {
             case TouchPhase::Began:
@@ -85,6 +88,11 @@ void RegisterInputBindings(py::module_ &m)
 
         // ---- Text input ----
         .def_property_readonly("input_string", &InputManager::GetInputString, "Characters typed this frame (UTF-8)")
+        .def("start_text_input", &InputManager::StartTextInput,
+             "Begin committed platform text input and show a software keyboard when available")
+        .def("stop_text_input", &InputManager::StopTextInput, "End platform text input")
+        .def_property_readonly("is_text_input_active", &InputManager::IsTextInputActive,
+                               "True while gameplay requested platform text input")
 
         // ---- Touch ----
         .def_property_readonly("touch_count", &InputManager::GetTouchCount, "Number of active touch contacts")

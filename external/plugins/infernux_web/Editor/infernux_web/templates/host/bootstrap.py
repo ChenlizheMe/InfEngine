@@ -263,6 +263,7 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     runtime_services = importlib.import_module("Infernux.runtime_services")
     web_host = importlib.import_module("_InfernuxWebHost")
     runtime_services.install_runtime_service("gpu-particles", web_host)
+    runtime_services.install_runtime_service("text-input", web_host)
 
     for source in (lib, math_module):
         exports = getattr(source, "__all__", None)
