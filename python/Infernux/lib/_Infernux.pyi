@@ -3799,6 +3799,8 @@ class InputManager:
     def touch_count(self) -> int: ...
     def get_touch(self, index: int) -> TouchState: ...
     def get_touches(self) -> List[TouchState]: ...
+    @property
+    def screen_state(self) -> ScreenState: ...
 
     # File drop
     def has_dropped_files(self) -> bool: ...
@@ -3833,7 +3835,24 @@ class TouchState:
     contact_width: float
     contact_height: float
     is_primary: bool
+    cancel_reason: str
     phase: str
+
+class ScreenState:
+    revision: int
+    logical_width: int
+    logical_height: int
+    framebuffer_width: int
+    framebuffer_height: int
+    pixel_ratio: float
+    safe_area_x: int
+    safe_area_y: int
+    safe_area_width: int
+    safe_area_height: int
+    keyboard_inset: int
+    keyboard_inset_known: bool
+    focused: bool
+    occluded: bool
 
 
 # =============================================================================

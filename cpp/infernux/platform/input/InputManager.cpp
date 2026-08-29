@@ -186,6 +186,7 @@ void InputManager::BeginFrame()
     // disturbing persistent capture flags. Editor capture is released on
     // explicit end or focus loss, not once per frame.
 #if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    RefreshScreenState();
     ApplyRelativeMouseMode();
 #endif
 }
@@ -247,7 +248,8 @@ void InputManager::ProcessTextInputEvent(const std::string &text)
 
 void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId,
                                      float x, float y, float deltaX, float deltaY, float pressure, TouchPhase phase,
-                                     float contactWidth, float contactHeight, bool isPrimary)
+                                     float contactWidth, float contactHeight, bool isPrimary,
+                                     const std::string &cancelReason)
 {
     const auto existing = std::find_if(m_touches.begin(), m_touches.end(), [&](const TouchState &touch) {
         return touch.touchId == touchId && touch.fingerId == fingerId;
@@ -271,19 +273,66 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     touch->contactWidth = contactWidth;
     touch->contactHeight = contactHeight;
     touch->isPrimary = isPrimary;
+    touch->cancelReason = phase == TouchPhase::Canceled ? cancelReason : std::string{};
     touch->phase = phase;
 }
 
 void InputManager::ProcessFocusEvent(bool focused)
 {
-    if (focused)
+    if (focused) {
+        if (!m_screenState.focused) {
+            m_screenState.focused = true;
+            ++m_screenState.revision;
+        }
         return;
+    }
     StopTextInput();
     m_editorMouseCaptured = false;
     ResetPhysicalInputForFocusLoss();
+    if (m_screenState.focused) {
+        m_screenState.focused = false;
+        ++m_screenState.revision;
+    }
 #if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
     ApplyRelativeMouseMode();
 #endif
+}
+
+void InputManager::ProcessScreenMetrics(int logicalWidth, int logicalHeight, int framebufferWidth,
+                                        int framebufferHeight, float pixelRatio, int safeAreaX, int safeAreaY,
+                                        int safeAreaWidth, int safeAreaHeight, bool keyboardInsetKnown,
+                                        int keyboardInset)
+{
+    ScreenState next = m_screenState;
+    next.logicalWidth = std::max(1, logicalWidth);
+    next.logicalHeight = std::max(1, logicalHeight);
+    next.framebufferWidth = std::max(1, framebufferWidth);
+    next.framebufferHeight = std::max(1, framebufferHeight);
+    next.pixelRatio = std::max(0.01f, pixelRatio);
+    next.safeAreaX = std::clamp(safeAreaX, 0, next.logicalWidth);
+    next.safeAreaY = std::clamp(safeAreaY, 0, next.logicalHeight);
+    next.safeAreaWidth = std::clamp(safeAreaWidth, 0, next.logicalWidth - next.safeAreaX);
+    next.safeAreaHeight = std::clamp(safeAreaHeight, 0, next.logicalHeight - next.safeAreaY);
+    next.keyboardInsetKnown = keyboardInsetKnown;
+    next.keyboardInset = keyboardInsetKnown ? std::clamp(keyboardInset, 0, next.logicalHeight) : 0;
+    const bool changed =
+        next.logicalWidth != m_screenState.logicalWidth || next.logicalHeight != m_screenState.logicalHeight ||
+        next.framebufferWidth != m_screenState.framebufferWidth ||
+        next.framebufferHeight != m_screenState.framebufferHeight || next.pixelRatio != m_screenState.pixelRatio ||
+        next.safeAreaX != m_screenState.safeAreaX || next.safeAreaY != m_screenState.safeAreaY ||
+        next.safeAreaWidth != m_screenState.safeAreaWidth || next.safeAreaHeight != m_screenState.safeAreaHeight ||
+        next.keyboardInsetKnown != m_screenState.keyboardInsetKnown ||
+        next.keyboardInset != m_screenState.keyboardInset;
+    if (!changed)
+        return;
+    next.revision = m_screenState.revision + 1;
+    const bool viewportChanged =
+        next.logicalWidth != m_screenState.logicalWidth || next.logicalHeight != m_screenState.logicalHeight ||
+        next.safeAreaX != m_screenState.safeAreaX || next.safeAreaY != m_screenState.safeAreaY ||
+        next.safeAreaWidth != m_screenState.safeAreaWidth || next.safeAreaHeight != m_screenState.safeAreaHeight;
+    m_screenState = next;
+    if (viewportChanged)
+        CancelActiveTouches("viewport_changed");
 }
 
 bool InputManager::StartTextInput()
@@ -397,7 +446,8 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
             break;
         }
         ProcessTouchEvent(finger.touchID, finger.fingerID, finger.timestamp, finger.windowID, finger.x, finger.y,
-                          finger.dx, finger.dy, finger.pressure, phase);
+                          finger.dx, finger.dy, finger.pressure, phase, 0.0f, 0.0f, false,
+                          phase == TouchPhase::Canceled ? "platform_cancel" : "");
         break;
     }
 
@@ -421,6 +471,29 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     // ---- Window focus lost → release editor drag capture and clear inputs ----
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         ProcessFocusEvent(false);
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+        ProcessFocusEvent(true);
+        break;
+    case SDL_EVENT_WINDOW_RESIZED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+    case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED:
+        RefreshScreenState();
+        break;
+    case SDL_EVENT_WINDOW_OCCLUDED:
+        if (!m_screenState.occluded) {
+            m_screenState.occluded = true;
+            ++m_screenState.revision;
+        }
+        break;
+    case SDL_EVENT_WINDOW_EXPOSED:
+    case SDL_EVENT_WINDOW_RESTORED:
+        if (m_screenState.occluded) {
+            m_screenState.occluded = false;
+            ++m_screenState.revision;
+        }
+        RefreshScreenState();
         break;
 
     default:
@@ -618,6 +691,7 @@ void InputManager::ResetPhysicalInputForFocusLoss()
     for (TouchState &touch : interruptedTouches) {
         if (touch.phase != TouchPhase::Ended && touch.phase != TouchPhase::Canceled) {
             touch.phase = TouchPhase::Canceled;
+            touch.cancelReason = "focus_lost";
             touch.deltaX = 0.0f;
             touch.deltaY = 0.0f;
             m_touches.emplace_back(std::move(touch));
@@ -631,6 +705,18 @@ void InputManager::ResetPhysicalInputForFocusLoss()
         m_keys[index] = m_syntheticKeys[index];
     for (size_t index = 0; index < m_syntheticMouseButtons.size(); ++index)
         m_mouseButtons[index] = m_syntheticMouseButtons[index];
+}
+
+void InputManager::CancelActiveTouches(const std::string &reason)
+{
+    for (TouchState &touch : m_touches) {
+        if (touch.phase == TouchPhase::Ended || touch.phase == TouchPhase::Canceled)
+            continue;
+        touch.phase = TouchPhase::Canceled;
+        touch.cancelReason = reason;
+        touch.deltaX = 0.0f;
+        touch.deltaY = 0.0f;
+    }
 }
 
 const TouchState &InputManager::GetTouch(int index) const
@@ -691,7 +777,30 @@ const char *InputManager::ScancodeToName(int scancode)
 void InputManager::SetWindow(SDL_Window *window)
 {
     m_window = window;
+    RefreshScreenState();
     ApplyRelativeMouseMode();
+}
+
+void InputManager::RefreshScreenState()
+{
+#if defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    return;
+#else
+    if (m_window == nullptr)
+        return;
+    int logicalWidth = 1;
+    int logicalHeight = 1;
+    int framebufferWidth = 1;
+    int framebufferHeight = 1;
+    SDL_GetWindowSize(m_window, &logicalWidth, &logicalHeight);
+    SDL_GetWindowSizeInPixels(m_window, &framebufferWidth, &framebufferHeight);
+    SDL_Rect safeArea{0, 0, logicalWidth, logicalHeight};
+    SDL_GetWindowSafeArea(m_window, &safeArea);
+    const float displayScale = SDL_GetWindowDisplayScale(m_window);
+    ProcessScreenMetrics(logicalWidth, logicalHeight, framebufferWidth, framebufferHeight,
+                         displayScale > 0.0f ? displayScale : 1.0f, safeArea.x, safeArea.y, safeArea.w, safeArea.h,
+                         false, 0);
+#endif
 }
 
 void InputManager::SetCursorLocked(bool locked)

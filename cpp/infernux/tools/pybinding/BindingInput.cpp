@@ -33,6 +33,7 @@ void RegisterInputBindings(py::module_ &m)
         .def_readonly("contact_width", &TouchState::contactWidth, "Normalized contact width")
         .def_readonly("contact_height", &TouchState::contactHeight, "Normalized contact height")
         .def_readonly("is_primary", &TouchState::isPrimary, "True for the platform's primary contact")
+        .def_readonly("cancel_reason", &TouchState::cancelReason, "Reason supplied for a canceled contact")
         .def_property_readonly("phase", [](const TouchState &touch) {
             switch (touch.phase) {
             case TouchPhase::Began:
@@ -48,6 +49,22 @@ void RegisterInputBindings(py::module_ &m)
             }
             return "canceled";
         });
+
+    py::class_<ScreenState>(m, "ScreenState", "Current logical, framebuffer, safe-area, and focus snapshot")
+        .def_readonly("revision", &ScreenState::revision)
+        .def_readonly("logical_width", &ScreenState::logicalWidth)
+        .def_readonly("logical_height", &ScreenState::logicalHeight)
+        .def_readonly("framebuffer_width", &ScreenState::framebufferWidth)
+        .def_readonly("framebuffer_height", &ScreenState::framebufferHeight)
+        .def_readonly("pixel_ratio", &ScreenState::pixelRatio)
+        .def_readonly("safe_area_x", &ScreenState::safeAreaX)
+        .def_readonly("safe_area_y", &ScreenState::safeAreaY)
+        .def_readonly("safe_area_width", &ScreenState::safeAreaWidth)
+        .def_readonly("safe_area_height", &ScreenState::safeAreaHeight)
+        .def_readonly("keyboard_inset", &ScreenState::keyboardInset)
+        .def_readonly("keyboard_inset_known", &ScreenState::keyboardInsetKnown)
+        .def_readonly("focused", &ScreenState::focused)
+        .def_readonly("occluded", &ScreenState::occluded);
 
     py::class_<InputManager, std::unique_ptr<InputManager, py::nodelete>>(
         m, "InputManager", "Low-level input state manager. Use the Python `Input` class for the public API.")
@@ -100,6 +117,10 @@ void RegisterInputBindings(py::module_ &m)
              "Return one touch from the current frame snapshot")
         .def("get_touches", &InputManager::GetTouches, py::return_value_policy::copy,
              "Return all touches in stable first-contact order")
+
+        // ---- Screen / safe area ----
+        .def_property_readonly("screen_state", &InputManager::GetScreenState, py::return_value_policy::copy,
+                               "Current logical, framebuffer, safe-area, keyboard, and focus snapshot")
 
         // ---- File drop (OS drag-drop) ----
         .def("has_dropped_files", &InputManager::HasDroppedFiles,

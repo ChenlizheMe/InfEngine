@@ -15,8 +15,15 @@
       color: #d8e6ef;
       touch-action: none;
     }
-    #infernux-shell { position: fixed; inset: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    #infernux-shell { position: fixed; inset: 0; }
     #canvas { width: 100%; height: 100%; display: block; outline: 0; }
+    #infernux-safe-area-probe {
+      position: fixed;
+      inset: 0;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      visibility: hidden;
+      pointer-events: none;
+    }
     #infernux-text-input {
       position: fixed;
       left: -10000px;
@@ -40,6 +47,7 @@
 <body>
   <main id="infernux-shell">
     <canvas id="canvas" tabindex="0" aria-label="Infernux game canvas"></canvas>
+    <div id="infernux-safe-area-probe" aria-hidden="true"></div>
     <input id="infernux-text-input" type="text" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false">
     <div id="status" role="status">Starting Infernux…</div>
   </main>
@@ -156,6 +164,8 @@
     }
     function installViewportBridge() {
       const shell = document.getElementById('infernux-shell');
+      const safeAreaProbe = document.getElementById('infernux-safe-area-probe');
+      const textInput = document.getElementById('infernux-text-input');
       let scheduled = false;
       const update = () => {
         scheduled = false;
@@ -166,7 +176,17 @@
           shell.style.width = `${viewport.width}px`;
           shell.style.height = `${viewport.height}px`;
         }
-        Module.ccall('InfernuxWebResizeCanvas', null, [], []);
+        const safe = getComputedStyle(safeAreaProbe);
+        const readPixels = (value) => Math.max(0, Number.parseFloat(value) || 0);
+        const keyboardKnown = document.activeElement === textInput && Boolean(viewport);
+        const keyboardInset = keyboardKnown
+          ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+          : 0;
+        Module.ccall('InfernuxWebViewportChanged', null,
+          ['number','number','number','number','number','number'],
+          [readPixels(safe.paddingLeft), readPixels(safe.paddingTop),
+           readPixels(safe.paddingRight), readPixels(safe.paddingBottom),
+           keyboardKnown ? 1 : 0, keyboardInset]);
       };
       const schedule = () => {
         if (scheduled) return;
@@ -179,6 +199,12 @@
         window.visualViewport.addEventListener('resize', schedule, {passive: true});
         window.visualViewport.addEventListener('scroll', schedule, {passive: true});
       }
+      textInput.addEventListener('focus', schedule);
+      textInput.addEventListener('blur', schedule);
+      window.addEventListener('pagehide', () => Module.ccall('InfernuxWebPageLifecycle', null, ['number'], [0]));
+      window.addEventListener('pageshow', () => Module.ccall('InfernuxWebPageLifecycle', null, ['number'], [1]));
+      document.addEventListener('freeze', () => Module.ccall('InfernuxWebPageLifecycle', null, ['number'], [0]));
+      document.addEventListener('resume', () => Module.ccall('InfernuxWebPageLifecycle', null, ['number'], [1]));
       schedule();
       recordDiagnostic('INFERNUX_WEB_VISUAL_VIEWPORT_READY');
     }

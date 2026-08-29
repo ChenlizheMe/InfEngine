@@ -264,6 +264,7 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     web_host = importlib.import_module("_InfernuxWebHost")
     runtime_services.install_runtime_service("gpu-particles", web_host)
     runtime_services.install_runtime_service("text-input", web_host)
+    screen_module = importlib.import_module("Infernux.screen")
 
     for source in (lib, math_module):
         exports = getattr(source, "__all__", None)
@@ -274,12 +275,15 @@ def _install_platform_runtime_api(native_module: Any) -> None:
                 setattr(package, name, getattr(source, name))
     for name in components.__all__:
         setattr(package, name, getattr(components, name))
+    for name in screen_module.__all__:
+        setattr(package, name, getattr(screen_module, name))
     package.Debug = debug_module.Debug
     package.__version__ = "0.4.0"
     package.__all__ = tuple(
         sorted(
             {
                 "Debug",
+                *screen_module.__all__,
                 *getattr(math_module, "__all__", ()),
                 *components.__all__,
                 *(

@@ -309,7 +309,13 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "compositionstart" in shell
     assert "compositionend" in shell
     assert "visualViewport" in shell
+    assert "safe-area-inset-top" in shell
+    assert "InfernuxWebViewportChanged" in main
+    assert "InfernuxWebPageLifecycle" in main
+    assert "pagehide" in shell
+    assert "pageshow" in shell
     assert 'install_runtime_service("text-input", web_host)' in bootstrap
+    assert 'importlib.import_module("Infernux.screen")' in bootstrap
     assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell
     assert "locateFile(path)" in shell

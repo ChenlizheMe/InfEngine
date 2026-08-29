@@ -62,6 +62,8 @@ async function main() {
         bubbles: true,
       }));
       Module.infernuxEndTextInput();
+      Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [0]);
+      Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [1]);
     });
     await page.waitForTimeout(1000);
     const result = await page.evaluate(() => {
@@ -75,12 +77,15 @@ async function main() {
         pointerDown: diagnostics.some((item) => item.includes("kind=pointer_down")),
         pointerCancel: diagnostics.some((item) => item.includes("kind=pointer_cancel")),
         textInput: diagnostics.some((item) => item.includes("kind=text_input")),
+        pageHide: diagnostics.some((item) => item.includes("kind=page_hide")),
+        pageShow: diagnostics.some((item) => item.includes("kind=page_show")),
         unhandledErrors: diagnostics.filter((item) => item.startsWith("ERROR:")),
       };
     });
     if (pageErrors.length || result.unhandledErrors.length ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
-        !result.pointerDown || !result.pointerCancel || !result.textInput) {
+        !result.pointerDown || !result.pointerCancel || !result.textInput ||
+        !result.pageHide || !result.pageShow) {
       throw new Error(JSON.stringify({ result, pageErrors }));
     }
     process.stdout.write(`${JSON.stringify(result)}\n`);

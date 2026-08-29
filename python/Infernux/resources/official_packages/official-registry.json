@@ -109,8 +109,8 @@
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
       },
       "artifact": "infernux.platform-web.inxpkg",
-      "artifact_sha256": "52d5c99fa9dfd81c0f0c4cdd7719b50ffe97634debd8b13e8caf5600896e9028",
-      "artifact_size": 78208,
+      "artifact_sha256": "62a7f75497ed752390d92ae058b8d09604b0a9e4a28e970b54ba71ff8814be48",
+      "artifact_size": 79040,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
       "repository": "",

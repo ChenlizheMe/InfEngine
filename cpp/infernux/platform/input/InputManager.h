@@ -63,7 +63,26 @@ struct TouchState
     float contactWidth = 0.0f;
     float contactHeight = 0.0f;
     bool isPrimary = false;
+    std::string cancelReason;
     TouchPhase phase = TouchPhase::Stationary;
+};
+
+struct ScreenState
+{
+    uint64_t revision = 0;
+    int logicalWidth = 1;
+    int logicalHeight = 1;
+    int framebufferWidth = 1;
+    int framebufferHeight = 1;
+    float pixelRatio = 1.0f;
+    int safeAreaX = 0;
+    int safeAreaY = 0;
+    int safeAreaWidth = 1;
+    int safeAreaHeight = 1;
+    int keyboardInset = 0;
+    bool keyboardInsetKnown = false;
+    bool focused = true;
+    bool occluded = false;
 };
 
 /**
@@ -99,8 +118,12 @@ class InputManager
     void ProcessTextInputEvent(const std::string &text);
     void ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId, float x,
                            float y, float deltaX, float deltaY, float pressure, TouchPhase phase,
-                           float contactWidth = 0.0f, float contactHeight = 0.0f, bool isPrimary = false);
+                           float contactWidth = 0.0f, float contactHeight = 0.0f, bool isPrimary = false,
+                           const std::string &cancelReason = {});
     void ProcessFocusEvent(bool focused);
+    void ProcessScreenMetrics(int logicalWidth, int logicalHeight, int framebufferWidth, int framebufferHeight,
+                              float pixelRatio, int safeAreaX, int safeAreaY, int safeAreaWidth, int safeAreaHeight,
+                              bool keyboardInsetKnown = false, int keyboardInset = 0);
 
     /// @brief Mark a trusted synthetic pointer position for the current GUI frame.
     ///
@@ -251,6 +274,12 @@ class InputManager
         return m_touches;
     }
 
+    /// @brief Current logical/framebuffer/safe-area snapshot for the game window.
+    [[nodiscard]] const ScreenState &GetScreenState() const
+    {
+        return m_screenState;
+    }
+
     // ---- File drop (OS drag-drop) ----
 
     /// @brief Returns true if one or more files were dropped onto the window this frame.
@@ -349,6 +378,7 @@ class InputManager
     bool m_cursorLocked = false;
     bool m_editorMouseCaptured = false;
     bool m_textInputActive = false;
+    ScreenState m_screenState;
 
     // ---- Name → scancode lookup ----
     static std::unordered_map<std::string, int> s_nameToScancode;
@@ -356,6 +386,8 @@ class InputManager
     static void BuildNameTable();
 
     void ResetPhysicalInputForFocusLoss();
+    void CancelActiveTouches(const std::string &reason);
+    void RefreshScreenState();
     void ApplyRelativeMouseMode();
 };
 

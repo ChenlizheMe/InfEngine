@@ -13,6 +13,7 @@ __version__ = ENGINE_VERSION
 # ── Runtime API (used by game scripts) ─────────────────────────────
 from Infernux.engine import release_engine, run_headless, Engine, LogLevel
 from Infernux.application import Application
+from Infernux.screen import Insets, Rect, Screen
 from Infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest, RuntimeAcceptanceTest
 from Infernux.math import Vector2, Vector3, vec4f, quatf, vector2, vector3, vector4, quaternion
 from Infernux import components as _components_module
@@ -84,6 +85,9 @@ __all__ = [
     # Engine
     "Engine",
     "Application",
+    "Screen",
+    "Rect",
+    "Insets",
     "RuntimeAcceptance",
     "RuntimeAcceptanceManifest",
     "RuntimeAcceptanceTest",

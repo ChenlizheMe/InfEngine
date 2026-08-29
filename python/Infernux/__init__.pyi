@@ -10,6 +10,9 @@ from Infernux.engine import run_headless as run_headless
 from Infernux.engine import Engine as Engine
 from Infernux.engine import LogLevel as LogLevel
 from Infernux.application import Application as Application
+from Infernux.screen import Insets as Insets
+from Infernux.screen import Rect as Rect
+from Infernux.screen import Screen as Screen
 from Infernux.acceptance import RuntimeAcceptance as RuntimeAcceptance
 from Infernux.acceptance import RuntimeAcceptanceManifest as RuntimeAcceptanceManifest
 from Infernux.acceptance import RuntimeAcceptanceTest as RuntimeAcceptanceTest

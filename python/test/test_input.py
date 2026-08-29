@@ -238,6 +238,7 @@ class TestInputMetaclassProperties:
             pressure=0.5,
             contact_size=(0.02, 0.03),
             is_primary=True,
+            cancel_reason="",
             phase=TouchPhase.MOVED,
         )
         assert touch.phase is TouchPhase.MOVED

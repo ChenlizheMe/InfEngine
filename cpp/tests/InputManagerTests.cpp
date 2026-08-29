@@ -191,6 +191,17 @@ int main()
     assert(input.GetTouch(0).contactHeight == 0.06f);
     assert(input.GetTouch(0).isPrimary);
 
+    input.ProcessScreenMetrics(1080, 2400, 1080, 2400, 1.0f, 0, 80, 1080, 2240, true, 700);
+    const auto &screen = input.GetScreenState();
+    assert(screen.logicalWidth == 1080);
+    assert(screen.logicalHeight == 2400);
+    assert(screen.safeAreaY == 80);
+    assert(screen.safeAreaHeight == 2240);
+    assert(screen.keyboardInsetKnown);
+    assert(screen.keyboardInset == 700);
+    assert(input.GetTouch(0).phase == TouchPhase::Canceled);
+    assert(input.GetTouch(0).cancelReason == "viewport_changed");
+
     input.BeginFrame();
     input.ProcessKeyEvent(SDL_SCANCODE_A, false);
     input.ProcessPointerButtonEvent(1, false);

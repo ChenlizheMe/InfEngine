@@ -23,6 +23,7 @@ class Touch:
     pressure: float
     contact_size: Tuple[float, float]
     is_primary: bool
+    cancel_reason: str
     phase: TouchPhase
 
 

@@ -55,6 +55,12 @@ std::array<double, 32> g_gamepadTimestamps{};
 std::unordered_map<int, std::pair<float, float>> g_pointerPositions;
 double g_lastFrameTimeMilliseconds = 0.0;
 bool g_runtimeFrameFailed = false;
+double g_safeAreaLeft = 0.0;
+double g_safeAreaTop = 0.0;
+double g_safeAreaRight = 0.0;
+double g_safeAreaBottom = 0.0;
+double g_keyboardInset = 0.0;
+bool g_keyboardInsetKnown = false;
 
 int BrowserCodeToScancode(std::string_view code)
 {
@@ -278,13 +284,52 @@ void ResizeCanvas()
     SetDictInteger(payload, "width", g_width);
     SetDictInteger(payload, "height", g_height);
     SetDictNumber(payload, "pixel_ratio", scale);
+    SetDictNumber(payload, "safe_left", g_safeAreaLeft);
+    SetDictNumber(payload, "safe_top", g_safeAreaTop);
+    SetDictNumber(payload, "safe_right", g_safeAreaRight);
+    SetDictNumber(payload, "safe_bottom", g_safeAreaBottom);
+    SetDictBool(payload, "keyboard_inset_known", g_keyboardInsetKnown);
+    SetDictNumber(payload, "keyboard_inset", g_keyboardInset);
     DispatchInput("viewport", payload);
     Py_XDECREF(payload);
+    infernux::InputManager::Instance().ProcessScreenMetrics(
+        static_cast<int>(g_cssWidth), static_cast<int>(g_cssHeight), static_cast<int>(g_width),
+        static_cast<int>(g_height), static_cast<float>(scale), static_cast<int>(g_safeAreaLeft),
+        static_cast<int>(g_safeAreaTop), std::max(0, static_cast<int>(g_cssWidth - g_safeAreaLeft - g_safeAreaRight)),
+        std::max(0, static_cast<int>(g_cssHeight - g_safeAreaTop - g_safeAreaBottom)), g_keyboardInsetKnown,
+        static_cast<int>(g_keyboardInset));
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebResizeCanvas()
 {
     ResizeCanvas();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebViewportChanged(double safeLeft, double safeTop, double safeRight,
+                                                                double safeBottom, int keyboardInsetKnown,
+                                                                double keyboardInset)
+{
+    g_safeAreaLeft = std::max(0.0, safeLeft);
+    g_safeAreaTop = std::max(0.0, safeTop);
+    g_safeAreaRight = std::max(0.0, safeRight);
+    g_safeAreaBottom = std::max(0.0, safeBottom);
+    g_keyboardInsetKnown = keyboardInsetKnown != 0;
+    g_keyboardInset = g_keyboardInsetKnown ? std::max(0.0, keyboardInset) : 0.0;
+    ResizeCanvas();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebPageLifecycle(int active)
+{
+    auto &input = infernux::InputManager::Instance();
+    input.ProcessFocusEvent(active != 0);
+    if (!active) {
+        g_pointerPositions.clear();
+        InfernuxWebEndTextInput();
+    }
+    PyObject *payload = PyDict_New();
+    SetDictBool(payload, "active", active != 0);
+    DispatchInput(active != 0 ? "page_show" : "page_hide", payload);
+    Py_DECREF(payload);
 }
 
 EM_BOOL OnResize(int, const EmscriptenUiEvent *, void *)
@@ -296,8 +341,10 @@ EM_BOOL OnResize(int, const EmscriptenUiEvent *, void *)
 EM_BOOL OnFocus(int eventType, const EmscriptenFocusEvent *, void *)
 {
     infernux::InputManager::Instance().ProcessFocusEvent(eventType == EMSCRIPTEN_EVENT_FOCUS);
-    if (eventType != EMSCRIPTEN_EVENT_FOCUS)
+    if (eventType != EMSCRIPTEN_EVENT_FOCUS) {
         g_pointerPositions.clear();
+        InfernuxWebEndTextInput();
+    }
     PyObject *payload = PyDict_New();
     SetDictBool(payload, "focused", eventType == EMSCRIPTEN_EVENT_FOCUS);
     DispatchInput(eventType == EMSCRIPTEN_EVENT_FOCUS ? "focus" : "blur", payload);
@@ -307,10 +354,11 @@ EM_BOOL OnFocus(int eventType, const EmscriptenFocusEvent *, void *)
 
 EM_BOOL OnVisibility(int, const EmscriptenVisibilityChangeEvent *event, void *)
 {
-    if (event->hidden)
+    if (event->hidden) {
         infernux::InputManager::Instance().ProcessFocusEvent(false);
-    if (event->hidden)
         g_pointerPositions.clear();
+        InfernuxWebEndTextInput();
+    }
     PyObject *payload = PyDict_New();
     SetDictBool(payload, "hidden", event->hidden != 0);
     SetDictInteger(payload, "state", event->visibilityState);

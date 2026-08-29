@@ -283,12 +283,7 @@ PyObject *BeginTextInput(PyObject *, PyObject *arguments)
 
 PyObject *EndTextInput(PyObject *, PyObject *)
 {
-    EM_ASM({
-        if (Module.infernuxEndTextInput)
-            Module.infernuxEndTextInput();
-    });
-    infernux::InputManager::Instance().StopTextInput();
-    g_textInputActive = false;
+    InfernuxWebEndTextInput();
     Py_RETURN_NONE;
 }
 
@@ -346,4 +341,14 @@ bool InfernuxWebFindShaderSource(const std::string &name, const char *stage, std
 void InfernuxWebSetParticleRuntime(infernux::web::WebParticleRuntime *runtime) noexcept
 {
     g_particleRuntime = runtime;
+}
+
+void InfernuxWebEndTextInput() noexcept
+{
+    EM_ASM({
+        if (Module.infernuxEndTextInput)
+            Module.infernuxEndTextInput();
+    });
+    infernux::InputManager::Instance().StopTextInput();
+    g_textInputActive = false;
 }

@@ -61,6 +61,7 @@ class Touch:
     pressure: float
     contact_size: Tuple[float, float]
     is_primary: bool
+    cancel_reason: str
     phase: TouchPhase
 
 
@@ -497,6 +498,7 @@ class Input(metaclass=_InputMeta):
                 float(native_touch.contact_height),
             ),
             is_primary=bool(native_touch.is_primary),
+            cancel_reason=str(native_touch.cancel_reason),
             phase=TouchPhase(str(native_touch.phase)),
         )
 
