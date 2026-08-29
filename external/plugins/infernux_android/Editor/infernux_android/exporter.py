@@ -36,6 +36,7 @@ from .doctor import (
     ANDROID_NDK,
     inspect_android_toolchain,
 )
+from .runtime_manifest import validate_runtime_manifest
 
 
 _ANDROID_CAPABILITIES = PlatformCapabilities(
@@ -62,6 +63,7 @@ _ANDROID_CAPABILITIES = PlatformCapabilities(
 )
 
 _ANDROID_PYTHON_SERIES = "3.13"
+_ANDROID_MINIMUM_API = 26
 # Bump when the packaged runtime layout or Android asset extraction contract changes.
 # The value is part of the on-device cache identity, so APK upgrades cannot silently
 # retain a runtime written by an older packaging policy.
@@ -642,6 +644,12 @@ def _stage_python_runtime(
     prefix: Path,
     abi: str,
 ) -> str:
+    manifest = validate_runtime_manifest(
+        prefix,
+        expected_abi=abi,
+        expected_python_series=_ANDROID_PYTHON_SERIES,
+        application_minimum_android_api=_ANDROID_MINIMUM_API,
+    )
     include_roots = sorted((prefix / "include").glob("python*"))
     library_roots = sorted(
         path
@@ -656,6 +664,12 @@ def _stage_python_runtime(
             "Android Player requires CPython "
             f"{_ANDROID_PYTHON_SERIES}, but the configured prefix provides {version}: "
             f"{prefix}"
+        )
+    manifest_version = str(manifest["cpython"]["version"])
+    if not manifest_version.startswith(version + "."):
+        raise ValueError(
+            f"Android Python prefix layout provides {version}, but its manifest "
+            f"declares {manifest_version}: {prefix}"
         )
     include_root = prefix / "include" / f"python{version}"
     library_root = prefix / "lib" / f"python{version}"

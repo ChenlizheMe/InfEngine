@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import shutil
 import sys
 import zipfile
@@ -37,6 +38,29 @@ def _write_android_numpy_wheel(prefix: Path, *, abi: str = "x86_64") -> Path:
             f"Tag: cp313-cp313-android_26_{architecture}\n",
         )
     return wheel
+
+
+def _stamp_android_python_prefix(
+    exporter_module,
+    prefix: Path,
+    *,
+    abi: str = "x86_64",
+    python_version: str = "3.13.15",
+    cpython_api: int = 21,
+    minimum_api: int = 26,
+) -> Path:
+    runtime_manifest = importlib.import_module("infernux_android.runtime_manifest")
+    runtime_manifest.create_runtime_manifest(
+        prefix,
+        abi=abi,
+        python_version=python_version,
+        cpython_android_api=cpython_api,
+        minimum_android_api=minimum_api,
+        ndk_version="27.3.13750724",
+        source_url="https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
+        source_sha256="a" * 64,
+    )
+    return prefix / runtime_manifest.MANIFEST_NAME
 
 
 def _android_module(monkeypatch):
@@ -357,6 +381,7 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     (prefix / "lib" / "libpython3.13.so").write_bytes(b"python")
     (prefix / "lib" / "libssl_python.so").write_bytes(b"ssl")
     _write_android_numpy_wheel(prefix)
+    _stamp_android_python_prefix(exporter_module, prefix)
 
     staging = tmp_path / "staging"
     stale_include = staging / "app/src/main/python/include/python3.13"
@@ -395,6 +420,7 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     (stdlib / "encodings" / "__init__.py").write_text(
         "changed runtime fixture\n", encoding="utf-8"
     )
+    _stamp_android_python_prefix(exporter_module, prefix)
     exporter_module._stage_python_runtime(request, staging, prefix, "x86_64")
     assert runtime_id.read_text(encoding="utf-8") != first_identity
 
@@ -526,6 +552,7 @@ def test_android_python_runtime_rejects_unsafe_numpy_wheel(monkeypatch, tmp_path
     wheel = _write_android_numpy_wheel(prefix)
     with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("../outside.py", "unsafe\n")
+    _stamp_android_python_prefix(exporter_module, prefix)
     request = BuildRequest(
         str(tmp_path / "project"),
         "android-x64-emulator",
@@ -552,6 +579,13 @@ def test_android_python_runtime_rejects_non_313_prefix(monkeypatch, tmp_path):
     (stdlib / "encodings").mkdir(parents=True)
     (include / "Python.h").write_text("fixture header\n", encoding="utf-8")
     (prefix / "lib" / "libpython3.11.so").write_bytes(b"python")
+    manifest_path = _stamp_android_python_prefix(exporter_module, prefix)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["cpython"]["version"] = "3.11.9"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     request = BuildRequest(
         str(tmp_path / "project"),
         "android-x64-emulator",
@@ -586,6 +620,7 @@ def test_android_python_runtime_rejects_missing_extension_sidecars(
         b"ELF payload libssl_python.so libcrypto_python.so"
     )
     _write_android_numpy_wheel(prefix)
+    _stamp_android_python_prefix(exporter_module, prefix)
     request = BuildRequest(
         str(tmp_path / "project"),
         "android-x64-emulator",
@@ -602,6 +637,83 @@ def test_android_python_runtime_rejects_missing_extension_sidecars(
             tmp_path / "staging",
             prefix,
             "x86_64",
+        )
+
+
+def test_android_python_runtime_rejects_unstamped_prefix(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    prefix = tmp_path / "python-prefix"
+    (prefix / "include/python3.13").mkdir(parents=True)
+    (prefix / "lib/python3.13/encodings").mkdir(parents=True)
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-x64-emulator",
+        str(tmp_path / "output"),
+        BuildProfile(),
+    )
+
+    with pytest.raises(ValueError, match="android_python_runtime.py"):
+        exporter_module._stage_python_runtime(
+            request,
+            tmp_path / "staging",
+            prefix,
+            "x86_64",
+        )
+
+
+def test_android_python_runtime_manifest_rejects_payload_tampering(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    runtime_manifest = importlib.import_module("infernux_android.runtime_manifest")
+    prefix = tmp_path / "python-prefix"
+    payload = prefix / "lib/python3.13/os.py"
+    payload.parent.mkdir(parents=True)
+    payload.write_text("fixture = 1\n", encoding="utf-8")
+    _stamp_android_python_prefix(exporter_module, prefix)
+
+    runtime_manifest.validate_runtime_manifest(
+        prefix,
+        expected_abi="x86_64",
+        expected_python_series="3.13",
+        application_minimum_android_api=26,
+    )
+    payload.write_text("fixture = 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="payload does not match"):
+        runtime_manifest.validate_runtime_manifest(
+            prefix,
+            expected_abi="x86_64",
+            expected_python_series="3.13",
+            application_minimum_android_api=26,
+        )
+
+
+def test_android_python_runtime_manifest_rejects_incompatible_target(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    runtime_manifest = importlib.import_module("infernux_android.runtime_manifest")
+    prefix = tmp_path / "python-prefix"
+    (prefix / "lib").mkdir(parents=True)
+    _stamp_android_python_prefix(exporter_module, prefix, minimum_api=27)
+
+    with pytest.raises(ValueError, match="requires API 27"):
+        runtime_manifest.validate_runtime_manifest(
+            prefix,
+            expected_abi="x86_64",
+            expected_python_series="3.13",
+            application_minimum_android_api=26,
+        )
+    with pytest.raises(ValueError, match="targets x86_64"):
+        runtime_manifest.validate_runtime_manifest(
+            prefix,
+            expected_abi="arm64-v8a",
+            expected_python_series="3.13",
+            application_minimum_android_api=27,
         )
 
 

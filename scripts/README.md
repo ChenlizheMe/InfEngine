@@ -47,3 +47,17 @@ uses `ID=PATH`; paths must live below `--root`, directory hashes are stable over
 sorted relative file names, and `--require-clean` rejects an uncommitted source
 tree. The manifest timestamp comes from the source commit rather than wall-clock
 time so the same release inputs reproduce the same provenance record.
+
+Android CPython prefixes are accepted only when they carry a complete
+`infernux-android-python.json` provenance manifest. After preparing a prefix,
+use `setup/android_python_runtime.py stamp` to record its ABI, CPython and
+effective minimum Android API levels, NDK version, official source hash,
+bundled wheels, and complete payload hash. Use the `verify` command in local or
+CI setup before starting an Android build. Prefixes with missing, incompatible,
+or modified payloads fail before any Player staging work begins.
+
+On Linux, `setup/build_android_python_runtime.sh` prepares a complete
+prefix from pinned CPython and NumPy source archives. It uses CPython's Android
+build, cibuildwheel's Android backend, the tracked NumPy cross-file contract,
+and an atomic output directory. The command never overwrites an existing
+prefix; pass a new output path when rebuilding an ABI.
