@@ -92,6 +92,15 @@ InxVkCoreModular::InxVkCoreModular(int maxFrameInFlight) : m_maxFramesInFlight(s
 
 InxVkCoreModular::~InxVkCoreModular()
 {
+    // Renderer construction precedes SDL/Vulkan startup.  If window creation
+    // fails, this object is still destroyed even though no Vulkan instance or
+    // device ever existed.  The normal teardown below assumes initialized
+    // renderer subsystems, so leave the default-constructed RAII members to
+    // perform their null-handle cleanup in that partial-startup state.
+    if (m_backend.Device().GetInstance() == VK_NULL_HANDLE && !m_backend.Device().IsValid()) {
+        return;
+    }
+
     if (m_backend.Device().IsValid() && !m_shuttingDown) {
         m_backend.Device().WaitIdle();
     }

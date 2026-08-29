@@ -433,7 +433,8 @@ InxRenderer::~InxRenderer()
 
     // 1. Single GPU drain — after this the device is idle, all subsequent
     //    vkDeviceWaitIdle calls inside subsystem destructors are redundant.
-    if (m_vkCore) {
+    const bool hasVulkanDevice = m_vkCore && m_vkCore->GetDeviceContext().IsValid();
+    if (hasVulkanDevice) {
         m_vkCore->GetDeviceContext().WaitIdle();
         m_vkCore->SetShuttingDown(true);
         m_vkCore->ReleaseActiveDrawLists();
@@ -463,7 +464,7 @@ InxRenderer::~InxRenderer()
     m_componentGizmos.reset();
     m_particleGpuDrawRegistry.reset();
 
-    if (m_vkCore)
+    if (hasVulkanDevice)
         m_vkCore->ReleaseGpuPreviews();
     m_gui.reset();
 
@@ -2593,11 +2594,12 @@ void InxRenderer::QueueDockTabSelection(const char *windowId, bool allowDuringMo
 }
 
 uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount,
-                                            int width, int height, VkFilter filter, bool pinned)
+                                            int width, int height, rhi::FilterMode filter, bool pinned)
 {
     if (!m_gui)
         throw std::logic_error("ImGui texture submission requires an initialized GUI");
-    return m_gui->SubmitTextureForImGui(name, pixels, byteCount, width, height, filter, pinned);
+    const VkFilter vkFilter = filter == rhi::FilterMode::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    return m_gui->SubmitTextureForImGui(name, pixels, byteCount, width, height, vkFilter, pinned);
 }
 
 uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid)

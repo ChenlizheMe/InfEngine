@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.22)
+project(InfernuxAndroidHost LANGUAGES C CXX)
+
+set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(SDL_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
+set(SDL_VULKAN ON CACHE BOOL "" FORCE)
+
+add_subdirectory(
+    "@INFERNUX_SOURCE_ROOT@/external/SDL"
+    "${CMAKE_CURRENT_BINARY_DIR}/SDL"
+)
+
+add_library(main SHARED main.cpp)
+target_compile_features(main PRIVATE cxx_std_17)
+target_compile_definitions(main PRIVATE
+    INFERNUX_ANDROID_ORIENTATIONS="@ANDROID_ORIENTATIONS@"
+)
+set(_infernux_python_version "@ANDROID_PYTHON_VERSION@")
+set(_infernux_python_include
+    "${CMAKE_CURRENT_SOURCE_DIR}/../python/include/python${_infernux_python_version}")
+set(_infernux_python_library
+    "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libpython${_infernux_python_version}.so")
+if(NOT EXISTS "${_infernux_python_include}/Python.h" OR
+   NOT EXISTS "${_infernux_python_library}")
+    message(FATAL_ERROR "The staged Android Python runtime is incomplete")
+endif()
+add_library(InfernuxAndroidPython SHARED IMPORTED)
+set_target_properties(InfernuxAndroidPython PROPERTIES
+    IMPORTED_LOCATION "${_infernux_python_library}"
+    INTERFACE_INCLUDE_DIRECTORIES "${_infernux_python_include}"
+)
+target_link_libraries(main PRIVATE SDL3::SDL3 InfernuxAndroidPython log)

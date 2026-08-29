@@ -39,9 +39,20 @@ from Infernux.engine.i18n import t
 from Infernux.engine.path_utils import path_key, resolved_path
 from Infernux.engine.player_package_native import extract_pack, read_manifest, write_pack
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
+from Infernux.engine.python_abi import (
+    LINUX_PYTHON_SHARED_PREFIX,
+    PYTHON_RUNTIME_DIRECTORY,
+    PYTHON_VERSION,
+    WINDOWS_PYTHON_DLL,
+)
 
 # ASCII-safe root for Nuitka staging and temporary build artifacts.
-_STAGING_ROOT = "C:\\_InxBuild"
+_STAGING_ROOT = os.environ.get(
+    "INFERNUX_NUITKA_ROOT",
+    "C:\\_InxBuild"
+    if sys.platform == "win32"
+    else os.path.join(tempfile.gettempdir(), "infernux-build"),
+)
 
 # Persistent Nuitka compilation cache — lives outside the per-build staging
 # directory so it survives across builds, dramatically speeding up rebuilds.
@@ -814,7 +825,7 @@ def _is_valid_builder_python(python_exe: str) -> bool:
     return bool(
         python_exe
         and os.path.isfile(python_exe)
-        and _python_version(python_exe) == "3.12"
+        and _python_version(python_exe) == PYTHON_VERSION
         and not _is_embeddable_python_exe(python_exe)
     )
 
@@ -838,9 +849,11 @@ def _resolve_builder_python() -> str:
         return sys.executable
 
     raise RuntimeError(
-        "Nuitka builds must run from a non-embeddable Python 3.12 environment.\n"
+        f"Nuitka builds must run from a non-embeddable Python {PYTHON_VERSION} "
+        "environment.\n"
         "In the packaged Hub workflow, each project owns a full Python copy "
-        "under .runtime/python312/ — open the project through its runtime and build from there."
+        f"under .runtime/{PYTHON_RUNTIME_DIRECTORY}/ — open the project through "
+        "its runtime and build from there."
     )
 
 
@@ -2493,10 +2506,13 @@ print(json.dumps({{
         bootstrap_module = self._bootstrap_module_file(lib_dir)
 
         for src in native_files:
-            # python312.dll is owned exclusively by the pre-extraction
+            # The CPython DLL is owned exclusively by the pre-extraction
             # CPython bootstrap. Nuitka normally emits it at the dist root;
             # refresh that copy and never duplicate it inside Runtime.inxrt.
-            if sys.platform == "win32" and src.name.casefold() == "python312.dll":
+            if (
+                sys.platform == "win32"
+                and src.name.casefold() == WINDOWS_PYTHON_DLL.casefold()
+            ):
                 shutil.copy2(src, dist_root / src.name)
                 try:
                     (target_dir / src.name).unlink()
@@ -2525,7 +2541,10 @@ print(json.dumps({{
 
             # Foundation is the bootstrap module's sole Infernux dependency
             # and must remain available before Runtime.inxrt is extracted.
-            if src.name.casefold() == "infernuxfoundation.dll":
+            if src.name.casefold() in {
+                "infernuxfoundation.dll",
+                "libinfernuxfoundation.so",
+            }:
                 dst_root = dist_root / src.name
                 shutil.copy2(src, dst_root)
                 Debug.log_internal(f"  Injected (bootstrap dependency): {src.name}")
@@ -2566,10 +2585,12 @@ print(json.dumps({{
             raise RuntimeError("Builder Python has no encodings package")
 
         ctypes_path = Path(resolved_path(ctypes_spec.origin))
+        environment_root = python_root.parent
         search_roots = (
             python_root,
             python_root / "DLLs",
             python_root / "Library" / "bin",
+            environment_root / "lib",
             ctypes_path.parent,
         )
 
@@ -2584,20 +2605,58 @@ print(json.dumps({{
                 )
             return None
 
-        sources: dict[str, Path] = {
-            "python312.dll": find_runtime_file("python312.dll", required=True),
-            "_ctypes.pyd": ctypes_path,
-            "ffi.dll": find_runtime_file("ffi.dll", required=True),
-        }
-        for optional_name in (
-            "python3.dll",
-            "zlib.dll",
-            "vcruntime140.dll",
-            "vcruntime140_1.dll",
-        ):
-            source = find_runtime_file(optional_name, required=False)
-            if source is not None:
-                sources[optional_name] = source
+        if sys.platform == "win32":
+            sources: dict[str, Path] = {
+                WINDOWS_PYTHON_DLL: find_runtime_file(
+                    WINDOWS_PYTHON_DLL, required=True
+                ),
+                "_ctypes.pyd": ctypes_path,
+                "ffi.dll": find_runtime_file("ffi.dll", required=True),
+            }
+            for optional_name in (
+                "python3.dll",
+                "zlib.dll",
+                "vcruntime140.dll",
+                "vcruntime140_1.dll",
+            ):
+                source = find_runtime_file(optional_name, required=False)
+                if source is not None:
+                    sources[optional_name] = source
+        elif sys.platform.startswith("linux"):
+            python_candidates = sorted(
+                candidate
+                for pattern in (
+                    f"{LINUX_PYTHON_SHARED_PREFIX}.1.0",
+                    LINUX_PYTHON_SHARED_PREFIX,
+                )
+                for candidate in (environment_root / "lib").glob(pattern)
+                if candidate.is_file()
+            )
+            if not python_candidates:
+                raise RuntimeError(
+                    "Builder Python bootstrap dependency is missing: "
+                    f"{LINUX_PYTHON_SHARED_PREFIX}"
+                )
+            python_library = python_candidates[0]
+            ffi_candidates = sorted(
+                candidate
+                for candidate in (environment_root / "lib").glob("libffi.so*")
+                if candidate.is_file()
+            )
+            if not ffi_candidates:
+                raise RuntimeError(
+                    "Builder Python bootstrap dependency is missing: libffi.so"
+                )
+            sources = {
+                python_library.name: python_library,
+                ctypes_path.name: ctypes_path,
+            }
+            for source in ffi_candidates:
+                sources.setdefault(source.name, source)
+        else:
+            raise RuntimeError(
+                f"PlayerHost bootstrap is unsupported on {sys.platform}"
+            )
 
         # Module-mode no longer embeds stdlib extensions. Stage the physical
         # CPython ABI modules so GameBuilder can move them into Runtime.inxrt.
@@ -2615,15 +2674,28 @@ print(json.dumps({{
                 sources.setdefault(source.name, source)
 
         dependency_patterns = (
-            "bzip2*.dll",
-            "libbz2*.dll",
-            "libcrypto-*.dll",
-            "libexpat*.dll",
-            "libffi*.dll",
-            "liblzma*.dll",
-            "libssl-*.dll",
-            "sqlite3.dll",
-            "zlib*.dll",
+            (
+                "bzip2*.dll",
+                "libbz2*.dll",
+                "libcrypto-*.dll",
+                "libexpat*.dll",
+                "libffi*.dll",
+                "liblzma*.dll",
+                "libssl-*.dll",
+                "sqlite3.dll",
+                "zlib*.dll",
+            )
+            if sys.platform == "win32"
+            else (
+                "libbz2.so*",
+                "libcrypto.so*",
+                "libexpat.so*",
+                "libffi.so*",
+                "liblzma.so*",
+                "libssl.so*",
+                "libsqlite3.so*",
+                "libz.so*",
+            )
         )
         for root in search_roots:
             if not root.is_dir():

@@ -47,6 +47,8 @@ set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
 # SDL configuration
 set(SDL_SHARED ON CACHE BOOL "" FORCE)
 set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
 
 # Jolt Physics configuration
 #
@@ -144,6 +146,133 @@ else()
     message(FATAL_ERROR
         "The pinned Zstandard source did not provide the required libzstd_static target"
     )
+endif()
+
+# SPIRV-Cross is linked into target runtimes for shader reflection. A desktop
+# Vulkan SDK only contains host libraries, so cross builds must compile the
+# pinned source for the target ABI instead of accidentally linking host code.
+set(_infernux_spirv_cross_default OFF)
+if(CMAKE_CROSSCOMPILING)
+    set(_infernux_spirv_cross_default ON)
+endif()
+option(INFERNUX_BUILD_TARGET_SPIRV_CROSS
+    "Build pinned SPIRV-Cross sources for the current target"
+    ${_infernux_spirv_cross_default}
+)
+set(INFERNUX_SPIRV_CROSS_SOURCE_DIR "" CACHE PATH
+    "Pinned local SPIRV-Cross source tree for offline cross builds"
+)
+if(INFERNUX_BUILD_TARGET_SPIRV_CROSS)
+    set(SPIRV_CROSS_SHARED OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_FORCE_PIC ON CACHE BOOL "" FORCE)
+    if(INFERNUX_SPIRV_CROSS_SOURCE_DIR)
+        if(NOT EXISTS "${INFERNUX_SPIRV_CROSS_SOURCE_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "INFERNUX_SPIRV_CROSS_SOURCE_DIR must contain CMakeLists.txt")
+        endif()
+        add_subdirectory(
+            "${INFERNUX_SPIRV_CROSS_SOURCE_DIR}"
+            "${CMAKE_BINARY_DIR}/_deps/infernux-spirv-cross-local"
+            EXCLUDE_FROM_ALL
+        )
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            infernux_spirv_cross
+            GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+            GIT_TAG 9c3c8e2cefdd8194b193bb8ed2fdff4d5527e382
+        )
+        FetchContent_MakeAvailable(infernux_spirv_cross)
+    endif()
+    if(NOT TARGET spirv-cross-core OR NOT TARGET spirv-cross-glsl)
+        message(FATAL_ERROR "Pinned SPIRV-Cross did not provide core and GLSL targets")
+    endif()
+    set(INFERNUX_SPIRV_CROSS_TARGETS
+        spirv-cross-core
+        spirv-cross-glsl
+        PARENT_SCOPE
+    )
+endif()
+
+# Cross-platform Vulkan entry points cannot be assumed to exist as direct
+# loader exports at the selected deployment API level. Build a pinned Volk
+# meta-loader so core and extension commands share one dispatch path.
+option(INFERNUX_BUILD_TARGET_VOLK
+    "Build the pinned Volk Vulkan meta-loader for the current target"
+    ${_infernux_spirv_cross_default}
+)
+set(INFERNUX_VOLK_SOURCE_DIR "" CACHE PATH
+    "Pinned local Volk source tree for offline cross builds"
+)
+if(INFERNUX_BUILD_TARGET_VOLK)
+    set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
+    if(INFERNUX_VOLK_SOURCE_DIR)
+        if(NOT EXISTS "${INFERNUX_VOLK_SOURCE_DIR}/volk.h" OR
+           NOT EXISTS "${INFERNUX_VOLK_SOURCE_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "INFERNUX_VOLK_SOURCE_DIR must contain volk.h and CMakeLists.txt")
+        endif()
+        add_subdirectory(
+            "${INFERNUX_VOLK_SOURCE_DIR}"
+            "${CMAKE_BINARY_DIR}/_deps/infernux-volk-local"
+            EXCLUDE_FROM_ALL
+        )
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            infernux_volk
+            GIT_REPOSITORY https://github.com/zeux/volk.git
+            GIT_TAG 2e19a77ce9b5bd8df0106f66b91032c0e5c776a1
+        )
+        FetchContent_MakeAvailable(infernux_volk)
+    endif()
+    if(NOT TARGET volk)
+        message(FATAL_ERROR "Pinned Volk source did not provide the volk target")
+    endif()
+    if(ANDROID)
+        # Android loads the engine as several DSOs. Linking Volk's static
+        # archive into each one creates independent hidden dispatch tables
+        # while its public initialization functions remain interposable. A
+        # call can then initialize one DSO's table and dereference another
+        # DSO's null vkGetInstanceProcAddr. Keep exactly one process-wide
+        # dispatch table in a shared runtime library instead.
+        get_target_property(_infernux_volk_source_dir volk SOURCE_DIR)
+        add_library(InfernuxVulkanLoader SHARED
+            "${_infernux_volk_source_dir}/volk.c"
+        )
+        target_link_libraries(InfernuxVulkanLoader PUBLIC volk_headers)
+        target_compile_definitions(InfernuxVulkanLoader PUBLIC
+            VOLK_DEFAULT_VISIBILITY=1
+        )
+        set_target_properties(InfernuxVulkanLoader PROPERTIES
+            C_VISIBILITY_PRESET default
+            VISIBILITY_INLINES_HIDDEN OFF
+        )
+        add_custom_command(TARGET InfernuxVulkanLoader POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                "-DSOURCE=$<TARGET_FILE:InfernuxVulkanLoader>"
+                "-DDESTINATION=${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:InfernuxVulkanLoader>"
+                -P "${CMAKE_SOURCE_DIR}/cmake/stage_build_file.cmake"
+            COMMENT "Stage the Android Vulkan dispatch library"
+            VERBATIM
+        )
+        set(INFERNUX_VULKAN_LOADER_TARGET InfernuxVulkanLoader)
+        set(INFERNUX_VULKAN_LOADER_TARGET InfernuxVulkanLoader PARENT_SCOPE)
+    else()
+        set(INFERNUX_VULKAN_LOADER_TARGET volk)
+        set(INFERNUX_VULKAN_LOADER_TARGET volk PARENT_SCOPE)
+    endif()
 endif()
 
 # assimp
@@ -255,10 +384,20 @@ target_include_directories(imgui PRIVATE
     ${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend
 )
 
+set(_infernux_external_vulkan_loader Vulkan::Vulkan)
+if(INFERNUX_VULKAN_LOADER_TARGET)
+    set(_infernux_external_vulkan_loader ${INFERNUX_VULKAN_LOADER_TARGET})
+endif()
 target_link_libraries(imgui PUBLIC
-    Vulkan::Vulkan
+    ${_infernux_external_vulkan_loader}
     SDL3::SDL3
 )
+if(INFERNUX_VULKAN_LOADER_TARGET)
+    target_compile_definitions(imgui PUBLIC
+        IMGUI_IMPL_VULKAN_USE_VOLK=1
+        INFERNUX_USE_VOLK=1
+    )
+endif()
 
 # ------------------------------------------------------------------------------
 # Restore Build Type

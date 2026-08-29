@@ -145,6 +145,65 @@ void TestPathOnlyDependencyIsRejectedOnInitialRefresh()
     std::filesystem::remove_all(root);
 }
 
+void TestScriptReimportRefreshesContentHashAndPreservesGuid()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-script-reimport-content-hash";
+    std::filesystem::remove_all(root);
+    const auto script = root / "Assets" / "Scripts" / "Gameplay.py";
+    WriteText(script, "VALUE = 1\n");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+
+        const std::string scriptPath = infernux::FromFsPath(script);
+        const std::string originalGuid = assetDatabase->GetGuidFromPath(scriptPath);
+        const auto originalMetadata = assetDatabase->GetMetaByGuid(originalGuid);
+        Require(!originalGuid.empty() && originalMetadata != nullptr,
+                "initial script refresh did not publish metadata");
+        const std::string originalHash = originalMetadata->GetDataAs<std::string>("content_hash");
+
+        // Preserve byte count so the regression cannot be hidden by a size-only check.
+        WriteText(script, "VALUE = 2\n");
+        const auto result = assetDatabase->ReimportAsset(scriptPath);
+        Require(result.succeeded, "script reimport failed");
+        Require(result.guid == originalGuid, "script reimport changed its GUID");
+        const auto rebuiltMetadata = assetDatabase->GetMetaByGuid(originalGuid);
+        Require(rebuiltMetadata != nullptr, "script reimport removed its metadata");
+        Require(rebuiltMetadata->GetDataAs<std::string>("content_hash") != originalHash,
+                "script reimport retained the stale source hash");
+        Require(rebuiltMetadata->GetDataAs<size_t>("file_size") == std::string("VALUE = 2\n").size(),
+                "script reimport retained the stale source size");
+
+        assetDatabase->FlushDerivedIndex();
+        infernux::AssetIndex index;
+        Require(index.Load(infernux::FromFsPath(root / "Library" / "AssetIndex.json"),
+                           infernux::FilesystemPathKey(infernux::FromFsPath(root))),
+                "script reimport did not persist the derived index");
+        const auto *entry = index.Find(infernux::FilesystemPathKey(scriptPath));
+        Require(entry != nullptr && entry->guid == originalGuid, "script reimport index lost the original identity");
+        Require(entry->contentHash == rebuiltMetadata->GetDataAs<std::string>("content_hash"),
+                "script reimport index did not publish the rebuilt source hash");
+
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestLegacySidecarWithoutContentHashIsRebuilt()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-legacy-sidecar";
@@ -446,6 +505,7 @@ int main()
     try {
         TestImporterExtensionsAreCaseInsensitive();
         TestPathOnlyDependencyIsRejectedOnInitialRefresh();
+        TestScriptReimportRefreshesContentHashAndPreservesGuid();
         TestLegacySidecarWithoutContentHashIsRebuilt();
         TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();

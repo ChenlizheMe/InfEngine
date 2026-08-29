@@ -193,6 +193,10 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
         host_status = mcp.tools["host_session_status"]()
         assert host_status["ok"] is True
         assert host_status["data"]["session"]["project_root"] == str(tmp_path)
+        guidance = host_status["data"]["workflow_guidance"]
+        assert "os_foreground_control" not in guidance
+        assert "render-target capture" in guidance["visual_capture"]
+        assert "Scene, Game, or Player" in guidance["visual_capture"]
     finally:
         shutdown_adapter()
 

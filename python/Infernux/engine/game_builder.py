@@ -86,6 +86,11 @@ from Infernux.engine.player_service_graph import (
     RuntimeFlavor,
     player_runtime_contract_sections,
 )
+from Infernux.engine.python_abi import (
+    LINUX_PYTHON_SHARED_PREFIX,
+    PYTHON_VERSION,
+    WINDOWS_PYTHON_DLL,
+)
 from Infernux.engine.runtime_type_registry import (
     RUNTIME_TYPE_REGISTRY_SCHEMA,
     RUNTIME_TYPE_REGISTRY_VERSION,
@@ -448,7 +453,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         if lowered == "py.typed":
             return False
         # NumPy ships compiled test modules beside its production extensions,
-        # e.g. _multiarray_tests.cp312-win_amd64.pyd. They are never needed by
+        # e.g. an ABI-tagged _multiarray_tests extension. It is never needed by
         # engine runtime imports and are unambiguously test-only by name.
         if lowered.endswith(".pyd") and "_tests" in lowered:
             return False
@@ -626,6 +631,83 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 shutil.rmtree(log_dir, ignore_errors=True)
             self._abort_output_transaction()
 
+    def cook_platform_content(
+        self,
+        package_root: str,
+        *,
+        platform_host: dict[str, object],
+        on_progress: Optional[Callable[[str, float], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
+        """Cook one project for a platform-native Player host.
+
+        The resulting ``<Game>_Data`` directory has the same Content.inxpkg,
+        runtime asset catalog, type registry, and Player manifest contracts as
+        a desktop build.  The platform exporter supplies the executable host,
+        so this path deliberately does not run Nuitka or emit Runtime.inxrt.
+        ``package_root`` must be an empty exporter-owned staging directory.
+        """
+
+        original_output = self.output_dir
+        self.output_dir = resolved_path(package_root)
+
+        def report(message: str, fraction: float) -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _BuildCancelled()
+            if on_progress is not None:
+                on_progress(message, fraction)
+
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            with os.scandir(self.output_dir) as entries:
+                existing_entries = sorted(entry.name for entry in entries)
+            if existing_entries:
+                raise BuildOutputDirectoryError(
+                    "not-empty-unmarked",
+                    self.output_dir,
+                    marker_filename=self.OUTPUT_MARKER_FILENAME,
+                    entries=existing_entries,
+                )
+
+            report("Validating project content", 0.0)
+            self._validate()
+            final_dir = self.output_dir
+            os.makedirs(os.path.join(final_dir, "Data"), exist_ok=False)
+
+            report("Cooking project assets", 0.1)
+            self._copy_game_data(final_dir, package_builtin_resources=True)
+            report("Compiling project scripts", 0.45)
+            self._compile_user_scripts(final_dir)
+            self._compile_player_plugin_scripts(final_dir)
+            self._write_runtime_asset_records(
+                final_dir,
+                package_builtin_resources=True,
+            )
+            self._process_build_icon(final_dir)
+            self._process_splash_items(final_dir)
+            self._relativize_scenes(final_dir)
+            self._generate_manifest(final_dir)
+            self._cleanup_dist(final_dir)
+
+            data_root = os.path.join(final_dir, f"{self.project_name}_Data")
+            os.replace(os.path.join(final_dir, "Data"), data_root)
+            report("Packing project content", 0.75)
+            self._pack_content_archive(
+                final_dir,
+                package_builtin_resources=True,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            )
+            self._write_payload_manifest(
+                final_dir,
+                platform_host=platform_host,
+                include_runtime_archive=False,
+            )
+            report("Platform content ready", 1.0)
+            return data_root
+        finally:
+            self.output_dir = original_output
+
     def _build_inner(self, _p, _blog, on_progress, cancel_event, build_start) -> str:
         """Internal build pipeline (separated for clean exception handling)."""
 
@@ -718,6 +800,15 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             os.remove(self._output_marker_path(final_dir))
         except FileNotFoundError:
             pass
+
+        # A generated directory is not a successful Player until the strict
+        # package audit accepts its complete public and private surfaces.
+        # Keep this before the transaction commit so a platform packaging
+        # regression cannot replace the user's last good build.
+        _p("Auditing Player package", 0.989)
+        from Infernux.engine.player_package_audit import audit_player_package
+
+        audit_player_package(final_dir, write_manifest=True)
 
         # Log per-directory size breakdown so the user sees where size goes
         self._report_build_size(final_dir, _blog)
@@ -1332,7 +1423,7 @@ _RUNTIME_ARCHIVE = os.path.join(_DATA_ROOT, "Runtime.inxrt")
 _CORE_RUNTIME_DIR = _extract_cached_archive(
     _RUNTIME_ARCHIVE,
     "runtime",
-    {"Infernux", "numpy", "numpy.libs", "stdlib"},
+    {"Infernux", "numpy", "numpy.libs", "packaging", "stdlib"},
 )
 _mark_boot_phase("runtime_ready")
 _STDLIB_RUNTIME_DIR = os.path.join(_CORE_RUNTIME_DIR, "stdlib")
@@ -1594,17 +1685,24 @@ finally:
     def _player_host_path(self) -> str:
         """Resolve the native single-process host; fail closed if absent."""
 
-        if sys.platform != "win32":
-            raise RuntimeError("PlayerHost packaging is currently supported on Windows only")
+        override = os.environ.get("INFERNUX_PLAYER_HOST_PATH", "").strip()
+        if override:
+            candidate = resolved_path(override)
+            if not os.path.isfile(candidate):
+                raise RuntimeError(
+                    f"INFERNUX_PLAYER_HOST_PATH is not a file: {candidate}"
+                )
+            return candidate
+        host_name = "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
         candidate = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "resources",
             "player_runtime",
-            "InfernuxPlayerHost.exe",
+            host_name,
         )
         if not os.path.isfile(candidate):
             raise RuntimeError(
-                "InfernuxPlayerHost.exe is missing; refusing to package a legacy "
+                f"{host_name} is missing; refusing to package a legacy "
                 "Nuitka executable Player"
             )
         return candidate
@@ -1664,13 +1762,12 @@ finally:
 
         game_name = f"{self.project_name}.exe" if sys.platform == "win32" else self.project_name
         game_executable = os.path.join(final_dir, game_name)
-        if sys.platform == "win32":
-            host = self._player_host_path()
-            if os.path.exists(game_executable):
-                os.remove(game_executable)
-            shutil.copy2(host, game_executable)
-        elif not os.path.isfile(game_executable):
-            raise RuntimeError("PlayerHost packaging requires a native game entry point")
+        host = self._player_host_path()
+        if os.path.exists(game_executable):
+            os.remove(game_executable)
+        shutil.copy2(host, game_executable)
+        if sys.platform != "win32":
+            os.chmod(game_executable, os.stat(game_executable).st_mode | 0o111)
 
         Debug.log_internal(
             f"  moved dist to output in {time.perf_counter() - _move_t0:.2f}s"
@@ -1709,13 +1806,22 @@ finally:
             raise RuntimeError(f"Player Data target already exists: {data_root}")
         os.replace(data_source, data_root)
 
+        expected_executable = (
+            f"{self.project_name}.exe" if sys.platform == "win32" else self.project_name
+        )
         executable_names = [
             name
             for name in os.listdir(final_dir)
-            if name.casefold().endswith(".exe")
-            and os.path.isfile(os.path.join(final_dir, name))
+            if os.path.isfile(os.path.join(final_dir, name))
+            and (
+                name.casefold().endswith(".exe")
+                if sys.platform == "win32"
+                else (
+                    not os.path.splitext(name)[1]
+                    and bool(os.stat(os.path.join(final_dir, name)).st_mode & 0o111)
+                )
+            )
         ]
-        expected_executable = f"{self.project_name}.exe"
         if executable_names != [expected_executable]:
             raise RuntimeError(
                 "Player layout requires exactly one root executable named "
@@ -1871,7 +1977,12 @@ finally:
     # Game data
     # ------------------------------------------------------------------
 
-    def _copy_game_data(self, final_dir: str):
+    def _copy_game_data(
+        self,
+        final_dir: str,
+        *,
+        package_builtin_resources: bool = False,
+    ):
         """Copy authored data and selected runtime artifacts to Data/."""
         self._runtime_artifact_bindings = {}
         self._runtime_artifact_source_paths = set()
@@ -1887,7 +1998,10 @@ finally:
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             shutil.copy2(source, destination)
 
-        self._copy_cooked_assets(data_dir)
+        self._copy_cooked_assets(
+            data_dir,
+            package_builtin_resources=package_builtin_resources,
+        )
         self._prune_player_editor_data(data_dir)
         self._stage_player_plugins(data_dir)
         self._stage_library_runtime_artifacts(data_dir)
@@ -1996,7 +2110,12 @@ finally:
                         f"Player plugin script compilation failed: {source}: {exc}"
                     ) from exc
 
-    def _copy_cooked_assets(self, data_dir: str) -> None:
+    def _copy_cooked_assets(
+        self,
+        data_dir: str,
+        *,
+        package_builtin_resources: bool = False,
+    ) -> None:
         """Stage every current project asset selected from the AssetIndex."""
 
         try:
@@ -2067,9 +2186,28 @@ finally:
                 is_path_within(source, root, allow_root=False)
                 for root in builtin_resources_roots
             ):
-                # Built-in resources are supplied once by Runtime.inxrt. They
-                # may participate in the GUID closure, but must never be
-                # duplicated into project Content or treated as author files.
+                # Desktop Players receive built-in resources from Runtime.inxrt.
+                # Platform-owned hosts do not carry that desktop archive, so
+                # their cook embeds only the built-ins reached by this project.
+                if package_builtin_resources:
+                    builtin_relative = self._builtin_resource_relative_path(source)
+                    if not builtin_relative:
+                        raise RuntimeError(
+                            "Player asset cook could not derive a built-in resource "
+                            f"path: guid={guid}, source={source}"
+                        )
+                    destination_relative = (
+                        f"Infernux/resources/{builtin_relative}"
+                    )
+                    destination_key = destination_relative.casefold()
+                    if destination_key not in copied:
+                        destination = os.path.join(
+                            data_dir,
+                            *destination_relative.split("/"),
+                        )
+                        os.makedirs(os.path.dirname(destination), exist_ok=True)
+                        shutil.copy2(source, destination)
+                        copied.add(destination_key)
                 continue
             raise RuntimeError(
                 "Player asset cook selected an unsupported source outside "
@@ -3075,7 +3213,12 @@ finally:
             },
         )
 
-    def _write_runtime_asset_records(self, final_dir: str) -> None:
+    def _write_runtime_asset_records(
+        self,
+        final_dir: str,
+        *,
+        package_builtin_resources: bool = False,
+    ) -> None:
         """Persist cooked GUID identity without shipping editor sidecars."""
 
         data_dir = os.path.join(final_dir, "Data")
@@ -3143,7 +3286,11 @@ finally:
             if not payloads and is_builtin_resource:
                 payloads = [
                     {
-                        "package": self._RUNTIME_ARCHIVE_FILENAME,
+                        "package": (
+                            self._CONTENT_ARCHIVE_FILENAME
+                            if package_builtin_resources
+                            else self._RUNTIME_ARCHIVE_FILENAME
+                        ),
                         "runtime_path": f"Infernux/resources/{builtin_relative}",
                     }
                 ]
@@ -3482,6 +3629,7 @@ finally:
         roots = [
             os.path.join(final_dir, "numpy"),
             os.path.join(final_dir, "numpy.libs"),
+            os.path.join(final_dir, "packaging"),
             os.path.join(final_dir, "Infernux"),
         ]
         files: list[tuple[str, str]] = []
@@ -3499,12 +3647,38 @@ finally:
         bootstrap_root_names = {
             "_infernuxbootstrap.pyd",
             "_infernuxplayer.pyd",
-            "python312.dll",
+            WINDOWS_PYTHON_DLL.casefold(),
             "_ctypes.pyd",
             "ffi.dll",
             "infernuxfoundation.dll",
         }
+        if sys.platform.startswith("linux"):
+            bootstrap_root_names.update(
+                filename.casefold()
+                for filename in os.listdir(final_dir)
+                if filename.startswith(
+                    (
+                        "_InfernuxBootstrap",
+                        "_InfernuxPlayer",
+                        "_ctypes.",
+                        LINUX_PYTHON_SHARED_PREFIX,
+                        "libffi.so",
+                        "libInfernuxFoundation.so",
+                    )
+                )
+            )
         package_lib = os.path.join(final_dir, "Infernux", "lib")
+
+        def is_native_shared_file(filename: str) -> bool:
+            suffix = os.path.splitext(filename)[1].casefold()
+            if suffix in {".dll", ".pyd", ".so", ".dylib"}:
+                return True
+            return bool(
+                sys.platform.startswith("linux")
+                and filename.startswith("lib")
+                and re.search(r"\.so(?:\.|$)", filename)
+            )
+
         for filename in sorted(os.listdir(final_dir)):
             source_path = os.path.join(final_dir, filename)
             if not os.path.isfile(source_path):
@@ -3513,8 +3687,7 @@ finally:
                 deferred_sources.append(source_path)
                 deferred_source_set.add(source_path)
                 continue
-            suffix = os.path.splitext(filename)[1].casefold()
-            if suffix not in {".dll", ".pyd", ".so", ".dylib"}:
+            if not is_native_shared_file(filename):
                 continue
             if source_path in deferred_source_set:
                 continue
@@ -3625,16 +3798,66 @@ finally:
                 f"extension module; found: {found}"
             )
         player_module = player_modules[0]
-        required = {
-            "python312.dll": os.path.join(final_dir, "python312.dll"),
-            "_ctypes.pyd": os.path.join(final_dir, "_ctypes.pyd"),
-            "ffi.dll": os.path.join(final_dir, "ffi.dll"),
-            "_InfernuxBootstrap.pyd": os.path.join(final_dir, "_InfernuxBootstrap.pyd"),
-            player_module.name: str(player_module),
-            "Infernux/lib/InfernuxFoundation.dll": os.path.join(
-                final_dir, "Infernux", "lib", "InfernuxFoundation.dll"
-            ),
-        }
+        if sys.platform == "win32":
+            required = {
+                WINDOWS_PYTHON_DLL: os.path.join(final_dir, WINDOWS_PYTHON_DLL),
+                "_ctypes.pyd": os.path.join(final_dir, "_ctypes.pyd"),
+                "ffi.dll": os.path.join(final_dir, "ffi.dll"),
+                "_InfernuxBootstrap.pyd": os.path.join(
+                    final_dir, "_InfernuxBootstrap.pyd"
+                ),
+                player_module.name: str(player_module),
+                "Infernux/lib/InfernuxFoundation.dll": os.path.join(
+                    final_dir, "Infernux", "lib", "InfernuxFoundation.dll"
+                ),
+            }
+        elif sys.platform.startswith("linux"):
+            def require_unique(pattern: str, label: str) -> Path:
+                matches = sorted(
+                    path for path in Path(final_dir).glob(pattern) if path.is_file()
+                )
+                if len(matches) != 1:
+                    found = ", ".join(path.name for path in matches) or "none"
+                    raise RuntimeError(
+                        f"Bootstrap.inxrt requires exactly one {label}; found: {found}"
+                    )
+                return matches[0]
+
+            python_libraries = sorted(
+                path
+                for path in Path(final_dir).glob(
+                    f"{LINUX_PYTHON_SHARED_PREFIX}*"
+                )
+                if path.is_file()
+            )
+            if not python_libraries:
+                raise RuntimeError(
+                    f"Bootstrap.inxrt requires the CPython {PYTHON_VERSION} "
+                    "shared library"
+                )
+            ctypes_module = require_unique("_ctypes.*.so", "_ctypes extension module")
+            ffi_libraries = sorted(
+                path for path in Path(final_dir).glob("libffi.so*") if path.is_file()
+            )
+            if not ffi_libraries:
+                raise RuntimeError("Bootstrap.inxrt requires the libffi shared library")
+            bootstrap_module = require_unique(
+                "_InfernuxBootstrap*.so", "_InfernuxBootstrap module"
+            )
+            foundation = Path(final_dir) / "Infernux" / "lib" / "libInfernuxFoundation.so"
+            required = {
+                ctypes_module.name: str(ctypes_module),
+                bootstrap_module.name: str(bootstrap_module),
+                player_module.name: str(player_module),
+                "Infernux/lib/libInfernuxFoundation.so": str(foundation),
+            }
+            required.update(
+                {path.name: str(path) for path in (*python_libraries, *ffi_libraries)}
+            )
+        else:
+            raise RuntimeError(
+                f"PlayerHost bootstrap is unsupported on {sys.platform}"
+            )
         for name, source in required.items():
             if not os.path.isfile(source):
                 raise RuntimeError(
@@ -3643,12 +3866,17 @@ finally:
                 )
 
         sources = [(name, source) for name, source in sorted(required.items())]
-        for optional_name in (
-            "python3.dll",
-            "zlib.dll",
-            "vcruntime140.dll",
-            "vcruntime140_1.dll",
-        ):
+        optional_bootstrap_names = (
+            (
+                "python3.dll",
+                "zlib.dll",
+                "vcruntime140.dll",
+                "vcruntime140_1.dll",
+            )
+            if sys.platform == "win32"
+            else ()
+        )
+        for optional_name in optional_bootstrap_names:
             source = os.path.join(final_dir, optional_name)
             if os.path.isfile(source):
                 sources.append((optional_name, source))
@@ -3677,12 +3905,7 @@ finally:
         for name, source in required.items():
             if "/" not in name:
                 os.remove(source)
-        for optional_name in (
-            "python3.dll",
-            "zlib.dll",
-            "vcruntime140.dll",
-            "vcruntime140_1.dll",
-        ):
+        for optional_name in optional_bootstrap_names:
             try:
                 os.remove(os.path.join(final_dir, optional_name))
             except FileNotFoundError:
@@ -3691,6 +3914,10 @@ finally:
         root_foundation = os.path.join(final_dir, "InfernuxFoundation.dll")
         if os.path.isfile(root_foundation):
             os.remove(root_foundation)
+        if sys.platform.startswith("linux"):
+            for root_foundation in Path(final_dir).glob("libInfernuxFoundation.so*"):
+                if root_foundation.is_file():
+                    root_foundation.unlink()
         Debug.log_internal(
             "Packed Bootstrap.inxrt: "
             f"{native_manifest['archive_bytes'] / (1024 * 1024):.1f} MB"
@@ -3776,6 +4003,7 @@ finally:
         self,
         final_dir: str,
         *,
+        package_builtin_resources: bool = False,
         on_progress: Optional[Callable[[str, float], None]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -3843,11 +4071,33 @@ finally:
                         "library/artifacts/blob/"
                     )
                 )
-                if not packed_runtime_shader and suffix in {
-                    ".py", ".pyi", ".pyx", ".lua", ".cpp", ".c", ".cc",
-                    ".h", ".hpp", ".glsl", ".vert", ".frag", ".comp", ".geom",
-                    ".tesc", ".tese", ".hlsl", ".shader",
-                }:
+                packed_platform_builtin_shader = (
+                    package_builtin_resources
+                    and suffix
+                    in {
+                        ".glsl",
+                        ".vert",
+                        ".frag",
+                        ".comp",
+                        ".geom",
+                        ".tesc",
+                        ".tese",
+                        ".hlsl",
+                        ".shader",
+                    }
+                    and portable_relative.casefold().startswith(
+                        "infernux/resources/"
+                    )
+                )
+                if (
+                    not packed_runtime_shader
+                    and not packed_platform_builtin_shader
+                    and suffix in {
+                        ".py", ".pyi", ".pyx", ".lua", ".cpp", ".c", ".cc",
+                        ".h", ".hpp", ".glsl", ".vert", ".frag", ".comp", ".geom",
+                        ".tesc", ".tese", ".hlsl", ".shader",
+                    }
+                ):
                     forbidden_plaintext.append(relative)
                 logical_type = logical_type_for_path(portable_relative)
                 if payload_kind_for(logical_type) in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
@@ -3952,13 +4202,36 @@ finally:
         project_root = resolved_path(self.project_path)
         changed = False
 
-        def rewrite(value):
+        def portable_asset_hint(value: str) -> str:
+            normalized = value.replace("\\", "/")
+            lowered = normalized.casefold()
+            if lowered.startswith("assets/"):
+                return "Assets/" + normalized[len("assets/") :]
+            marker = "/assets/"
+            marker_index = lowered.find(marker)
+            if marker_index >= 0:
+                return "Assets/" + normalized[marker_index + len(marker) :]
+            if not (
+                os.path.isabs(value)
+                or re.match(r"^[A-Za-z]:[\\/]", value)
+            ):
+                return normalized
+            return ""
+
+        def rewrite(value, field_name: str = ""):
             nonlocal changed
             if isinstance(value, dict):
-                return {key: rewrite(item) for key, item in value.items()}
+                return {key: rewrite(item, str(key)) for key, item in value.items()}
             if isinstance(value, list):
-                return [rewrite(item) for item in value]
-            if not isinstance(value, str) or not os.path.isabs(value):
+                return [rewrite(item, field_name) for item in value]
+            if not isinstance(value, str):
+                return value
+            if field_name.casefold() == "path_hint":
+                portable = portable_asset_hint(value)
+                if portable != value:
+                    changed = True
+                return portable
+            if not os.path.isabs(value):
                 return value
             try:
                 absolute = resolved_path(value)
@@ -3974,12 +4247,40 @@ finally:
             return rewritten_path
 
         rewritten = rewrite(document)
+        if (
+            isinstance(rewritten, dict)
+            and rewritten.get("$schema") == "infernux.particle_runtime_index"
+            and isinstance(rewritten.get("entries"), list)
+        ):
+            deduplicated: dict[tuple[str, str], dict] = {}
+            passthrough: list[object] = []
+            for item in rewritten["entries"]:
+                if not isinstance(item, dict):
+                    passthrough.append(item)
+                    continue
+                identity = (str(item.get("guid", "")), str(item.get("stable_id", "")))
+                existing = deduplicated.get(identity)
+                if existing is None or (
+                    not str(existing.get("path_hint", ""))
+                    and str(item.get("path_hint", ""))
+                ):
+                    deduplicated[identity] = item
+            compact_entries = list(deduplicated.values()) + passthrough
+            if compact_entries != rewritten["entries"]:
+                rewritten["entries"] = compact_entries
+                changed = True
         _yield_editor_thread()
         if not changed:
             return
         _write_json_atomic(path, rewritten, indent=None)
 
-    def _write_payload_manifest(self, final_dir: str) -> None:
+    def _write_payload_manifest(
+        self,
+        final_dir: str,
+        *,
+        platform_host: Optional[dict[str, object]] = None,
+        include_runtime_archive: bool = True,
+    ) -> None:
         """Write the deterministic runtime catalog and bootstrap manifest.
 
         The package TOCs are the source of truth after authoring files have
@@ -3998,10 +4299,12 @@ finally:
         except FileNotFoundError:
             pass
 
-        package_paths = [
-            os.path.join(data_root, self._RUNTIME_ARCHIVE_FILENAME),
-            os.path.join(data_root, self._CONTENT_ARCHIVE_FILENAME),
-        ]
+        package_paths = []
+        if include_runtime_archive:
+            package_paths.append(
+                os.path.join(data_root, self._RUNTIME_ARCHIVE_FILENAME)
+            )
+        package_paths.append(os.path.join(data_root, self._CONTENT_ARCHIVE_FILENAME))
         parallel_path = os.path.join(
             data_root, "Modules", self._PARALLEL_ARCHIVE_FILENAME
         )
@@ -4075,9 +4378,33 @@ finally:
                 ) from exc
             packages.append(package_record)
 
-        executable = os.path.join(final_dir, f"{self.project_name}.exe")
-        if not os.path.isfile(executable):
-            raise RuntimeError(f"Player executable is missing: {executable}")
+        if platform_host is None:
+            executable_name = (
+                f"{self.project_name}.exe"
+                if sys.platform == "win32"
+                else self.project_name
+            )
+            executable = os.path.join(final_dir, executable_name)
+            if not os.path.isfile(executable):
+                raise RuntimeError(f"Player executable is missing: {executable}")
+            player_host = {
+                "executable": relative_path(executable, final_dir),
+                "sha256": self._sha256_file(executable),
+                "identity": "nuitka-player-host",
+            }
+            product_layout = "single_executable_native_packages"
+            entry_point = os.path.basename(executable)
+        else:
+            player_host = json.loads(
+                json.dumps(platform_host, ensure_ascii=False, sort_keys=True)
+            )
+            identity = str(player_host.get("identity", "")).strip()
+            entry_point = str(player_host.get("entry_point", "")).strip()
+            if not identity or not entry_point:
+                raise ValueError(
+                    "Platform Player host requires non-empty identity and entry_point"
+                )
+            product_layout = "platform_native_packages"
         proven_residual_assets = self._residual_direct_runtime_assets(package_entries)
         if proven_residual_assets:
             raise RuntimeError(
@@ -4087,11 +4414,7 @@ finally:
             )
         catalog = build_catalog(
             package_entries,
-            player_host={
-                "executable": relative_path(executable, final_dir),
-                "sha256": self._sha256_file(executable),
-                "identity": "nuitka-player-host",
-            },
+            player_host=player_host,
             package_records=packages,
         )
         catalog_path = os.path.join(library_root, "RuntimeAssetCatalog.json")
@@ -4158,9 +4481,9 @@ finally:
             "$schema": PLAYER_MANIFEST_SCHEMA,
             "manifest_version": PLAYER_MANIFEST_VERSION,
             "product": {
-                "layout": "single_executable_native_packages",
+                "layout": product_layout,
                 **runtime_contract["product"],
-                "entry_points": [os.path.basename(executable)],
+                "entry_points": [entry_point],
                 "single_entry_point": True,
             },
             "features": runtime_contract["features"],
@@ -4431,7 +4754,7 @@ finally:
 
         # Remove the platform-tagged .pyd duplicate — Nuitka standardises
         # to the short name (_Infernux.pyd) and --include-package-data
-        # copies the original cp312-win_amd64.pyd as well.
+        # copies the original ABI-named extension module as well.
         lib_dir_dup = os.path.join(final_dir, "Infernux", "lib")
         if os.path.isdir(lib_dir_dup):
             for fname in os.listdir(lib_dir_dup):
@@ -4439,6 +4762,13 @@ finally:
                     short = fname.split(".")[0] + ".pyd"
                     if os.path.isfile(os.path.join(lib_dir_dup, short)):
                         _queue_file(os.path.join(lib_dir_dup, fname))
+                elif (
+                    sys.platform.startswith("linux")
+                    and fname.startswith("_Infernux.cpython-")
+                    and fname.endswith(".so")
+                    and os.path.isfile(os.path.join(lib_dir_dup, "_Infernux.so"))
+                ):
+                    _queue_file(os.path.join(lib_dir_dup, fname))
 
         # The full bridge stays package-qualified for normal post-extraction
         # imports. Any root copy is redundant; only _InfernuxBootstrap is a

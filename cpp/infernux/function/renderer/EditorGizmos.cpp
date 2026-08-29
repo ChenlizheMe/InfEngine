@@ -1,6 +1,6 @@
 #include "EditorGizmos.h"
-#include "InxLog.h"
 #include <core/config/MathConstants.h>
+#include <core/log/InxLog.h>
 #include <function/scene/Scene.h>
 
 namespace infernux

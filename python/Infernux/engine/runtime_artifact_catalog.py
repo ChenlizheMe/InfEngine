@@ -103,6 +103,36 @@ def unix_ns_to_filetime_ticks(unix_ns: int) -> int:
     return int(unix_ns) // 100 + WINDOWS_FILETIME_EPOCH_OFFSET_TICKS
 
 
+def _source_content_hash(path: str, expected: str) -> str:
+    """Hash source bytes in the format carried by one AssetIndex entry."""
+
+    normalized = str(expected or "").strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]+", normalized):
+        raise RuntimeArtifactError(
+            f"AssetIndex content_hash has an unsupported format for {path}: {expected!r}"
+        )
+    try:
+        with Path(path).open("rb") as stream:
+            if len(normalized) == 16:
+                # Native InxResourceMeta uses stable FNV-1a 64-bit hashes.
+                value = 14695981039346656037
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    for byte in chunk:
+                        value ^= byte
+                        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+                return f"{value:016x}"
+            if len(normalized) == 64:
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                return digest.hexdigest()
+    except OSError as exc:
+        raise RuntimeArtifactError(f"Asset source cannot be fingerprinted: {path}") from exc
+    raise RuntimeArtifactError(
+        f"AssetIndex content_hash has an unsupported format for {path}: {expected!r}"
+    )
+
+
 def _metadata_value(entry: dict[str, Any], key: str, default: Any = None) -> Any:
     metadata = entry.get("metadata")
     if not isinstance(metadata, dict):
@@ -203,23 +233,38 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     except OSError as exc:
         raise RuntimeArtifactError(f"Asset source is missing: {source}") from exc
     expected = entry["source"]
-    # AssetIndex stores Windows FILETIME ticks (100 ns since 1601), while
-    # Python's st_mtime_ns is nanoseconds since 1970.  Keep the comparison in
-    # the index's native unit instead of treating equal-looking timestamps as
-    # a universal format.
+    expected_size = int(expected["size"])
+    expected_modified = int(expected["modified_ns"])
+    content_hash = str(entry.get("content_hash", "")).strip()
+    if not content_hash:
+        raise RuntimeArtifactError(f"AssetIndex content_hash is missing for {source}")
+
+    # std::filesystem::file_time_type has no cross-platform epoch or tick
+    # contract. Windows indexes currently resemble FILETIME while Linux
+    # indexes use the implementation's native clock, and copying a project
+    # between filesystems can also change mtime without changing its bytes.
+    # Size + mtime remain the fast path; an mtime mismatch is resolved by the
+    # native content hash instead of rejecting an otherwise identical source.
     current = {
         "size": int(stat.st_size),
         "modified_ns": unix_ns_to_filetime_ticks(stat.st_mtime_ns),
     }
-    if current != {"size": int(expected["size"]), "modified_ns": int(expected["modified_ns"])}:
+    if current["size"] != expected_size:
         raise RuntimeArtifactError(
             f"Asset source fingerprint is stale for {source}: "
             f"expected={expected!r}, current={current!r}"
         )
-    content_hash = str(entry.get("content_hash", ""))
-    if not content_hash:
-        raise RuntimeArtifactError(f"AssetIndex content_hash is missing for {source}")
-    current["content_hash"] = content_hash
+    if current["modified_ns"] != expected_modified:
+        actual_hash = _source_content_hash(source, content_hash)
+        if actual_hash.casefold() != content_hash.casefold():
+            raise RuntimeArtifactError(
+                f"Asset source fingerprint is stale for {source}: "
+                f"expected={expected!r}, current={current!r}, "
+                f"expected_content_hash={content_hash!r}, actual_content_hash={actual_hash!r}"
+            )
+        current["content_hash"] = actual_hash
+    else:
+        current["content_hash"] = content_hash
     return current
 
 
@@ -490,7 +535,19 @@ def runtime_artifact_id(package: str, runtime_path: str) -> str:
 _COMPACT_ASSET_GUID = re.compile(r"[0-9a-fA-F]{32}")
 
 
-def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
+_SCALAR_ASSET_GUID_FIELDS = frozenset(
+    {
+        "dependencies",
+        "materials",
+        "material_guids",
+        "mesh_guids",
+        "shader_guids",
+    }
+)
+_NON_ASSET_GUID_FIELDS = frozenset({"type_guid", "stable_id"})
+
+
+def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
     if isinstance(value, dict):
         # Python serialized fields use the explicit asset_ref marker, while
         # several native/current documents (materials, effect groups and
@@ -508,14 +565,25 @@ def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
                 path_hint = ""
             if guid or path_hint:
                 yield guid, path_hint
-        for item in value.values():
-            yield from _asset_refs(item)
+        for key, item in value.items():
+            yield from _asset_refs(item, str(key))
     elif isinstance(value, list):
         for item in value:
-            yield from _asset_refs(item)
-    elif isinstance(value, str) and _COMPACT_ASSET_GUID.fullmatch(value):
+            yield from _asset_refs(item, field_name)
+    elif (
+        isinstance(value, str)
+        and _COMPACT_ASSET_GUID.fullmatch(value)
+        and (
+            (
+                field_name.casefold().endswith("guid")
+                and field_name.casefold() not in _NON_ASSET_GUID_FIELDS
+            )
+            or field_name.casefold() in _SCALAR_ASSET_GUID_FIELDS
+        )
+    ):
         # Native scene serializers keep common references such as material,
-        # mesh and shader GUIDs as compact scalar strings.
+        # mesh and shader GUIDs as compact scalar strings. Type GUIDs and
+        # particle stable IDs are identities, not asset dependencies.
         yield value, ""
 
 

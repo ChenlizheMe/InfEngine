@@ -20,8 +20,6 @@
 
 #pragma once
 
-#include <SDL3/SDL.h>
-
 #include <array>
 #include <cstdint>
 #include <string>
@@ -29,6 +27,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+union SDL_Event;
+struct SDL_Window;
 
 namespace infernux
 {
@@ -38,6 +39,29 @@ static constexpr int INPUT_MAX_KEYS = 512;
 
 /// Maximum number of mouse buttons tracked (SDL supports up to 5, reserve 8).
 static constexpr int INPUT_MAX_MOUSE_BUTTONS = 8;
+
+enum class TouchPhase : uint8_t
+{
+    Began,
+    Moved,
+    Stationary,
+    Ended,
+    Canceled,
+};
+
+struct TouchState
+{
+    uint64_t touchId = 0;
+    uint64_t fingerId = 0;
+    uint64_t timestampNs = 0;
+    uint32_t windowId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float deltaX = 0.0f;
+    float deltaY = 0.0f;
+    float pressure = 0.0f;
+    TouchPhase phase = TouchPhase::Stationary;
+};
 
 /**
  * @class InputManager
@@ -61,6 +85,19 @@ class InputManager
     /// @brief Feed an SDL event into the input state.
     void ProcessSDLEvent(const SDL_Event &event);
 
+    // ---- Platform-neutral event ingestion ----
+    // Window-system adapters translate their native events once and feed this
+    // semantic layer. Web, Android, and desktop therefore share the exact same
+    // held/edge/touch lifecycle instead of maintaining parallel input models.
+    void ProcessKeyEvent(int scancode, bool pressed);
+    void ProcessPointerButtonEvent(int button, bool pressed);
+    void ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY);
+    void ProcessScrollEvent(float deltaX, float deltaY);
+    void ProcessTextInputEvent(const std::string &text);
+    void ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId, float x,
+                           float y, float deltaX, float deltaY, float pressure, TouchPhase phase);
+    void ProcessFocusEvent(bool focused);
+
     /// @brief Mark a trusted synthetic pointer position for the current GUI frame.
     ///
     /// SDL's ImGui backend can otherwise fall back to the physical OS cursor
@@ -77,10 +114,23 @@ class InputManager
     /// normal desktop interaction, such as native file dialogs.
     void MarkSyntheticInputForFrame();
 
+    /// @brief Track trusted automation-held state without claiming OS or editor focus.
+    ///
+    /// Synthetic key/button presses can span many rendered frames. Keeping their
+    /// ownership separate from the ordinary SDL held-state lets gameplay accept
+    /// MCP input while the Editor remains in the background.
+    void TrackSyntheticEvent(const SDL_Event &event);
+
     /// @brief True when at least one trusted synthetic event was handled this frame.
     [[nodiscard]] bool IsSyntheticInputFrame() const
     {
         return m_syntheticInputThisFrame;
+    }
+
+    /// @brief True while trusted automation supplied this frame's input or holds a control.
+    [[nodiscard]] bool HasSyntheticGameplayInput() const
+    {
+        return m_syntheticInputThisFrame || m_syntheticHeldCount != 0;
     }
 
     // ---- Keyboard queries (Unity: Input.GetKey / GetKeyDown / GetKeyUp) ----
@@ -165,12 +215,21 @@ class InputManager
         return m_inputString;
     }
 
-    // ---- Touch (placeholder for future mobile support) ----
+    // ---- Touch ----
 
-    /// @brief Number of active touch contacts this frame.
+    /// @brief Number of touch contacts reported by the current frame snapshot.
     [[nodiscard]] int GetTouchCount() const
     {
-        return m_touchCount;
+        return static_cast<int>(m_touches.size());
+    }
+
+    /// @brief Return one stable-indexed touch from the current frame snapshot.
+    [[nodiscard]] const TouchState &GetTouch(int index) const;
+
+    /// @brief Return every touch in first-contact order for this frame.
+    [[nodiscard]] const std::vector<TouchState> &GetTouches() const
+    {
+        return m_touches;
     }
 
     // ---- File drop (OS drag-drop) ----
@@ -259,9 +318,12 @@ class InputManager
     float m_syntheticMouseY = 0.f;
     bool m_hasSyntheticMousePositionThisFrame = false;
     bool m_syntheticInputThisFrame = false;
+    std::array<uint8_t, INPUT_MAX_KEYS> m_syntheticKeys{};
+    std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_syntheticMouseButtons{};
+    uint32_t m_syntheticHeldCount = 0;
 
     std::string m_inputString;
-    int m_touchCount = 0;
+    std::vector<TouchState> m_touches;
     std::vector<std::string> m_droppedFiles;
 
     SDL_Window *m_window = nullptr;
@@ -273,6 +335,7 @@ class InputManager
     static bool s_nameTableBuilt;
     static void BuildNameTable();
 
+    void ResetPhysicalInputForFocusLoss();
     void ApplyRelativeMouseMode();
 };
 

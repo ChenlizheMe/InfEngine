@@ -253,8 +253,8 @@ GpuBillboardMaterialState ParticleGpuSurfaceBinding::ResolveMaterialState() cons
         const auto &renderState = m_material->GetRenderState();
         state = {renderState.renderQueue, renderState.blendEnable, renderState.depthTestEnable,
                  renderState.depthWriteEnable,
-                 renderState.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                     renderState.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA};
+                 renderState.srcColorBlendFactor == MaterialBlendFactor::One &&
+                     renderState.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha};
     }
     if (m_semantics.softParticles) {
         state.renderQueue = std::max(state.renderQueue, EngineConfig::Get().transparentQueueMin);

@@ -5,7 +5,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_player_host_is_a_static_inxpack_bootstrap():
-    cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    cmake = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "CMakeLists.txt",
+            ROOT / "cmake/InfernuxPlayerHost.cmake",
+            ROOT / "cpp/tests/CMakeLists.txt",
+        )
+    )
     host = (ROOT / "cpp/infernux/tools/launcher/PlayerHost.cpp").read_text(encoding="utf-8")
     launcher = (ROOT / "cpp/infernux/tools/launcher/InfernuxPlayerLauncher.cpp").read_text(
         encoding="utf-8"
@@ -27,20 +34,19 @@ def test_player_host_is_a_static_inxpack_bootstrap():
     assert "bootstrapArchive.string()" not in host
     host_sources = cmake.split("target_sources(InfernuxPlayerHost PRIVATE", 1)[1].split(")", 1)[0]
     assert "cpp/infernux/core/log/InxLog.cpp" not in host_sources
-    assert "target_link_options(InfernuxPlayerHost PRIVATE /NODEFAULTLIB:python312.lib)" in cmake
-    assert "target_link_options(infernux_player_host_tests PRIVATE /NODEFAULTLIB:python312.lib)" in cmake
+    assert "/NODEFAULTLIB:python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}.lib" in cmake
     assert cmake.count('MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"') == 2
     assert "target_link_libraries(InfernuxPlayerHost PRIVATE Python3::Python" not in cmake
-    assert "target_link_libraries(InfernuxPlayerHost PRIVATE python312" not in cmake
+    assert "target_link_libraries(InfernuxPlayerHost PRIVATE python313" not in cmake
     assert launcher.index("#include <windows.h>") < launcher.index("#include <shellapi.h>")
 
 
 def test_player_host_cache_is_outside_install_directory():
     host = (ROOT / "cpp/infernux/tools/launcher/PlayerHost.cpp").read_text(encoding="utf-8")
-    assert 'L"Infernux" / L"PlayerCache"' in host
+    assert '"Infernux" / "PlayerCache"' in host
     assert 'L"PlayerWarmCache"' not in host
     assert 'layout.dataRoot / L"Library"' not in host
-    assert 'cacheRoot / L"stdlib"' in host
+    assert 'cacheRoot / "stdlib"' in host
     assert "ReclaimStale" in host
     assert "WriteMetadata" in host
     assert ".stale." in host

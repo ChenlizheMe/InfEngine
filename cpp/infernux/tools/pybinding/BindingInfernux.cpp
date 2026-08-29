@@ -1,3 +1,4 @@
+#include "BindingRegistration.h"
 #include "Infernux.h"
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <SDL3/SDL.h>
@@ -191,8 +192,9 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             if (sourceOffset % sizeof(uint32_t) != 0 || destinationOffset % sizeof(uint32_t) != 0 || byteSize == 0 ||
                 byteSize % sizeof(uint32_t) != 0)
                 throw std::invalid_argument("GPU particle migration range must be uint32 aligned");
-            decoded.copyRanges.push_back({sourceOffset / sizeof(uint32_t), destinationOffset / sizeof(uint32_t),
-                                          byteSize / sizeof(uint32_t), 0});
+            constexpr uint32_t wordSize = static_cast<uint32_t>(sizeof(uint32_t));
+            decoded.copyRanges.push_back(
+                {sourceOffset / wordSize, destinationOffset / wordSize, byteSize / wordSize, 0});
         }
         program.migration = std::move(decoded);
     }
@@ -520,8 +522,8 @@ std::string ResolveGpuParticleOutputPrograms(InxRenderer &renderer,
                 state.blendEnable,
                 state.depthTestEnable,
                 state.depthWriteEnable,
-                state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                    state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                state.srcColorBlendFactor == MaterialBlendFactor::One &&
+                    state.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha,
             };
         }
     }
@@ -542,28 +544,7 @@ particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &va
 
 } // namespace
 
-namespace infernux
-{
-void RegisterGUIBindings(py::module_ &m);
-void RegisterVector2Bindings(py::module_ &m);
-void RegisterVector3Bindings(py::module_ &m);
-void RegisterVec4fBindings(py::module_ &m);
-void RegisterResourceBindings(py::module_ &m);
-void RegisterSceneBindings(py::module_ &m);
-void RegisterAssetDatabaseBindings(py::module_ &m);
-void RegisterAssetRegistryBindings(py::module_ &m);
-void RegisterRhiBindings(py::module_ &m);
-void RegisterRenderGraphBindings(py::module_ &m);
-void RegisterRenderPipelineBindings(py::module_ &m);
-void RegisterCommandBufferBindings(py::module_ &m);
-void RegisterTagLayerBindings(py::module_ &m);
-void RegisterInputBindings(py::module_ &m);
-void RegisterPhysicsBindings(py::module_ &m);
-void RegisterAudioBindings(py::module_ &m);
-void RegisterBatchBindings(py::module_ &m);
-} // namespace infernux
-
-PYBIND11_MODULE(_Infernux, m)
+void infernux::RegisterInfernuxBindings(py::module_ &m)
 {
     m.doc() = "Python bindings for Infernux";
 
@@ -1691,7 +1672,7 @@ PYBIND11_MODULE(_Infernux, m)
                 const py::buffer_info info = pixels.request();
                 if (info.ndim != 1 || info.itemsize != 1 || info.strides[0] != 1)
                     throw std::invalid_argument("ImGui pixels must be a contiguous one-dimensional byte buffer");
-                VkFilter f = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+                rhi::FilterMode f = nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
                 py::gil_scoped_release release;
                 return r->SubmitTextureForImGui(name, static_cast<const unsigned char *>(info.ptr), info.size, width,
                                                 height, f, pinned);
@@ -2886,25 +2867,6 @@ PYBIND11_MODULE(_Infernux, m)
     m.def(
         "inflog_internal", [](const std::string &msg) { INXLOG_INFO_INTERNAL(msg); }, py::arg("msg"),
         "Write an internal INFO-level message to the engine log without surfacing it in the editor console.");
-
-    // Register all binding modules
-    RegisterGUIBindings(m);
-    RegisterVector2Bindings(m);
-    RegisterVector3Bindings(m);
-    RegisterVec4fBindings(m);
-    RegisterResourceBindings(m);
-    RegisterAssetDatabaseBindings(m);
-    RegisterAssetRegistryBindings(m);
-    RegisterSceneBindings(m);
-    RegisterTagLayerBindings(m);
-    RegisterRhiBindings(m);
-    RegisterRenderGraphBindings(m);
-    RegisterCommandBufferBindings(m);
-    RegisterRenderPipelineBindings(m);
-    RegisterInputBindings(m);
-    RegisterPhysicsBindings(m);
-    RegisterAudioBindings(m);
-    RegisterBatchBindings(m);
 
     // ====================================================================
     // Gizmo geometry generation helpers (pure math, no engine state needed)

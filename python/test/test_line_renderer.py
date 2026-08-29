@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from Infernux import LineRenderer as LineRendererComponent
@@ -26,6 +28,20 @@ def test_line_renderer_is_available_through_the_component_system(scene):
     assert line.position_count == 2
     assert line._cpp_component.vertex_count == 4
     assert line._cpp_component.index_count == 6
+
+
+def test_line_renderer_default_material_is_double_sided_and_transparent(scene):
+    line = scene.create_game_object("DefaultLine").add_component("LineRenderer")
+
+    material = line._cpp_component.get_effective_material()
+    state = material.get_render_state()
+
+    assert material.name == "DefaultLineMaterial"
+    assert state.cull_mode == 0
+    assert state.blend_enable is True
+    assert state.depth_test_enable is True
+    assert state.depth_write_enable is False
+    assert state.render_queue == 3000
 
 
 def test_line_renderer_inspector_uses_specialized_curve_gradient_and_position_editors(
@@ -109,6 +125,44 @@ def test_line_renderer_ignores_consecutive_duplicate_samples_in_generated_ribbon
     assert line.position_count == 5
     assert line._cpp_component.vertex_count == 6
     assert line._cpp_component.index_count == 12
+
+
+def test_line_renderer_view_alignment_preserves_winding_when_direction_reverses():
+    shader_root = (
+        Path(__file__).parents[1]
+        / "Infernux"
+        / "resources"
+        / "shaders"
+        / "_templates"
+    )
+    for shader_name in ("vertex_main.glsl", "shadow_vertex_main.glsl"):
+        source = (shader_root / shader_name).read_text(encoding="utf-8")
+        assert "fallbackSide" in source
+        assert "geometricLength" in source
+        assert "smoothstep(0.025, 0.20, geometricLength)" in source
+        assert "dot(geometricSide, fallbackSide) < 0.0" in source
+        assert "directionSign = dot(tangentWorld, facing)" not in source
+        assert "[3].xyz - centerWorld.xyz" not in source
+
+
+def test_line_renderer_retraced_path_keeps_ribbon_sides_continuous(scene):
+    line = scene.create_game_object("RetracedLine").add_component("LineRenderer")
+    line.set_positions([(0, 0, 0), (1, 0, 0), (0, 0, 0)])
+    line.start_width = 0.4
+    line.end_width = 0.4
+    target = scene.create_game_object("RetracedBake").add_component("MeshRenderer")
+
+    line.bake_mesh(target)
+
+    positions = target._cpp_component.get_positions()
+    assert len(positions) == 6
+    first_side_y = float(positions[1][1]) - float(positions[0][1])
+    assert abs(first_side_y) > 0.1
+    for sample in range(1, 3):
+        side_y = float(positions[sample * 2 + 1][1]) - float(
+            positions[sample * 2][1]
+        )
+        assert side_y * first_side_y > 0.0
 
 
 def test_line_renderer_serializes_authored_state_without_generated_mesh(scene):

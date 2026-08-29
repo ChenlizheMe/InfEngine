@@ -589,6 +589,14 @@ bool VkDeviceContext::HasStencilComponent(VkFormat format)
 
 bool VkDeviceContext::CreateInstance(const DeviceConfig &config)
 {
+#if defined(INFERNUX_USE_VOLK)
+    const VkResult loaderResult = volkInitialize();
+    if (loaderResult != VK_SUCCESS) {
+        INXLOG_ERROR("Failed to initialize the Vulkan loader, VkResult=", static_cast<int>(loaderResult));
+        return false;
+    }
+#endif
+
     m_validationEnabled = config.enableValidationLayers;
 
     // Check validation layer support
@@ -658,6 +666,9 @@ bool VkDeviceContext::CreateInstance(const DeviceConfig &config)
         INXLOG_ERROR("vkCreateInstance failed: ", VkResultToString(result));
         return false;
     }
+#if defined(INFERNUX_USE_VOLK)
+    volkLoadInstanceOnly(m_instance);
+#endif
 
     return true;
 }
@@ -832,6 +843,9 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
         INXLOG_ERROR("vkCreateDevice failed: ", VkResultToString(result));
         return false;
     }
+#if defined(INFERNUX_USE_VOLK)
+    volkLoadDevice(m_device);
+#endif
     m_rhiCapabilityState = enabledCapabilityState;
     m_descriptorIndexingEnabled = m_rhiCapabilityState.bindless.IsEnabled();
     m_timelineSemaphoreEnabled = m_rhiCapabilityState.timelineSemaphore.enabled;

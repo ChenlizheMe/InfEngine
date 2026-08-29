@@ -7,8 +7,9 @@
 #include "GpuResidency.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
-#include "ScenePickingService.h"
+#include "ScenePickingTypes.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
+#include "rhi/RhiDescriptors.h"
 #include <array>
 #include <chrono>
 #include <core/log/InxLog.h>           // LogLevel enum (used in SetLogLevel)
@@ -48,6 +49,7 @@ struct ParticleProgramBootstrap;
 class RenderPipelineCallback;
 class ResourcePreviewManager;
 class Scene;
+class ScenePickingService;
 class SceneRenderGraph;
 class SceneRenderTarget;
 class TransientResourcePool;
@@ -344,7 +346,7 @@ class InxRenderer
 
     // ImGui texture management
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
-                                   int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+                                   int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false);
     uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);

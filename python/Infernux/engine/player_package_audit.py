@@ -15,6 +15,7 @@ import json
 import os
 import re
 import struct
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -43,6 +44,11 @@ from .runtime_artifact_catalog import (
     runtime_artifact_id,
     runtime_artifact_reason_for,
 )
+from .python_abi import (
+    LINUX_PYTHON_SHARED_PREFIX,
+    PYTHON_VERSION,
+    WINDOWS_PYTHON_DLL,
+)
 
 
 MANIFEST_FILENAME = "Player.inxmanifest"
@@ -56,8 +62,8 @@ MANIFEST_SCHEMA = PLAYER_MANIFEST_SCHEMA
 # package root is only the game host executable plus its Data directory.
 BOOTSTRAP_NATIVE_ROOT_ALLOWLIST: dict[str, dict[str, str]] = {}
 
-RUNTIME_REQUIRED_NATIVE_FILES = frozenset(
-    {
+if sys.platform == "win32":
+    RUNTIME_REQUIRED_NATIVE_FILES = frozenset({
         "Infernux/lib/_Infernux.pyd",
         "Infernux/lib/InfernuxFoundation.dll",
         "Infernux/lib/InfernuxParticleRuntime.dll",
@@ -68,24 +74,17 @@ RUNTIME_REQUIRED_NATIVE_FILES = frozenset(
         "Infernux/lib/assimp-vc143-mt.dll",
         "Infernux/lib/Jolt.dll",
         "Infernux/lib/SDL3.dll",
-    }
-)
-RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset(
-    {
+    })
+    RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset({
         "Infernux/lib/InfernuxRuntime.dll",
         "Infernux/lib/SPIRV.dll",
         "Infernux/lib/SPVRemapper.dll",
         "Infernux/lib/glslang-default-resource-limits.dll",
         "Infernux/lib/glslang.dll",
-    }
-)
-RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/zlib.dll"})
-BOOTSTRAP_REQUIRED_ROOT_FILES = frozenset(
-    {}
-)
-BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset(
-    {
-        "python312.dll",
+    })
+    RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/zlib.dll"})
+    BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
+        WINDOWS_PYTHON_DLL,
         "_ctypes.pyd",
         "ffi.dll",
         "_InfernuxBootstrap.pyd",
@@ -93,7 +92,36 @@ BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset(
         "stdlib/encodings/__init__.pyc",
         "stdlib/encodings/aliases.pyc",
         "stdlib/encodings/utf_8.pyc",
-    }
+    })
+else:
+    RUNTIME_REQUIRED_NATIVE_FILES = frozenset({
+        "Infernux/lib/_Infernux.so",
+        "Infernux/lib/libInfernuxFoundation.so",
+        "Infernux/lib/libInfernuxParticleRuntime.so",
+        "Infernux/lib/libInfernuxRenderCore.so",
+        "Infernux/lib/libInfernuxRendererRuntime.so",
+        "Infernux/lib/libInfernuxShaderCompiler.so",
+        "Infernux/lib/libInfernuxVulkanBackend.so",
+        "Infernux/lib/libassimp.so",
+        "Infernux/lib/libJolt.so",
+        "Infernux/lib/libSDL3.so",
+    })
+    RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset({
+        "Infernux/lib/libInfernuxRuntime.so",
+        "Infernux/lib/libSPIRV.so",
+        "Infernux/lib/libSPVRemapper.so",
+        "Infernux/lib/libglslang-default-resource-limits.so",
+        "Infernux/lib/libglslang.so",
+    })
+    RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/libz.so"})
+    BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
+        "Infernux/lib/libInfernuxFoundation.so",
+        "stdlib/encodings/__init__.pyc",
+        "stdlib/encodings/aliases.pyc",
+        "stdlib/encodings/utf_8.pyc",
+    })
+BOOTSTRAP_REQUIRED_ROOT_FILES = frozenset(
+    {}
 )
 EDITOR_I18N_PREFIX = "Infernux/engine/locales/"
 
@@ -151,6 +179,7 @@ RUNTIME_DOCUMENT_SUFFIXES = RUNTIME_AUTHORING_DOCUMENT_SUFFIXES
 PLAYER_RUNTIME_PROJECT_SETTINGS = frozenset(
     {
         "ProjectSettings/BuildSettings.json",
+        "ProjectSettings/InxPlugins.json",
         "ProjectSettings/PhysicsSettings.json",
         "ProjectSettings/TagLayerSettings.json",
     }
@@ -221,9 +250,27 @@ def _data_root(package_root: Path, executable_stem: str | None = None) -> Path:
         if data_root.name.casefold() != expected_name.casefold():
             raise RuntimeError(
                 "Player layout is incomplete: the unique data directory must be "
-                f"named {expected_name!r} to match {executable_stem!r}.exe"
+                f"named {expected_name!r} to match native host {executable_stem!r}"
             )
     return data_root
+
+
+def _player_executable_stem(package_root: Path) -> str | None:
+    if sys.platform == "win32":
+        candidates = sorted(
+            path
+            for path in package_root.iterdir()
+            if path.is_file() and path.suffix.casefold() == ".exe"
+        )
+    else:
+        candidates = sorted(
+            path
+            for path in package_root.iterdir()
+            if path.is_file() and not path.suffix
+        )
+    if len(candidates) != 1:
+        return None
+    return candidates[0].stem if sys.platform == "win32" else candidates[0].name
 
 
 def _read_text(path: Path) -> str:
@@ -508,15 +555,15 @@ def audit_player_package(
     *,
     write_manifest: bool = True,
 ) -> dict[str, object]:
-    """Audit a final ``<Game>.exe + <Game>_Data`` Player directory."""
+    """Audit a final native host plus ``<Game>_Data`` Player directory."""
 
     root = Path(resolved_path(package_root))
     if not root.is_dir():
         raise RuntimeError(f"Player package directory not found: {root}")
-    root_executables = sorted(
-        path for path in root.glob("*.exe") if path.is_file()
-    )
-    executable_stem = root_executables[0].stem if len(root_executables) == 1 else None
+    data_root = _data_root(root)
+    executable_stem = _player_executable_stem(root)
+    if executable_stem is None:
+        executable_stem = data_root.name[: -len("_Data")]
     data_root = _data_root(root, executable_stem)
     data_relative = data_root.name
     expected = {
@@ -525,13 +572,16 @@ def audit_player_package(
         f"{data_relative}/Bootstrap.inxrt",
         f"{data_relative}/Runtime.inxrt",
         f"{data_relative}/Content.inxpkg",
+        f"{data_relative}/PackageIndex.inxmanifest",
         f"{data_relative}/Library/RuntimeAssetCatalog.json",
     }
     optional = {f"{data_relative}/Modules/Parallel.inxmod"}
 
     # Audit the direct root surface before recursively inspecting payloads.
     # This makes unknown Nuitka output fail closed, including empty folders.
-    expected_executable = f"{executable_stem}.exe" if executable_stem else ""
+    expected_executable = (
+        f"{executable_stem}.exe" if sys.platform == "win32" else executable_stem
+    )
     root_surface: list[dict[str, str]] = []
     root_surface_gaps: list[str] = []
     for child in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
@@ -692,21 +742,26 @@ def audit_player_package(
     executables = [
         str(item["path"])
         for item in files
-        if Path(str(item["path"])).suffix.casefold() == ".exe"
+        if str(item["path"]) == expected_executable
     ]
     if len(executables) != 1:
-        forbidden.append("Player package must contain exactly one visible .exe")
+        forbidden.append("Player package must contain exactly one visible native host")
     elif "/" in executables[0]:
         forbidden.append("Player executable must be at the package root")
 
+    foundation_name = (
+        "InfernuxFoundation.dll"
+        if sys.platform == "win32"
+        else "libInfernuxFoundation.so"
+    )
     expected_foundation_archive_paths = {
         (
             f"{data_relative}/Bootstrap.inxrt::"
-            "Infernux/lib/InfernuxFoundation.dll"
+            f"Infernux/lib/{foundation_name}"
         ).casefold(),
         (
             f"{data_relative}/Runtime.inxrt::"
-            "Infernux/lib/InfernuxFoundation.dll"
+            f"Infernux/lib/{foundation_name}"
         ).casefold(),
     }
 
@@ -721,6 +776,21 @@ def audit_player_package(
             == expected_foundation_archive_paths
         )
 
+    def _is_linux_soname_alias_group(paths: list[str]) -> bool:
+        if not sys.platform.startswith("linux") or len(paths) < 2:
+            return False
+        archives = {path.partition("::")[0] for path in paths}
+        if len(archives) != 1 or not all("::" in path for path in paths):
+            return False
+        bases: set[str] = set()
+        for path in paths:
+            name = Path(path.split("::", 1)[1]).name
+            match = re.fullmatch(r"(?P<base>.+\.so)(?:\..+)?", name)
+            if match is None:
+                return False
+            bases.add(match.group("base").casefold())
+        return len(bases) == 1
+
     duplicate_asset_payloads = sorted(
         sorted(paths)
         for paths in hashes.values()
@@ -733,6 +803,7 @@ def audit_player_package(
         for paths in hashes.values()
         if len(paths) > 1
         and not _is_required_bootstrap_duplicate(paths)
+        and not _is_linux_soname_alias_group(paths)
         and not _is_logically_distinct_asset_payload(paths, data_relative)
     )
     duplicate_native = sorted(
@@ -880,6 +951,22 @@ def audit_player_package(
         for required in sorted(BOOTSTRAP_REQUIRED_ARCHIVE_FILES)
         if required.casefold() not in {path.casefold() for path in bootstrap_entry_paths}
     ]
+    if sys.platform.startswith("linux"):
+        linux_bootstrap_requirements = {
+            f"CPython {PYTHON_VERSION} shared library": lambda name: name.startswith(
+                LINUX_PYTHON_SHARED_PREFIX
+            ),
+            "_ctypes extension module": lambda name: name.startswith("_ctypes.") and name.endswith(".so"),
+            "libffi shared library": lambda name: name.startswith("libffi.so"),
+            "_InfernuxBootstrap module": lambda name: name.startswith("_InfernuxBootstrap")
+            and name.endswith(".so"),
+        }
+        bootstrap_names = {Path(path).name for path in bootstrap_entry_paths}
+        bootstrap_payload_gap.extend(
+            f"missing required bootstrap archive file: {label}"
+            for label, predicate in linux_bootstrap_requirements.items()
+            if not any(predicate(name) for name in bootstrap_names)
+        )
     if not any(
         Path(path).name.startswith("_InfernuxPlayer")
         and Path(path).name.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))

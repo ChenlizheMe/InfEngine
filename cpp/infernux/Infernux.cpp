@@ -1487,7 +1487,7 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
         try {
             const uint64_t uploadVersion =
                 m_renderer->SubmitTextureForImGui(textureName, pixels.data(), pixels.size(), kMaterialPreviewSize,
-                                                  kMaterialPreviewSize, VK_FILTER_LINEAR);
+                                                  kMaterialPreviewSize, rhi::FilterMode::Linear);
             std::lock_guard<std::mutex> lock(m_previewResultMutex);
             auto it = m_materialPreviewStates.find(completed.resourceKey);
             if (it != m_materialPreviewStates.end()) {
@@ -1636,7 +1636,7 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
             const PreviewPixelSummary pixelSummary = SummarizePreviewPixels(pixels);
             const uint64_t uploadVersion =
                 m_renderer->SubmitTextureForImGui(textureName, pixels.data(), pixels.size(), kMaterialPreviewSize,
-                                                  kMaterialPreviewSize, VK_FILTER_LINEAR);
+                                                  kMaterialPreviewSize, rhi::FilterMode::Linear);
             std::lock_guard<std::mutex> lock(m_previewResultMutex);
             auto it = m_materialPreviewStates.find(request.resourceKey);
             if (it != m_materialPreviewStates.end()) {
@@ -1886,7 +1886,7 @@ void Infernux::PumpPreviewTasks()
             try {
                 uploadVersion = m_renderer->SubmitTextureForImGui(
                     stateSnapshot.textureName, completed.pixels.data(), completed.pixels.size(), completed.width,
-                    completed.height, completed.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+                    completed.height, completed.nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear);
             } catch (const std::exception &error) {
                 INXLOG_ERROR("Failed to submit image preview texture: ", error.what());
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
@@ -1970,8 +1970,9 @@ void Infernux::PumpPreviewTasks()
 
             try {
                 const PreviewPixelSummary pixelSummary = SummarizePreviewPixels(pixels);
-                const uint64_t uploadVersion = m_renderer->SubmitTextureForImGui(
-                    textureName, pixels.data(), pixels.size(), kMeshPreviewSize, kMeshPreviewSize, VK_FILTER_LINEAR);
+                const uint64_t uploadVersion =
+                    m_renderer->SubmitTextureForImGui(textureName, pixels.data(), pixels.size(), kMeshPreviewSize,
+                                                      kMeshPreviewSize, rhi::FilterMode::Linear);
                 {
                     std::lock_guard<std::mutex> lock(m_previewResultMutex);
                     auto it = m_meshPreviewStates.find(completed.resourceKey);

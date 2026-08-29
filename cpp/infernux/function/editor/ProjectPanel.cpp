@@ -1695,7 +1695,7 @@ void ProjectPanel::EnsureTypeIconsLoaded()
             continue;
 
         (void)m_renderer->SubmitTextureForImGui(texName, texData.pixels.data(), texData.pixels.size(), texData.width,
-                                                texData.height, VK_FILTER_LINEAR, true);
+                                                texData.height, rhi::FilterMode::Linear, true);
         const uint64_t textureId = m_renderer->GetImGuiTextureId(texName);
         m_typeIconCache[iconKey] = textureId;
         if (textureId == 0)

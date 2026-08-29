@@ -1,7 +1,5 @@
 #pragma once
 
-#ifdef _WIN32
-
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -63,5 +61,3 @@ class PlayerHost
 };
 
 } // namespace infernux::playerhost
-
-#endif // _WIN32

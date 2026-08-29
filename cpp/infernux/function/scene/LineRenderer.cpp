@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <core/log/InxLog.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -533,6 +534,15 @@ void LineRenderer::Simplify(float tolerance)
     RebuildMesh();
 }
 
+std::shared_ptr<InxMaterial> LineRenderer::GetEffectiveMaterial(uint32_t slot) const
+{
+    if (GetMaterial(slot) || (slot < GetMaterialCount() && !GetMaterialGuid(slot).empty()))
+        return MeshRenderer::GetEffectiveMaterial(slot);
+
+    auto material = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLineMaterial");
+    return material ? material : MeshRenderer::GetEffectiveMaterial(slot);
+}
+
 glm::mat4 LineRenderer::ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const
 {
     return m_useWorldSpace ? glm::mat4(1.0f) : objectWorldMatrix;
@@ -706,6 +716,17 @@ void LineRenderer::RebuildMesh()
             capped.push_back(sample);
         }
         samples = std::move(capped);
+    }
+
+    // A ribbon tangent represents an axis, not an oriented travel vector:
+    // t and -t produce the same width plane.  Preserve a continuous tangent
+    // hemisphere along the strip so a path that doubles back does not swap
+    // its left/right vertices and turn the adjacent quad into a bow-tie.  Cap
+    // centers are positioned first with the true endpoint directions above;
+    // this pass only stabilizes the orientation used for camera-facing width.
+    for (size_t index = 1; index < samples.size(); ++index) {
+        if (glm::dot(samples[index - 1].tangent, samples[index].tangent) < 0.0f)
+            samples[index].tangent = -samples[index].tangent;
     }
 
     vertices.reserve(samples.size() * 2u);

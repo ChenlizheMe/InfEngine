@@ -191,7 +191,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
 
     const RenderState &baseState = basePreviewMaterial->GetRenderState();
     if (baseState.blendEnable) {
-        auto buildPreviewPass = [&](VkCullModeFlags cullMode, bool overrideCull) -> std::shared_ptr<InxMaterial> {
+        auto buildPreviewPass = [&](MaterialCullMode cullMode, bool overrideCull) -> std::shared_ptr<InxMaterial> {
             // Preview passes must not reuse the source material's GUID/name key,
             // otherwise descriptor-cache replacement can invalidate the live set
             // still used by the main scene.
@@ -202,9 +202,9 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
 
             // Preview path uses transparent clear color (alpha=0), so alpha must
             // be written by the material pass instead of preserving destination alpha.
-            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = MaterialBlendFactor::SourceAlpha;
+            state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+            state.alphaBlendOp = MaterialBlendOp::Add;
 
             passMaterial->SetRenderState(state);
             passMaterial->MarkOverride(RenderStateOverride::BlendMode);
@@ -219,9 +219,9 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
             return passMaterial;
         };
 
-        if (!baseState.depthWriteEnable && baseState.cullMode == VK_CULL_MODE_NONE) {
-            auto backFacePass = buildPreviewPass(VK_CULL_MODE_FRONT_BIT, true);
-            auto frontFacePass = buildPreviewPass(VK_CULL_MODE_BACK_BIT, true);
+        if (!baseState.depthWriteEnable && baseState.cullMode == MaterialCullMode::None) {
+            auto backFacePass = buildPreviewPass(MaterialCullMode::Front, true);
+            auto frontFacePass = buildPreviewPass(MaterialCullMode::Back, true);
             if (backFacePass && frontFacePass) {
                 ownedPreviewMaterials.push_back(backFacePass);
                 ownedPreviewMaterials.push_back(frontFacePass);

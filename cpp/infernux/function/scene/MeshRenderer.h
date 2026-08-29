@@ -307,7 +307,7 @@ class MeshRenderer : public Component
     }
 
     /// @brief Get world-space bounding box (transformed by GameObject)
-    [[nodiscard]] void GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
+    void GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
 
     /// @brief Compute world bounds from a pre-computed world matrix (avoids double GetWorldMatrix)
     virtual void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;

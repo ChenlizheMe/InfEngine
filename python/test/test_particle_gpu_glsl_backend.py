@@ -2618,6 +2618,8 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
     assert "transforms.simulation_to_world * vec4(" in emitter.rendering
     assert "view.rendering_control.zw" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 0) out vec3 out_world_position;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "layout(location = 6) out vec4 out_line_color;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "out_line_color = vec4(1.0);" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 10) out vec2 out_particle_next_uv;" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 14) out float out_particle_alpha;" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 15) flat out uint out_layer_mask;" in gpu_backend._BILLBOARD_VERTEX_GLSL
@@ -3103,6 +3105,8 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
     assert ".a_builtin_scale" in emitter.rendering
     assert "scale_custom = vec4(" in emitter.rendering
     assert "instance.rotation_custom.yzw" in gpu_backend._MESH_VERTEX_GLSL
+    assert "layout(location = 6) out vec4 out_line_color;" in gpu_backend._MESH_VERTEX_GLSL
+    assert "out_line_color = vec4(1.0);" in gpu_backend._MESH_VERTEX_GLSL
     assert "instance.scale_custom.xyz" in gpu_backend._MESH_VERTEX_GLSL
     assert "rotation_z * rotation_y * rotation_x" in gpu_backend._MESH_VERTEX_GLSL
     assert "view.rendering_control.y > 0.5" in gpu_backend._MESH_VERTEX_GLSL

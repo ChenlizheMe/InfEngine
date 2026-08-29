@@ -1,6 +1,6 @@
 #include "EditorTools.h"
-#include "InxLog.h"
 #include <algorithm>
+#include <core/log/InxLog.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Scene.h>
 #include <glm/gtc/matrix_transform.hpp>

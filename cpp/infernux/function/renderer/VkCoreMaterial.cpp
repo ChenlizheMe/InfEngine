@@ -17,6 +17,7 @@
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
 #include "vk/DescriptorBindTrace.h"
+#include "vk/MaterialRenderStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
@@ -1354,7 +1355,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     }
 
     // ---- Shadow pipeline cache: share VkPipeline across materials with same shader + cull mode ----
-    VkCullModeFlags matCullMode = material->GetRenderState().cullMode;
+    VkCullModeFlags matCullMode = vk::ToVkCullMode(material->GetRenderState().cullMode);
     std::string shadowShaderKey = vertShaderName + "|" + fragShaderName + "|";
     shadowShaderKey += linkedArtifact ? std::to_string(linkedArtifact->key.revision) + ":Shadow" : "legacy-shadow";
     shadowShaderKey += "|cull" + std::to_string(matCullMode);
@@ -1373,7 +1374,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     auto shaderStages = vkrender::MakeVertFragStages(vertModule, fragModule);
 
     // Vertex input — only attributes consumed by the shadow vertex shader (full mesh buffer still bound).
-    auto bindingDesc = Vertex::getBindingDescription();
+    auto bindingDesc = vk::GetVertexBindingDescription();
     ShaderReflection shadowVertRefl;
     bool haveVertRefl = linkedShadowProgram != nullptr;
     if (linkedShadowProgram)

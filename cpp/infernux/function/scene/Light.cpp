@@ -4,7 +4,7 @@
 #include "GameObject.h"
 #include "SceneManager.h"
 #include "Transform.h"
-#include <InxLog.h>
+#include <core/log/InxLog.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 

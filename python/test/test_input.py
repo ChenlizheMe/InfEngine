@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.input import Input, KeyCode
+from Infernux.input import Input, KeyCode, Touch, TouchPhase
 from Infernux.lib import InputManager
 
 
@@ -224,6 +224,21 @@ class TestInputMetaclassProperties:
     def test_touch_count_unfocused(self):
         Input._game_focused = False
         assert Input.touch_count == 0
+        assert Input.touches == ()
+
+    def test_touch_public_types(self):
+        touch = Touch(
+            touch_id=1,
+            finger_id=2,
+            timestamp_ns=3,
+            window_id=4,
+            position=(0.25, 0.75),
+            delta_position=(0.1, -0.1),
+            pressure=0.5,
+            phase=TouchPhase.MOVED,
+        )
+        assert touch.phase is TouchPhase.MOVED
+        assert touch.position == (0.25, 0.75)
 
     def test_input_string_idle(self):
         Input._game_focused = True

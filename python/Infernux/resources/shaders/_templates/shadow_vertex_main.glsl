@@ -26,24 +26,34 @@ ${VERTEX_CALL}
         vec3 tangentWorld = dot(transformedTangent, transformedTangent) > 1.0e-10
             ? normalize(transformedTangent)
             : vec3(1.0, 0.0, 0.0);
+        mat4 lightViewWorld = inverse(shadowUBO.view);
         vec3 facingCandidate = inBoneIndices.z == 0u
-            ? inverse(shadowUBO.view)[3].xyz - centerWorld.xyz
+            ? -lightViewWorld[2].xyz
             : normalMatrix * v.normal;
         vec3 facing = dot(facingCandidate, facingCandidate) > 1.0e-10
             ? normalize(facingCandidate)
             : vec3(0.0, 0.0, 1.0);
-        mat4 lightViewWorld = inverse(shadowUBO.view);
         vec3 viewRight = normalize(lightViewWorld[0].xyz);
-        vec3 side = cross(facing, tangentWorld);
-        if (dot(side, side) < 1.0e-6)
-            side = viewRight - tangentWorld * dot(viewRight, tangentWorld);
-        if (dot(side, side) < 1.0e-10)
-            side = cross(lightViewWorld[1].xyz, tangentWorld);
-        if (dot(side, side) < 1.0e-10)
-            side = vec3(1.0, 0.0, 0.0);
-        side = normalize(side);
-        if (dot(side, viewRight) < 0.0)
-            side = -side;
+        vec3 viewUp = normalize(lightViewWorld[1].xyz);
+        vec3 fallbackSide = viewRight - tangentWorld * dot(viewRight, tangentWorld);
+        if (dot(fallbackSide, fallbackSide) < 1.0e-8)
+            fallbackSide = viewUp - tangentWorld * dot(viewUp, tangentWorld);
+        if (dot(fallbackSide, fallbackSide) < 1.0e-10)
+            fallbackSide = abs(tangentWorld.x) < 0.9
+                ? cross(tangentWorld, vec3(1.0, 0.0, 0.0))
+                : cross(tangentWorld, vec3(0.0, 1.0, 0.0));
+        fallbackSide = normalize(fallbackSide);
+
+        vec3 geometricSide = cross(facing, tangentWorld);
+        float geometricLength = length(geometricSide);
+        vec3 side = fallbackSide;
+        if (geometricLength > 1.0e-6) {
+            geometricSide /= geometricLength;
+            if (dot(geometricSide, fallbackSide) < 0.0)
+                geometricSide = -geometricSide;
+            float geometricWeight = smoothstep(0.025, 0.20, geometricLength);
+            side = normalize(mix(fallbackSide, geometricSide, geometricWeight));
+        }
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneWeights.z > 0.0) {
             vec3 towardLightCandidate = shadowUBO.light_vector.w < 0.5

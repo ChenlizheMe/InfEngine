@@ -178,6 +178,7 @@ class LineRenderer final : public MeshRenderer
 
     void Simplify(float tolerance);
 
+    [[nodiscard]] std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const override;
     [[nodiscard]] glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
     void RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix) override;
     void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const override;

@@ -9,6 +9,7 @@ from Infernux.debug import Debug
 
 from Infernux.engine.ide_preference import get_ide
 from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
 
 # File extensions to hide
 HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp', '.inxparticle'}
@@ -561,7 +562,9 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     module_name = 'project'
     module_rel_path = f'.idea/{module_name}.iml'
     setup_guide_path = os.path.join(project_root, 'PYCHARM_SETUP.zh-CN.en.md')
-    runtime_python = os.path.join(project_root, '.runtime', 'python312', 'python.exe')
+    runtime_python = os.path.join(
+        project_root, '.runtime', PYTHON_RUNTIME_DIRECTORY, 'python.exe'
+    )
 
     try:
         os.makedirs(idea_dir, exist_ok=True)
@@ -654,7 +657,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     '本项目使用随项目提供的 Python 运行环境：',
     '',
     '```text',
-    '.runtime/python312/python.exe',
+    f'.runtime/{PYTHON_RUNTIME_DIRECTORY}/python.exe',
     '```',
     '',
     '如果 PyCharm 打开项目后没有可用的 Python SDK，请按以下步骤手动配置：',
@@ -685,7 +688,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     'This project uses the bundled Python runtime located at:',
     '',
     '```text',
-    '.runtime/python312/python.exe',
+    f'.runtime/{PYTHON_RUNTIME_DIRECTORY}/python.exe',
     '```',
     '',
     'If PyCharm opens the project without a valid Python SDK, configure it manually:',

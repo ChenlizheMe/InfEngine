@@ -134,6 +134,12 @@ def test_input_semantic_ui_console_and_docs_are_schema_operations(tmp_path):
         assert [event[1]["pressed"] for event in host.events[-4:]] == [True, True, False, False]
         assert [event[1]["key"] for event in host.events[-4:]] == ["ctrl", "s", "s", "ctrl"]
 
+        held = operations["infernux.input.key.hold"]("w", duration_seconds=0.001)
+        assert held["delivered"] is True
+        assert held["release_sequence"] > held["press_sequence"]
+        assert [event[1]["pressed"] for event in host.events[-2:]] == [True, False]
+        assert [event[1]["key"] for event in host.events[-2:]] == ["w", "w"]
+
         clicked = operations["infernux.input.pointer.click"](40.0, 80.0)
         assert clicked["release_sequence"] > clicked["press_sequence"] > clicked["move_sequence"]
         assert [event[0] for event in host.events[-3:]] == [
@@ -296,6 +302,31 @@ def test_capture_surface_cannot_fall_back_to_operating_system_pixels():
     native_text = "\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in native_sources)
     forbidden_native = ("BitBlt(", "PrintWindow(", "GetDC(", "XGetImage(", "CGWindowListCreateImage")
     assert all(symbol not in native_text for symbol in forbidden_native)
+
+
+def test_mcp_automation_cannot_control_operating_system_window_activation():
+    plugin_root = (
+        Path(__file__).parents[2]
+        / "external"
+        / "plugins"
+        / "infernux_mcp"
+        / "Editor"
+        / "infernux_mcp"
+    )
+    python_sources = list(plugin_root.rglob("*.py"))
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore") for path in python_sources
+    )
+    forbidden_symbols = (
+        "SetForegroundWindow",
+        "BringWindowToTop",
+        "SetActiveWindow",
+        "AttachThreadInput",
+        "GetForegroundWindow",
+        "win32gui",
+        "pyautogui",
+    )
+    assert all(symbol not in source_text for symbol in forbidden_symbols)
 
 
 def test_player_schema_exposes_managed_input_and_motion_capture(tmp_path, monkeypatch):

@@ -324,6 +324,10 @@ void InxView::ProcessEvent()
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
         case SDL_EVENT_TEXT_INPUT:
+        case SDL_EVENT_FINGER_DOWN:
+        case SDL_EVENT_FINGER_MOTION:
+        case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_CANCELED:
         case SDL_EVENT_DROP_FILE:
         case SDL_EVENT_DROP_TEXT:
             pacing.wokeByInputEvent = true;
@@ -452,6 +456,10 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
     case SDL_EVENT_TEXT_INPUT:
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED:
     case SDL_EVENT_DROP_FILE:
     case SDL_EVENT_DROP_TEXT:
     case SDL_EVENT_QUIT:
@@ -673,6 +681,7 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             positionEvent.motion.yrel = 0.0f;
             hadInputEvent = ProcessOneEvent(positionEvent, true) || hadInputEvent;
         }
+        InputManager::Instance().TrackSyntheticEvent(event);
         hadInputEvent = ProcessOneEvent(event, synthetic.type == SyntheticInputType::MouseMotion) || hadInputEvent;
         if (synthetic.type == SyntheticInputType::MouseMotion)
             pointerMotionProcessedInBatch = true;
@@ -853,6 +862,11 @@ void InxView::SetWindowResizable(bool resizable)
 void InxView::SDLInit()
 {
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
+    // Touch is a first-class input stream. Compatibility mouse synthesis would
+    // otherwise deliver one physical contact through both APIs and cause
+    // duplicate gameplay/UI actions on Android and mobile Web.
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
         const std::string error = SDL_GetError();
         INXLOG_ERROR("SDL_Init failed: ", error);

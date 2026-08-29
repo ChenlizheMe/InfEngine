@@ -29,31 +29,50 @@ ${VERTEX_CALL}
         vec3 tangentWorld = dot(transformedTangent, transformedTangent) > 1.0e-10
             ? normalize(transformedTangent)
             : vec3(1.0, 0.0, 0.0);
+        mat4 cameraWorld = inverse(ubo.view);
         vec3 facing;
         if (inBoneIndices.z == 0u) {
-            vec3 toCamera = inverse(ubo.view)[3].xyz - centerWorld.xyz;
-            facing = dot(toCamera, toCamera) > 1.0e-10 ? normalize(toCamera) : vec3(0.0, 0.0, 1.0);
+            // View alignment is a camera-plane billboard. Using a separate
+            // point-to-camera vector at every sample makes long trails twist
+            // under perspective and cross the near-parallel fallback at
+            // different frames. One view-plane normal keeps the whole strip
+            // coherent while the camera and authored points move.
+            vec3 viewFacing = -cameraWorld[2].xyz;
+            facing = dot(viewFacing, viewFacing) > 1.0e-10
+                ? normalize(viewFacing)
+                : vec3(0.0, 0.0, -1.0);
         } else {
             vec3 transformedFacing = normalMatrix * v.normal;
             facing = dot(transformedFacing, transformedFacing) > 1.0e-10
                 ? normalize(transformedFacing)
                 : vec3(0.0, 0.0, 1.0);
         }
-        mat4 cameraWorld = inverse(ubo.view);
         vec3 cameraRight = normalize(cameraWorld[0].xyz);
-        vec3 side = cross(facing, tangentWorld);
-        // Near a camera-facing tangent, normalizing the tiny cross product
-        // amplifies frame noise and flips adjacent ribbon vertices. Project
-        // camera-right off the tangent in that singular region instead.
-        if (dot(side, side) < 1.0e-6)
-            side = cameraRight - tangentWorld * dot(cameraRight, tangentWorld);
-        if (dot(side, side) < 1.0e-10)
-            side = cross(cameraWorld[1].xyz, tangentWorld);
-        if (dot(side, side) < 1.0e-10)
-            side = vec3(1.0, 0.0, 0.0);
-        side = normalize(side);
-        if (dot(side, cameraRight) < 0.0)
-            side = -side;
+        vec3 cameraUp = normalize(cameraWorld[1].xyz);
+        vec3 fallbackSide = cameraRight - tangentWorld * dot(cameraRight, tangentWorld);
+        if (dot(fallbackSide, fallbackSide) < 1.0e-8)
+            fallbackSide = cameraUp - tangentWorld * dot(cameraUp, tangentWorld);
+        if (dot(fallbackSide, fallbackSide) < 1.0e-10)
+            fallbackSide = abs(tangentWorld.x) < 0.9
+                ? cross(tangentWorld, vec3(1.0, 0.0, 0.0))
+                : cross(tangentWorld, vec3(0.0, 1.0, 0.0));
+        fallbackSide = normalize(fallbackSide);
+
+        // Near a camera-facing segment the geometric width direction is
+        // undefined. Normalizing that tiny cross product magnifies minute
+        // physics/sample noise into a full-width flip. Blend from a stable,
+        // tangent-sign-invariant camera basis until the projection is well
+        // conditioned; this also keeps retraced trails on the same side.
+        vec3 geometricSide = cross(facing, tangentWorld);
+        float geometricLength = length(geometricSide);
+        vec3 side = fallbackSide;
+        if (geometricLength > 1.0e-6) {
+            geometricSide /= geometricLength;
+            if (dot(geometricSide, fallbackSide) < 0.0)
+                geometricSide = -geometricSide;
+            float geometricWeight = smoothstep(0.025, 0.20, geometricLength);
+            side = normalize(mix(fallbackSide, geometricSide, geometricWeight));
+        }
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneIndices.y != 0u) {
             worldNormal = facing;

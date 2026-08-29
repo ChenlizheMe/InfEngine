@@ -120,8 +120,39 @@ def _iter_dev_native_search_dirs():
     build_root = os.path.join(repo_root, "out", "build")
     configs = ("RelWithDebInfo", "Release", "Debug")
 
+    # Preset build trees stage an ABI-complete runtime in python-sync. Prefer
+    # the most recently built compatible directory so switching Python ABIs or
+    # CMake presets does not require copying binaries into the source package.
+    preset_candidates = glob.glob(os.path.join(build_root, "*", "python-sync"))
     for config in configs:
-        yield os.path.join(build_root, config)
+        preset_candidates.extend(
+            glob.glob(os.path.join(build_root, "*", config))
+        )
+
+    def newest_compatible_module(directory: str) -> float:
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            candidate = os.path.join(directory, f"_Infernux{suffix}")
+            if os.path.isfile(candidate):
+                return os.path.getmtime(candidate)
+        return -1.0
+
+    seen = set()
+    for candidate in sorted(
+        preset_candidates, key=newest_compatible_module, reverse=True
+    ):
+        normalized = os.path.abspath(candidate)
+        if normalized in seen or newest_compatible_module(normalized) < 0:
+            continue
+        seen.add(normalized)
+        yield normalized
+
+    # Retain the legacy single-config layout for older developer build trees.
+    for config in configs:
+        candidate = os.path.join(build_root, config)
+        normalized = os.path.abspath(candidate)
+        if normalized not in seen:
+            seen.add(normalized)
+            yield normalized
 
     externals = (
         ("external", "assimp", "bin"),
@@ -280,12 +311,19 @@ try:
 except (ModuleNotFoundError, ImportError, OSError) as _initial_native_error:
     if _native_override_dir is not None:
         _raise_native_import_error(_initial_native_error)
+    _native_module = None
+    _last_native_error = _initial_native_error
     for candidate in _iter_dev_native_search_dirs():
         _register_native_search_dir(candidate)
-    try:
-        _native_module = _load_native_module(None)
-    except (ModuleNotFoundError, ImportError, OSError) as exc:
-        _raise_native_import_error(exc)
+        native_dir = candidate
+        _preload_bundled_crt_dlls()
+        try:
+            _native_module = _load_native_module_from_dir(candidate)
+            break
+        except (ModuleNotFoundError, ImportError, OSError) as exc:
+            _last_native_error = exc
+    if _native_module is None:
+        _raise_native_import_error(_last_native_error)
 
 _export_native_module(_native_module)
 _SceneDocumentReadTicket = _native_module._SceneDocumentReadTicket

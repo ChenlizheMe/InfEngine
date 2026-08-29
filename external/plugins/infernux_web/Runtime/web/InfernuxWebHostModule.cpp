@@ -1,0 +1,145 @@
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+#include "InfernuxWebHostModule.h"
+
+#include <platform/filesystem/InxPack.h>
+
+#include <exception>
+#include <filesystem>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+
+namespace
+{
+
+std::mutex g_shaderMutex;
+std::unordered_map<std::string, std::string> g_shaderSources;
+
+std::string ShaderKey(const std::string &name, const char *stage)
+{
+    return name + '\0' + (stage != nullptr ? stage : "");
+}
+
+PyObject *ReadPackageEntry(PyObject *, PyObject *arguments)
+{
+    const char *packagePath = nullptr;
+    const char *entryPath = nullptr;
+    if (!PyArg_ParseTuple(arguments, "ss:read_entry", &packagePath, &entryPath))
+        return nullptr;
+
+    try {
+        const auto bytes = infernux::inxpack::ReadEntry(std::filesystem::path(packagePath), entryPath);
+        return PyBytes_FromStringAndSize(reinterpret_cast<const char *>(bytes.data()),
+                                         static_cast<Py_ssize_t>(bytes.size()));
+    } catch (const std::exception &error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject *ExtractPackage(PyObject *, PyObject *arguments)
+{
+    const char *packagePath = nullptr;
+    const char *destinationPath = nullptr;
+    if (!PyArg_ParseTuple(arguments, "ss:extract_package", &packagePath, &destinationPath))
+        return nullptr;
+
+    try {
+        const auto manifest =
+            infernux::inxpack::Extract(std::filesystem::path(packagePath), std::filesystem::path(destinationPath));
+        PyObject *summary = PyDict_New();
+        if (summary == nullptr)
+            return nullptr;
+        const auto setInteger = [summary](const char *name, uint64_t value) {
+            PyObject *item = PyLong_FromUnsignedLongLong(value);
+            if (item == nullptr)
+                return false;
+            const int result = PyDict_SetItemString(summary, name, item);
+            Py_DECREF(item);
+            return result == 0;
+        };
+        PyObject *hash = PyUnicode_FromString(infernux::inxpack::HashToHex(manifest.archiveHash).c_str());
+        const bool complete = setInteger("entries", static_cast<uint64_t>(manifest.entries.size())) &&
+                              setInteger("raw_bytes", manifest.rawBytes) &&
+                              setInteger("stored_bytes", manifest.storedBytes) &&
+                              setInteger("archive_bytes", manifest.archiveBytes) && hash != nullptr &&
+                              PyDict_SetItemString(summary, "archive_sha256", hash) == 0;
+        Py_XDECREF(hash);
+        if (!complete) {
+            Py_DECREF(summary);
+            return nullptr;
+        }
+        return summary;
+    } catch (const std::exception &error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject *RegisterShader(PyObject *, PyObject *arguments)
+{
+    const char *name = nullptr;
+    const char *stage = nullptr;
+    PyObject *sourceObject = nullptr;
+    if (!PyArg_ParseTuple(arguments, "ssO:register_shader", &name, &stage, &sourceObject))
+        return nullptr;
+    if (name == nullptr || *name == '\0' ||
+        (std::string(stage) != "vertex" && std::string(stage) != "fragment" && std::string(stage) != "compute")) {
+        PyErr_SetString(PyExc_ValueError, "shader name and stage are invalid");
+        return nullptr;
+    }
+    Py_ssize_t sourceSize = 0;
+    const char *source = PyUnicode_AsUTF8AndSize(sourceObject, &sourceSize);
+    if (source == nullptr)
+        return nullptr;
+    if (sourceSize <= 0) {
+        PyErr_SetString(PyExc_ValueError, "shader source is empty");
+        return nullptr;
+    }
+    {
+        std::lock_guard lock(g_shaderMutex);
+        const auto [entry, inserted] =
+            g_shaderSources.emplace(ShaderKey(name, stage), std::string(source, static_cast<size_t>(sourceSize)));
+        if (!inserted) {
+            PyErr_SetString(PyExc_ValueError, "shader identity is already registered");
+            return nullptr;
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+PyMethodDef kMethods[] = {
+    {"read_entry", ReadPackageEntry, METH_VARARGS,
+     "Read and validate one entry from the native Infernux Player container."},
+    {"extract_package", ExtractPackage, METH_VARARGS, "Validate and extract one native Infernux Player container."},
+    {"register_shader", RegisterShader, METH_VARARGS,
+     "Register one validated WGSL shader in the browser runtime catalog."},
+    {nullptr, nullptr, 0, nullptr},
+};
+
+PyModuleDef kModule = {
+    PyModuleDef_HEAD_INIT,
+    "_InfernuxWebHost",
+    "Web Player host services that do not belong to the gameplay API.",
+    -1,
+    kMethods,
+};
+
+} // namespace
+
+PyMODINIT_FUNC PyInit__InfernuxWebHost()
+{
+    return PyModule_Create(&kModule);
+}
+
+bool InfernuxWebFindShaderSource(const std::string &name, const char *stage, std::string &source)
+{
+    std::lock_guard lock(g_shaderMutex);
+    const auto found = g_shaderSources.find(ShaderKey(name, stage));
+    if (found == g_shaderSources.end())
+        return false;
+    source = found->second;
+    return true;
+}

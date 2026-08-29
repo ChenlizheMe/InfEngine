@@ -2,8 +2,13 @@
 #include <core/log/InxLog.h>
 
 // SPIRV-Cross headers
+#if defined(INFERNUX_SPIRV_CROSS_FLAT_INCLUDE)
+#include <spirv_cross.hpp>
+#include <spirv_glsl.hpp>
+#else
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
+#endif
 
 #include <cstring>
 

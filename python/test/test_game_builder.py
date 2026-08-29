@@ -29,6 +29,7 @@ from Infernux.engine.runtime_artifact_catalog import (
     logical_type_for_path,
     payload_kind_for,
     runtime_artifact_reason_for,
+    source_fingerprint,
     unix_ns_to_filetime_ticks,
     validate_artifact,
 )
@@ -254,6 +255,18 @@ def _make_builder(tmp_path, output_dir):
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
 
 
+def _player_executable_name(game_name: str = "TestGame") -> str:
+    return f"{game_name}.exe" if sys.platform == "win32" else game_name
+
+
+def _write_player_executable(root: Path, payload: bytes = b"Infernux Player") -> Path:
+    executable = root / _player_executable_name()
+    executable.write_bytes(payload)
+    if sys.platform != "win32":
+        executable.chmod(executable.stat().st_mode | 0o111)
+    return executable
+
+
 def _bind_staged_script_to_asset_index(
     builder: GameBuilder,
     output_dir: Path,
@@ -300,9 +313,10 @@ def _prepare_runtime_catalog_inputs(
             data_root / builder._CONTENT_ARCHIVE_FILENAME,
         )
     if include_executable:
-        (final_dir / f"{builder.project_name}.exe").write_bytes(
-            b"Infernux Player"
-        )
+        executable = final_dir / _player_executable_name(builder.project_name)
+        executable.write_bytes(b"Infernux Player")
+        if sys.platform != "win32":
+            executable.chmod(executable.stat().st_mode | 0o111)
     return data_root
 
 
@@ -525,8 +539,11 @@ def _asset_index_entry(
     content_hash: str | None = None,
 ) -> dict:
     stat = source.stat()
+    normalized_path = str(source.resolve()).replace("\\", "/")
+    if sys.platform == "win32":
+        normalized_path = normalized_path.casefold()
     return {
-        "normalized_path": str(source.resolve()).replace("\\", "/").casefold(),
+        "normalized_path": normalized_path,
         "guid": guid,
         "resource_type": 3,
         "source": {
@@ -557,6 +574,76 @@ def _write_asset_index(project_root: Path, entries: list[dict]) -> None:
     index_path = project_root / "Library" / "AssetIndex.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(json.dumps(index), encoding="utf-8")
+
+
+def _fnv1a64(payload: bytes) -> str:
+    value = 14695981039346656037
+    for byte in payload:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def test_source_fingerprint_accepts_cross_platform_timestamp_when_content_matches(tmp_path):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "portable.bin"
+    source.parent.mkdir(parents=True)
+    payload = b"portable asset payload\n"
+    source.write_bytes(payload)
+    entry = _asset_index_entry(
+        project,
+        source,
+        "portable-guid",
+        "",
+        "Binary",
+        content_hash=_fnv1a64(payload),
+    )
+    entry["source"]["modified_ns"] = -987654321
+
+    fingerprint = source_fingerprint(project, entry)
+
+    assert fingerprint["size"] == len(payload)
+    assert fingerprint["content_hash"] == _fnv1a64(payload)
+
+
+def test_source_fingerprint_rejects_changed_content_despite_equal_size(tmp_path):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "stale.bin"
+    source.parent.mkdir(parents=True)
+    original = b"before"
+    source.write_bytes(original)
+    entry = _asset_index_entry(
+        project,
+        source,
+        "stale-guid",
+        "",
+        "Binary",
+        content_hash=_fnv1a64(original),
+    )
+    source.write_bytes(b"after!")
+    entry["source"]["modified_ns"] = -987654321
+
+    with pytest.raises(RuntimeArtifactError, match="actual_content_hash"):
+        source_fingerprint(project, entry)
+
+
+def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "resized.bin"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"small")
+    entry = _asset_index_entry(
+        project,
+        source,
+        "resized-guid",
+        "",
+        "Binary",
+        content_hash=_fnv1a64(b"small"),
+    )
+    source.write_bytes(b"larger")
+
+    with pytest.raises(RuntimeArtifactError, match="fingerprint is stale"):
+        source_fingerprint(project, entry)
 
 
 def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_path):
@@ -1045,7 +1132,7 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     sources = {}
-    for filename in ("python312.dll", "_ctypes.pyd", "ffi.dll", "zlib.dll"):
+    for filename in ("python313.dll", "_ctypes.pyd", "ffi.dll", "zlib.dll"):
         source = runtime / filename
         source.write_bytes(filename.encode("ascii"))
         sources[filename] = source
@@ -1309,16 +1396,44 @@ def test_pack_core_runtime_moves_boot_deferred_stdlib_extensions(tmp_path):
         "runtime", encoding="utf-8"
     )
     (final_dir / "Infernux" / "engine" / "locales").mkdir(parents=True)
+    packaging_root = final_dir / "packaging"
+    packaging_root.mkdir()
+    (packaging_root / "__init__.pyc").write_bytes(b"packaging runtime")
     builder._pack_core_runtime_archive(str(final_dir))
 
     manifest = read_manifest(data_root / builder._RUNTIME_ARCHIVE_FILENAME)
     paths = {entry["path"] for entry in manifest["files"]}
     assert {f"stdlib/{filename}" for filename in deferred} <= paths
     assert "stdlib/late-runtime.dll" in paths
+    assert "packaging/__init__.pyc" in paths
     assert "stdlib/__future__.pyc" not in paths
     assert all(not (final_dir / filename).exists() for filename in deferred)
     assert not (final_dir / "late-runtime.dll").exists()
+    assert not packaging_root.exists()
     assert not (final_dir / "Infernux").exists()
+
+
+def test_pack_core_runtime_moves_versioned_linux_sonames_off_root(
+    tmp_path, monkeypatch
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = final_dir / "TestGame_Data"
+    runtime_root = final_dir / "Infernux" / "resources"
+    data_root.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "runtime.bin").write_bytes(b"runtime")
+    (final_dir / "libz.so.1").write_bytes(b"versioned soname")
+    monkeypatch.setattr(game_builder_module.sys, "platform", "linux")
+
+    builder._pack_core_runtime_archive(str(final_dir))
+
+    paths = {
+        entry["path"]
+        for entry in read_manifest(data_root / builder._RUNTIME_ARCHIVE_FILENAME)["files"]
+    }
+    assert "stdlib/libz.so.1" in paths
+    assert not (final_dir / "libz.so.1").exists()
 
 
 def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
@@ -1337,7 +1452,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     (final_dir / "_InfernuxBootstrap.pyd").write_bytes(b"bootstrap")
     (final_dir / "InfernuxFoundation.dll").write_bytes(b"foundation")
     (final_dir / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
-    (final_dir / "python312.dll").write_bytes(b"python")
+    (final_dir / "python313.dll").write_bytes(b"python")
     (final_dir / "_ctypes.pyd").write_bytes(b"ctypes ABI")
     (final_dir / "ffi.dll").write_bytes(b"libffi ABI")
     (final_dir / "_socket.pyd").write_bytes(b"socket")
@@ -1354,7 +1469,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "stdlib/_socket.pyd" in paths
     assert (final_dir / "_InfernuxBootstrap.pyd").is_file()
     assert (final_dir / "InfernuxFoundation.dll").is_file()
-    assert (final_dir / "python312.dll").is_file()
+    assert (final_dir / "python313.dll").is_file()
     assert (final_dir / "_ctypes.pyd").is_file()
     assert (final_dir / "ffi.dll").is_file()
     assert "stdlib/_ctypes.pyd" not in paths
@@ -1380,16 +1495,28 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
     package_lib = final_dir / "Infernux" / "lib"
     data_root.mkdir(parents=True)
     package_lib.mkdir(parents=True)
-    for filename in (
-        "python312.dll",
-        "_ctypes.pyd",
-        "ffi.dll",
-        "_InfernuxBootstrap.pyd",
-    ):
+    if sys.platform == "win32":
+        bootstrap_files = (
+            "python313.dll",
+            "_ctypes.pyd",
+            "ffi.dll",
+            "_InfernuxBootstrap.pyd",
+        )
+        module_name = "_InfernuxPlayer.cp313-win_amd64.pyd"
+        foundation_name = "InfernuxFoundation.dll"
+    else:
+        bootstrap_files = (
+            "libpython3.13.so.1.0",
+            "_ctypes.cpython-312-x86_64-linux-gnu.so",
+            "libffi.so.8",
+            "_InfernuxBootstrap.cpython-312-x86_64-linux-gnu.so",
+        )
+        module_name = "_InfernuxPlayer.cpython-312-x86_64-linux-gnu.so"
+        foundation_name = "libInfernuxFoundation.so"
+    for filename in bootstrap_files:
         (final_dir / filename).write_bytes(filename.encode("ascii"))
-    module_name = "_InfernuxPlayer.cp312-win_amd64.pyd"
     (final_dir / module_name).write_bytes(b"player module")
-    (package_lib / "InfernuxFoundation.dll").write_bytes(b"foundation")
+    (package_lib / foundation_name).write_bytes(b"foundation")
     encodings = final_dir / "stdlib" / "encodings"
     encodings.mkdir(parents=True)
     for filename in ("__init__.pyc", "aliases.pyc", "utf_8.pyc"):
@@ -1713,13 +1840,13 @@ def test_runtime_engine_fingerprint_tracks_loaded_native_payload(tmp_path, monke
     native_root = tmp_path / "native"
     native_root.mkdir()
     native_module = (
-        "_Infernux.cp312-win_amd64.pyd"
+        "_Infernux.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_Infernux.so"
     )
     (native_root / native_module).write_bytes(b"module")
     bootstrap_module = (
-        "_InfernuxBootstrap.cp312-win_amd64.pyd"
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_InfernuxBootstrap.so"
     )
@@ -1753,7 +1880,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     native_root = tmp_path / "native"
     native_root.mkdir()
     native_module = (
-        "_Infernux.cp312-win_amd64.pyd"
+        "_Infernux.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_Infernux.so"
     )
@@ -1764,7 +1891,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     )
     (native_root / native_module).write_bytes(b"current-module")
     bootstrap_module = (
-        "_InfernuxBootstrap.cp312-win_amd64.pyd"
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_InfernuxBootstrap.so"
     )
@@ -1780,7 +1907,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         else native_root / "libInfernuxFoundation.so"
     )
     foundation.write_bytes(b"foundation")
-    python_runtime = native_root / "python312.dll" if sys.platform == "win32" else None
+    python_runtime = native_root / "python313.dll" if sys.platform == "win32" else None
     if python_runtime is not None:
         python_runtime.write_bytes(b"python-runtime")
         (native_root / "zlib.dll").write_bytes(b"runtime-zlib")
@@ -1811,8 +1938,8 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         assert not (dist / companion).exists()
         assert (dist / "_InfernuxBootstrap.pyd").read_bytes() == b"bootstrap-module"
         assert (dist / "InfernuxFoundation.dll").read_bytes() == b"foundation"
-        assert (dist / "python312.dll").read_bytes() == b"python-runtime"
-        assert not (package_lib / "python312.dll").exists()
+        assert (dist / "python313.dll").read_bytes() == b"python-runtime"
+        assert not (package_lib / "python313.dll").exists()
         assert (package_lib / "zlib.dll").read_bytes() == b"runtime-zlib"
         assert not (dist / "zlib.dll").exists()
         for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
@@ -2112,7 +2239,7 @@ def test_current_player_layout_uses_one_renamed_executable(tmp_path, monkeypatch
     dist.mkdir(parents=True)
     module_name = "_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so"
     (dist / module_name).write_bytes(b"player module")
-    (dist / "python312.dll").write_bytes(b"python")
+    (dist / "python313.dll").write_bytes(b"python")
     final_dir = Path(builder._organize_output(str(dist)))
     (final_dir / "Data").mkdir()
     (final_dir / "Data" / "BuildManifest.json").write_text("{}", encoding="utf-8")
@@ -2121,10 +2248,13 @@ def test_current_player_layout_uses_one_renamed_executable(tmp_path, monkeypatch
     builder._write_output_marker(str(final_dir))
 
     data_root = final_dir / "TestGame_Data"
-    assert (final_dir / "TestGame.exe").read_bytes() == b"host"
-    assert [path.name for path in final_dir.glob("*.exe")] == ["TestGame.exe"]
+    executable_name = _player_executable_name()
+    assert (final_dir / executable_name).read_bytes() == b"host"
+    assert [path.name for path in final_dir.iterdir() if path.name == executable_name] == [
+        executable_name
+    ]
     assert (final_dir / module_name).read_bytes() == b"player module"
-    assert (final_dir / "python312.dll").read_bytes() == b"python"
+    assert (final_dir / "python313.dll").read_bytes() == b"python"
     assert (final_dir / GameBuilder.OUTPUT_MARKER_FILENAME).is_file()
     assert (data_root / "BuildManifest.json").is_file()
     assert not (data_root / "Runtime").exists()
@@ -2197,7 +2327,7 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     builder._process_build_icon(str(final_dir))
     builder._process_splash_items(str(final_dir))
     builder._generate_manifest(str(final_dir))
-    (final_dir / "TestGame.exe").write_bytes(b"player")
+    _write_player_executable(final_dir, b"player")
     builder._organize_player_layout(str(final_dir))
 
     manifest = json.loads(
@@ -2377,7 +2507,7 @@ def test_game_data_includes_render_effect_artifacts(tmp_path):
 
     assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
 
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     builder._pack_content_archive(str(final_dir))
     header = read_manifest(
@@ -2482,7 +2612,7 @@ def test_game_data_replaces_current_texture_source_with_library_artifact(tmp_pat
 
     final_dir = tmp_path / "dist"
     builder._copy_game_data(str(final_dir))
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     builder._pack_content_archive(str(final_dir))
 
@@ -2550,7 +2680,7 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         ],
     }
 
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     builder._pack_content_archive(str(final_dir))
     header = read_manifest(
@@ -3078,7 +3208,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     numpy_example = final_dir / "numpy" / "random" / "_examples" / "extending.pyx"
     numpy_stub = final_dir / "numpy" / "typing" / "_array_like.pyi"
     numpy_tests_extension = (
-        final_dir / "numpy" / "_core" / "_multiarray_tests.cp312-win_amd64.pyd"
+        final_dir / "numpy" / "_core" / "_multiarray_tests.cp313-win_amd64.pyd"
     )
     numpy_api_changes = final_dir / "numpy" / "ma" / "API_CHANGES.txt"
     numpy_license = final_dir / "numpy" / "LICENSE.txt"
@@ -3616,6 +3746,74 @@ def test_copy_cooked_assets_catalogs_builtin_shaders_without_duplicating_them(tm
     ]
 
 
+def test_platform_cook_packages_reachable_builtin_resources_in_content(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    scene = project / "Assets" / "Main.scene"
+    shader = project / "Library" / "Resources" / "shaders" / "standard.vert"
+    shader.parent.mkdir(parents=True, exist_ok=True)
+    shader.write_text("void main() {}\n", encoding="utf-8")
+    scene.write_text(json.dumps({"shader": "builtin-shader-guid"}), encoding="utf-8")
+    scene_entry = _asset_index_entry(project, scene, "scene-guid", "", "Scene")
+    shader_entry = _asset_index_entry(
+        project,
+        shader,
+        "builtin-shader-guid",
+        "",
+        "Shader",
+    )
+    shader_entry["read_only"] = True
+    _write_asset_index(project, [scene_entry, shader_entry])
+    final_dir = tmp_path / "dist"
+    data_dir = final_dir / "Data"
+
+    builder._copy_cooked_assets(
+        str(data_dir),
+        package_builtin_resources=True,
+    )
+
+    packaged_shader = data_dir / "Infernux/resources/shaders/standard.vert"
+    assert packaged_shader.read_text(encoding="utf-8") == "void main() {}\n"
+
+    builder._cooked_asset_entries = {"builtin-shader-guid": shader_entry}
+    builder._runtime_artifact_bindings = {}
+    builder._write_runtime_asset_records(
+        str(final_dir),
+        package_builtin_resources=True,
+    )
+    records = json.loads(
+        (data_dir / "Library" / "RuntimeAssetRecords.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    shader_record = next(
+        item for item in records["entries"] if item["guid"] == "builtin-shader-guid"
+    )
+    assert shader_record["runtime_artifacts"] == [
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Infernux/resources/shaders/standard.vert",
+            "runtime_artifact_id": game_builder_module.runtime_artifact_id(
+                "Content.inxpkg", "Infernux/resources/shaders/standard.vert"
+            ),
+        }
+    ]
+
+    data_root = final_dir / "TestGame_Data"
+    data_root.parent.mkdir(parents=True, exist_ok=True)
+    data_dir.rename(data_root)
+    (data_root / "Assets/Main.scene").unlink()
+    (data_root / "Assets").rmdir()
+    builder._pack_content_archive(
+        str(final_dir),
+        package_builtin_resources=True,
+    )
+    manifest = read_manifest(data_root / "Content.inxpkg")
+    assert "Infernux/resources/shaders/standard.vert" in {
+        entry["path"] for entry in manifest["files"]
+    }
+
+
 def test_package_resource_shader_keeps_guid_identity_in_headless_build(
     tmp_path, monkeypatch
 ):
@@ -4116,7 +4314,7 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     assert not (staged / "Assets" / "Unused.mat.meta").exists()
     assert not (staged / "Assets" / "Dynamic" / "Runtime.bin").exists()
 
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     data_root = final_dir / "TestGame_Data"
     runtime_source = tmp_path / "runtime.bin"
@@ -4223,6 +4421,132 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
     scene = by_path["Library/Artifacts/Document/scene-guid.scene"]
     assert scene["dependencies"] == [material_id]
     assert scene["unresolved_dependencies"] == []
+
+
+def test_player_document_rewrite_normalizes_asset_hints_and_particle_duplicates(
+    tmp_path,
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    document_path = tmp_path / "RuntimeIndex.json"
+    document_path.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": [
+                    {
+                        "guid": "1" * 32,
+                        "stable_id": "2" * 32,
+                        "path_hint": "Assets/VFX/Wind.particlegraph",
+                    },
+                    {
+                        "guid": "1" * 32,
+                        "stable_id": "2" * 32,
+                        "path_hint": "C:/OldProject/Assets/VFX/Wind.particlegraph",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    builder._rewrite_player_document_paths(str(document_path), ".json")
+
+    rewritten = json.loads(document_path.read_text(encoding="utf-8"))
+    assert rewritten["entries"] == [
+        {
+            "guid": "1" * 32,
+            "stable_id": "2" * 32,
+            "path_hint": "Assets/VFX/Wind.particlegraph",
+        }
+    ]
+
+
+def test_runtime_catalog_does_not_treat_type_or_stable_ids_as_assets():
+    script_guid = "1" * 32
+    type_guid = "2" * 32
+    particle_guid = "3" * 32
+    stable_id = "4" * 32
+    script_payload = b"script"
+    particle_payload = b"particle"
+    type_registry = json.dumps(
+        {
+            "$schema": "infernux.runtime_type_registry",
+            "types": [
+                {
+                    "script_guid": script_guid,
+                    "type_guid": type_guid,
+                }
+            ],
+        }
+    ).encode("utf-8")
+    particle_index = json.dumps(
+        {
+            "$schema": "infernux.particle_runtime_index",
+            "entries": [
+                {
+                    "guid": particle_guid,
+                    "path_hint": "Assets/VFX/Wind.particlegraph",
+                    "stable_id": stable_id,
+                }
+            ],
+        }
+    ).encode("utf-8")
+    entries = [
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Assets/Scripts/Game.pyc",
+            "bytes": len(script_payload),
+            "sha256": hashlib.sha256(script_payload).hexdigest(),
+            "asset_binding": {
+                "source_guid": script_guid,
+                "source_path": "Assets/Scripts/Game.py",
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": f"Library/Artifacts/Particle/{particle_guid}.inxparticle",
+            "bytes": len(particle_payload),
+            "sha256": hashlib.sha256(particle_payload).hexdigest(),
+            "asset_binding": {
+                "source_guid": particle_guid,
+                "source_path": "Assets/VFX/Wind.particlegraph",
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Library/RuntimeTypeRegistry.json",
+            "bytes": len(type_registry),
+            "sha256": hashlib.sha256(type_registry).hexdigest(),
+            "payload": type_registry,
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Library/Artifacts/Particle/RuntimeIndex.json",
+            "bytes": len(particle_index),
+            "sha256": hashlib.sha256(particle_index).hexdigest(),
+            "payload": particle_index,
+        },
+    ]
+
+    catalog = build_catalog(
+        entries,
+        player_host={"executable": "Game", "sha256": "a" * 64},
+        package_records=[],
+    )
+
+    by_path = {artifact["runtime_path"]: artifact for artifact in catalog["artifacts"]}
+    script = by_path["Assets/Scripts/Game.pyc"]
+    particle = by_path[
+        f"Library/Artifacts/Particle/{particle_guid}.inxparticle"
+    ]
+    registry = by_path["Library/RuntimeTypeRegistry.json"]
+    index = by_path["Library/Artifacts/Particle/RuntimeIndex.json"]
+    assert registry["dependencies"] == [script["runtime_artifact_id"]]
+    assert registry["unresolved_dependencies"] == []
+    assert index["dependencies"] == [particle["runtime_artifact_id"]]
+    assert index["unresolved_dependencies"] == []
 
 
 def test_animclip3d_catalog_depends_on_independent_animation_model():
@@ -4430,7 +4754,7 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
         )
     )
     assert catalog["$schema"] == "infernux.runtime_asset_catalog"
-    assert catalog["player_host"]["executable"] == "TestGame.exe"
+    assert catalog["player_host"]["executable"] == _player_executable_name()
     assert {package["path"] for package in catalog["packages"]} == {
         "TestGame_Data/Runtime.inxrt",
         "TestGame_Data/Content.inxpkg",
@@ -4454,6 +4778,47 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
     )
 
 
+def test_payload_manifest_supports_platform_native_player_host(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = _prepare_runtime_catalog_inputs(
+        builder,
+        final_dir,
+        include_runtime=False,
+        include_executable=False,
+    )
+    host = {
+        "identity": "android-sdl-python-player-host",
+        "entry_point": "com.infernux.bootstrap/.InfernuxActivity",
+        "platform": "android",
+        "architecture": "x86_64",
+    }
+
+    builder._write_payload_manifest(
+        str(final_dir),
+        platform_host=host,
+        include_runtime_archive=False,
+    )
+
+    catalog = json.loads(
+        (data_root / "Library/RuntimeAssetCatalog.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (data_root / "Player.inxmanifest").read_text(encoding="utf-8")
+    )
+    package_index = (data_root / "PackageIndex.inxmanifest").read_text(
+        encoding="ascii"
+    )
+    assert catalog["player_host"] == host
+    assert [record["path"] for record in catalog["packages"]] == [
+        "TestGame_Data/Content.inxpkg"
+    ]
+    assert manifest["product"]["layout"] == "platform_native_packages"
+    assert manifest["product"]["entry_points"] == [host["entry_point"]]
+    assert "content\t" in package_index
+    assert "runtime\t" not in package_index
+
+
 def test_payload_manifest_rejects_direct_documents_after_dependency_reads(
     tmp_path,
     monkeypatch,
@@ -4462,7 +4827,7 @@ def test_payload_manifest_rejects_direct_documents_after_dependency_reads(
     final_dir = tmp_path / "dist"
     data_root = final_dir / "TestGame_Data"
     data_root.mkdir(parents=True)
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
 
     sources = tmp_path / "catalog-payloads"
     sources.mkdir()
@@ -4622,6 +4987,7 @@ class TestGameBuilderOutputSafety:
         assert 'os.environ["_INFERNUX_PACKAGED_RESOURCE_ROOT"]' in boot_source
         assert '_RUNTIME_ARCHIVE = os.path.join(_DATA_ROOT, "Runtime.inxrt")' in boot_source
         assert '"stdlib"' in boot_source
+        assert '{"Infernux", "numpy", "numpy.libs", "packaging", "stdlib"}' in boot_source
         assert '_STDLIB_RUNTIME_DIR' in boot_source
         assert 'os.add_dll_directory(_dll_dir)' in boot_source
         assert '_CONTENT_ARCHIVE = os.path.join(_DATA_ROOT, "Content.inxpkg")' in boot_source
@@ -5326,6 +5692,7 @@ class TestGameBuilderAutoParallelExport:
             builder._collect_user_dependencies()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows SDK environment")
 class TestNuitkaWindowsSdkEnvironment:
     def test_augment_windows_sdk_environment_adds_kits_tools_and_paths(self, tmp_path, monkeypatch):
         monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")

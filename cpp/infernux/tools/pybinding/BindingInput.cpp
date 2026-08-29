@@ -20,6 +20,32 @@ namespace infernux
 
 void RegisterInputBindings(py::module_ &m)
 {
+    py::class_<TouchState>(m, "TouchState", "Immutable snapshot of one touch contact for the current frame")
+        .def_readonly("touch_id", &TouchState::touchId)
+        .def_readonly("finger_id", &TouchState::fingerId)
+        .def_readonly("timestamp_ns", &TouchState::timestampNs)
+        .def_readonly("window_id", &TouchState::windowId)
+        .def_readonly("x", &TouchState::x, "Normalized horizontal position")
+        .def_readonly("y", &TouchState::y, "Normalized vertical position")
+        .def_readonly("delta_x", &TouchState::deltaX, "Normalized horizontal movement this frame")
+        .def_readonly("delta_y", &TouchState::deltaY, "Normalized vertical movement this frame")
+        .def_readonly("pressure", &TouchState::pressure)
+        .def_property_readonly("phase", [](const TouchState &touch) {
+            switch (touch.phase) {
+            case TouchPhase::Began:
+                return "began";
+            case TouchPhase::Moved:
+                return "moved";
+            case TouchPhase::Stationary:
+                return "stationary";
+            case TouchPhase::Ended:
+                return "ended";
+            case TouchPhase::Canceled:
+                return "canceled";
+            }
+            return "canceled";
+        });
+
     py::class_<InputManager, std::unique_ptr<InputManager, py::nodelete>>(
         m, "InputManager", "Low-level input state manager. Use the Python `Input` class for the public API.")
 
@@ -62,6 +88,10 @@ void RegisterInputBindings(py::module_ &m)
 
         // ---- Touch ----
         .def_property_readonly("touch_count", &InputManager::GetTouchCount, "Number of active touch contacts")
+        .def("get_touch", &InputManager::GetTouch, py::arg("index"), py::return_value_policy::copy,
+             "Return one touch from the current frame snapshot")
+        .def("get_touches", &InputManager::GetTouches, py::return_value_policy::copy,
+             "Return all touches in stable first-contact order")
 
         // ---- File drop (OS drag-drop) ----
         .def("has_dropped_files", &InputManager::HasDroppedFiles,
@@ -81,6 +111,8 @@ void RegisterInputBindings(py::module_ &m)
                                "True when the Scene view editor camera is using relative mouse capture")
         .def_property_readonly("is_synthetic_input_frame", &InputManager::IsSyntheticInputFrame,
                                "True when trusted automation supplied input during the current frame")
+        .def_property_readonly("has_synthetic_gameplay_input", &InputManager::HasSyntheticGameplayInput,
+                               "True while trusted automation input is active without requiring window focus")
 
         // ---- Utility ----
         .def("reset_all", &InputManager::ResetAll, "Clear all input state (focus loss, scene change, etc.)")

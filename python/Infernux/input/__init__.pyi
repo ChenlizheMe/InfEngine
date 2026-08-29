@@ -1,7 +1,27 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Tuple, Union
 from .ime import ImeInputState
+
+
+class TouchPhase(str, Enum):
+    BEGAN: TouchPhase
+    MOVED: TouchPhase
+    STATIONARY: TouchPhase
+    ENDED: TouchPhase
+    CANCELED: TouchPhase
+
+
+class Touch:
+    touch_id: int
+    finger_id: int
+    timestamp_ns: int
+    window_id: int
+    position: Tuple[float, float]
+    delta_position: Tuple[float, float]
+    pressure: float
+    phase: TouchPhase
 
 
 class KeyCode:
@@ -99,7 +119,9 @@ class Input:
     any_key_down: bool
     """Returns True during the frame any key or mouse button is first pressed."""
     touch_count: int
-    """Number of active touch contacts."""
+    """Number of touch contacts in the current frame snapshot."""
+    touches: Tuple[Touch, ...]
+    """All touch contacts in stable first-contact order."""
     mouse_sensitivity: float
     """Mouse sensitivity multiplier (default 0.1)."""
 
@@ -140,6 +162,11 @@ class Input:
     @staticmethod
     def get_mouse_button_up(button: int) -> bool:
         """Returns True during the frame the mouse button was released."""
+        ...
+
+    @staticmethod
+    def get_touch(index: int) -> Touch:
+        """Return one touch from the current frame snapshot."""
         ...
 
     @staticmethod

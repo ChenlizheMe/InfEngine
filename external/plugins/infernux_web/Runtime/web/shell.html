@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#07111d">
+  <title>Infernux Player</title>
+  <style>
+    :root { color-scheme: dark; background: #07111d; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: radial-gradient(circle at 50% 25%, #102b42 0%, #07111d 58%, #04080d 100%);
+      font: 14px/1.4 system-ui, sans-serif;
+      color: #d8e6ef;
+      touch-action: none;
+    }
+    #infernux-shell { position: fixed; inset: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    #canvas { width: 100%; height: 100%; display: block; outline: 0; }
+    #infernux-text-input {
+      position: fixed;
+      left: -10000px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #status {
+      position: absolute;
+      left: max(12px, env(safe-area-inset-left));
+      bottom: max(10px, env(safe-area-inset-bottom));
+      padding: 5px 8px;
+      border: 1px solid rgba(104, 202, 255, .28);
+      background: rgba(4, 12, 20, .72);
+      border-radius: 3px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <main id="infernux-shell">
+    <canvas id="canvas" tabindex="0" aria-label="Infernux game canvas"></canvas>
+    <textarea id="infernux-text-input" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+    <div id="status" role="status">Starting Infernux…</div>
+  </main>
+  <script>
+    const statusNode = document.getElementById('status');
+    const canvasNode = document.getElementById('canvas');
+    const assetRevision = '@INFERNUX_WEB_ASSET_REVISION@';
+    const diagnostics = [];
+    function recordDiagnostic(text) {
+      diagnostics.push(String(text));
+      canvasNode.dataset.infernuxDiagnostics = JSON.stringify(diagnostics);
+    }
+    function installTextInputBridge() {
+      const input = document.getElementById('infernux-text-input');
+      if (!input || input.dataset.infernuxBound === 'true') return;
+      input.dataset.infernuxBound = 'true';
+      input.addEventListener('input', () => {
+        if (input.value.length > 0) {
+          Module.ccall('InfernuxWebTextInput', null, ['string'], [input.value]);
+          input.value = '';
+        }
+      });
+      Module.infernuxBeginTextInput = (initialValue = '') => {
+        input.value = String(initialValue);
+        input.focus({preventScroll: true});
+        input.setSelectionRange(input.value.length, input.value.length);
+      };
+      Module.infernuxEndTextInput = () => {
+        input.blur();
+        input.value = '';
+      };
+      recordDiagnostic('INFERNUX_WEB_TEXT_BRIDGE_READY');
+    }
+    var Module = {
+      canvas: canvasNode,
+      locateFile(path) {
+        const separator = path.includes('?') ? '&' : '?';
+        return `${path}${separator}revision=${encodeURIComponent(assetRevision)}`;
+      },
+      postRun: [installTextInputBridge],
+      print(text) {
+        recordDiagnostic(text);
+        console.log(text);
+        if (text.includes('INFERNUX_WEB_HOST_READY')) {
+          canvasNode.dataset.infernuxState = 'ready';
+          statusNode.remove();
+        }
+      },
+      printErr(text) {
+        recordDiagnostic(`ERROR: ${String(text)}`);
+        console.error(text);
+      },
+      onAbort(reason) {
+        canvasNode.dataset.infernuxState = 'aborted';
+        statusNode.textContent = `Player stopped: ${reason}`;
+      }
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

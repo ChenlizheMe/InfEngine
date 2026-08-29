@@ -3792,6 +3792,8 @@ class InputManager:
     # Touch
     @property
     def touch_count(self) -> int: ...
+    def get_touch(self, index: int) -> TouchState: ...
+    def get_touches(self) -> List[TouchState]: ...
 
     # File drop
     def has_dropped_files(self) -> bool: ...
@@ -3811,6 +3813,19 @@ class InputManager:
     def name_to_scancode(name: str) -> int: ...
     @staticmethod
     def scancode_to_name(scancode: int) -> str: ...
+
+
+class TouchState:
+    touch_id: int
+    finger_id: int
+    timestamp_ns: int
+    window_id: int
+    x: float
+    y: float
+    delta_x: float
+    delta_y: float
+    pressure: float
+    phase: str
 
 
 # =============================================================================

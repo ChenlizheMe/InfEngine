@@ -37,6 +37,16 @@ def test_session_status_enforces_debug_recording_policy(tmp_path):
     assert session.status()["recording_available"] is False
 
 
+def test_mode_remediation_exposes_only_engine_capture_contract(tmp_path):
+    session.configure(str(tmp_path), _config("developer_assist"))
+
+    remediation = session.mode_remediation("global_validation")
+
+    assert "os_foreground_control" not in remediation
+    assert remediation["capture_source"] == "engine_render_target_only"
+    assert "foreground window" not in remediation["instructions"]
+
+
 def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_path, monkeypatch):
     lease = "private-supervisor-lease"
     monkeypatch.setenv("INFERNUX_MCP_EDITOR_INSTANCE_ID", "editor-instance-for-test")

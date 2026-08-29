@@ -30,31 +30,34 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.inxpack COMMAND infernux_inxpack_tests)
 
+    add_executable(infernux_player_host_tests
+        cpp/tests/PlayerHostTests.cpp
+        cpp/infernux/tools/launcher/PlayerHost.cpp
+        cpp/infernux/tools/launcher/PlayerHost.h
+    )
+    target_include_directories(infernux_player_host_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${Python3_INCLUDE_DIRS}
+    )
+    target_sources(infernux_player_host_tests PRIVATE
+        cpp/infernux/platform/filesystem/InxPack.cpp
+    )
+    target_link_libraries(infernux_player_host_tests PRIVATE ${INFERNUX_ZSTD_TARGET} ${CMAKE_DL_LIBS})
     if(WIN32)
-        add_executable(infernux_player_host_tests
-            cpp/tests/PlayerHostTests.cpp
-            cpp/infernux/tools/launcher/PlayerHost.cpp
-            cpp/infernux/tools/launcher/PlayerHost.h
-        )
-        target_include_directories(infernux_player_host_tests PRIVATE
-            ${CMAKE_SOURCE_DIR}/cpp
-            ${CMAKE_SOURCE_DIR}/cpp/infernux
-            ${CMAKE_SOURCE_DIR}/external
-            ${Python3_INCLUDE_DIRS}
-        )
-        target_sources(infernux_player_host_tests PRIVATE
-            cpp/infernux/platform/filesystem/InxPack.cpp
-        )
-        target_link_libraries(infernux_player_host_tests PRIVATE ${INFERNUX_ZSTD_TARGET} shell32)
+        target_link_libraries(infernux_player_host_tests PRIVATE shell32)
         set_target_properties(infernux_player_host_tests PROPERTIES
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
         )
-        if(MSVC)
-            target_compile_options(infernux_player_host_tests PRIVATE /utf-8)
-            target_link_options(infernux_player_host_tests PRIVATE /NODEFAULTLIB:python312.lib)
-        endif()
-        add_test(NAME infernux.player_host COMMAND infernux_player_host_tests)
     endif()
+    if(MSVC)
+        target_compile_options(infernux_player_host_tests PRIVATE /utf-8)
+        target_link_options(infernux_player_host_tests PRIVATE
+            "/NODEFAULTLIB:python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}.lib"
+        )
+    endif()
+    add_test(NAME infernux.player_host COMMAND infernux_player_host_tests)
 
     add_executable(infernux_editor_search_model_tests
         cpp/tests/EditorSearchModelTests.cpp
@@ -667,6 +670,24 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_material_document_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.material_document COMMAND infernux_material_document_tests)
+
+    add_executable(infernux_material_render_state_vulkan_tests
+        cpp/tests/MaterialRenderStateVulkanTests.cpp
+    )
+    target_include_directories(infernux_material_render_state_vulkan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_material_render_state_vulkan_tests PRIVATE Vulkan::Vulkan glm::glm)
+    target_compile_definitions(infernux_material_render_state_vulkan_tests PRIVATE
+        INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME=1
+    )
+    if(MSVC)
+        target_compile_options(infernux_material_render_state_vulkan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_material_render_state_vulkan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.material_render_state_vulkan COMMAND infernux_material_render_state_vulkan_tests)
 
     add_executable(infernux_mesh_artifact_tests
         cpp/tests/MeshArtifactTests.cpp

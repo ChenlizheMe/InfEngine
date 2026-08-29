@@ -3,8 +3,8 @@
 #include "ComponentFactory.h"
 #include "GameObject.h"
 #include "Scene.h"
-#include <InxLog.h>
 #include <cmath>
+#include <core/log/InxLog.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 

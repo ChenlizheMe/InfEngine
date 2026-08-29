@@ -2,6 +2,7 @@
 #include "InxRenderStruct.h"
 #include "MsaaPolicy.h"
 #include "VertexInputFilter.h"
+#include "vk/MaterialRenderStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
@@ -892,20 +893,20 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
         // even though it covers the same surface.  LESS_OR_EQUAL preserves
         // hidden-surface rejection while allowing that visible surface to
         // publish its normal.
-        effectiveState.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        effectiveState.depthCompareOp = MaterialCompareOp::LessOrEqual;
     }
     if (!rhi::IsStencilFormat(pipelineDesc.depthFormat))
         effectiveState.stencilTestEnable = false;
 
     // Debug log the cull mode being used
     const char *cullModeStr = "UNKNOWN";
-    if (effectiveState.cullMode == VK_CULL_MODE_NONE)
+    if (effectiveState.cullMode == MaterialCullMode::None)
         cullModeStr = "NONE";
-    else if (effectiveState.cullMode == VK_CULL_MODE_FRONT_BIT)
+    else if (effectiveState.cullMode == MaterialCullMode::Front)
         cullModeStr = "FRONT";
-    else if (effectiveState.cullMode == VK_CULL_MODE_BACK_BIT)
+    else if (effectiveState.cullMode == MaterialCullMode::Back)
         cullModeStr = "BACK";
-    else if (effectiveState.cullMode == VK_CULL_MODE_FRONT_AND_BACK)
+    else if (effectiveState.cullMode == MaterialCullMode::FrontAndBack)
         cullModeStr = "FRONT_AND_BACK";
     INXLOG_DEBUG("CreatePipelineWithProgram: shader=", program->GetShaderId(), ", cullMode=", cullModeStr,
                  ", target=", ShaderCompileTargetName(pipelineDesc.target),
@@ -923,7 +924,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     // Vertex input - expose only attributes consumed by this vertex shader.
     // This keeps shaders that do not use skinning inputs from producing Vulkan
     // validation warnings for locations 5/6.
-    auto bindingDescription = Vertex::getBindingDescription();
+    auto bindingDescription = vk::GetVertexBindingDescription();
     auto attributeDescriptions = FilterVertexAttributesForReflection(program->GetVertexReflection());
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
@@ -937,7 +938,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     // Input assembly
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = effectiveState.topology;
+    inputAssembly.topology = vk::ToVkPrimitiveTopology(effectiveState.topology);
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     // Multisampling
@@ -948,10 +949,10 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = effectiveState.polygonMode;
+    rasterizer.polygonMode = vk::ToVkPolygonMode(effectiveState.polygonMode);
     rasterizer.lineWidth = effectiveState.lineWidth;
-    rasterizer.cullMode = effectiveState.cullMode;
-    rasterizer.frontFace = effectiveState.frontFace;
+    rasterizer.cullMode = vk::ToVkCullMode(effectiveState.cullMode);
+    rasterizer.frontFace = vk::ToVkFrontFace(effectiveState.frontFace);
     rasterizer.depthBiasEnable = effectiveState.depthBiasEnable ? VK_TRUE : VK_FALSE;
     rasterizer.depthBiasConstantFactor = effectiveState.depthBiasConstantFactor;
     rasterizer.depthBiasSlopeFactor = effectiveState.depthBiasSlopeFactor;
@@ -964,12 +965,12 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     colorBlendAttachment.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = effectiveState.blendEnable ? VK_TRUE : VK_FALSE;
-    colorBlendAttachment.srcColorBlendFactor = effectiveState.srcColorBlendFactor;
-    colorBlendAttachment.dstColorBlendFactor = effectiveState.dstColorBlendFactor;
-    colorBlendAttachment.colorBlendOp = effectiveState.colorBlendOp;
-    colorBlendAttachment.srcAlphaBlendFactor = effectiveState.srcAlphaBlendFactor;
-    colorBlendAttachment.dstAlphaBlendFactor = effectiveState.dstAlphaBlendFactor;
-    colorBlendAttachment.alphaBlendOp = effectiveState.alphaBlendOp;
+    colorBlendAttachment.srcColorBlendFactor = vk::ToVkBlendFactor(effectiveState.srcColorBlendFactor);
+    colorBlendAttachment.dstColorBlendFactor = vk::ToVkBlendFactor(effectiveState.dstColorBlendFactor);
+    colorBlendAttachment.colorBlendOp = vk::ToVkBlendOp(effectiveState.colorBlendOp);
+    colorBlendAttachment.srcAlphaBlendFactor = vk::ToVkBlendFactor(effectiveState.srcAlphaBlendFactor);
+    colorBlendAttachment.dstAlphaBlendFactor = vk::ToVkBlendFactor(effectiveState.dstAlphaBlendFactor);
+    colorBlendAttachment.alphaBlendOp = vk::ToVkBlendOp(effectiveState.alphaBlendOp);
 
     std::vector<VkPipelineColorBlendAttachmentState> blendAttachments(pipelineDesc.colorFormats.size(),
                                                                       colorBlendAttachment);
@@ -985,11 +986,11 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = effectiveState.depthTestEnable ? VK_TRUE : VK_FALSE;
     depthStencil.depthWriteEnable = effectiveState.depthWriteEnable ? VK_TRUE : VK_FALSE;
-    depthStencil.depthCompareOp = effectiveState.depthCompareOp;
+    depthStencil.depthCompareOp = vk::ToVkCompareOp(effectiveState.depthCompareOp);
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = effectiveState.stencilTestEnable ? VK_TRUE : VK_FALSE;
-    depthStencil.front = effectiveState.stencilFront;
-    depthStencil.back = effectiveState.stencilBack;
+    depthStencil.front = vk::ToVkStencilOpState(effectiveState.stencilFront);
+    depthStencil.back = vk::ToVkStencilOpState(effectiveState.stencilBack);
 
     // Create pipeline with shader program's layout
     VkGraphicsPipelineCreateInfo pipelineInfo{};

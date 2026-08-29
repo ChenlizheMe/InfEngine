@@ -17,6 +17,17 @@ from Infernux.engine.nuitka_builder import NuitkaBuilder
 from Infernux.resources import get_package_resources_path
 
 
+def _player_host_path() -> Path:
+    configured = os.environ.get("INFERNUX_PLAYER_HOST_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return (
+        Path(get_package_resources_path())
+        / "player_runtime"
+        / "InfernuxPlayerHost.exe"
+    )
+
+
 def _clean_generated_python_package_artifacts() -> None:
     """Remove editor metadata and stale incremental wheel payloads."""
     package_root = Path(resolved_path(__file__)).parents[1]
@@ -88,11 +99,7 @@ def build_prebuilt_runtime(
         )
         builder.build(force_runtime_rebuild=force)
         exported_path = builder.export_runtime_pack(output_root)
-        player_host = (
-            Path(get_package_resources_path())
-            / "player_runtime"
-            / "InfernuxPlayerHost.exe"
-        )
+        player_host = _player_host_path()
         if sys.platform == "win32" and not player_host.is_file():
             raise RuntimeError(
                 "Release Runtime Pack cannot be exported without InfernuxPlayerHost.exe"

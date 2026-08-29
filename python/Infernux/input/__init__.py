@@ -29,10 +29,36 @@ Example::
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 from typing import Tuple, Union
 
 from Infernux.lib import InputManager as _NativeInputManager
 from .ime import ImeInputState
+
+
+class TouchPhase(str, Enum):
+    """Lifecycle phase for one touch contact in the current input frame."""
+
+    BEGAN = "began"
+    MOVED = "moved"
+    STATIONARY = "stationary"
+    ENDED = "ended"
+    CANCELED = "canceled"
+
+
+@dataclass(frozen=True, slots=True)
+class Touch:
+    """Platform-independent normalized touch snapshot."""
+
+    touch_id: int
+    finger_id: int
+    timestamp_ns: int
+    window_id: int
+    position: Tuple[float, float]
+    delta_position: Tuple[float, float]
+    pressure: float
+    phase: TouchPhase
 
 
 # =============================================================================
@@ -92,10 +118,17 @@ class _InputMeta(type):
 
     @property
     def touch_count(cls) -> int:
-        """Number of active touch contacts this frame."""
+        """Number of touch contacts in the current frame snapshot."""
         if not cls._accepts_game_input():
             return 0
         return _NativeInputManager.instance().touch_count
+
+    @property
+    def touches(cls) -> Tuple[Touch, ...]:
+        """All touch contacts in stable first-contact order."""
+        if not cls._accepts_game_input():
+            return ()
+        return tuple(cls._from_native_touch(touch) for touch in _NativeInputManager.instance().get_touches())
 
 
 # =============================================================================
@@ -262,7 +295,12 @@ class Input(metaclass=_InputMeta):
 
     @staticmethod
     def _accepts_game_input() -> bool:
-        return Input._game_focused or Input._automation_game_input_depth > 0
+        manager = _NativeInputManager.instance()
+        return (
+            Input._game_focused
+            or Input._automation_game_input_depth > 0
+            or bool(manager.has_synthetic_gameplay_input)
+        )
 
     @staticmethod
     def _begin_automation_game_input() -> None:
@@ -436,10 +474,30 @@ class Input(metaclass=_InputMeta):
     # (implemented in _InputMeta metaclass)
 
     # ------------------------------------------------------------------
-    # Touch (placeholder) — Unity: Input.touchCount
+    # Touch — Unity: Input.touchCount / Input.GetTouch
     # ------------------------------------------------------------------
     # Property-style access: Input.touch_count → int
     # (implemented in _InputMeta metaclass)
+
+    @staticmethod
+    def _from_native_touch(native_touch) -> Touch:
+        return Touch(
+            touch_id=int(native_touch.touch_id),
+            finger_id=int(native_touch.finger_id),
+            timestamp_ns=int(native_touch.timestamp_ns),
+            window_id=int(native_touch.window_id),
+            position=(float(native_touch.x), float(native_touch.y)),
+            delta_position=(float(native_touch.delta_x), float(native_touch.delta_y)),
+            pressure=float(native_touch.pressure),
+            phase=TouchPhase(str(native_touch.phase)),
+        )
+
+    @staticmethod
+    def get_touch(index: int) -> Touch:
+        """Return one touch from the current frame snapshot."""
+        if not Input._accepts_game_input():
+            raise IndexError("Touch input is unavailable while gameplay input is unfocused")
+        return Input._from_native_touch(_NativeInputManager.instance().get_touch(index))
 
     # ------------------------------------------------------------------
     # Utility

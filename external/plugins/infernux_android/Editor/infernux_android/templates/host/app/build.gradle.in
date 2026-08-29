@@ -1,0 +1,58 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.infernux.bootstrap"
+    compileSdk 36
+    ndkVersion "@ANDROID_NDK_VERSION@"
+
+    defaultConfig {
+        applicationId "com.infernux.bootstrap"
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName "0.1.0"
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+                abiFilters "@ANDROID_ABI@"
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    androidResources {
+        // AAPT's default contains <dir>_*, which silently removes Python
+        // packages such as numpy/_core and numpy/_utils from assets.
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs += ["@INFERNUX_SOURCE_ROOT@/external/SDL/android-project/app/src/main/java"]
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "@ANDROID_CMAKE_VERSION@"
+        }
+    }
+}

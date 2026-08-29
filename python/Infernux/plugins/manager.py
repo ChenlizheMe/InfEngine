@@ -32,6 +32,7 @@ from Infernux.engine.path_utils import (
     resolved_path,
 )
 from Infernux.engine.player_package_native import read_entry
+from Infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
 from Infernux.version import ENGINE_VERSION
 
 from .content import (
@@ -1399,7 +1400,12 @@ class PluginManager:
 
     def _project_python_executable(self) -> str:
         candidates = (
-            os.path.join(self.project_root, ".runtime", "python312", "python.exe"),
+            os.path.join(
+                self.project_root,
+                ".runtime",
+                PYTHON_RUNTIME_DIRECTORY,
+                "python.exe",
+            ),
             os.path.join(self.project_root, ".venv", "Scripts", "python.exe"),
             os.path.join(self.project_root, ".venv", "bin", "python"),
         )

@@ -196,6 +196,49 @@ def test_player_bootstrap_does_not_discover_project_requirements(monkeypatch):
     assert calls == ["manifest", "policy"]
 
 
+def test_player_bootstrap_accepts_platform_native_package_without_runtime_archive(
+    monkeypatch, tmp_path
+):
+    import json
+
+    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from Infernux.engine.player_service_graph import (
+        PLAYER_MANIFEST_SCHEMA,
+        PLAYER_MANIFEST_VERSION,
+        RuntimeFeatureSet,
+        RuntimeFlavor,
+        player_runtime_contract_sections,
+    )
+
+    flavor = RuntimeFlavor.PLAYER_DEBUG
+    contract = player_runtime_contract_sections(flavor, RuntimeFeatureSet())
+    document = {
+        "$schema": PLAYER_MANIFEST_SCHEMA,
+        "manifest_version": PLAYER_MANIFEST_VERSION,
+        "product": {
+            "layout": "platform_native_packages",
+            **contract["product"],
+            "entry_points": ["com.infernux.bootstrap/.InfernuxActivity"],
+            "single_entry_point": True,
+        },
+        "features": contract["features"],
+        "services": contract["services"],
+        "runtime_policy": contract["runtime_policy"],
+    }
+    (tmp_path / "Player.inxmanifest").write_text(
+        json.dumps(document), encoding="utf-8"
+    )
+    (tmp_path / "Content.inxpkg").write_bytes(b"content")
+    monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(tmp_path))
+    bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
+    bootstrap.project_path = str(tmp_path / "project")
+
+    bootstrap._validate_runtime_manifest()
+
+    assert bootstrap._runtime_package_root == str(tmp_path)
+    assert bootstrap._runtime_manifest.flavor is flavor
+
+
 def test_player_release_policy_rejects_debug_control_environment(monkeypatch, tmp_path):
     from Infernux.engine.player_bootstrap import PlayerBootstrap
 

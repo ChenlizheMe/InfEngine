@@ -1,0 +1,655 @@
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+#include <webgpu/webgpu_cpp.h>
+
+#include <function/renderer/rhi/RhiDescriptors.h>
+
+#include <core/threading/JobSystem.h>
+#include <function/renderer/FullscreenRenderer.h>
+#include <platform/input/InputManager.h>
+
+#include "InfernuxWebHostModule.h"
+#include "WebGpuRhiDevice.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <memory>
+#include <string_view>
+#include <unordered_map>
+
+#include <emscripten.h>
+#include <emscripten/html5.h>
+
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+PyMODINIT_FUNC PyInit__Infernux();
+#endif
+
+namespace
+{
+
+wgpu::Instance g_instance = wgpuCreateInstance(nullptr);
+wgpu::Adapter g_adapter;
+wgpu::Device g_device;
+wgpu::Queue g_queue;
+wgpu::Surface g_surface;
+std::unique_ptr<infernux::web::WebGpuRhiDevice> g_rhi;
+infernux::FullscreenRenderer g_fullscreenRenderer;
+infernux::FullscreenPipelineKey g_fullscreenPipelineKey;
+wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
+PyObject *g_tick = nullptr;
+PyObject *g_input = nullptr;
+uint32_t g_width = 1;
+uint32_t g_height = 1;
+double g_cssWidth = 1.0;
+double g_cssHeight = 1.0;
+std::array<double, 32> g_gamepadTimestamps{};
+std::unordered_map<long, std::pair<float, float>> g_touchPositions;
+
+int BrowserCodeToScancode(std::string_view code)
+{
+    if (code.size() == 4 && code.substr(0, 3) == "Key" && code[3] >= 'A' && code[3] <= 'Z')
+        return 4 + (code[3] - 'A');
+    if (code.size() == 6 && code.substr(0, 5) == "Digit" && code[5] >= '1' && code[5] <= '9')
+        return 30 + (code[5] - '1');
+    if (code == "Digit0")
+        return 39;
+    if (code == "Enter")
+        return 40;
+    if (code == "Escape")
+        return 41;
+    if (code == "Backspace")
+        return 42;
+    if (code == "Tab")
+        return 43;
+    if (code == "Space")
+        return 44;
+    if (code == "ArrowRight")
+        return 79;
+    if (code == "ArrowLeft")
+        return 80;
+    if (code == "ArrowDown")
+        return 81;
+    if (code == "ArrowUp")
+        return 82;
+    return -1;
+}
+
+int BrowserButtonToUnityButton(unsigned short button)
+{
+    switch (button) {
+    case 0:
+        return 0;
+    case 2:
+        return 1;
+    case 1:
+        return 2;
+    case 3:
+        return 3;
+    case 4:
+        return 4;
+    default:
+        return -1;
+    }
+}
+
+class WebFullscreenRendererHost final : public infernux::FullscreenRendererHost
+{
+  public:
+    explicit WebFullscreenRendererHost(infernux::web::WebGpuRhiDevice &device) : m_device(device)
+    {
+    }
+
+    [[nodiscard]] infernux::rhi::Device &GetRhiDevice() noexcept override
+    {
+        return m_device;
+    }
+
+    [[nodiscard]] uint32_t GetFrameCount() const noexcept override
+    {
+        return 1;
+    }
+
+    [[nodiscard]] uint32_t GetCurrentFrame() const noexcept override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] infernux::rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name,
+                                                                        infernux::rhi::ShaderStage stage) override
+    {
+        const char *stageName = nullptr;
+        if (stage == infernux::rhi::ShaderStage::Vertex)
+            stageName = "vertex";
+        else if (stage == infernux::rhi::ShaderStage::Fragment)
+            stageName = "fragment";
+        else if (stage == infernux::rhi::ShaderStage::Compute)
+            stageName = "compute";
+        if (stageName == nullptr)
+            return {};
+        std::string source;
+        if (!InfernuxWebFindShaderSource(name, stageName, source))
+            return {};
+        return m_device.CreateShaderModule(infernux::rhi::ShaderModuleDesc::FromWgsl(source.data(), source.size()));
+    }
+
+    [[nodiscard]] infernux::rhi::BindingLayoutHandle GetPerViewLayout() const noexcept override
+    {
+        return {};
+    }
+
+    [[nodiscard]] infernux::rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept override
+    {
+        return {};
+    }
+
+    [[nodiscard]] infernux::rhi::BindGroupHandle GetCurrentGlobalsGroup() override
+    {
+        return {};
+    }
+
+    void ReportError(const std::string &message) override
+    {
+        std::fprintf(stderr, "INFERNUX_WEB_RENDER_ERROR %s\n", message.c_str());
+    }
+
+    void ReportInfo(const std::string &message) override
+    {
+        std::printf("INFERNUX_WEB_RENDER_INFO %s\n", message.c_str());
+    }
+
+  private:
+    infernux::web::WebGpuRhiDevice &m_device;
+};
+
+void PrintPythonError(const char *context)
+{
+    std::fprintf(stderr, "INFERNUX_WEB_PYTHON_ERROR context=%s\n", context);
+    PyErr_Print();
+}
+
+bool VerifyPreloadedRuntime()
+{
+    static constexpr char pythonArchive[] = "/usr/local/lib/python313.zip";
+    std::FILE *stream = std::fopen(pythonArchive, "rb");
+    if (stream == nullptr) {
+        std::fprintf(stderr, "INFERNUX_WEB_PYTHON_ARCHIVE_MISSING path=%s\n", pythonArchive);
+        return false;
+    }
+    const int seekResult = std::fseek(stream, 0, SEEK_END);
+    const long byteSize = seekResult == 0 ? std::ftell(stream) : -1;
+    std::array<unsigned char, 4> signature{};
+    const bool hasSignature = std::fseek(stream, 0, SEEK_SET) == 0 &&
+                              std::fread(signature.data(), 1, signature.size(), stream) == signature.size();
+    std::fclose(stream);
+    const bool isZip =
+        hasSignature && signature[0] == 'P' && signature[1] == 'K' && signature[2] == 3 && signature[3] == 4;
+    if (byteSize <= 0 || !isZip) {
+        std::fprintf(stderr, "INFERNUX_WEB_PYTHON_ARCHIVE_INVALID bytes=%ld zip=%d\n", byteSize, isZip ? 1 : 0);
+        return false;
+    }
+    std::printf("INFERNUX_WEB_PYTHON_ARCHIVE_READY bytes=%ld\n", byteSize);
+    return true;
+}
+
+void SetDictString(PyObject *dictionary, const char *key, const char *value)
+{
+    PyObject *item = PyUnicode_FromString(value != nullptr ? value : "");
+    if (item != nullptr) {
+        PyDict_SetItemString(dictionary, key, item);
+        Py_DECREF(item);
+    }
+}
+
+void SetDictNumber(PyObject *dictionary, const char *key, double value)
+{
+    PyObject *item = PyFloat_FromDouble(value);
+    if (item != nullptr) {
+        PyDict_SetItemString(dictionary, key, item);
+        Py_DECREF(item);
+    }
+}
+
+void SetDictInteger(PyObject *dictionary, const char *key, long value)
+{
+    PyObject *item = PyLong_FromLong(value);
+    if (item != nullptr) {
+        PyDict_SetItemString(dictionary, key, item);
+        Py_DECREF(item);
+    }
+}
+
+void SetDictBool(PyObject *dictionary, const char *key, bool value)
+{
+    PyObject *item = PyBool_FromLong(value ? 1 : 0);
+    if (item != nullptr) {
+        PyDict_SetItemString(dictionary, key, item);
+        Py_DECREF(item);
+    }
+}
+
+void DispatchInput(const char *kind, PyObject *payload)
+{
+    if (g_input == nullptr || payload == nullptr)
+        return;
+    PyObject *result = PyObject_CallFunction(g_input, "sO", kind, payload);
+    if (result == nullptr)
+        PrintPythonError("input");
+    else
+        Py_DECREF(result);
+}
+
+void ResizeCanvas()
+{
+    double cssWidth = 0.0;
+    double cssHeight = 0.0;
+    emscripten_get_element_css_size("#canvas", &cssWidth, &cssHeight);
+    g_cssWidth = std::max(1.0, cssWidth);
+    g_cssHeight = std::max(1.0, cssHeight);
+    const double scale = std::max(1.0, emscripten_get_device_pixel_ratio());
+    g_width = std::max(1u, static_cast<uint32_t>(cssWidth * scale));
+    g_height = std::max(1u, static_cast<uint32_t>(cssHeight * scale));
+    emscripten_set_canvas_element_size("#canvas", g_width, g_height);
+
+    if (g_surface && g_device) {
+        wgpu::SurfaceConfiguration config;
+        config.device = g_device;
+        config.format = g_surfaceFormat;
+        config.usage = wgpu::TextureUsage::RenderAttachment;
+        config.width = g_width;
+        config.height = g_height;
+        config.alphaMode = wgpu::CompositeAlphaMode::Auto;
+        config.presentMode = wgpu::PresentMode::Fifo;
+        g_surface.Configure(&config);
+    }
+
+    PyObject *payload = PyDict_New();
+    SetDictInteger(payload, "width", g_width);
+    SetDictInteger(payload, "height", g_height);
+    SetDictNumber(payload, "pixel_ratio", scale);
+    DispatchInput("viewport", payload);
+    Py_XDECREF(payload);
+}
+
+EM_BOOL OnResize(int, const EmscriptenUiEvent *, void *)
+{
+    ResizeCanvas();
+    return EM_TRUE;
+}
+
+EM_BOOL OnFocus(int eventType, const EmscriptenFocusEvent *, void *)
+{
+    infernux::InputManager::Instance().ProcessFocusEvent(eventType == EMSCRIPTEN_EVENT_FOCUS);
+    PyObject *payload = PyDict_New();
+    SetDictBool(payload, "focused", eventType == EMSCRIPTEN_EVENT_FOCUS);
+    DispatchInput(eventType == EMSCRIPTEN_EVENT_FOCUS ? "focus" : "blur", payload);
+    Py_DECREF(payload);
+    return EM_FALSE;
+}
+
+EM_BOOL OnVisibility(int, const EmscriptenVisibilityChangeEvent *event, void *)
+{
+    if (event->hidden)
+        infernux::InputManager::Instance().ProcessFocusEvent(false);
+    PyObject *payload = PyDict_New();
+    SetDictBool(payload, "hidden", event->hidden != 0);
+    SetDictInteger(payload, "state", event->visibilityState);
+    DispatchInput("visibility", payload);
+    Py_DECREF(payload);
+    return EM_FALSE;
+}
+
+EM_BOOL OnKey(int eventType, const EmscriptenKeyboardEvent *event, void *)
+{
+    infernux::InputManager::Instance().ProcessKeyEvent(BrowserCodeToScancode(event->code),
+                                                       eventType == EMSCRIPTEN_EVENT_KEYDOWN);
+    PyObject *payload = PyDict_New();
+    SetDictString(payload, "key", event->key);
+    SetDictString(payload, "code", event->code);
+    SetDictBool(payload, "repeat", event->repeat != 0);
+    SetDictBool(payload, "ctrl", event->ctrlKey != 0);
+    SetDictBool(payload, "shift", event->shiftKey != 0);
+    SetDictBool(payload, "alt", event->altKey != 0);
+    SetDictBool(payload, "meta", event->metaKey != 0);
+    DispatchInput(eventType == EMSCRIPTEN_EVENT_KEYDOWN ? "key_down" : "key_up", payload);
+    Py_XDECREF(payload);
+    return EM_TRUE;
+}
+
+EM_BOOL OnMouse(int eventType, const EmscriptenMouseEvent *event, void *)
+{
+    auto &input = infernux::InputManager::Instance();
+    input.ProcessPointerMotionEvent(static_cast<float>(event->targetX), static_cast<float>(event->targetY),
+                                    static_cast<float>(event->movementX), static_cast<float>(event->movementY));
+    if (eventType == EMSCRIPTEN_EVENT_MOUSEDOWN || eventType == EMSCRIPTEN_EVENT_MOUSEUP) {
+        input.ProcessPointerButtonEvent(BrowserButtonToUnityButton(event->button),
+                                        eventType == EMSCRIPTEN_EVENT_MOUSEDOWN);
+    }
+    PyObject *payload = PyDict_New();
+    SetDictInteger(payload, "x", event->targetX);
+    SetDictInteger(payload, "y", event->targetY);
+    SetDictInteger(payload, "movement_x", event->movementX);
+    SetDictInteger(payload, "movement_y", event->movementY);
+    SetDictInteger(payload, "button", event->button);
+    SetDictInteger(payload, "buttons", event->buttons);
+    const char *kind = "pointer_move";
+    if (eventType == EMSCRIPTEN_EVENT_MOUSEDOWN)
+        kind = "pointer_down";
+    else if (eventType == EMSCRIPTEN_EVENT_MOUSEUP)
+        kind = "pointer_up";
+    DispatchInput(kind, payload);
+    Py_XDECREF(payload);
+    return EM_TRUE;
+}
+
+EM_BOOL OnWheel(int, const EmscriptenWheelEvent *event, void *)
+{
+    infernux::InputManager::Instance().ProcessScrollEvent(static_cast<float>(event->deltaX),
+                                                          static_cast<float>(-event->deltaY));
+    PyObject *payload = PyDict_New();
+    SetDictNumber(payload, "delta_x", event->deltaX);
+    SetDictNumber(payload, "delta_y", event->deltaY);
+    SetDictInteger(payload, "delta_mode", event->deltaMode);
+    DispatchInput("wheel", payload);
+    Py_XDECREF(payload);
+    return EM_TRUE;
+}
+
+EM_BOOL OnTouch(int eventType, const EmscriptenTouchEvent *event, void *)
+{
+    auto &input = infernux::InputManager::Instance();
+    infernux::TouchPhase phase = infernux::TouchPhase::Moved;
+    if (eventType == EMSCRIPTEN_EVENT_TOUCHSTART)
+        phase = infernux::TouchPhase::Began;
+    else if (eventType == EMSCRIPTEN_EVENT_TOUCHEND)
+        phase = infernux::TouchPhase::Ended;
+    else if (eventType == EMSCRIPTEN_EVENT_TOUCHCANCEL)
+        phase = infernux::TouchPhase::Canceled;
+    PyObject *points = PyList_New(0);
+    for (int index = 0; index < event->numTouches; ++index) {
+        const EmscriptenTouchPoint &point = event->touches[index];
+        if (point.isChanged) {
+            const float x = static_cast<float>(point.targetX / g_cssWidth);
+            const float y = static_cast<float>(point.targetY / g_cssHeight);
+            const auto previous = g_touchPositions.find(point.identifier);
+            const float deltaX = previous == g_touchPositions.end() ? 0.0f : x - previous->second.first;
+            const float deltaY = previous == g_touchPositions.end() ? 0.0f : y - previous->second.second;
+            input.ProcessTouchEvent(0, static_cast<uint64_t>(point.identifier),
+                                    static_cast<uint64_t>(emscripten_get_now() * 1000000.0), 0, x, y, deltaX, deltaY,
+                                    1.0f, phase);
+            if (phase == infernux::TouchPhase::Ended || phase == infernux::TouchPhase::Canceled)
+                g_touchPositions.erase(point.identifier);
+            else
+                g_touchPositions[point.identifier] = {x, y};
+        }
+        PyObject *entry = PyDict_New();
+        SetDictInteger(entry, "id", point.identifier);
+        SetDictInteger(entry, "x", point.targetX);
+        SetDictInteger(entry, "y", point.targetY);
+        SetDictBool(entry, "changed", point.isChanged != 0);
+        PyList_Append(points, entry);
+        Py_DECREF(entry);
+    }
+    PyObject *payload = PyDict_New();
+    PyDict_SetItemString(payload, "points", points);
+    Py_DECREF(points);
+    const char *kind = "touch_move";
+    if (eventType == EMSCRIPTEN_EVENT_TOUCHSTART)
+        kind = "touch_start";
+    else if (eventType == EMSCRIPTEN_EVENT_TOUCHEND)
+        kind = "touch_end";
+    else if (eventType == EMSCRIPTEN_EVENT_TOUCHCANCEL)
+        kind = "touch_cancel";
+    DispatchInput(kind, payload);
+    Py_DECREF(payload);
+    return EM_TRUE;
+}
+
+void PollGamepads()
+{
+    if (emscripten_sample_gamepad_data() != EMSCRIPTEN_RESULT_SUCCESS)
+        return;
+    const int count = std::min(emscripten_get_num_gamepads(), static_cast<int>(g_gamepadTimestamps.size()));
+    for (int index = 0; index < count; ++index) {
+        EmscriptenGamepadEvent event{};
+        if (emscripten_get_gamepad_status(index, &event) != EMSCRIPTEN_RESULT_SUCCESS || !event.connected)
+            continue;
+        if (event.timestamp == g_gamepadTimestamps[static_cast<size_t>(index)])
+            continue;
+        g_gamepadTimestamps[static_cast<size_t>(index)] = event.timestamp;
+
+        PyObject *payload = PyDict_New();
+        SetDictInteger(payload, "index", event.index);
+        SetDictString(payload, "id", event.id);
+        SetDictString(payload, "mapping", event.mapping);
+        PyObject *axes = PyList_New(event.numAxes);
+        for (int axis = 0; axis < event.numAxes; ++axis)
+            PyList_SetItem(axes, axis, PyFloat_FromDouble(event.axis[axis]));
+        PyObject *buttons = PyList_New(event.numButtons);
+        for (int button = 0; button < event.numButtons; ++button) {
+            PyObject *state = PyDict_New();
+            SetDictNumber(state, "value", event.analogButton[button]);
+            SetDictBool(state, "pressed", event.digitalButton[button] != 0);
+            PyList_SetItem(buttons, button, state);
+        }
+        PyDict_SetItemString(payload, "axes", axes);
+        PyDict_SetItemString(payload, "buttons", buttons);
+        Py_DECREF(axes);
+        Py_DECREF(buttons);
+        DispatchInput("gamepad", payload);
+        Py_DECREF(payload);
+    }
+}
+
+infernux::rhi::PixelFormat ToRhiFormat(wgpu::TextureFormat format)
+{
+    switch (format) {
+    case wgpu::TextureFormat::RGBA8Unorm:
+        return infernux::rhi::PixelFormat::RGBA8UNorm;
+    case wgpu::TextureFormat::RGBA8UnormSrgb:
+        return infernux::rhi::PixelFormat::RGBA8Srgb;
+    case wgpu::TextureFormat::BGRA8Unorm:
+        return infernux::rhi::PixelFormat::BGRA8UNorm;
+    case wgpu::TextureFormat::BGRA8UnormSrgb:
+        return infernux::rhi::PixelFormat::BGRA8Srgb;
+    default:
+        return infernux::rhi::PixelFormat::Undefined;
+    }
+}
+
+bool CreateRhiPipeline()
+{
+    const auto format = ToRhiFormat(g_surfaceFormat);
+    if (format == infernux::rhi::PixelFormat::Undefined)
+        return false;
+
+    g_rhi = std::make_unique<infernux::web::WebGpuRhiDevice>(g_device, g_queue);
+    g_fullscreenRenderer.Initialize(std::make_shared<WebFullscreenRendererHost>(*g_rhi));
+    g_fullscreenPipelineKey.shaderName = "Web Host";
+    g_fullscreenPipelineKey.colorFormat = format;
+    g_fullscreenPipelineKey.useDynamicRendering = true;
+    return g_fullscreenRenderer.EnsurePipeline(g_fullscreenPipelineKey).pipeline.IsValid();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebTextInput(const char *text)
+{
+    infernux::InputManager::Instance().ProcessTextInputEvent(text != nullptr ? text : "");
+    PyObject *payload = PyDict_New();
+    SetDictString(payload, "text", text);
+    DispatchInput("text_input", payload);
+    Py_DECREF(payload);
+}
+
+bool InitializePython()
+{
+    if (!VerifyPreloadedRuntime())
+        return false;
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (!infernux::JobSystem::IsAvailable())
+        infernux::JobSystem::InitializeInline();
+#endif
+    if (PyImport_AppendInittab("_InfernuxWebHost", &PyInit__InfernuxWebHost) == -1) {
+        std::fprintf(stderr, "INFERNUX_WEB_HOST_MODULE_REGISTRATION_FAILED\n");
+        return false;
+    }
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (PyImport_AppendInittab("_Infernux", &PyInit__Infernux) == -1) {
+        std::fprintf(stderr, "INFERNUX_WEB_NATIVE_MODULE_REGISTRATION_FAILED\n");
+        return false;
+    }
+#endif
+    Py_Initialize();
+    if (!Py_IsInitialized())
+        return false;
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (PyRun_SimpleString("import _Infernux\n"
+                           "assert _Infernux.__runtime_profile__ == 'web-player'\n"
+                           "print('INFERNUX_WEB_NATIVE_MODULE_READY profile=web-player')") != 0) {
+        PrintPythonError("native-module");
+        return false;
+    }
+#endif
+    if (PyRun_SimpleString("exec(open('/infernux/bootstrap.py', encoding='utf-8').read(), globals())") != 0) {
+        PrintPythonError("bootstrap");
+        return false;
+    }
+    PyObject *mainModule = PyImport_AddModule("__main__");
+    g_tick = PyObject_GetAttrString(mainModule, "infernux_web_tick");
+    g_input = PyObject_GetAttrString(mainModule, "infernux_web_input");
+    return g_tick != nullptr && PyCallable_Check(g_tick) && g_input != nullptr && PyCallable_Check(g_input);
+}
+
+void Frame()
+{
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (infernux::JobSystem::IsAvailable())
+        infernux::JobSystem::Get().RunPendingJobs(64);
+#endif
+    PollGamepads();
+    wgpu::SurfaceTexture surfaceTexture;
+    g_surface.GetCurrentTexture(&surfaceTexture);
+    if (surfaceTexture.texture) {
+        wgpu::TextureView view = surfaceTexture.texture.CreateView();
+        wgpu::RenderPassColorAttachment colorAttachment;
+        colorAttachment.view = view;
+        colorAttachment.loadOp = wgpu::LoadOp::Clear;
+        colorAttachment.storeOp = wgpu::StoreOp::Store;
+        colorAttachment.clearValue = {0.015, 0.035, 0.065, 1.0};
+        wgpu::RenderPassDescriptor passDescriptor;
+        passDescriptor.colorAttachmentCount = 1;
+        passDescriptor.colorAttachments = &colorAttachment;
+        wgpu::CommandEncoder encoder = g_device.CreateCommandEncoder();
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDescriptor);
+        if (g_rhi) {
+            infernux::web::WebGpuGraphicsCommandContext context;
+            auto commands = g_rhi->MakeGraphicsCommandEncoder(context, pass);
+            const auto &pipeline = g_fullscreenRenderer.EnsurePipeline(g_fullscreenPipelineKey);
+            infernux::FullscreenPushConstants pushConstants;
+            g_fullscreenRenderer.Draw(commands, pipeline, {}, {}, pushConstants, sizeof(pushConstants));
+        }
+        pass.End();
+        wgpu::CommandBuffer commands = encoder.Finish();
+        g_queue.Submit(1, &commands);
+    }
+    if (g_tick != nullptr) {
+        PyObject *result = PyObject_CallNoArgs(g_tick);
+        if (result == nullptr)
+            PrintPythonError("frame");
+        else
+            Py_DECREF(result);
+    }
+    infernux::InputManager::Instance().BeginFrame();
+}
+
+void StartSurface()
+{
+    g_queue = g_device.GetQueue();
+    wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasSource;
+    canvasSource.selector = "#canvas";
+    wgpu::SurfaceDescriptor surfaceDescriptor;
+    surfaceDescriptor.nextInChain = &canvasSource;
+    g_surface = g_instance.CreateSurface(&surfaceDescriptor);
+
+    wgpu::SurfaceCapabilities capabilities;
+    g_surface.GetCapabilities(g_adapter, &capabilities);
+    if (capabilities.formatCount == 0) {
+        std::fprintf(stderr, "INFERNUX_WEBGPU_NO_SURFACE_FORMAT\n");
+        return;
+    }
+    g_surfaceFormat = capabilities.formats[0];
+    if (!CreateRhiPipeline()) {
+        std::fprintf(stderr, "INFERNUX_WEBGPU_RHI_PIPELINE_FAILED %s\n",
+                     g_rhi ? g_rhi->LastError().c_str() : "unsupported surface format");
+        return;
+    }
+    std::printf("INFERNUX_WEBGPU_FULLSCREEN_RHI_READY\n");
+    ResizeCanvas();
+    emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false, OnResize);
+    emscripten_set_focus_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, OnFocus);
+    emscripten_set_blur_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, OnFocus);
+    emscripten_set_visibilitychange_callback(nullptr, true, OnVisibility);
+    emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, OnKey);
+    emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, OnKey);
+    emscripten_set_mousedown_callback("#canvas", nullptr, true, OnMouse);
+    emscripten_set_mouseup_callback("#canvas", nullptr, true, OnMouse);
+    emscripten_set_mousemove_callback("#canvas", nullptr, true, OnMouse);
+    emscripten_set_wheel_callback("#canvas", nullptr, true, OnWheel);
+    emscripten_set_touchstart_callback("#canvas", nullptr, true, OnTouch);
+    emscripten_set_touchend_callback("#canvas", nullptr, true, OnTouch);
+    emscripten_set_touchmove_callback("#canvas", nullptr, true, OnTouch);
+    emscripten_set_touchcancel_callback("#canvas", nullptr, true, OnTouch);
+    PyObject *details = PyDict_New();
+    SetDictString(details, "graphics_api", "webgpu");
+    SetDictInteger(details, "width", g_width);
+    SetDictInteger(details, "height", g_height);
+    PyObject *mainModule = PyImport_AddModule("__main__");
+    PyObject *ready = PyObject_GetAttrString(mainModule, "infernux_web_ready");
+    if (ready != nullptr) {
+        PyObject *result = PyObject_CallOneArg(ready, details);
+        if (result == nullptr)
+            PrintPythonError("ready");
+        else
+            Py_DECREF(result);
+        Py_DECREF(ready);
+    }
+    Py_DECREF(details);
+
+    std::printf("INFERNUX_WEBGPU_DEVICE_READY format=%d\n", static_cast<int>(g_surfaceFormat));
+    infernux::InputManager::Instance().BeginFrame();
+    emscripten_set_main_loop(Frame, 0, false);
+}
+
+} // namespace
+
+int main()
+{
+    std::printf("INFERNUX_WEB_PLAYER_START\n");
+    if (!InitializePython()) {
+        std::fprintf(stderr, "INFERNUX_WEB_PYTHON_INITIALIZATION_FAILED\n");
+        return 1;
+    }
+    g_instance.RequestAdapter(
+        nullptr, wgpu::CallbackMode::AllowSpontaneous,
+        [](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message) {
+            if (status != wgpu::RequestAdapterStatus::Success) {
+                std::fprintf(stderr, "INFERNUX_WEBGPU_ADAPTER_FAILED %.*s\n", static_cast<int>(message.length),
+                             message.data);
+                return;
+            }
+            g_adapter = adapter;
+            wgpu::DeviceDescriptor descriptor;
+            g_adapter.RequestDevice(
+                &descriptor, wgpu::CallbackMode::AllowSpontaneous,
+                [](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message) {
+                    if (status != wgpu::RequestDeviceStatus::Success) {
+                        std::fprintf(stderr, "INFERNUX_WEBGPU_DEVICE_FAILED %.*s\n", static_cast<int>(message.length),
+                                     message.data);
+                        return;
+                    }
+                    g_device = device;
+                    StartSurface();
+                });
+        });
+    return 0;
+}

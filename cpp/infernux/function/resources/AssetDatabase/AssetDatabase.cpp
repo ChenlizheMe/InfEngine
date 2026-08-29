@@ -2062,18 +2062,39 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
 
     if (result.resourceType == ResourceType::Script) {
         // Python owns script parsing, dependency analysis, and live class
-        // publication. Rebuilding native script metadata here reparsed the
-        // same source with several std::regex passes on the render thread,
-        // even though a source edit cannot change this asset's identity or
-        // catalog position. Keep the source fingerprint authoritative and let
-        // explicit/full refreshes materialize the derived sidecar fields.
-        //
-        // ScriptDependencyGraph also owns Python-to-Python propagation. A
-        // second AssetDependencyGraph notification duplicated that traversal
-        // and could synchronously wake unrelated runtime callbacks before the
-        // validated script transaction was ready to publish.
+        // publication, so native reimport must not invoke ScriptImporter or
+        // publish a second dependency event. It still has to rebuild the
+        // lightweight source metadata: keeping only size/mtime current while
+        // retaining an old content_hash produces an internally inconsistent
+        // AssetIndex and makes strict Player cooks reject the edited script.
+        const auto previousMeta = GetMetaByGuid(guid);
+        if (!previousMeta)
+            throw std::logic_error("Registered script has no metadata snapshot");
+        const auto restoreMetadata = [&]() {
+            m_metas[guid] = std::make_shared<InxResourceMeta>(*previousMeta);
+            const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
+            if (!previousMeta->SaveToFile(metaPath))
+                throw std::runtime_error("Failed to restore script metadata after reimport failure: " + metaPath);
+        };
+        std::string rebuiltGuid;
+        try {
+            rebuiltGuid = RebuildMetadata(path);
+        } catch (...) {
+            restoreMetadata();
+            throw;
+        }
+        if (rebuiltGuid.empty() || rebuiltGuid != guid) {
+            if (!rebuiltGuid.empty() && rebuiltGuid != guid)
+                m_metas.erase(rebuiltGuid);
+            restoreMetadata();
+            result.errorCode = AssetMutationErrorCode::ImportFailed;
+            result.error = "script metadata rebuild did not preserve the registered GUID";
+            return result;
+        }
+        UpdateMapping(guid, path);
         UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
         m_assetIndexDirty = true;
+        PublishQuerySnapshotForPaths({path});
         result.succeeded = true;
         result.databaseCommitted = true;
         result.changed = true;

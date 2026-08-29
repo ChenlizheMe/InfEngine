@@ -50,14 +50,15 @@ struct MeshVertexInputState
     VkPipelineVertexInputStateCreateInfo createInfo{};
 
     MeshVertexInputState()
-        : bindingDesc(Vertex::getBindingDescription()),
+        : bindingDesc(vk::GetVertexBindingDescription()),
           attrDescs(FilterVertexAttributesForReflection(ShaderReflection{}))
     {
         initCreateInfo();
     }
 
     explicit MeshVertexInputState(const ShaderReflection &vertexReflection)
-        : bindingDesc(Vertex::getBindingDescription()), attrDescs(FilterVertexAttributesForReflection(vertexReflection))
+        : bindingDesc(vk::GetVertexBindingDescription()),
+          attrDescs(FilterVertexAttributesForReflection(vertexReflection))
     {
         initCreateInfo();
     }

@@ -177,8 +177,15 @@ class PlayerBootstrap:
         product = manifest.get("product", {})
         if product.get("single_entry_point") is not True:
             raise RuntimeError("Player package must have exactly one executable entry point")
+        layout = str(product.get("layout", ""))
+        required_artifacts = {
+            "single_executable_native_packages": ("Runtime.inxrt", "Content.inxpkg"),
+            "platform_native_packages": ("Content.inxpkg",),
+        }.get(layout)
+        if required_artifacts is None:
+            raise RuntimeError(f"Player package layout is unsupported: {layout or '<missing>'}")
         required_root = data_root or os.path.dirname(manifest_path)
-        for artifact in ("Runtime.inxrt", "Content.inxpkg"):
+        for artifact in required_artifacts:
             if not os.path.isfile(os.path.join(required_root, artifact)):
                 raise RuntimeError(f"Player package artifact is missing: {artifact}")
 

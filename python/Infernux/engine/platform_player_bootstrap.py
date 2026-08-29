@@ -1,0 +1,182 @@
+"""Bootstrap a cooked Player inside a platform-owned Python/native host."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.player_package_native import extract_pack, read_manifest
+
+
+_PACKAGE_INDEX_HEADER = "INFERNUX_PLAYER_PACKAGE_INDEX_V1"
+_CONTENT_ROOTS = {
+    "Assets",
+    "Branding",
+    "Infernux",
+    "Library",
+    "Packages",
+    "ProjectSettings",
+    "Splash",
+    "_script_guid_map.json",
+}
+
+
+def _package_index(data_root: Path) -> dict[str, tuple[str, int]]:
+    index_path = data_root / "PackageIndex.inxmanifest"
+    records: dict[str, tuple[str, int]] = {}
+    try:
+        lines = index_path.read_text(encoding="ascii").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"Player package index is unreadable: {index_path}") from exc
+    if not lines or lines[0] != _PACKAGE_INDEX_HEADER:
+        raise RuntimeError("Player package index uses an unsupported format")
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) != 3:
+            raise RuntimeError("Player package index contains an invalid record")
+        kind, digest, raw_size = parts
+        if (
+            kind not in {"runtime", "content", "parallel"}
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise RuntimeError("Player package index contains an invalid identity")
+        try:
+            archive_size = int(raw_size)
+        except ValueError as exc:
+            raise RuntimeError("Player package index contains an invalid size") from exc
+        if archive_size < 0 or kind in records:
+            raise RuntimeError("Player package index contains an invalid record")
+        records[kind] = (digest, archive_size)
+    return records
+
+
+def _content_cache(data_root: Path, cache_root: Path) -> Path:
+    records = _package_index(data_root)
+    expected = records.get("content")
+    if expected is None:
+        raise RuntimeError("Player package index does not declare Content.inxpkg")
+    expected_hash, expected_size = expected
+    archive = data_root / "Content.inxpkg"
+    try:
+        archive_size = archive.stat().st_size
+    except OSError as exc:
+        raise RuntimeError(f"Player content package is missing: {archive}") from exc
+    if archive_size != expected_size:
+        raise RuntimeError("Player content package size disagrees with its package index")
+
+    manifest = read_manifest(archive)
+    if (
+        str(manifest.get("archive_sha256", "")).casefold() != expected_hash
+        or int(manifest.get("archive_bytes", -1)) != expected_size
+    ):
+        raise RuntimeError("Player content package identity disagrees with its package index")
+
+    os.environ["_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256"] = expected_hash
+    os.environ["_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES"] = str(expected_size)
+    destination = cache_root / f"content-{expected_hash[:24]}"
+    ready = destination / ".ready"
+    try:
+        if ready.read_text(encoding="ascii").strip() == expected_hash:
+            return destination
+    except OSError:
+        pass
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}-",
+            dir=cache_root,
+        )
+    )
+    try:
+        extracted = extract_pack(
+            archive,
+            temporary,
+            allowed_roots=_CONTENT_ROOTS,
+        )
+        if (
+            str(extracted.get("archive_sha256", "")).casefold() != expected_hash
+            or int(extracted.get("archive_bytes", -1)) != expected_size
+        ):
+            raise RuntimeError("Extracted Player content identity changed unexpectedly")
+        ready_path = temporary / ".ready"
+        ready_path.write_text(expected_hash + "\n", encoding="ascii", newline="\n")
+        if destination.exists():
+            shutil.rmtree(destination)
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+    return destination
+
+
+def prepare_platform_player(package_root: str, cache_root: str) -> str:
+    """Validate/extract a platform package and return its cooked project root."""
+
+    package = Path(resolved_path(package_root))
+    cache = Path(resolved_path(cache_root))
+    if not package.is_dir():
+        raise RuntimeError(f"Platform Player package root is missing: {package}")
+    if not (package / "Player.inxmanifest").is_file():
+        candidates = sorted(
+            child
+            for child in package.iterdir()
+            if child.is_dir() and (child / "Player.inxmanifest").is_file()
+        )
+        if len(candidates) != 1:
+            raise RuntimeError(
+                "Platform Player asset root must contain exactly one cooked Data directory"
+            )
+        package = candidates[0]
+    manifest_path = package / "Player.inxmanifest"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        flavor = manifest["product"]["flavor"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError("Platform Player runtime manifest is unreadable") from exc
+    if flavor not in {"PlayerDebug", "PlayerRelease"}:
+        raise RuntimeError("Platform Player runtime manifest has an invalid flavor")
+    project_root = _content_cache(package, cache)
+    build_manifest = package / "BuildManifest.json"
+    if not build_manifest.is_file():
+        raise RuntimeError("Platform Player package has no BuildManifest.json")
+    target_manifest = project_root / "BuildManifest.json"
+    payload = build_manifest.read_bytes()
+    if not target_manifest.is_file() or hashlib.sha256(
+        target_manifest.read_bytes()
+    ).digest() != hashlib.sha256(payload).digest():
+        temporary = target_manifest.with_name(target_manifest.name + ".tmp")
+        temporary.write_bytes(payload)
+        os.replace(temporary, target_manifest)
+
+    os.environ["_INFERNUX_PLAYER_MODE"] = "1"
+    os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = str(package)
+    os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = (
+        "1" if flavor == "PlayerDebug" else "0"
+    )
+    log_directory = cache / "Logs"
+    log_directory.mkdir(parents=True, exist_ok=True)
+    os.environ["_INFERNUX_PLAYER_LOG"] = str(log_directory / "player.log")
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
+    return str(project_root)
+
+
+def run_platform_player(package_root: str, cache_root: str) -> None:
+    """Enter the shared standalone Player from a platform-native host."""
+
+    project_root = prepare_platform_player(package_root, cache_root)
+    from Infernux.engine import run_player
+    from Infernux.lib import LogLevel
+
+    run_player(project_root, engine_log_level=LogLevel.Debug)
+
+
+__all__ = ["prepare_platform_player", "run_platform_player"]

@@ -13,7 +13,7 @@ Output layout::
 
     <OutputDir>/
         <GameName>.exe          ← Nuitka-compiled native executable
-        python312.dll           ← CPython runtime (required by Nuitka)
+        python313.dll           ← CPython runtime (required by Nuitka)
         SDL3.dll, imgui.dll … ← engine native DLLs (also in Infernux/lib/)
         Infernux/              ← engine package
             lib/

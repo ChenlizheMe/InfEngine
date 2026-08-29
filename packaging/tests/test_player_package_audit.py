@@ -467,11 +467,11 @@ def _valid_player(tmp_path: Path) -> Path:
     (root / "Balance.exe").write_bytes(player_exe)
     bootstrap_sources = []
     for name, payload in (
-        ("python312.dll", b"python"),
+        ("python313.dll", b"python"),
         ("_ctypes.pyd", b"ctypes ABI"),
         ("ffi.dll", b"libffi ABI"),
         ("_InfernuxBootstrap.pyd", b"bootstrap"),
-        ("_InfernuxPlayer.cp312-win_amd64.pyd", b"player module"),
+        ("_InfernuxPlayer.cp313-win_amd64.pyd", b"player module"),
         ("Infernux/lib/InfernuxFoundation.dll", b"foundation"),
         ("stdlib/encodings/__init__.pyc", b"encodings package"),
         ("stdlib/encodings/aliases.pyc", b"encoding aliases"),
@@ -543,6 +543,20 @@ def _valid_player(tmp_path: Path) -> Path:
             ("Library/RuntimeAssetRecords.json", asset_records),
         ),
         data / "Content.inxpkg",
+    )
+    package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX_V1"]
+    for kind, package_name in (
+        ("runtime", "Runtime.inxrt"),
+        ("content", "Content.inxpkg"),
+    ):
+        package_path = data / package_name
+        package_index_lines.append(
+            f"{kind}\t{hashlib.sha256(package_path.read_bytes()).hexdigest()}\t"
+            f"{package_path.stat().st_size}"
+        )
+    (data / "PackageIndex.inxmanifest").write_text(
+        "\n".join(package_index_lines) + "\n",
+        encoding="ascii",
     )
     _write_catalog(root)
     return root

@@ -1,0 +1,12 @@
+{
+  "reference": "infernux/platform-web",
+  "name": "Infernux Web Platform",
+  "version": "0.1.0",
+  "intro": "Build Infernux games for browsers with WebGPU.",
+  "intros": {
+    "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
+  },
+  "engine": ">=0.4.0,<0.5",
+  "dependencies": []
+}
+

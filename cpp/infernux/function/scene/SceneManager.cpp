@@ -1,7 +1,9 @@
 // Jolt types hidden behind opaque headers — no Jolt include needed
 #include "SceneManager.h"
 #include "Collider.h"
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include "EditorCameraController.h"
+#endif
 #include "GameObject.h"
 #include "Light.h"
 #include "MeshCollider.h"
@@ -12,9 +14,14 @@
 #include "TransformECSStore.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
-#include <InxLog.h>
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+#include <SDL3/SDL.h>
+#endif
 #include <algorithm>
+#include <core/log/InxLog.h>
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include <function/audio/AudioEngine.h>
+#endif
 #include <platform/input/InputManager.h>
 
 namespace
@@ -32,6 +39,7 @@ namespace infernux
 
 namespace
 {
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaTime)
 {
     InputManager &input = InputManager::Instance();
@@ -84,6 +92,7 @@ void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaT
 
     controller.Update(std::max(deltaTime, 0.0f));
 }
+#endif
 } // namespace
 
 SceneManager &SceneManager::Instance()
@@ -116,11 +125,13 @@ SceneManager::SceneManager()
         }
     });
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Create editor camera
     m_editorCameraObject = std::make_unique<GameObject>("Editor Camera");
     m_editorCameraComponent = m_editorCameraObject->AddComponent<Camera>();
     m_editorCamera.SetCamera(m_editorCameraComponent);
     m_editorCamera.Reset(); // Set default position
+#endif
 }
 
 uint64_t SceneManager::GetGlobalTransformSerial() const
@@ -238,11 +249,13 @@ void SceneManager::Shutdown()
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Destroy the editor camera object (its Camera component must leave the
     // component registry before any later teardown step).
     m_editorCamera.SetCamera(nullptr);
     m_editorCameraComponent = nullptr;
     m_editorCameraObject.reset();
+#endif
 
     // Drop callbacks so nothing external fires into a dead engine.
     m_onSceneLoaded = nullptr;
@@ -378,9 +391,13 @@ void SceneManager::Update(float deltaTime)
 {
     m_lastFrameProfile = {};
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     auto t0 = ProfileClock::now();
     UpdateCapturedEditorCamera(m_editorCamera, deltaTime);
     m_lastFrameProfile.editorCameraMs += ProfileMsSince(t0);
+#else
+    auto t0 = ProfileClock::now();
+#endif
 
     if (!m_isPlaying && m_activeScene) {
         const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
@@ -485,10 +502,14 @@ void SceneManager::LateUpdate(float deltaTime)
         m_lastFrameProfile.lateUpdateMs += ProfileMsSince(t0);
     }
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Update spatial audio (runs even when paused so listener position stays synced)
     auto t0 = ProfileClock::now();
     AudioEngine::Instance().Update(deltaTime);
     m_lastFrameProfile.audioMs += ProfileMsSince(t0);
+#else
+    (void)deltaTime;
+#endif
 }
 
 void SceneManager::EndFrame()
@@ -523,7 +544,9 @@ void SceneManager::Play()
 
     m_isPlaying = true;
     m_isPaused = false;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
+#endif
 
     // Notify renderer to exit idle mode immediately.
     if (m_onPlayStateChanged)
@@ -589,7 +612,9 @@ void SceneManager::Stop()
 {
     m_isPlaying = false;
     m_isPaused = false;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
+#endif
     m_fixedTimeAccumulator = 0.0f;
     m_fixedTime = 0.0;
     m_fixedUnscaledTime = 0.0;
@@ -611,10 +636,12 @@ void SceneManager::Stop()
 void SceneManager::Pause()
 {
     m_isPaused = !m_isPaused;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     if (m_isPaused)
         AudioEngine::Instance().PauseAll();
     else
         AudioEngine::Instance().ResumeAll();
+#endif
 }
 
 void SceneManager::Step(float deltaTime)

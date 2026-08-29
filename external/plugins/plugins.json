@@ -6,6 +6,16 @@
       "path": "infernux_mcp",
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
       "default": true
+    },
+    {
+      "path": "infernux_android",
+      "repository": "",
+      "default": false
+    },
+    {
+      "path": "infernux_web",
+      "repository": "",
+      "default": false
     }
   ]
 }

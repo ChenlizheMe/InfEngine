@@ -8,16 +8,21 @@
  *   SDL_EVENT_MOUSE_MOTION
  *   SDL_EVENT_MOUSE_WHEEL
  *   SDL_EVENT_TEXT_INPUT
- *   SDL_EVENT_FINGER_DOWN / SDL_EVENT_FINGER_UP
- *   SDL_EVENT_WINDOW_FOCUS_LOST
+ *   SDL_EVENT_FINGER_DOWN / SDL_EVENT_FINGER_MOTION /
+ *   SDL_EVENT_FINGER_UP / SDL_EVENT_FINGER_CANCELED
+ *
+ * SDL_EVENT_WINDOW_FOCUS_LOST
  */
 
 #include "InputManager.h"
+
+#include <SDL3/SDL.h>
 
 #include <algorithm>
 #include <cctype>
 #include <core/log/InxLog.h>
 #include <cstring>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -163,7 +168,16 @@ void InputManager::BeginFrame()
     m_scrollX = 0.f;
     m_scrollY = 0.f;
     m_inputString.clear();
-    m_touchCount = 0;
+    m_touches.erase(std::remove_if(m_touches.begin(), m_touches.end(),
+                                   [](const TouchState &touch) {
+                                       return touch.phase == TouchPhase::Ended || touch.phase == TouchPhase::Canceled;
+                                   }),
+                    m_touches.end());
+    for (TouchState &touch : m_touches) {
+        touch.phase = TouchPhase::Stationary;
+        touch.deltaX = 0.0f;
+        touch.deltaY = 0.0f;
+    }
     m_droppedFiles.clear();
     m_hasSyntheticMousePositionThisFrame = false;
     m_syntheticInputThisFrame = false;
@@ -171,7 +185,100 @@ void InputManager::BeginFrame()
     // Re-apply relative mouse mode for the current window/focus state without
     // disturbing persistent capture flags. Editor capture is released on
     // explicit end or focus loss, not once per frame.
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
     ApplyRelativeMouseMode();
+#endif
+}
+
+void InputManager::ProcessKeyEvent(int scancode, bool pressed)
+{
+    if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
+        return;
+    const size_t index = static_cast<size_t>(scancode);
+    if (pressed) {
+        if (m_keys[index] == 0)
+            m_keyDown[index] = 1;
+        m_keys[index] = 1;
+    } else {
+        if (m_keys[index] != 0)
+            m_keyUp[index] = 1;
+        m_keys[index] = 0;
+    }
+}
+
+void InputManager::ProcessPointerButtonEvent(int button, bool pressed)
+{
+    if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
+        return;
+    const size_t index = static_cast<size_t>(button);
+    if (pressed) {
+        if (m_mouseButtons[index] == 0)
+            m_mouseButtonDown[index] = 1;
+        m_mouseButtons[index] = 1;
+    } else {
+        if (m_mouseButtons[index] != 0)
+            m_mouseButtonUp[index] = 1;
+        m_mouseButtons[index] = 0;
+    }
+}
+
+void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY)
+{
+    m_mouseX = x;
+    m_mouseY = y;
+    m_mouseDX += deltaX;
+    m_mouseDY += deltaY;
+    if (m_editorMouseCaptured) {
+        m_editorMouseDX += deltaX;
+        m_editorMouseDY += deltaY;
+    }
+}
+
+void InputManager::ProcessScrollEvent(float deltaX, float deltaY)
+{
+    m_scrollX += deltaX;
+    m_scrollY += deltaY;
+}
+
+void InputManager::ProcessTextInputEvent(const std::string &text)
+{
+    m_inputString += text;
+}
+
+void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId,
+                                     float x, float y, float deltaX, float deltaY, float pressure, TouchPhase phase)
+{
+    const auto existing = std::find_if(m_touches.begin(), m_touches.end(), [&](const TouchState &touch) {
+        return touch.touchId == touchId && touch.fingerId == fingerId;
+    });
+    TouchState *touch = nullptr;
+    if (existing == m_touches.end()) {
+        m_touches.emplace_back();
+        touch = &m_touches.back();
+        touch->touchId = touchId;
+        touch->fingerId = fingerId;
+    } else {
+        touch = &*existing;
+    }
+    touch->timestampNs = timestampNs;
+    touch->windowId = windowId;
+    touch->x = x;
+    touch->y = y;
+    touch->deltaX = deltaX;
+    touch->deltaY = deltaY;
+    touch->pressure = pressure;
+    touch->phase = phase;
+}
+
+void InputManager::ProcessFocusEvent(bool focused)
+{
+    if (focused)
+        return;
+    m_editorMouseCaptured = false;
+    ResetPhysicalInputForFocusLoss();
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    ApplyRelativeMouseMode();
+#endif
 }
 
 void InputManager::ProcessSDLEvent(const SDL_Event &event)
@@ -198,82 +305,70 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     switch (event.type) {
 
     // ---- Keyboard ----
-    case SDL_EVENT_KEY_DOWN: {
-        int sc = static_cast<int>(event.key.scancode);
-        if (sc >= 0 && sc < INPUT_MAX_KEYS) {
-            if (m_keys[sc] == 0) {
-                m_keyDown[sc] = 1;
-            }
-            m_keys[sc] = 1;
-        }
+    case SDL_EVENT_KEY_DOWN:
+        ProcessKeyEvent(static_cast<int>(event.key.scancode), true);
         break;
-    }
-    case SDL_EVENT_KEY_UP: {
-        int sc = static_cast<int>(event.key.scancode);
-        if (sc >= 0 && sc < INPUT_MAX_KEYS) {
-            if (m_keys[sc] != 0) {
-                m_keyUp[sc] = 1;
-            }
-            m_keys[sc] = 0;
-        }
+    case SDL_EVENT_KEY_UP:
+        ProcessKeyEvent(static_cast<int>(event.key.scancode), false);
         break;
-    }
 
     // ---- Mouse buttons ----
     // SDL3 mouse button indices: 1=left, 2=middle, 3=right, 4/5=side
     // We remap to Unity convention: 0=left, 1=right, 2=middle, 3/4=side
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
-        int btn = remapButton(event.button.button);
-        if (btn >= 0 && btn < INPUT_MAX_MOUSE_BUTTONS) {
-            if (m_mouseButtons[btn] == 0) {
-                m_mouseButtonDown[btn] = 1;
-            }
-            m_mouseButtons[btn] = 1;
-        }
+        if (event.button.which == SDL_TOUCH_MOUSEID)
+            break;
+        ProcessPointerButtonEvent(remapButton(event.button.button), true);
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP: {
-        int btn = remapButton(event.button.button);
-        if (btn >= 0 && btn < INPUT_MAX_MOUSE_BUTTONS) {
-            if (m_mouseButtons[btn] != 0) {
-                m_mouseButtonUp[btn] = 1;
-            }
-            m_mouseButtons[btn] = 0;
-        }
+        if (event.button.which == SDL_TOUCH_MOUSEID)
+            break;
+        ProcessPointerButtonEvent(remapButton(event.button.button), false);
         break;
     }
 
     // ---- Mouse motion ----
     case SDL_EVENT_MOUSE_MOTION:
-        m_mouseX = event.motion.x;
-        m_mouseY = event.motion.y;
-        m_mouseDX += event.motion.xrel;
-        m_mouseDY += event.motion.yrel;
-        if (m_editorMouseCaptured) {
-            m_editorMouseDX += event.motion.xrel;
-            m_editorMouseDY += event.motion.yrel;
-        }
+        if (event.motion.which == SDL_TOUCH_MOUSEID)
+            break;
+        ProcessPointerMotionEvent(event.motion.x, event.motion.y, event.motion.xrel, event.motion.yrel);
         break;
 
     // ---- Mouse wheel ----
     case SDL_EVENT_MOUSE_WHEEL:
-        m_scrollX += event.wheel.x;
-        m_scrollY += event.wheel.y;
+        ProcessScrollEvent(event.wheel.x, event.wheel.y);
         break;
 
     // ---- Text input ----
     case SDL_EVENT_TEXT_INPUT:
-        m_inputString += event.text.text;
+        ProcessTextInputEvent(event.text.text);
         break;
 
-    // ---- Touch (basic tracking) ----
+    // ---- Touch ----
     case SDL_EVENT_FINGER_DOWN:
-        ++m_touchCount;
-        break;
+    case SDL_EVENT_FINGER_MOTION:
     case SDL_EVENT_FINGER_UP:
-        // Don't go negative
-        m_touchCount = std::max(0, m_touchCount - 1);
+    case SDL_EVENT_FINGER_CANCELED: {
+        const SDL_TouchFingerEvent &finger = event.tfinger;
+        TouchPhase phase = TouchPhase::Canceled;
+        switch (event.type) {
+        case SDL_EVENT_FINGER_DOWN:
+            phase = TouchPhase::Began;
+            break;
+        case SDL_EVENT_FINGER_MOTION:
+            phase = (finger.dx == 0.0f && finger.dy == 0.0f) ? TouchPhase::Stationary : TouchPhase::Moved;
+            break;
+        case SDL_EVENT_FINGER_UP:
+            phase = TouchPhase::Ended;
+            break;
+        default:
+            break;
+        }
+        ProcessTouchEvent(finger.touchID, finger.fingerID, finger.timestamp, finger.windowID, finger.x, finger.y,
+                          finger.dx, finger.dy, finger.pressure, phase);
         break;
+    }
 
     // ---- File drop from OS ----
     // SDL drop events carry the last drop position even when the window did
@@ -294,9 +389,7 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
 
     // ---- Window focus lost → release editor drag capture and clear inputs ----
     case SDL_EVENT_WINDOW_FOCUS_LOST:
-        m_editorMouseCaptured = false;
-        ResetAll();
-        ApplyRelativeMouseMode();
+        ProcessFocusEvent(false);
         break;
 
     default:
@@ -325,6 +418,52 @@ bool InputManager::GetSyntheticMousePositionForFrame(float &x, float &y) const
 void InputManager::MarkSyntheticInputForFrame()
 {
     m_syntheticInputThisFrame = true;
+}
+
+void InputManager::TrackSyntheticEvent(const SDL_Event &event)
+{
+    m_syntheticInputThisFrame = true;
+    const auto setHeld = [this](auto &states, int index, bool held) {
+        if (index < 0 || index >= static_cast<int>(states.size()))
+            return;
+        const uint8_t value = held ? 1u : 0u;
+        if (states[static_cast<size_t>(index)] == value)
+            return;
+        states[static_cast<size_t>(index)] = value;
+        if (held)
+            ++m_syntheticHeldCount;
+        else if (m_syntheticHeldCount > 0)
+            --m_syntheticHeldCount;
+    };
+
+    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+        setHeld(m_syntheticKeys, static_cast<int>(event.key.scancode), event.type == SDL_EVENT_KEY_DOWN);
+        return;
+    }
+    if (event.type != SDL_EVENT_MOUSE_BUTTON_DOWN && event.type != SDL_EVENT_MOUSE_BUTTON_UP)
+        return;
+
+    int button = -1;
+    switch (event.button.button) {
+    case SDL_BUTTON_LEFT:
+        button = 0;
+        break;
+    case SDL_BUTTON_RIGHT:
+        button = 1;
+        break;
+    case SDL_BUTTON_MIDDLE:
+        button = 2;
+        break;
+    case SDL_BUTTON_X1:
+        button = 3;
+        break;
+    case SDL_BUTTON_X2:
+        button = 4;
+        break;
+    default:
+        break;
+    }
+    setHeld(m_syntheticMouseButtons, button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
 }
 
 // ============================================================================
@@ -425,9 +564,49 @@ void InputManager::ResetAll()
     m_scrollX = m_scrollY = 0.f;
     m_syntheticMouseX = m_syntheticMouseY = 0.f;
     m_hasSyntheticMousePositionThisFrame = false;
+    m_syntheticInputThisFrame = false;
+    m_syntheticKeys.fill(0);
+    m_syntheticMouseButtons.fill(0);
+    m_syntheticHeldCount = 0;
     m_inputString.clear();
-    m_touchCount = 0;
+    m_touches.clear();
     m_droppedFiles.clear();
+}
+
+void InputManager::ResetPhysicalInputForFocusLoss()
+{
+    // Losing OS focus must release real device state, but trusted synthetic
+    // input intentionally drives gameplay while the Editor remains in the
+    // background. Preserve that independently tracked held state and rebuild
+    // the shared query arrays from it after clearing physical input.
+    const auto syntheticKeys = m_syntheticKeys;
+    const auto syntheticMouseButtons = m_syntheticMouseButtons;
+    const uint32_t syntheticHeldCount = m_syntheticHeldCount;
+    auto interruptedTouches = std::move(m_touches);
+    ResetAll();
+    for (TouchState &touch : interruptedTouches) {
+        if (touch.phase != TouchPhase::Ended && touch.phase != TouchPhase::Canceled) {
+            touch.phase = TouchPhase::Canceled;
+            touch.deltaX = 0.0f;
+            touch.deltaY = 0.0f;
+            m_touches.emplace_back(std::move(touch));
+        }
+    }
+    m_syntheticKeys = syntheticKeys;
+    m_syntheticMouseButtons = syntheticMouseButtons;
+    m_syntheticHeldCount = syntheticHeldCount;
+    m_syntheticInputThisFrame = syntheticHeldCount != 0;
+    for (size_t index = 0; index < m_syntheticKeys.size(); ++index)
+        m_keys[index] = m_syntheticKeys[index];
+    for (size_t index = 0; index < m_syntheticMouseButtons.size(); ++index)
+        m_mouseButtons[index] = m_syntheticMouseButtons[index];
+}
+
+const TouchState &InputManager::GetTouch(int index) const
+{
+    if (index < 0 || static_cast<size_t>(index) >= m_touches.size())
+        throw std::out_of_range("Touch index is outside the current frame snapshot");
+    return m_touches[static_cast<size_t>(index)];
 }
 
 // ============================================================================
@@ -448,11 +627,14 @@ int InputManager::NameToScancode(const std::string &name)
         return it->second;
     }
 
-    // Fallback: try SDL's own name lookup
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    // Desktop adapters retain SDL's extended name vocabulary. Semantic hosts
+    // deliberately expose only the engine's stable cross-platform table.
     SDL_Scancode sc = SDL_GetScancodeFromName(name.c_str());
     if (sc != SDL_SCANCODE_UNKNOWN) {
         return static_cast<int>(sc);
     }
+#endif
 
     return -1;
 }
@@ -461,7 +643,14 @@ const char *InputManager::ScancodeToName(int scancode)
 {
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return "unknown";
+#if defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    BuildNameTable();
+    const auto it = std::find_if(s_nameToScancode.begin(), s_nameToScancode.end(),
+                                 [scancode](const auto &entry) { return entry.second == scancode; });
+    return it != s_nameToScancode.end() ? it->first.c_str() : "unknown";
+#else
     return SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode));
+#endif
 }
 
 // ============================================================================
@@ -504,6 +693,11 @@ std::pair<float, float> InputManager::ConsumeEditorMouseDelta()
 
 void InputManager::ApplyRelativeMouseMode()
 {
+#if defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    // Browser and other semantic hosts own pointer-lock policy in their window
+    // adapter. The engine only preserves the requested logical state here.
+    return;
+#else
     const bool relativeMouseEnabled = m_cursorLocked || m_editorMouseCaptured;
 
     if (!m_window) {
@@ -527,6 +721,7 @@ void InputManager::ApplyRelativeMouseMode()
     }
 
     SDL_SetWindowRelativeMouseMode(m_window, true);
+#endif
 }
 
 } // namespace infernux

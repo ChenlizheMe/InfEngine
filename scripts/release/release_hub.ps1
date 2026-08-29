@@ -120,22 +120,19 @@ if ($UploadOnly) {
     New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
 Write-Host "[1/6] Configuring the release preset..." -ForegroundColor Cyan
-& cmake --preset release
+& cmake --preset windows-msvc-release
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 
-Write-Host "[2/6] Building the native module and Release Player Runtime Pack..." -ForegroundColor Cyan
-& cmake --build --preset release --target _Infernux --parallel
-if ($LASTEXITCODE -ne 0) { throw 'Native engine build failed.' }
-& cmake --build --preset release --target prebuild_player_runtime --parallel
-if ($LASTEXITCODE -ne 0) { throw 'Release Player Runtime Pack build failed.' }
-
-Write-Host "       Building the wheel from the verified local Release payload..." -ForegroundColor Cyan
-$env:INFERNUX_SOURCE_DIR = $Root
-& python -m build --wheel --no-isolation --outdir $ReleaseDir
-if ($LASTEXITCODE -ne 0) { throw 'Wheel build failed.' }
+Write-Host "[2/6] Building the staged and verified Release wheel..." -ForegroundColor Cyan
+& cmake --build --preset windows-msvc-wheel --parallel
+if ($LASTEXITCODE -ne 0) { throw 'Release wheel build failed.' }
+$WheelDir = Join-Path $Root 'out\build\windows-msvc-release\python-wheel'
+$Wheels = @(Get-ChildItem -LiteralPath $WheelDir -Filter '*.whl' -File)
+if ($Wheels.Count -ne 1) { throw "Expected one wheel in $WheelDir, found $($Wheels.Count)." }
+Copy-Item -LiteralPath $Wheels[0].FullName -Destination $ReleaseDir
 
 Write-Host "[3/6] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
-& cmake --build --preset packaging-installer
+& cmake --build --preset windows-hub-installer
 if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
 $HubDir = Join-Path $Root 'out\package\hub'
 $Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
@@ -171,7 +168,7 @@ Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object
 }
 
 $RequiredAssets = @(
-    "infernux-$Version-cp312-cp312-win_amd64.whl",
+    "infernux-$Version-cp313-cp313-win_amd64.whl",
     "InfernuxHubInstaller-$Version.exe",
     "InfernuxHub-$Version-windows-x64-full.zip",
     "InfernuxHub-$Version-manifest.json",

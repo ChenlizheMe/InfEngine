@@ -14,7 +14,7 @@
 #include "GameObject.h"
 #include "MeshRenderer.h"
 #include "Transform.h"
-#include <InxLog.h>
+#include <core/log/InxLog.h>
 
 #include <algorithm>
 #include <cmath>

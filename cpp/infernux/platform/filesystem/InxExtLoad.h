@@ -17,7 +17,7 @@
 #define dlsym GetProcAddress
 #endif
 
-#include "InxLog.h"
+#include <core/log/InxLog.h>
 
 namespace infernux
 {
