@@ -161,6 +161,7 @@ class KeyCode:
     TAB = 43         # SDL_SCANCODE_TAB
     RETURN = 40      # SDL_SCANCODE_RETURN
     ESCAPE = 41      # SDL_SCANCODE_ESCAPE
+    AC_BACK = 282    # SDL_SCANCODE_AC_BACK (Android/system Back)
     SPACE = 44       # SDL_SCANCODE_SPACE
     DELETE = 76       # SDL_SCANCODE_DELETE
 

@@ -58,6 +58,16 @@ def test_standard_gameplay_map_combines_keyboard_move(monkeypatch):
     assert actions["Move"].phase is InputActionPhase.PERFORMED
 
 
+def test_standard_cancel_accepts_android_back(monkeypatch):
+    _reset_fake(monkeypatch)
+    actions = InputActionMap.standard_gameplay()
+    _FakeInput.held = {KeyCode.AC_BACK}
+    _FakeInput.down = {KeyCode.AC_BACK}
+
+    assert actions["Cancel"].is_pressed
+    assert actions["Cancel"].was_pressed_this_frame
+
+
 def test_virtual_vector_source_has_frame_stable_edges(monkeypatch):
     _reset_fake(monkeypatch)
     move = InputAction("Move", InputActionType.VECTOR2)

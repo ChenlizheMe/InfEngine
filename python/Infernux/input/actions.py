@@ -386,7 +386,7 @@ class InputActionMap:
         )
         result.add_action("Look", InputActionType.VECTOR2).bind_pointer_delta()
         result.add_action("Submit").bind_key(KeyCode.RETURN).bind_key(KeyCode.SPACE)
-        result.add_action("Cancel").bind_key(KeyCode.ESCAPE)
+        result.add_action("Cancel").bind_key(KeyCode.ESCAPE).bind_key(KeyCode.AC_BACK)
         result.add_action("Pause").bind_key(KeyCode.P)
         return result
 

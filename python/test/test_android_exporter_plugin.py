@@ -188,6 +188,14 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "android.hardware.vulkan.version" in manifest
     assert 'android:screenOrientation="landscape"' in manifest
     assert "glEsVersion" not in manifest
+    assert "if (mScreenKeyboardShown)" in activity
+    assert "registerOnBackInvokedCallback" in activity
+    assert "OnBackInvokedDispatcher.PRIORITY_DEFAULT" in activity
+    assert "this::dispatchInfernuxBack" in activity
+    assert "sendCommand(COMMAND_TEXTEDIT_HIDE, null)" in activity
+    assert "onNativeKeyDown(KeyEvent.KEYCODE_BACK)" in activity
+    assert "onNativeKeyUp(KeyEvent.KEYCODE_BACK)" in activity
+    assert "super.onBackPressed()" not in activity
     assert 'abiFilters "x86_64"' in gradle
     assert 'ignoreAssetsPattern = "!.svn:!.git:!.ds_store:' in gradle
     assert 'version "8.10.1"' in root_gradle

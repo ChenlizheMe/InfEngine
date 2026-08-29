@@ -1,8 +1,11 @@
 package com.infernux.bootstrap;
 
 import android.os.Bundle;
+import android.os.Build;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.view.KeyEvent;
+import android.window.OnBackInvokedDispatcher;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -48,6 +51,30 @@ public final class InfernuxActivity extends SDLActivity {
             throw new IllegalStateException("Failed to prepare embedded Python", exception);
         }
         super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    this::dispatchInfernuxBack);
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        dispatchInfernuxBack();
+    }
+
+    private void dispatchInfernuxBack() {
+        if (mScreenKeyboardShown) {
+            sendCommand(COMMAND_TEXTEDIT_HIDE, null);
+            onNativeKeyboardFocusLost();
+            return;
+        }
+
+        // Back is gameplay/UI input, not an unconditional Activity exit.
+        // SDL maps Android KEYCODE_BACK to SDL_SCANCODE_AC_BACK, allowing the
+        // portable Cancel action to close a modal, pause, or ask for exit.
+        onNativeKeyDown(KeyEvent.KEYCODE_BACK);
+        onNativeKeyUp(KeyEvent.KEYCODE_BACK);
     }
 
     private File prepareVersionedAssets(String assetRoot, String identityName)

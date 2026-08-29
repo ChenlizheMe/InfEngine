@@ -36,6 +36,7 @@ class KeyCode:
     TAB: int
     RETURN: int
     ESCAPE: int
+    AC_BACK: int
     SPACE: int
     DELETE: int
 
