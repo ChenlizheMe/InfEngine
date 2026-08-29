@@ -104,6 +104,12 @@ class InputManager
     /// @brief Begin a new input frame. Clears transition edges and deltas.
     void BeginFrame();
 
+    /// @brief Monotonic input-frame identity used by higher-level action maps.
+    [[nodiscard]] uint64_t GetFrameIndex() const noexcept
+    {
+        return m_frameIndex;
+    }
+
     /// @brief Feed an SDL event into the input state.
     void ProcessSDLEvent(const SDL_Event &event);
 
@@ -379,6 +385,7 @@ class InputManager
     bool m_editorMouseCaptured = false;
     bool m_textInputActive = false;
     ScreenState m_screenState;
+    uint64_t m_frameIndex = 0;
 
     // ---- Name → scancode lookup ----
     static std::unordered_map<std::string, int> s_nameToScancode;

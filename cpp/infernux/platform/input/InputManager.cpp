@@ -157,6 +157,7 @@ InputManager::InputManager()
 
 void InputManager::BeginFrame()
 {
+    ++m_frameIndex;
     m_keyDown.fill(0);
     m_keyUp.fill(0);
     m_mouseButtonDown.fill(0);

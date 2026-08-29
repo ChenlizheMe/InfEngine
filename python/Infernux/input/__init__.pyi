@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Tuple, Union
 from .ime import ImeInputState
+from .actions import InputAction, InputActionMap, InputActionPhase, InputActionType
 
 
 class TouchPhase(str, Enum):
@@ -109,6 +110,8 @@ class Input:
     """Interface for reading input from keyboard, mouse, and touch."""
 
     # Class-level properties (via _InputMeta metaclass)
+    frame_index: int
+    """Monotonic identity of the current native input frame."""
     mouse_position: Tuple[float, float]
     """The current mouse position in screen coordinates."""
     game_mouse_position: Tuple[float, float]
@@ -217,4 +220,13 @@ class Input:
         ...
 
 
-__all__ = ["KeyCode", "Input"]
+__all__ = [
+    "Input",
+    "InputAction",
+    "InputActionMap",
+    "InputActionPhase",
+    "InputActionType",
+    "KeyCode",
+    "Touch",
+    "TouchPhase",
+]

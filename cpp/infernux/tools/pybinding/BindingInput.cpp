@@ -71,6 +71,8 @@ void RegisterInputBindings(py::module_ &m)
 
         .def_static("instance", &InputManager::Instance, py::return_value_policy::reference,
                     "Get the singleton InputManager instance")
+        .def_property_readonly("frame_index", &InputManager::GetFrameIndex,
+                               "Monotonic input-frame identity for action sampling")
 
         // ---- Keyboard ----
         .def("get_key", &InputManager::GetKey, py::arg("scancode"), "True while the key (by SDL scancode) is held down")

@@ -73,6 +73,11 @@ class _InputMeta(type):
     """Metaclass that enables ``Input.mouse_position`` (no parentheses)."""
 
     @property
+    def frame_index(cls) -> int:
+        """Monotonic identity of the native input frame."""
+        return int(_NativeInputManager.instance().frame_index)
+
+    @property
     def mouse_position(cls) -> Tuple[float, float]:
         """Current mouse position as ``(x, y)`` in window-space pixels."""
         mgr = _NativeInputManager.instance()
@@ -571,3 +576,17 @@ class Input(metaclass=_InputMeta):
     def reset_input_axes() -> None:
         """Reset all input state. Unity: ``Input.ResetInputAxes()``."""
         _NativeInputManager.instance().reset_all()
+
+
+from .actions import InputAction, InputActionMap, InputActionPhase, InputActionType
+
+__all__ = [
+    "Input",
+    "InputAction",
+    "InputActionMap",
+    "InputActionPhase",
+    "InputActionType",
+    "KeyCode",
+    "Touch",
+    "TouchPhase",
+]

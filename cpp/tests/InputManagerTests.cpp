@@ -48,7 +48,9 @@ int main()
     auto &input = InputManager::Instance();
     input.ResetAll();
 
+    const uint64_t previousFrame = input.GetFrameIndex();
     input.BeginFrame();
+    assert(input.GetFrameIndex() == previousFrame + 1);
     auto keyDown = KeyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W);
     auto keyUp = KeyEvent(SDL_EVENT_KEY_UP, SDL_SCANCODE_W);
     input.TrackSyntheticEvent(keyDown);
