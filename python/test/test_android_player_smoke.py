@@ -66,6 +66,40 @@ def test_apk_abi_inventory(tmp_path: Path):
     assert module.apk_abis(apk) == frozenset({"arm64-v8a", "x86_64"})
 
 
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (
+            """WindowManagerPolicy\n  KeyguardServiceDelegate\n    showing=true\n    occluded=false\n""",
+            True,
+        ),
+        (
+            """WindowManagerPolicy\n  KeyguardServiceDelegate\n    showing=false\n    occluded=false\n""",
+            False,
+        ),
+        ("unrecognized policy output", True),
+    ],
+)
+def test_keyguard_visibility_is_fail_closed(policy: str, expected: bool):
+    module = _module()
+
+    assert module.keyguard_is_showing(policy) is expected
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("Physical size: 1440x3200", (1440, 3200)),
+        ("Physical size: 1440x3200\nOverride size: 720x1600", (1440, 3200)),
+        ("", None),
+    ],
+)
+def test_physical_display_size(output: str, expected: tuple[int, int] | None):
+    module = _module()
+
+    assert module.physical_display_size(output) == expected
+
+
 def test_smoke_parser_accepts_gameplay_ready_gate():
     module = _module()
 

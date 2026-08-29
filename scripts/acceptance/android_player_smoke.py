@@ -218,6 +218,64 @@ def apk_abis(apk: Path) -> frozenset[str]:
         )
 
 
+def keyguard_is_showing(policy: str) -> bool:
+    """Return the authoritative KeyguardServiceDelegate visibility state."""
+    in_delegate = False
+    for raw_line in policy.splitlines():
+        line = raw_line.strip()
+        if line == "KeyguardServiceDelegate":
+            in_delegate = True
+            continue
+        if in_delegate and line.startswith("showing="):
+            return line.partition("=")[2].strip().casefold() == "true"
+    # An unknown policy format is not evidence that the device is unlocked.
+    return True
+
+
+def physical_display_size(output: str) -> tuple[int, int] | None:
+    for raw_line in output.splitlines():
+        match = re.search(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", raw_line)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def unlock_device(adb: Adb, timeout: float = 10.0) -> None:
+    """Wake and dismiss a non-secure keyguard before launching the Player."""
+    adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
+    adb.run("shell", "wm", "dismiss-keyguard", check=False)
+    deadline = time.monotonic() + timeout
+    gesture_sent = False
+    last_policy = ""
+    while time.monotonic() < deadline:
+        last_policy = adb.run("shell", "dumpsys", "window", "policy", check=False)
+        if not keyguard_is_showing(last_policy):
+            return
+        if not gesture_sent:
+            size = physical_display_size(
+                adb.run("shell", "wm", "size", check=False)
+            )
+            if size is not None:
+                width, height = size
+                adb.run(
+                    "shell",
+                    "input",
+                    "swipe",
+                    str(width // 2),
+                    str(height * 4 // 5),
+                    str(width // 2),
+                    str(height // 5),
+                    "300",
+                    check=False,
+                )
+            adb.run("shell", "wm", "dismiss-keyguard", check=False)
+            gesture_sent = True
+        time.sleep(0.25)
+    raise RuntimeError(
+        "Android device is still locked; unlock it before running Player acceptance"
+    )
+
+
 def _wait_for_player(
     adb: Adb,
     package: str,
@@ -293,9 +351,9 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             reinstalled_after_signature_mismatch = True
     adb.run("logcat", "-c")
     adb.run("shell", "am", "force-stop", arguments.package)
-    adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
-    adb.run("shell", "wm", "dismiss-keyguard", check=False)
+    unlock_device(adb)
     adb.run("shell", "am", "start", "-n", arguments.activity)
+    _wait_for_foreground(adb, arguments.package)
     pid, log = _wait_for_player(
         adb,
         arguments.package,
