@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -454,6 +455,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("apk", type=Path)
     parser.add_argument("--adb", type=Path, default=Path("adb"))
+    parser.add_argument("--report", type=Path, help="Write atomic JSON acceptance evidence")
     parser.add_argument("--serial")
     parser.add_argument("--package", default="com.infernux.bootstrap")
     parser.add_argument(
@@ -483,29 +485,86 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-install", action="store_true")
     parser.add_argument("--no-back", action="store_true")
+    parser.add_argument(
+        "--keep-running",
+        action="store_true",
+        help="Leave the Player running after acceptance for manual visual inspection",
+    )
     return parser
+
+
+def _stop_player_best_effort(arguments: argparse.Namespace, serial: str | None) -> None:
+    """Stop the accepted Player without hiding the original acceptance result."""
+
+    try:
+        if serial is None:
+            controller = Adb(arguments.adb)
+            device = select_device(
+                parse_devices(controller.run("devices", "-l")), arguments.serial
+            )
+            serial = device.serial
+        Adb(arguments.adb, serial).run(
+            "shell", "am", "force-stop", arguments.package, check=False
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return
+
+
+def _write_report(path: Path | None, payload: dict[str, object]) -> None:
+    if path is None:
+        return
+    destination = path.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
 
 
 def main() -> int:
     arguments = _parser().parse_args()
     arguments.apk = arguments.apk.expanduser().resolve()
     arguments.adb = arguments.adb.expanduser()
-    if not arguments.apk.is_file():
-        raise FileNotFoundError(arguments.apk)
-    if arguments.resume_cycles < 0:
-        raise ValueError("--resume-cycles cannot be negative")
-    if arguments.max_surface_creations is not None and arguments.max_surface_creations < 1:
-        raise ValueError("--max-surface-creations must be positive")
-    if arguments.max_abandoned_buffers < 0:
-        raise ValueError("--max-abandoned-buffers cannot be negative")
-    result = run_smoke(arguments)
-    print(json.dumps(asdict(result), ensure_ascii=False, sort_keys=True))
+    result = None
+    run_started = False
+    try:
+        if not arguments.apk.is_file():
+            raise FileNotFoundError(arguments.apk)
+        if arguments.resume_cycles < 0:
+            raise ValueError("--resume-cycles cannot be negative")
+        if (
+            arguments.max_surface_creations is not None
+            and arguments.max_surface_creations < 1
+        ):
+            raise ValueError("--max-surface-creations must be positive")
+        if arguments.max_abandoned_buffers < 0:
+            raise ValueError("--max-abandoned-buffers cannot be negative")
+        run_started = True
+        result = run_smoke(arguments)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        payload = {
+            "schema": 1,
+            "status": "failed",
+            "apk": str(arguments.apk),
+            "serial": arguments.serial or "",
+            "error": str(error),
+        }
+        _write_report(arguments.report, payload)
+        print(str(error), file=sys.stderr)
+        return 1
+    finally:
+        if run_started and not arguments.keep_running:
+            _stop_player_best_effort(
+                arguments,
+                result.serial if result is not None else arguments.serial,
+            )
+    payload = {"schema": 1, "status": "passed", **asdict(result)}
+    _write_report(arguments.report, payload)
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-        print(str(error), file=sys.stderr)
-        raise SystemExit(1) from error
+    raise SystemExit(main())

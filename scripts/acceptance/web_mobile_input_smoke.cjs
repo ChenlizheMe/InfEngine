@@ -29,8 +29,15 @@ function resolveBrowserExecutable() {
 
 async function main() {
   const url = process.argv[2];
-  if (!url) throw new Error("usage: node web_mobile_input_smoke.cjs <url> [--require-active-audio]");
+  if (!url) throw new Error("usage: node web_mobile_input_smoke.cjs <url> [--require-active-audio] [--startup-timeout-ms N]");
   const requireActiveAudio = process.argv.includes("--require-active-audio");
+  const timeoutIndex = process.argv.indexOf("--startup-timeout-ms");
+  const startupTimeout = timeoutIndex >= 0
+    ? Number(process.argv[timeoutIndex + 1])
+    : 240000;
+  if (!Number.isFinite(startupTimeout) || startupTimeout <= 0) {
+    throw new Error("--startup-timeout-ms must be a positive number");
+  }
   const executablePath = resolveBrowserExecutable();
   const browser = await chromium.launch({
     executablePath,
@@ -46,17 +53,48 @@ async function main() {
   });
   const pageErrors = [];
   const consoleErrors = [];
+  const consoleMessages = [];
   page.on("pageerror", (error) => pageErrors.push(String(error)));
   page.on("console", (message) => {
+    consoleMessages.push(`${message.type()}: ${message.text()}`);
+    if (consoleMessages.length > 200) consoleMessages.shift();
     if (message.type() === "error") consoleErrors.push(message.text());
   });
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
-    await page.waitForFunction(
-      () => document.querySelector("#canvas")?.dataset.infernuxState === "awaiting-user-activation",
-      null,
-      { timeout: 240000 },
-    );
+    try {
+      await page.waitForFunction(
+        () => document.querySelector("#canvas")?.dataset.infernuxState === "awaiting-user-activation",
+        null,
+        { timeout: startupTimeout },
+      );
+    } catch (error) {
+      const startup = await page.evaluate(() => {
+        const canvas = document.querySelector("#canvas");
+        let diagnostics = [];
+        try {
+          diagnostics = JSON.parse(canvas?.dataset.infernuxDiagnostics || "[]");
+        } catch (parseError) {
+          diagnostics = [`diagnostic parse failed: ${parseError}`];
+        }
+        return {
+          documentReadyState: document.readyState,
+          canvasFound: Boolean(canvas),
+          canvasState: canvas?.dataset.infernuxState || "",
+          diagnosticTail: diagnostics.slice(-120),
+          moduleCalledRun: globalThis.Module?.calledRun ?? null,
+          moduleRuntimeInitialized: globalThis.Module?.runtimeInitialized ?? null,
+        };
+      });
+      throw new Error(JSON.stringify({
+        phase: "startup",
+        startup,
+        pageErrors,
+        consoleErrors,
+        consoleMessages,
+        cause: String(error),
+      }));
+    }
     const canvasBox = await page.locator("#canvas").boundingBox();
     if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
     await page.touchscreen.tap(

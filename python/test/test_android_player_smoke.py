@@ -111,6 +111,26 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
     assert arguments.serial is None
     assert arguments.max_surface_creations is None
     assert arguments.max_abandoned_buffers == 8
+    assert not arguments.keep_running
+
+
+def test_smoke_parser_allows_manual_session_to_remain_running():
+    module = _module()
+
+    arguments = module._parser().parse_args(["player.apk", "--keep-running"])
+
+    assert arguments.keep_running
+
+
+def test_atomic_report_records_structured_payload(tmp_path: Path):
+    module = _module()
+    report = tmp_path / "evidence" / "android.json"
+
+    module._write_report(report, {"schema": 1, "status": "passed"})
+
+    assert report.read_text(encoding="utf-8") == (
+        '{\n  "schema": 1,\n  "status": "passed"\n}\n'
+    )
 
 
 def test_hyperos_usb_install_approval_is_narrowly_detected():

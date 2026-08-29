@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "acceptance" / "build_player.py"
+
+
+def _module():
+    spec = importlib.util.spec_from_file_location("infernux_build_player_cli", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_build_option_uses_json_values():
+    module = _module()
+
+    assert module._parse_option('android_artifact="apk"') == (
+        "android_artifact",
+        "apk",
+    )
+    assert module._parse_option("compress=true") == ("compress", True)
+    assert module._parse_option("workers=2") == ("workers", 2)
+
+
+@pytest.mark.parametrize("value", ["missing-separator", "=true", "value=nope"])
+def test_build_option_rejects_invalid_syntax(value):
+    with pytest.raises(argparse.ArgumentTypeError):
+        _module()._parse_option(value)
+
+
+def test_invalid_project_fails_closed_and_writes_atomic_evidence(tmp_path):
+    module = _module()
+    project = tmp_path / "not-a-project"
+    output = tmp_path / "output"
+    report = tmp_path / "evidence" / "build.json"
+
+    status = module.main(
+        [str(project), "web-wasm32", str(output), "--report", str(report)]
+    )
+
+    assert status == 2
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schema"] == 1
+    assert payload["status"] == "invalid-project"
+    assert payload["target"] == "web-wasm32"
+    assert payload["diagnostics"][0]["code"] == "build.project.invalid"
+    assert not tuple(report.parent.glob(".*.tmp"))
+
+
+def test_exporter_mapping_covers_plugin_targets():
+    module = _module()
+
+    assert set(module.EXPORTERS) == {
+        "android-arm64",
+        "android-x64-emulator",
+        "web-wasm32",
+    }
+    assert all(path.is_dir() for path in module.PLUGIN_EDITORS.values())

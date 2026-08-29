@@ -1,0 +1,16 @@
+{
+  "debug_mode": true,
+  "display_mode": "windowed",
+  "enable_jit": false,
+  "game_name": "InfernuxPlatformFixture",
+  "icon_path": "",
+  "lto": false,
+  "output_dir": "",
+  "scenes": [
+    "Assets/Scenes/Main.scene"
+  ],
+  "splash_items": [],
+  "window_height": 720,
+  "window_resizable": true,
+  "window_width": 1280
+}

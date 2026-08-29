@@ -1,0 +1,255 @@
+name: Android And Web Player Acceptance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/platform-player.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "cpp/**"
+      - "external/plugins/infernux_android/**"
+      - "external/plugins/infernux_web/**"
+      - "python/**"
+      - "resources/**"
+      - "scripts/acceptance/**"
+      - "scripts/setup/**"
+      - "tests/fixtures/multiplatform_player/**"
+  push:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/platform-player.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "cpp/**"
+      - "external/plugins/infernux_android/**"
+      - "external/plugins/infernux_web/**"
+      - "python/**"
+      - "resources/**"
+      - "scripts/acceptance/**"
+      - "scripts/setup/**"
+      - "tests/fixtures/multiplatform_player/**"
+  schedule:
+    - cron: "17 18 * * 2,5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-player-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-player:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      INFERNUX_SOURCE_ROOT: ${{ github.workspace }}
+      INFERNUX_WEB_TOOLCHAIN_ROOT: ${{ github.workspace }}/out/toolchains/web
+      INFERNUX_WEB_BUILD_CACHE: ${{ github.workspace }}/out/cache/web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: infernux
+          python-version: "3.13"
+          auto-activate-base: false
+
+      - name: Cache Web toolchain and native build
+        uses: actions/cache@v4
+        with:
+          path: |
+            out/toolchains/web
+            out/cache/web
+            out/build/linux-clang-headless
+          key: web-player-v1-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'cmake/**', 'CMakeLists.txt') }}
+          restore-keys: |
+            web-player-v1-${{ runner.os }}-
+
+      - name: Install host dependencies
+        run: scripts/setup/install_linux_dependencies.sh
+
+      - name: Install Python dependencies
+        run: |
+          conda activate infernux
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Build Linux host modules
+        run: |
+          conda activate infernux
+          cmake --preset linux-clang-headless
+          cmake --build --preset linux-clang-headless
+
+      - name: Prepare pinned Web toolchain
+        run: |
+          conda activate infernux
+          scripts/setup/build_web_toolchain.sh "$INFERNUX_WEB_TOOLCHAIN_ROOT"
+          echo "INFERNUX_EMSDK_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/emsdk" >> "$GITHUB_ENV"
+          echo "INFERNUX_WEB_CPYTHON_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/Python-3.13.15" >> "$GITHUB_ENV"
+          echo "INFERNUX_WEB_TINT=$INFERNUX_WEB_TOOLCHAIN_ROOT/build/dawn-tint-31e25af254ab572c77054edec4946d2244e184dd/tint" >> "$GITHUB_ENV"
+
+      - name: Build Web Player fixture
+        run: |
+          conda activate infernux
+          rm -rf out/ci-projects/web out/acceptance/web
+          mkdir -p out/ci-projects/web out/test-results
+          cp -a tests/fixtures/multiplatform_player/. out/ci-projects/web/
+          python scripts/acceptance/build_player.py \
+            out/ci-projects/web web-wasm32 out/acceptance/web \
+            --report out/test-results/web-player-build.json \
+            --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
+
+      - name: Install browser acceptance runtime
+        run: |
+          conda activate infernux
+          npm ci --prefix scripts/acceptance
+          npm exec --prefix scripts/acceptance -- playwright install --with-deps chromium
+
+      - name: Validate Web Player in a mobile browser context
+        run: |
+          conda activate infernux
+          set -o pipefail
+          python -m http.server 8765 --bind 127.0.0.1 --directory out/acceptance/web \
+            > out/test-results/web-http.log 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..50}; do
+            if curl -fsS -o /dev/null http://127.0.0.1:8765/infernux-player.html; then
+              break
+            fi
+            sleep 0.1
+          done
+          curl -fsS -o /dev/null http://127.0.0.1:8765/infernux-player.html
+          node scripts/acceptance/web_mobile_input_smoke.cjs \
+            http://127.0.0.1:8765/infernux-player.html \
+            --startup-timeout-ms 360000 \
+            | tee out/test-results/web-player-smoke.json
+
+      - name: Upload Web Player evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-player-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/test-results/web-*
+            out/toolchains/web/infernux-web-toolchain.json
+          if-no-files-found: warn
+
+  android-player:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      INFERNUX_SOURCE_ROOT: ${{ github.workspace }}
+      INFERNUX_ANDROID_RUNTIME: ${{ github.workspace }}/out/toolchains/android-python-x86_64
+      INFERNUX_ANDROID_RUNTIME_WORK: ${{ github.workspace }}/out/cache/android-python
+      INFERNUX_ANDROID_BUILD_CACHE: ${{ github.workspace }}/out/cache/android-player
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: infernux
+          python-version: "3.13"
+          auto-activate-base: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android SDK
+        run: |
+          conda activate infernux
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "cmake;3.30.5" \
+            "ndk;27.3.13750724" \
+            "ndk;29.0.14206865"
+
+      - name: Cache Android Python runtime and build intermediates
+        uses: actions/cache@v4
+        with:
+          path: |
+            out/toolchains/android-python-x86_64
+            out/cache/android-python
+            out/cache/android-player
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: android-player-v1-${{ runner.os }}-${{ hashFiles('scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**') }}
+          restore-keys: |
+            android-player-v1-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        run: |
+          conda activate infernux
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Prepare pinned Android Python runtime
+        run: |
+          conda activate infernux
+          if [[ -d "$INFERNUX_ANDROID_RUNTIME" ]]; then
+            python scripts/setup/android_python_runtime.py verify \
+              "$INFERNUX_ANDROID_RUNTIME" \
+              --abi x86_64 \
+              --application-minimum-api 26
+          else
+            scripts/setup/build_android_python_runtime.sh \
+              x86_64 \
+              "$INFERNUX_ANDROID_RUNTIME" \
+              "$INFERNUX_ANDROID_RUNTIME_WORK"
+          fi
+
+      - name: Build and validate Android Player on API 36
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 36
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          emulator-boot-timeout: 600
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
+          script: |
+            conda activate infernux
+            rm -rf out/ci-projects/android out/acceptance/android
+            mkdir -p out/ci-projects/android out/test-results
+            cp -a tests/fixtures/multiplatform_player/. out/ci-projects/android/
+            python scripts/acceptance/build_player.py \
+              out/ci-projects/android android-x64-emulator out/acceptance/android \
+              --report out/test-results/android-player-build.json \
+              --option 'android_artifact="apk"' \
+              --option "android_python_prefix=\"$INFERNUX_ANDROID_RUNTIME\"" \
+              --option "build_cache_root=\"$INFERNUX_ANDROID_BUILD_CACHE\""
+            python scripts/acceptance/android_player_smoke.py \
+              out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \
+              --serial emulator-5554 \
+              --no-back \
+              --resume-cycles 2 \
+              --report out/test-results/android-player-smoke.json
+
+      - name: Upload Android Player evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-player-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/android-*
+          if-no-files-found: warn

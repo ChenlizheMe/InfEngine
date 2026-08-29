@@ -41,6 +41,21 @@ Run `npm ci --prefix scripts/acceptance` after cloning, then invoke
 uses the installed Microsoft Edge binary; CI hosts may install the pinned
 Playwright Chromium build explicitly.
 
+`acceptance/build_player.py` is the non-interactive Player build entry point for
+local acceptance and managed CI. It resolves Android and Web exporters from the
+source checkout, emits the same progress events as the Editor, and writes an
+atomic JSON evidence report even when project validation or toolchain diagnosis
+fails. Exporter-specific values use repeatable `--option KEY=JSON` arguments.
+
+For example:
+
+```powershell
+conda activate infernux
+python scripts/acceptance/build_player.py C:\Projects\Balance android-arm64 C:\Builds\Balance `
+  --option android_artifact='"apk"' `
+  --option android_python_prefix='"E:\toolchains\infernux-python-3.13.15-android\arm64-v8a"'
+```
+
 Release-candidate artifacts and JSON smoke results can be bound to one source
 commit with `build_evidence_manifest.py`. Every `--artifact` and `--result`
 uses `ID=PATH`; paths must live below `--root`, directory hashes are stable over
@@ -61,3 +76,11 @@ prefix from pinned CPython and NumPy source archives. It uses CPython's Android
 build, cibuildwheel's Android backend, the tracked NumPy cross-file contract,
 and an atomic output directory. The command never overwrites an existing
 prefix; pass a new output path when rebuilding an ABI.
+
+`setup/build_web_toolchain.sh` prepares the pinned Emscripten SDK, CPython
+browser runtime, and Dawn Tint translator used by the Web exporter. It accepts
+one cacheable toolchain root, verifies source archives before extraction, keeps
+platform code out of the engine package, and records key output hashes in
+`infernux-web-toolchain.json`. Install `glslangValidator` separately through the
+host package manager because it is a system shader compiler rather than part of
+the cached Web toolchain.

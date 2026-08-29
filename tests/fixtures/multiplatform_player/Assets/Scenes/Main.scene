@@ -1,0 +1,142 @@
+{
+  "environment": {
+    "ambientColor": [0.18, 0.2, 0.24],
+    "ambientEquatorColor": [0.1, 0.11, 0.13],
+    "ambientGroundColor": [0.04, 0.04, 0.05],
+    "ambientIntensity": 1.0,
+    "ambientSkyColor": [0.18, 0.2, 0.24],
+    "ambientSource": 0,
+    "skyExposure": 1.0,
+    "skyGroundColor": [0.12, 0.13, 0.15],
+    "skyHorizonColor": [0.32, 0.4, 0.52],
+    "skyTopColor": [0.08, 0.12, 0.2],
+    "skyboxMaterialGuid": ""
+  },
+  "isPlaying": false,
+  "mainCameraComponentId": 2,
+  "name": "Main",
+  "objects": [
+    {
+      "active": true,
+      "children": [],
+      "components": [
+        {
+          "component_id": 2,
+          "data": {
+            "aspectRatio": 1.7777778,
+            "backgroundColor": [0.03, 0.05, 0.09, 1.0],
+            "clearFlags": 0,
+            "cullingMask": 4294967295,
+            "depth": 0.0,
+            "dithering": false,
+            "farClip": 1000.0,
+            "fov": 60.0,
+            "nearClip": 0.01,
+            "orthoSize": 5.0,
+            "projectionMode": 0,
+            "stopNaNs": true
+          },
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "native:infernux.Camera"
+        }
+      ],
+      "id": 1,
+      "is_static": false,
+      "layer": 0,
+      "name": "Main Camera",
+      "tag": "MainCamera",
+      "transform": {
+        "component_id": 1,
+        "enabled": true,
+        "execution_order": 0,
+        "position": [0.0, 3.0, -8.0],
+        "rotation": [15.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "type": "Transform"
+      }
+    },
+    {
+      "active": true,
+      "children": [],
+      "components": [
+        {
+          "component_id": 4,
+          "data": {
+            "areaSize": [1.0, 1.0],
+            "areaTwoSided": false,
+            "baked": false,
+            "color": [1.0, 0.95, 0.88],
+            "cullingMask": 4294967295,
+            "influenceDomains": 3,
+            "intensity": 1.2,
+            "lightType": 0,
+            "outerSpotAngle": 45.0,
+            "range": 10.0,
+            "renderMode": 0,
+            "shadowBias": 1.0,
+            "shadowNormalBias": 1.0,
+            "shadowSoftness": 1.0,
+            "shadowStrength": 1.0,
+            "shadows": 0,
+            "spotAngle": 30.0
+          },
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "native:infernux.Light"
+        }
+      ],
+      "id": 3,
+      "is_static": false,
+      "layer": 0,
+      "name": "Directional Light",
+      "tag": "Untagged",
+      "transform": {
+        "component_id": 3,
+        "enabled": true,
+        "execution_order": 0,
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [50.0, 330.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "type": "Transform"
+      }
+    },
+    {
+      "active": true,
+      "children": [],
+      "components": [
+        {
+          "component_id": 6,
+          "data": {
+            "boundsMax": [0.5, 0.5, 0.5],
+            "boundsMin": [-0.5, -0.5, -0.5],
+            "castShadows": true,
+            "inlineMeshBuiltin": true,
+            "inlineMeshName": "Cube",
+            "materials": ["04000000000000000000000000000003"],
+            "meshId": 0,
+            "receivesShadows": true,
+            "useInlineMesh": true
+          },
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "native:infernux.MeshRenderer"
+        }
+      ],
+      "id": 5,
+      "is_static": false,
+      "layer": 0,
+      "name": "Render Probe",
+      "tag": "Untagged",
+      "transform": {
+        "component_id": 5,
+        "enabled": true,
+        "execution_order": 0,
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 25.0, 0.0],
+        "scale": [2.0, 2.0, 2.0],
+        "type": "Transform"
+      }
+    }
+  ]
+}
