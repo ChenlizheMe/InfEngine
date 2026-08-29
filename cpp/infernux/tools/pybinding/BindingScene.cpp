@@ -2226,8 +2226,7 @@ void RegisterSceneBindings(py::module_ &m)
                 return 0u;
             return JobSystem::Get().RunPendingJobs(maxJobs);
         },
-        py::arg("max_jobs") = 64,
-        "Run queued native jobs only when the JobSystem uses its owner-thread executor");
+        py::arg("max_jobs") = 64, "Run queued native jobs only when the JobSystem uses its owner-thread executor");
     m.def(
         "_preflight_scene_resource_dependencies",
         [](py::handle document) { PreflightSceneResourceDependencies(PythonToJson(document)); }, py::arg("document"),
