@@ -76,6 +76,7 @@ def _load_scene_manager_module(monkeypatch):
 
     fake_path_utils = types.ModuleType("Infernux.engine.path_utils")
     fake_path_utils.safe_path = lambda path: path
+    fake_path_utils.is_path_within = lambda path, root: str(path).startswith(str(root))
     fake_path_utils.path_key = lambda path: str(path).lower()
     fake_path_utils.resolved_path = lambda path: str(path)
 

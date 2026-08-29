@@ -16,7 +16,7 @@ This module orchestrates those primitives into a complete workflow.
 """
 
 import os
-from Infernux.engine.path_utils import path_key, resolved_path
+from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
 import json
 from dataclasses import dataclass
 from typing import Any, Optional, Callable
@@ -31,6 +31,8 @@ from Infernux.engine.project_context import get_project_root
 
 SCENE_EXTENSION = ".scene"
 EDITOR_SETTINGS_FILE = "EditorSettings.json"
+LAST_OPENED_SCENE_GUID_KEY = "lastOpenedSceneGuid"
+LEGACY_LAST_OPENED_SCENE_PATH_KEY = "lastOpenedScene"
 DEFAULT_SCENE_NAME = "Untitled Scene"
 DEFAULT_SCENE_FILE_BASE = "UntitledScene"
 PREFAB_MODE_SCENE_NAME = "__PrefabMode__"
@@ -116,6 +118,57 @@ def _save_editor_settings(settings: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     from Infernux.core.document_store import write_document_text
     write_document_text(path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+
+
+def _legacy_scene_path_in_current_project(value: object) -> Optional[str]:
+    """Recover one pre-GUID scene setting without preserving path identity."""
+
+    root = _effective_project_root()
+    text = str(value or "").strip()
+    if not root or not text:
+        return None
+    portable = text.replace("\\", "/")
+    lowered = portable.casefold()
+    marker = "/assets/"
+    if lowered.startswith("assets/"):
+        relative = portable
+    elif marker in lowered:
+        relative = portable[lowered.index(marker) + 1 :]
+    else:
+        candidate = resolved_path(text)
+        assets_root = os.path.join(root, "Assets")
+        return (
+            candidate
+            if os.path.isfile(candidate) and is_path_within(candidate, assets_root)
+            else None
+        )
+    candidate = resolved_path(os.path.join(root, *relative.split("/")))
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _migrate_legacy_camera_state_keys(settings: dict, asset_database: Any) -> bool:
+    """Replace pre-GUID scene camera keys and discard stale absolute paths."""
+
+    states = settings.get("sceneCameraStates")
+    if not isinstance(states, dict):
+        return False
+    changed = False
+    for old_key in list(states):
+        key_text = str(old_key)
+        if "/" not in key_text and "\\" not in key_text:
+            continue
+        scene_path = _legacy_scene_path_in_current_project(key_text)
+        get_guid = getattr(asset_database, "get_guid_from_path", None)
+        guid = (
+            str(get_guid(scene_path) or "").strip()
+            if scene_path and callable(get_guid)
+            else ""
+        )
+        if guid:
+            states.setdefault(guid, states[old_key])
+        states.pop(old_key, None)
+        changed = True
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -722,14 +775,22 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             native.confirm_close()
 
     def load_last_scene_or_default(self):
-        """Called at startup — load the last opened scene, or create a default.
+        """Load the GUID-addressed last scene, or create a default.
 
         Uses immediate (non-deferred) loading since no rendering occurs yet.
         """
         settings = _load_editor_settings()
-        last_scene = settings.get("lastOpenedScene")
+        scene_guid = str(settings.get(LAST_OPENED_SCENE_GUID_KEY) or "").strip()
+        last_scene = ""
+        if scene_guid and self._asset_database is not None:
+            last_scene = str(self._asset_database.get_path_from_guid(scene_guid) or "")
+        if not last_scene:
+            last_scene = _legacy_scene_path_in_current_project(
+                settings.get(LEGACY_LAST_OPENED_SCENE_PATH_KEY)
+            ) or ""
         if last_scene and os.path.isfile(last_scene):
             if self._do_open_scene(last_scene, record_navigation=False):
+                self._remember_last_scene(last_scene)
                 return
             Debug.log_warning(f"Last scene file missing or invalid: {last_scene}")
 
@@ -1324,11 +1385,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             "yaw": rot[0],
             "pitch": rot[1],
         }
+        get_guid = getattr(self._asset_database, "get_guid_from_path", None)
+        guid = (
+            str(get_guid(scene_path) or "").strip() if callable(get_guid) else ""
+        )
+        if not guid:
+            return
         settings = _load_editor_settings()
-        if "sceneCameraStates" not in settings:
+        _migrate_legacy_camera_state_keys(settings, self._asset_database)
+        if not isinstance(settings.get("sceneCameraStates"), dict):
             settings["sceneCameraStates"] = {}
-        key = path_key(scene_path)
-        settings["sceneCameraStates"][key] = state
+        settings["sceneCameraStates"][guid] = state
         _save_editor_settings(settings)
 
     def _restore_camera_state(self, scene_path: str):
@@ -1338,10 +1405,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         cam = self._engine.editor_camera
         if not cam:
             return
+        get_guid = getattr(self._asset_database, "get_guid_from_path", None)
+        guid = (
+            str(get_guid(scene_path) or "").strip() if callable(get_guid) else ""
+        )
+        if not guid:
+            return
         settings = _load_editor_settings()
+        if _migrate_legacy_camera_state_keys(settings, self._asset_database):
+            _save_editor_settings(settings)
         states = settings.get("sceneCameraStates", {})
-        key = path_key(scene_path)
-        state = states.get(key)
+        state = states.get(guid)
         if not state:
             return
         p = state["position"]
