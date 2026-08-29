@@ -33,13 +33,27 @@ _DEFAULT_TIMESTAMP_URL = "http://timestamp.digicert.com"
 
 def _validate_runtime_bundle(bundle_path: Path) -> None:
     archive = runtime_archive_for_machine()
-    marker_name = (
-        f"{DEFAULT_PYTHON_RUNTIME.directory_name}/"
-        ".infernux-private-python-runtime.json"
-    )
+    runtime_prefix = f"{DEFAULT_PYTHON_RUNTIME.directory_name}/"
+    marker_name = runtime_prefix + ".infernux-private-python-runtime.json"
     try:
         with zipfile.ZipFile(bundle_path) as bundle:
+            payload_members = [
+                name.replace("\\", "/")
+                for name in bundle.namelist()
+                if name and not name.endswith("/")
+            ]
+            if not payload_members or any(
+                not name.startswith(runtime_prefix) for name in payload_members
+            ):
+                raise RuntimeError(
+                    "The private Python runtime bundle contains files outside the "
+                    f"default Python {DEFAULT_PYTHON_RUNTIME.series} runtime. "
+                    "Clear out/package/runtime and rebuild "
+                    "prepare_bundled_python_runtime."
+                )
             marker = json.loads(bundle.read(marker_name))
+    except RuntimeError:
+        raise
     except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
         raise RuntimeError(
             "The private Python runtime bundle is invalid or missing its provenance marker. "

@@ -148,6 +148,36 @@ def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
         )
 
 
+def test_hub_build_rejects_extra_legacy_runtime_payload(tmp_path: Path):
+    source_root = tmp_path / "source"
+    runtime_bundle = tmp_path / "dist" / "runtime" / "runtime_bundle.zip"
+    runtime_bundle.parent.mkdir(parents=True)
+    archive = runtime_archive_for_machine()
+    marker = {
+        "owner": "Infernux Hub",
+        "kind": "private-python-runtime",
+        "python_version": PYTHON_VERSION,
+        "source_archive": archive.name,
+        "source_archive_sha256": archive.sha256,
+    }
+    with zipfile.ZipFile(runtime_bundle, "w") as bundle:
+        bundle.writestr(
+            f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
+            json.dumps(marker),
+        )
+        bundle.writestr("python312/python.exe", b"legacy runtime")
+
+    with pytest.raises(RuntimeError, match="contains files outside"):
+        build_hub._build_hub(
+            source_root,
+            tmp_path / "build",
+            tmp_path / "dist",
+            cmake_generator="Visual Studio 17 2022",
+            build_env=None,
+            tools=None,
+        )
+
+
 def test_msvc_report_validation_accepts_only_msvc(tmp_path: Path):
     report = tmp_path / "launcher.build" / "scons-report.txt"
     report.parent.mkdir()

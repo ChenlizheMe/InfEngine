@@ -103,6 +103,13 @@ def test_runtime_archive_rejects_paths_outside_destination(tmp_path: Path) -> No
 def test_legacy_python_installers_are_removed_without_touching_runtime(tmp_path: Path) -> None:
     legacy_installer = tmp_path / "python-3.12.8-amd64.exe"
     legacy_installer.write_bytes(b"installer")
+    legacy_archive = (
+        tmp_path
+        / "cpython-3.12.13+20260805-x86_64-pc-windows-msvc-install_only.tar.gz"
+    )
+    legacy_archive.write_bytes(b"old archive")
+    current_archive = tmp_path / runtime_archive_for_machine().name
+    current_archive.write_bytes(b"current archive")
     runtime_python = tmp_path / "python312" / "python.exe"
     runtime_python.parent.mkdir()
     runtime_python.write_bytes(b"runtime")
@@ -110,6 +117,8 @@ def test_legacy_python_installers_are_removed_without_touching_runtime(tmp_path:
     remove_legacy_installer_artifacts(tmp_path)
 
     assert not legacy_installer.exists()
+    assert not legacy_archive.exists()
+    assert current_archive.read_bytes() == b"current archive"
     assert runtime_python.read_bytes() == b"runtime"
 
 

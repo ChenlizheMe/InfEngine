@@ -226,7 +226,19 @@ def extract_runtime_archive(
         shutil.rmtree(extract_root, ignore_errors=True)
 
 
-def remove_legacy_installer_artifacts(runtime_cache_root: str | os.PathLike[str]) -> None:
+def remove_legacy_installer_artifacts(
+    runtime_cache_root: str | os.PathLike[str],
+    *,
+    runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
+) -> None:
+    """Prune obsolete bootstrap files without touching installed runtimes.
+
+    The packaging cache is shared across Hub builds.  Keep only the pinned
+    relocatable archive for the runtime being staged so an older Python ABI
+    can never be swept into a fresh installer by stale workspace output.
+    Managed ``pythonXY`` directories are intentionally left alone: Hub may
+    keep them side by side for engine versions that target different ABIs.
+    """
     root = Path(runtime_cache_root)
     if not root.is_dir():
         return
@@ -239,3 +251,8 @@ def remove_legacy_installer_artifacts(runtime_cache_root: str | os.PathLike[str]
         for artifact in root.glob(pattern):
             if artifact.is_file():
                 artifact.unlink()
+
+    expected_archive = runtime_archive_for_machine(runtime=runtime).name
+    for artifact in root.glob("cpython-*-install_only.tar.gz*"):
+        if artifact.is_file() and artifact.name != expected_archive:
+            artifact.unlink()
