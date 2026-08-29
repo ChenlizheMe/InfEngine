@@ -329,6 +329,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert 'importlib.import_module("Infernux.screen")' in bootstrap
     assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell
+    assert '<link rel="icon" href="data:,">' in shell
     assert "locateFile(path)" in shell
     assert "assetRevision" in shell
     assert "versionedAssets[path]" in shell

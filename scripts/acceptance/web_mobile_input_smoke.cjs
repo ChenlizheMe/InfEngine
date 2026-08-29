@@ -45,7 +45,11 @@ async function main() {
     isMobile: true,
   });
   const pageErrors = [];
+  const consoleErrors = [];
   page.on("pageerror", (error) => pageErrors.push(String(error)));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
     await page.waitForFunction(
@@ -112,6 +116,20 @@ async function main() {
       ) || "";
       return {
         state: canvas.dataset.infernuxState,
+        pythonReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_PYTHON_READY")),
+        nativeModuleReady: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_NATIVE_MODULE_READY"),
+        ),
+        sceneReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_SCENE_READY")),
+        sceneRenderReady: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_SCENE_RENDER_READY"),
+        ),
+        firstFrameReady: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_FIRST_FRAME_READY"),
+        ),
+        runtimeActive: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_RUNTIME_ACTIVE"),
+        ),
         pointerBridge: diagnostics.includes("INFERNUX_WEB_POINTER_BRIDGE_READY"),
         textBridge: diagnostics.includes("INFERNUX_WEB_TEXT_BRIDGE_READY"),
         visualViewport: diagnostics.includes("INFERNUX_WEB_VISUAL_VIEWPORT_READY"),
@@ -127,13 +145,15 @@ async function main() {
         diagnosticTail: diagnostics.slice(-80),
       };
     });
-    if (pageErrors.length || result.unhandledErrors.length ||
+    if (pageErrors.length || consoleErrors.length || result.unhandledErrors.length ||
+        !result.pythonReady || !result.nativeModuleReady || !result.sceneReady ||
+        !result.sceneRenderReady || !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
         !result.pageHide || !result.pageShow) {
-      throw new Error(JSON.stringify({ result, pageErrors }));
+      throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));
     }
     delete result.diagnosticTail;
     process.stdout.write(`${JSON.stringify(result)}\n`);
