@@ -424,6 +424,32 @@ void TestWaitHelpIsProfiled()
     infernux::JobSystem::Shutdown();
 }
 
+void TestInlineExecutionMode()
+{
+    infernux::JobSystem::InitializeInline();
+    auto &jobs = infernux::JobSystem::Get();
+    Require(jobs.IsInline(), "inline JobSystem did not expose its execution mode");
+    Require(jobs.GetWorkerCount() == 0, "inline JobSystem created a worker thread");
+
+    std::thread::id executionThread;
+    const std::thread::id ownerThread = std::this_thread::get_id();
+    auto deferred = jobs.Schedule([&executionThread] { executionThread = std::this_thread::get_id(); });
+    Require(!deferred.IsComplete(), "inline work ran during submission");
+    Require(jobs.RunPendingJobs(1) == 1, "inline pump did not execute one queued job");
+    Require(deferred.IsComplete(), "inline pump did not complete its handle");
+    Require(executionThread == ownerThread, "inline work escaped the owner thread");
+
+    std::atomic<uint32_t> batchCount{0};
+    auto batch = jobs.ScheduleBatch(
+        8, [&batchCount](uint32_t) { return [&batchCount] { batchCount.fetch_add(1, std::memory_order_relaxed); }; });
+    jobs.WaitPassive(batch);
+    Require(batchCount.load(std::memory_order_relaxed) == 8, "inline passive wait did not drain the target work");
+
+    infernux::JobSystem::Get().Schedule([&batchCount] { batchCount.fetch_add(1, std::memory_order_relaxed); });
+    infernux::JobSystem::Shutdown();
+    Require(batchCount.load(std::memory_order_relaxed) == 9, "inline shutdown dropped queued work");
+}
+
 } // namespace
 
 int main()
@@ -442,6 +468,7 @@ int main()
         TestGroupAwareNestedWaitReleasesPermit();
         TestPriorityAgingPreventsStarvation();
         TestWaitHelpIsProfiled();
+        TestInlineExecutionMode();
     } catch (const std::exception &error) {
         std::cerr << "JobSystem test failed: " << error.what() << '\n';
         infernux::JobSystem::Shutdown();

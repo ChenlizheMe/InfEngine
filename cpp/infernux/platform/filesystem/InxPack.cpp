@@ -943,8 +943,14 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
             throw std::runtime_error("InxPack cannot extract entry: " + entry.path);
     };
 
-    // Archive entries are independently compressed and hashed. Bounded
-    // parallel extraction uses otherwise idle cores during a cold Player
+    // Archive entries are independently compressed and hashed. Browser builds
+    // deliberately remain single-threaded unless a future Player profile opts
+    // into wasm threads and the required cross-origin isolation contract.
+#if defined(INFERNUX_SINGLE_THREADED_RUNTIME)
+    for (size_t index = 0; index < manifest.entries.size(); ++index)
+        extractEntry(manifestInput, index);
+#else
+    // Native hosts use bounded parallel extraction during a cold Player
     // launch without creating an unbounded number of disk writers on slower
     // machines. Every worker owns its input stream and output file.
     const size_t hardwareThreads = std::max<size_t>(1, std::thread::hardware_concurrency());
@@ -979,6 +985,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
         worker.join();
     if (failure)
         std::rethrow_exception(failure);
+#endif
     return manifest;
 }
 
