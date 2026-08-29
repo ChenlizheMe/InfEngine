@@ -1,68 +1,55 @@
-# ------------------------------------------------------------------------------
-# Python Packaging and Installation
-# ------------------------------------------------------------------------------
-add_subdirectory(external/plugins)
+# Python wheel staging, packaging, and optional environment installation.
 
-set(INFERNUX_PYTHON_WHEEL_DIR "${CMAKE_BINARY_DIR}/python_wheel")
+set(INFERNUX_PYTHON_STAGE_DIR "${CMAKE_BINARY_DIR}/stage/python-wheel-source")
+set(INFERNUX_PYTHON_WHEEL_DIR "${CMAKE_BINARY_DIR}/python-wheel")
 
-add_custom_target(package_and_install_python
+add_custom_target(stage_python_package
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} --install "${CMAKE_BINARY_DIR}"
+        --config "$<CONFIG>"
+        --prefix "${INFERNUX_PYTHON_STAGE_DIR}"
+        --component ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    DEPENDS
+        prebuild_player_runtime
+        infernux_official_plugins
+    COMMENT "Assembling the Python wheel source tree under out/stage"
+    VERBATIM
+)
+
+add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E echo "Ensuring Python packaging tools are available..."
     COMMAND ${CMAKE_COMMAND}
         -DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}
         -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
         -P "${CMAKE_SOURCE_DIR}/cmake/ensure_python_packaging_tools.cmake"
 
-    COMMAND ${CMAKE_COMMAND} -E echo "Building Python wheel via '${Python3_EXECUTABLE} -m build --wheel'..."
-    # setuptools reuses python package files from this staging directory when
-    # their timestamps look current. Native dependencies can otherwise come
-    # from a previous CMake configuration (for example Release Jolt.dll beside
-    # a RelWithDebInfo _Infernux.pyd).
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/build"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/python/Infernux.egg-info"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/build"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/python/Infernux.egg-info"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_WHEEL_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_PYTHON_WHEEL_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E env
-        "INFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
-        "${Python3_EXECUTABLE}" -m build --wheel --no-isolation --outdir "${INFERNUX_PYTHON_WHEEL_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E chdir "${INFERNUX_PYTHON_STAGE_DIR}"
+        ${CMAKE_COMMAND} -E env
+        "INFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}"
+        "${Python3_EXECUTABLE}" -m build --wheel --no-isolation
+        --outdir "${INFERNUX_PYTHON_WHEEL_DIR}"
 
-    COMMAND ${CMAKE_COMMAND} -E echo "Verifying native wheel payload against the current build..."
     COMMAND ${CMAKE_COMMAND}
-        -DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DINFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
         -P "${CMAKE_SOURCE_DIR}/cmake/verify_python_wheel.cmake"
 
-    COMMAND ${CMAKE_COMMAND} -E echo "Removing build metadata before wheel installation..."
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/python/Infernux.egg-info"
+    DEPENDS stage_python_package
+    COMMENT "Building and verifying the Infernux Python wheel"
+    VERBATIM
+)
 
-    COMMAND ${CMAKE_COMMAND} -E echo "Installing built wheel via pip..."
+add_custom_target(install_python_wheel
     COMMAND ${CMAKE_COMMAND}
         -DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
         -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
         -P "${CMAKE_SOURCE_DIR}/install_wheel.cmake"
-
-    COMMAND ${CMAKE_COMMAND} -E echo "Cleaning up .egg-info directory..."
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/python/Infernux.egg-info"
-
-    COMMAND ${CMAKE_COMMAND} -E echo "Cleaning Python build artifacts after packaging..."
-    COMMAND ${CMAKE_COMMAND}
-            "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
-            -DPYTHON_DIR=${CMAKE_SOURCE_DIR}/python
-            -P ${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake
-    COMMAND ${CMAKE_COMMAND}
-            "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
-            -DPYTHON_DIR=${CMAKE_SOURCE_DIR}/packaging
-            -P ${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake
-
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Python packaging and installation after native module build"
-)
-
-# Keep packaging behind one ordered dependency chain. The native Python
-# modules already depend on clean_python_pycache; adding cleanup here as a
-# second root allows it to race runtime staging under parallel MSBuild.
-add_dependencies(
-    package_and_install_python
-    prebuild_player_runtime
-    infernux_official_plugins
+    DEPENDS package_python
+    COMMENT "Installing the verified Infernux wheel into the active Python environment"
+    VERBATIM
 )

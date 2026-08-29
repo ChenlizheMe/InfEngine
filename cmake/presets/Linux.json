@@ -1,0 +1,107 @@
+{
+  "version": 6,
+  "include": ["Base.json"],
+  "configurePresets": [
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "infernux-base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "INFERNUX_BUILD_PLAYER_HOST": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-dev",
+      "displayName": "Linux Clang Development",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "displayName": "Linux Clang Release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-headless",
+      "displayName": "Linux Clang Headless Validation",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-clang-dev",
+      "configurePreset": "linux-clang-dev",
+      "jobs": 8
+    },
+    {
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8
+    },
+    {
+      "name": "linux-clang-headless",
+      "configurePreset": "linux-clang-headless",
+      "jobs": 8
+    },
+    {
+      "name": "linux-clang-stage",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["stage_python_package"]
+    },
+    {
+      "name": "linux-clang-wheel",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["package_python"]
+    },
+    {
+      "name": "linux-clang-install-wheel",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["install_python_wheel"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-clang-dev",
+      "configurePreset": "linux-clang-dev",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "linux-clang-headless",
+      "configurePreset": "linux-clang-headless",
+      "filter": {
+        "exclude": {"label": "requires_vulkan_device"}
+      },
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}

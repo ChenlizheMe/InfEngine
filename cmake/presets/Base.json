@@ -1,0 +1,16 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "infernux-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build/${presetName}/python-sync"
+      },
+      "environment": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  ]
+}

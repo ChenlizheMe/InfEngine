@@ -1,0 +1,44 @@
+{
+  "version": 6,
+  "include": ["Windows.json", "Linux.json"],
+  "workflowPresets": [
+    {
+      "name": "windows-pr",
+      "displayName": "Windows PR Validation",
+      "steps": [
+        {"type": "configure", "name": "windows-msvc-dev"},
+        {"type": "build", "name": "windows-msvc-dev"},
+        {"type": "test", "name": "windows-msvc-dev"}
+      ]
+    },
+    {
+      "name": "linux-pr",
+      "displayName": "Linux PR Validation",
+      "steps": [
+        {"type": "configure", "name": "linux-clang-dev"},
+        {"type": "build", "name": "linux-clang-dev"},
+        {"type": "test", "name": "linux-clang-dev"}
+      ]
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows Release Validation",
+      "steps": [
+        {"type": "configure", "name": "windows-msvc-release"},
+        {"type": "build", "name": "windows-msvc-release"},
+        {"type": "test", "name": "windows-msvc-release"},
+        {"type": "build", "name": "windows-msvc-wheel"}
+      ]
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Release Validation",
+      "steps": [
+        {"type": "configure", "name": "linux-clang-release"},
+        {"type": "build", "name": "linux-clang-release"},
+        {"type": "test", "name": "linux-clang-release"},
+        {"type": "build", "name": "linux-clang-wheel"}
+      ]
+    }
+  ]
+}
