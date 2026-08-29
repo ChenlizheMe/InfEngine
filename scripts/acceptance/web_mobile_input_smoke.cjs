@@ -1,14 +1,40 @@
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const { chromium } = require("playwright");
+
+function resolveBrowserExecutable() {
+  if (process.env.INFERNUX_WEB_BROWSER) {
+    return process.env.INFERNUX_WEB_BROWSER;
+  }
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+
+  const roots = [
+    process.env["ProgramFiles(x86)"],
+    process.env.ProgramFiles,
+    process.env.LOCALAPPDATA,
+  ].filter(Boolean);
+  const candidates = roots.map((root) => path.join(
+    root,
+    "Microsoft",
+    "Edge",
+    "Application",
+    "msedge.exe",
+  ));
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
 
 async function main() {
   const url = process.argv[2];
   if (!url) throw new Error("usage: node web_mobile_input_smoke.cjs <url>");
-  const executablePath = process.env.INFERNUX_WEB_BROWSER || undefined;
+  const executablePath = resolveBrowserExecutable();
   const browser = await chromium.launch({
     executablePath,
     headless: true,
+    timeout: 30000,
     args: ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"],
   });
   const page = await browser.newPage({
