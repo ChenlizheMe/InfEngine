@@ -2189,8 +2189,8 @@ int main()
     assert(!updatedGraphicsDesc.colorTargets[0].blendEnabled && updatedGraphicsDesc.depth.writeEnabled);
     liveMaterialState.blendEnable = true;
     liveMaterialState.depthWriteEnable = false;
-    liveMaterialState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    liveMaterialState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    liveMaterialState.srcColorBlendFactor = MaterialBlendFactor::One;
+    liveMaterialState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
     billboardDesc.material->SetRenderState(liveMaterialState);
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
