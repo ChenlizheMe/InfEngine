@@ -117,7 +117,7 @@ list(REMOVE_DUPLICATES INFERNUX_INCLUDE_DIRS)
 # Native Runtime And pybind11 Module Definition
 # ------------------------------------------------------------------------------
 set(PYBIND11_FINDPYTHON ON)
-find_package(Python3 COMPONENTS Interpreter Development.Module Development.Embed REQUIRED)
+find_package(Python3 3.13 EXACT COMPONENTS Interpreter Development.Module Development.Embed REQUIRED)
 
 # Auto-discover pip-installed pybind11 so find_package works out of the box
 execute_process(
@@ -192,10 +192,10 @@ if(WIN32 AND INFERNUX_BUILD_PLAYER_HOST)
     )
     if(MSVC)
         target_compile_options(InfernuxPlayerHost PRIVATE /utf-8 /O1)
-        # Python 3.12's Windows headers inject python312.lib through
+        # Python 3.13's Windows headers inject python313.lib through
         # pragma comment(lib). PlayerHost resolves every PEP 587 symbol from
-        # python312.dll at runtime, so an import-library dependency is invalid.
-        target_link_options(InfernuxPlayerHost PRIVATE /NODEFAULTLIB:python312.lib)
+        # python313.dll at runtime, so an import-library dependency is invalid.
+        target_link_options(InfernuxPlayerHost PRIVATE /NODEFAULTLIB:python313.lib)
     endif()
     target_include_directories(InfernuxPlayerHost PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp

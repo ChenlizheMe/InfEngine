@@ -5,10 +5,10 @@ if(NOT Python3_EXECUTABLE)
 endif()
 
 add_custom_target(prepare_bundled_python_runtime
-    COMMAND ${CMAKE_COMMAND} -E echo "Ensuring bundled Python 3.12 runtime is available..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Ensuring bundled Python 3.13 runtime is available..."
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_SOURCE_DIR}/packaging/stage_bundled_python_runtime.py"
-        --dest-root "${CMAKE_SOURCE_DIR}/out/package/runtime/python312"
+        --dest-root "${CMAKE_SOURCE_DIR}/out/package/runtime/python313"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Stage bundled full Python runtime assets"
 )
