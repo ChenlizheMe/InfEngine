@@ -34,3 +34,9 @@ arguments on each host. Save each result with `--trajectory-output`, then pass
 the two JSON files to `compare_headless_trajectories.py`. The comparison ignores
 host-specific project paths and checks the sampled state with an explicit
 numeric tolerance.
+
+Browser acceptance dependencies are isolated under `scripts/acceptance/`.
+Run `npm ci --prefix scripts/acceptance` after cloning, then invoke
+`web_mobile_input_smoke.cjs` against a locally served Web Player. On Windows it
+uses the installed Microsoft Edge binary; CI hosts may install the pinned
+Playwright Chromium build explicitly.
