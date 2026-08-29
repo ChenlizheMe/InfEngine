@@ -2160,15 +2160,24 @@ finally:
         for guid in sorted(selected):
             entry = selected[guid]
             source = self._library_source_entry_path(entry)
+            builtin_relative = (
+                self._builtin_resource_relative_path(source)
+                if bool(entry.get("read_only", False))
+                else ""
+            )
             validation_root = self.project_path
             if not is_path_within(source, validation_root, allow_root=False):
-                validation_root = next(
-                    (
-                        root
-                        for root in builtin_resources_roots
-                        if is_path_within(source, root, allow_root=False)
-                    ),
-                    validation_root,
+                validation_root = (
+                    self._builtin_resource_source_root(source)
+                    if builtin_relative
+                    else next(
+                        (
+                            root
+                            for root in builtin_resources_roots
+                            if is_path_within(source, root, allow_root=False)
+                        ),
+                        validation_root,
+                    )
                 )
             try:
                 source_fingerprint(validation_root, entry)
@@ -2183,20 +2192,11 @@ finally:
             if is_path_within(source, assets_root, allow_root=False):
                 copy_source(source, reason=f"AssetIndex GUID {guid}")
                 continue
-            if bool(entry.get("read_only", False)) and any(
-                is_path_within(source, root, allow_root=False)
-                for root in builtin_resources_roots
-            ):
+            if bool(entry.get("read_only", False)) and builtin_relative:
                 # Desktop Players receive built-in resources from Runtime.inxrt.
                 # Platform-owned hosts do not carry that desktop archive, so
                 # their cook embeds only the built-ins reached by this project.
                 if package_builtin_resources:
-                    builtin_relative = self._builtin_resource_relative_path(source)
-                    if not builtin_relative:
-                        raise RuntimeError(
-                            "Player asset cook could not derive a built-in resource "
-                            f"path: guid={guid}, source={source}"
-                        )
                     destination_relative = (
                         f"Infernux/resources/{builtin_relative}"
                     )
@@ -2322,7 +2322,30 @@ finally:
         for root in self._builtin_resource_roots():
             if is_path_within(source, root, allow_root=False):
                 return relative_path(source, root).replace("\\", "/")
+        # A source checkout may run the Editor while an installed wheel in the
+        # project's virtual environment performs the build. Both trees own
+        # the same immutable built-ins, but their absolute roots differ. The
+        # canonical package layout remains a stable runtime identity.
+        portable = portable_path(source)
+        marker = "/infernux/resources/"
+        marker_index = portable.casefold().rfind(marker)
+        if marker_index >= 0:
+            relative = portable[marker_index + len(marker) :].lstrip("/")
+            if relative and not relative.startswith("../"):
+                return relative
         return ""
+
+    def _builtin_resource_source_root(self, source_path: str) -> str:
+        """Return the resource root represented by one canonical source path."""
+
+        source = resolved_path(source_path)
+        relative = self._builtin_resource_relative_path(source)
+        if not relative:
+            return ""
+        root = source
+        for _part in Path(relative).parts:
+            root = os.path.dirname(root)
+        return resolved_path(root)
 
     def _collect_library_asset_entries(self, entries: list[dict]) -> dict[str, dict]:
         """Select every current imported product beneath ``Assets``.
@@ -2366,23 +2389,16 @@ finally:
                 allow_root=False,
             )
         }
-        builtin_shader_roots = tuple(
-            resolved_path(os.path.join(root, "shaders"))
-            for root in self._builtin_resource_roots()
-        )
         roots.update(
             str(entry["guid"])
             for entry in entries
             if bool(entry.get("read_only", False))
             and logical_asset_type(entry) == "shader"
-            and any(
-                is_path_within(
-                    self._library_source_entry_path(entry),
-                    builtin_shader_root,
-                    allow_root=False,
-                )
-                for builtin_shader_root in builtin_shader_roots
+            and self._builtin_resource_relative_path(
+                self._library_source_entry_path(entry)
             )
+            .casefold()
+            .startswith("shaders/")
         )
 
         selected: dict[str, dict] = {}

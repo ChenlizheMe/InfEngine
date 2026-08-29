@@ -2587,13 +2587,40 @@ print(json.dumps({{
 
         ctypes_path = Path(resolved_path(ctypes_spec.origin))
         environment_root = python_root.parent
-        search_roots = (
-            python_root,
-            python_root / "DLLs",
-            python_root / "Library" / "bin",
-            environment_root / "lib",
-            ctypes_path.parent,
-        )
+        environment_roots: list[Path] = []
+        environment_root_keys: set[str] = set()
+        environment_candidates = [environment_root]
+        if path_key(self._builder_python) == path_key(sys.executable):
+            # A project venv usually contains only a launcher and site-packages.
+            # Its CPython shared library remains in the managed base runtime.
+            # Follow that base only for the interpreter running this builder;
+            # an explicitly supplied foreign interpreter must stay isolated.
+            environment_candidates.extend(
+                (
+                    Path(resolved_path(sys.prefix)),
+                    Path(resolved_path(sys.exec_prefix)),
+                    Path(resolved_path(sys.base_prefix)),
+                    Path(resolved_path(sys.base_exec_prefix)),
+                )
+            )
+        for candidate in environment_candidates:
+            key = os.path.normcase(str(candidate))
+            if key in environment_root_keys:
+                continue
+            environment_root_keys.add(key)
+            environment_roots.append(candidate)
+
+        search_roots_list = [python_root, ctypes_path.parent]
+        for root in environment_roots:
+            search_roots_list.extend(
+                (
+                    root,
+                    root / "DLLs",
+                    root / "Library" / "bin",
+                    root / "lib",
+                )
+            )
+        search_roots = tuple(dict.fromkeys(search_roots_list))
 
         def find_runtime_file(filename: str, *, required: bool) -> Optional[Path]:
             for root in search_roots:
@@ -2639,11 +2666,12 @@ print(json.dumps({{
         elif sys.platform.startswith("linux"):
             python_candidates = sorted(
                 candidate
+                for root in environment_roots
                 for pattern in (
                     f"{LINUX_PYTHON_SHARED_PREFIX}.1.0",
                     LINUX_PYTHON_SHARED_PREFIX,
                 )
-                for candidate in (environment_root / "lib").glob(pattern)
+                for candidate in (root / "lib").glob(pattern)
                 if candidate.is_file()
             )
             if not python_candidates:
@@ -2654,7 +2682,8 @@ print(json.dumps({{
             python_library = python_candidates[0]
             ffi_candidates = sorted(
                 candidate
-                for candidate in (environment_root / "lib").glob("libffi.so*")
+                for root in environment_roots
+                for candidate in (root / "lib").glob("libffi.so*")
                 if candidate.is_file()
             )
             if not ffi_candidates:

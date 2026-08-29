@@ -1188,6 +1188,50 @@ def test_python_bootstrap_runtime_accepts_standalone_libffi_name(tmp_path, monke
     assert resolved_encodings == encodings
 
 
+def test_python_bootstrap_runtime_follows_venv_base_prefix(tmp_path, monkeypatch):
+    venv_root = tmp_path / "project" / ".venv"
+    scripts_root = venv_root / "Scripts"
+    dll_root = venv_root / "DLLs"
+    base_root = tmp_path / "managed-python313"
+    encodings = venv_root / "Lib" / "encodings"
+    scripts_root.mkdir(parents=True)
+    dll_root.mkdir(parents=True)
+    base_root.mkdir()
+    encodings.mkdir(parents=True)
+    python_executable = scripts_root / "python.exe"
+    python_executable.write_bytes(b"venv launcher")
+    python_dll = base_root / "python313.dll"
+    python_dll.write_bytes(b"base Python ABI")
+    ctypes_module = dll_root / "_ctypes.pyd"
+    ctypes_module.write_bytes(b"ctypes ABI")
+    libffi = dll_root / "libffi-8.dll"
+    libffi.write_bytes(b"libffi ABI")
+
+    def find_spec(name):
+        if name == "_ctypes":
+            return SimpleNamespace(origin=str(ctypes_module))
+        if name == "encodings":
+            return SimpleNamespace(submodule_search_locations=[str(encodings)])
+        return None
+
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")
+    monkeypatch.setattr(nuitka_builder_module.sys, "prefix", str(venv_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "exec_prefix", str(venv_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "base_prefix", str(base_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "base_exec_prefix", str(base_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "executable", str(python_executable))
+    monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
+    monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = str(python_executable)
+
+    sources, resolved_encodings = builder._python_bootstrap_runtime_sources()
+
+    assert sources["python313.dll"] == python_dll
+    assert sources["libffi-8.dll"] == libffi
+    assert resolved_encodings == encodings
+
+
 def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     import Infernux
 
@@ -3925,6 +3969,83 @@ def test_package_resource_shader_keeps_guid_identity_in_headless_build(
     )
     assert shader_record["metadata"]["metadata"]["shader_id"]["value"] == (
         "Particle Sprite"
+    )
+
+
+def test_source_checkout_shader_keeps_identity_when_wheel_builds_project(
+    tmp_path, monkeypatch
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    scene = project / "Assets" / "Main.scene"
+    checkout_resources = (
+        tmp_path / "source-checkout" / "python" / "Infernux" / "resources"
+    )
+    installed_resources = (
+        tmp_path / "project-venv" / "site-packages" / "Infernux" / "resources"
+    )
+    shader = checkout_resources / "shaders" / "particle_sprite.vert"
+    shader.parent.mkdir(parents=True, exist_ok=True)
+    shader.write_text(
+        'ShaderInfo { Name "Particle Sprite" Capabilities [ParticleSprite] }\n',
+        encoding="utf-8",
+    )
+    installed_resources.mkdir(parents=True, exist_ok=True)
+    scene.write_text("{}\n", encoding="utf-8")
+    scene_entry = _asset_index_entry(project, scene, "scene-guid", "", "Scene")
+    shader_entry = _asset_index_entry(
+        project,
+        shader,
+        "particle-shader-guid",
+        "",
+        "Shader",
+    )
+    shader_entry["read_only"] = True
+    shader_entry["metadata"]["metadata"]["shader_id"] = {
+        "type": "string",
+        "value": "Particle Sprite",
+    }
+    monkeypatch.setattr(
+        game_builder_module._resources,
+        "get_package_resources_path",
+        lambda: str(installed_resources),
+    )
+    monkeypatch.setattr(
+        game_builder_module._resources,
+        "resources_path",
+        str(installed_resources),
+    )
+    entries = [scene_entry, shader_entry]
+    _write_asset_index(project, entries)
+    (project / "ProjectSettings" / "BuildSettings.json").write_text(
+        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        encoding="utf-8",
+    )
+
+    selected = builder._collect_library_asset_entries(entries)
+
+    assert set(selected) == {"scene-guid", "particle-shader-guid"}
+    builder._copy_cooked_assets(str(tmp_path / "copy" / "Data"))
+    assert "particle-shader-guid" in builder._cooked_asset_entries
+    builder._cooked_asset_entries = {
+        "particle-shader-guid": selected["particle-shader-guid"]
+    }
+    builder._runtime_artifact_bindings = {}
+    final_dir = tmp_path / "dist"
+    builder._write_runtime_asset_records(str(final_dir))
+    records = json.loads(
+        (final_dir / "Data" / "Library" / "RuntimeAssetRecords.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    shader_record = next(
+        item for item in records["entries"] if item["guid"] == "particle-shader-guid"
+    )
+    assert shader_record["runtime_path"] == (
+        "Library/Resources/shaders/particle_sprite.vert"
+    )
+    assert shader_record["runtime_artifacts"][0]["runtime_path"] == (
+        "Infernux/resources/shaders/particle_sprite.vert"
     )
 
 
