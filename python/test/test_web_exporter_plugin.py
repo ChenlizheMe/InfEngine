@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from Infernux.engine.build import BuildProfile, BuildRequest
+from Infernux.plugins import player_file_exported
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -196,20 +197,27 @@ def test_web_export_stages_cooked_host_then_fails_on_native_runtime(
 
 def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     _web_module(monkeypatch)
-    runtime = (
-        ROOT / "external" / "plugins" / "infernux_web" / "Runtime" / "web"
+    host_templates = (
+        ROOT
+        / "external"
+        / "plugins"
+        / "infernux_web"
+        / "Editor"
+        / "infernux_web"
+        / "templates"
+        / "host"
     )
-    cmake = (runtime / "CMakeLists.txt").read_text(encoding="utf-8")
-    main = (runtime / "main.cpp").read_text(encoding="utf-8")
-    rhi_backend = (runtime / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
-    scene_renderer = (runtime / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
+    cmake = (host_templates / "CMakeLists.txt").read_text(encoding="utf-8")
+    main = (host_templates / "main.cpp").read_text(encoding="utf-8")
+    rhi_backend = (host_templates / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
+    scene_renderer = (host_templates / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
     fullscreen = (
         ROOT / "cpp" / "infernux" / "function" / "renderer" / "FullscreenRenderer.cpp"
     ).read_text(encoding="utf-8")
-    shell = (runtime / "shell.html").read_text(encoding="utf-8")
-    bootstrap = (runtime / "bootstrap.py").read_text(encoding="utf-8")
-    host_module = (runtime / "InfernuxWebHostModule.cpp").read_text(encoding="utf-8")
-    revision_stamp = (runtime / "stamp_asset_revision.cmake").read_text(
+    shell = (host_templates / "shell.html").read_text(encoding="utf-8")
+    bootstrap = (host_templates / "bootstrap.py").read_text(encoding="utf-8")
+    host_module = (host_templates / "InfernuxWebHostModule.cpp").read_text(encoding="utf-8")
+    revision_stamp = (host_templates / "stamp_asset_revision.cmake").read_text(
         encoding="utf-8"
     )
 
@@ -281,6 +289,22 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert re.search(r"\bopengl\b", combined) is None
     assert re.search(r"\bwebgl\b", combined) is None
     assert re.search(r"\bgles\b", combined) is None
+
+
+def test_web_host_build_templates_are_editor_only():
+    plugin_root = ROOT / "external" / "plugins" / "infernux_web"
+    host_templates = (
+        plugin_root / "Editor" / "infernux_web" / "templates" / "host"
+    )
+
+    assert not (plugin_root / "Runtime" / "web").exists()
+    assert (host_templates / "CMakeLists.txt").is_file()
+    assert (host_templates / "main.cpp").is_file()
+    assert (host_templates / "shell.html").is_file()
+    for path in host_templates.rglob("*"):
+        if path.is_file():
+            relative = path.relative_to(plugin_root).as_posix()
+            assert player_file_exported({}, relative) is False
 
 
 def test_web_exporter_reuses_verified_native_zstd_checkout(monkeypatch, tmp_path):

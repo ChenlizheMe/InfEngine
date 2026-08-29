@@ -365,10 +365,10 @@ def _configure_and_build_host(
         )
     distribution = str(details.get("distribution", "Ubuntu-22.04"))
     source_root = Path(__file__).resolve().parents[5]
-    runtime_source = Path(__file__).resolve().parents[2] / "Runtime" / "web"
+    host_template_source = Path(__file__).resolve().parent / "templates" / "host"
     build_root = staging / "host-build"
     wsl_source_root = _wsl_path(source_root, distribution)
-    wsl_runtime_source = _wsl_path(runtime_source, distribution)
+    wsl_host_template_source = _wsl_path(host_template_source, distribution)
     wsl_build_root = _wsl_path(build_root, distribution)
     wsl_player_assets = _wsl_path(player_assets, distribution)
     wsl_shader_manifest = _wsl_path(
@@ -382,7 +382,9 @@ def _configure_and_build_host(
     emsdk_root = str(details["emsdk_root"])
     cpython_root = str(details["cpython_root"])
     tint_path = str(details["tint_path"])
-    asset_revision = _web_asset_revision(staging, player_assets, runtime_source)
+    asset_revision = _web_asset_revision(
+        staging, player_assets, host_template_source
+    )
     zstd_source = _find_local_zstd_source(source_root)
     zstd_argument = ""
     if zstd_source is not None:
@@ -397,7 +399,7 @@ def _configure_and_build_host(
     )
     configure = (
         "emcmake cmake "
-        f"-S {shlex.quote(wsl_runtime_source)} "
+        f"-S {shlex.quote(wsl_host_template_source)} "
         f"-B {shlex.quote(wsl_build_root)} -G Ninja "
         f"-DCMAKE_BUILD_TYPE={configuration} "
         f"-DINFERNUX_WEB_CPYTHON_SOURCE={shlex.quote(cpython_root)} "
@@ -463,14 +465,14 @@ def _find_local_zstd_source(source_root: Path) -> Path | None:
 def _web_asset_revision(
     staging: Path,
     player_assets: Path,
-    runtime_source: Path,
+    host_template_source: Path,
 ) -> str:
     """Hash every staged byte that can change the browser asset bundle."""
 
     digest = hashlib.sha256()
     roots = (
         ("player", player_assets),
-        ("runtime", runtime_source),
+        ("host", host_template_source),
         ("shaders", staging / "shader-cook"),
     )
     files: list[tuple[str, Path]] = []

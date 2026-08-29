@@ -151,10 +151,9 @@ class AndroidPlatformExporter(PlatformExporter):
             )
         request.report("prepare", 0, 1, "Preparing Android SDL host project")
         staging.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
+        _stage_host_template(
             Path(__file__).with_name("templates") / "host",
             staging,
-            dirs_exist_ok=True,
         )
         python_prefix = _python_prefix(request, abi)
         if python_prefix is None:
@@ -500,6 +499,25 @@ def _stage_engine_python_package(
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyi"),
     )
     request.report("analyze", 2, 2, "Android Player Python modules staged")
+
+
+def _stage_host_template(source: Path, staging: Path) -> None:
+    """Copy build templates without project AssetDatabase sidecars.
+
+    Installed plugins live under ``Packages`` and therefore receive ``.meta``
+    identity files.  Those sidecars are meaningful to Infernux, but Android's
+    resource merger treats every file below ``res`` as a platform resource.
+    Ignore new sidecars and prune stale copies left in the reusable host cache.
+    """
+
+    shutil.copytree(
+        source,
+        staging,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("*.meta"),
+    )
+    for sidecar in staging.rglob("*.meta"):
+        sidecar.unlink()
 
 
 def _cook_player_content(

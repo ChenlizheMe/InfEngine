@@ -202,6 +202,27 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "@ANDROID_" not in cmake + gradle + root_gradle
 
 
+def test_android_host_template_excludes_asset_database_sidecars(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    source = tmp_path / "installed-plugin-template"
+    values = source / "app/src/main/res/values"
+    values.mkdir(parents=True)
+    (values / "strings.xml").write_text("<resources />\n", encoding="utf-8")
+    (values / "strings.xml.meta").write_text("{}\n", encoding="utf-8")
+    staging = tmp_path / "host-cache"
+    stale = staging / "app/src/main/res/values/styles.xml.meta"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("{}\n", encoding="utf-8")
+
+    exporter_module._stage_host_template(source, staging)
+
+    assert (staging / "app/src/main/res/values/strings.xml").is_file()
+    assert not list(staging.rglob("*.meta"))
+
+
 @pytest.mark.parametrize(
     ("option", "width", "height", "expected"),
     (
