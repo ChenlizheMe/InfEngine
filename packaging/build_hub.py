@@ -16,6 +16,7 @@ from typing import Mapping
 
 from installer.payload import HUB_PAYLOAD_ARCHIVE, create_payload_archive
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 _VISUAL_STUDIO_GENERATOR_PREFIX = "Visual Studio "
@@ -32,7 +33,10 @@ _DEFAULT_TIMESTAMP_URL = "http://timestamp.digicert.com"
 
 def _validate_runtime_bundle(bundle_path: Path) -> None:
     archive = runtime_archive_for_machine()
-    marker_name = "python312/.infernux-private-python-runtime.json"
+    marker_name = (
+        f"{DEFAULT_PYTHON_RUNTIME.directory_name}/"
+        ".infernux-private-python-runtime.json"
+    )
     try:
         with zipfile.ZipFile(bundle_path) as bundle:
             marker = json.loads(bundle.read(marker_name))
@@ -70,7 +74,7 @@ def _require_msbuild_generator(cmake_generator: str) -> None:
     ):
         raise RuntimeError(
             "Windows Hub packaging must be launched by the Visual Studio/MSBuild "
-            "CMake preset. Run: cmake --build --preset packaging-installer"
+            "CMake preset. Run: cmake --build --preset windows-hub-installer"
         )
 
 

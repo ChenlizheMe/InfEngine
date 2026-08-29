@@ -39,6 +39,7 @@ class _CheckWorker(QObject):
                     "current_version": update.current_version if update is not None else "",
                     "target_version": update.target_version if update is not None else "",
                     "asset_name": update.asset_name if update is not None else "",
+                    "required": bool(update.required) if update is not None else False,
                 }
             )
             self.finished.emit(update)
@@ -160,19 +161,32 @@ class UpdateController(QObject):
                     self.main_window, tr("Hub Update"), tr("Infernux Hub is up to date."),
                 )
             return
-        answer = QMessageBox.question(
-            self.main_window,
-            tr("Hub Update Available"),
-            tr(
-                "Infernux Hub {version} is available. Update now?\n\n"
-                "Hub will close, install the verified update, and restart automatically.",
-                version=update.target_version,
-            ),
-        )
-        if answer != QMessageBox.Yes:
-            return
+        if update.required:
+            QMessageBox.information(
+                self.main_window,
+                tr("Hub Update Required"),
+                tr(
+                    "Infernux Hub must be updated to {version} before this version of "
+                    "the engine can be installed.\n\nThe verified update will be "
+                    "downloaded now. Hub will then restart automatically.",
+                    version=update.target_version,
+                ),
+            )
+        else:
+            answer = QMessageBox.question(
+                self.main_window,
+                tr("Hub Update Available"),
+                tr(
+                    "Infernux Hub {version} is available. Update now?\n\n"
+                    "Hub will close, install the verified update, and restart automatically.",
+                    version=update.target_version,
+                ),
+            )
+            if answer != QMessageBox.Yes:
+                return
         dialog = UpdateProgressDialog(update, self.main_window)
-        if dialog.exec() == QDialog.Accepted:
+        result = dialog.exec()
+        if result == QDialog.Accepted or update.required:
             self.main_window.hide()
             self.main_window.app.quit()
 

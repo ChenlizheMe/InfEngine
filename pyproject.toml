@@ -8,7 +8,7 @@ version = "0.3.7"
 description = "Infernux (熔炉) — open-source game engine with a C++17 / Vulkan runtime and a Python layer for gameplay, tools, and render authoring."
 authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13,<3.14"
 license = "MIT"
 keywords = ["game-engine", "vulkan", "python", "rendergraph", "editor"]
 classifiers = [
@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Games/Entertainment",
 ]

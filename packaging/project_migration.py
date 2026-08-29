@@ -12,6 +12,10 @@ from pathlib import Path
 
 from hub_utils import is_frozen
 from project_paths import inspect_existing_project
+from project_python_runtime import (
+    project_runtime_settings_path,
+    write_project_python_version,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,18 @@ class ProjectMigrationService:
             raise RuntimeError(f"The project already uses Infernux {target_version}.")
         if self.version_manager is None or not self.version_manager.is_installed(target_version):
             raise RuntimeError(f"Infernux {target_version} is not installed in Hub.")
+        target_python = self.version_manager.python_version_for_engine(target_version)
+        if not target_python:
+            raise RuntimeError(
+                f"Infernux {target_version} has no valid Python ABI binding."
+            )
+        if is_frozen() and not self.project_model.runtime_manager.has_runtime(
+            target_python
+        ):
+            raise RuntimeError(
+                f"Infernux {target_version} requires Python {target_python}, which "
+                "is not installed in Hub. Install that Python runtime first."
+            )
 
         self._emit(on_status, "Creating project backup...")
         backup_path = self._create_backup(info.path, source_version, target_version)
@@ -53,6 +69,12 @@ class ProjectMigrationService:
         pin_bytes = Path(pin_path).read_bytes() if os.path.isfile(pin_path) else None
         requirements_path = os.path.join(info.path, "ProjectSettings", "requirements.txt")
         requirements_bytes = Path(requirements_path).read_bytes() if os.path.isfile(requirements_path) else None
+        python_settings_path = str(project_runtime_settings_path(info.path))
+        python_settings_bytes = (
+            Path(python_settings_path).read_bytes()
+            if os.path.isfile(python_settings_path)
+            else None
+        )
 
         if had_runtime:
             os.replace(runtime_path, saved_runtime)
@@ -60,6 +82,7 @@ class ProjectMigrationService:
         temp_requirements = requirements_path + f".migrate-{uuid.uuid4().hex}"
         try:
             self._emit(on_status, "Preparing target engine runtime...")
+            write_project_python_version(info.path, target_python)
             self.project_model._create_project_runtime(info.path, on_status=on_status)
             self.project_model._install_infernux_in_runtime(
                 info.path, target_version, on_status=on_status,
@@ -81,6 +104,7 @@ class ProjectMigrationService:
                 os.replace(saved_runtime, runtime_path)
             self._restore_file(pin_path, pin_bytes)
             self._restore_file(requirements_path, requirements_bytes)
+            self._restore_file(python_settings_path, python_settings_bytes)
             raise
 
         return MigrationResult(info.path, source_version, target_version, backup_path)

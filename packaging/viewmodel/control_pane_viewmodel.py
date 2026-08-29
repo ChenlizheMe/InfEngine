@@ -133,6 +133,7 @@ class LaunchPreparationWorker(QObject):
                 )
 
             self.progress.emit("Checking engine version...", 4)
+            python_version = ProjectModel.get_project_python_version(project_path)
             pinned_version = (
                 self.version_manager.read_project_version(project_path)
                 if self.version_manager
@@ -141,11 +142,14 @@ class LaunchPreparationWorker(QObject):
             if (
                 pinned_version
                 and self.version_manager
-                and not self.version_manager.is_installed(pinned_version)
+                and not self.version_manager.is_installed(
+                    pinned_version, python_version
+                )
             ):
                 raise RuntimeError(
-                    f"Infernux {pinned_version} is required by this project. "
-                    f"Open {tr('Installs')} and install it before launching."
+                    f"Infernux {pinned_version} for Python {python_version} is "
+                    f"required by this project. Open {tr('Installs')} and install "
+                    "that exact engine/Python combination before launching."
                 )
 
             if is_frozen():
@@ -154,8 +158,9 @@ class LaunchPreparationWorker(QObject):
                 if not os.path.isfile(python_exe):
                     raise RuntimeError(
                         "Project Python runtime not found at:\n"
-                        f"{os.path.join(project_path, '.runtime', 'python312')}\n\n"
-                        "Please recreate the project or reinstall the engine version."
+                        f"{os.path.dirname(python_exe)}\n\n"
+                        f"Install Python {python_version} in Hub, then repair this "
+                        "project runtime."
                     )
                 # Starting the editor is the authoritative native import check.
                 # A separate smoke-test process here used to double cold-start
@@ -433,14 +438,6 @@ class ControlPaneViewModel:
     def create_project(self, parent):
         from view.new_project_view import NewProjectView
 
-        if is_frozen() and self.runtime_manager is not None and not self.runtime_manager.has_runtime():
-            QMessageBox.warning(
-                parent,
-                tr("Python 3.12 Required"),
-                tr("Python 3.12 is not installed yet. Open the Installs page or restart the Hub and let it finish runtime setup first."),
-            )
-            return
-
         dialog = NewProjectView(self.version_manager, self.runtime_manager, parent)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -455,14 +452,15 @@ class ControlPaneViewModel:
         if is_frozen() and not engine_version:
             QMessageBox.warning(parent, tr("Missing Version"), tr("Please select an installed engine version."))
             return
-
         progress_dialog = CustomProgressDialog(parent)
         progress_dialog.show()
 
         self._init_error: str = ""
 
         self.thread = QThread()
-        self.worker = InitProjectWorker(self.model, new_name, project_path, engine_version)
+        self.worker = InitProjectWorker(
+            self.model, new_name, project_path, engine_version
+        )
         self.worker.moveToThread(self.thread)
 
         def _store_error(msg: str):

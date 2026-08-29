@@ -239,7 +239,7 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
 
     monkeypatch.setattr(model, "_copy_bundled_requirements", lambda dest, _version: Path(dest).write_text("", encoding="utf-8"))
 
-    def create_runtime(project, on_status=None):
+    def create_runtime(project, python_version="", on_status=None):
         runtime_locations.append(Path(project))
         (Path(project) / ".venv").mkdir()
 
@@ -398,6 +398,10 @@ class _MigrationVersionManager:
         return version == "0.3.0"
 
     @staticmethod
+    def python_version_for_engine(_version):
+        return "3.13"
+
+    @staticmethod
     def write_project_version(project, version):
         (Path(project) / ".infernux-version").write_text(version + "\n", encoding="utf-8")
 
@@ -440,6 +444,11 @@ def test_project_migration_backs_up_and_replaces_runtime(tmp_path: Path):
     assert result.source_version == "0.2.0"
     assert (project / ".infernux-version").read_text(encoding="utf-8").strip() == "0.3.0"
     assert (project / ".venv" / "engine.txt").read_text(encoding="utf-8") == "0.3.0"
+    assert json.loads(
+        (project / "ProjectSettings" / "PythonRuntime.json").read_text(
+            encoding="utf-8"
+        )
+    )["pythonVersion"] == "3.13"
     assert not (project / ".venv" / "old.txt").exists()
     with zipfile.ZipFile(result.backup_path) as archive:
         assert "Assets/scene.inx" in archive.namelist()

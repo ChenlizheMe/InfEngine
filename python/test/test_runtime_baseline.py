@@ -39,9 +39,9 @@ def _identity(*, role: str = "Editor", build: str = "Debug") -> RuntimeBaselineI
         flavor=f"{role}{build}",
         platform="Windows",
         architecture="AMD64",
-        python_version="3.12.0",
+        python_version="3.13.0",
         native_profile_enabled=build == "Debug",
-        engine_version="0.2.9",
+        engine_version="0.4.0",
         build_preset=build.casefold(),
     )
 

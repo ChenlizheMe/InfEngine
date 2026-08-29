@@ -1,4 +1,4 @@
-"""Notion-themed 'Create New Project' dialog."""
+"""Infernux Hub 'Create New Project' dialog."""
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -23,7 +23,6 @@ class NewProjectView(QDialog):
         self.setMinimumWidth(560)
         self.setModal(True)
         self._version_manager = version_manager
-        self._runtime_manager = runtime_manager
         self._has_installed_versions = False
 
         self.settings = QSettings("InfernuxEngine", "InfernuxEngine")
@@ -106,16 +105,9 @@ class NewProjectView(QDialog):
         self._no_version_hint.setWordWrap(True)
         self._no_version_hint.setVisible(False)
         self._no_version_hint.setObjectName("dialogErrorHint")
-        self._runtime_hint = QLabel(tr(
-            "Python 3.12 is not installed yet. Go to the Installs tab to install it first."
-        ))
-        self._runtime_hint.setWordWrap(True)
-        self._runtime_hint.setVisible(False)
-        self._runtime_hint.setObjectName("dialogErrorHint")
         ver_layout.addWidget(ver_label)
         ver_layout.addWidget(self.version_combo)
         ver_layout.addWidget(self._no_version_hint)
-        ver_layout.addWidget(self._runtime_hint)
         form_layout.addLayout(ver_layout)
         layout.addWidget(form_card)
         self.version_combo.currentIndexChanged.connect(self._update_create_button_state)
@@ -145,6 +137,7 @@ class NewProjectView(QDialog):
 
     def _populate_versions(self):
         """Fill the version combo box."""
+        self.version_combo.clear()
         installed: list[str] = []
         dev_mode = not is_frozen()
         if self._version_manager is not None:
@@ -160,10 +153,6 @@ class NewProjectView(QDialog):
             # Dev mode: add a "dev (current env)" option at the top
             self.version_combo.insertItem(0, tr("dev (current environment)"), "")
             self.version_combo.setCurrentIndex(0)
-        else:
-            missing_runtime = self._runtime_manager is not None and not self._runtime_manager.has_runtime()
-            if missing_runtime:
-                self._runtime_hint.setVisible(True)
 
         self._update_create_button_state()
 
@@ -173,7 +162,6 @@ class NewProjectView(QDialog):
         return bool(self.version_combo.currentData())
 
     def _update_create_button_state(self):
-        missing_runtime = is_frozen() and self._runtime_manager is not None and not self._runtime_manager.has_runtime()
         has_version = self._has_selected_version()
         if is_frozen():
             self._no_version_hint.setText(tr(
@@ -184,8 +172,7 @@ class NewProjectView(QDialog):
             self._no_version_hint.setVisible(not has_version)
         else:
             self._no_version_hint.setVisible(False)
-        self._runtime_hint.setVisible(missing_runtime)
-        self._create_btn.setEnabled(self.viewmodel.is_valid() and has_version and not missing_runtime)
+        self._create_btn.setEnabled(self.viewmodel.is_valid() and has_version)
 
     def _on_choose_path(self):
         current_path = self.path_edit.text() or ""

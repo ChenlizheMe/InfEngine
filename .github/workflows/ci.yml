@@ -29,7 +29,7 @@ jobs:
       - uses: conda-incubator/setup-miniconda@v3
         with:
           activate-environment: infernux
-          python-version: "3.12"
+          python-version: "3.13"
           auto-activate-base: false
 
       - name: Cache Vulkan SDK
@@ -60,14 +60,14 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset native-tests
+          cmake --preset windows-msvc-headless
 
       - name: Build native test preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --build --preset native-tests
+          cmake --build --preset windows-msvc-headless
 
       - name: Provide Vulkan loader for headless tests
         shell: pwsh
@@ -83,7 +83,7 @@ jobs:
           }
           $loader = Join-Path $runtimeBin "vulkan-1.dll"
           $destinations = @("python\Infernux\lib\vulkan-1.dll")
-          Get-ChildItem "out\build\native-tests" -Recurse -Filter "InfernuxRuntime.dll" |
+          Get-ChildItem "out\build\windows-msvc-headless" -Recurse -Filter "InfernuxRuntime.dll" |
             ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
           foreach ($destination in ($destinations | Select-Object -Unique)) {
             $parent = Split-Path -Parent $destination
@@ -96,4 +96,4 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          ctest --preset native-tests -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
+          ctest --preset windows-msvc-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure

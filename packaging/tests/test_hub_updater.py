@@ -31,6 +31,7 @@ def test_check_prefers_exact_incremental_asset(monkeypatch):
     assert update is not None
     assert update.incremental is True
     assert update.asset_name == patch
+    assert update.required is False
 
 
 def test_check_falls_back_to_full_asset(monkeypatch):
@@ -48,6 +49,42 @@ def test_check_falls_back_to_full_asset(monkeypatch):
     assert update is not None
     assert update.incremental is False
     assert update.asset_name == full
+
+
+def test_update_into_versioned_runtime_hub_is_required(monkeypatch):
+    target = "0.4.0"
+    full = f"InfernuxHub-{target}-windows-x64-full.zip"
+    manifest = "InfernuxHub-manifest.json"
+    checksums = f"{'2' * 64}  {full}\n{'3' * 64}  {manifest}\n"
+    release = {
+        "tag_name": f"v{target}",
+        "assets": [_asset("SHA256SUMS.txt"), _asset(full), _asset(manifest)],
+    }
+    responses = iter([json.dumps(release).encode(), checksums.encode()])
+    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: next(responses))
+
+    update = check_for_update("0.3.7")
+
+    assert update is not None
+    assert update.required is True
+
+
+def test_updates_after_runtime_catalog_migration_are_optional(monkeypatch):
+    target = "0.4.1"
+    full = f"InfernuxHub-{target}-windows-x64-full.zip"
+    manifest = "InfernuxHub-manifest.json"
+    checksums = f"{'2' * 64}  {full}\n{'3' * 64}  {manifest}\n"
+    release = {
+        "tag_name": f"v{target}",
+        "assets": [_asset("SHA256SUMS.txt"), _asset(full), _asset(manifest)],
+    }
+    responses = iter([json.dumps(release).encode(), checksums.encode()])
+    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: next(responses))
+
+    update = check_for_update("0.4.0")
+
+    assert update is not None
+    assert update.required is False
 
 
 def test_packaged_updater_requests_elevation(tmp_path: Path, monkeypatch):

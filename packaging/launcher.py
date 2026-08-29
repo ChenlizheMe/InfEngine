@@ -38,7 +38,7 @@ from model.project_model import ProjectModel
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
-from view.installs_view import InstallsView, PythonRuntimeInstallDialog
+from view.installs_view import InstallsView
 from installer_safety import can_remove_install_dir
 from i18n import configure_language, tr
 from view.hover_widgets import ensure_hover_animation_filter
@@ -75,8 +75,8 @@ class GameEngineLauncher(QMainWindow):
         self.resize(1080, 720)
 
         # Version and runtime managers
-        self.version_manager = VersionManager()
         self.runtime_manager = PythonRuntimeManager()
+        self.version_manager = VersionManager(self.runtime_manager)
 
         # ── Root layout: sidebar | content ───────────────────────────
         central = QWidget(self)
@@ -209,27 +209,9 @@ class GameEngineLauncher(QMainWindow):
             sys.exit(self.app.exec())
 
     def _bootstrap_python_runtime(self):
-        if self.runtime_manager.has_runtime():
-            QTimer.singleShot(0, self._finish_startup)
-            return
-
-        QMessageBox.information(
-            self,
-            tr("Python 3.12 Setup"),
-            tr("Infernux Hub needs Python 3.12 to create and launch projects.\n\n"
-            "Hub uses an isolated runtime under C:\\Users\\Public\\InfernuxHub. It is deployed from a file archive\n"
-            "and never installs, upgrades, removes, registers, or changes your existing Python environments.\n"
-            "Each project receives its own copy of this private runtime."),
-        )
-
-        dlg = PythonRuntimeInstallDialog(self.runtime_manager, self)
-        if dlg.exec() != QDialog.Accepted and dlg.error_text:
-            QMessageBox.warning(
-                self,
-                tr("Python 3.12 Not Ready"),
-                dlg.error_text,
-            )
-        self.installs_view.refresh()
+        # Runtime installation is always an explicit user action. Startup only
+        # refreshes inventory and lets the show-once notification explain the
+        # new default; it never downloads or replaces Python implicitly.
         QTimer.singleShot(0, self._finish_startup)
 
     def _finish_startup(self):

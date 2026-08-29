@@ -3,7 +3,7 @@ Minimal setup.py to force platform-specific wheel tags.
 
 Infernux ships pre-built native extensions (.pyd / .dll) as package data,
 so the wheel must NOT be tagged 'py3-none-any'.  Overriding has_ext_modules()
-makes setuptools produce a platform wheel (e.g. cp312-win_amd64).
+makes setuptools produce a platform wheel (e.g. cp313-win_amd64).
 """
 
 from setuptools import setup

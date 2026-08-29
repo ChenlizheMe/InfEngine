@@ -1,0 +1,11 @@
+name: infernux
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.13
+  - pip
+  - ninja
+  - clang-format
+  - pip:
+      - -r requirements.txt

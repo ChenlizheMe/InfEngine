@@ -14,6 +14,7 @@ if str(PACKAGING_ROOT) not in sys.path:
 
 import build_hub
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 _VALID_MSVC_REPORT = """\
@@ -67,7 +68,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     }
     with zipfile.ZipFile(runtime_bundle, "w") as bundle:
         bundle.writestr(
-            "python312/.infernux-private-python-runtime.json",
+            f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
             json.dumps(marker),
         )
     (packaging_dir / "resources").mkdir(parents=True)
@@ -124,7 +125,7 @@ def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
     runtime_bundle.parent.mkdir(parents=True)
     with zipfile.ZipFile(runtime_bundle, "w") as bundle:
         bundle.writestr(
-            "python312/.infernux-private-python-runtime.json",
+            f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
             json.dumps(
                 {
                     "owner": "Infernux Hub",

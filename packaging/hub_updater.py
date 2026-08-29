@@ -20,6 +20,9 @@ from hub_utils import get_app_dir, is_frozen
 
 GITHUB_LATEST_RELEASE = "https://api.github.com/repos/ChenlizheMe/Infernux/releases/latest"
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+# Hub 0.4 introduces the versioned Python runtime catalog. Earlier Hub builds
+# can discover the release, but cannot provision its cp313 runtime.
+_VERSIONED_RUNTIME_HUB_VERSION = "0.4.0"
 
 
 @dataclass(frozen=True)
@@ -34,11 +37,17 @@ class HubUpdate:
     incremental: bool
     manifest_url: str
     manifest_sha256: str
+    required: bool = False
 
 
 def _version_key(value: str) -> tuple[int, int, int]:
     match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
     return tuple(map(int, match.groups())) if match else (0, 0, 0)
+
+
+def _update_is_required(current_version: str, target_version: str) -> bool:
+    boundary = _version_key(_VERSIONED_RUNTIME_HUB_VERSION)
+    return _version_key(current_version) < boundary <= _version_key(target_version)
 
 
 def current_hub_version() -> str:
@@ -114,6 +123,7 @@ def check_for_update(current_version: str | None = None) -> HubUpdate | None:
         incremental=incremental,
         manifest_url=manifest_asset["browser_download_url"],
         manifest_sha256=checksums[manifest_name],
+        required=_update_is_required(current, target),
     )
 
 

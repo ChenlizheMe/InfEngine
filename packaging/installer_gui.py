@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import sys
@@ -23,10 +24,13 @@ from installer.install_application import HubInstallTransaction
 from installer.install_python_runtime import install_runtime_for_app
 from installer_safety import install_target_error, is_recognized_install_dir
 from i18n import tr
-import logging
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 if sys.platform == "win32":
     import winreg
+
+
+_BUNDLED_PYTHON_VERSION = DEFAULT_PYTHON_RUNTIME.series
 
 
 def _resource_dir() -> str:
@@ -190,7 +194,12 @@ class InstallWorker(QObject):
                 self.progress.emit(tr("Preparing Infernux Hub files..."))
                 installation.prepare()
 
-                self.progress.emit(tr("Deploying private Python 3.12 runtime..."))
+                self.progress.emit(
+                    tr(
+                        "Deploying private Python {version} runtime...",
+                        version=_BUNDLED_PYTHON_VERSION,
+                    )
+                )
                 install_runtime_for_app(installation.staged_dir, progress_callback=self.progress.emit)
 
                 self.progress.emit(tr("Replacing the installed Infernux Hub..."))
@@ -230,10 +239,14 @@ class InstallerWindow(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
         root.addWidget(title)
 
-        intro = QLabel(tr(
-            "This installer copies Infernux Hub and its isolated Python 3.12 runtime onto your machine. "
-            "It does not install, upgrade, remove, register, or modify any Python already on your system."
-        ))
+        intro = QLabel(
+            tr(
+                "This installer copies Infernux Hub and its isolated Python {version} "
+                "runtime onto your machine. It does not install, upgrade, remove, "
+                "register, or modify any Python already on your system.",
+                version=_BUNDLED_PYTHON_VERSION,
+            )
+        )
         intro.setWordWrap(True)
         intro.setMinimumHeight(56)
         intro.setContentsMargins(0, 0, 0, 6)

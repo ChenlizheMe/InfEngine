@@ -5,9 +5,9 @@ Layout on disk::
     ~/.infernux/
         versions/
             0.2.9/
-                infernux-0.2.9-cp312-cp312-win_amd64.whl
+                infernux-0.4.0-cp313-cp313-win_amd64.whl
             0.3.0/
-                infernux-0.3.0-cp312-cp312-win_amd64.whl
+                infernux-0.4.1-cp313-cp313-win_amd64.whl
 """
 
 from __future__ import annotations
@@ -22,9 +22,15 @@ import urllib.request
 import uuid
 import zipfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, List, Optional
 import logging
+
+from packaging.tags import sys_tags
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME, PythonRuntimeId
 
 
 class DownloadCancelled(Exception):
@@ -41,6 +47,14 @@ _CACHE_TTL = 300  # seconds before re-fetching release list
 
 
 @dataclass
+class EngineWheel:
+    filename: str
+    url: str
+    size: int
+    python_version: str
+
+
+@dataclass
 class EngineVersion:
     """Represents a single Infernux release."""
 
@@ -51,21 +65,24 @@ class EngineVersion:
     published_at: str = ""
     prerelease: bool = False
     installed: bool = False
+    python_version: str = ""
+    wheel_options: tuple[EngineWheel, ...] = ()
+    compatibility_error: str = ""
 
     @property
     def display_name(self) -> str:
         suffix = " (pre-release)" if self.prerelease else ""
         return f"{self.version}{suffix}"
 
-
 class VersionManager:
     """Discovers, downloads, and manages Infernux engine versions."""
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_manager=None) -> None:
         _VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
         self._cache_file = _VERSIONS_DIR / "_releases_cache.json"
         self._cached_releases: list[dict] | None = None
         self._cached_at: float = 0.0
+        self._runtime_manager = runtime_manager
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -83,15 +100,33 @@ class VersionManager:
             if pre and not include_prerelease:
                 continue
 
-            wheel_url, wheel_size = _find_wheel_asset(rel)
+            wheel_options = _find_wheel_assets(rel)
+            python_versions = {
+                wheel.python_version for wheel in wheel_options
+            }
+            compatibility_error = ""
+            if len(python_versions) > 1:
+                compatibility_error = (
+                    f"Infernux {ver} publishes conflicting Python ABIs: "
+                    f"{', '.join(sorted(python_versions))}. Each Infernux version "
+                    "must target exactly one Python minor version."
+                )
+            wheel = (
+                self._preferred_wheel(wheel_options)
+                if not compatibility_error
+                else None
+            )
             ev = EngineVersion(
                 tag=tag,
                 version=ver,
-                wheel_url=wheel_url,
-                wheel_size=wheel_size,
+                wheel_url=wheel.url if wheel else "",
+                wheel_size=wheel.size if wheel else 0,
                 published_at=rel.get("published_at", ""),
                 prerelease=pre,
                 installed=self.is_installed(ver),
+                python_version=wheel.python_version if wheel else "",
+                wheel_options=wheel_options,
+                compatibility_error=compatibility_error,
             )
             versions[ver] = ev
 
@@ -107,14 +142,14 @@ class VersionManager:
         result = sorted(versions.values(), key=lambda v: _version_tuple(v.version), reverse=True)
         return result
 
-    def installed_versions(self) -> List[str]:
+    def installed_versions(self, python_version: str | None = None) -> List[str]:
         """Return list of locally-installed version strings, newest first."""
-        vers = self._local_versions()
+        vers = self._local_versions(python_version)
         vers.sort(key=_version_tuple, reverse=True)
         return vers
 
-    def is_installed(self, version: str) -> bool:
-        return bool(self.get_wheel_path(version))
+    def is_installed(self, version: str, python_version: str | None = None) -> bool:
+        return bool(self.get_wheel_path(version, python_version))
 
     @staticmethod
     def _is_valid_wheel(path: str) -> bool:
@@ -124,7 +159,9 @@ class VersionManager:
         except OSError:
             return False
 
-    def get_wheel_path(self, version: str) -> Optional[str]:
+    def get_wheel_path(
+        self, version: str, python_version: str | None = None
+    ) -> Optional[str]:
         """Return path to a VALID cached wheel for *version*, or None.
 
         Corrupted wheels (e.g. left over from an interrupted install before
@@ -134,9 +171,18 @@ class VersionManager:
         ver_dir = _VERSIONS_DIR / version
         if not ver_dir.is_dir():
             return None
+        target_python = (
+            PythonRuntimeId.parse(python_version).series if python_version else ""
+        )
+        valid_wheels: list[str] = []
         for wheel in glob.glob(str(ver_dir / "infernux-*.whl")):
             if self._is_valid_wheel(wheel):
-                return wheel
+                if not wheel_platform_compatible(wheel):
+                    continue
+                if target_python and wheel_python_version(wheel) != target_python:
+                    continue
+                valid_wheels.append(wheel)
+                continue
             try:
                 os.remove(wheel)
                 logging.getLogger(__name__).warning(
@@ -144,7 +190,59 @@ class VersionManager:
                 )
             except OSError:
                 pass
-        return None
+        if not valid_wheels:
+            return None
+        preferred = self._preferred_local_wheel(valid_wheels)
+        return preferred or sorted(valid_wheels)[0]
+
+    def installed_python_versions(self, version: str) -> list[str]:
+        ver_dir = _VERSIONS_DIR / version
+        if not ver_dir.is_dir():
+            return []
+        versions = {
+            wheel_python_version(path)
+            for path in glob.glob(str(ver_dir / "infernux-*.whl"))
+            if (
+                self._is_valid_wheel(path)
+                and wheel_platform_compatible(path)
+                and wheel_python_version(path)
+            )
+        }
+        return sorted(
+            versions,
+            key=lambda item: PythonRuntimeId.parse(item),
+            reverse=True,
+        )
+
+    def python_version_for_engine(self, version: str) -> str:
+        versions = self.installed_python_versions(version)
+        if not versions:
+            return ""
+        if len(versions) != 1:
+            raise ValueError(
+                f"Infernux {version} has wheels for conflicting Python ABIs: "
+                f"{', '.join(versions)}. Remove the conflicting engine install."
+            )
+        return versions[0]
+
+    def is_python_runtime_installed(self, python_version: str) -> bool:
+        return bool(
+            self._runtime_manager is not None
+            and self._runtime_manager.has_runtime(python_version)
+        )
+
+    def installation_block_reason(self, engine: EngineVersion) -> str:
+        """Explain why a visible online engine release cannot be installed."""
+        if engine.compatibility_error:
+            return engine.compatibility_error
+        if not engine.wheel_url or not engine.python_version:
+            return f"Infernux {engine.version} has no compatible wheel for this platform."
+        if not self.is_python_runtime_installed(engine.python_version):
+            return (
+                f"Infernux {engine.version} requires Python {engine.python_version}. "
+                f"Please install Python {engine.python_version} first."
+            )
+        return ""
 
     def download_version(
         self,
@@ -167,13 +265,19 @@ class VersionManager:
         ev = next((v for v in versions if v.version == version), None)
         if ev is None:
             raise ValueError(f"Version {version} not found in releases")
-        if not ev.wheel_url:
-            raise ValueError(f"No wheel asset found for version {version}")
+        if ev.compatibility_error:
+            raise ValueError(ev.compatibility_error)
+        wheel = self._preferred_wheel(ev.wheel_options)
+        if wheel is None:
+            raise ValueError(
+                f"No wheel asset found for Infernux {version} on this platform"
+            )
+        self._require_installed_python(wheel.python_version, engine_version=version)
 
         ver_dir = _VERSIONS_DIR / version
         ver_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = ev.wheel_url.rsplit("/", 1)[-1]
+        filename = wheel.filename or wheel.url.rsplit("/", 1)[-1]
         dest = ver_dir / filename
 
         if dest.exists():
@@ -182,14 +286,14 @@ class VersionManager:
             dest.unlink(missing_ok=True)  # heal corrupted leftovers
 
         # Stream download to a unique temp file
-        req = urllib.request.Request(ev.wheel_url)
+        req = urllib.request.Request(wheel.url)
         req.add_header("Accept", "application/octet-stream")
         req.add_header("User-Agent", "Infernux-Hub/1.0")
 
         tmp_path = f"{dest}.tmp-{uuid.uuid4().hex[:8]}"
         try:
             with urllib.request.urlopen(req) as resp:
-                total = int(resp.headers.get("Content-Length", 0)) or ev.wheel_size
+                total = int(resp.headers.get("Content-Length", 0)) or wheel.size
                 downloaded = 0
                 chunk_size = 64 * 1024
 
@@ -249,13 +353,31 @@ class VersionManager:
         import shutil
 
         filename = os.path.basename(wheel_path)
+        if not wheel_platform_compatible(filename):
+            raise ValueError(
+                f"The selected wheel is not compatible with this platform: {filename}"
+            )
         match = re.match(r"infernux-([^-]+)-", filename, re.IGNORECASE)
         if not match:
             raise ValueError(
                 f"Cannot determine version from wheel filename: {filename}\n"
-                "Expected a file like infernux-0.3.0-cp312-cp312-win_amd64.whl"
+                "Expected a file like infernux-0.4.0-cp313-cp313-win_amd64.whl"
             )
         version = match.group(1)
+        python_version = wheel_python_version(filename)
+        if not python_version:
+            raise ValueError(
+                f"Cannot determine the target Python ABI from wheel filename: {filename}"
+            )
+        self._require_installed_python(python_version, engine_version=version)
+
+        existing_versions = self.installed_python_versions(version)
+        if existing_versions and python_version not in existing_versions:
+            raise ValueError(
+                f"Infernux {version} is already bound to Python "
+                f"{existing_versions[0]}; the same engine version cannot also "
+                f"target Python {python_version}."
+            )
 
         ver_dir = _VERSIONS_DIR / version
         ver_dir.mkdir(parents=True, exist_ok=True)
@@ -346,7 +468,7 @@ class VersionManager:
         self._cached_at = now
         return releases
 
-    def _local_versions(self) -> List[str]:
+    def _local_versions(self, python_version: str | None = None) -> List[str]:
         """List versions with a VALID wheel downloaded locally.
 
         Uses get_wheel_path() so corrupted leftovers from interrupted
@@ -357,9 +479,60 @@ class VersionManager:
             return result
         for entry in _VERSIONS_DIR.iterdir():
             if entry.is_dir() and not entry.name.startswith("_"):
-                if self.get_wheel_path(entry.name):
+                if self.get_wheel_path(entry.name, python_version):
                     result.append(entry.name)
         return result
+
+    def _require_installed_python(
+        self,
+        python_version: str,
+        *,
+        engine_version: str,
+    ) -> None:
+        if self._runtime_manager is None:
+            raise RuntimeError(
+                "Infernux Hub cannot verify installed Python runtimes. "
+                "Open the Installs page and try again."
+            )
+        if self._runtime_manager.has_runtime(python_version):
+            return
+        raise ValueError(
+            f"Infernux {engine_version} requires Python {python_version}. "
+            f"Please install Python {python_version} in Infernux Hub first."
+        )
+
+    def _preferred_wheel(
+        self, wheels: tuple[EngineWheel, ...]
+    ) -> EngineWheel | None:
+        if not wheels:
+            return None
+        preferred_versions: list[str] = []
+        if self._runtime_manager is not None:
+            preferred_versions.extend(self._runtime_manager.installed_versions())
+        preferred_versions.append(DEFAULT_PYTHON_RUNTIME.series)
+        for python_version in preferred_versions:
+            match = next(
+                (wheel for wheel in wheels if wheel.python_version == python_version),
+                None,
+            )
+            if match is not None:
+                return match
+        return wheels[0]
+
+    def _preferred_local_wheel(self, wheels: list[str]) -> str:
+        wheel_by_python = {
+            wheel_python_version(wheel): wheel
+            for wheel in wheels
+            if wheel_python_version(wheel)
+        }
+        preferred_versions: list[str] = []
+        if self._runtime_manager is not None:
+            preferred_versions.extend(self._runtime_manager.installed_versions())
+        preferred_versions.append(DEFAULT_PYTHON_RUNTIME.series)
+        for version in preferred_versions:
+            if version in wheel_by_python:
+                return wheel_by_python[version]
+        return ""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -384,10 +557,62 @@ def _version_tuple(version: str):
     return tuple(parts)
 
 
-def _find_wheel_asset(release: dict) -> tuple[str, int]:
-    """Find the .whl asset URL and size from a GitHub release."""
+_CPYTHON_WHEEL_TAG = re.compile(r"(?:^|-)(cp(\d)(\d{1,2}))(?:-|_)", re.IGNORECASE)
+
+
+def wheel_python_version(path_or_name: str) -> str:
+    """Return the Python major/minor ABI encoded in an Infernux wheel name."""
+    name = os.path.basename(path_or_name)
+    match = _CPYTHON_WHEEL_TAG.search(name)
+    if match is None:
+        return ""
+    return f"{int(match.group(2))}.{int(match.group(3))}"
+
+
+@lru_cache(maxsize=1)
+def supported_wheel_platforms() -> frozenset[str]:
+    """Return host platform tags without tying them to Hub's Python ABI."""
+
+    return frozenset(tag.platform for tag in sys_tags())
+
+
+def wheel_platform_compatible(path_or_name: str) -> bool:
+    """Whether a wheel targets this OS/architecture, independent of CPython."""
+
+    name = os.path.basename(path_or_name)
+    try:
+        _distribution, _version, _build, tags = parse_wheel_filename(name)
+    except InvalidWheelFilename:
+        return False
+    platforms = supported_wheel_platforms()
+    return any(tag.platform in platforms for tag in tags)
+
+
+def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
+    """Find all CPython-specific Infernux wheels in a GitHub release."""
+    result: list[EngineWheel] = []
     for asset in release.get("assets", []):
         name = asset.get("name", "")
-        if name.endswith(".whl") and "infernux" in name.lower():
-            return asset.get("browser_download_url", ""), asset.get("size", 0)
-    return "", 0
+        if (
+            name.endswith(".whl")
+            and "infernux" in name.lower()
+            and wheel_platform_compatible(name)
+        ):
+            python_version = wheel_python_version(name)
+            if not python_version:
+                continue
+            result.append(
+                EngineWheel(
+                    filename=name,
+                    url=asset.get("browser_download_url", ""),
+                    size=asset.get("size", 0),
+                    python_version=python_version,
+                )
+            )
+    return tuple(
+        sorted(
+            result,
+            key=lambda wheel: PythonRuntimeId.parse(wheel.python_version),
+            reverse=True,
+        )
+    )

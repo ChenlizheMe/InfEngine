@@ -5,7 +5,7 @@ Build with:
     cd packaging
     pyinstaller infernux_hub.spec --clean
 or via CMake:
-    cmake --build --preset release --target infernux_hub
+    cmake --build --preset windows-hub
 """
 
 import os

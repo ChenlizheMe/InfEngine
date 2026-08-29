@@ -11,6 +11,12 @@ import uuid
 
 from hub_utils import is_frozen, merge_child_env_utf8
 from project_paths import inspect_existing_project, new_project_target
+from project_python_runtime import (
+    project_runtime_directory,
+    read_project_python_version,
+    write_project_python_version,
+)
+from python_runtime_catalog import PythonRuntimeId
 from python_runtime import PythonRuntimeError, PythonRuntimeManager
 import logging
 
@@ -73,6 +79,13 @@ _FALLBACK_PROJECT_GITATTRIBUTES = """# Keep project text deterministic across pl
 *.mp3 binary
 *.ogg binary
 """
+
+
+def _project_python_version(project_dir: str) -> str:
+    version = read_project_python_version(project_dir, required=is_frozen())
+    if version:
+        return version
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def _engine_component_type_id(module_name: str, qualified_name: str) -> str:
@@ -758,9 +771,36 @@ class ProjectModel:
         """Compatibility alias for old callers; never deletes project files."""
         return self.remove_project(project_id)
 
-    def init_project_folder(self, project_name: str, project_path: str,
-                            engine_version: str = "", on_status=None) -> str:
+    def init_project_folder(
+        self,
+        project_name: str,
+        project_path: str,
+        engine_version: str = "",
+        on_status=None,
+    ) -> str:
         """Create a project transactionally and return its final directory."""
+        if is_frozen():
+            if not engine_version:
+                raise RuntimeError(
+                    "Select an installed Infernux version before creating a project."
+                )
+            if self.version_manager is None:
+                raise RuntimeError("Infernux version manager is unavailable.")
+            try:
+                target_python_version = (
+                    self.version_manager.python_version_for_engine(engine_version)
+                )
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+            if not target_python_version:
+                raise RuntimeError(
+                    f"Infernux {engine_version} is not installed in Hub."
+                )
+        else:
+            target_python_version = (
+                f"{sys.version_info.major}.{sys.version_info.minor}"
+            )
+
         parent_dir, final_dir = new_project_target(project_path, project_name)
         if os.path.exists(final_dir):
             raise RuntimeError(f"Project directory already exists:\n{final_dir}")
@@ -805,6 +845,7 @@ class ProjectModel:
             if engine_version:
                 from version_manager import VersionManager
                 VersionManager.write_project_version(staging_dir, engine_version)
+            write_project_python_version(staging_dir, target_python_version)
 
             if on_status:
                 on_status("Finalizing project...")
@@ -917,14 +958,20 @@ class ProjectModel:
         self._copy_bundled_support_file("requirements.txt", dest_path, engine_version)
 
     @staticmethod
+    def get_project_python_version(project_dir: str) -> str:
+        return _project_python_version(project_dir)
+
+    @staticmethod
     def _get_project_python(project_dir: str) -> str:
         """Return the Python executable for the project.
 
         In frozen (packaged Hub) mode, each project owns a full Python copy
-        under .runtime/python312/.  In dev mode, we use a classic .venv.
+        under the version-bound .runtime/pythonXY/. In dev mode, we use a
+        classic .venv.
         """
         if is_frozen():
-            runtime_dir = os.path.join(project_dir, ".runtime", "python312")
+            python_version = _project_python_version(project_dir)
+            runtime_dir = project_runtime_directory(project_dir, python_version)
             if sys.platform == "win32":
                 return os.path.join(runtime_dir, "python.exe")
             return os.path.join(runtime_dir, "bin", "python")
@@ -936,9 +983,14 @@ class ProjectModel:
 
     def _create_project_runtime(self, project_dir: str, *, on_status=None) -> None:
         if is_frozen():
-            runtime_path = os.path.join(project_dir, ".runtime", "python312")
+            target_version = read_project_python_version(project_dir)
+            runtime_path = project_runtime_directory(project_dir, target_version)
             try:
-                self.runtime_manager.create_project_runtime(runtime_path, on_status=on_status)
+                self.runtime_manager.create_project_runtime(
+                    runtime_path,
+                    version=target_version,
+                    on_status=on_status,
+                )
             except PythonRuntimeError as exc:
                 raise RuntimeError(str(exc)) from exc
             return
@@ -963,7 +1015,7 @@ class ProjectModel:
         """Install the Infernux wheel into the project's Python environment.
 
         In frozen (packaged Hub) mode, the wheel is installed into the project's
-        full Python copy at .runtime/python312/.
+        full Python copy at the project's version-bound .runtime/pythonXY/.
         In dev mode, the wheel is installed into the classic .venv.
 
         Source builds are intentionally blocked here so project creation never
@@ -981,7 +1033,10 @@ class ProjectModel:
         if not is_frozen():
             wheel = _find_dev_wheel(project_python, strict=True)
         elif engine_version and self.version_manager is not None:
-            wheel = self.version_manager.get_wheel_path(engine_version) or ""
+            project_python_version = _project_python_version(project_dir)
+            wheel = self.version_manager.get_wheel_path(
+                engine_version, project_python_version
+            ) or ""
 
         if not wheel:
             if is_frozen():
@@ -1087,14 +1142,27 @@ class ProjectModel:
     def _get_site_packages(project_dir: str) -> str:
         """Return the site-packages directory for the project's Python runtime."""
         if is_frozen():
-            runtime_dir = os.path.join(project_dir, ".runtime", "python312")
+            python_version = _project_python_version(project_dir)
+            runtime_id = PythonRuntimeId.parse(python_version)
+            runtime_dir = project_runtime_directory(project_dir, runtime_id)
             if sys.platform == "win32":
                 return os.path.join(runtime_dir, "Lib", "site-packages")
-            return os.path.join(runtime_dir, "lib", "python3.12", "site-packages")
+            return os.path.join(
+                runtime_dir,
+                "lib",
+                runtime_id.unix_library_stem,
+                "site-packages",
+            )
         venv_dir = os.path.join(project_dir, ".venv")
         if sys.platform == "win32":
             return os.path.join(venv_dir, "Lib", "site-packages")
-        return os.path.join(venv_dir, "lib", "python3.12", "site-packages")
+        python_version = _project_python_version(project_dir)
+        return os.path.join(
+            venv_dir,
+            "lib",
+            PythonRuntimeId.parse(python_version).unix_library_stem,
+            "site-packages",
+        )
 
     @staticmethod
     def _create_vscode_workspace(project_dir: str):
@@ -1147,9 +1215,10 @@ class ProjectModel:
         # ── pyrightconfig.json (at project root) ────────────────────────
         # In frozen mode, point Pyright directly at the project runtime Python;
         # in dev mode, use the classic venvPath/venv convention.
+        python_version = _project_python_version(project_dir)
         if is_frozen():
             pyright_config = {
-                "pythonVersion": "3.12",
+                "pythonVersion": python_version,
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,
                 "reportWildcardImportFromLibrary": False,
@@ -1160,7 +1229,7 @@ class ProjectModel:
             pyright_config = {
                 "venvPath": ".",
                 "venv": ".venv",
-                "pythonVersion": "3.12",
+                "pythonVersion": python_version,
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,
                 "reportWildcardImportFromLibrary": False,

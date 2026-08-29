@@ -1,7 +1,8 @@
 import json
+from types import SimpleNamespace
 
 from PySide6.QtCore import QEventLoop, QThread, QTimer
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 
 import view.update_dialog as update_dialog
 
@@ -46,3 +47,37 @@ def test_manual_update_check_returns_to_the_main_thread(monkeypatch):
     controller.thread.wait(1000)
 
     assert observed["main_thread"] is True
+
+
+def test_required_runtime_catalog_update_cannot_be_declined(monkeypatch):
+    _app()
+    window = QWidget()
+    observed = {"quit": False, "information": False, "question": False}
+    window.app = SimpleNamespace(quit=lambda: observed.__setitem__("quit", True))
+    controller = update_dialog.UpdateController(window)
+    update = SimpleNamespace(target_version="0.4.0", required=True)
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *_args: observed.__setitem__("information", True),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: observed.__setitem__("question", True),
+    )
+
+    class _RejectedUpdateDialog:
+        def __init__(self, *_args):
+            pass
+
+        def exec(self):
+            return QDialog.Rejected
+
+    monkeypatch.setattr(update_dialog, "UpdateProgressDialog", _RejectedUpdateDialog)
+
+    controller._checked(update)
+
+    assert observed == {"quit": True, "information": True, "question": False}
+    assert window.isHidden()

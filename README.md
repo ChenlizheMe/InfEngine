@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/version-0.3.7-orange.svg" alt="Version 0.3.7" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
   <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="Current platform: Windows" />
-  <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/python-3.13-brightgreen.svg" alt="Python 3.13" />
   <img src="https://img.shields.io/badge/graphics-Vulkan-red.svg" alt="Vulkan" />
 </p>
 
@@ -35,7 +35,7 @@ This is a real editor capture from the 0.3.4 showcase: 65,536 ordinary GameObjec
 
 A general-purpose game engine. Not a chat box glued onto someone else's editor.
 
-The runtime is C++17 and Vulkan. Gameplay, components, editor tools, assets, and render setup are written in Python 3.12.
+The runtime is C++17 and Vulkan. Gameplay, components, editor tools, assets, and render setup are written in Python 3.13.
 
 This tree is **0.3.7**. It runs on Windows x64. Android, Web, and Linux Players are not out yet. There is no bundled PyTorch stack either.
 
@@ -71,24 +71,23 @@ Runtime code and regular assets go into a Player build. Editor scripts stay in t
 
 Download the Windows x64 installer from [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) and let InfernuxHub manage engine versions.
 
-From source you need Windows 10/11 x64, Python 3.12+, Vulkan SDK 1.3+, CMake 3.22+, Visual Studio 2022, and MSVC v143:
+From source you need Windows 10/11 x64, Python 3.13, Vulkan SDK 1.3+, CMake 3.25+, Visual Studio 2022, and MSVC v143:
 
 ```bash
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
-conda create -n infernux python=3.12 -y
+conda env create -f environment.yml
 conda activate infernux
-pip install -r requirements.txt
-cmake --preset release
-cmake --build --preset release
+cmake --preset windows-msvc-release
+cmake --build --preset windows-msvc-wheel
 python packaging/launcher.py
 ```
 
 ```bash
 python -m pytest python/test/ -v
-cmake --preset native-tests
-cmake --build --preset native-tests
-ctest --preset native-tests --output-on-failure
+cmake --preset windows-msvc-dev
+cmake --build --preset windows-msvc-dev
+ctest --preset windows-msvc-dev --output-on-failure
 ```
 
 ## Docs

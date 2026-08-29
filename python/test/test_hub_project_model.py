@@ -23,7 +23,9 @@ class _FakeVersionManager:
     def __init__(self, wheel_path: str) -> None:
         self._wheel_path = wheel_path
 
-    def get_wheel_path(self, _engine_version: str) -> str:
+    def get_wheel_path(
+        self, _engine_version: str, _python_version: str | None = None
+    ) -> str:
         return self._wheel_path
 
 

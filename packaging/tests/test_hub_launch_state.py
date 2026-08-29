@@ -115,7 +115,7 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
             return "0.3.7"
 
         @staticmethod
-        def is_installed(_version):
+        def is_installed(_version, _python_version=None):
             return True
 
     monkeypatch.setattr(control_pane_viewmodel, "is_frozen", lambda: True)

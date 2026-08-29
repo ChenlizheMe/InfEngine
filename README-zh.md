@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/version-0.3.7-orange.svg" alt="Version 0.3.7" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
   <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="当前平台：Windows" />
-  <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/python-3.13-brightgreen.svg" alt="Python 3.13" />
   <img src="https://img.shields.io/badge/graphics-Vulkan-red.svg" alt="Vulkan" />
 </p>
 
@@ -35,7 +35,7 @@
 
 通用游戏引擎。不是在别人编辑器外面套一层聊天框。
 
-运行时是 C++17 和 Vulkan。玩法、组件、编辑器、资源和渲染编排用 Python 3.12 写。
+运行时是 C++17 和 Vulkan。玩法、组件、编辑器、资源和渲染编排用 Python 3.13 编写。
 
 当前这棵树是 **0.3.7**，只有 Windows x64。Android、Web、Linux Player 都还没出，也没有自带的 PyTorch 栈。
 
@@ -71,24 +71,23 @@ MyPlugin/
 
 从 [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) 下 Windows x64 安装器，让 InfernuxHub 管理引擎版本。
 
-源码构建需要 Windows 10/11 x64、Python 3.12+、Vulkan SDK 1.3+、CMake 3.22+、Visual Studio 2022、MSVC v143：
+源码构建需要 Windows 10/11 x64、Python 3.13、Vulkan SDK 1.3+、CMake 3.25+、Visual Studio 2022、MSVC v143：
 
 ```bash
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
-conda create -n infernux python=3.12 -y
+conda env create -f environment.yml
 conda activate infernux
-pip install -r requirements.txt
-cmake --preset release
-cmake --build --preset release
+cmake --preset windows-msvc-release
+cmake --build --preset windows-msvc-wheel
 python packaging/launcher.py
 ```
 
 ```bash
 python -m pytest python/test/ -v
-cmake --preset native-tests
-cmake --build --preset native-tests
-ctest --preset native-tests --output-on-failure
+cmake --preset windows-msvc-dev
+cmake --build --preset windows-msvc-dev
+ctest --preset windows-msvc-dev --output-on-failure
 ```
 
 ## 文档
