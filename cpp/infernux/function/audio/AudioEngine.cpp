@@ -621,4 +621,10 @@ void AudioEngine::ResumeAll()
     }
 }
 
+size_t AudioEngine::GetActiveVoiceCount() const
+{
+    std::lock_guard<std::mutex> lock(m_streamsMutex);
+    return m_activeStreams.size();
+}
+
 } // namespace infernux

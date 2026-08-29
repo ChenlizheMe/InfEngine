@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include <SDL3/SDL_audio.h>
 #include <atomic>
 #include <cstdint>
@@ -139,6 +141,9 @@ class AudioEngine
     {
         return m_globalPaused;
     }
+
+    /// @brief Number of live playback streams currently bound to the device.
+    [[nodiscard]] size_t GetActiveVoiceCount() const;
 
     /// @brief Get the output sample rate
     [[nodiscard]] int GetSampleRate() const

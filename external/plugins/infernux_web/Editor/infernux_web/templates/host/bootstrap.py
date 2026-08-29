@@ -223,6 +223,8 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     )
     particle_module = importlib.import_module("Infernux.components.particle_system")
     builtin_modules = {
+        "AudioListener": "audio_listener",
+        "AudioSource": "audio_source",
         "Light": "light",
         "MeshRenderer": "mesh_renderer",
         "LineRenderer": "line_renderer",
@@ -413,7 +415,7 @@ def _prepare_player_runtime() -> None:
         raise RuntimeError("Web Player component surface omitted ParticleSystem")
     print(
         "INFERNUX_WEB_COMPONENT_SURFACE_READY "
-        "particle=true"
+        "audio=true particle=true"
     )
     session = PlayerRuntimeSession(asset_database=database)
     session.configure_runtime_contract(runtime_manifest, runtime_catalog)
@@ -441,7 +443,6 @@ def _prepare_player_runtime() -> None:
 def infernux_web_ready(details: dict[str, Any]) -> None:
     """Receive the browser graphics and viewport contract from the native host."""
 
-    global _player_activated
     print(
         "INFERNUX_WEB_HOST_READY "
         f"python=3.13 graphics={details.get('graphics_api')} "
@@ -449,10 +450,22 @@ def infernux_web_ready(details: dict[str, Any]) -> None:
     )
     if _player_session is None:
         _prepare_player_runtime()
+    print("INFERNUX_WEB_USER_ACTIVATION_REQUIRED")
+
+
+def infernux_web_activate(audio_ready: bool) -> bool:
+    """Activate gameplay only after a trusted browser gesture unlocked audio."""
+
+    global _player_activated
+    if _player_activated:
+        return True
+    if not audio_ready:
+        raise RuntimeError("Web Player audio did not unlock from the user gesture")
     if _player_session is None or not _player_session.activate():
         raise RuntimeError("Web Player runtime session could not be activated")
     _player_activated = True
     print("INFERNUX_WEB_RUNTIME_ACTIVE")
+    return True
 
 
 def infernux_web_input(kind: str, payload: dict[str, Any]) -> None:

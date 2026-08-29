@@ -6,6 +6,7 @@
 #include <function/renderer/rhi/RhiDescriptors.h>
 
 #include <core/threading/JobSystem.h>
+#include <function/audio/AudioEngine.h>
 #include <function/renderer/FullscreenRenderer.h>
 #include <platform/input/InputManager.h>
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
@@ -47,6 +48,7 @@ infernux::web::WebParticleRuntime g_particleRuntime;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
 PyObject *g_input = nullptr;
+PyObject *g_activate = nullptr;
 uint32_t g_width = 1;
 uint32_t g_height = 1;
 double g_cssWidth = 1.0;
@@ -61,6 +63,7 @@ double g_safeAreaRight = 0.0;
 double g_safeAreaBottom = 0.0;
 double g_keyboardInset = 0.0;
 bool g_keyboardInsetKnown = false;
+bool g_runtimeActivated = false;
 
 int BrowserCodeToScancode(std::string_view code)
 {
@@ -255,6 +258,40 @@ void DispatchInput(const char *kind, PyObject *payload)
         Py_DECREF(result);
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebUserActivation()
+{
+    if (g_runtimeActivated || g_activate == nullptr)
+        return;
+
+    const bool audioReady = infernux::AudioEngine::Instance().Initialize();
+    if (!audioReady) {
+        std::fprintf(stderr, "INFERNUX_WEB_AUDIO_INITIALIZATION_FAILED\n");
+        return;
+    }
+
+    PyObject *argument = PyBool_FromLong(1);
+    PyObject *result = argument != nullptr ? PyObject_CallOneArg(g_activate, argument) : nullptr;
+    Py_XDECREF(argument);
+    if (result == nullptr) {
+        PrintPythonError("activation");
+        return;
+    }
+    const int activated = PyObject_IsTrue(result);
+    Py_DECREF(result);
+    if (activated < 0) {
+        PrintPythonError("activation-result");
+        return;
+    }
+    if (activated == 0)
+        return;
+
+    g_runtimeActivated = true;
+    std::printf("INFERNUX_WEB_AUDIO_READY sample_rate=%d channels=%d\n",
+                infernux::AudioEngine::Instance().GetSampleRate(), infernux::AudioEngine::Instance().GetChannelCount());
+    std::printf("INFERNUX_WEB_AUDIO_ACTIVE_VOICES count=%zu\n",
+                infernux::AudioEngine::Instance().GetActiveVoiceCount());
+}
+
 void ResizeCanvas()
 {
     double cssWidth = 0.0;
@@ -325,6 +362,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebPageLifecycle(int active)
     if (!active) {
         g_pointerPositions.clear();
         InfernuxWebEndTextInput();
+        infernux::AudioEngine::Instance().PauseAll();
+    } else if (g_runtimeActivated) {
+        infernux::AudioEngine::Instance().ResumeAll();
     }
     PyObject *payload = PyDict_New();
     SetDictBool(payload, "active", active != 0);
@@ -358,6 +398,9 @@ EM_BOOL OnVisibility(int, const EmscriptenVisibilityChangeEvent *event, void *)
         infernux::InputManager::Instance().ProcessFocusEvent(false);
         g_pointerPositions.clear();
         InfernuxWebEndTextInput();
+        infernux::AudioEngine::Instance().PauseAll();
+    } else if (g_runtimeActivated) {
+        infernux::AudioEngine::Instance().ResumeAll();
     }
     PyObject *payload = PyDict_New();
     SetDictBool(payload, "hidden", event->hidden != 0);
@@ -369,6 +412,8 @@ EM_BOOL OnVisibility(int, const EmscriptenVisibilityChangeEvent *event, void *)
 
 EM_BOOL OnKey(int eventType, const EmscriptenKeyboardEvent *event, void *)
 {
+    if (eventType == EMSCRIPTEN_EVENT_KEYDOWN && !event->repeat)
+        InfernuxWebUserActivation();
     infernux::InputManager::Instance().ProcessKeyEvent(BrowserCodeToScancode(event->code),
                                                        eventType == EMSCRIPTEN_EVENT_KEYDOWN);
     PyObject *payload = PyDict_New();
@@ -403,6 +448,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebPointerEvent(int eventKind, int 
                                                              double contactWidthPixels, double contactHeightPixels,
                                                              int button, int buttons, int isPrimary)
 {
+    if (eventKind == 0)
+        InfernuxWebUserActivation();
     auto &input = infernux::InputManager::Instance();
     const float normalizedX = static_cast<float>(xPixels / g_cssWidth);
     const float normalizedY = static_cast<float>(yPixels / g_cssHeight);
@@ -568,7 +615,9 @@ bool InitializePython()
     PyObject *mainModule = PyImport_AddModule("__main__");
     g_tick = PyObject_GetAttrString(mainModule, "infernux_web_tick");
     g_input = PyObject_GetAttrString(mainModule, "infernux_web_input");
-    return g_tick != nullptr && PyCallable_Check(g_tick) && g_input != nullptr && PyCallable_Check(g_input);
+    g_activate = PyObject_GetAttrString(mainModule, "infernux_web_activate");
+    return g_tick != nullptr && PyCallable_Check(g_tick) && g_input != nullptr && PyCallable_Check(g_input) &&
+           g_activate != nullptr && PyCallable_Check(g_activate);
 }
 
 void Frame()

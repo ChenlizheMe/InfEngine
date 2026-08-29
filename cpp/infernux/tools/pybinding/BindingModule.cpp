@@ -14,6 +14,7 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterTagLayerBindings(module);
     infernux::RegisterInputBindings(module);
     infernux::RegisterPhysicsBindings(module);
+    infernux::RegisterAudioBindings(module);
 #else
     module.attr("__runtime_profile__") = "desktop";
     infernux::RegisterInfernuxBindings(module);

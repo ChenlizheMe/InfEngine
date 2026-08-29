@@ -69,6 +69,30 @@ foreach(_archive _python_expat _python_mpdecimal _python_hacl)
 endforeach()
 
 include(FetchContent)
+
+# The Web Player owns an audio-only SDL runtime. Browser graphics and input
+# remain on the explicit WebGPU/DOM adapters above this layer.
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+set(SDL_VIDEO OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+set(SDL_GPU OFF CACHE BOOL "" FORCE)
+set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+set(SDL_JOYSTICK OFF CACHE BOOL "" FORCE)
+set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
+set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
+set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
+set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
+add_subdirectory(
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/SDL"
+    "${CMAKE_BINARY_DIR}/_deps/infernux-web-sdl"
+    EXCLUDE_FROM_ALL
+)
+
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
@@ -115,8 +139,15 @@ add_executable(InfernuxWebPlayerHost
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/audio/AudioClip.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/audio/AudioClipLoader.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/audio/AudioDecoders.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/audio/AudioEngine.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/audio/AudioListener.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/audio/AudioSource.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/platform/filesystem/InxPack.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/platform/input/InputManager.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/stb/stb_vorbis.c"
 )
 set_target_properties(InfernuxWebPlayerHost PROPERTIES
     CXX_STANDARD 17
@@ -139,6 +170,7 @@ target_include_directories(InfernuxWebPlayerHost PRIVATE
     "${INFERNUX_WEB_CPYTHON_BUILD}"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/dr_libs"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/glm"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/nlohmann/single_include"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/SDL/include"
@@ -150,6 +182,7 @@ target_link_libraries(InfernuxWebPlayerHost PRIVATE
     "${_python_mpdecimal}"
     "${_python_hacl}"
     ${_web_zstd_target}
+    SDL3::SDL3-static
     dl
     pthread
     m
@@ -189,6 +222,7 @@ if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingModule.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingAssetRegistry.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingBatch.cpp"
+        "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingAudio.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingInput.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingPhysics.cpp"
         "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/tools/pybinding/BindingResources.cpp"

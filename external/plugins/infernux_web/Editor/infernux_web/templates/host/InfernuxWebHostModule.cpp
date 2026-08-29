@@ -10,6 +10,7 @@
 #include <emscripten.h>
 
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+#include <function/audio/AudioClipLoader.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
@@ -153,6 +154,7 @@ PyObject *InitializeRuntimeAssets(PyObject *, PyObject *arguments)
                                 std::make_unique<infernux::PhysicMaterialLoader>());
         registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
         registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Audio, std::make_unique<infernux::AudioClipLoader>());
         registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
         registry.RegisterLoader(infernux::ResourceType::DefaultText,
                                 std::make_unique<infernux::InxDefaultTextLoader>());

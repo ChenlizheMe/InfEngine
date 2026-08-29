@@ -218,6 +218,10 @@
         recordDiagnostic(text);
         console.log(text);
         if (text.includes('INFERNUX_WEB_HOST_READY')) {
+          canvasNode.dataset.infernuxState = 'awaiting-user-activation';
+          statusNode.textContent = 'Tap, click, or press a key to play';
+        }
+        if (text.includes('INFERNUX_WEB_RUNTIME_ACTIVE')) {
           canvasNode.dataset.infernuxState = 'ready';
           statusNode.remove();
         }

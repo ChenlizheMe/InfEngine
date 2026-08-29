@@ -59,11 +59,16 @@ def test_web_exporter_contributes_only_webgpu_target(monkeypatch):
     assert not capabilities.python_native_modules
     assert not capabilities.numba
     assert not capabilities.network
-    assert not capabilities.audio
+    assert capabilities.audio
     assert capabilities.text_input
     assert capabilities.gamepad_input
     assert not capabilities.persistent_storage
-    assert {"dom-text-input", "multi-pointer", "safe-area"} <= capabilities.features
+    assert {
+        "dom-text-input",
+        "gesture-gated-webaudio",
+        "multi-pointer",
+        "safe-area",
+    } <= capabilities.features
 
 
 def test_web_doctor_accepts_pinned_toolchain(monkeypatch):
@@ -269,6 +274,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "InxPack.cpp" in cmake
     assert "35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad" in cmake
     assert "INFERNUX_WEB_ZSTD_SOURCE_DIR" in cmake
+    assert "SDL3::SDL3-static" in cmake
+    assert "AudioEngine.cpp" in cmake
     assert "Py_Initialize" in main
     assert "JobSystem::InitializeInline" in main
     assert "RunPendingJobs(64)" in main
@@ -312,9 +319,13 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "safe-area-inset-top" in shell
     assert "InfernuxWebViewportChanged" in main
     assert "InfernuxWebPageLifecycle" in main
+    assert "InfernuxWebUserActivation" in main
+    assert "INFERNUX_WEB_AUDIO_READY" in main
     assert "pagehide" in shell
     assert "pageshow" in shell
     assert 'install_runtime_service("text-input", web_host)' in bootstrap
+    assert '"AudioSource": "audio_source"' in bootstrap
+    assert "INFERNUX_WEB_USER_ACTIVATION_REQUIRED" in bootstrap
     assert 'importlib.import_module("Infernux.screen")' in bootstrap
     assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell

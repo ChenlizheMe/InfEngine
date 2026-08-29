@@ -29,7 +29,8 @@ function resolveBrowserExecutable() {
 
 async function main() {
   const url = process.argv[2];
-  if (!url) throw new Error("usage: node web_mobile_input_smoke.cjs <url>");
+  if (!url) throw new Error("usage: node web_mobile_input_smoke.cjs <url> [--require-active-audio]");
+  const requireActiveAudio = process.argv.includes("--require-active-audio");
   const executablePath = resolveBrowserExecutable();
   const browser = await chromium.launch({
     executablePath,
@@ -48,9 +49,20 @@ async function main() {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
     await page.waitForFunction(
-      () => document.querySelector("#canvas")?.dataset.infernuxState === "ready",
+      () => document.querySelector("#canvas")?.dataset.infernuxState === "awaiting-user-activation",
       null,
       { timeout: 240000 },
+    );
+    const canvasBox = await page.locator("#canvas").boundingBox();
+    if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
+    await page.touchscreen.tap(
+      canvasBox.x + canvasBox.width * 0.5,
+      canvasBox.y + canvasBox.height * 0.5,
+    );
+    await page.waitForFunction(
+      () => document.querySelector("#canvas")?.dataset.infernuxState === "ready",
+      null,
+      { timeout: 30000 },
     );
     await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
@@ -95,25 +107,35 @@ async function main() {
     const result = await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
       const diagnostics = JSON.parse(canvas.dataset.infernuxDiagnostics || "[]");
+      const activeVoiceMarker = diagnostics.find(
+        (item) => item.includes("INFERNUX_WEB_AUDIO_ACTIVE_VOICES"),
+      ) || "";
       return {
         state: canvas.dataset.infernuxState,
         pointerBridge: diagnostics.includes("INFERNUX_WEB_POINTER_BRIDGE_READY"),
         textBridge: diagnostics.includes("INFERNUX_WEB_TEXT_BRIDGE_READY"),
         visualViewport: diagnostics.includes("INFERNUX_WEB_VISUAL_VIEWPORT_READY"),
+        audioReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_AUDIO_READY")),
+        audioContextRunning: Module.SDL3?.audioContext?.state === "running",
+        activeAudioVoices: Number(activeVoiceMarker.match(/count=(\d+)/)?.[1] || 0),
         pointerDown: diagnostics.some((item) => item.includes("kind=pointer_down")),
         pointerCancel: diagnostics.some((item) => item.includes("kind=pointer_cancel")),
         textInput: diagnostics.some((item) => item.includes("kind=text_input")),
         pageHide: diagnostics.some((item) => item.includes("kind=page_hide")),
         pageShow: diagnostics.some((item) => item.includes("kind=page_show")),
         unhandledErrors: diagnostics.filter((item) => item.startsWith("ERROR:")),
+        diagnosticTail: diagnostics.slice(-80),
       };
     });
     if (pageErrors.length || result.unhandledErrors.length ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
+        !result.audioReady || !result.audioContextRunning ||
+        (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
         !result.pageHide || !result.pageShow) {
       throw new Error(JSON.stringify({ result, pageErrors }));
     }
+    delete result.diagnosticTail;
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } finally {
     await browser.close();

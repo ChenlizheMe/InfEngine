@@ -39,7 +39,7 @@ _WEB_CAPABILITIES = PlatformCapabilities(
     dynamic_loading=False,
     filesystem=True,
     network=False,
-    audio=False,
+    audio=True,
     pointer_input=True,
     text_input=True,
     gamepad_input=True,
@@ -51,6 +51,7 @@ _WEB_CAPABILITIES = PlatformCapabilities(
             "browser-lifecycle",
             "css-pixel-viewport",
             "dom-text-input",
+            "gesture-gated-webaudio",
             "multi-pointer",
             "safe-area",
         }
