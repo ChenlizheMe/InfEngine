@@ -2604,7 +2604,7 @@ print(json.dumps({{
                 )
             )
         for candidate in environment_candidates:
-            key = os.path.normcase(str(candidate))
+            key = path_key(candidate)
             if key in environment_root_keys:
                 continue
             environment_root_keys.add(key)
