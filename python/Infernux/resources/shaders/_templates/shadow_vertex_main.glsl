@@ -44,15 +44,24 @@ ${VERTEX_CALL}
                 : cross(tangentWorld, vec3(0.0, 1.0, 0.0));
         fallbackSide = normalize(fallbackSide);
 
+        // Mirror of the main-pass width expansion: use the continuous
+        // geometric side directly and only fall back near the singular
+        // light-facing configuration, aligning the fallback's hemisphere to
+        // the geometric side (never snapping the geometric side to a light
+        // axis, which flickered on light-horizontal segments).
         vec3 geometricSide = cross(facing, tangentWorld);
         float geometricLength = length(geometricSide);
-        vec3 side = fallbackSide;
-        if (geometricLength > 1.0e-6) {
+        vec3 side;
+        if (geometricLength > 0.20) {
+            side = geometricSide / geometricLength;
+        } else if (geometricLength > 1.0e-6) {
             geometricSide /= geometricLength;
-            if (dot(geometricSide, fallbackSide) < 0.0)
-                geometricSide = -geometricSide;
+            if (dot(fallbackSide, geometricSide) < 0.0)
+                fallbackSide = -fallbackSide;
             float geometricWeight = smoothstep(0.025, 0.20, geometricLength);
             side = normalize(mix(fallbackSide, geometricSide, geometricWeight));
+        } else {
+            side = fallbackSide;
         }
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneWeights.z > 0.0) {

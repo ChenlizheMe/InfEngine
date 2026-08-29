@@ -58,20 +58,29 @@ ${VERTEX_CALL}
                 : cross(tangentWorld, vec3(0.0, 1.0, 0.0));
         fallbackSide = normalize(fallbackSide);
 
-        // Near a camera-facing segment the geometric width direction is
-        // undefined. Normalizing that tiny cross product magnifies minute
-        // physics/sample noise into a full-width flip. Blend from a stable,
-        // tangent-sign-invariant camera basis until the projection is well
-        // conditioned; this also keeps retraced trails on the same side.
+        // The width direction is cross(facing, tangent): continuous in the
+        // tangent, and the CPU already keeps tangent signs hemisphere-
+        // continuous along the strip, so no per-vertex sign correction is
+        // applied here. Snapping the sign to a camera axis placed every
+        // screen-horizontal segment exactly on the flip boundary
+        // (dot(cross(f,t), fallback) == -t.y in view space), so float noise
+        // flipped individual vertices a full width each frame. Only a segment
+        // pointing almost straight at the camera is truly ill-conditioned;
+        // there we blend toward the camera-plane fallback and align the
+        // fallback's hemisphere to the geometric side, never the reverse.
         vec3 geometricSide = cross(facing, tangentWorld);
         float geometricLength = length(geometricSide);
-        vec3 side = fallbackSide;
-        if (geometricLength > 1.0e-6) {
+        vec3 side;
+        if (geometricLength > 0.20) {
+            side = geometricSide / geometricLength;
+        } else if (geometricLength > 1.0e-6) {
             geometricSide /= geometricLength;
-            if (dot(geometricSide, fallbackSide) < 0.0)
-                geometricSide = -geometricSide;
+            if (dot(fallbackSide, geometricSide) < 0.0)
+                fallbackSide = -fallbackSide;
             float geometricWeight = smoothstep(0.025, 0.20, geometricLength);
             side = normalize(mix(fallbackSide, geometricSide, geometricWeight));
+        } else {
+            side = fallbackSide;
         }
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneIndices.y != 0u) {

@@ -140,7 +140,14 @@ def test_line_renderer_view_alignment_preserves_winding_when_direction_reverses(
         assert "fallbackSide" in source
         assert "geometricLength" in source
         assert "smoothstep(0.025, 0.20, geometricLength)" in source
-        assert "dot(geometricSide, fallbackSide) < 0.0" in source
+        # The well-conditioned regime must use the continuous geometric side
+        # without any hemisphere snapping: aligning cross(facing, tangent) to
+        # a camera axis put screen-horizontal segments exactly on the flip
+        # boundary and made ribbons flicker a full width every frame. Only the
+        # fallback may adopt the geometric side's hemisphere.
+        assert "side = geometricSide / geometricLength;" in source
+        assert "dot(fallbackSide, geometricSide) < 0.0" in source
+        assert "geometricSide = -geometricSide" not in source
         assert "directionSign = dot(tangentWorld, facing)" not in source
         assert "[3].xyz - centerWorld.xyz" not in source
 
