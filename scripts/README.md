@@ -7,7 +7,7 @@ runtime code stays in `cpp/` and `python/`; Hub application code stays in
 
 | Directory | Purpose | Primary entry point |
 |:----------|:--------|:--------------------|
-| `acceptance/` | Reusable project-level runtime acceptance on supported hosts | `headless_project_smoke.py` |
+| `acceptance/` | Reusable project-level runtime acceptance and cross-host trajectory comparison | `headless_project_smoke.py` / `compare_headless_trajectories.py` |
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
@@ -27,3 +27,10 @@ Website tool names under `docs/tools/` are intentionally verb-based:
 `build-*` creates deterministic artifacts, `check-*` enforces a contract,
 `test-*` exercises browser-independent behavior, and `verify-site.mjs` is the
 aggregate consistency gate.
+
+For cross-host physics evidence, run `headless_project_smoke.py` with identical
+`--fixed-delta`, `--play-frames`, `--track-object`, and `--sample-every`
+arguments on each host. Save each result with `--trajectory-output`, then pass
+the two JSON files to `compare_headless_trajectories.py`. The comparison ignores
+host-specific project paths and checks the sampled state with an explicit
+numeric tolerance.

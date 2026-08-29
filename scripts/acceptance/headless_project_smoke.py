@@ -21,10 +21,12 @@ from Infernux.scene import SceneManager
 class _State:
     requested: bool = False
     active: bool = False
+    play_start_frame: int | None = None
     played_frames: int = 0
     error: str = ""
     object_names: list[str] | None = None
     component_names: list[str] | None = None
+    trajectory: list[dict[str, Any]] | None = None
 
 
 def _walk_objects(roots: list[Any]) -> list[Any]:
@@ -49,14 +51,62 @@ def _component_name(component: Any) -> str:
     return str(getattr(component, "type_name", "") or type(component).__name__)
 
 
+def _vector3(value: Any) -> list[float]:
+    return [round(float(getattr(value, axis)), 6) for axis in ("x", "y", "z")]
+
+
+def _capture_trajectory_sample(
+    objects: list[Any], tracked_names: list[str], frame: int, fixed_delta: float
+) -> dict[str, Any]:
+    objects_by_name: dict[str, list[Any]] = {}
+    for obj in objects:
+        objects_by_name.setdefault(str(obj.name), []).append(obj)
+
+    samples: dict[str, Any] = {}
+    for name in tracked_names:
+        matches = objects_by_name.get(name, [])
+        if len(matches) != 1:
+            samples[name] = {"status": "missing" if not matches else "ambiguous"}
+            continue
+        obj = matches[0]
+        sample: dict[str, Any] = {"position": _vector3(obj.transform.position)}
+        for component in obj.get_components():
+            if _component_name(component) != "Rigidbody":
+                continue
+            for attribute in ("position", "velocity", "angular_velocity"):
+                try:
+                    sample[attribute] = _vector3(getattr(component, attribute))
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
+            break
+        samples[name] = sample
+    return {
+        "frame": int(frame),
+        "time_seconds": round(float(frame) * fixed_delta, 6),
+        "objects": samples,
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project", help="Project root containing Assets and ProjectSettings")
     parser.add_argument("--scene", required=True, help="Project-relative .scene path")
     parser.add_argument("--play-frames", type=int, default=120)
+    parser.add_argument("--fixed-delta", type=float, default=1.0 / 60.0)
     parser.add_argument("--load-timeout-frames", type=int, default=600)
     parser.add_argument("--require-object", action="append", default=[])
     parser.add_argument("--require-component", action="append", default=[])
+    parser.add_argument(
+        "--track-object",
+        action="append",
+        default=[],
+        help="Record one uniquely named object's transform and Rigidbody state",
+    )
+    parser.add_argument("--sample-every", type=int, default=30)
+    parser.add_argument(
+        "--trajectory-output",
+        help="Optional path for the same structured result printed to stdout",
+    )
     return parser
 
 
@@ -71,8 +121,11 @@ def main() -> int:
         raise FileNotFoundError(scene_path)
     if args.play_frames <= 0 or args.load_timeout_frames <= 0:
         raise ValueError("frame limits must be positive")
+    if args.fixed_delta <= 0.0 or args.sample_every <= 0:
+        raise ValueError("--fixed-delta and --sample-every must be positive")
 
-    state = _State()
+    tracked_names = list(dict.fromkeys(str(name) for name in args.track_object))
+    state = _State(trajectory=[])
 
     def update(_engine: Any, _frame: int) -> bool:
         if not state.requested:
@@ -93,6 +146,15 @@ def main() -> int:
                         return False
                     native_manager.play()
                     state.active = True
+                    state.play_start_frame = _frame
+                    objects = _walk_objects(list(native_manager.get_active_scene().get_root_objects()))
+                    if tracked_names:
+                        state.trajectory.append(
+                            _capture_trajectory_sample(
+                                objects, tracked_names, 0, args.fixed_delta
+                            )
+                        )
+                    return True
                 elif _frame + 1 >= args.load_timeout_frames:
                     state.error = f"scene did not become active: {scene_relative}"
                     return False
@@ -101,7 +163,27 @@ def main() -> int:
                 time.sleep(0.001)
                 return True
 
-        state.played_frames += 1
+        state.played_frames = _frame - int(state.play_start_frame or 0)
+        if (
+            tracked_names
+            and state.played_frames > 0
+            and (
+                state.played_frames % args.sample_every == 0
+                or state.played_frames == args.play_frames
+            )
+        ):
+            scene = NativeSceneManager.instance().get_active_scene()
+            if scene is None:
+                state.error = "no active scene while sampling headless trajectory"
+                return False
+            state.trajectory.append(
+                _capture_trajectory_sample(
+                    _walk_objects(list(scene.get_root_objects())),
+                    tracked_names,
+                    state.played_frames,
+                    args.fixed_delta,
+                )
+            )
         if state.played_frames < args.play_frames:
             return True
         scene = NativeSceneManager.instance().get_active_scene()
@@ -120,6 +202,7 @@ def main() -> int:
     run_headless(
         project,
         update,
+        fixed_delta=args.fixed_delta,
         max_frames=args.load_timeout_frames + args.play_frames,
     )
     if state.error:
@@ -129,13 +212,16 @@ def main() -> int:
 
     object_names = state.object_names or []
     component_names = state.component_names or []
-    missing_objects = sorted(set(args.require_object).difference(object_names))
+    missing_objects = sorted(
+        (set(args.require_object) | set(tracked_names)).difference(object_names)
+    )
     missing_components = sorted(set(args.require_component).difference(component_names))
     result = {
         "schema": "infernux.headless_project_smoke",
         "status": "passed" if not missing_objects and not missing_components else "failed",
         "project": project,
         "scene": scene_relative,
+        "fixed_delta": args.fixed_delta,
         "play_frames": state.played_frames,
         "object_count": len(object_names),
         "component_count": len(component_names),
@@ -143,8 +229,15 @@ def main() -> int:
         "components": sorted(set(component_names)),
         "missing_objects": missing_objects,
         "missing_components": missing_components,
+        "trajectory": state.trajectory,
     }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    encoded = json.dumps(result, ensure_ascii=False, indent=2)
+    print(encoded)
+    if args.trajectory_output:
+        output_path = resolved_path(args.trajectory_output)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(encoded + "\n")
     return 0 if result["status"] == "passed" else 1
 
 
