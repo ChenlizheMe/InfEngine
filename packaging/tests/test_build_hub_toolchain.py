@@ -210,6 +210,19 @@ def test_mingw_paths_are_removed_from_release_environment(path: str, expected: b
     assert build_hub._is_mingw_path(path) is expected
 
 
+def test_nuitka_build_uses_an_ascii_temporary_directory():
+    build_dir = Path(r"C:\Users\测试\source\build")
+    build_env = {
+        "ProgramData": r"C:\ProgramData",
+        "TEMP": r"C:\Users\测试\AppData\Local\Temp",
+    }
+
+    result = build_hub._nuitka_temp_directory(build_env, build_dir)
+
+    str(result).encode("ascii")
+    assert result.is_relative_to(Path(r"C:\ProgramData\Infernux\BuildTemp"))
+
+
 @pytest.mark.parametrize(
     ("project_version", "file_version"),
     [

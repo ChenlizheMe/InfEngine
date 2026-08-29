@@ -1362,7 +1362,7 @@ def audit_player_package(
                 f"direct runtime payload has no AssetIndex GUID: {artifact_id}"
             )
 
-    layout = "infernux-single-entry-player"
+    layout = "single_executable_native_packages"
     runtime_policy = runtime_contract["runtime_policy"]
     reachability_gaps = []
     if missing_without_manifest:

@@ -206,7 +206,9 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         project / "Packages/infernux/mcp/Editor/infernux_mcp/material_operations.py"
     ).is_file()
     assert {item["reference"] for item in manager.registry.available()} == {
-        "infernux/mcp"
+        "infernux/mcp",
+        "infernux/platform-android",
+        "infernux/platform-web",
     }
     record = manager.registry.installed_record("infernux/mcp")
     localized_pages = manager.content_pages(record, locale="zh")
@@ -323,7 +325,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    assert capabilities_result["data"]["operation_count"] == 80
+    assert capabilities_result["data"]["operation_count"] == 81
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()

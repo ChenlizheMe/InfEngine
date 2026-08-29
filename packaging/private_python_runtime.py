@@ -15,6 +15,7 @@ from pathlib import Path
 from python_runtime_catalog import (
     DEFAULT_PYTHON_RUNTIME,
     PythonRuntimeId,
+    SUPPORTED_PYTHON_RUNTIMES,
     runtime_release,
 )
 
@@ -231,17 +232,24 @@ def remove_legacy_installer_artifacts(
     *,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
 ) -> None:
-    """Prune obsolete bootstrap files without touching installed runtimes.
+    """Prune obsolete bootstrap files and non-target packaging runtimes.
 
-    The packaging cache is shared across Hub builds.  Keep only the pinned
-    relocatable archive for the runtime being staged so an older Python ABI
-    can never be swept into a fresh installer by stale workspace output.
-    Managed ``pythonXY`` directories are intentionally left alone: Hub may
-    keep them side by side for engine versions that target different ABIs.
+    This function only operates on the explicitly supplied packaging cache,
+    never on Hub's managed user-runtime directory. Keep only the pinned
+    runtime being staged so stale output from an older ABI cannot enter a
+    fresh Hub installer.
     """
     root = Path(runtime_cache_root)
     if not root.is_dir():
         return
+    target_runtime = PythonRuntimeId.parse(runtime)
+    for runtime_id in SUPPORTED_PYTHON_RUNTIMES:
+        if runtime_id == target_runtime:
+            continue
+        stale_runtime = root / runtime_id.directory_name
+        if stale_runtime.is_dir():
+            shutil.rmtree(stale_runtime)
+
     for pattern in (
         "python-3.12*.exe",
         "python-3.12*.pkg",
@@ -252,7 +260,7 @@ def remove_legacy_installer_artifacts(
             if artifact.is_file():
                 artifact.unlink()
 
-    expected_archive = runtime_archive_for_machine(runtime=runtime).name
+    expected_archive = runtime_archive_for_machine(runtime=target_runtime).name
     for artifact in root.glob("cpython-*-install_only.tar.gz*"):
         if artifact.is_file() and artifact.name != expected_archive:
             artifact.unlink()

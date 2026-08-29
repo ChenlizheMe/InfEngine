@@ -100,7 +100,7 @@ def test_runtime_archive_rejects_paths_outside_destination(tmp_path: Path) -> No
     assert not (tmp_path / "outside.txt").exists()
 
 
-def test_legacy_python_installers_are_removed_without_touching_runtime(tmp_path: Path) -> None:
+def test_stale_packaging_runtime_is_removed_from_current_installer(tmp_path: Path) -> None:
     legacy_installer = tmp_path / "python-3.12.8-amd64.exe"
     legacy_installer.write_bytes(b"installer")
     legacy_archive = (
@@ -119,7 +119,7 @@ def test_legacy_python_installers_are_removed_without_touching_runtime(tmp_path:
     assert not legacy_installer.exists()
     assert not legacy_archive.exists()
     assert current_archive.read_bytes() == b"current archive"
-    assert runtime_python.read_bytes() == b"runtime"
+    assert not runtime_python.parent.exists()
 
 
 def test_runtime_manager_refuses_non_hub_python_destination(tmp_path: Path) -> None:

@@ -198,7 +198,7 @@ def test_engine_compatibility_is_validated_and_enforced_before_install(tmp_path)
     package = _export(incompatible, tmp_path / "future.inxpkg")
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
-    with pytest.raises(RuntimeError, match="current engine is 0.3.7"):
+    with pytest.raises(RuntimeError, match="current engine is 0.4.0"):
         manager.install_package(str(package), install_dependencies=False)
     assert manager.registry.installed() == ()
     assert not (project / "Assets/Plugins/vendor/future-engine/Data.bin").exists()

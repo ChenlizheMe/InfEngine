@@ -11,9 +11,9 @@
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "artifact_sha256": "fbbda987c52dc0b589f217bca0a9db11ae75c9b442741419c9d680d77ba7eebe",
-      "artifact_size": 548288,
-      "engine": ">=0.3.7,<0.4",
+      "artifact_sha256": "10921e09605674fdce870b68950e29b428d5839741122e5fc6c74f83dc3b25f2",
+      "artifact_size": 549248,
+      "engine": ">=0.4,<0.5",
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
       "pages": [
@@ -61,6 +61,72 @@
           "title": "License",
           "path": "LICENSE",
           "format": "text"
+        }
+      ]
+    },
+    {
+      "reference": "infernux/platform-android",
+      "name": "Infernux Android Platform",
+      "version": "0.1.0",
+      "intro": "Build Infernux games for Android with Vulkan.",
+      "intros": {
+        "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
+      },
+      "artifact": "infernux.platform-android.inxpkg",
+      "artifact_sha256": "eaab00db5b3eb6cd8511b90635e3cd8e86895f1b7fbd2746d4c20acbc80681d4",
+      "artifact_size": 32128,
+      "engine": ">=0.4.0,<0.5",
+      "dependencies": [],
+      "repository": "",
+      "pages": [
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.md",
+          "format": "markdown"
+        },
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        },
+        {
+          "id": "license",
+          "title": "License",
+          "path": "LICENSE",
+          "format": "text"
+        }
+      ]
+    },
+    {
+      "reference": "infernux/platform-web",
+      "name": "Infernux Web Platform",
+      "version": "0.1.0",
+      "intro": "Build Infernux games for browsers with WebGPU.",
+      "intros": {
+        "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
+      },
+      "artifact": "infernux.platform-web.inxpkg",
+      "artifact_sha256": "6fc0ddfa63564fcb78ad799b471f08b9a9b54787b4b28974bcc78e53170b7e94",
+      "artifact_size": 62336,
+      "engine": ">=0.4.0,<0.5",
+      "dependencies": [],
+      "repository": "",
+      "pages": [
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.md",
+          "format": "markdown"
+        },
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
         }
       ]
     }

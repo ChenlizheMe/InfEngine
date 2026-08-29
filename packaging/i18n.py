@@ -92,6 +92,8 @@ _ZH = {
     "Preparing Python {version} for Infernux Hub": "正在为 Infernux Hub 准备 Python {version}",
     "A background setup process is extracting an isolated full Python {version} runtime under the Infernux Hub runtime directory. Projects targeting this Python version receive their own copy. Your existing Python installations are not used or changed. This window will close automatically when setup finishes.": "后台正在 Infernux Hub 运行时目录中解压隔离的完整 Python {version} 运行环境。绑定此 Python 版本的项目会获得自己的副本。电脑上已有的 Python 不会被使用或改动，准备完成后此窗口会自动关闭。",
     "Infernux {engine} requires Python {version}. Please install Python {version} first.": "Infernux {engine} 需要 Python {version}。请先安装 Python {version}。",
+    "Python Runtime Required": "需要 Python 运行环境",
+    "This Infernux Hub requires Python {version} for current engine releases. Install Python {version} from Installs before installing or creating a project with them.\n\nOlder engine versions continue to use their own matching Python runtime.": "当前引擎版本需要 Python {version}。请先在“安装”页面安装 Python {version}，再安装该引擎或用它创建项目。\n\n旧引擎版本会继续使用各自匹配的 Python 运行环境。",
     "Python {version} is ready at:\n{path}": "Python {version} 已就绪：\n{path}",
     "Installed": "已安装",
     "Install": "安装",

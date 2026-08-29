@@ -374,6 +374,34 @@ std::string AssetDatabase::GetSkinnedMeshArtifactPath(const std::string &guid) c
     return FromFsPath(ToFsPath(m_projectRoot) / std::filesystem::u8path(relative));
 }
 
+bool AssetDatabase::EnsureRuntimeArtifactCurrent(const std::string &guid, ResourceType type)
+{
+    AssertMutationThread("EnsureRuntimeArtifactCurrent");
+    AssertNoPendingCommit("EnsureRuntimeArtifactCurrent");
+    const auto path = m_guidToPath.find(guid);
+    if (path == m_guidToPath.end() || path->second.empty())
+        return false;
+    const std::string normalizedPath = FilesystemPathKey(path->second);
+    const std::string primary = GetRuntimeArtifactPath(guid, type);
+    std::error_code error;
+    bool reusable =
+        !primary.empty() && std::filesystem::is_regular_file(ToFsPath(primary), error) && !error &&
+        HasCurrentRuntimeArtifactHeader(ToFsPath(primary), type, ImportArtifact::RuntimeArtifactKind::Primary);
+    if (reusable && type == ResourceType::Mesh) {
+        error.clear();
+        const std::string skinned = GetSkinnedMeshArtifactPath(guid);
+        reusable =
+            !skinned.empty() && std::filesystem::is_regular_file(ToFsPath(skinned), error) && !error &&
+            HasCurrentRuntimeArtifactHeader(ToFsPath(skinned), type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
+    }
+    if (reusable)
+        return true;
+    if (IsReadOnlyPath(normalizedPath))
+        return false;
+    const AssetMutationResult rebuilt = ReimportAsset(path->second);
+    return rebuilt.succeeded;
+}
+
 void AssetDatabase::AssertMutationThread(const char *operation) const
 {
     if (!m_initialized)

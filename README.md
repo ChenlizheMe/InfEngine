@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.3.7-orange.svg" alt="Version 0.3.7" />
+  <img src="https://img.shields.io/badge/version-0.4.0--dev-orange.svg" alt="Version 0.4.0 development" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
   <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="Current platform: Windows" />
   <img src="https://img.shields.io/badge/python-3.13-brightgreen.svg" alt="Python 3.13" />
@@ -37,7 +37,7 @@ A general-purpose game engine. Not a chat box glued onto someone else's editor.
 
 The runtime is C++17 and Vulkan. Gameplay, components, editor tools, assets, and render setup are written in Python 3.13.
 
-This tree is **0.3.7**. It runs on Windows x64. Android, Web, and Linux Players are not out yet. There is no bundled PyTorch stack either.
+This development tree targets **0.4.0**. Windows x64 is stable; Android and Web Players are being validated on the same project. Linux Player support and the PyTorch stack are not ready yet.
 
 ## What you can do now
 
@@ -84,8 +84,9 @@ python packaging/launcher.py
 ```
 
 On Linux, run `bash scripts/setup/configure_development.sh` instead. The setup
-script initializes submodules and creates or updates the repository's Python
-3.13 Conda environment from `environment.yml`.
+script initializes submodules and creates the repository's Python 3.13 Conda
+environment from `environment.yml`. If an older `infernux` environment uses a
+different Python ABI, the script replaces it instead of trying to reuse it.
 
 ```bash
 python -m pytest python/test/ -v
@@ -110,7 +111,7 @@ ctest --preset windows-msvc-dev --output-on-failure
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.7},
+  version = {0.4.0},
   url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```

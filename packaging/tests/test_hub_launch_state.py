@@ -4,6 +4,7 @@ import sys
 import time
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PACKAGING_DIR = Path(__file__).resolve().parents[1]
@@ -11,7 +12,9 @@ if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QMessageBox
 
+from launcher import GameEngineLauncher
 from splash_screen import EngineSplashScreen
 import splash_screen
 import viewmodel.control_pane_viewmodel as control_pane_viewmodel
@@ -145,3 +148,58 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
 
     assert errors == []
     assert finished == [str(runtime_python)]
+
+
+def test_upgraded_hub_requires_the_new_default_runtime(monkeypatch):
+    _app()
+    observed = {"message": "", "page": None, "finished": False}
+    launcher = SimpleNamespace(
+        runtime_manager=SimpleNamespace(
+            default_version="3.13",
+            has_runtime=lambda _version: False,
+        ),
+        sidebar=SimpleNamespace(
+            select_page=lambda page: observed.__setitem__("page", page)
+        ),
+        _finish_startup=lambda: observed.__setitem__("finished", True),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: observed.__setitem__("message", message),
+    )
+    monkeypatch.setattr(
+        "launcher.QTimer.singleShot",
+        lambda _delay, callback: callback(),
+    )
+
+    GameEngineLauncher._bootstrap_python_runtime(launcher)
+
+    assert "Python 3.13" in observed["message"]
+    assert observed["page"] == 1
+    assert observed["finished"] is True
+
+
+def test_fresh_installer_runtime_skips_the_upgrade_requirement(monkeypatch):
+    observed = {"warning": False, "finished": False}
+    launcher = SimpleNamespace(
+        runtime_manager=SimpleNamespace(
+            default_version="3.13",
+            has_runtime=lambda _version: True,
+        ),
+        sidebar=SimpleNamespace(select_page=lambda _page: None),
+        _finish_startup=lambda: observed.__setitem__("finished", True),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args: observed.__setitem__("warning", True),
+    )
+    monkeypatch.setattr(
+        "launcher.QTimer.singleShot",
+        lambda _delay, callback: callback(),
+    )
+
+    GameEngineLauncher._bootstrap_python_runtime(launcher)
+
+    assert observed == {"warning": False, "finished": True}

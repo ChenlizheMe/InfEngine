@@ -336,6 +336,41 @@ bool SetEnvironmentPath(const char *name, const std::filesystem::path &value)
 #endif
 }
 
+#ifdef _WIN32
+bool HasManagedPlayerControlChannel()
+{
+    return ::GetEnvironmentVariableW(L"_INFERNUX_PLAYER_CONTROL_FILE", nullptr, 0) > 0;
+}
+
+std::string Utf8Text(const std::wstring &value)
+{
+    if (value.empty())
+        return {};
+    const int size =
+        ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0)
+        return {};
+    std::string result(static_cast<size_t>(size), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size, nullptr,
+                          nullptr);
+    return result;
+}
+
+void ReportManagedPlayerFailure(const std::wstring &message)
+{
+    const DWORD required = ::GetEnvironmentVariableW(L"_INFERNUX_READY_FILE", nullptr, 0);
+    if (required <= 1)
+        return;
+    std::wstring path(static_cast<size_t>(required), L'\0');
+    const DWORD written = ::GetEnvironmentVariableW(L"_INFERNUX_READY_FILE", path.data(), required);
+    if (written == 0 || written >= required)
+        return;
+    path.resize(written);
+    std::ofstream stream(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    stream << "ERROR:" << Utf8Text(message) << '\n';
+}
+#endif
+
 void ClearPythonEnvironment()
 {
 #ifdef _WIN32
@@ -613,7 +648,12 @@ int PlayerHost::Run(const Layout &layout, const std::vector<std::wstring> &gameA
     std::filesystem::path cacheRoot;
     if (!PrepareCache(layout, cacheRoot) || !LoadPython(layout, cacheRoot)) {
 #ifdef _WIN32
-        ::MessageBoxW(nullptr, error_.c_str(), L"Infernux PlayerHost", MB_OK | MB_ICONERROR);
+        if (HasManagedPlayerControlChannel()) {
+            ReportManagedPlayerFailure(error_);
+            std::wcerr << L"Infernux PlayerHost: " << error_ << std::endl;
+        } else {
+            ::MessageBoxW(nullptr, error_.c_str(), L"Infernux PlayerHost", MB_OK | MB_ICONERROR);
+        }
 #else
         std::wcerr << L"Infernux PlayerHost: " << error_ << std::endl;
 #endif
@@ -624,7 +664,12 @@ int PlayerHost::Run(const Layout &layout, const std::vector<std::wstring> &gameA
         state_ = State::Exited;
     if (state_ == State::Failed) {
 #ifdef _WIN32
-        ::MessageBoxW(nullptr, error_.c_str(), L"Infernux PlayerHost", MB_OK | MB_ICONERROR);
+        if (HasManagedPlayerControlChannel()) {
+            ReportManagedPlayerFailure(error_);
+            std::wcerr << L"Infernux PlayerHost: " << error_ << std::endl;
+        } else {
+            ::MessageBoxW(nullptr, error_.c_str(), L"Infernux PlayerHost", MB_OK | MB_ICONERROR);
+        }
 #else
         std::wcerr << L"Infernux PlayerHost: " << error_ << std::endl;
 #endif

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -673,7 +674,19 @@ def _stage_python_runtime(
     native_library.mkdir(parents=True, exist_ok=True)
     for stale_library in (*native_library.glob("libpython*.so"), *native_library.glob("lib*_python.so")):
         stale_library.unlink()
-    runtime_libraries = (python_library, *(prefix / "lib").glob("lib*_python.so"))
+    required_sidecars = _required_python_sidecar_libraries(library_root)
+    missing_sidecars = [
+        name for name in required_sidecars if not (prefix / "lib" / name).is_file()
+    ]
+    if missing_sidecars:
+        raise ValueError(
+            f"Android Python {version} prefix is missing native dependencies "
+            f"required by its extension modules: {', '.join(missing_sidecars)}"
+        )
+    runtime_libraries = (
+        python_library,
+        *sorted((prefix / "lib").glob("lib*_python.so")),
+    )
     for library in runtime_libraries:
         shutil.copy2(library, native_library / library.name)
 
@@ -702,6 +715,23 @@ def _stage_python_runtime(
     )
     request.report("python-runtime", 4, 4, f"Android Python {version} runtime staged")
     return version
+
+
+def _required_python_sidecar_libraries(library_root: Path) -> tuple[str, ...]:
+    """Find Android sidecar libraries named by CPython extension binaries."""
+    dependency_pattern = re.compile(rb"lib[A-Za-z0-9_.+-]+_python\.so")
+    dependencies: set[str] = set()
+    for extension in library_root.rglob("*.so"):
+        try:
+            payload = extension.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"Unable to inspect Android Python extension dependencies: {extension}"
+            ) from exc
+        dependencies.update(
+            match.decode("ascii") for match in dependency_pattern.findall(payload)
+        )
+    return tuple(sorted(dependencies))
 
 
 def _find_android_numpy_wheel(

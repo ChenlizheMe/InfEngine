@@ -255,6 +255,8 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginLoadAsset(const std::string
         throw std::invalid_argument("AssetRegistry has no loader for worker request");
     if (!loader->second->SupportsWorkerLoad())
         throw std::invalid_argument("AssetRegistry loader does not support worker loading");
+    if (type == ResourceType::Mesh && !m_assetDb->EnsureRuntimeArtifactCurrent(guid, type))
+        throw std::runtime_error("AssetRegistry could not rebuild the runtime CPU artifact for GUID: " + guid);
     if (!JobSystem::IsAvailable())
         throw std::logic_error("AssetRegistry worker load requires JobSystem");
 

@@ -777,6 +777,35 @@ def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, 
     supervisor._close_player_log()
 
 
+def test_supervisor_reports_playerhost_failure_without_waiting_for_timeout(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "Desktop" / "FailedPlayerHost"
+    supervisor = SupervisorSession(str(project), session_id="failed-player-host")
+    supervisor.prepare_project()
+    executable = _write_single_entry_debug_player_output(tmp_path, project)
+
+    class _PlayerProcess:
+        pid = 8452
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _popen(_argv, **kwargs):
+        with open(kwargs["env"]["_INFERNUX_READY_FILE"], "w", encoding="utf-8") as stream:
+            stream.write("ERROR:Bootstrap.inxrt is damaged\n")
+        return _PlayerProcess()
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
+
+    status = supervisor.launch_player(str(executable), timeout_seconds=30.0)
+
+    assert status["player_ready"] is False
+    assert status["ready_error"] == "Bootstrap.inxrt is damaged"
+    supervisor._close_player_log()
+
+
 def test_supervisor_player_logs_only_report_current_launch(tmp_path, monkeypatch):
     local_state = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(local_state))

@@ -209,9 +209,25 @@ class GameEngineLauncher(QMainWindow):
             sys.exit(self.app.exec())
 
     def _bootstrap_python_runtime(self):
-        # Runtime installation is always an explicit user action. Startup only
-        # refreshes inventory and lets the show-once notification explain the
-        # new default; it never downloads or replaces Python implicitly.
+        # A fresh installer provisions the default runtime before launching the
+        # Hub. An in-place upgrade from an older Hub deliberately does not
+        # mutate Python behind the user's back, so make the missing requirement
+        # explicit and take the user directly to the runtime controls.
+        default_version = self.runtime_manager.default_version
+        if not self.runtime_manager.has_runtime(default_version):
+            QMessageBox.warning(
+                self,
+                tr("Python Runtime Required"),
+                tr(
+                    "This Infernux Hub requires Python {version} for current "
+                    "engine releases. Install Python {version} from Installs "
+                    "before installing or creating a project with them.\n\n"
+                    "Older engine versions continue to use their own matching "
+                    "Python runtime.",
+                    version=default_version,
+                ),
+            )
+            self.sidebar.select_page(1)
         QTimer.singleShot(0, self._finish_startup)
 
     def _finish_startup(self):

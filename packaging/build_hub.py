@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -80,6 +81,42 @@ def _run(
     env: Mapping[str, str] | None = None,
 ) -> None:
     subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def _nuitka_build_environment(
+    build_env: Mapping[str, str] | None,
+    build_dir: Path,
+) -> Mapping[str, str] | None:
+    if build_env is None:
+        return None
+
+    temp_dir = _nuitka_temp_directory(build_env, build_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(build_env)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        env[name] = str(temp_dir)
+    return env
+
+
+def _nuitka_temp_directory(
+    build_env: Mapping[str, str],
+    build_dir: Path,
+) -> Path:
+    temp_dir = build_dir / "temp"
+    try:
+        str(temp_dir).encode("ascii")
+    except UnicodeEncodeError:
+        program_data = Path(build_env.get("ProgramData", r"C:\ProgramData"))
+        digest = hashlib.sha256(str(build_dir).encode("utf-8")).hexdigest()[:16]
+        temp_dir = program_data / "Infernux" / "BuildTemp" / digest
+    try:
+        str(temp_dir).encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(
+            "Hub packaging needs an ASCII-only temporary directory. Set "
+            "ProgramData to an ASCII path and rebuild."
+        ) from exc
+    return temp_dir
 
 
 def _require_msbuild_generator(cmake_generator: str) -> None:
@@ -470,7 +507,8 @@ def _build_hub(
     if sys.platform == "darwin":
         command.append("--macos-create-app-bundle")
     command.append(str(packaging_dir / "launcher.py"))
-    _run(command, cwd=packaging_dir, env=build_env)
+    process_env = _nuitka_build_environment(build_env, build_dir)
+    _run(command, cwd=packaging_dir, env=process_env)
     reports = _validate_msvc_reports(output_dir) if os.name == "nt" else []
 
     candidates = [output_dir / "launcher.dist", output_dir / "launcher.app"]
@@ -547,7 +585,8 @@ def _build_installer(
         # security products to inspect and is less packer-like.
         command.extend(["--windows-uac-admin", "--onefile-no-compression"])
     command.append(str(packaging_dir / "installer_gui.py"))
-    _run(command, cwd=packaging_dir, env=build_env)
+    process_env = _nuitka_build_environment(build_env, build_dir)
+    _run(command, cwd=packaging_dir, env=process_env)
     if os.name == "nt":
         _validate_msvc_reports(output_dir)
 

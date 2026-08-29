@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.3.7-orange.svg" alt="Version 0.3.7" />
+  <img src="https://img.shields.io/badge/version-0.4.0--dev-orange.svg" alt="Version 0.4.0 development" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
   <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="当前平台：Windows" />
   <img src="https://img.shields.io/badge/python-3.13-brightgreen.svg" alt="Python 3.13" />
@@ -37,7 +37,7 @@
 
 运行时是 C++17 和 Vulkan。玩法、组件、编辑器、资源和渲染编排用 Python 3.13 编写。
 
-当前这棵树是 **0.3.7**，只有 Windows x64。Android、Web、Linux Player 都还没出，也没有自带的 PyTorch 栈。
+当前开发树面向 **0.4.0**。Windows x64 已稳定，Android 与 Web Player 正在用同一个项目验收；Linux Player 和 PyTorch 栈尚未完成。
 
 ## 现在能干什么
 
@@ -84,7 +84,8 @@ python packaging/launcher.py
 ```
 
 Linux 下请改为运行 `bash scripts/setup/configure_development.sh`。初始化脚本会补齐
-子模块，并按照 `environment.yml` 创建或更新项目统一使用的 Python 3.13 Conda 环境。
+子模块，并按照 `environment.yml` 创建项目统一使用的 Python 3.13 Conda 环境；如果已有
+`infernux` 环境使用不同的 Python ABI，脚本会重建它，不会勉强沿用旧环境。
 
 ```bash
 python -m pytest python/test/ -v
@@ -109,7 +110,7 @@ ctest --preset windows-msvc-dev --output-on-failure
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.3.7},
+  version = {0.4.0},
   url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```

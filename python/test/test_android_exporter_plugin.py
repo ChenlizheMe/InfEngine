@@ -530,6 +530,43 @@ def test_android_python_runtime_rejects_non_313_prefix(monkeypatch, tmp_path):
         )
 
 
+def test_android_python_runtime_rejects_missing_extension_sidecars(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    prefix = tmp_path / "python-prefix"
+    include = prefix / "include" / "python3.13"
+    stdlib = prefix / "lib" / "python3.13"
+    extension_dir = stdlib / "lib-dynload"
+    include.mkdir(parents=True)
+    (stdlib / "encodings").mkdir(parents=True)
+    extension_dir.mkdir()
+    (include / "Python.h").write_text("fixture header\n", encoding="utf-8")
+    (prefix / "lib" / "libpython3.13.so").write_bytes(b"python")
+    (extension_dir / "_ssl.cpython-313-x86_64-linux-android.so").write_bytes(
+        b"ELF payload libssl_python.so libcrypto_python.so"
+    )
+    _write_android_numpy_wheel(prefix)
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-x64-emulator",
+        str(tmp_path / "output"),
+        BuildProfile(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="libcrypto_python.so, libssl_python.so",
+    ):
+        exporter_module._stage_python_runtime(
+            request,
+            tmp_path / "staging",
+            prefix,
+            "x86_64",
+        )
+
+
 def test_android_engine_native_staging_is_exact(monkeypatch, tmp_path):
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")

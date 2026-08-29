@@ -372,6 +372,11 @@ class AssetDatabase
     [[nodiscard]] std::string GetRuntimeArtifactPath(const std::string &guid, ResourceType type) const;
     [[nodiscard]] std::string GetSkinnedMeshArtifactPath(const std::string &guid) const;
 
+    /// Ensure a GUID's imported CPU artifact is reusable before a worker load.
+    /// Corrupt or obsolete authoring artifacts are rebuilt on the owner thread;
+    /// immutable Player catalogs fail instead of attempting source import.
+    [[nodiscard]] bool EnsureRuntimeArtifactCurrent(const std::string &guid, ResourceType type);
+
     /// @brief Access the dependency graph (singleton shorthand)
     [[nodiscard]] static AssetDependencyGraph &GetDependencyGraph()
     {

@@ -10,8 +10,8 @@
         "zh": "Python 3.13 现已成为默认版本"
       },
       "message": {
-        "en": "Infernux Hub can now manage multiple Python runtimes side by side. Infernux 0.4.0 targets Python 3.13, while Python 3.12 remains available only for projects and engine versions that target it.\n\nA fresh Hub installation includes Python 3.13. After an in-app Hub upgrade, open Installs to add it before installing Infernux 0.4.0. Existing projects keep their bound Python version.",
-        "zh": "Infernux Hub 现在可以并列管理多个 Python 运行环境。Infernux 0.4.0 对应 Python 3.13，Python 3.12 只为明确绑定它的旧项目和旧引擎版本保留。\n\n全新安装的 Hub 已包含 Python 3.13；如果通过 Hub 内更新升级，请先在“安装”页面添加 Python 3.13，再安装 Infernux 0.4.0。已有项目会保留其绑定的 Python 版本。"
+        "en": "Infernux Hub can now manage multiple Python runtimes side by side. Infernux 0.4.0 targets Python 3.13; older projects and engine releases keep using the Python version recorded by their wheel.\n\nA fresh Hub installation includes Python 3.13. After an in-app Hub upgrade, install it from Installs before installing Infernux 0.4.0. Existing projects keep their bound Python version.",
+        "zh": "Infernux Hub 现在可以并列管理多个 Python 运行环境。Infernux 0.4.0 对应 Python 3.13；旧项目和旧引擎版本继续使用各自 wheel 所记录的 Python 版本。\n\n全新安装的 Hub 已包含 Python 3.13；如果通过 Hub 内更新升级，请先在“安装”页面安装它，再安装 Infernux 0.4.0。已有项目会保留其绑定的 Python 版本。"
       },
       "action": {
         "kind": "open_installs",

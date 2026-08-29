@@ -12,6 +12,7 @@ from Infernux.engine.game_builder import GameBuilder
 from Infernux.engine.player_build_preflight import (
     publish_player_asset_catalog_for_host,
 )
+from Infernux.engine.path_utils import resolved_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,9 +32,9 @@ def cook_platform_content(
 
     settings = load_build_settings(request.project_root)
     game_name = str(settings.get("game_name", "")).strip() or Path(
-        request.project_root
-    ).resolve().name
-    root = Path(output_root).resolve()
+        resolved_path(request.project_root)
+    ).name
+    root = Path(resolved_path(output_root))
     root.mkdir(parents=True, exist_ok=True)
     builder = GameBuilder(
         request.project_root,
