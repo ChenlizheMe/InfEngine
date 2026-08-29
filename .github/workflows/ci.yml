@@ -97,3 +97,71 @@ jobs:
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           ctest --preset windows-msvc-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
+
+  linux-headless:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: infernux
+          python-version: "3.13"
+          auto-activate-base: false
+
+      - name: Install Linux Vulkan build dependencies
+        run: |
+          conda activate infernux
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang \
+            libasound2-dev \
+            libdecor-0-dev \
+            libdrm-dev \
+            libffi-dev \
+            libgbm-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
+            libudev-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxss-dev \
+            libxtst-dev \
+            lld \
+            ninja-build \
+            pkg-config \
+            zlib1g-dev
+
+      - name: Install Python build and test dependencies
+        run: |
+          conda activate infernux
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Configure Linux headless preset
+        run: |
+          conda activate infernux
+          cmake --preset linux-clang-headless
+
+      - name: Build Linux headless preset
+        run: |
+          conda activate infernux
+          cmake --build --preset linux-clang-headless
+
+      - name: Run Linux preset tests
+        run: |
+          conda activate infernux
+          ctest --preset linux-clang-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
