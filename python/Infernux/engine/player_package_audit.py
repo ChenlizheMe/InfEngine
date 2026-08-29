@@ -45,6 +45,8 @@ from .runtime_artifact_catalog import (
     runtime_artifact_reason_for,
 )
 from .python_abi import (
+    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+    BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
     LINUX_PYTHON_SHARED_PREFIX,
     PYTHON_VERSION,
     WINDOWS_PYTHON_DLL,
@@ -85,6 +87,7 @@ if sys.platform == "win32":
     })
     RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/zlib.dll"})
     BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
+        BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
         WINDOWS_PYTHON_DLL,
         "_ctypes.pyd",
         "_InfernuxBootstrap.pyd",
@@ -115,6 +118,7 @@ else:
     })
     RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/libz.so"})
     BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
+        BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
         "Infernux/lib/libInfernuxFoundation.so",
         "stdlib/encodings/__init__.pyc",
         "stdlib/encodings/aliases.pyc",
@@ -952,6 +956,43 @@ def audit_player_package(
         if required.casefold() not in {path.casefold() for path in bootstrap_entry_paths}
     ]
     bootstrap_names = {Path(path).name for path in bootstrap_entry_paths}
+    if BOOTSTRAP_NATIVE_MANIFEST_FILENAME in bootstrap_entry_paths:
+        try:
+            bootstrap_native_document = json.loads(
+                read_entry(
+                    data_root / "Bootstrap.inxrt",
+                    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+                ).decode("utf-8")
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            bootstrap_payload_gap.append(
+                f"bootstrap native manifest is unreadable: {exc}"
+            )
+        else:
+            if (
+                bootstrap_native_document.get("$schema")
+                != BOOTSTRAP_NATIVE_MANIFEST_SCHEMA
+            ):
+                bootstrap_payload_gap.append(
+                    "bootstrap native manifest has an unsupported schema"
+                )
+            bootstrap_native_files = bootstrap_native_document.get("files")
+            if not isinstance(bootstrap_native_files, list):
+                bootstrap_payload_gap.append(
+                    "bootstrap native manifest contains no file list"
+                )
+            else:
+                bootstrap_names_casefold = {
+                    name.casefold() for name in bootstrap_names
+                }
+                bootstrap_payload_gap.extend(
+                    f"missing declared bootstrap native file: {name}"
+                    for name in bootstrap_native_files
+                    if not isinstance(name, str)
+                    or not name
+                    or Path(name).name != name
+                    or name.casefold() not in bootstrap_names_casefold
+                )
     if sys.platform == "win32":
         if not any(is_windows_libffi_dll(name) for name in bootstrap_names):
             bootstrap_payload_gap.append(

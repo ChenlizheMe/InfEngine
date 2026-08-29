@@ -1150,6 +1150,15 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
 
     for filename in sources:
         assert (dist / filename).read_bytes() == sources[filename].read_bytes()
+    bootstrap_manifest = json.loads(
+        (dist / game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert bootstrap_manifest == {
+        "$schema": game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+        "files": sorted(sources),
+    }
     assert (dist / "stdlib" / "encodings" / "__init__.pyc").is_file()
     assert not list((dist / "stdlib" / "encodings").glob("*.py"))
 
@@ -1178,6 +1187,12 @@ def test_python_bootstrap_runtime_accepts_standalone_libffi_name(tmp_path, monke
     monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")
     monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
     monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(nuitka_builder_module, "resolved_path", lambda value: str(value))
+    monkeypatch.setattr(
+        nuitka_builder_module,
+        "path_key",
+        lambda value: os.path.normcase(os.path.abspath(str(value))),
+    )
     builder = object.__new__(NuitkaBuilder)
     builder._builder_python = str(python_executable)
 
@@ -1222,6 +1237,12 @@ def test_python_bootstrap_runtime_follows_venv_base_prefix(tmp_path, monkeypatch
     monkeypatch.setattr(nuitka_builder_module.sys, "executable", str(python_executable))
     monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
     monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(nuitka_builder_module, "resolved_path", lambda value: str(value))
+    monkeypatch.setattr(
+        nuitka_builder_module,
+        "path_key",
+        lambda value: os.path.normcase(os.path.abspath(str(value))),
+    )
     builder = object.__new__(NuitkaBuilder)
     builder._builder_python = str(python_executable)
 
@@ -1459,15 +1480,12 @@ def test_debug_player_uses_generic_reusable_runtime_pack(tmp_path, monkeypatch):
     assert Path(captured["icon_path"]).is_file()
 
 
-def test_pack_core_runtime_moves_boot_deferred_stdlib_extensions(tmp_path):
+def test_pack_core_runtime_moves_unclassified_native_files(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
     final_dir.mkdir()
     data_root = final_dir / "TestGame_Data"
     data_root.mkdir()
-    deferred = sorted(builder._PLAYER_DEFERRED_STDLIB_FILES)
-    for index, filename in enumerate(deferred):
-        (final_dir / filename).write_bytes(f"deferred-{index}".encode("ascii"))
     (final_dir / "late-runtime.dll").write_bytes(b"move into runtime")
     (final_dir / "Infernux" / "resources").mkdir(parents=True)
     (final_dir / "Infernux" / "resources" / "runtime.txt").write_text(
@@ -1481,11 +1499,9 @@ def test_pack_core_runtime_moves_boot_deferred_stdlib_extensions(tmp_path):
 
     manifest = read_manifest(data_root / builder._RUNTIME_ARCHIVE_FILENAME)
     paths = {entry["path"] for entry in manifest["files"]}
-    assert {f"stdlib/{filename}" for filename in deferred} <= paths
     assert "stdlib/late-runtime.dll" in paths
     assert "packaging/__init__.pyc" in paths
     assert "stdlib/__future__.pyc" not in paths
-    assert all(not (final_dir / filename).exists() for filename in deferred)
     assert not (final_dir / "late-runtime.dll").exists()
     assert not packaging_root.exists()
     assert not (final_dir / "Infernux").exists()
@@ -1514,6 +1530,9 @@ def test_pack_core_runtime_moves_versioned_linux_sonames_off_root(
     assert not (final_dir / "libz.so.1").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="validates the Windows Player DLL layout"
+)
 def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
@@ -1574,25 +1593,36 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
     data_root.mkdir(parents=True)
     package_lib.mkdir(parents=True)
     if sys.platform == "win32":
-        bootstrap_files = (
+        python_bootstrap_files = (
             "python313.dll",
             "_ctypes.pyd",
             "libffi-8.dll",
-            "_InfernuxBootstrap.pyd",
+            "_opcode.pyd",
         )
+        bootstrap_module_name = "_InfernuxBootstrap.pyd"
         module_name = "_InfernuxPlayer.cp313-win_amd64.pyd"
         foundation_name = "InfernuxFoundation.dll"
     else:
-        bootstrap_files = (
+        python_bootstrap_files = (
             "libpython3.13.so.1.0",
             "_ctypes.cpython-312-x86_64-linux-gnu.so",
             "libffi.so.8",
-            "_InfernuxBootstrap.cpython-312-x86_64-linux-gnu.so",
+            "_opcode.cpython-313-x86_64-linux-gnu.so",
         )
+        bootstrap_module_name = "_InfernuxBootstrap.cpython-312-x86_64-linux-gnu.so"
         module_name = "_InfernuxPlayer.cpython-312-x86_64-linux-gnu.so"
         foundation_name = "libInfernuxFoundation.so"
-    for filename in bootstrap_files:
+    for filename in (*python_bootstrap_files, bootstrap_module_name):
         (final_dir / filename).write_bytes(filename.encode("ascii"))
+    (final_dir / game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "$schema": game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+                "files": list(python_bootstrap_files),
+            }
+        ),
+        encoding="utf-8",
+    )
     (final_dir / module_name).write_bytes(b"player module")
     (package_lib / foundation_name).write_bytes(b"foundation")
     encodings = final_dir / "stdlib" / "encodings"
@@ -1610,6 +1640,8 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
     assert "stdlib/encodings/__init__.pyc" in paths
     assert "stdlib/__future__.pyc" in paths
     assert "stdlib/inspect.pyc" in paths
+    assert game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME in paths
+    assert any(Path(path).name.startswith("_opcode") for path in paths)
     assert all(
         path.endswith(".pyc")
         for path in paths
@@ -1869,6 +1901,9 @@ def test_player_compile_fingerprint_ignores_post_build_packaging_code(tmp_path, 
 
     builder = object.__new__(NuitkaBuilder)
     builder._engine_fingerprint_cache = ""
+    native_dir = package_root / "lib"
+    native_dir.mkdir()
+    builder._native_payload_dir = lambda: native_dir
     first = builder._player_compile_input_fingerprint()
     audit_source.write_text("AUDIT = 2\n", encoding="utf-8")
     builder_source.write_text("BUILDER = 2\n", encoding="utf-8")

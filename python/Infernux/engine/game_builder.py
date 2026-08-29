@@ -87,6 +87,8 @@ from Infernux.engine.player_service_graph import (
     player_runtime_contract_sections,
 )
 from Infernux.engine.python_abi import (
+    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+    BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
     LINUX_PYTHON_SHARED_PREFIX,
     PYTHON_VERSION,
     WINDOWS_PYTHON_DLL,
@@ -99,6 +101,38 @@ from Infernux.engine.runtime_type_registry import (
 
 
 _NATIVE_PLAYER_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod"})
+
+
+def _load_bootstrap_native_sources(final_dir: str) -> dict[str, str]:
+    """Load the exact native CPython closure staged by NuitkaBuilder."""
+
+    manifest_path = Path(final_dir) / BOOTSTRAP_NATIVE_MANIFEST_FILENAME
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Player bootstrap native manifest is missing or invalid; rebuild the runtime pack"
+        ) from exc
+    if document.get("$schema") != BOOTSTRAP_NATIVE_MANIFEST_SCHEMA:
+        raise RuntimeError("Player bootstrap native manifest has an unsupported schema")
+    filenames = document.get("files")
+    if not isinstance(filenames, list) or not filenames:
+        raise RuntimeError("Player bootstrap native manifest contains no files")
+
+    sources: dict[str, str] = {}
+    source_keys: set[str] = set()
+    for value in filenames:
+        if not isinstance(value, str) or not value or Path(value).name != value:
+            raise RuntimeError(f"Invalid Player bootstrap native filename: {value!r}")
+        key = value.casefold()
+        if key in source_keys:
+            raise RuntimeError(f"Duplicate Player bootstrap native filename: {value}")
+        source = Path(final_dir) / value
+        if not source.is_file():
+            raise RuntimeError(f"Player bootstrap native file is missing: {value}")
+        source_keys.add(key)
+        sources[value] = str(source)
+    return sources
 
 
 def _ensure_video_splash_packages() -> None:
@@ -464,30 +498,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             ".html",
             ".txt",
         }
-    # These extensions are not imported by the generated boot source before
-    # Runtime.inxrt extraction. All loose non-bootstrap native files are
-    # classified dynamically when Runtime.inxrt is assembled.
-    _PLAYER_DEFERRED_STDLIB_FILES = frozenset(
-        {
-            "_decimal.pyd",
-            "_hashlib.pyd",
-            "_multiprocessing.pyd",
-            "_queue.pyd",
-            "_socket.pyd",
-            "_ssl.pyd",
-            "_uuid.pyd",
-            "_wmi.pyd",
-            "pyexpat.pyd",
-            "select.pyd",
-            "unicodedata.pyd",
-            "libcrypto-3-x64.dll",
-            "libcrypto-3.dll",
-            "libssl-3-x64.dll",
-            "libssl-3.dll",
-            "libexpat.dll",
-            "libexpat-1.dll",
-        }
-    )
     # Editor localization is loaded by the Editor only.  Keep this explicit
     # because ``--include-package-data=Infernux`` otherwise makes it easy for
     # Nuitka to copy the directory back into a Player staging tree.
@@ -3653,14 +3663,6 @@ finally:
         deferred_sources: list[str] = []
         deferred_source_set: set[str] = set()
         source_bytes = 0
-        for filename in sorted(self._PLAYER_DEFERRED_STDLIB_FILES):
-            source_path = os.path.join(final_dir, filename)
-            if not os.path.isfile(source_path):
-                continue
-            files.append((os.path.join("stdlib", filename).replace(os.sep, "/"), source_path))
-            deferred_sources.append(source_path)
-            deferred_source_set.add(source_path)
-            source_bytes += os.path.getsize(source_path)
         bootstrap_root_names = {
             "_infernuxbootstrap.pyd",
             "_infernuxplayer.pyd",
@@ -3805,6 +3807,7 @@ finally:
 
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
         archive_path = os.path.join(data_root, "Bootstrap.inxrt")
+        required = _load_bootstrap_native_sources(final_dir)
         extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
         player_modules = sorted(
             path
@@ -3830,7 +3833,7 @@ finally:
                 raise RuntimeError(
                     "Bootstrap.inxrt requires a Windows libffi DLL"
                 )
-            required = {
+            required.update({
                 WINDOWS_PYTHON_DLL: os.path.join(final_dir, WINDOWS_PYTHON_DLL),
                 "_ctypes.pyd": os.path.join(final_dir, "_ctypes.pyd"),
                 "_InfernuxBootstrap.pyd": os.path.join(
@@ -3840,7 +3843,7 @@ finally:
                 "Infernux/lib/InfernuxFoundation.dll": os.path.join(
                     final_dir, "Infernux", "lib", "InfernuxFoundation.dll"
                 ),
-            }
+            })
             required.update({path.name: str(path) for path in ffi_libraries})
         elif sys.platform.startswith("linux"):
             def require_unique(pattern: str, label: str) -> Path:
@@ -3876,12 +3879,12 @@ finally:
                 "_InfernuxBootstrap*.so", "_InfernuxBootstrap module"
             )
             foundation = Path(final_dir) / "Infernux" / "lib" / "libInfernuxFoundation.so"
-            required = {
+            required.update({
                 ctypes_module.name: str(ctypes_module),
                 bootstrap_module.name: str(bootstrap_module),
                 player_module.name: str(player_module),
                 "Infernux/lib/libInfernuxFoundation.so": str(foundation),
-            }
+            })
             required.update(
                 {path.name: str(path) for path in (*python_libraries, *ffi_libraries)}
             )
@@ -3897,21 +3900,6 @@ finally:
                 )
 
         sources = [(name, source) for name, source in sorted(required.items())]
-        optional_bootstrap_names = (
-            (
-                "python3.dll",
-                "zlib.dll",
-                "vcruntime140.dll",
-                "vcruntime140_1.dll",
-            )
-            if sys.platform == "win32"
-            else ()
-        )
-        for optional_name in optional_bootstrap_names:
-            source = os.path.join(final_dir, optional_name)
-            if os.path.isfile(source):
-                sources.append((optional_name, source))
-
         bootstrap_stdlib = Path(final_dir) / "stdlib"
         if not (bootstrap_stdlib / "encodings" / "__init__.pyc").is_file():
             raise RuntimeError(
@@ -3925,6 +3913,12 @@ finally:
                 )
             logical = source.relative_to(Path(final_dir)).as_posix()
             sources.append((logical, str(source)))
+        bootstrap_native_manifest = os.path.join(
+            final_dir, BOOTSTRAP_NATIVE_MANIFEST_FILENAME
+        )
+        sources.append(
+            (BOOTSTRAP_NATIVE_MANIFEST_FILENAME, bootstrap_native_manifest)
+        )
         native_manifest = self._write_finalize_pack(
             sources,
             archive_path,
@@ -3936,11 +3930,7 @@ finally:
         for name, source in required.items():
             if "/" not in name:
                 os.remove(source)
-        for optional_name in optional_bootstrap_names:
-            try:
-                os.remove(os.path.join(final_dir, optional_name))
-            except FileNotFoundError:
-                pass
+        os.remove(os.path.join(final_dir, BOOTSTRAP_NATIVE_MANIFEST_FILENAME))
         shutil.rmtree(bootstrap_stdlib)
         root_foundation = os.path.join(final_dir, "InfernuxFoundation.dll")
         if os.path.isfile(root_foundation):

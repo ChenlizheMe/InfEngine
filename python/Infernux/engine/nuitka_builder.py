@@ -40,11 +40,14 @@ from Infernux.engine.path_utils import path_key, resolved_path
 from Infernux.engine.player_package_native import extract_pack, read_manifest, write_pack
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
 from Infernux.engine.python_abi import (
+    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+    BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
     LINUX_PYTHON_SHARED_PREFIX,
     PYTHON_RUNTIME_DIRECTORY,
     PYTHON_VERSION,
     WINDOWS_LIBFFI_DLL_PATTERNS,
     WINDOWS_PYTHON_DLL,
+    stdlib_extension_module_sources,
 )
 
 # ASCII-safe root for Nuitka staging and temporary build artifacts.
@@ -62,6 +65,7 @@ _RUNTIME_PACK_DIR = os.path.join(_STAGING_ROOT, "_runtime_packs")
 _REQUIREMENTS_STATE_DIR = os.path.join(_STAGING_ROOT, "_requirements_state")
 _MAX_RUNTIME_PACKS = 4
 _RUNTIME_HASH_STATE_FILENAME = "content-hashes.json"
+_RUNTIME_HASH_CACHE_MIN_BYTES = 1024 * 1024
 _RUNTIME_ARCHIVE_FILENAME = "Runtime.inxrt"
 _RUNTIME_PACK_MANIFEST_FILENAME = "Player.inxmanifest"
 _PACKAGED_RUNTIME_DIRNAME = "_runtime_packs"
@@ -1372,7 +1376,10 @@ class NuitkaBuilder:
         native_payload_dir = self._native_payload_dir()
         package_lib_dir = package_root / "lib"
         if path_key(native_payload_dir) != path_key(package_lib_dir):
-            for path in self._native_payload_files(native_payload_dir):
+            for path in sorted(
+                self._native_payload_files(native_payload_dir),
+                key=lambda item: item.name.casefold(),
+            ):
                 digest.update(f"native/{path.name}".encode("utf-8"))
                 content_hash, state_key = self._cached_file_hash(path, hash_state)
                 live_hash_keys.add(state_key)
@@ -1445,8 +1452,10 @@ print(json.dumps({{
         key = path_key(path)
         cached = state.get(key, {})
         if (
-            cached.get("size") == stat.st_size
+            stat.st_size >= _RUNTIME_HASH_CACHE_MIN_BYTES
+            and cached.get("size") == stat.st_size
             and cached.get("mtime_ns") == stat.st_mtime_ns
+            and cached.get("ctime_ns") == stat.st_ctime_ns
             and isinstance(cached.get("sha256"), str)
         ):
             return cached["sha256"], key
@@ -1459,6 +1468,7 @@ print(json.dumps({{
         state[key] = {
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
             "sha256": value,
         }
         return value, key
@@ -2701,20 +2711,11 @@ print(json.dumps({{
                 f"PlayerHost bootstrap is unsupported on {sys.platform}"
             )
 
-        # Module-mode no longer embeds stdlib extensions. Stage the physical
-        # CPython ABI modules so GameBuilder can move them into Runtime.inxrt.
-        extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
-        for module_name in sorted(sys.stdlib_module_names):
-            try:
-                spec = importlib.util.find_spec(module_name)
-            except (ImportError, AttributeError, ValueError):
-                continue
-            origin = getattr(spec, "origin", None) if spec is not None else None
-            if not origin or not str(origin).endswith(extension_suffixes):
-                continue
-            source = Path(resolved_path(origin))
-            if source.is_file():
-                sources.setdefault(source.name, source)
+        # Module-mode no longer embeds stdlib extensions. The complete pure
+        # stdlib is imported before Runtime.inxrt can be mounted, so its native
+        # extension closure belongs to the same Bootstrap.inxrt phase.
+        for name, source in stdlib_extension_module_sources().items():
+            sources.setdefault(name, source)
 
         dependency_patterns = (
             (
@@ -2759,6 +2760,29 @@ print(json.dumps({{
         dist_root = Path(dist_dir)
         for name, source in sources.items():
             shutil.copy2(source, dist_root / name)
+        manifest_path = dist_root / BOOTSTRAP_NATIVE_MANIFEST_FILENAME
+        temporary_manifest = manifest_path.with_name(
+            f".{manifest_path.name}.{os.getpid()}.tmp"
+        )
+        try:
+            temporary_manifest.write_text(
+                json.dumps(
+                    {
+                        "$schema": BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+                        "files": sorted(sources),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary_manifest, manifest_path)
+        finally:
+            try:
+                temporary_manifest.unlink()
+            except FileNotFoundError:
+                pass
 
         target_encodings = dist_root / "stdlib" / "encodings"
         target_encodings.mkdir(parents=True, exist_ok=True)
