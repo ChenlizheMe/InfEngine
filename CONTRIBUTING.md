@@ -20,8 +20,9 @@ cmake --preset windows-msvc-release
 cmake --build --preset windows-msvc-wheel
 ```
 
-On Linux, run `bash scripts/setup/configure_development.sh`. These setup scripts
-initialize submodules and create or repair the `infernux` environment from
+On Ubuntu or Debian, run `scripts/setup/install_linux_dependencies.sh` once and
+then `bash scripts/setup/configure_development.sh`. The setup scripts initialize
+submodules and create or repair the `infernux` environment from
 `environment.yml`. CMake intentionally rejects another Python minor version so
 a local build cannot silently produce an incompatible wheel.
 

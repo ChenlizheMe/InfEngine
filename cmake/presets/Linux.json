@@ -18,6 +18,7 @@
         "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld",
+        "PKG_CONFIG_EXECUTABLE": "/usr/bin/pkg-config",
         "INFERNUX_BUILD_PLAYER_HOST": "ON"
       }
     },

@@ -89,10 +89,18 @@ cmake --build --preset windows-msvc-wheel
 python packaging/launcher.py
 ```
 
-On Linux, run `bash scripts/setup/configure_development.sh` instead. The setup
-script initializes submodules and creates the repository's Python 3.13 Conda
-environment from `environment.yml`. If an older `infernux` environment uses a
-different Python ABI, the script replaces it instead of trying to reuse it.
+On Ubuntu or Debian, install the native dependencies once, then configure the
+repository. The setup script initializes submodules and creates the Python 3.13
+Conda environment from `environment.yml`. If an older `infernux` environment
+uses a different Python ABI, the script replaces it instead of reusing it.
+
+```bash
+scripts/setup/install_linux_dependencies.sh
+bash scripts/setup/configure_development.sh
+conda activate infernux
+cmake --preset linux-clang-release
+cmake --build --preset linux-clang-release
+```
 
 ```bash
 python -m pytest python/test/ -v

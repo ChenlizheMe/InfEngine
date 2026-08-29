@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
+
+# Resolve platform compiler companion tools before project() performs its IPO
+# probe. Ubuntu installs versioned LLVM binaries without always publishing the
+# unversioned llvm-ar/llvm-ranlib names expected by CMake's Clang integration.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxCompilerTools.cmake")
+
 project(Infernux LANGUAGES C CXX)
 
 # Root orchestration only. Target ownership and packaging policy live in the

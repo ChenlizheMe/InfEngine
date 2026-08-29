@@ -13,6 +13,33 @@ command -v conda >/dev/null 2>&1 || {
     exit 1
 }
 
+missing_tools=()
+for tool in clang clang++ ld.lld ninja pkg-config glslangValidator; do
+    command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
+done
+
+find_llvm_tool() {
+    local base_name="$1"
+    local version
+    command -v "$base_name" >/dev/null 2>&1 && return 0
+    for version in 22 21 20 19 18 17; do
+        command -v "${base_name}-${version}" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+if ! find_llvm_tool llvm-ar; then
+    missing_tools+=("llvm-ar")
+fi
+if ! find_llvm_tool llvm-ranlib; then
+    missing_tools+=("llvm-ranlib")
+fi
+if ((${#missing_tools[@]})); then
+    echo "Linux native build tools are missing: ${missing_tools[*]}" >&2
+    echo "Run scripts/setup/install_linux_dependencies.sh, then retry." >&2
+    exit 1
+fi
+
 git submodule update --init --recursive
 
 if conda env list | awk '$1 == "infernux" { found = 1 } END { exit !found }'; then
