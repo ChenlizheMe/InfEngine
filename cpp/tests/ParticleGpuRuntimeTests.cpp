@@ -1163,7 +1163,7 @@ int main()
 
     {
         FakeDevice sharingDevice;
-        std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> sharingWords{};
+        std::array<std::array<uint32_t, 5>, static_cast<size_t>(particle::GpuKernelStage::Count)> sharingWords{};
         particle::GpuEmitterDesc sharingDesc;
         sharingDesc.capacity = 128;
         sharingDesc.stateStride = 32;
@@ -1219,7 +1219,7 @@ int main()
 
     {
         FakeDevice collisionRuntimeDevice;
-        std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> collisionWords{};
+        std::array<std::array<uint32_t, 5>, static_cast<size_t>(particle::GpuKernelStage::Count)> collisionWords{};
         particle::GpuEmitterDesc collisionDesc;
         collisionDesc.capacity = 32;
         collisionDesc.stateStride = 32;
@@ -1397,7 +1397,7 @@ int main()
     FakeDevice device;
     GpuRetirementQueue deletionQueue;
     deletionQueue.BindSerialSource([] { return rhi::SubmissionSerial{1}; });
-    std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> words{};
+    std::array<std::array<uint32_t, 5>, static_cast<size_t>(particle::GpuKernelStage::Count)> words{};
     particle::GpuEmitterDesc desc;
     desc.capacity = 1000;
     desc.stateStride = 64;

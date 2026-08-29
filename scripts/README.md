@@ -7,6 +7,7 @@ runtime code stays in `cpp/` and `python/`; Hub application code stays in
 
 | Directory | Purpose | Primary entry point |
 |:----------|:--------|:--------------------|
+| `acceptance/` | Reusable project-level runtime acceptance on supported hosts | `headless_project_smoke.py` |
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
