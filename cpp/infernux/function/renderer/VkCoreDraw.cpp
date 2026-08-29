@@ -91,6 +91,10 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         return;
     }
 
+    if (result == vk::SwapchainResult::SkipFrame) {
+        return;
+    }
+
     if (result == vk::SwapchainResult::Error) {
         INXLOG_ERROR("Failed to acquire swapchain image");
         return;

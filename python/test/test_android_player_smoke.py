@@ -64,3 +64,44 @@ def test_apk_abi_inventory(tmp_path: Path):
         archive.writestr("assets/player.inxpack", b"content")
 
     assert module.apk_abis(apk) == frozenset({"arm64-v8a", "x86_64"})
+
+
+def test_smoke_parser_accepts_gameplay_ready_gate():
+    module = _module()
+
+    arguments = module._parser().parse_args(
+        ["player.apk", "--expect-ready-log", "BALANCE 040 //"]
+    )
+
+    assert arguments.expect_ready_log == "BALANCE 040 //"
+    assert arguments.serial is None
+    assert arguments.max_surface_creations is None
+    assert arguments.max_abandoned_buffers == 8
+
+
+def test_hyperos_usb_install_approval_is_narrowly_detected():
+    module = _module()
+    hierarchy = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="com.miui.securitycenter" text="继续安装"
+        resource-id="android:id/button2" clickable="true" enabled="true"
+        bounds="[131,2825][698,3008]" />
+</hierarchy>
+"""
+
+    assert module.oem_install_approval_target(hierarchy) == (414, 2916)
+
+
+@pytest.mark.parametrize(
+    "hierarchy",
+    [
+        "<hierarchy><node package='other' text='继续安装' resource-id='android:id/button2' clickable='true' enabled='true' bounds='[0,0][10,10]'/></hierarchy>",
+        "<hierarchy><node package='com.miui.securitycenter' text='拒绝' resource-id='android:id/button2' clickable='true' enabled='true' bounds='[0,0][10,10]'/></hierarchy>",
+        "<hierarchy><node package='com.miui.securitycenter' text='继续安装' resource-id='android:id/button1' clickable='true' enabled='true' bounds='[0,0][10,10]'/></hierarchy>",
+        "not xml",
+    ],
+)
+def test_oem_install_approval_rejects_unrelated_ui(hierarchy: str):
+    module = _module()
+
+    assert module.oem_install_approval_target(hierarchy) is None

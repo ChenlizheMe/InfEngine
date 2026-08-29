@@ -918,7 +918,10 @@ bool InxView::TryCreateSurface(VkInstance vkInstance, VkSurfaceKHR *vkSurface) n
     if (!m_window || vkInstance == VK_NULL_HANDLE || !vkSurface)
         return false;
     *vkSurface = VK_NULL_HANDLE;
-    return SDL_Vulkan_CreateSurface(m_window, vkInstance, nullptr, vkSurface);
+    const bool created = SDL_Vulkan_CreateSurface(m_window, vkInstance, nullptr, vkSurface);
+    if (created)
+        m_hasCreatedSurface.store(true, std::memory_order_release);
+    return created;
 }
 
 bool SDLCALL InxView::WatchApplicationEvents(void *userdata, SDL_Event *event)
@@ -947,6 +950,21 @@ bool SDLCALL InxView::WatchApplicationEvents(void *userdata, SDL_Event *event)
         view->m_applicationInBackground.store(false, std::memory_order_release);
         view->RequestExternalWake();
         break;
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+    case SDL_EVENT_WINDOW_RESIZED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        // Android may replace the SurfaceView buffer queue after the Activity
+        // has already resumed (notably during fixed-rotation transitions).
+        // Recreating only on DID_ENTER_FOREGROUND can therefore bind Vulkan to
+        // the retiring ANativeWindow and leave the renderer dequeuing from an
+        // abandoned BufferQueue. Once the initial surface exists, any native
+        // pixel-size transition is a presentation-surface boundary.
+        if (view->m_hasCreatedSurface.load(std::memory_order_acquire)) {
+            view->m_surfaceRecreationPending.store(true, std::memory_order_release);
+            view->RequestExternalWake();
+        }
+        break;
+#endif
     default:
         break;
     }

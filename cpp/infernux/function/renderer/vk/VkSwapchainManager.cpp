@@ -11,6 +11,8 @@
 #include "VulkanQueueManager.h"
 #include <core/error/InxError.h>
 
+#include <SDL3/SDL_log.h>
+
 #include <algorithm>
 #include <limits>
 
@@ -171,11 +173,35 @@ bool VkSwapchainManager::BuildGeneration(const VkDeviceContext &context, uint32_
         createInfo.pQueueFamilyIndices = nullptr;
     }
 
-    createInfo.preTransform = swapchainSupport.capabilities.currentTransform;
+    // The renderer currently emits an unrotated clip-space image. Advertising
+    // currentTransform here would tell the compositor that pre-rotation has
+    // already been applied even though the projection, viewport, and scissor
+    // are still in window coordinates. Prefer IDENTITY so Android performs
+    // the required presentation rotation. A future explicit pre-rotation path
+    // may use currentTransform only after all three render contracts rotate in
+    // lockstep.
+    const VkSurfaceTransformFlagBitsKHR preTransform =
+        (swapchainSupport.capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0
+            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+            : swapchainSupport.capabilities.currentTransform;
+    createInfo.preTransform = preTransform;
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
     createInfo.oldSwapchain = oldSwapchain;
+
+    const auto &capabilities = swapchainSupport.capabilities;
+    INXLOG_INFO("Vulkan surface contract: requested=", width, "x", height,
+                ", currentExtent=", capabilities.currentExtent.width, "x", capabilities.currentExtent.height,
+                ", chosenExtent=", extent.width, "x", extent.height,
+                ", currentTransform=", static_cast<uint32_t>(capabilities.currentTransform),
+                ", preTransform=", static_cast<uint32_t>(preTransform),
+                ", supportedTransforms=", static_cast<uint32_t>(capabilities.supportedTransforms));
+    SDL_Log("INFERNUX_VULKAN_SURFACE requested=%ux%u current=%ux%u extent=%ux%u currentTransform=%u "
+            "preTransform=%u supportedTransforms=%u",
+            width, height, capabilities.currentExtent.width, capabilities.currentExtent.height, extent.width,
+            extent.height, static_cast<uint32_t>(capabilities.currentTransform), static_cast<uint32_t>(preTransform),
+            static_cast<uint32_t>(capabilities.supportedTransforms));
 
     VkResult result = vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &generation.swapchain);
     if (result != VK_SUCCESS) {
@@ -258,12 +284,18 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
         return SwapchainResult::NeedRecreate;
     }
     if (result == VK_SUBOPTIMAL_KHR) {
-        // Suboptimal but usable - mark for recreation but continue
-        return SwapchainResult::NeedRecreate;
+        // The acquired image is valid. In particular, Android can report a
+        // persistent SUBOPTIMAL result when IDENTITY pre-transform is chosen
+        // deliberately so SurfaceFlinger performs display rotation. Rebuilding
+        // the same swapchain cannot improve that contract and would thrash the
+        // presentation path every frame. A real resize is delivered separately
+        // through the framebuffer-resized flag or OUT_OF_DATE.
+        return SwapchainResult::Success;
     }
     if (result == VK_TIMEOUT || result == VK_NOT_READY) {
-        // Window is likely occluded / behind another window — skip frame
-        return SwapchainResult::NeedRecreate;
+        // The window is likely occluded or the compositor is busy. No image was
+        // acquired, so skip this frame without destroying a valid generation.
+        return SwapchainResult::SkipFrame;
     }
     if (result != VK_SUCCESS) {
         INXLOG_ERROR("Failed to acquire swapchain image: ", VkResultToString(result));
@@ -296,8 +328,11 @@ SwapchainResult VkSwapchainManager::Present(VulkanQueueManager &queues, uint32_t
 
     VkResult result = queues.Present(presentInfo);
 
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return SwapchainResult::NeedRecreate;
+    }
+    if (result == VK_SUBOPTIMAL_KHR) {
+        return SwapchainResult::Success;
     }
     if (result != VK_SUCCESS) {
         INXLOG_ERROR("Failed to present swapchain image: ", VkResultToString(result));

@@ -53,7 +53,8 @@ class VulkanQueueManager;
 enum class SwapchainResult
 {
     Success,      ///< Operation completed successfully
-    NeedRecreate, ///< Swapchain needs recreation (resize, suboptimal)
+    NeedRecreate, ///< Swapchain is out of date and must be replaced
+    SkipFrame,    ///< No image is available yet; keep the current generation
     Error         ///< Fatal error occurred
 };
 

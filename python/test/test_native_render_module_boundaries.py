@@ -1089,6 +1089,8 @@ def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
     assert "SDL_EVENT_WILL_ENTER_BACKGROUND" in view
     assert "m_applicationInBackground.store(true" in view
     assert "m_surfaceRecreationPending.store(true" in view
+    assert "SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED" in view
+    assert "m_hasCreatedSurface.load" in view
     assert "NeedsSurfaceRecreation()" in renderer
     assert "RecreatePresentationSurface" in renderer
     assert core.index("m_backend.Presentation().Destroy()") < core.index(

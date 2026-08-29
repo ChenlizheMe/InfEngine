@@ -224,6 +224,7 @@ class InxView
     bool m_isMinimized = false;
     std::atomic_bool m_applicationInBackground{false};
     std::atomic_bool m_surfaceRecreationPending{false};
+    std::atomic_bool m_hasCreatedSurface{false};
     bool m_eventWatchInstalled = false;
     bool m_isPlayMode = false;
     bool m_needsImmediateGuiRefresh = false;

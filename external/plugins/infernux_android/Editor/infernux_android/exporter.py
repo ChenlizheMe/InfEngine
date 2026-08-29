@@ -419,7 +419,7 @@ def _configure_project(
     *,
     python_version: str = _ANDROID_PYTHON_SERIES,
     sdl_orientations: str = "LandscapeLeft LandscapeRight",
-    android_orientation: str = "landscape",
+    android_orientation: str = "sensorLandscape",
 ) -> None:
     replacements = {
         "@INFERNUX_SOURCE_ROOT@": source_root.as_posix(),
@@ -589,8 +589,8 @@ def _android_orientation_contract(
         height = int(settings.get("window_height", 720))
         configured = "landscape" if width >= height else "portrait"
     policies = {
-        "landscape": ("LandscapeLeft LandscapeRight", "landscape"),
-        "portrait": ("Portrait PortraitUpsideDown", "portrait"),
+        "landscape": ("LandscapeLeft LandscapeRight", "sensorLandscape"),
+        "portrait": ("Portrait PortraitUpsideDown", "sensorPortrait"),
         "sensor": (
             "LandscapeLeft LandscapeRight Portrait PortraitUpsideDown",
             "fullUser",

@@ -186,7 +186,7 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert '"${CMAKE_CURRENT_SOURCE_DIR}/../python/include/' in cmake
     assert '"${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/' in cmake
     assert "android.hardware.vulkan.version" in manifest
-    assert 'android:screenOrientation="landscape"' in manifest
+    assert 'android:screenOrientation="sensorLandscape"' in manifest
     assert "glEsVersion" not in manifest
     assert "if (mScreenKeyboardShown)" in activity
     assert "registerOnBackInvokedCallback" in activity
@@ -238,8 +238,13 @@ def test_android_host_template_excludes_asset_database_sidecars(
 @pytest.mark.parametrize(
     ("option", "width", "height", "expected"),
     (
-        ("auto", 1920, 1080, ("LandscapeLeft LandscapeRight", "landscape")),
-        ("auto", 720, 1280, ("Portrait PortraitUpsideDown", "portrait")),
+        (
+            "auto",
+            1920,
+            1080,
+            ("LandscapeLeft LandscapeRight", "sensorLandscape"),
+        ),
+        ("auto", 720, 1280, ("Portrait PortraitUpsideDown", "sensorPortrait")),
         (
             "sensor",
             1280,
