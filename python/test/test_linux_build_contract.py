@@ -51,6 +51,14 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
     assert "install_linux_dependencies.sh" in configurator
 
 
+def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    linux_job = workflow.split("  linux-headless:", 1)[1]
+
+    assert "run: scripts/setup/install_linux_dependencies.sh" in linux_job
+    assert "sudo apt-get install" not in linux_job
+
+
 def test_clang_format_is_an_explicit_developer_target_dependency() -> None:
     module = (ROOT / "cmake/InfernuxDeveloperTools.cmake").read_text(encoding="utf-8")
 

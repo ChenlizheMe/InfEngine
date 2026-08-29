@@ -116,37 +116,7 @@ jobs:
           auto-activate-base: false
 
       - name: Install Linux Vulkan build dependencies
-        run: |
-          conda activate infernux
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            clang \
-            clang-format \
-            libasound2-dev \
-            libdecor-0-dev \
-            libdrm-dev \
-            libffi-dev \
-            libgbm-dev \
-            libpipewire-0.3-dev \
-            libpulse-dev \
-            libudev-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcursor-dev \
-            libxext-dev \
-            libxfixes-dev \
-            libxi-dev \
-            libxkbcommon-dev \
-            libxrandr-dev \
-            libxrender-dev \
-            libxss-dev \
-            libxtst-dev \
-            lld \
-            llvm \
-            ninja-build \
-            pkg-config \
-            zlib1g-dev
+        run: scripts/setup/install_linux_dependencies.sh
 
       - name: Install Python build and test dependencies
         run: |
