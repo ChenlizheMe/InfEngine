@@ -992,13 +992,18 @@ class NuitkaBuilder:
     # former monolithic InfernuxRuntime DLL is now a private static archive.
     # Historical copies may survive an older wheel and must never enter a new
     # Player pack or its cache fingerprint.
-    _FORBIDDEN_LEGACY_NATIVE_DLLS = frozenset(
+    _FORBIDDEN_LEGACY_NATIVE_FILES = frozenset(
         {
             "infernuxruntime.dll",
+            "libinfernuxruntime.so",
             "spirv.dll",
+            "libspirv.so",
             "spvremapper.dll",
+            "libspvremapper.so",
             "glslang-default-resource-limits.dll",
+            "libglslang-default-resource-limits.so",
             "glslang.dll",
+            "libglslang.so",
         }
     )
     _GAME_BUILD_NOFOLLOW_MODULES = frozenset()
@@ -1361,7 +1366,7 @@ class NuitkaBuilder:
                 or path.suffix.lower()
                 in {".pyc", ".pdb", ".lib", ".exp", ".meta", ".bak"}
                 or relative.endswith(".pyi")
-                or path.name.casefold() in self._FORBIDDEN_LEGACY_NATIVE_DLLS
+                or path.name.casefold() in self._FORBIDDEN_LEGACY_NATIVE_FILES
             ):
                 continue
             digest.update(relative.encode("utf-8"))
@@ -2447,7 +2452,7 @@ print(json.dumps({{
         for path in lib_dir.iterdir():
             if not path.is_file() or path in {module_file, bootstrap_module}:
                 continue
-            if path.name.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
+            if path.name.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
                 continue
             # Never mix a stale short-name extension with the selected
             # ABI-tagged module. Nuitka creates the short name itself.
@@ -2461,6 +2466,61 @@ print(json.dumps({{
                 files.append(path)
         return sorted(files, key=lambda path: path.name.lower())
 
+    @classmethod
+    def _player_native_payload_is_compatible(cls, lib_dir: Path) -> bool:
+        """Return whether *lib_dir* contains a self-contained Player bridge."""
+
+        try:
+            cls._native_payload_files(lib_dir)
+        except (OSError, RuntimeError):
+            return False
+        forbidden = cls._FORBIDDEN_LEGACY_NATIVE_FILES
+        return not any(
+            path.is_file() and path.name.casefold() in forbidden
+            for path in lib_dir.iterdir()
+        )
+
+    @classmethod
+    def _source_build_player_native_dirs(cls, loaded_dir: Path) -> list[Path]:
+        """Find shipping-native siblings of an Editor development payload."""
+
+        build_roots: list[Path] = []
+        for parent in (loaded_dir, *loaded_dir.parents):
+            if (
+                parent.name.casefold() == "build"
+                and parent.parent.name.casefold() == "out"
+            ):
+                build_roots.append(parent)
+                break
+        try:
+            import Infernux
+
+            package_root = Path(resolved_path(Infernux.__file__)).parent
+            repository_root = package_root.parents[1]
+            build_roots.append(repository_root / "out" / "build")
+        except (ImportError, OSError, IndexError, TypeError):
+            pass
+
+        candidates: list[Path] = []
+        seen: set[str] = set()
+        for build_root in build_roots:
+            for pattern in ("*/python-sync", "*/Release", "*/RelWithDebInfo"):
+                for candidate in build_root.glob(pattern):
+                    key = path_key(candidate)
+                    if key in seen or path_key(candidate) == path_key(loaded_dir):
+                        continue
+                    seen.add(key)
+                    if cls._player_native_payload_is_compatible(candidate):
+                        candidates.append(candidate)
+
+        def module_timestamp(candidate: Path) -> int:
+            try:
+                return cls._native_module_file(candidate).stat().st_mtime_ns
+            except OSError:
+                return -1
+
+        return sorted(candidates, key=module_timestamp, reverse=True)
+
     @staticmethod
     def _native_payload_dir() -> Path:
         """Resolve the atomic native payload used by this builder process."""
@@ -2472,6 +2532,11 @@ print(json.dumps({{
                     f"INFERNUX_NATIVE_MODULE_DIR is not a directory: {candidate}"
                 )
             NuitkaBuilder._native_payload_files(candidate)
+            if not NuitkaBuilder._player_native_payload_is_compatible(candidate):
+                raise RuntimeError(
+                    "INFERNUX_NATIVE_MODULE_DIR points to an Editor development "
+                    "runtime. Build and select a static Release Player runtime."
+                )
             return candidate
 
         native_module = importlib.import_module("Infernux.lib._Infernux")
@@ -2480,7 +2545,22 @@ print(json.dumps({{
             raise RuntimeError("Loaded Infernux native module has no filesystem path")
         candidate = Path(resolved_path(module_file)).parent
         NuitkaBuilder._native_payload_files(candidate)
-        return candidate
+        if NuitkaBuilder._player_native_payload_is_compatible(candidate):
+            return candidate
+
+        alternatives = NuitkaBuilder._source_build_player_native_dirs(candidate)
+        if alternatives:
+            selected = alternatives[0]
+            Debug.log_internal(
+                "Selected static Player native payload instead of the active "
+                f"Editor development runtime: {selected}"
+            )
+            return selected
+        raise RuntimeError(
+            "The active Infernux native module is an Editor development runtime "
+            "and cannot be packaged into a Player. Build the platform Release "
+            "preset first (for example: cmake --build --preset windows-msvc-release)."
+        )
 
     def _inject_native_libs(self, dist_dir: str):
         """Stage the bootstrap root and complete package-qualified native runtime.
@@ -2505,7 +2585,7 @@ print(json.dumps({{
 
         # Remove stale copies left by older installed wheels or Nuitka output
         # before injecting the current native closure.
-        for legacy_name in self._FORBIDDEN_LEGACY_NATIVE_DLLS:
+        for legacy_name in self._FORBIDDEN_LEGACY_NATIVE_FILES:
             for stale_path in (dist_root / legacy_name, target_dir / legacy_name):
                 try:
                     stale_path.unlink()

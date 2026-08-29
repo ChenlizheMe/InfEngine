@@ -3707,7 +3707,7 @@ finally:
             source_path = os.path.join(final_dir, filename)
             if not os.path.isfile(source_path):
                 continue
-            if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
+            if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
                 deferred_sources.append(source_path)
                 deferred_source_set.add(source_path)
                 continue
@@ -3750,7 +3750,7 @@ finally:
                     # executable inside Runtime.inxrt.
                     if filename.casefold().endswith(".exe"):
                         continue
-                    if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
+                    if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
                         continue
                     if is_numpy_package and not self._include_numpy_runtime_file(filename):
                         continue

@@ -36,6 +36,10 @@ from Infernux.engine.player_package_audit import (
 )
 import Infernux.engine.player_package_audit as player_package_audit
 from Infernux.engine.player_package_native import read_entry, read_manifest, set_test_backend, write_pack
+from Infernux.engine.python_abi import (
+    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+    BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+)
 from Infernux.engine.player_service_graph import (
     RuntimeFeatureSet,
     RuntimeFlavor,
@@ -466,7 +470,14 @@ def _valid_player(tmp_path: Path) -> Path:
     struct.pack_into("<H", player_exe, 0x98, 0x020B)
     (root / "Balance.exe").write_bytes(player_exe)
     bootstrap_sources = []
-    for name, payload in (
+    bootstrap_native_files = (
+        "python313.dll",
+        "_ctypes.pyd",
+        "ffi.dll",
+        "_InfernuxBootstrap.pyd",
+        "_InfernuxPlayer.cp313-win_amd64.pyd",
+    )
+    bootstrap_payloads = (
         ("python313.dll", b"python"),
         ("_ctypes.pyd", b"ctypes ABI"),
         ("ffi.dll", b"libffi ABI"),
@@ -476,7 +487,18 @@ def _valid_player(tmp_path: Path) -> Path:
         ("stdlib/encodings/__init__.pyc", b"encodings package"),
         ("stdlib/encodings/aliases.pyc", b"encoding aliases"),
         ("stdlib/encodings/utf_8.pyc", b"utf8 codec"),
-    ):
+        (
+            BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+            json.dumps(
+                {
+                    "$schema": BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+                    "files": list(bootstrap_native_files),
+                },
+                sort_keys=True,
+            ).encode("utf-8"),
+        ),
+    )
+    for name, payload in bootstrap_payloads:
         source_path = source / name.replace("/", "_")
         source_path.write_bytes(payload)
         bootstrap_sources.append((name, source_path))

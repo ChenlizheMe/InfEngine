@@ -7,6 +7,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from .path_utils import resolved_path
+
 
 PYTHON_MAJOR = 3
 PYTHON_MINOR = 13
@@ -50,7 +52,7 @@ def stdlib_extension_module_sources() -> dict[str, Path]:
         origin = getattr(spec, "origin", None) if spec is not None else None
         if not origin or not str(origin).endswith(extension_suffixes):
             continue
-        source = Path(origin).resolve()
+        source = Path(resolved_path(origin))
         if source.is_file():
             sources.setdefault(source.name, source)
     return sources

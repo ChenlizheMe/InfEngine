@@ -1543,7 +1543,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     (package_lib / "_Infernux.pyd").write_bytes(b"full bridge")
     (package_lib / "InfernuxFoundation.dll").write_bytes(b"foundation")
     (package_lib / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
-    for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
+    for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
         (package_lib / legacy_name).write_bytes(b"legacy static dependency")
         (final_dir / legacy_name).write_bytes(b"legacy root dependency")
     (final_dir / "_InfernuxBootstrap.pyd").write_bytes(b"bootstrap")
@@ -1572,15 +1572,15 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "stdlib/_ctypes.pyd" not in paths
     assert "stdlib/libffi-8.dll" not in paths
     assert not {
-        f"Infernux/lib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
+        f"Infernux/lib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES
     } & paths
     assert not {
-        f"stdlib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
+        f"stdlib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES
     } & paths
     assert not (final_dir / "InfernuxRendererRuntime.dll").exists()
     assert all(
         not (final_dir / name).exists()
-        for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
+        for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES
     )
     assert not (final_dir / "Infernux").exists()
 
@@ -2024,8 +2024,6 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     if python_runtime is not None:
         python_runtime.write_bytes(b"python-runtime")
         (native_root / "zlib.dll").write_bytes(b"runtime-zlib")
-        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
-            (native_root / legacy_name).write_bytes(b"legacy static dependency")
     monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
 
     dist = tmp_path / "boot.dist"
@@ -2037,7 +2035,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     (package_lib / companion).write_bytes(b"stale-runtime")
     if sys.platform == "win32":
         (dist / companion).write_bytes(b"stale-root-runtime")
-        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
+        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
             (dist / legacy_name).write_bytes(b"stale root legacy")
             (package_lib / legacy_name).write_bytes(b"stale package legacy")
 
@@ -2055,9 +2053,82 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         assert not (package_lib / "python313.dll").exists()
         assert (package_lib / "zlib.dll").read_bytes() == b"runtime-zlib"
         assert not (dist / "zlib.dll").exists()
-        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
+        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
             assert not (dist / legacy_name).exists()
             assert not (package_lib / legacy_name).exists()
+
+
+def test_player_native_payload_rejects_explicit_editor_runtime(tmp_path, monkeypatch):
+    native_root = tmp_path / "native"
+    native_root.mkdir()
+    native_module = (
+        "_Infernux.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    bootstrap_module = (
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_InfernuxBootstrap.so"
+    )
+    legacy_runtime = (
+        "InfernuxRuntime.dll"
+        if sys.platform == "win32"
+        else "libInfernuxRuntime.so"
+    )
+    (native_root / native_module).write_bytes(b"editor-module")
+    (native_root / bootstrap_module).write_bytes(b"bootstrap-module")
+    (native_root / legacy_runtime).write_bytes(b"editor-runtime")
+    monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
+
+    with pytest.raises(RuntimeError, match="static Release Player runtime"):
+        NuitkaBuilder._native_payload_dir()
+
+
+def test_player_native_payload_selects_static_source_build_sibling(
+    tmp_path, monkeypatch
+):
+    repository = tmp_path / "repository"
+    package_root = repository / "python" / "Infernux"
+    package_root.mkdir(parents=True)
+    package_init = package_root / "__init__.py"
+    package_init.write_text("", encoding="utf-8")
+    build_root = repository / "out" / "build"
+    editor_root = build_root / "windows-msvc-dev" / "python-sync"
+    player_root = build_root / "windows-msvc-release" / "python-sync"
+    editor_root.mkdir(parents=True)
+    player_root.mkdir(parents=True)
+    native_module = (
+        "_Infernux.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    bootstrap_module = (
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_InfernuxBootstrap.so"
+    )
+    legacy_runtime = (
+        "InfernuxRuntime.dll"
+        if sys.platform == "win32"
+        else "libInfernuxRuntime.so"
+    )
+    for root in (editor_root, player_root):
+        (root / native_module).write_bytes(root.name.encode("utf-8"))
+        (root / bootstrap_module).write_bytes(b"bootstrap-module")
+    (editor_root / legacy_runtime).write_bytes(b"editor-runtime")
+
+    import Infernux
+
+    monkeypatch.delenv("INFERNUX_NATIVE_MODULE_DIR", raising=False)
+    monkeypatch.setattr(Infernux, "__file__", str(package_init))
+    monkeypatch.setattr(
+        nuitka_builder_module.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(__file__=str(editor_root / native_module)),
+    )
+
+    assert NuitkaBuilder._native_payload_dir() == player_root
 
 
 def test_runtime_compatibility_key_ignores_branding_and_managed_dependencies(
