@@ -13,17 +13,17 @@ Thanks for contributing.
 The repository provides one Conda environment definition for the supported
 development ABI, Python 3.13:
 
-```bash
-conda env create -f environment.yml
+```powershell
+./scripts/setup/configure_development.ps1
 conda activate infernux
 cmake --preset windows-msvc-release
 cmake --build --preset windows-msvc-wheel
 ```
 
-If the `infernux` environment already exists, update it with
-`conda env update -n infernux -f environment.yml --prune`. CMake intentionally
-rejects another Python minor version so a local build cannot silently produce
-an incompatible wheel.
+On Linux, run `bash scripts/setup/configure_development.sh`. These setup scripts
+initialize submodules and create or repair the `infernux` environment from
+`environment.yml`. CMake intentionally rejects another Python minor version so
+a local build cannot silently produce an incompatible wheel.
 
 For Hub development:
 

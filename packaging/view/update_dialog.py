@@ -128,17 +128,21 @@ class UpdateProgressDialog(QDialog):
 class UpdateController(QObject):
     """Own worker lifetime and present an update without blocking Hub startup."""
 
+    check_finished = Signal()
+
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
         self.thread = None
         self.worker = None
         self._silent_check = True
+        self._completion_pending = False
 
     def check(self, *, silent: bool = True):
         if self.thread and self.thread.isRunning():
             return
         self._silent_check = silent
+        self._completion_pending = True
         self.thread = QThread(self)
         self.worker = _CheckWorker()
         self.worker.moveToThread(self.thread)
@@ -160,6 +164,7 @@ class UpdateController(QObject):
                 QMessageBox.information(
                     self.main_window, tr("Hub Update"), tr("Infernux Hub is up to date."),
                 )
+            self._finish_check()
             return
         if update.required:
             QMessageBox.information(
@@ -183,6 +188,7 @@ class UpdateController(QObject):
                 ),
             )
             if answer != QMessageBox.Yes:
+                self._finish_check()
                 return
         dialog = UpdateProgressDialog(update, self.main_window)
         result = dialog.exec()
@@ -192,10 +198,19 @@ class UpdateController(QObject):
         if result == QDialog.Accepted:
             self.main_window.hide()
             self.main_window.app.quit()
+            return
+        self._finish_check()
 
     def _check_failed(self, message: str):
         if not self._silent_check:
             QMessageBox.warning(self.main_window, tr("Update Check Failed"), message)
+        self._finish_check()
+
+    def _finish_check(self) -> None:
+        if not self._completion_pending:
+            return
+        self._completion_pending = False
+        self.check_finished.emit()
 
 
 __all__ = ["UpdateController", "UpdateProgressDialog"]

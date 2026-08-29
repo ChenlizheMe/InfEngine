@@ -49,13 +49,40 @@ def test_manual_update_check_returns_to_the_main_thread(monkeypatch):
     assert observed["main_thread"] is True
 
 
+def test_update_check_completion_is_emitted_after_no_update(monkeypatch):
+    _app()
+    window = QWidget()
+    controller = update_dialog.UpdateController(window)
+    completed = []
+    controller.check_finished.connect(lambda: completed.append(True))
+    loop = QEventLoop()
+
+    monkeypatch.setattr(update_dialog, "check_for_update", lambda: None)
+    controller.check_finished.connect(loop.quit)
+    QTimer.singleShot(3000, loop.quit)
+    controller.check(silent=True)
+    loop.exec()
+    controller.thread.wait(1000)
+
+    assert completed == [True]
+
+
 def test_required_runtime_catalog_update_starts_without_confirmation(monkeypatch):
     _app()
     window = QWidget()
     window.show()
-    observed = {"quit": False, "information": False, "question": False}
+    observed = {
+        "quit": False,
+        "information": False,
+        "question": False,
+        "finished": False,
+    }
     window.app = SimpleNamespace(quit=lambda: observed.__setitem__("quit", True))
     controller = update_dialog.UpdateController(window)
+    controller._completion_pending = True
+    controller.check_finished.connect(
+        lambda: observed.__setitem__("finished", True)
+    )
     update = SimpleNamespace(target_version="0.4.0", required=True)
 
     monkeypatch.setattr(
@@ -80,7 +107,12 @@ def test_required_runtime_catalog_update_starts_without_confirmation(monkeypatch
 
     controller._checked(update)
 
-    assert observed == {"quit": False, "information": True, "question": False}
+    assert observed == {
+        "quit": False,
+        "information": True,
+        "question": False,
+        "finished": True,
+    }
     assert not window.isHidden()
 
 
@@ -91,6 +123,9 @@ def test_required_runtime_catalog_update_quits_after_success(monkeypatch):
     observed = {"quit": False, "question": False}
     window.app = SimpleNamespace(quit=lambda: observed.__setitem__("quit", True))
     controller = update_dialog.UpdateController(window)
+    controller._completion_pending = True
+    finished = []
+    controller.check_finished.connect(lambda: finished.append(True))
     update = SimpleNamespace(target_version="0.4.0", required=True)
 
     monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
@@ -112,4 +147,5 @@ def test_required_runtime_catalog_update_quits_after_success(monkeypatch):
     controller._checked(update)
 
     assert observed == {"quit": True, "question": False}
+    assert finished == []
     assert window.isHidden()

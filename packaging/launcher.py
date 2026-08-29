@@ -145,6 +145,10 @@ class GameEngineLauncher(QMainWindow):
 
         from view.update_dialog import UpdateController
         self.update_controller = UpdateController(self)
+        self.update_controller.check_finished.connect(
+            self._on_startup_update_check_finished
+        )
+        self._startup_update_pending = False
         self.settings_view.update_check_requested.connect(
             lambda: self.update_controller.check(silent=False)
         )
@@ -204,9 +208,22 @@ class GameEngineLauncher(QMainWindow):
     def run(self):
         self.show()
         if is_frozen():
-            QTimer.singleShot(0, self._bootstrap_python_runtime)
+            QTimer.singleShot(0, self._bootstrap_hub)
         if self._own_app:
             sys.exit(self.app.exec())
+
+    def _bootstrap_hub(self):
+        # Resolve application updates before presenting runtime migration.
+        # This keeps an older Hub from offering engine/runtime actions that a
+        # newer release has made incompatible.
+        self._startup_update_pending = True
+        self.update_controller.check(silent=True)
+
+    def _on_startup_update_check_finished(self):
+        if not self._startup_update_pending:
+            return
+        self._startup_update_pending = False
+        self._bootstrap_python_runtime()
 
     def _bootstrap_python_runtime(self):
         # A fresh installer provisions the default runtime before launching the
@@ -233,7 +250,6 @@ class GameEngineLauncher(QMainWindow):
     def _finish_startup(self):
         self.installs_view.refresh()
         self.notification_controller.show_pending()
-        QTimer.singleShot(1200, lambda: self.update_controller.check(silent=True))
 
     def _on_close(self):
         self.db.close()

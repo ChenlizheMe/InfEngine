@@ -180,6 +180,30 @@ def test_upgraded_hub_requires_the_new_default_runtime(monkeypatch):
     assert observed["finished"] is True
 
 
+def test_packaged_hub_checks_for_updates_before_runtime_bootstrap():
+    observed = []
+    launcher = SimpleNamespace(
+        _startup_update_pending=False,
+        update_controller=SimpleNamespace(
+            check=lambda **kwargs: observed.append(("update", kwargs))
+        ),
+        _bootstrap_python_runtime=lambda: observed.append(("runtime", {})),
+    )
+
+    GameEngineLauncher._bootstrap_hub(launcher)
+
+    assert launcher._startup_update_pending is True
+    assert observed == [("update", {"silent": True})]
+
+    GameEngineLauncher._on_startup_update_check_finished(launcher)
+
+    assert launcher._startup_update_pending is False
+    assert observed == [
+        ("update", {"silent": True}),
+        ("runtime", {}),
+    ]
+
+
 def test_fresh_installer_runtime_skips_the_upgrade_requirement(monkeypatch):
     observed = {"warning": False, "finished": False}
     launcher = SimpleNamespace(
