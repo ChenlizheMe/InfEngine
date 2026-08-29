@@ -7,7 +7,7 @@ runtime code stays in `cpp/` and `python/`; Hub application code stays in
 
 | Directory | Purpose | Primary entry point |
 |:----------|:--------|:--------------------|
-| `acceptance/` | Reusable project-level runtime acceptance and cross-host trajectory comparison | `headless_project_smoke.py` / `compare_headless_trajectories.py` |
+| `acceptance/` | Reusable project-level runtime acceptance, cross-host trajectory comparison, and release evidence manifests | `headless_project_smoke.py` / `compare_headless_trajectories.py` / `build_evidence_manifest.py` |
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
@@ -40,3 +40,10 @@ Run `npm ci --prefix scripts/acceptance` after cloning, then invoke
 `web_mobile_input_smoke.cjs` against a locally served Web Player. On Windows it
 uses the installed Microsoft Edge binary; CI hosts may install the pinned
 Playwright Chromium build explicitly.
+
+Release-candidate artifacts and JSON smoke results can be bound to one source
+commit with `build_evidence_manifest.py`. Every `--artifact` and `--result`
+uses `ID=PATH`; paths must live below `--root`, directory hashes are stable over
+sorted relative file names, and `--require-clean` rejects an uncommitted source
+tree. The manifest timestamp comes from the source commit rather than wall-clock
+time so the same release inputs reproduce the same provenance record.
