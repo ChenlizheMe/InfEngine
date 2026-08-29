@@ -96,7 +96,23 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          ctest --preset windows-msvc-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
+          New-Item -ItemType Directory -Path out\test-results -Force | Out-Null
+          ctest --preset windows-msvc-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out\test-results\ctest-windows.xml
+
+      - name: Run Python and platform contract tests
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          python -m pytest python\test -q --junitxml out\test-results\pytest-windows.xml
+
+      - name: Upload Windows test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/*.xml
+          if-no-files-found: warn
 
   linux-headless:
     runs-on: ubuntu-22.04
@@ -136,4 +152,18 @@ jobs:
       - name: Run Linux preset tests
         run: |
           conda activate infernux
-          ctest --preset linux-clang-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
+          mkdir -p out/test-results
+          ctest --preset linux-clang-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out/test-results/ctest-linux.xml
+
+      - name: Run Python and platform contract tests
+        run: |
+          conda activate infernux
+          python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
+
+      - name: Upload Linux test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/*.xml
+          if-no-files-found: warn
