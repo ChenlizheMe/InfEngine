@@ -2106,6 +2106,13 @@ std::vector<char> InxShaderLoader::CompileFragmentGlsl(const std::string &source
     return spirv;
 }
 
+std::string InxShaderLoader::PrepareAuthoredStageGlsl(const std::string &source, const std::string &filePath,
+                                                      ShaderCompileTarget target)
+{
+    CompilationGuard guard;
+    return PreprocessShaderSource(source, filePath, target);
+}
+
 void InxShaderLoader::CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
                                      const std::string &variantName, EShLanguage shaderType)
 {

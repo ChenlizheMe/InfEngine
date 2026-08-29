@@ -259,6 +259,11 @@ void main() {
     assert(standaloneInfo.pushConstants->fields.size() == 2);
     assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());
     RequireCompiles(compiler, standalonePassSource, "StandalonePass.frag");
+    const auto crossPlatformGlsl = compiler.PrepareAuthoredStageGlsl(standalonePassSource, "StandalonePass.frag");
+    assert(!crossPlatformGlsl.empty());
+    assert(crossPlatformGlsl.find("ShaderInfo") == std::string::npos);
+    assert(crossPlatformGlsl.find("layout(location = 0) in vec2 inputUv") != std::string::npos);
+    assert(crossPlatformGlsl.find("layout(location = 0) out vec4 outputColor") != std::string::npos);
 
     const std::string linkedSurfaceStandalone = R"(
 #version 450

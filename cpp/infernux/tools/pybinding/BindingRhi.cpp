@@ -60,6 +60,17 @@ void RegisterRhiBindings(py::module_ &m)
         py::arg("sources"), py::arg("source_label") = "<generated-graphics>",
         "Internal batch compiler for generated graphics GLSL");
 
+    m.def(
+        "_prepare_authored_shader_glsl",
+        [](const std::string &source, const std::string &sourcePath) {
+            static InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+            const auto generated = compiler.PrepareAuthoredStageGlsl(source, sourcePath, ShaderCompileTarget::Forward);
+            if (generated.empty())
+                throw std::runtime_error("authored shader preprocessing produced no GLSL: " + sourcePath);
+            return generated;
+        },
+        py::arg("source"), py::arg("source_path"), "Internal cross-platform cook entry for authored ShaderInfo source");
+
     py::enum_<rhi::PixelFormat>(m, "PixelFormat", "Backend-neutral pixel format")
         .value("UNDEFINED", rhi::PixelFormat::Undefined)
         .value("R8_UNORM", rhi::PixelFormat::R8UNorm)
