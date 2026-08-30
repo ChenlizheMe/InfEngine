@@ -479,6 +479,40 @@ def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     assert (project / "Packages/infernux/platform-fixture/Runtime/fixture.py").is_file()
 
 
+def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
+    bundled_source = _source(tmp_path / "bundled", "infernux/platform-fixture")
+    (bundled_source / "Runtime").mkdir()
+    (bundled_source / "Runtime" / "fixture.py").write_text(
+        "RELEASE = 'bundled'\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(bundled_source, resources / "infernux.platform-fixture.inxpkg")
+
+    project_source = _source(tmp_path / "project-release", "infernux/platform-fixture")
+    (project_source / "Runtime").mkdir()
+    (project_source / "Runtime" / "fixture.py").write_text(
+        "RELEASE = 'project'\n", encoding="utf-8"
+    )
+    project_package = _export(project_source, tmp_path / "project-release.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+    manager.install_package(str(project_package), install_dependencies=False)
+
+    states = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert (
+        project / "Packages/infernux/platform-fixture/Runtime/fixture.py"
+    ).read_text(encoding="utf-8") == "RELEASE = 'project'\n"
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    assert record["source"]["location"] == str(project_package.resolve())
+    assert record["source"].get("builtin") is not True
+
+
 def test_startup_installs_resources_root_inxpackages_without_official_catalog(
     tmp_path, monkeypatch
 ):

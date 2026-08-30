@@ -246,8 +246,10 @@ def install_bundled_packages(
     """Install every wheel-mandatory InxPackage from the resources root.
 
     A direct child named ``*.inxpkg`` is part of the host wheel's built-in
-    package set.  The set is authoritative and local: startup never replaces
-    a missing or incompatible artifact with a network download.
+    package set.  The set is authoritative and local for missing references:
+    startup never replaces a missing artifact with a network download.  An
+    existing project installation with the same reference is preserved because
+    it may be a newer release or originate from another supported source.
     """
 
     project = resolved_path(project_root)
@@ -321,10 +323,14 @@ def install_bundled_packages(
                     "builtin": True,
                 },
             )
-        return tuple(
-            manager.install_reference(str(preview.metadata["reference"]))
-            for _package_path, preview, _package_sha256 in previews
-        )
+        installed: list[PluginState] = []
+        for _package_path, preview, _package_sha256 in previews:
+            reference = str(preview.metadata["reference"])
+            if manager.registry.installed_record(reference) is not None:
+                installed.append(manager.reload(reference))
+                continue
+            installed.append(manager.install_reference(reference))
+        return tuple(installed)
     finally:
         if owned_manager:
             manager.shutdown()
