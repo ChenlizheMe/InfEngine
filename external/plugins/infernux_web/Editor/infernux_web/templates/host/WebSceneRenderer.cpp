@@ -23,6 +23,8 @@ namespace infernux::web
 namespace
 {
 
+constexpr uint32_t kLineVertexMarker = 0x4C494E45u;
+
 constexpr char kSceneShader[] = R"wgsl(
 struct CameraData {
     view_projection: mat4x4<f32>,
@@ -374,8 +376,21 @@ bool WebSceneRenderer::CreatePipelines()
     pipelineDescriptor.primitive.cullMode = wgpu::CullMode::None;
     pipelineDescriptor.depthStencil = &depth;
     pipelineDescriptor.multisample.count = 1;
-    m_pipeline = m_device.CreateRenderPipeline(&pipelineDescriptor);
-    if (!m_pipeline)
+    m_opaquePipeline = m_device.CreateRenderPipeline(&pipelineDescriptor);
+    if (!m_opaquePipeline)
+        return false;
+
+    wgpu::BlendState transparentBlend;
+    transparentBlend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    transparentBlend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    transparentBlend.alpha.srcFactor = wgpu::BlendFactor::One;
+    transparentBlend.alpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    colorTarget.blend = &transparentBlend;
+    depth.depthWriteEnabled = wgpu::OptionalBool::False;
+    m_transparentPipeline = m_device.CreateRenderPipeline(&pipelineDescriptor);
+    colorTarget.blend = nullptr;
+    depth.depthWriteEnabled = wgpu::OptionalBool::True;
+    if (!m_transparentPipeline)
         return false;
 
     wgpu::ShaderSourceWGSL skyShaderSource;
@@ -512,6 +527,11 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
 
     m_vertices.clear();
     m_indices.clear();
+    m_drawRanges.clear();
+    const glm::mat4 cameraToWorld = glm::inverse(camera->GetViewMatrix());
+    const glm::vec3 cameraRight = glm::normalize(glm::vec3(cameraToWorld[0]));
+    const glm::vec3 cameraUp = glm::normalize(glm::vec3(cameraToWorld[1]));
+    const glm::vec3 viewFacing = glm::normalize(-glm::vec3(cameraToWorld[2]));
     const auto &drawCalls = frame->DrawCalls().drawCalls;
     for (const DrawCall &draw : drawCalls) {
         if (!draw.frustumVisible || !draw.meshVertices || !draw.meshIndices || draw.indexCount == 0)
@@ -524,20 +544,71 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             static_cast<uint32_t>(std::min<size_t>(draw.indexCount, sourceIndices.size() - draw.indexStart));
         const uint32_t vertexBase = static_cast<uint32_t>(m_vertices.size());
         const glm::vec4 materialColor = MaterialColor(draw.material);
+        WebDrawRange range;
+        range.firstIndex = static_cast<uint32_t>(m_indices.size());
+        range.castsShadows = draw.castsShadows;
+        if (draw.material) {
+            const RenderState &state = draw.material->GetRenderState();
+            range.transparent = state.blendEnable || state.renderQueue >= 3000 || materialColor.a < 0.999f;
+        } else {
+            range.transparent = materialColor.a < 0.999f;
+        }
         const glm::mat3 worldNormal = glm::inverseTranspose(glm::mat3(draw.worldMatrix));
 
         m_vertices.reserve(m_vertices.size() + sourceVertices.size());
         for (const Vertex &source : sourceVertices) {
-            const glm::mat4 skin = SkinMatrix(source, draw.skinBoneMatrices);
-            const glm::vec3 localPosition = glm::vec3(skin * glm::vec4(source.pos, 1.0f));
-            const glm::vec3 worldPosition = glm::vec3(draw.worldMatrix * glm::vec4(localPosition, 1.0f));
-            glm::vec3 localNormal = glm::mat3(skin) * source.normal;
-            glm::vec3 worldNormalValue = worldNormal * localNormal;
+            const bool lineVertex = source.boneIndices.w == kLineVertexMarker;
+            range.line = range.line || lineVertex;
+            glm::vec3 worldPosition;
+            glm::vec3 worldNormalValue;
+            float vertexAlpha = 1.0f;
+            if (lineVertex) {
+                const glm::vec3 center = glm::vec3(draw.worldMatrix * glm::vec4(source.pos, 1.0f));
+                glm::vec3 tangent = glm::mat3(draw.worldMatrix) * glm::vec3(source.tangent);
+                tangent = Finite(tangent) && glm::dot(tangent, tangent) > 1.0e-10f ? glm::normalize(tangent)
+                                                                                   : glm::vec3(1.0f, 0.0f, 0.0f);
+                glm::vec3 facing = source.boneIndices.z == 0u ? viewFacing : worldNormal * source.normal;
+                facing = Finite(facing) && glm::dot(facing, facing) > 1.0e-10f ? glm::normalize(facing)
+                                                                               : glm::vec3(0.0f, 0.0f, 1.0f);
+                glm::vec3 fallbackSide = cameraRight - tangent * glm::dot(cameraRight, tangent);
+                if (glm::dot(fallbackSide, fallbackSide) < 1.0e-8f)
+                    fallbackSide = cameraUp - tangent * glm::dot(cameraUp, tangent);
+                if (glm::dot(fallbackSide, fallbackSide) < 1.0e-10f)
+                    fallbackSide = std::abs(tangent.x) < 0.9f ? glm::cross(tangent, glm::vec3(1.0f, 0.0f, 0.0f))
+                                                              : glm::cross(tangent, glm::vec3(0.0f, 1.0f, 0.0f));
+                fallbackSide = glm::normalize(fallbackSide);
+                glm::vec3 geometricSide = glm::cross(facing, tangent);
+                const float geometricLength = glm::length(geometricSide);
+                glm::vec3 side;
+                if (geometricLength > 0.20f) {
+                    side = geometricSide / geometricLength;
+                } else if (geometricLength > 1.0e-6f) {
+                    geometricSide /= geometricLength;
+                    if (glm::dot(fallbackSide, geometricSide) < 0.0f)
+                        fallbackSide = -fallbackSide;
+                    const float normalizedWeight = std::clamp((geometricLength - 0.025f) / 0.175f, 0.0f, 1.0f);
+                    const float geometricWeight =
+                        normalizedWeight * normalizedWeight * (3.0f - 2.0f * normalizedWeight);
+                    side = glm::normalize(glm::mix(fallbackSide, geometricSide, geometricWeight));
+                } else {
+                    side = fallbackSide;
+                }
+                worldPosition = center + side * source.boneWeights.x;
+                worldNormalValue = source.boneIndices.y != 0u ? facing : worldNormal * source.normal;
+                vertexAlpha = std::clamp(source.boneWeights.y, 0.0f, 1.0f);
+            } else {
+                const glm::mat4 skin = SkinMatrix(source, draw.skinBoneMatrices);
+                const glm::vec3 localPosition = glm::vec3(skin * glm::vec4(source.pos, 1.0f));
+                worldPosition = glm::vec3(draw.worldMatrix * glm::vec4(localPosition, 1.0f));
+                const glm::vec3 localNormal = glm::mat3(skin) * source.normal;
+                worldNormalValue = worldNormal * localNormal;
+            }
             if (!Finite(worldNormalValue) || glm::dot(worldNormalValue, worldNormalValue) < 1.0e-8f)
                 worldNormalValue = glm::vec3(0.0f, 1.0f, 0.0f);
             else
                 worldNormalValue = glm::normalize(worldNormalValue);
-            const glm::vec4 color = glm::vec4(source.color, 1.0f) * materialColor;
+            const glm::vec4 color = glm::vec4(source.color, vertexAlpha) * materialColor;
+            range.transparent = range.transparent || color.a < 0.999f;
             WebVertex vertex{};
             std::memcpy(vertex.position, &worldPosition, sizeof(vertex.position));
             std::memcpy(vertex.normal, &worldNormalValue, sizeof(vertex.normal));
@@ -552,6 +623,9 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
                 continue;
             m_indices.push_back(vertexBase + sourceIndex);
         }
+        range.indexCount = static_cast<uint32_t>(m_indices.size()) - range.firstIndex;
+        if (range.indexCount > 0)
+            m_drawRanges.push_back(range);
     }
 
     if (m_vertices.empty() || m_indices.empty()) {
@@ -647,7 +721,7 @@ void WebSceneRenderer::ReportFrameIssue(const char *issue)
 bool WebSceneRenderer::Prepare(wgpu::CommandEncoder encoder, uint32_t width, uint32_t height)
 {
     m_framePrepared = false;
-    if (!m_pipeline || !m_shadowPipeline || !encoder || !BuildFrame(width, height))
+    if (!m_opaquePipeline || !m_transparentPipeline || !m_shadowPipeline || !encoder || !BuildFrame(width, height))
         return false;
     const uint64_t vertexBytes = m_vertices.size() * sizeof(WebVertex);
     const uint64_t indexBytes = m_indices.size() * sizeof(uint32_t);
@@ -673,7 +747,10 @@ bool WebSceneRenderer::Prepare(wgpu::CommandEncoder encoder, uint32_t width, uin
         shadowPass.SetBindGroup(0, m_shadowCameraGroup);
         shadowPass.SetVertexBuffer(0, m_vertexBuffer, 0, vertexBytes);
         shadowPass.SetIndexBuffer(m_indexBuffer, wgpu::IndexFormat::Uint32, 0, indexBytes);
-        shadowPass.DrawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
+        for (const WebDrawRange &range : m_drawRanges) {
+            if (range.castsShadows)
+                shadowPass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
+        }
         shadowPass.End();
     }
     m_framePrepared = true;
@@ -693,18 +770,34 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
         pass.Draw(3, 1, 0, 0);
     }
 
-    pass.SetPipeline(m_pipeline);
     pass.SetBindGroup(0, m_cameraGroup);
     pass.SetVertexBuffer(0, m_vertexBuffer, 0, vertexBytes);
     pass.SetIndexBuffer(m_indexBuffer, wgpu::IndexFormat::Uint32, 0, indexBytes);
-    pass.DrawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
+    bool transparentPipeline = false;
+    pass.SetPipeline(m_opaquePipeline);
+    size_t transparentCount = 0;
+    size_t lineCount = 0;
+    for (const WebDrawRange &range : m_drawRanges) {
+        if (range.transparent != transparentPipeline) {
+            transparentPipeline = range.transparent;
+            pass.SetPipeline(transparentPipeline ? m_transparentPipeline : m_opaquePipeline);
+        }
+        transparentCount += range.transparent ? 1u : 0u;
+        lineCount += range.line ? 1u : 0u;
+        pass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
+    }
     if (!m_reportedFirstFrame) {
-        std::printf("INFERNUX_WEB_SCENE_RENDER_READY vertices=%zu indices=%zu\n", m_vertices.size(), m_indices.size());
+        std::printf("INFERNUX_WEB_SCENE_RENDER_READY vertices=%zu indices=%zu draws=%zu transparent=%zu\n",
+                    m_vertices.size(), m_indices.size(), m_drawRanges.size(), transparentCount);
         if (m_drawSky)
             std::printf("INFERNUX_WEB_SKY_READY mode=procedural\n");
         if (m_shadowEnabled)
             std::printf("INFERNUX_WEB_SHADOW_READY resolution=%u\n", m_shadowResolution);
         m_reportedFirstFrame = true;
+    }
+    if (lineCount > 0 && !m_reportedLineDraw) {
+        std::printf("INFERNUX_WEB_LINE_DRAW_READY draws=%zu expansion=camera-facing alpha=vertex\n", lineCount);
+        m_reportedLineDraw = true;
     }
     return true;
 }

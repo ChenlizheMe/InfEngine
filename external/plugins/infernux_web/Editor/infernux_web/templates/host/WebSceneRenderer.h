@@ -47,6 +47,15 @@ class WebSceneRenderer final
         float color[4];
     };
 
+    struct WebDrawRange
+    {
+        uint32_t firstIndex = 0;
+        uint32_t indexCount = 0;
+        bool transparent = false;
+        bool castsShadows = true;
+        bool line = false;
+    };
+
     struct alignas(16) CameraData
     {
         glm::mat4 viewProjection{1.0f};
@@ -70,7 +79,8 @@ class WebSceneRenderer final
     wgpu::Device m_device;
     wgpu::Queue m_queue;
     wgpu::TextureFormat m_colorFormat = wgpu::TextureFormat::Undefined;
-    wgpu::RenderPipeline m_pipeline;
+    wgpu::RenderPipeline m_opaquePipeline;
+    wgpu::RenderPipeline m_transparentPipeline;
     wgpu::RenderPipeline m_skyPipeline;
     wgpu::RenderPipeline m_shadowPipeline;
     wgpu::BindGroupLayout m_cameraLayout;
@@ -94,9 +104,11 @@ class WebSceneRenderer final
     RenderWorldSnapshot m_world;
     std::vector<WebVertex> m_vertices;
     std::vector<uint32_t> m_indices;
+    std::vector<WebDrawRange> m_drawRanges;
     CameraData m_cameraData;
     std::string m_lastFrameIssue;
     bool m_reportedFirstFrame = false;
+    bool m_reportedLineDraw = false;
     bool m_framePrepared = false;
     bool m_drawSky = true;
     bool m_shadowEnabled = false;

@@ -348,6 +348,13 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "descriptor.colorAttachmentCount = 0" in scene_renderer
     assert "ExtractCameraFrame" in scene_renderer
     assert "frame->DrawCalls()" in scene_renderer
+    assert "m_transparentPipeline" in scene_renderer
+    assert "range.transparent" in scene_renderer
+    assert "state.renderQueue >= 3000" in scene_renderer
+    assert "kLineVertexMarker" in scene_renderer
+    assert "source.boneWeights.x" in scene_renderer
+    assert "source.boneWeights.y" in scene_renderer
+    assert "INFERNUX_WEB_LINE_DRAW_READY" in scene_renderer
     assert "ToWebClipSpace(frame->PrimaryView().viewProjection)" in scene_renderer
     assert "ToWebClipSpace(camera->GetViewProjectionMatrix())" in particle_runtime
     assert "rhi::PixelFormat::RGBA16SFloat" in particle_runtime
