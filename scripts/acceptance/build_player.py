@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import importlib
 import json
 import os
@@ -63,6 +64,12 @@ def _diagnostic_payload(item) -> dict[str, object]:
         "source": item.source,
         "detail": dict(item.detail),
     }
+
+
+def _is_verbose_progress(item) -> bool:
+    """Return whether an event is raw subprocess output rather than a build phase."""
+    source = str(dict(item.detail).get("source", "")).casefold()
+    return source in {"cmake", "gradle"}
 
 
 def _write_report(path: Path, payload: dict[str, object]) -> None:
@@ -147,8 +154,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     progress: list[dict[str, object]] = []
+    progress_phase_counts: Counter[str] = Counter()
+    progress_event_count = 0
+    omitted_verbose_progress = 0
 
     def on_progress(item) -> None:
+        nonlocal progress_event_count, omitted_verbose_progress
         record = {
             "phase": item.phase,
             "completed": item.completed,
@@ -156,8 +167,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "message": item.message,
             "detail": dict(item.detail),
         }
-        progress.append(record)
+        progress_event_count += 1
+        progress_phase_counts[str(item.phase)] += 1
+        if _is_verbose_progress(item):
+            omitted_verbose_progress += 1
+        else:
+            progress.append(record)
         print(f"[{item.phase}] {item.message}", flush=True)
+
+    def progress_summary() -> dict[str, object]:
+        return {
+            "event_count": progress_event_count,
+            "retained_count": len(progress),
+            "omitted_verbose_count": omitted_verbose_progress,
+            "phase_counts": dict(sorted(progress_phase_counts.items())),
+        }
 
     options = dict(arguments.option)
     request = BuildRequest(
@@ -189,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "options": options,
             "diagnostics": [_diagnostic_payload(item) for item in error.diagnostics],
             "progress": progress,
+            "progress_summary": progress_summary(),
         }
         _write_report(report_path, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -217,6 +242,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ],
         "diagnostics": [_diagnostic_payload(item) for item in result.diagnostics],
         "progress": progress,
+        "progress_summary": progress_summary(),
         "log_tail": list(result.logs[-300:]),
     }
     _write_report(report_path, payload)

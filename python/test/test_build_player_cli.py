@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,3 +66,15 @@ def test_exporter_mapping_covers_plugin_targets():
         "web-wasm32",
     }
     assert all(path.is_dir() for path in module.PLUGIN_EDITORS.values())
+
+
+def test_raw_build_tool_output_is_not_retained_as_phase_progress():
+    module = _module()
+
+    assert module._is_verbose_progress(
+        SimpleNamespace(detail={"source": "cmake"})
+    )
+    assert module._is_verbose_progress(
+        SimpleNamespace(detail={"source": "gradle"})
+    )
+    assert not module._is_verbose_progress(SimpleNamespace(detail={}))
