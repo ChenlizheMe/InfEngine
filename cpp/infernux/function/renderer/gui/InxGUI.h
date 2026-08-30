@@ -170,6 +170,9 @@ class InxGUI
     }
 
   private:
+    void RefreshDisplayScale();
+    void ReloadGUIFont();
+
     struct ImGuiTextureResource
     {
         std::shared_ptr<rhi::TextureResource> texture;

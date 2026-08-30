@@ -24,11 +24,25 @@
 #include <memory>
 #include <platform/input/InputManager.h>
 #include <stdexcept>
+#include <string>
 
 namespace infernux
 {
 namespace
 {
+
+struct EditorDpiState
+{
+    ImGuiStyle baseStyle;
+    std::string fontPath;
+    float fontSize = 18.0f;
+};
+
+EditorDpiState &GetEditorDpiState()
+{
+    static EditorDpiState state;
+    return state;
+}
 
 class ImGuiBuildFrameGuard
 {
@@ -76,6 +90,36 @@ void BringDockTreeToDisplayFront(ImGuiWindow *window)
     });
 }
 
+void ConfigureEditorStyleDimensions(ImGuiStyle &style)
+{
+    style.WindowPadding = ImVec2(10.0f, 10.0f);
+    style.FramePadding = ImVec2(8.0f, 3.0f);
+    style.CellPadding = ImVec2(4.0f, 4.0f);
+    style.ItemSpacing = ImVec2(8.0f, 6.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.IndentSpacing = 18.0f;
+    style.ScrollbarSize = 8.0f;
+    style.GrabMinSize = 6.0f;
+
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FrameBorderSize = 1.0f;
+    style.TabBorderSize = 0.0f;
+    style.TabBarBorderSize = 1.0f;
+
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 0.0f;
+    style.FrameRounding = 0.0f;
+    style.PopupRounding = 0.0f;
+    style.ScrollbarRounding = 0.0f;
+    style.GrabRounding = 0.0f;
+    style.TabRounding = 0.0f;
+
+    style.AntiAliasedLines = true;
+    style.AntiAliasedFill = true;
+}
+
 } // namespace
 
 InxGUI::InxGUI(InxVkCoreModular *vkCore) : m_vkCore_ptr(vkCore)
@@ -93,6 +137,7 @@ InxGUI::~InxGUI()
 void InxGUI::Init(SDL_Window *window)
 {
     m_window_ptr = window;
+    GetEditorDpiState() = {};
 
     // Detect display DPI scale (e.g. 2.0 for 200% Windows scaling)
     m_dpiScale = SDL_GetWindowDisplayScale(window);
@@ -137,38 +182,11 @@ void InxGUI::Init(SDL_Window *window)
         // =====================================================================
         // Style dimensions — Notion-style clean, modern spacing
         // =====================================================================
-        style.WindowPadding = ImVec2(10.0f, 10.0f);
-        style.FramePadding = ImVec2(8.0f, 3.0f);
-        style.CellPadding = ImVec2(4.0f, 4.0f);
-        style.ItemSpacing = ImVec2(8.0f, 6.0f);
-        style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
-        style.IndentSpacing = 18.0f;
-        style.ScrollbarSize = 8.0f; // thin Notion scrollbar
-        style.GrabMinSize = 6.0f;
-
-        // Borders — minimal, but keep inputs readable
-        style.WindowBorderSize = 1.0f;
-        style.ChildBorderSize = 1.0f;
-        style.PopupBorderSize = 1.0f;
-        style.FrameBorderSize = 1.0f; // visible border around input fields
-        style.TabBorderSize = 0.0f;
-        style.TabBarBorderSize = 1.0f;
-
-        // Rounding — project-wide square language
-        style.WindowRounding = 0.0f; // main window stays square
-        style.ChildRounding = 0.0f;
-        style.FrameRounding = 0.0f;
-        style.PopupRounding = 0.0f;
-        style.ScrollbarRounding = 0.0f;
-        style.GrabRounding = 0.0f;
-        style.TabRounding = 0.0f;
-
-        // Anti-aliasing
-        style.AntiAliasedLines = true;
-        style.AntiAliasedFill = true;
+        ConfigureEditorStyleDimensions(style);
+        GetEditorDpiState().baseStyle = style;
 
         // Scale all style dimensions for high-DPI displays
-        if (m_dpiScale > 1.0f) {
+        if (std::abs(m_dpiScale - 1.0f) >= 0.01f) {
             style.ScaleAllSizes(m_dpiScale);
         }
     }
@@ -286,12 +304,29 @@ void InxGUI::Init(SDL_Window *window)
 
 void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
 {
+    if (fontPath == nullptr || *fontPath == '\0' || fontSize <= 0.0f) {
+        INXLOG_WARN("InxGUI::SetGUIFont(): Invalid font configuration");
+        return;
+    }
+
+    EditorDpiState &dpiState = GetEditorDpiState();
+    dpiState.fontPath = fontPath;
+    dpiState.fontSize = fontSize;
+    ReloadGUIFont();
+}
+
+void InxGUI::ReloadGUIFont()
+{
+    EditorDpiState &dpiState = GetEditorDpiState();
+    if (dpiState.fontPath.empty() || ImGui::GetCurrentContext() == nullptr)
+        return;
+
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
 
     // Scale font size by display DPI (e.g. 14px * 2.0 = 28px on 200% display)
-    float scaledSize = fontSize * m_dpiScale;
-    INXLOG_DEBUG("Loading font at ", scaledSize, "px (base ", fontSize, " x scale ", m_dpiScale, ")");
+    float scaledSize = dpiState.fontSize * m_dpiScale;
+    INXLOG_DEBUG("Loading font at ", scaledSize, "px (base ", dpiState.fontSize, " x scale ", m_dpiScale, ")");
 
     ImFontConfig fontConfig;
     fontConfig.FontDataOwnedByAtlas = false;
@@ -299,7 +334,7 @@ void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
     // Since ImGui 1.92+ with RendererHasTextures, glyph ranges are no longer
     // needed. Glyphs are loaded on-demand at any requested size, so the atlas
     // grows incrementally instead of pre-baking all CJK glyphs up-front.
-    ImFont *font = io.Fonts->AddFontFromFileTTF(fontPath, scaledSize, &fontConfig);
+    ImFont *font = io.Fonts->AddFontFromFileTTF(dpiState.fontPath.c_str(), scaledSize, &fontConfig);
     if (font == nullptr) {
         INXLOG_WARN("InxGUI::SetGUIFont(): Failed to load font from ", fontPath);
         return;
@@ -307,6 +342,32 @@ void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
 
     // Font texture is now created automatically by the backend
     // No need to manually call ImGui_ImplVulkan_CreateFontsTexture()
+}
+
+void InxGUI::RefreshDisplayScale()
+{
+    if (m_window_ptr == nullptr || ImGui::GetCurrentContext() == nullptr)
+        return;
+
+    float nextScale = SDL_GetWindowDisplayScale(m_window_ptr);
+    if (nextScale <= 0.0f)
+        nextScale = 1.0f;
+    if (std::abs(nextScale - m_dpiScale) < 0.01f)
+        return;
+
+    const float previousScale = m_dpiScale;
+    m_dpiScale = nextScale;
+    InxGUIContext::s_dpiScale = nextScale;
+
+    ImGuiStyle &style = ImGui::GetStyle();
+    ImVec4 activeColors[ImGuiCol_COUNT];
+    std::copy_n(style.Colors, ImGuiCol_COUNT, activeColors);
+    style = GetEditorDpiState().baseStyle;
+    std::copy_n(activeColors, ImGuiCol_COUNT, style.Colors);
+    style.ScaleAllSizes(nextScale);
+    ReloadGUIFont();
+    m_editorFrameScheduler.Request();
+    INXLOG_INFO("Display scale changed from ", previousScale, " to ", nextScale);
 }
 
 void InxGUI::ReleaseTextureResource(ImGuiTextureResource &resource)
@@ -469,6 +530,11 @@ void InxGUI::BuildFrameInternal()
     // Do not let a render-graph submission reuse the stale publication while
     // this frame is being rebuilt (notably after a throttled editor refresh).
     m_hasDrawData = false;
+
+    // SDL reports per-monitor scale changes as the window crosses displays.
+    // Poll here as well as processing the event so a throttled editor frame or
+    // platform-specific event ordering cannot leave the UI at the old scale.
+    RefreshDisplayScale();
 
     PumpTextureUploads();
 
