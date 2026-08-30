@@ -145,6 +145,10 @@ def write_project_lock(project_path: str, pid: int, token: str, mode: str, state
 def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Environment for subprocesses: inherit current env and prefer UTF-8 on Windows."""
     merged = {**os.environ, **(extra or {})}
+    merged.setdefault(
+        "INFERNUX_PACKAGE_CACHE_ROOT",
+        os.path.join(get_hub_data_dir(), "packages"),
+    )
     if sys.platform == "win32":
         merged.setdefault("PYTHONUTF8", "1")
         merged.setdefault("PYTHONIOENCODING", "utf-8")
