@@ -1112,6 +1112,12 @@ void ParticleGpuRuntime::RecordInitIndirect(const rhi::ComputeCommandEncoder &en
     constants.systemSeed = systemSeed;
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
+    // Portable hosts may already have an authoritative CPU spawn schedule but
+    // no GPU SpawnPrepare pass. In that case the Init kernel must consume the
+    // count and identity carried by these push constants instead of the
+    // graph-owned spawn metadata buffer. Native render graphs keep the
+    // existing metadata-driven path by supplying a valid buffer.
+    constants.reserved = spawnMetadata.IsValid() ? 0u : 1u;
     constants.aliveReadSlot = AliveReadSlot();
     constants.aliveWriteSlot = AliveWriteSlot();
     constants.useAliveList = IsAliveListReady() ? 1u : 0u;

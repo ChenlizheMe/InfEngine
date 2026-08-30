@@ -5660,6 +5660,34 @@ def test_source_needs_compile_when_library_artifact_is_stale(tmp_path, monkeypat
     assert not ParticleArtifactRegistry.source_needs_compile(str(path))
 
 
+def test_source_needs_compile_when_generated_gpu_contract_is_stale(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "CompilerUpgrade.particlegraph"
+    path.parent.mkdir(parents=True)
+    ParticleGraphAsset(stable_id="compiler-upgrade", name="Compiler Upgrade").save(
+        str(path)
+    )
+    current = ParticleArtifactRegistry.get(str(path))
+    assert current is not None
+    artifact_path = Path(current.artifact_path)
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    payload["gpu_glsl"]["emitters"][0]["stages"]["init"] += "\n// stale"
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    ParticleArtifactRegistry.clear()
+
+    assert ParticleArtifactRegistry.source_needs_compile(str(path))
+    rebuilt = ParticleArtifactRegistry.ensure_source_compiled(str(path))
+
+    assert rebuilt is not None
+    assert "// stale" not in rebuilt.gpu_glsl["emitters"][0]["stages"]["init"]
+    assert not ParticleArtifactRegistry.source_needs_compile(str(path))
+
+
 def test_particle_graph_latest_request_wins_out_of_order_compilation(
     tmp_path, monkeypatch
 ):

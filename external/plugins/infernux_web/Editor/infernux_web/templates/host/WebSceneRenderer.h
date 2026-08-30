@@ -4,6 +4,7 @@
 #include <function/scene/SceneRenderExtractor.h>
 #include <webgpu/webgpu_cpp.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -45,6 +46,9 @@ class WebSceneRenderer final
         float position[3];
         float normal[3];
         float color[4];
+        float emission[4];
+        // x = metallic, y = smoothness, z = occlusion, w = unlit.
+        float material[4];
     };
 
     struct WebDrawRange
@@ -58,6 +62,15 @@ class WebSceneRenderer final
 
     struct alignas(16) CameraData
     {
+        struct alignas(16) PunctualLightData
+        {
+            glm::vec4 positionRange{0.0f};
+            glm::vec4 colorIntensity{0.0f};
+            glm::vec4 directionOuterCos{0.0f};
+            // x = inner cone cosine, y = 0 point / 1 spot.
+            glm::vec4 parameters{0.0f};
+        };
+
         glm::mat4 viewProjection{1.0f};
         glm::mat4 inverseViewProjection{1.0f};
         glm::mat4 lightViewProjection{1.0f};
@@ -68,6 +81,12 @@ class WebSceneRenderer final
         glm::vec4 skyHorizon{0.651f, 0.725f, 0.816f, 1.0f};
         glm::vec4 skyGround{0.345f, 0.345f, 0.345f, 1.0f};
         glm::vec4 ambient{0.16f, 0.17f, 0.20f, 1.0f};
+        glm::vec4 ambientSky{0.16f, 0.17f, 0.20f, 1.0f};
+        // xyz = equator radiance, w = 0 flat / 1 gradient.
+        glm::vec4 ambientEquator{0.16f, 0.17f, 0.20f, 0.0f};
+        glm::vec4 ambientGround{0.16f, 0.17f, 0.20f, 1.0f};
+        glm::uvec4 lightCounts{0u};
+        std::array<PunctualLightData, 8> punctualLights{};
     };
 
     bool CreatePipelines();

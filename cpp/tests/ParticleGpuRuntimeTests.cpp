@@ -1486,10 +1486,18 @@ int main()
     assert(trace.indirectBuffers == std::vector<rhi::BufferHandle>({runtime.AliveDispatchBuffer()}));
     assert(trace.indirectOffsets == std::vector<uint64_t>({16u}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
+    assert(trace.constants[1].reserved == 0u);
     assert(trace.constants[2].simulationStep == 9);
     assert(trace.constants[1].diagnosticFlags == 0u);
     assert(trace.constants[2].diagnosticFlags == 1u);
     assert(trace.constants[3].diagnosticFlags == 2u);
+
+    trace = {};
+    runtime.RecordInitIndirect(encoder, 12, 700, 9, 7, 10, 1.0f / 60.0f, graphSpawnGroup, {}, 0);
+    assert(trace.constants.size() == 1 && trace.constants[0].invocationCount == 12 &&
+           trace.constants[0].spawnBaseId == 700 && trace.constants[0].spawnGeneration == 9 &&
+           trace.constants[0].reserved == 1u && trace.dispatches == std::vector<uint32_t>({1u}) &&
+           trace.indirectBuffers.empty());
 
     auto fusedDesc = desc;
     fusedDesc.supportsFusedUpdateRendering = true;

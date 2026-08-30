@@ -1,5 +1,6 @@
 #include "WebSceneRenderer.h"
 
+#include <core/types/ColorSpace.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
 #include <function/scene/GameObject.h>
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -24,8 +26,16 @@ namespace
 {
 
 constexpr uint32_t kLineVertexMarker = 0x4C494E45u;
+constexpr uint32_t kMaxPunctualLights = 8u;
 
 constexpr char kSceneShader[] = R"wgsl(
+struct PunctualLightData {
+    position_range: vec4<f32>,
+    color_intensity: vec4<f32>,
+    direction_outer_cos: vec4<f32>,
+    parameters: vec4<f32>,
+};
+
 struct CameraData {
     view_projection: mat4x4<f32>,
     inverse_view_projection: mat4x4<f32>,
@@ -37,6 +47,11 @@ struct CameraData {
     sky_horizon: vec4<f32>,
     sky_ground: vec4<f32>,
     ambient: vec4<f32>,
+    ambient_sky: vec4<f32>,
+    ambient_equator: vec4<f32>,
+    ambient_ground: vec4<f32>,
+    light_counts: vec4<u32>,
+    punctual_lights: array<PunctualLightData, 8>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraData;
@@ -47,6 +62,8 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) emission: vec4<f32>,
+    @location(4) material: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -55,6 +72,8 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
     @location(2) world_position: vec3<f32>,
     @location(3) shadow_position: vec4<f32>,
+    @location(4) emission: vec4<f32>,
+    @location(5) material: vec4<f32>,
 };
 
 @vertex
@@ -65,7 +84,130 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
     output.color = input.color;
     output.world_position = input.position;
     output.shadow_position = camera.light_view_projection * vec4<f32>(input.position, 1.0);
+    output.emission = input.emission;
+    output.material = input.material;
     return output;
+}
+
+const PI: f32 = 3.14159265358979323846;
+
+fn fresnel_schlick(f0: vec3<f32>, f90: f32, u: f32) -> vec3<f32> {
+    let x = 1.0 - u;
+    let x2 = x * x;
+    let x5 = x * x2 * x2;
+    return f0 * (1.0 - x5) + vec3<f32>(f90 * x5);
+}
+
+fn fresnel_schlick_roughness(f0: vec3<f32>, f90: f32, ndotv: f32,
+                             perceptual_roughness: f32) -> vec3<f32> {
+    let grazing = max(vec3<f32>(f90 * (1.0 - perceptual_roughness)), f0);
+    let x = 1.0 - ndotv;
+    let x2 = x * x;
+    let x5 = x * x2 * x2;
+    return f0 + (grazing - f0) * x5;
+}
+
+fn env_brdf_approx(perceptual_roughness: f32, ndotv: f32) -> vec2<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = perceptual_roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * ndotv)) * r.x + r.y;
+    return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+}
+
+fn sky_gradient(y: f32, sky: vec3<f32>, equator: vec3<f32>, ground: vec3<f32>) -> vec3<f32> {
+    let base = mix(ground, sky, smoothstep(-0.10, 0.45, y));
+    var horizon_mask = 0.0;
+    if (y < 0.0) {
+        let side = 1.0 - smoothstep(0.0, 0.10, -y);
+        horizon_mask = side * side;
+    } else {
+        horizon_mask = 1.0 - smoothstep(0.0, 0.45, y);
+    }
+    return mix(base, equator, horizon_mask * 0.35);
+}
+
+fn sample_ambient_probe(direction: vec3<f32>) -> vec3<f32> {
+    if (camera.ambient_equator.w < 0.5) {
+        return max(camera.ambient.rgb * camera.ambient.w, vec3<f32>(0.0));
+    }
+    return max(sky_gradient(direction.y, camera.ambient_sky.rgb,
+                            camera.ambient_equator.rgb, camera.ambient_ground.rgb),
+               vec3<f32>(0.0));
+}
+
+fn sample_ambient_irradiance(direction: vec3<f32>) -> vec3<f32> {
+    if (camera.ambient_equator.w < 0.5) {
+        return max(camera.ambient.rgb * camera.ambient.w, vec3<f32>(0.0));
+    }
+    let y = clamp(direction.y, -1.0, 1.0);
+    if (y >= 0.0) {
+        return max(mix(camera.ambient_equator.rgb, camera.ambient_sky.rgb, y), vec3<f32>(0.0));
+    }
+    return max(mix(camera.ambient_equator.rgb, camera.ambient_ground.rgb, -y), vec3<f32>(0.0));
+}
+
+fn specular_ambient_direction(normal: vec3<f32>, view_direction: vec3<f32>,
+                              perceptual_roughness: f32) -> vec3<f32> {
+    let reflection = reflect(-view_direction, normal);
+    let roughness = perceptual_roughness * perceptual_roughness;
+    let factor = (1.0 - roughness) * (sqrt(max(1.0 - roughness, 0.0)) + roughness);
+    return normalize(mix(normal, reflection, clamp(factor, 0.0, 1.0)));
+}
+
+fn specular_occlusion(ndotv: f32, occlusion: f32, perceptual_roughness: f32) -> f32 {
+    return clamp(pow(ndotv + occlusion, exp2(-16.0 * perceptual_roughness - 1.0))
+                 - 1.0 + occlusion, 0.0, 1.0);
+}
+
+fn disney_diffuse(ndotv: f32, ndotl: f32, ldotv: f32, perceptual_roughness: f32) -> f32 {
+    let fd90 = 0.5 + perceptual_roughness * (1.0 + ldotv);
+    let light_x = 1.0 - ndotl;
+    let view_x = 1.0 - ndotv;
+    let light_scatter = 1.0 + (fd90 - 1.0) * light_x * light_x * light_x * light_x * light_x;
+    let view_scatter = 1.0 + (fd90 - 1.0) * view_x * view_x * view_x * view_x * view_x;
+    return (1.0 / PI) * (1.0 / 1.03571) * light_scatter * view_scatter;
+}
+
+fn dv_smith_joint_ggx(ndoth: f32, ndotl: f32, ndotv: f32, roughness: f32) -> f32 {
+    let a2 = roughness * roughness;
+    let s = (ndoth * a2 - ndoth) * ndoth + 1.0;
+    let lambda_v = ndotl * sqrt(max((-ndotv * a2 + ndotv) * ndotv + a2, 1.0e-7));
+    let lambda_l = ndotv * sqrt(max((-ndotl * a2 + ndotl) * ndotl + a2, 1.0e-7));
+    return (1.0 / PI) * 0.5 * a2 / max(s * s * (lambda_v + lambda_l), 1.0e-7);
+}
+
+fn evaluate_pbr_light(normal: vec3<f32>, view_direction: vec3<f32>, light_direction: vec3<f32>,
+                      radiance: vec3<f32>, albedo: vec3<f32>, metallic: f32,
+                      perceptual_roughness: f32, roughness: f32, f0: vec3<f32>, f90: f32,
+                      energy_compensation: vec3<f32>) -> vec3<f32> {
+    let half_vector_sum = view_direction + light_direction;
+    var half_vector = normal;
+    if (dot(half_vector_sum, half_vector_sum) > 1.0e-8) {
+        half_vector = normalize(half_vector_sum);
+    }
+    let ndotl = max(dot(normal, light_direction), 0.0);
+    if (ndotl <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let ndotv = max(dot(normal, view_direction), 0.0);
+    let ndoth = max(dot(normal, half_vector), 0.0);
+    let ldoth = max(dot(light_direction, half_vector), 0.0);
+    let ldotv = max(dot(light_direction, view_direction), 0.0);
+    let fresnel = fresnel_schlick(f0, f90, ldoth);
+    let specular = fresnel * dv_smith_joint_ggx(ndoth, ndotl, ndotv, roughness)
+                   * energy_compensation;
+    let diffuse = albedo * (1.0 - metallic) *
+                  disney_diffuse(ndotv, ndotl, ldotv, perceptual_roughness);
+    return (diffuse + specular) * radiance * (ndotl * PI);
+}
+
+fn punctual_attenuation(distance_to_light: f32, range: f32) -> f32 {
+    let safe_range = max(range, 1.0e-4);
+    let distance_squared = distance_to_light * distance_to_light;
+    let ratio_squared = distance_squared / (safe_range * safe_range);
+    let factor = clamp(1.0 - ratio_squared * ratio_squared, 0.0, 1.0);
+    return factor * factor / (distance_squared + 1.0);
 }
 
 fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
@@ -95,11 +237,61 @@ fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(input.normal);
+    if (input.material.w > 0.5) {
+        return vec4<f32>(input.color.rgb + input.emission.rgb * input.emission.a, input.color.a);
+    }
+    let view_direction = normalize(camera.camera_position.xyz - input.world_position);
+    let ndotv = max(dot(normal, view_direction), 0.0);
+    let metallic = clamp(input.material.x, 0.0, 1.0);
+    let perceptual_roughness = clamp(1.0 - input.material.y, 0.045, 1.0);
+    let roughness = perceptual_roughness * perceptual_roughness;
+    let occlusion = clamp(input.material.z, 0.0, 1.0);
+    let f0 = mix(vec3<f32>(0.04), input.color.rgb, vec3<f32>(metallic));
+    let f90 = clamp(50.0 * dot(f0, vec3<f32>(0.33333)), 0.0, 1.0);
+    let env_brdf = env_brdf_approx(perceptual_roughness, ndotv);
+    let reflectivity = env_brdf.x + env_brdf.y;
+    let energy_compensation = vec3<f32>(1.0) + f0 * (1.0 / max(reflectivity, 0.001) - 1.0);
     let toward_light = normalize(camera.light_direction_strength.xyz);
-    let diffuse = max(dot(normal, toward_light), 0.0);
     let shadow = sample_shadow(input.shadow_position, normal);
-    let direct = camera.light_color_intensity.rgb * camera.light_color_intensity.w * diffuse * shadow;
-    return vec4<f32>(input.color.rgb * (camera.ambient.rgb + direct), input.color.a);
+    let radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
+    var direct = evaluate_pbr_light(normal, view_direction, toward_light, radiance, input.color.rgb,
+                                    metallic, perceptual_roughness, roughness, f0, f90,
+                                    energy_compensation) * shadow;
+
+    for (var light_index = 0u; light_index < camera.light_counts.x; light_index = light_index + 1u) {
+        let light = camera.punctual_lights[light_index];
+        let to_light = light.position_range.xyz - input.world_position;
+        let distance_to_light = length(to_light);
+        if (distance_to_light <= 1.0e-5 || distance_to_light >= light.position_range.w) {
+            continue;
+        }
+        let local_direction = to_light / distance_to_light;
+        var cone = 1.0;
+        if (light.parameters.y > 0.5) {
+            let theta = dot(local_direction, -normalize(light.direction_outer_cos.xyz));
+            cone = clamp((theta - light.direction_outer_cos.w) /
+                         max(light.parameters.x - light.direction_outer_cos.w, 1.0e-4), 0.0, 1.0);
+        }
+        let attenuation = punctual_attenuation(distance_to_light, light.position_range.w) * cone;
+        let local_radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation;
+        direct += evaluate_pbr_light(normal, view_direction, local_direction, local_radiance,
+                                     input.color.rgb, metallic, perceptual_roughness, roughness, f0, f90,
+                                     energy_compensation);
+    }
+    let diffuse_irradiance = sample_ambient_irradiance(normal);
+    let reflection_direction = specular_ambient_direction(normal, view_direction, perceptual_roughness);
+    let prefilter = clamp(perceptual_roughness * (1.7 - 0.7 * perceptual_roughness), 0.0, 1.0);
+    let specular_irradiance = mix(sample_ambient_probe(reflection_direction),
+                                  sample_ambient_irradiance(reflection_direction), prefilter);
+    let environment_fresnel = fresnel_schlick_roughness(f0, f90, ndotv, perceptual_roughness);
+    let diffuse_weight = (vec3<f32>(1.0) - environment_fresnel) * (1.0 - metallic);
+    let ambient_diffuse = diffuse_weight * input.color.rgb * diffuse_irradiance * occlusion;
+    let ambient_specular = specular_irradiance * (f0 * env_brdf.x + vec3<f32>(env_brdf.y))
+                           * energy_compensation
+                           * specular_occlusion(ndotv, occlusion, perceptual_roughness);
+    let emission = input.emission.rgb * input.emission.a;
+    return vec4<f32>(ambient_diffuse + ambient_specular + direct + emission,
+                     input.color.a);
 }
 )wgsl";
 
@@ -182,6 +374,42 @@ glm::vec4 MaterialColor(const std::shared_ptr<InxMaterial> &material)
             return glm::vec4(*value, 1.0f);
     }
     return glm::vec4(1.0f);
+}
+
+float MaterialFloat(const std::shared_ptr<InxMaterial> &material, const char *name, float fallback)
+{
+    if (!material)
+        return fallback;
+    const MaterialProperty *property = material->GetProperty(name);
+    if (!property || property->type != MaterialPropertyType::Float)
+        return fallback;
+    if (const auto *value = std::get_if<float>(&property->value))
+        return *value;
+    return fallback;
+}
+
+glm::vec4 MaterialVector(const std::shared_ptr<InxMaterial> &material, const char *name, const glm::vec4 &fallback)
+{
+    if (!material)
+        return fallback;
+    const MaterialProperty *property = material->GetProperty(name);
+    if (!property)
+        return fallback;
+    if (const auto *value = std::get_if<glm::vec4>(&property->value))
+        return *value;
+    if (const auto *value = std::get_if<glm::vec3>(&property->value))
+        return glm::vec4(*value, fallback.w);
+    return fallback;
+}
+
+bool MaterialIsUnlit(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return false;
+    std::string shader = material->GetFragShaderName();
+    std::transform(shader.begin(), shader.end(), shader.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return shader.find("unlit") != std::string::npos;
 }
 
 bool Finite(const glm::vec3 &value)
@@ -330,7 +558,7 @@ bool WebSceneRenderer::CreatePipelines()
     if (!shader)
         return false;
 
-    std::array<wgpu::VertexAttribute, 3> attributes{};
+    std::array<wgpu::VertexAttribute, 5> attributes{};
     attributes[0].format = wgpu::VertexFormat::Float32x3;
     attributes[0].offset = offsetof(WebVertex, position);
     attributes[0].shaderLocation = 0;
@@ -340,6 +568,12 @@ bool WebSceneRenderer::CreatePipelines()
     attributes[2].format = wgpu::VertexFormat::Float32x4;
     attributes[2].offset = offsetof(WebVertex, color);
     attributes[2].shaderLocation = 2;
+    attributes[3].format = wgpu::VertexFormat::Float32x4;
+    attributes[3].offset = offsetof(WebVertex, emission);
+    attributes[3].shaderLocation = 3;
+    attributes[4].format = wgpu::VertexFormat::Float32x4;
+    attributes[4].offset = offsetof(WebVertex, material);
+    attributes[4].shaderLocation = 4;
     wgpu::VertexBufferLayout vertexLayout;
     vertexLayout.arrayStride = sizeof(WebVertex);
     vertexLayout.stepMode = wgpu::VertexStepMode::Vertex;
@@ -543,7 +777,14 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
         const uint32_t indexCount =
             static_cast<uint32_t>(std::min<size_t>(draw.indexCount, sourceIndices.size() - draw.indexStart));
         const uint32_t vertexBase = static_cast<uint32_t>(m_vertices.size());
-        const glm::vec4 materialColor = MaterialColor(draw.material);
+        const glm::vec4 materialColor = inx::color::SrgbToLinear(MaterialColor(draw.material));
+        const glm::vec4 emission =
+            inx::color::SrgbToLinear(MaterialVector(draw.material, "emissionColor", glm::vec4(0.0f)));
+        const glm::vec4 materialParameters(
+            std::clamp(MaterialFloat(draw.material, "metallic", 0.0f), 0.0f, 1.0f),
+            std::clamp(MaterialFloat(draw.material, "smoothness", 0.5f), 0.0f, 1.0f),
+            std::clamp(MaterialFloat(draw.material, "ambientOcclusion", 1.0f), 0.0f, 1.0f),
+            MaterialIsUnlit(draw.material) ? 1.0f : 0.0f);
         WebDrawRange range;
         range.firstIndex = static_cast<uint32_t>(m_indices.size());
         range.castsShadows = draw.castsShadows;
@@ -613,6 +854,8 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             std::memcpy(vertex.position, &worldPosition, sizeof(vertex.position));
             std::memcpy(vertex.normal, &worldNormalValue, sizeof(vertex.normal));
             std::memcpy(vertex.color, &color, sizeof(vertex.color));
+            std::memcpy(vertex.emission, &emission, sizeof(vertex.emission));
+            std::memcpy(vertex.material, &materialParameters, sizeof(vertex.material));
             m_vertices.push_back(vertex);
         }
 
@@ -638,22 +881,37 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
     m_cameraData.viewProjection = ToWebClipSpace(frame->PrimaryView().viewProjection);
     m_cameraData.inverseViewProjection = glm::inverse(m_cameraData.viewProjection);
     m_cameraData.cameraPosition = glm::vec4(frame->PrimaryView().position, 1.0f);
-    m_cameraData.skyTopExposure = glm::vec4(environment.skyTopColor, environment.skyExposure);
-    m_cameraData.skyHorizon = glm::vec4(environment.skyHorizonColor, 1.0f);
-    m_cameraData.skyGround = glm::vec4(environment.skyGroundColor, 1.0f);
+    m_cameraData.skyTopExposure = glm::vec4(inx::color::SrgbToLinear(environment.skyTopColor), environment.skyExposure);
+    m_cameraData.skyHorizon = glm::vec4(inx::color::SrgbToLinear(environment.skyHorizonColor), 1.0f);
+    m_cameraData.skyGround = glm::vec4(inx::color::SrgbToLinear(environment.skyGroundColor), 1.0f);
     m_drawSky = m_diagnosticSkyEnabled && camera->GetClearFlags() == CameraClearFlags::Skybox;
 
     using AmbientSource = SceneEnvironmentSettings::AmbientSource;
     switch (static_cast<AmbientSource>(environment.ambientSource)) {
     case AmbientSource::Color:
-        m_cameraData.ambient = glm::vec4(environment.ambientColor * environment.ambientIntensity, 1.0f);
+        m_cameraData.ambient =
+            glm::vec4(inx::color::SrgbToLinear(environment.ambientColor), environment.ambientIntensity);
+        m_cameraData.ambientEquator.w = 0.0f;
         break;
     case AmbientSource::Gradient:
-        m_cameraData.ambient = glm::vec4(environment.ambientEquatorColor * environment.ambientIntensity, 1.0f);
+        m_cameraData.ambientSky =
+            glm::vec4(inx::color::SrgbToLinear(environment.ambientSkyColor) * environment.ambientIntensity, 1.0f);
+        m_cameraData.ambientEquator =
+            glm::vec4(inx::color::SrgbToLinear(environment.ambientEquatorColor) * environment.ambientIntensity, 1.0f);
+        m_cameraData.ambientGround =
+            glm::vec4(inx::color::SrgbToLinear(environment.ambientGroundColor) * environment.ambientIntensity, 1.0f);
         break;
     case AmbientSource::Skybox:
     default:
-        m_cameraData.ambient = glm::vec4(environment.skyHorizonColor * (0.35f * environment.ambientIntensity), 1.0f);
+        m_cameraData.ambientSky = glm::vec4(inx::color::SrgbToLinear(environment.skyTopColor) *
+                                                (environment.skyExposure * environment.ambientIntensity),
+                                            1.0f);
+        m_cameraData.ambientEquator = glm::vec4(inx::color::SrgbToLinear(environment.skyHorizonColor) *
+                                                    (environment.skyExposure * environment.ambientIntensity),
+                                                1.0f);
+        m_cameraData.ambientGround = glm::vec4(inx::color::SrgbToLinear(environment.skyGroundColor) *
+                                                   (environment.skyExposure * environment.ambientIntensity),
+                                               1.0f);
         break;
     }
 
@@ -675,7 +933,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             if (Finite(forward) && glm::dot(forward, forward) > 1.0e-8f)
                 rayDirection = glm::normalize(forward);
         }
-        lightColor = directionalLight->GetColor();
+        lightColor = inx::color::SrgbToLinear(directionalLight->GetColor());
         lightIntensity = directionalLight->GetIntensity();
         if (directionalLight->GetShadows() != LightShadows::None)
             shadowStrength = directionalLight->GetShadowStrength();
@@ -684,6 +942,29 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
     m_cameraData.lightColorIntensity = glm::vec4(lightColor, lightIntensity);
     m_shadowEnabled = m_diagnosticShadowsEnabled && shadowStrength > 0.0f;
     m_cameraData.lightDirectionStrength = glm::vec4(towardLight, m_shadowEnabled ? shadowStrength : 0.0f);
+
+    uint32_t punctualLightCount = 0;
+    for (Light *light : SceneManager::Instance().GetActiveLights()) {
+        if (!light || !light->IsEnabled() || !light->GetAffectGeometry() || punctualLightCount >= kMaxPunctualLights)
+            continue;
+        const LightType type = light->GetLightType();
+        if (type != LightType::Point && type != LightType::Spot)
+            continue;
+        Transform *transform = light->GetTransform();
+        if (!transform)
+            continue;
+        CameraData::PunctualLightData &target = m_cameraData.punctualLights[punctualLightCount++];
+        target.positionRange = glm::vec4(transform->GetWorldPosition(), light->GetRange());
+        target.colorIntensity = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
+        glm::vec3 forward = transform->GetWorldForward();
+        if (!Finite(forward) || glm::dot(forward, forward) < 1.0e-8f)
+            forward = glm::vec3(0.0f, -1.0f, 0.0f);
+        target.directionOuterCos =
+            glm::vec4(glm::normalize(forward), std::cos(glm::radians(light->GetOuterSpotAngle() * 0.5f)));
+        target.parameters = glm::vec4(std::cos(glm::radians(light->GetSpotAngle() * 0.5f)),
+                                      type == LightType::Spot ? 1.0f : 0.0f, 0.0f, 0.0f);
+    }
+    m_cameraData.lightCounts.x = punctualLightCount;
 
     glm::vec3 boundsMin(std::numeric_limits<float>::max());
     glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
@@ -787,7 +1068,7 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
         pass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
     }
     if (!m_reportedFirstFrame) {
-        std::printf("INFERNUX_WEB_SCENE_RENDER_READY vertices=%zu indices=%zu draws=%zu transparent=%zu\n",
+        std::printf("INFERNUX_WEB_SCENE_RENDER_READY vertices=%zu indices=%zu draws=%zu transparent=%zu material=pbr\n",
                     m_vertices.size(), m_indices.size(), m_drawRanges.size(), transparentCount);
         if (m_drawSky)
             std::printf("INFERNUX_WEB_SKY_READY mode=procedural\n");

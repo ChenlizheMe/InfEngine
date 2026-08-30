@@ -299,6 +299,11 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "FullscreenRenderer.cpp" in cmake
     assert "WebSceneRenderer.cpp" in cmake
     assert "WebPostProcessRenderer.cpp" in cmake
+    assert "dv_smith_joint_ggx" in scene_renderer
+    assert 'MaterialFloat(draw.material, "metallic", 0.0f)' in scene_renderer
+    assert 'MaterialFloat(draw.material, "smoothness", 0.5f)' in scene_renderer
+    assert 'MaterialVector(draw.material, "emissionColor"' in scene_renderer
+    assert "material=pbr" in scene_renderer
     assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake
     assert "InxPack.cpp" in cmake
     assert "35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad" in cmake

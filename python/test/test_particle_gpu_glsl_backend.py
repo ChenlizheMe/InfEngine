@@ -2906,7 +2906,11 @@ def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
     assert "inx_pop_free();" not in main
     assert "return" not in before_barrier
     assert main.count("barrier();") == 1
-    assert "emitter_spawn.spawn_count - group_first_invocation" in main
+    assert "authoritative_spawn_count - group_first_invocation" in main
+    assert "pc.reserved != 0u" in main
+    assert "pc.invocation_count" in main
+    assert "pc.spawn_base_id" in main
+    assert "pc.spawn_generation" in main
     assert "simulation_control.simulation_allowed" not in before_barrier
     assert "inx_current_emitter_playing()" not in before_barrier
     assert re.search(

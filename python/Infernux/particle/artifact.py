@@ -289,7 +289,13 @@ class ParticleArtifactRegistry:
 
     @classmethod
     def source_needs_compile(cls, source_path: str, *, guid: str = "") -> bool:
-        """Return True when the Library artifact is missing or stale."""
+        """Return True when the Library artifact is missing or stale.
+
+        Source identity alone is not enough: generated GPU source and binary
+        contracts evolve with the particle compiler.  Validate the complete
+        persisted product so a build cannot ship an artifact produced by an
+        older lowering implementation after an engine upgrade.
+        """
         owner = cls._resolve_source_guid(source_path, guid)
         try:
             source = Path(source_path).read_text(encoding="utf-8")
@@ -317,12 +323,19 @@ class ParticleArtifactRegistry:
         ) or cls._artifact_path(owner or stable_id)
         if not artifact_path or not os.path.isfile(artifact_path):
             return True
-        try:
-            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
-            embedded = str((payload or {}).get("source_hash") or "")
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-            return True
-        return embedded.casefold() != current.casefold()
+        return (
+            cls._load_persisted(
+                artifact_path,
+                key=cls._source_key(source_path, owner),
+                source_hash=current,
+                source_kind=(
+                    "script"
+                    if source_path.casefold().endswith(".particle.py")
+                    else "graph"
+                ),
+            )
+            is None
+        )
 
     @classmethod
     def ensure_source_compiled(
@@ -331,7 +344,7 @@ class ParticleArtifactRegistry:
         """Compile one source when its Library artifact is missing or stale."""
         if not cls.source_needs_compile(source_path, guid=guid):
             return cls.get(source_path, guid=guid)
-        return cls.compile_path(source_path, guid=guid)
+        return cls.compile_path(source_path, guid=guid, force_recompile=True)
 
     @classmethod
     def ensure_project_compiled(
@@ -360,7 +373,7 @@ class ParticleArtifactRegistry:
                     if not cls.source_needs_compile(source_path, guid=guid):
                         skipped.append(source_path)
                         continue
-                    cls.compile_path(source_path, guid=guid)
+                    cls.compile_path(source_path, guid=guid, force_recompile=True)
                     compiled.append(source_path)
                 except Exception as exc:
                     failed.append(source_path)

@@ -6821,14 +6821,18 @@ void main() {{
     uint invocation = gl_GlobalInvocationID.x;
     uint group_first_invocation = invocation - gl_LocalInvocationIndex;
     if (gl_LocalInvocationIndex == 0u) {{
+        uint authoritative_spawn_count = pc.reserved != 0u
+            ? pc.invocation_count
+            : emitter_spawn.spawn_count;
         uint requested_count = 0u;
         // Spawn Prepare is the authority for this frame. Rechecking mutable
         // play/simulation state here can discard a burst that was already
-        // accepted and encoded into the indirect dispatch.
-        if (group_first_invocation < emitter_spawn.spawn_count) {{
+        // accepted and encoded into the indirect dispatch. Portable hosts
+        // without Spawn Prepare explicitly select the push-constant schedule.
+        if (group_first_invocation < authoritative_spawn_count) {{
             requested_count = min(
                 gl_WorkGroupSize.x,
-                emitter_spawn.spawn_count - group_first_invocation);
+                authoritative_spawn_count - group_first_invocation);
         }}
         inx_particle_init_accepted_count = inx_reserve_free_block(
             requested_count, inx_particle_init_old_free_count);
@@ -6845,9 +6849,15 @@ void main() {{
     state.lifecycle_flags = INX_PARTICLE_ALIVE;
     state.update_resume_step = 0xffffffffu;
     state.rendering_resume_step = 0xffffffffu;
-    uint particle_id = emitter_spawn.spawn_base_id + invocation;
+    uint authoritative_spawn_base_id = pc.reserved != 0u
+        ? pc.spawn_base_id
+        : emitter_spawn.spawn_base_id;
+    uint authoritative_spawn_generation = pc.reserved != 0u
+        ? pc.spawn_generation
+        : emitter_spawn.spawn_generation;
+    uint particle_id = authoritative_spawn_base_id + invocation;
     state.{id_field} = particle_id;
-    state.spawn_generation = emitter_spawn.spawn_generation + uint(particle_id < emitter_spawn.spawn_base_id);
+    state.spawn_generation = authoritative_spawn_generation + uint(particle_id < authoritative_spawn_base_id);
     bool particle_alive = true;
     bool inx_stage_suspended = false;
 {body}
