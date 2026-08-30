@@ -16,12 +16,28 @@ set(INFERNUX_WEB_PLAYER_ASSETS "" CACHE PATH
     "Optional cooked project and Python assets to preload into the Web host")
 set(INFERNUX_WEB_ASSET_REVISION "" CACHE STRING
     "Deterministic identity shared by the Web Player JavaScript and data files")
+set(INFERNUX_WEB_DISPLAY_MODE "fullscreen_borderless" CACHE STRING
+    "Web Player presentation: fullscreen_borderless or windowed")
+set(INFERNUX_WEB_CANVAS_WIDTH "1280" CACHE STRING
+    "Fixed Web Player render width used by windowed presentation")
+set(INFERNUX_WEB_CANVAS_HEIGHT "720" CACHE STRING
+    "Fixed Web Player render height used by windowed presentation")
 string(LENGTH "${INFERNUX_WEB_ASSET_REVISION}" _web_asset_revision_length)
 if(NOT INFERNUX_WEB_ASSET_REVISION MATCHES "^[0-9a-f]+$" OR
    NOT _web_asset_revision_length EQUAL 24)
     message(FATAL_ERROR
         "INFERNUX_WEB_ASSET_REVISION must be a 24-character lowercase SHA-256 prefix")
 endif()
+if(NOT INFERNUX_WEB_DISPLAY_MODE STREQUAL "fullscreen_borderless" AND
+   NOT INFERNUX_WEB_DISPLAY_MODE STREQUAL "windowed")
+    message(FATAL_ERROR
+        "INFERNUX_WEB_DISPLAY_MODE must be fullscreen_borderless or windowed")
+endif()
+foreach(_web_canvas_extent INFERNUX_WEB_CANVAS_WIDTH INFERNUX_WEB_CANVAS_HEIGHT)
+    if(NOT "${${_web_canvas_extent}}" MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "${_web_canvas_extent} must be a positive integer")
+    endif()
+endforeach()
 option(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE
     "Compile the existing Infernux Python binding surface for wasm without linking it"
     OFF
@@ -134,6 +150,7 @@ add_executable(InfernuxWebPlayerHost
     WebGpuRhiDevice.cpp
     WebParticleRuntime.cpp
     WebSceneRenderer.cpp
+    WebScreenUIRenderer.cpp
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuContactRuntime.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp"
@@ -177,9 +194,16 @@ target_include_directories(InfernuxWebPlayerHost PRIVATE
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/dr_libs"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/glm"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/imgui"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/nlohmann/single_include"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/SDL/include"
     "${INFERNUX_ENGINE_SOURCE_ROOT}/external/stb"
+)
+target_sources(InfernuxWebPlayerHost PRIVATE
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/imgui/imgui.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/imgui/imgui_draw.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/imgui/imgui_tables.cpp"
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/external/imgui/imgui_widgets.cpp"
 )
 target_link_libraries(InfernuxWebPlayerHost PRIVATE
     "${_python_library}"
@@ -201,6 +225,19 @@ target_compile_definitions(InfernuxWebPlayerHost PRIVATE
     INFERNUX_SINGLE_THREADED_RUNTIME=1
     INFERNUX_WEBGPU_RUNTIME=1
 )
+if(INFERNUX_WEB_DISPLAY_MODE STREQUAL "windowed")
+    target_compile_definitions(InfernuxWebPlayerHost PRIVATE
+        INFERNUX_WEB_FIXED_CANVAS=1
+        INFERNUX_WEB_CANVAS_WIDTH=${INFERNUX_WEB_CANVAS_WIDTH}
+        INFERNUX_WEB_CANVAS_HEIGHT=${INFERNUX_WEB_CANVAS_HEIGHT}
+    )
+else()
+    target_compile_definitions(InfernuxWebPlayerHost PRIVATE
+        INFERNUX_WEB_FIXED_CANVAS=0
+        INFERNUX_WEB_CANVAS_WIDTH=${INFERNUX_WEB_CANVAS_WIDTH}
+        INFERNUX_WEB_CANVAS_HEIGHT=${INFERNUX_WEB_CANVAS_HEIGHT}
+    )
+endif()
 
 if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR
    INFERNUX_WEB_LINK_ENGINE_RUNTIME)

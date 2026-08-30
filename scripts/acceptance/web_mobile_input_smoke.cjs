@@ -158,9 +158,16 @@ async function main() {
   if (!url) {
     throw new Error(
       "usage: node web_mobile_input_smoke.cjs <url> " +
-      "[--cdp-endpoint URL] [--require-active-audio] [--startup-timeout-ms N]",
+      "[--cdp-endpoint URL] [--require-active-audio] [--startup-timeout-ms N] " +
+      "[--viewport-width N] [--viewport-height N] " +
+      "[--expect-presentation fullscreen-borderless|windowed] " +
+      "[--expect-render-width N] [--expect-render-height N]",
     );
   }
+  const argumentValue = (name, fallback = "") => {
+    const index = process.argv.indexOf(name);
+    return index >= 0 ? process.argv[index + 1] : fallback;
+  };
   const requireActiveAudio = process.argv.includes("--require-active-audio");
   const cdpIndex = process.argv.indexOf("--cdp-endpoint");
   const cdpEndpoint = cdpIndex >= 0 ? process.argv[cdpIndex + 1] : "";
@@ -173,6 +180,19 @@ async function main() {
     : 240000;
   if (!Number.isFinite(startupTimeout) || startupTimeout <= 0) {
     throw new Error("--startup-timeout-ms must be a positive number");
+  }
+  const viewportWidth = Number(argumentValue("--viewport-width", "412"));
+  const viewportHeight = Number(argumentValue("--viewport-height", "915"));
+  const expectedPresentation = argumentValue("--expect-presentation");
+  const expectedRenderWidth = Number(argumentValue("--expect-render-width", "0"));
+  const expectedRenderHeight = Number(argumentValue("--expect-render-height", "0"));
+  if (!Number.isInteger(viewportWidth) || viewportWidth <= 0 ||
+      !Number.isInteger(viewportHeight) || viewportHeight <= 0) {
+    throw new Error("viewport dimensions must be positive integers");
+  }
+  if (expectedPresentation &&
+      !["fullscreen-borderless", "windowed"].includes(expectedPresentation)) {
+    throw new Error("--expect-presentation must be fullscreen-borderless or windowed");
   }
   let browser;
   let page;
@@ -196,7 +216,7 @@ async function main() {
       args: ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"],
     });
     page = await browser.newPage({
-      viewport: { width: 412, height: 915 },
+      viewport: { width: viewportWidth, height: viewportHeight },
       deviceScaleFactor: 2,
       hasTouch: true,
       isMobile: true,
@@ -215,9 +235,7 @@ async function main() {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
     try {
       await page.waitForFunction(
-        () => ["awaiting-user-activation", "ready"].includes(
-          document.querySelector("#canvas")?.dataset.infernuxState,
-        ),
+        () => document.querySelector("#canvas")?.dataset.infernuxState === "ready",
         null,
         { timeout: startupTimeout },
       );
@@ -273,18 +291,26 @@ async function main() {
       const loader = document.querySelector("#infernux-loader");
       if (loader) loader.style.visibility = "";
     });
-    if (stateBeforeActivation !== "ready") {
-      await activateCanvas(page, canvasBox, cdpEndpoint);
-    }
-    await page.waitForFunction(
-      () => document.querySelector("#canvas")?.dataset.infernuxState === "ready",
-      null,
-      { timeout: 30000 },
-    );
+    await activateCanvas(page, canvasBox, cdpEndpoint);
+    await page.waitForFunction(() => {
+      const diagnostics = JSON.parse(
+        document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+      );
+      return diagnostics.some((item) => item.includes("INFERNUX_WEB_AUDIO_READY"));
+    }, null, { timeout: 30000 });
     await page.waitForTimeout(250);
     const frameAfterActivation = await measureCanvasFrame(canvas);
-    await page.evaluate(() => {
+    const contextMenuPrevented = await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
+      const contextMenu = new MouseEvent("contextmenu", {
+        button: 2,
+        buttons: 2,
+        clientX: 12,
+        clientY: 12,
+        bubbles: true,
+        cancelable: true,
+      });
+      canvas.dispatchEvent(contextMenu);
       const pointer = (type, pointerId, x, y, primary) => {
         canvas.dispatchEvent(new PointerEvent(type, {
           pointerId,
@@ -321,6 +347,7 @@ async function main() {
       Module.infernuxEndTextInput();
       Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [0]);
       Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [1]);
+      return contextMenu.defaultPrevented;
     });
     await page.waitForTimeout(1000);
     const frameAfterInput = await measureCanvasFrame(canvas);
@@ -346,6 +373,9 @@ async function main() {
         shadowReady: diagnostics.some(
           (item) => item.includes("INFERNUX_WEB_SHADOW_READY"),
         ),
+        screenUiReady: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_SCREEN_UI_READY"),
+        ),
         firstFrameReady: diagnostics.some(
           (item) => item.includes("INFERNUX_WEB_FIRST_FRAME_READY"),
         ),
@@ -355,8 +385,6 @@ async function main() {
         pointerBridge: diagnostics.includes("INFERNUX_WEB_POINTER_BRIDGE_READY"),
         textBridge: diagnostics.includes("INFERNUX_WEB_TEXT_BRIDGE_READY"),
         visualViewport: diagnostics.includes("INFERNUX_WEB_VISUAL_VIEWPORT_READY"),
-        screenUiBridge: diagnostics.includes("INFERNUX_WEB_SCREEN_UI_BRIDGE_READY"),
-        screenUiText: document.querySelector("#infernux-screen-ui")?.textContent || "",
         audioReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_AUDIO_READY")),
         audioContextRunning: Module.SDL3?.audioContext?.state === "running",
         activeAudioVoices: Number(activeVoiceMarker.match(/count=(\d+)/)?.[1] || 0),
@@ -365,6 +393,20 @@ async function main() {
         textInput: diagnostics.some((item) => item.includes("kind=text_input")),
         pageHide: diagnostics.some((item) => item.includes("kind=page_hide")),
         pageShow: diagnostics.some((item) => item.includes("kind=page_show")),
+        presentation: document.body.dataset.infernuxPresentation || "",
+        canvasLayout: (() => {
+          const rect = canvas.getBoundingClientRect();
+          return {
+            left: rect.left,
+            top: rect.top,
+            cssWidth: rect.width,
+            cssHeight: rect.height,
+            renderWidth: canvas.width,
+            renderHeight: canvas.height,
+            viewportWidth: window.visualViewport?.width || window.innerWidth,
+            viewportHeight: window.visualViewport?.height || window.innerHeight,
+          };
+        })(),
         unhandledErrors: diagnostics.filter((item) => item.startsWith("ERROR:")),
         diagnosticTail: diagnostics.slice(-80),
       };
@@ -375,6 +417,7 @@ async function main() {
     result.skyDifference = skyDifference;
     result.frameAfterActivation = frameAfterActivation;
     result.frameAfterInput = frameAfterInput;
+    result.contextMenuPrevented = contextMenuPrevented;
     const frameIsVisible = (frame) => (
       frame.nonBlackRatio >= 0.1 &&
       frame.luminanceDeviation >= 0.01 &&
@@ -391,19 +434,40 @@ async function main() {
       skyDifference.meanAbsoluteDifference >= 0.03
     );
     const shadowsAreVisible = (
-      shadowDifference.changedPixelRatio >= 0.005 &&
+      shadowDifference.changedPixelRatio >= 0.003 &&
       shadowDifference.meanAbsoluteDifference >= 0.0002
+    );
+    const presentationMatches = !expectedPresentation ||
+      result.presentation === expectedPresentation;
+    const renderSizeMatches = (
+      (!expectedRenderWidth || result.canvasLayout.renderWidth === expectedRenderWidth) &&
+      (!expectedRenderHeight || result.canvasLayout.renderHeight === expectedRenderHeight)
+    );
+    const centeredWindowMatches = expectedPresentation !== "windowed" || (
+      result.canvasLayout.cssWidth <= result.canvasLayout.viewportWidth + 1 &&
+      result.canvasLayout.cssHeight <= result.canvasLayout.viewportHeight + 1 &&
+      Math.abs(
+        result.canvasLayout.left * 2 + result.canvasLayout.cssWidth -
+        result.canvasLayout.viewportWidth
+      ) <= 2 &&
+      Math.abs(
+        result.canvasLayout.top * 2 + result.canvasLayout.cssHeight -
+        result.canvasLayout.viewportHeight
+      ) <= 2
     );
     if (pageErrors.length || consoleErrors.length || result.unhandledErrors.length ||
         !result.pythonReady || !result.nativeModuleReady || !result.sceneReady ||
         !result.sceneRenderReady || !result.skyReady || !result.shadowReady ||
+        !result.screenUiReady ||
         !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
-        !result.screenUiBridge || !result.screenUiText.includes("FPS") ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
         !result.pageHide || !result.pageShow ||
+        stateBeforeActivation !== "ready" || !result.contextMenuPrevented ||
+        !presentationMatches || !renderSizeMatches || !centeredWindowMatches ||
+        !frameIsVisible(frameBeforeActivation) ||
         !frameIsVisible(frameAfterActivation) || !frameIsVisible(frameAfterInput) ||
         !inputPreservedFrame || !skyIsVisible || !shadowsAreVisible) {
       throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));

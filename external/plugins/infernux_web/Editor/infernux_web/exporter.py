@@ -136,13 +136,31 @@ class WebPlatformExporter(PlatformExporter):
         staging = _web_staging_directory(request)
         logs: tuple[str, ...] = ()
         try:
+            from Infernux.engine.interaction import normalize_build_settings
+            from Infernux.engine.platform_content_cook import (
+                build_settings_for_request,
+            )
+
+            build_settings = normalize_build_settings(
+                build_settings_for_request(request)
+            )
+            presentation = {
+                "display_mode": str(build_settings["display_mode"]),
+                "window_width": int(build_settings["window_width"]),
+                "window_height": int(build_settings["window_height"]),
+            }
             request.report("prepare", 0, 1, "Preparing Web Player staging")
             _prepare_web_staging(staging)
             game_name, player_assets = _cook_web_player_assets(request, staging)
             _stage_engine_python_package(request, player_assets, source_root)
             _stage_web_shader_sources(request, staging, player_assets, source_root)
             logs = _configure_and_build_host(
-                request, staging, player_assets, details, source_root
+                request,
+                staging,
+                player_assets,
+                details,
+                source_root,
+                presentation,
             )
             request.report("prepare", 1, 1, "Cooked Web Player host ready")
         except (OSError, RuntimeError, ValueError) as error:
@@ -212,6 +230,7 @@ class WebPlatformExporter(PlatformExporter):
                 "game": game_name,
                 "asset_revision": asset_revision,
                 "entry_point": "infernux-player.html",
+                "presentation": presentation,
             },
             logs=logs,
             elapsed_seconds=time.perf_counter() - started,
@@ -611,6 +630,7 @@ def _configure_and_build_host(
     player_assets: Path,
     details: dict[str, object],
     source_root: Path,
+    presentation: dict[str, object],
 ) -> tuple[str, ...]:
     if os.name != "nt":
         raise RuntimeError(
@@ -634,8 +654,14 @@ def _configure_and_build_host(
     emsdk_root = str(details["emsdk_root"])
     cpython_root = str(details["cpython_root"])
     tint_path = str(details["tint_path"])
+    display_mode = str(presentation["display_mode"])
+    canvas_width = int(presentation["window_width"])
+    canvas_height = int(presentation["window_height"])
     asset_revision = _web_asset_revision(
-        staging, player_assets, host_template_source
+        staging,
+        player_assets,
+        host_template_source,
+        presentation=presentation,
     )
     zstd_source = _find_local_zstd_source(source_root)
     zstd_argument = ""
@@ -660,7 +686,10 @@ def _configure_and_build_host(
         f"-DINFERNUX_ENGINE_SOURCE_ROOT={shlex.quote(wsl_source_root)} "
         f"-DINFERNUX_WEB_PLAYER_ASSETS={shlex.quote(wsl_player_assets)} "
         "-DINFERNUX_WEB_LINK_ENGINE_RUNTIME=ON "
-        f"-DINFERNUX_WEB_ASSET_REVISION={asset_revision}"
+        f"-DINFERNUX_WEB_ASSET_REVISION={asset_revision} "
+        f"-DINFERNUX_WEB_DISPLAY_MODE={shlex.quote(display_mode)} "
+        f"-DINFERNUX_WEB_CANVAS_WIDTH={canvas_width} "
+        f"-DINFERNUX_WEB_CANVAS_HEIGHT={canvas_height}"
         f"{zstd_argument}"
     )
     script = "\n".join(
@@ -719,10 +748,21 @@ def _web_asset_revision(
     staging: Path,
     player_assets: Path,
     host_template_source: Path,
+    *,
+    presentation: dict[str, object],
 ) -> str:
     """Hash every staged byte that can change the browser asset bundle."""
 
     digest = hashlib.sha256()
+    digest.update(
+        json.dumps(
+            presentation,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    digest.update(b"\0")
     roots = (
         ("player", player_assets),
         ("host", host_template_source),

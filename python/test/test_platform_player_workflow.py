@@ -69,7 +69,8 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert '"--cdp-endpoint"' in smoke
     assert "chromium.connectOverCDP" in smoke
     assert 'session.send("Input.dispatchTouchEvent"' in smoke
-    assert '["awaiting-user-activation", "ready"]' in smoke
+    assert 'dataset.infernuxState === "ready"' in smoke
+    assert "awaiting-user-activation" not in smoke
 
 
 def test_web_smoke_rejects_black_or_flat_frames_after_input():

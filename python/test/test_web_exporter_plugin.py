@@ -204,7 +204,12 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     )
     revision = "1234567890abcdef12345678"
 
-    def _build_host(_request, staging, _assets, _details, _source_root):
+    captured_presentation = {}
+
+    def _build_host(
+        _request, staging, _assets, _details, _source_root, presentation
+    ):
+        captured_presentation.update(presentation)
         host_build = staging / "host-build"
         host_build.mkdir(parents=True)
         (host_build / "infernux-player.html").write_text(
@@ -243,6 +248,12 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     assert result.manifest["game"] == "Balance"
     assert result.manifest["asset_revision"] == revision
     assert result.manifest["entry_point"] == "infernux-player.html"
+    assert result.manifest["presentation"] == {
+        "display_mode": "fullscreen_borderless",
+        "window_width": 1280,
+        "window_height": 720,
+    }
+    assert captured_presentation == result.manifest["presentation"]
     assert result.logs == ("host built",)
 
 
@@ -263,6 +274,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     rhi_backend = (host_templates / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
     scene_renderer = (host_templates / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
     particle_runtime = (host_templates / "WebParticleRuntime.cpp").read_text(encoding="utf-8")
+    screen_ui_renderer = (host_templates / "WebScreenUIRenderer.cpp").read_text(
+        encoding="utf-8"
+    )
     fullscreen = (
         ROOT / "cpp" / "infernux" / "function" / "renderer" / "FullscreenRenderer.cpp"
     ).read_text(encoding="utf-8")
@@ -356,11 +370,11 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert '"GameObjectRef": ref_wrappers_module.GameObjectRef' in bootstrap
     assert '"disallow_multiple": decorators_module.disallow_multiple' in bootstrap
     assert '"add_component_menu": decorators_module.add_component_menu' in bootstrap
-    assert "def _publish_screen_ui()" in bootstrap
-    assert "canvas.compute_logical_size" in bootstrap
-    assert "submit_screen_ui(payload)" in bootstrap
-    assert '"UIText", "UIImage", "UIButton"' in bootstrap
-    assert "INFERNUX_WEB_USER_ACTIVATION_REQUIRED" in bootstrap
+    assert "def _publish_screen_ui()" not in bootstrap
+    assert "submit_screen_ui(payload)" not in bootstrap
+    assert "INFERNUX_WEB_USER_ACTIVATION_REQUIRED" not in bootstrap
+    assert "INFERNUX_WEB_AUDIO_USER_ACTIVATION_PENDING" in bootstrap
+    assert "_player_session.activate()" in bootstrap
     assert 'importlib.import_module("Infernux.screen")' in bootstrap
     assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell
@@ -372,9 +386,18 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "infernux-logo.png" in shell
     assert "monitorRunDependencies(left)" in shell
     assert "infernux-progress-track" in shell
-    assert "infernux-screen-ui" in shell
-    assert "infernuxSubmitScreenUI" in shell
-    assert "INFERNUX_WEB_SCREEN_UI_BRIDGE_READY" in shell
+    assert "infernux-screen-ui" not in shell
+    assert "infernuxSubmitScreenUI" not in shell
+    assert "INFERNUX_WEB_SCREEN_UI_BRIDGE_READY" not in shell
+    assert "contextmenu" in shell
+    assert "event.preventDefault()" in shell
+    assert "Tap, click, or press a key to play" not in shell
+    assert "INFERNUX_WEB_FIRST_FRAME_READY" in shell
+    assert "playerPresentation.mode === 'windowed'" in shell
+    assert "document.body.dataset.infernuxPresentation" in shell
+    assert "@INFERNUX_WEB_DISPLAY_MODE@" in shell
+    assert "@INFERNUX_WEB_CANVAS_WIDTH@" in shell
+    assert "@INFERNUX_WEB_CANVAS_HEIGHT@" in shell
     assert "copy_if_different" in revision_stamp
     assert "infernux-player.${INFERNUX_WEB_ASSET_REVISION}.js" in revision_stamp
     assert "INFERNUX_WEB_PYTHON_ARCHIVE_INVALID" in main
@@ -385,7 +408,16 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "infernux::inxpack::ReadEntry" in host_module
     assert "infernux::inxpack::Extract" in host_module
     assert '"extract_package"' in host_module
-    assert '"submit_screen_ui"' in host_module
+    assert '"submit_screen_ui"' not in host_module
+    assert "INFERNUX_WEB_FIXED_CANVAS" in main
+    assert "g_screenUIRenderer.Render" in main
+    assert "WebScreenUIRenderer.cpp" in cmake
+    assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
+    assert "screen_ui_add_text" in host_module
+    assert "RuntimeScreenUISubmission._submit_canvas" in bootstrap
+    assert "INFERNUX_WEB_DISPLAY_MODE" in cmake
+    assert "INFERNUX_WEB_CANVAS_WIDTH" in cmake
+    assert "INFERNUX_WEB_CANVAS_HEIGHT" in cmake
     assert "extract_package(package, data_root)" in bootstrap
     assert "INFERNUX_SINGLE_THREADED_RUNTIME=1" in cmake
     assert "register_shader" in host_module
@@ -516,14 +548,32 @@ def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
     (runtime / "main.cpp").write_bytes(b"runtime")
     (shaders / "manifest.json").write_bytes(b"shader")
 
-    first = exporter_module._web_asset_revision(staging, player, runtime)
+    fullscreen = {
+        "display_mode": "fullscreen_borderless",
+        "window_width": 1280,
+        "window_height": 720,
+    }
+    first = exporter_module._web_asset_revision(
+        staging, player, runtime, presentation=fullscreen
+    )
     (runtime / "main.cpp").write_bytes(b"runtime changed")
-    second = exporter_module._web_asset_revision(staging, player, runtime)
+    second = exporter_module._web_asset_revision(
+        staging, player, runtime, presentation=fullscreen
+    )
     bytecode = player / "python" / "site-packages" / "Infernux" / "__pycache__"
     bytecode.mkdir(parents=True)
     (bytecode / "runtime.cpython-313.opt-1.pyc").write_bytes(b"compiled")
-    third = exporter_module._web_asset_revision(staging, player, runtime)
+    third = exporter_module._web_asset_revision(
+        staging, player, runtime, presentation=fullscreen
+    )
+    windowed = exporter_module._web_asset_revision(
+        staging,
+        player,
+        runtime,
+        presentation={**fullscreen, "display_mode": "windowed"},
+    )
 
     assert re.fullmatch(r"[0-9a-f]{24}", first)
     assert first != second
     assert second != third
+    assert third != windowed

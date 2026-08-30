@@ -19,7 +19,9 @@ _frame_count = 0
 _player_session: Any = None
 _player_scene_manager: Any = None
 _player_activated = False
-_screen_ui_signature: tuple[Any, ...] | None = None
+_screen_width = 1
+_screen_height = 1
+_screen_ui_renderer: Any = None
 _player_root = "/infernux/player"
 _player_python = f"{_player_root}/python/site-packages"
 _runtime_data_root = ""
@@ -455,6 +457,8 @@ def _prepare_player_runtime() -> None:
 def infernux_web_ready(details: dict[str, Any]) -> None:
     """Receive the browser graphics and viewport contract from the native host."""
 
+    global _player_activated, _screen_width, _screen_height, _screen_ui_renderer
+
     print(
         "INFERNUX_WEB_HOST_READY "
         f"python=3.13 graphics={details.get('graphics_api')} "
@@ -462,27 +466,34 @@ def infernux_web_ready(details: dict[str, Any]) -> None:
     )
     if _player_session is None:
         _prepare_player_runtime()
-    print("INFERNUX_WEB_USER_ACTIVATION_REQUIRED")
+    if _player_session is None or not _player_session.activate():
+        raise RuntimeError("Web Player runtime session could not be activated")
+    _screen_width = max(1, int(details.get("width", 1)))
+    _screen_height = max(1, int(details.get("height", 1)))
+    _screen_ui_renderer = _WebScreenUIRenderer()
+    _player_activated = True
+    print("INFERNUX_WEB_RUNTIME_ACTIVE")
+    print("INFERNUX_WEB_AUDIO_USER_ACTIVATION_PENDING")
 
 
 def infernux_web_activate(audio_ready: bool) -> bool:
-    """Activate gameplay only after a trusted browser gesture unlocked audio."""
+    """Acknowledge the trusted browser gesture used to unlock WebAudio."""
 
-    global _player_activated
-    if _player_activated:
-        return True
     if not audio_ready:
         raise RuntimeError("Web Player audio did not unlock from the user gesture")
-    if _player_session is None or not _player_session.activate():
-        raise RuntimeError("Web Player runtime session could not be activated")
-    _player_activated = True
-    print("INFERNUX_WEB_RUNTIME_ACTIVE")
+    if not _player_activated or _player_session is None:
+        raise RuntimeError("Web Player gameplay was not ready before audio activation")
+    print("INFERNUX_WEB_AUDIO_USER_ACTIVATED")
     return True
 
 
 def infernux_web_input(kind: str, payload: dict[str, Any]) -> None:
     """Queue one normalized browser event for the engine input adapter."""
 
+    global _screen_width, _screen_height
+    if kind == "viewport":
+        _screen_width = max(1, int(payload.get("width", _screen_width)))
+        _screen_height = max(1, int(payload.get("height", _screen_height)))
     _events.append((kind, payload))
     if kind not in _seen_event_kinds:
         _seen_event_kinds.add(kind)
@@ -497,172 +508,85 @@ def infernux_web_drain_input() -> tuple[tuple[str, dict[str, Any]], ...]:
     return events
 
 
-def _screen_ui_color(value: Any, default: tuple[float, ...]) -> list[float]:
-    values = list(value) if isinstance(value, (list, tuple)) else list(default)
-    values.extend(default[len(values):])
-    return [float(values[index]) for index in range(4)]
+class _WebScreenUIList:
+    Camera = 0
+    Overlay = 1
 
 
-def _screen_ui_texture_path(value: Any) -> str:
-    path = str(value or "").strip()
-    if not path:
-        return ""
-    if os.path.isabs(path):
-        return os.path.normpath(path).replace("\\", "/")
-    return os.path.normpath(os.path.join(_runtime_data_root, path)).replace("\\", "/")
+class _WebScreenUIRenderer:
+    """Python protocol adapter for the engine-owned WebGPU UI consumer."""
+
+    def __init__(self) -> None:
+        import _InfernuxWebHost as host
+
+        self._host = host
+
+    def begin_frame(self, width: int, height: int) -> None:
+        self._host.screen_ui_begin_frame(width, height)
+
+    def begin_frame_cached(
+        self, width: int, height: int, content_revision: int
+    ) -> bool:
+        return bool(
+            self._host.screen_ui_begin_frame_cached(
+                width, height, content_revision & ((1 << 64) - 1)
+            )
+        )
+
+    def add_filled_rect(self, *arguments: Any) -> None:
+        self._host.screen_ui_add_filled_rect(*arguments)
+
+    def add_image(self, *arguments: Any) -> None:
+        self._host.screen_ui_add_image(*arguments)
+
+    def add_text(self, *arguments: Any) -> None:
+        self._host.screen_ui_add_text(*arguments)
+
+    def measure_text(self, *arguments: Any) -> tuple[float, float]:
+        measured = self._host.screen_ui_measure_text(*arguments)
+        return float(measured[0]), float(measured[1])
 
 
-def _publish_screen_ui() -> None:
-    """Publish engine-authored Screen UI through the browser platform adapter."""
-
-    global _screen_ui_signature
-    if _player_scene_manager is None:
+def _submit_screen_ui() -> None:
+    if _player_scene_manager is None or _screen_ui_renderer is None:
         return
 
-    from _InfernuxWebHost import submit_screen_ui
-    from Infernux.screen import Screen
-    from Infernux.ui.ui_canvas_utils import (
-        canvas_membership_revision,
-        collect_sorted_runtime_canvases,
+    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from Infernux.engine.ui.runtime_canvas_snapshot import (
+        collect_sorted_runtime_canvas_snapshot,
     )
-    from Infernux.ui.ui_render_revision import get_runtime_ui_revision
+    from Infernux.ui.enums import RenderMode
+    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
 
     scene = _player_scene_manager.get_active_scene()
     persistent_scene = _player_scene_manager.get_runtime_persistent_scene()
-    screen_width, screen_height = Screen.size
-    if scene is None or screen_width < 1 or screen_height < 1:
-        return
-    canvases = collect_sorted_runtime_canvases(
-        scene, persistent_scene, allow_stale_empty=True
+    if scene is None:
+        canvases = ()
+    else:
+        canvases = tuple(
+            collect_sorted_runtime_canvas_snapshot(scene, persistent_scene)
+        )
+    revision = runtime_ui_revision(
+        scene,
+        canvases,
+        _screen_width,
+        _screen_height,
+        0,
     )
-    signature = (
-        int(get_runtime_ui_revision()),
-        int(canvas_membership_revision()),
-        int(getattr(scene, "structure_version", 0)),
-        int(getattr(persistent_scene, "structure_version", 0)),
-        int(Screen.revision),
-        int(screen_width),
-        int(screen_height),
-    )
-    if signature == _screen_ui_signature:
+    if _screen_ui_renderer.begin_frame_cached(
+        _screen_width, _screen_height, revision
+    ):
         return
-
-    commands: list[dict[str, Any]] = []
     for canvas in canvases:
-        owner = getattr(canvas, "game_object", None)
-        if (
-            owner is not None
-            and not owner.active_in_hierarchy
-            or not getattr(canvas, "enabled", True)
-        ):
-            continue
-        scale_x, scale_y, text_scale = canvas.compute_scale(
-            float(screen_width), float(screen_height)
+        RuntimeScreenUISubmission._submit_canvas(
+            canvas,
+            _screen_ui_renderer,
+            lambda _path: 0,
+            _screen_width,
+            _screen_height,
+            _WebScreenUIList,
+            RenderMode,
         )
-        logical_width, logical_height = canvas.compute_logical_size(
-            float(screen_width), float(screen_height)
-        )
-        for element in canvas._get_elements():
-            element_owner = getattr(element, "game_object", None)
-            if (
-                element_owner is not None
-                and not element_owner.active_in_hierarchy
-                or not getattr(element, "enabled", True)
-            ):
-                continue
-            kind_name = type(element).__name__
-            if kind_name not in {"UIText", "UIImage", "UIButton"}:
-                continue
-            x, y, width, height = element.get_rect(logical_width, logical_height)
-            command: dict[str, Any] = {
-                "id": f"{int(getattr(element_owner, 'id', 0) or 0)}:{kind_name}",
-                "kind": kind_name[2:].casefold(),
-                "x": float(x) * scale_x,
-                "y": float(y) * scale_y,
-                "width": float(width) * scale_x,
-                "height": float(height) * scale_y,
-                "opacity": float(getattr(element, "opacity", 1.0)),
-                "corner_radius": float(getattr(element, "corner_radius", 0.0))
-                * min(scale_x, scale_y),
-                "rotation": float(getattr(element, "rotation", 0.0)),
-                "mirror_x": bool(getattr(element, "mirror_x", False)),
-                "mirror_y": bool(getattr(element, "mirror_y", False)),
-            }
-            if kind_name == "UIText":
-                command.update(
-                    {
-                        "text": str(getattr(element, "text", "") or ""),
-                        "text_color": _screen_ui_color(
-                            getattr(element, "color", None), (1.0, 1.0, 1.0, 1.0)
-                        ),
-                        "font_size": float(getattr(element, "font_size", 18.0))
-                        * text_scale,
-                        "line_height": float(getattr(element, "line_height", 1.2)),
-                        "letter_spacing": float(
-                            getattr(element, "letter_spacing", 0.0)
-                        )
-                        * text_scale,
-                        "align_h": int(getattr(element, "text_align_h", 0)),
-                        "align_v": int(getattr(element, "text_align_v", 0)),
-                        "overflow": int(getattr(element, "overflow", 0)),
-                    }
-                )
-            elif kind_name == "UIImage":
-                command.update(
-                    {
-                        "background_color": _screen_ui_color(
-                            getattr(element, "color", None), (1.0, 1.0, 1.0, 1.0)
-                        ),
-                        "texture_path": _screen_ui_texture_path(
-                            getattr(element, "texture_path", "")
-                        ),
-                    }
-                )
-            else:
-                tint = _screen_ui_color(
-                    element.get_current_tint()
-                    if hasattr(element, "get_current_tint")
-                    else None,
-                    (1.0, 1.0, 1.0, 1.0),
-                )
-                background = _screen_ui_color(
-                    getattr(element, "background_color", None),
-                    (0.922, 0.341, 0.341, 1.0),
-                )
-                command.update(
-                    {
-                        "text": str(getattr(element, "label", "") or ""),
-                        "text_color": _screen_ui_color(
-                            getattr(element, "label_color", None),
-                            (1.0, 1.0, 1.0, 1.0),
-                        ),
-                        "background_color": [
-                            background[index] * tint[index] for index in range(4)
-                        ],
-                        "texture_path": _screen_ui_texture_path(
-                            getattr(element, "texture_path", "")
-                        ),
-                        "font_size": float(getattr(element, "font_size", 18.0))
-                        * text_scale,
-                        "line_height": float(getattr(element, "line_height", 1.2)),
-                        "letter_spacing": float(
-                            getattr(element, "letter_spacing", 0.0)
-                        )
-                        * text_scale,
-                        "align_h": int(getattr(element, "text_align_h", 1)),
-                        "align_v": int(getattr(element, "text_align_v", 1)),
-                        "overflow": 1,
-                    }
-                )
-            commands.append(command)
-
-    payload = json.dumps(
-        {"revision": hash(signature), "commands": commands},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    if submit_screen_ui(payload):
-        _screen_ui_signature = signature
 
 
 def infernux_web_tick(delta_time: float) -> None:
@@ -672,7 +596,7 @@ def infernux_web_tick(delta_time: float) -> None:
     if not _player_activated or _player_session is None:
         return
     _player_session.tick(max(0.0, min(float(delta_time), 0.25)))
-    _publish_screen_ui()
+    _submit_screen_ui()
     _frame_count += 1
     if _frame_count == 1:
         print("INFERNUX_WEB_FIRST_FRAME_READY")

@@ -1449,7 +1449,9 @@ class Engine():
         # gets GC'd (ref count → 0), pybind11 removes the C++ → Python mapping
         # from registered_instances, and get_override() can't find the Python
         # object → "pure virtual function" error.
-        from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+        from Infernux.engine.runtime_screen_ui_pipeline import (
+            RuntimeScreenUIRenderPipeline,
+        )
 
         wrapped_pipeline = RuntimeScreenUIRenderPipeline(
             self._screen_ui_submission,

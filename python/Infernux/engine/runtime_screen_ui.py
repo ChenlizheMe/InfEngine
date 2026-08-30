@@ -8,9 +8,6 @@ Game captures and hidden Game tabs consume the same current-frame HUD.
 from __future__ import annotations
 
 import weakref
-
-from Infernux.debug import Debug
-from Infernux.lib import RenderPipelineCallback
 from Infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
 )
@@ -184,22 +181,17 @@ class RuntimeScreenUISubmission:
             )
 
 
-class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
-    """Submit Screen UI before delegating each engine-owned camera render."""
+def __getattr__(name: str):
+    """Keep the desktop pipeline wrapper lazy for reduced Player bindings.
 
-    def __init__(self, submission: RuntimeScreenUISubmission, delegate) -> None:
-        super().__init__()
-        self._submission = submission
-        self._delegate = delegate
+    Cooked Web Players only need the platform-neutral command submission helpers.
+    Importing the native render-pipeline base while loading those helpers would
+    unnecessarily require the desktop callback binding in every Player profile.
+    """
+    if name == "RuntimeScreenUIRenderPipeline":
+        from Infernux.engine.runtime_screen_ui_pipeline import (
+            RuntimeScreenUIRenderPipeline,
+        )
 
-    def render(self, context, camera) -> None:
-        try:
-            self._submission.submit()
-        except Exception as exc:
-            Debug.log_suppressed("RenderPipeline.ScreenUI", exc)
-        self._delegate.render(context, camera)
-
-    def dispose(self) -> None:
-        dispose = getattr(self._delegate, "dispose", None)
-        if callable(dispose):
-            dispose()
+        return RuntimeScreenUIRenderPipeline
+    raise AttributeError(name)

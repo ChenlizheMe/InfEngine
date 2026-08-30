@@ -3,6 +3,7 @@
 
 #include "InfernuxWebHostModule.h"
 #include "WebParticleRuntime.h"
+#include "WebScreenUIRenderer.h"
 
 #include <platform/filesystem/InxPack.h>
 #include <platform/input/InputManager.h>
@@ -33,6 +34,7 @@ namespace
 std::mutex g_shaderMutex;
 std::unordered_map<std::string, std::string> g_shaderSources;
 infernux::web::WebParticleRuntime *g_particleRuntime = nullptr;
+infernux::web::WebScreenUIRenderer *g_screenUIRenderer = nullptr;
 bool g_textInputActive = false;
 
 std::string ShaderKey(const std::string &name, const char *stage)
@@ -294,25 +296,121 @@ PyObject *IsTextInputActive(PyObject *, PyObject *)
     return PyBool_FromLong(g_textInputActive ? 1 : 0);
 }
 
-PyObject *SubmitScreenUi(PyObject *, PyObject *arguments)
+PyObject *ScreenUIBeginFrame(PyObject *, PyObject *arguments)
 {
-    const char *payload = nullptr;
-    Py_ssize_t payloadSize = 0;
-    if (!PyArg_ParseTuple(arguments, "s#:submit_screen_ui", &payload, &payloadSize))
+    unsigned int width = 0;
+    unsigned int height = 0;
+    if (!PyArg_ParseTuple(arguments, "II:screen_ui_begin_frame", &width, &height))
         return nullptr;
-    if (payload == nullptr || payloadSize < 0) {
-        PyErr_SetString(PyExc_ValueError, "screen UI payload is invalid");
+    if (g_screenUIRenderer)
+        g_screenUIRenderer->BeginFrame(width, height);
+    Py_RETURN_NONE;
+}
+
+PyObject *ScreenUIBeginFrameCached(PyObject *, PyObject *arguments)
+{
+    unsigned int width = 0;
+    unsigned int height = 0;
+    unsigned long long revision = 0;
+    if (!PyArg_ParseTuple(arguments, "IIK:screen_ui_begin_frame_cached", &width, &height, &revision))
+        return nullptr;
+    return PyBool_FromLong(g_screenUIRenderer && g_screenUIRenderer->BeginFrameCached(width, height, revision));
+}
+
+PyObject *ScreenUIAddFilledRect(PyObject *, PyObject *arguments)
+{
+    int list = 0;
+    double values[9]{};
+    if (!PyArg_ParseTuple(arguments, "iddddddddd:screen_ui_add_filled_rect", &list, &values[0], &values[1], &values[2],
+                          &values[3], &values[4], &values[5], &values[6], &values[7], &values[8]))
+        return nullptr;
+    if (g_screenUIRenderer)
+        g_screenUIRenderer->AddFilledRect(
+            list, static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2]),
+            static_cast<float>(values[3]), static_cast<float>(values[4]), static_cast<float>(values[5]),
+            static_cast<float>(values[6]), static_cast<float>(values[7]), static_cast<float>(values[8]));
+    Py_RETURN_NONE;
+}
+
+double TupleNumber(PyObject *arguments, Py_ssize_t index)
+{
+    return PyFloat_AsDouble(PyTuple_GetItem(arguments, index));
+}
+
+PyObject *ScreenUIAddImage(PyObject *, PyObject *arguments)
+{
+    if (PyTuple_Size(arguments) != 18) {
+        PyErr_SetString(PyExc_TypeError, "screen_ui_add_image expects 18 arguments");
         return nullptr;
     }
-    const int submitted = EM_ASM_INT(
-        {
-            if (!Module.infernuxSubmitScreenUI)
-                return 0;
-            Module.infernuxSubmitScreenUI(UTF8ToString($0, $1));
-            return 1;
-        },
-        payload, payloadSize);
-    return PyBool_FromLong(submitted != 0);
+    const int list = static_cast<int>(PyLong_AsLong(PyTuple_GetItem(arguments, 0)));
+    const uint64_t texture = PyLong_AsUnsignedLongLong(PyTuple_GetItem(arguments, 1));
+    double values[13]{};
+    for (int index = 0; index < 13; ++index)
+        values[index] = TupleNumber(arguments, index + 2);
+    const bool mirrorH = PyObject_IsTrue(PyTuple_GetItem(arguments, 15)) != 0;
+    const bool mirrorV = PyObject_IsTrue(PyTuple_GetItem(arguments, 16)) != 0;
+    const double rounding = TupleNumber(arguments, 17);
+    if (PyErr_Occurred())
+        return nullptr;
+    if (g_screenUIRenderer)
+        g_screenUIRenderer->AddImage(
+            list, texture, static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2]),
+            static_cast<float>(values[3]), static_cast<float>(values[4]), static_cast<float>(values[5]),
+            static_cast<float>(values[6]), static_cast<float>(values[7]), static_cast<float>(values[8]),
+            static_cast<float>(values[9]), static_cast<float>(values[10]), static_cast<float>(values[11]),
+            static_cast<float>(values[12]), mirrorH, mirrorV, static_cast<float>(rounding));
+    Py_RETURN_NONE;
+}
+
+PyObject *ScreenUIAddText(PyObject *, PyObject *arguments)
+{
+    if (PyTuple_Size(arguments) != 20) {
+        PyErr_SetString(PyExc_TypeError, "screen_ui_add_text expects 20 arguments");
+        return nullptr;
+    }
+    const int list = static_cast<int>(PyLong_AsLong(PyTuple_GetItem(arguments, 0)));
+    const char *text = PyUnicode_AsUTF8(PyTuple_GetItem(arguments, 5));
+    const bool mirrorH = PyObject_IsTrue(PyTuple_GetItem(arguments, 15)) != 0;
+    const bool mirrorV = PyObject_IsTrue(PyTuple_GetItem(arguments, 16)) != 0;
+    const char *fontPath = PyUnicode_AsUTF8(PyTuple_GetItem(arguments, 17));
+    double values[15]{};
+    for (int index = 0; index < 4; ++index)
+        values[index] = TupleNumber(arguments, index + 1);
+    for (int index = 4; index < 13; ++index)
+        values[index] = TupleNumber(arguments, index + 2);
+    values[13] = TupleNumber(arguments, 18);
+    values[14] = TupleNumber(arguments, 19);
+    if (PyErr_Occurred() || !text || !fontPath)
+        return nullptr;
+    if (g_screenUIRenderer)
+        g_screenUIRenderer->AddText(
+            list, static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2]),
+            static_cast<float>(values[3]), text, static_cast<float>(values[4]), static_cast<float>(values[5]),
+            static_cast<float>(values[6]), static_cast<float>(values[7]), static_cast<float>(values[8]),
+            static_cast<float>(values[9]), static_cast<float>(values[10]), static_cast<float>(values[11]),
+            static_cast<float>(values[12]), mirrorH, mirrorV, fontPath, static_cast<float>(values[13]),
+            static_cast<float>(values[14]));
+    Py_RETURN_NONE;
+}
+
+PyObject *ScreenUIMeasureText(PyObject *, PyObject *arguments)
+{
+    const char *text = nullptr;
+    const char *fontPath = nullptr;
+    double fontSize = 0.0;
+    double wrapWidth = 0.0;
+    double lineHeight = 0.0;
+    double letterSpacing = 0.0;
+    if (!PyArg_ParseTuple(arguments, "sddsdd:screen_ui_measure_text", &text, &fontSize, &wrapWidth, &fontPath,
+                          &lineHeight, &letterSpacing))
+        return nullptr;
+    const auto measured = g_screenUIRenderer ? g_screenUIRenderer->MeasureText(text, static_cast<float>(fontSize),
+                                                                               static_cast<float>(wrapWidth), fontPath,
+                                                                               static_cast<float>(lineHeight),
+                                                                               static_cast<float>(letterSpacing))
+                                             : std::pair<float, float>{0.0f, 0.0f};
+    return Py_BuildValue("ff", measured.first, measured.second);
 }
 
 PyMethodDef kMethods[] = {
@@ -333,8 +431,12 @@ PyMethodDef kMethods[] = {
     {"begin_text_input", BeginTextInput, METH_VARARGS, "Focus the browser text bridge and begin committed text input."},
     {"end_text_input", EndTextInput, METH_NOARGS, "End browser text input and dismiss the software keyboard."},
     {"is_text_input_active", IsTextInputActive, METH_NOARGS, "Return whether browser text input is active."},
-    {"submit_screen_ui", SubmitScreenUi, METH_VARARGS,
-     "Publish the current engine Screen UI snapshot to the browser presentation layer."},
+    {"screen_ui_begin_frame", ScreenUIBeginFrame, METH_VARARGS, nullptr},
+    {"screen_ui_begin_frame_cached", ScreenUIBeginFrameCached, METH_VARARGS, nullptr},
+    {"screen_ui_add_filled_rect", ScreenUIAddFilledRect, METH_VARARGS, nullptr},
+    {"screen_ui_add_image", ScreenUIAddImage, METH_VARARGS, nullptr},
+    {"screen_ui_add_text", ScreenUIAddText, METH_VARARGS, nullptr},
+    {"screen_ui_measure_text", ScreenUIMeasureText, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -366,6 +468,11 @@ bool InfernuxWebFindShaderSource(const std::string &name, const char *stage, std
 void InfernuxWebSetParticleRuntime(infernux::web::WebParticleRuntime *runtime) noexcept
 {
     g_particleRuntime = runtime;
+}
+
+void InfernuxWebSetScreenUIRenderer(infernux::web::WebScreenUIRenderer *renderer) noexcept
+{
+    g_screenUIRenderer = renderer;
 }
 
 void InfernuxWebEndTextInput() noexcept

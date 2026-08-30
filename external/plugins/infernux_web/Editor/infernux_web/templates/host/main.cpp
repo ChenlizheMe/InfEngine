@@ -17,6 +17,7 @@
 #include "WebGpuRhiDevice.h"
 #include "WebParticleRuntime.h"
 #include "WebSceneRenderer.h"
+#include "WebScreenUIRenderer.h"
 
 #include <algorithm>
 #include <array>
@@ -45,6 +46,7 @@ infernux::FullscreenRenderer g_fullscreenRenderer;
 infernux::FullscreenPipelineKey g_fullscreenPipelineKey;
 infernux::web::WebSceneRenderer g_sceneRenderer;
 infernux::web::WebParticleRuntime g_particleRuntime;
+infernux::web::WebScreenUIRenderer g_screenUIRenderer;
 bool g_particleRuntimeReady = false;
 bool g_webGpuValidationFailed = false;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
@@ -301,9 +303,15 @@ void ResizeCanvas()
     emscripten_get_element_css_size("#canvas", &cssWidth, &cssHeight);
     g_cssWidth = std::max(1.0, cssWidth);
     g_cssHeight = std::max(1.0, cssHeight);
+#if INFERNUX_WEB_FIXED_CANVAS
+    g_width = static_cast<uint32_t>(INFERNUX_WEB_CANVAS_WIDTH);
+    g_height = static_cast<uint32_t>(INFERNUX_WEB_CANVAS_HEIGHT);
+    const double scale = static_cast<double>(g_width) / g_cssWidth;
+#else
     const double scale = std::max(1.0, emscripten_get_device_pixel_ratio());
     g_width = std::max(1u, static_cast<uint32_t>(cssWidth * scale));
     g_height = std::max(1u, static_cast<uint32_t>(cssHeight * scale));
+#endif
     emscripten_set_canvas_element_size("#canvas", g_width, g_height);
 
     if (g_surface && g_device) {
@@ -699,8 +707,12 @@ void Frame()
             infernux::FullscreenPushConstants pushConstants;
             g_fullscreenRenderer.Draw(commands, pipeline, {}, {}, pushConstants, sizeof(pushConstants));
         }
+        if (!g_webGpuValidationFailed)
+            (void)g_screenUIRenderer.Render(pass, 0, g_width, g_height);
         if (scenePrepared && g_particleRuntimeReady && !g_webGpuValidationFailed)
             (void)g_particleRuntime.Render(pass, g_width, g_height);
+        if (!g_webGpuValidationFailed)
+            (void)g_screenUIRenderer.Render(pass, 1, g_width, g_height);
         pass.End();
         wgpu::CommandBuffer commands = encoder.Finish();
         g_queue.Submit(1, &commands);
@@ -733,6 +745,11 @@ void StartSurface()
         std::fprintf(stderr, "INFERNUX_WEBGPU_SCENE_PIPELINE_FAILED\n");
         return;
     }
+    if (!g_screenUIRenderer.Initialize(g_device, g_queue, g_surfaceFormat)) {
+        std::fprintf(stderr, "INFERNUX_WEB_SCREEN_UI_INITIALIZATION_FAILED\n");
+        return;
+    }
+    InfernuxWebSetScreenUIRenderer(&g_screenUIRenderer);
     if (!g_particleRuntime.Initialize(*g_rhi, ToRhiFormat(g_surfaceFormat))) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_RUNTIME_FAILED %s\n", g_particleRuntime.LastError().c_str());
     } else {
