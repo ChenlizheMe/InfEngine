@@ -608,7 +608,10 @@ std::string WebParticleRuntime::ReplaceGraph(uint64_t graphInstanceId, PyObject 
         desc.capacity = capacity;
         desc.stateStride = stateStride;
         desc.eventTypeCount = eventTypes;
-        desc.supportsFusedUpdateRendering = true;
+        // The fused Vulkan kernel exceeds the portable WebGPU per-stage
+        // storage-buffer budget. Keep simulation and render export as distinct
+        // GPU stages so each pipeline publishes only the resources it uses.
+        desc.supportsFusedUpdateRendering = false;
         std::array<std::string, static_cast<size_t>(particle::GpuKernelStage::Count)> sources;
         for (size_t stage = 0; stage < sources.size(); ++stage) {
             const std::string name = std::string("Particle/") + kernelHash + "/" + kStageNames[stage];
@@ -770,55 +773,89 @@ void WebParticleRuntime::RecordCompute(wgpu::CommandEncoder commandEncoder)
         hasWork = hasWork || !emitter->pending.empty() || emitter->resetPending;
     if (!hasWork)
         return;
-    wgpu::ComputePassDescriptor passDesc;
-    auto pass = commandEncoder.BeginComputePass(&passDesc);
-    WebGpuComputeCommandContext context;
-    const auto commands = m_state->rhi->MakeComputeCommandEncoder(context, pass);
+    const auto recordStage = [&](const auto &record) {
+        wgpu::ComputePassDescriptor passDesc;
+        auto pass = commandEncoder.BeginComputePass(&passDesc);
+        WebGpuComputeCommandContext context;
+        const auto commands = m_state->rhi->MakeComputeCommandEncoder(context, pass);
+        const bool recorded = record(commands);
+        pass.End();
+        return recorded;
+    };
     for (auto &[_, emitter] : m_state->emitters) {
-        if (emitter->resetPending) {
-            emitter->runtime->RequestBootstrap();
-            emitter->resetPending = false;
-            emitter->drawReady = false;
+        State::Emitter *currentEmitter = emitter.get();
+        if (currentEmitter->resetPending) {
+            currentEmitter->runtime->RequestBootstrap();
+            currentEmitter->resetPending = false;
+            currentEmitter->drawReady = false;
         }
-        if (emitter->pending.empty())
+        if (currentEmitter->pending.empty())
             continue;
-        if (!emitter->runtime->UpdateTransforms(emitter->transforms)) {
+        if (!currentEmitter->runtime->UpdateTransforms(currentEmitter->transforms)) {
             m_state->error = "WebGPU particle transform upload failed";
-            emitter->pending.clear();
+            currentEmitter->pending.clear();
             continue;
         }
-        for (const FrameRequest &request : emitter->pending) {
-            if (emitter->runtime->NeedsBootstrap() &&
-                !emitter->runtime->RecordBootstrap(commands, request.systemSeed, emitter->spawnGroup)) {
+        for (const FrameRequest &request : currentEmitter->pending) {
+            if (currentEmitter->runtime->NeedsBootstrap() && !recordStage([&](const auto &commands) {
+                    return currentEmitter->runtime->RecordBootstrap(commands, request.systemSeed,
+                                                                    currentEmitter->spawnGroup);
+                })) {
                 m_state->error = "WebGPU particle bootstrap recording failed";
                 break;
             }
             if (request.simulate && request.spawnCount > 0) {
-                emitter->runtime->RecordInitIndirect(
-                    commands, request.spawnCount, request.spawnBaseId, request.spawnGeneration, request.systemSeed,
-                    request.simulationStep, request.deltaTime, emitter->spawnGroup, {}, 0);
-            }
-            if (request.simulate) {
-                if (!emitter->runtime->RecordRenderReset(commands, emitter->spawnGroup, false, true) ||
-                    !emitter->runtime->RecordUpdateRenderingFused(commands, request.systemSeed, request.simulationStep,
-                                                                  request.deltaTime, emitter->spawnGroup)) {
-                    m_state->error = "WebGPU particle fused simulation recording failed";
+                if (!recordStage([&](const auto &commands) {
+                        currentEmitter->runtime->RecordInitIndirect(commands, request.spawnCount, request.spawnBaseId,
+                                                                    request.spawnGeneration, request.systemSeed,
+                                                                    request.simulationStep, request.deltaTime,
+                                                                    currentEmitter->spawnGroup, {}, 0);
+                        return true;
+                    })) {
+                    m_state->error = "WebGPU particle initialization recording failed";
                     break;
                 }
-                emitter->runtime->PublishAliveWrite();
+            }
+            if (request.simulate) {
+                const bool resetRecorded = recordStage([&](const auto &commands) {
+                    return currentEmitter->runtime->RecordRenderReset(commands, currentEmitter->spawnGroup, false,
+                                                                      true);
+                });
+                const bool updateRecorded = resetRecorded && recordStage([&](const auto &commands) {
+                                                return currentEmitter->runtime->RecordUpdate(
+                                                    commands, request.systemSeed, request.simulationStep,
+                                                    request.deltaTime, currentEmitter->spawnGroup);
+                                            });
+                if (!updateRecorded) {
+                    m_state->error = "WebGPU particle simulation recording failed";
+                    break;
+                }
+                currentEmitter->runtime->PublishAliveWrite();
+                if (request.render && !recordStage([&](const auto &commands) {
+                        return currentEmitter->runtime->RecordRendering(
+                            commands, request.systemSeed, request.simulationStep, currentEmitter->spawnGroup);
+                    })) {
+                    m_state->error = "WebGPU particle rendering export failed";
+                    break;
+                }
             } else if (request.render) {
-                if (!emitter->runtime->RecordRenderReset(commands, emitter->spawnGroup) ||
-                    !emitter->runtime->RecordRendering(commands, request.systemSeed, request.simulationStep,
-                                                       emitter->spawnGroup)) {
+                const bool resetRecorded = recordStage([&](const auto &commands) {
+                    return currentEmitter->runtime->RecordRenderReset(commands, currentEmitter->spawnGroup);
+                });
+                const bool renderingRecorded =
+                    resetRecorded && recordStage([&](const auto &commands) {
+                        return currentEmitter->runtime->RecordRendering(
+                            commands, request.systemSeed, request.simulationStep, currentEmitter->spawnGroup);
+                    });
+                if (!renderingRecorded) {
                     m_state->error = "WebGPU particle rendering export failed";
                     break;
                 }
             }
-            emitter->drawReady = request.render;
+            currentEmitter->drawReady = request.render;
         }
-        emitter->pending.clear();
+        currentEmitter->pending.clear();
     }
-    pass.End();
 }
 
 bool WebParticleRuntime::Render(wgpu::RenderPassEncoder pass, uint32_t width, uint32_t height)

@@ -164,6 +164,11 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/shell.generated.html"
     @ONLY
 )
+configure_file(
+    "${INFERNUX_ENGINE_SOURCE_ROOT}/docs/assets/logo.png"
+    "${CMAKE_CURRENT_BINARY_DIR}/infernux-logo.png"
+    COPYONLY
+)
 
 target_include_directories(InfernuxWebPlayerHost PRIVATE
     "${INFERNUX_WEB_CPYTHON_SOURCE}/Include"

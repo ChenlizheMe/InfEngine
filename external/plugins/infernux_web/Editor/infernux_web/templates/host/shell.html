@@ -7,11 +7,11 @@
   <link rel="icon" href="data:,">
   <title>Infernux Player</title>
   <style>
-    :root { color-scheme: dark; background: #07111d; }
+    :root { color-scheme: dark; background: #111214; }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
     body {
-      background: radial-gradient(circle at 50% 25%, #102b42 0%, #07111d 58%, #04080d 100%);
+      background: #111214;
       font: 14px/1.4 system-ui, sans-serif;
       color: #d8e6ef;
       touch-action: none;
@@ -33,15 +33,46 @@
       opacity: 0;
       pointer-events: none;
     }
-    #status {
+    #infernux-loader {
       position: absolute;
-      left: max(12px, env(safe-area-inset-left));
-      bottom: max(10px, env(safe-area-inset-bottom));
-      padding: 5px 8px;
-      border: 1px solid rgba(104, 202, 255, .28);
-      background: rgba(4, 12, 20, .72);
-      border-radius: 3px;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+               max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+      background: radial-gradient(circle at 50% 43%, #242528 0%, #161719 42%, #0d0e0f 100%);
       pointer-events: none;
+      transition: opacity 180ms ease;
+    }
+    #infernux-loader.ready { background: rgba(13, 14, 15, .78); }
+    #infernux-loader.hidden { opacity: 0; }
+    #infernux-loader-card { width: min(360px, 76vw); text-align: center; }
+    #infernux-loader-logo {
+      width: clamp(96px, 18vw, 148px);
+      height: auto;
+      filter: drop-shadow(0 18px 28px rgba(0, 0, 0, .42));
+    }
+    #status { margin-top: 22px; min-height: 20px; color: #e8e8e8; }
+    #infernux-progress-track {
+      height: 3px;
+      margin-top: 12px;
+      overflow: hidden;
+      background: #343538;
+    }
+    #infernux-progress {
+      width: 0;
+      height: 100%;
+      background: #ed3b2f;
+      transition: width 120ms ease;
+    }
+    #infernux-loader.indeterminate #infernux-progress {
+      width: 34%;
+      animation: infernux-progress 1.15s ease-in-out infinite;
+    }
+    #infernux-loader-hint { margin-top: 10px; color: #96989d; font-size: 12px; }
+    @keyframes infernux-progress {
+      from { transform: translateX(-115%); }
+      to { transform: translateX(295%); }
     }
   </style>
 </head>
@@ -50,10 +81,23 @@
     <canvas id="canvas" tabindex="0" aria-label="Infernux game canvas"></canvas>
     <div id="infernux-safe-area-probe" aria-hidden="true"></div>
     <input id="infernux-text-input" type="text" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false">
-    <div id="status" role="status">Starting Infernux…</div>
+    <section id="infernux-loader" class="indeterminate" aria-live="polite">
+      <div id="infernux-loader-card">
+        <img id="infernux-loader-logo" src="infernux-logo.png" alt="Infernux">
+        <div id="status" role="status">Preparing Infernux Player</div>
+        <div id="infernux-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="infernux-progress"></div>
+        </div>
+        <div id="infernux-loader-hint">Loading game content…</div>
+      </div>
+    </section>
   </main>
   <script>
     const statusNode = document.getElementById('status');
+    const loaderNode = document.getElementById('infernux-loader');
+    const loaderHintNode = document.getElementById('infernux-loader-hint');
+    const progressTrackNode = document.getElementById('infernux-progress-track');
+    const progressNode = document.getElementById('infernux-progress');
     const canvasNode = document.getElementById('canvas');
     const assetRevision = '@INFERNUX_WEB_ASSET_REVISION@';
     const diagnosticsInTitle = new URLSearchParams(window.location.search).has('diagnostics');
@@ -62,6 +106,13 @@
       'infernux-player.wasm': `infernux-player.${assetRevision}.wasm`
     });
     const diagnostics = [];
+    let totalDependencies = 0;
+    function setLoadingProgress(value, determinate = true) {
+      const percent = Math.max(0, Math.min(100, Number(value) || 0));
+      loaderNode.classList.toggle('indeterminate', !determinate);
+      progressNode.style.width = determinate ? `${percent}%` : '';
+      progressTrackNode.setAttribute('aria-valuenow', String(Math.round(percent)));
+    }
     function recordDiagnostic(text) {
       const message = String(text);
       diagnostics.push(message);
@@ -215,16 +266,39 @@
         return versionedAssets[path] || path;
       },
       postRun: [installTextInputBridge, installPointerBridge, installViewportBridge],
+      setStatus(text) {
+        const message = String(text || '').trim();
+        if (!message) return;
+        statusNode.textContent = message.replace(/\s*\(\d+(?:\.\d+)?\/\d+\)\s*$/, '');
+        const progress = message.match(/\((\d+(?:\.\d+)?)\/(\d+)\)/);
+        if (progress) {
+          setLoadingProgress(Number(progress[1]) / Math.max(1, Number(progress[2])) * 100);
+        } else {
+          setLoadingProgress(0, false);
+        }
+      },
+      monitorRunDependencies(left) {
+        totalDependencies = Math.max(totalDependencies, left);
+        const complete = totalDependencies === 0 ? 0 : (totalDependencies - left) / totalDependencies;
+        statusNode.textContent = left > 0 ? 'Loading game content' : 'Starting game';
+        loaderHintNode.textContent = left > 0 ? `${Math.round(complete * 100)}%` : 'Finalizing runtime…';
+        setLoadingProgress(complete * 100, totalDependencies > 0);
+      },
       print(text) {
         recordDiagnostic(text);
         console.log(text);
         if (text.includes('INFERNUX_WEB_HOST_READY')) {
           canvasNode.dataset.infernuxState = 'awaiting-user-activation';
-          statusNode.textContent = 'Tap, click, or press a key to play';
+          loaderNode.classList.remove('indeterminate');
+          loaderNode.classList.add('ready');
+          statusNode.textContent = 'Ready';
+          loaderHintNode.textContent = 'Tap, click, or press a key to play';
+          setLoadingProgress(100);
         }
         if (text.includes('INFERNUX_WEB_RUNTIME_ACTIVE')) {
           canvasNode.dataset.infernuxState = 'ready';
-          statusNode.remove();
+          loaderNode.classList.add('hidden');
+          setTimeout(() => loaderNode.remove(), 200);
         }
       },
       printErr(text) {
@@ -233,7 +307,9 @@
       },
       onAbort(reason) {
         canvasNode.dataset.infernuxState = 'aborted';
+        loaderNode.classList.remove('hidden', 'indeterminate');
         statusNode.textContent = `Player stopped: ${reason}`;
+        loaderHintNode.textContent = 'Open the browser console for details.';
       }
     };
   </script>

@@ -5,12 +5,88 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <string_view>
 #include <utility>
 
 namespace infernux::web
 {
 namespace
 {
+
+bool IsIdentifierCharacter(char value)
+{
+    return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') ||
+           value == '_';
+}
+
+bool HasIdentifierUseAfter(std::string_view source, std::string_view identifier, size_t offset)
+{
+    while ((offset = source.find(identifier, offset)) != std::string_view::npos) {
+        const bool startsCleanly = offset == 0 || !IsIdentifierCharacter(source[offset - 1]);
+        const size_t end = offset + identifier.size();
+        const bool endsCleanly = end == source.size() || !IsIdentifierCharacter(source[end]);
+        if (startsCleanly && endsCleanly)
+            return true;
+        offset = end;
+    }
+    return false;
+}
+
+std::array<std::vector<uint32_t>, rhi::ComputePipelineDesc::MaxBindingLayouts>
+ReflectUsedComputeBindings(std::string_view source)
+{
+    std::array<std::vector<uint32_t>, rhi::ComputePipelineDesc::MaxBindingLayouts> result;
+    size_t cursor = 0;
+    while ((cursor = source.find("@group(", cursor)) != std::string_view::npos) {
+        const size_t groupStart = cursor + 7;
+        size_t groupEnd = groupStart;
+        while (groupEnd < source.size() && source[groupEnd] >= '0' && source[groupEnd] <= '9')
+            ++groupEnd;
+        if (groupEnd == groupStart)
+            break;
+        const uint32_t group =
+            static_cast<uint32_t>(std::stoul(std::string(source.substr(groupStart, groupEnd - groupStart))));
+        const size_t bindingMarker = source.find("@binding(", groupEnd);
+        const size_t statementEnd = source.find(';', groupEnd);
+        if (bindingMarker == std::string_view::npos || statementEnd == std::string_view::npos ||
+            bindingMarker > statementEnd) {
+            cursor = groupEnd;
+            continue;
+        }
+        const size_t bindingStart = bindingMarker + 9;
+        size_t bindingEnd = bindingStart;
+        while (bindingEnd < source.size() && source[bindingEnd] >= '0' && source[bindingEnd] <= '9')
+            ++bindingEnd;
+        const size_t colon = source.rfind(':', statementEnd);
+        if (bindingEnd == bindingStart || colon == std::string_view::npos || colon < bindingEnd ||
+            group >= result.size()) {
+            cursor = statementEnd + 1;
+            continue;
+        }
+        size_t identifierEnd = colon;
+        while (identifierEnd > bindingEnd && (source[identifierEnd - 1] == ' ' || source[identifierEnd - 1] == '\t'))
+            --identifierEnd;
+        size_t identifierStart = identifierEnd;
+        while (identifierStart > bindingEnd && IsIdentifierCharacter(source[identifierStart - 1]))
+            --identifierStart;
+        const std::string_view identifier = source.substr(identifierStart, identifierEnd - identifierStart);
+        if (!identifier.empty() && HasIdentifierUseAfter(source, identifier, statementEnd + 1)) {
+            const uint32_t binding =
+                static_cast<uint32_t>(std::stoul(std::string(source.substr(bindingStart, bindingEnd - bindingStart))));
+            auto &bindings = result[group];
+            if (std::find(bindings.begin(), bindings.end(), binding) == bindings.end())
+                bindings.push_back(binding);
+        }
+        cursor = statementEnd + 1;
+    }
+    return result;
+}
+
+bool UsesBinding(const std::vector<uint32_t> *usedBindings, uint32_t binding)
+{
+    return usedBindings == nullptr ||
+           std::find(usedBindings->begin(), usedBindings->end(), binding) != usedBindings->end();
+}
 
 wgpu::ShaderStage ToWebShaderStage(rhi::ShaderStage stages)
 {
@@ -504,8 +580,20 @@ rhi::ShaderModuleHandle WebGpuRhiDevice::CreateShaderModule(const rhi::ShaderMod
         SetError("WebGPU shader modules require cooked WGSL");
         return {};
     }
+    std::string normalizedSource(static_cast<const char *>(desc.code), desc.byteSize);
+    // The RHI StorageBuffer contract permits read and write access. Vulkan can
+    // bind that wider contract to a shader that only reads, while WebGPU
+    // requires the shader access mode and BindGroupLayout type to match
+    // exactly. Widen read-only WGSL declarations without changing their use.
+    constexpr std::string_view readOnlyStorage = "var<storage, read>";
+    constexpr std::string_view readWriteStorage = "var<storage, read_write>";
+    size_t storageCursor = 0;
+    while ((storageCursor = normalizedSource.find(readOnlyStorage, storageCursor)) != std::string::npos) {
+        normalizedSource.replace(storageCursor, readOnlyStorage.size(), readWriteStorage);
+        storageCursor += readWriteStorage.size();
+    }
     wgpu::ShaderSourceWGSL source;
-    source.code = wgpu::StringView(static_cast<const char *>(desc.code), desc.byteSize);
+    source.code = wgpu::StringView(normalizedSource.data(), normalizedSource.size());
     wgpu::ShaderModuleDescriptor native;
     native.nextInChain = &source;
     auto module = m_device.CreateShaderModule(&native);
@@ -513,16 +601,22 @@ rhi::ShaderModuleHandle WebGpuRhiDevice::CreateShaderModule(const rhi::ShaderMod
         SetError("WebGPU failed to create WGSL shader module");
         return {};
     }
-    return Register<rhi::ShaderModuleHandle>(m_shaderModules, m_freeShaderModule, {std::move(module)});
+    return Register<rhi::ShaderModuleHandle>(m_shaderModules, m_freeShaderModule,
+                                             {std::move(module), std::move(normalizedSource)});
 }
 
 wgpu::BindGroupLayout WebGpuRhiDevice::CreateNativeBindingLayout(const rhi::BindingLayoutDesc &desc,
-                                                                 bool includePushConstant)
+                                                                 bool includePushConstant,
+                                                                 const std::vector<uint32_t> *usedBindings)
 {
     std::vector<wgpu::BindGroupLayoutEntry> entries;
     entries.reserve(desc.entryCount * 2 + (includePushConstant ? 1 : 0));
     for (uint32_t index = 0; index < desc.entryCount; ++index) {
         const auto &source = desc.entries[index];
+        if (!UsesBinding(usedBindings, source.binding) &&
+            !(source.type == rhi::BindingType::CombinedTextureSampler &&
+              UsesBinding(usedBindings, WebSamplerBinding(source.binding))))
+            continue;
         if (source.count != 1 || source.binding >= WebSamplerBindingBase) {
             SetError("WebGPU binding arrays and reserved bindings are not supported by this ABI");
             return {};
@@ -583,20 +677,23 @@ rhi::BindingLayoutHandle WebGpuRhiDevice::CreateBindingLayout(const rhi::Binding
         SetError("WebGPU binding layout has too many entries");
         return {};
     }
-    auto layout = CreateNativeBindingLayout(desc, false);
-    if (!layout)
-        return {};
-    return Register<rhi::BindingLayoutHandle>(m_bindingLayouts, m_freeBindingLayout, {std::move(layout), desc});
+    // Compute shaders use stage-specific layouts. Creating the Vulkan-sized
+    // superset here would exceed WebGPU limits before unused resources can be
+    // removed, so native layouts are materialized with each pipeline instead.
+    return Register<rhi::BindingLayoutHandle>(m_bindingLayouts, m_freeBindingLayout, {{}, desc});
 }
 
 wgpu::BindGroup WebGpuRhiDevice::CreateNativeBindGroup(const rhi::BindGroupDesc *desc, wgpu::BindGroupLayout layout,
-                                                       wgpu::Buffer pushConstantBuffer)
+                                                       wgpu::Buffer pushConstantBuffer,
+                                                       const std::vector<uint32_t> *usedBindings)
 {
     std::vector<wgpu::BindGroupEntry> entries;
     if (desc) {
         entries.reserve(desc->bufferCount + desc->textureCount * 2 + (pushConstantBuffer ? 1 : 0));
         for (uint32_t index = 0; index < desc->bufferCount; ++index) {
             const auto &source = desc->buffers[index];
+            if (!UsesBinding(usedBindings, source.binding))
+                continue;
             const auto *buffer = Resolve(m_buffers, source.buffer);
             if (!buffer) {
                 SetError("invalid WebGPU buffer binding");
@@ -611,6 +708,10 @@ wgpu::BindGroup WebGpuRhiDevice::CreateNativeBindGroup(const rhi::BindGroupDesc 
         }
         for (uint32_t index = 0; index < desc->textureCount; ++index) {
             const auto &source = desc->textures[index];
+            if (!UsesBinding(usedBindings, source.binding) &&
+                !(source.type == rhi::BindingType::CombinedTextureSampler &&
+                  UsesBinding(usedBindings, WebSamplerBinding(source.binding))))
+                continue;
             if (source.type != rhi::BindingType::Sampler) {
                 const auto *view = Resolve(m_textureViews, source.texture);
                 if (!view) {
@@ -663,10 +764,7 @@ rhi::BindGroupHandle WebGpuRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
         SetError("invalid WebGPU binding layout handle");
         return {};
     }
-    auto group = CreateNativeBindGroup(&desc, layout->layout, {});
-    if (!group)
-        return {};
-    return Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup, {std::move(group), desc});
+    return Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup, {{}, desc});
 }
 
 rhi::GraphicsPipelineHandle WebGpuRhiDevice::CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc)
@@ -688,9 +786,8 @@ rhi::GraphicsPipelineHandle WebGpuRhiDevice::CreateGraphicsPipeline(const rhi::G
             SetError("invalid WebGPU graphics binding layout");
             return {};
         }
-        payload.layouts[index] = index == WebPushConstantGroup && desc.pushConstantBytes > 0
-                                     ? CreateNativeBindingLayout(layout->desc, true)
-                                     : layout->layout;
+        payload.layouts[index] =
+            CreateNativeBindingLayout(layout->desc, index == WebPushConstantGroup && desc.pushConstantBytes > 0);
         if (!payload.layouts[index])
             return {};
     }
@@ -763,15 +860,15 @@ rhi::ComputePipelineHandle WebGpuRhiDevice::CreateComputePipeline(const rhi::Com
     ComputePipelinePayload payload;
     payload.layoutCount = desc.bindingLayoutCount;
     payload.pushConstantBytes = desc.pushConstantBytes;
+    payload.usedBindings = ReflectUsedComputeBindings(shader->source);
     for (uint32_t index = 0; index < desc.bindingLayoutCount; ++index) {
         const auto *layout = Resolve(m_bindingLayouts, desc.bindingLayouts[index]);
         if (!layout) {
             SetError("invalid WebGPU compute binding layout");
             return {};
         }
-        payload.layouts[index] = index == WebPushConstantGroup && desc.pushConstantBytes > 0
-                                     ? CreateNativeBindingLayout(layout->desc, true)
-                                     : layout->layout;
+        payload.layouts[index] = CreateNativeBindingLayout(
+            layout->desc, index == WebPushConstantGroup && desc.pushConstantBytes > 0, &payload.usedBindings[index]);
     }
     if (desc.pushConstantBytes > 0 && payload.layoutCount == 0) {
         rhi::BindingLayoutDesc empty;
@@ -887,7 +984,9 @@ void WebGpuRhiDevice::BindGraphicsGroup(WebGpuGraphicsCommandContext &context, u
         if (native)
             context.pass.SetBindGroup(setIndex, native);
     } else if (group) {
-        context.pass.SetBindGroup(setIndex, group->group);
+        auto native = CreateNativeBindGroup(&group->desc, pipeline->layouts[setIndex], {});
+        if (native)
+            context.pass.SetBindGroup(setIndex, native);
     }
 }
 
@@ -901,11 +1000,14 @@ void WebGpuRhiDevice::BindComputeGroup(WebGpuComputeCommandContext &context, uin
         if (!context.pushConstantBuffer)
             return;
         auto native = CreateNativeBindGroup(group ? &group->desc : nullptr, pipeline->layouts[setIndex],
-                                            context.pushConstantBuffer);
+                                            context.pushConstantBuffer, &pipeline->usedBindings[setIndex]);
         if (native)
             context.pass.SetBindGroup(setIndex, native);
     } else if (group) {
-        context.pass.SetBindGroup(setIndex, group->group);
+        auto native =
+            CreateNativeBindGroup(&group->desc, pipeline->layouts[setIndex], {}, &pipeline->usedBindings[setIndex]);
+        if (native)
+            context.pass.SetBindGroup(setIndex, native);
     }
 }
 

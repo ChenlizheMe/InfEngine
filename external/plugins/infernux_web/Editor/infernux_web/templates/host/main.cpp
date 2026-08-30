@@ -45,6 +45,8 @@ infernux::FullscreenRenderer g_fullscreenRenderer;
 infernux::FullscreenPipelineKey g_fullscreenPipelineKey;
 infernux::web::WebSceneRenderer g_sceneRenderer;
 infernux::web::WebParticleRuntime g_particleRuntime;
+bool g_particleRuntimeReady = false;
+bool g_webGpuValidationFailed = false;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
 PyObject *g_input = nullptr;
@@ -666,12 +668,15 @@ void Frame()
             depthAttachment.depthLoadOp = wgpu::LoadOp::Clear;
             depthAttachment.depthStoreOp = wgpu::StoreOp::Store;
             depthAttachment.depthClearValue = 1.0f;
-            passDescriptor.depthStencilAttachment = &depthAttachment;
         }
         wgpu::CommandEncoder encoder = g_device.CreateCommandEncoder();
-        g_particleRuntime.RecordCompute(encoder);
+        if (g_particleRuntimeReady && !g_webGpuValidationFailed)
+            g_particleRuntime.RecordCompute(encoder);
+        const bool scenePrepared = !g_webGpuValidationFailed && g_sceneRenderer.Prepare(encoder, g_width, g_height);
+        if (scenePrepared && g_sceneRenderer.HasDepthTarget())
+            passDescriptor.depthStencilAttachment = &depthAttachment;
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDescriptor);
-        const bool renderedScene = g_sceneRenderer.Render(pass, g_width, g_height);
+        const bool renderedScene = scenePrepared && g_sceneRenderer.RenderPrepared(pass);
         if (!renderedScene && g_rhi) {
             infernux::web::WebGpuGraphicsCommandContext context;
             auto commands = g_rhi->MakeGraphicsCommandEncoder(context, pass);
@@ -679,7 +684,8 @@ void Frame()
             infernux::FullscreenPushConstants pushConstants;
             g_fullscreenRenderer.Draw(commands, pipeline, {}, {}, pushConstants, sizeof(pushConstants));
         }
-        (void)g_particleRuntime.Render(pass, g_width, g_height);
+        if (scenePrepared && g_particleRuntimeReady && !g_webGpuValidationFailed)
+            (void)g_particleRuntime.Render(pass, g_width, g_height);
         pass.End();
         wgpu::CommandBuffer commands = encoder.Finish();
         g_queue.Submit(1, &commands);
@@ -714,9 +720,10 @@ void StartSurface()
     }
     if (!g_particleRuntime.Initialize(*g_rhi, ToRhiFormat(g_surfaceFormat))) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_RUNTIME_FAILED %s\n", g_particleRuntime.LastError().c_str());
-        return;
+    } else {
+        g_particleRuntimeReady = true;
+        InfernuxWebSetParticleRuntime(&g_particleRuntime);
     }
-    InfernuxWebSetParticleRuntime(&g_particleRuntime);
     std::printf("INFERNUX_WEBGPU_FULLSCREEN_RHI_READY\n");
     ResizeCanvas();
     emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false, OnResize);
@@ -767,6 +774,33 @@ int main()
             }
             g_adapter = adapter;
             wgpu::DeviceDescriptor descriptor;
+            wgpu::Limits adapterLimits;
+            wgpu::Limits requiredLimits;
+            constexpr uint32_t kParticleStorageBufferLimit = 12;
+            if (g_adapter.GetLimits(&adapterLimits)) {
+                std::printf("INFERNUX_WEBGPU_ADAPTER_LIMITS bind_groups=%u storage_buffers=%u bindings=%u\n",
+                            adapterLimits.maxBindGroups, adapterLimits.maxStorageBuffersPerShaderStage,
+                            adapterLimits.maxBindingsPerBindGroup);
+                if (adapterLimits.maxStorageBuffersPerShaderStage >= kParticleStorageBufferLimit) {
+                    requiredLimits.maxStorageBuffersPerShaderStage = kParticleStorageBufferLimit;
+                    descriptor.requiredLimits = &requiredLimits;
+                } else {
+                    std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_LIMIT_UNAVAILABLE required=%u available=%u\n",
+                                 kParticleStorageBufferLimit, adapterLimits.maxStorageBuffersPerShaderStage);
+                }
+            }
+            descriptor.SetUncapturedErrorCallback(
+                [](const wgpu::Device &, wgpu::ErrorType type, wgpu::StringView errorMessage) {
+                    g_webGpuValidationFailed = true;
+                    std::fprintf(stderr, "INFERNUX_WEBGPU_UNCAPTURED_ERROR type=%d message=%.*s\n",
+                                 static_cast<int>(type), static_cast<int>(errorMessage.length), errorMessage.data);
+                });
+            descriptor.SetDeviceLostCallback(
+                wgpu::CallbackMode::AllowSpontaneous,
+                [](const wgpu::Device &, wgpu::DeviceLostReason reason, wgpu::StringView lostMessage) {
+                    std::fprintf(stderr, "INFERNUX_WEBGPU_DEVICE_LOST reason=%d message=%.*s\n",
+                                 static_cast<int>(reason), static_cast<int>(lostMessage.length), lostMessage.data);
+                });
             g_adapter.RequestDevice(
                 &descriptor, wgpu::CallbackMode::AllowSpontaneous,
                 [](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message) {

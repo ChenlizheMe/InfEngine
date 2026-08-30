@@ -2,10 +2,14 @@
 
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
+#include <function/scene/GameObject.h>
+#include <function/scene/Light.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
+#include <function/scene/Transform.h>
 
 #include <glm/gtc/matrix_inverse.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
 #include <array>
@@ -22,9 +26,20 @@ namespace
 constexpr char kSceneShader[] = R"wgsl(
 struct CameraData {
     view_projection: mat4x4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    light_view_projection: mat4x4<f32>,
+    camera_position: vec4<f32>,
+    light_direction_strength: vec4<f32>,
+    light_color_intensity: vec4<f32>,
+    sky_top_exposure: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    sky_ground: vec4<f32>,
+    ambient: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraData;
+@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -36,6 +51,8 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world_position: vec3<f32>,
+    @location(3) shadow_position: vec4<f32>,
 };
 
 @vertex
@@ -44,16 +61,106 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
     output.position = camera.view_projection * vec4<f32>(input.position, 1.0);
     output.normal = input.normal;
     output.color = input.color;
+    output.world_position = input.position;
+    output.shadow_position = camera.light_view_projection * vec4<f32>(input.position, 1.0);
     return output;
+}
+
+fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
+    if (camera.light_direction_strength.w <= 0.0 || position.w <= 0.0) {
+        return 1.0;
+    }
+    let ndc = position.xyz / position.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if (ndc.z <= 0.0 || ndc.z >= 1.0 || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return 1.0;
+    }
+    let toward_light = normalize(camera.light_direction_strength.xyz);
+    let normal_bias = 0.0015 * (1.0 - max(dot(normal, toward_light), 0.0));
+    let texel = 1.0 / vec2<f32>(textureDimensions(shadow_map));
+    var visibility = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            visibility += textureSampleCompareLevel(shadow_map, shadow_sampler,
+                                                     uv + vec2<f32>(f32(x), f32(y)) * texel,
+                                                     ndc.z - 0.0008 - normal_bias);
+        }
+    }
+    let filtered = visibility / 9.0;
+    return mix(1.0 - camera.light_direction_strength.w, 1.0, filtered);
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(input.normal);
-    let light_direction = normalize(vec3<f32>(0.35, 0.82, 0.45));
-    let diffuse = max(dot(normal, light_direction), 0.0);
-    let lighting = 0.24 + diffuse * 0.76;
-    return vec4<f32>(input.color.rgb * lighting, input.color.a);
+    let toward_light = normalize(camera.light_direction_strength.xyz);
+    let diffuse = max(dot(normal, toward_light), 0.0);
+    let shadow = sample_shadow(input.shadow_position, normal);
+    let direct = camera.light_color_intensity.rgb * camera.light_color_intensity.w * diffuse * shadow;
+    return vec4<f32>(input.color.rgb * (camera.ambient.rgb + direct), input.color.a);
+}
+)wgsl";
+
+constexpr char kSkyShader[] = R"wgsl(
+struct CameraData {
+    view_projection: mat4x4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    light_view_projection: mat4x4<f32>,
+    camera_position: vec4<f32>,
+    light_direction_strength: vec4<f32>,
+    light_color_intensity: vec4<f32>,
+    sky_top_exposure: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    sky_ground: vec4<f32>,
+    ambient: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> camera: CameraData;
+
+struct SkyOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) clip_position: vec2<f32>,
+};
+
+@vertex
+fn vertex_main(@builtin(vertex_index) index: u32) -> SkyOutput {
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    var output: SkyOutput;
+    output.position = vec4<f32>(positions[index], 1.0, 1.0);
+    output.clip_position = positions[index];
+    return output;
+}
+
+@fragment
+fn fragment_main(input: SkyOutput) -> @location(0) vec4<f32> {
+    let far_world = camera.inverse_view_projection * vec4<f32>(input.clip_position, 1.0, 1.0);
+    let direction = normalize(far_world.xyz / far_world.w - camera.camera_position.xyz);
+    let upper = smoothstep(0.0, 0.72, max(direction.y, 0.0));
+    let lower = smoothstep(0.0, 0.55, max(-direction.y, 0.0));
+    var color = mix(camera.sky_horizon.rgb, camera.sky_top_exposure.rgb, upper);
+    color = mix(color, camera.sky_ground.rgb, lower);
+    return vec4<f32>(color * camera.sky_top_exposure.w, 1.0);
+}
+)wgsl";
+
+constexpr char kShadowShader[] = R"wgsl(
+struct CameraData {
+    view_projection: mat4x4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    light_view_projection: mat4x4<f32>,
+    camera_position: vec4<f32>,
+    light_direction_strength: vec4<f32>,
+    light_color_intensity: vec4<f32>,
+    sky_top_exposure: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    sky_ground: vec4<f32>,
+    ambient: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> camera: CameraData;
+
+@vertex
+fn vertex_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
+    return camera.light_view_projection * vec4<f32>(position, 1.0);
 }
 )wgsl";
 
@@ -116,35 +223,91 @@ bool WebSceneRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::
         return false;
 
     wgpu::BufferDescriptor cameraBufferDescriptor;
-    cameraBufferDescriptor.size = sizeof(glm::mat4);
+    cameraBufferDescriptor.size = sizeof(CameraData);
     cameraBufferDescriptor.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
     m_cameraBuffer = m_device.CreateBuffer(&cameraBufferDescriptor);
     if (!m_cameraBuffer)
         return false;
 
-    wgpu::BindGroupLayoutEntry cameraEntry;
-    cameraEntry.binding = 0;
-    cameraEntry.visibility = wgpu::ShaderStage::Vertex;
-    cameraEntry.buffer.type = wgpu::BufferBindingType::Uniform;
-    cameraEntry.buffer.minBindingSize = sizeof(glm::mat4);
+    std::array<wgpu::BindGroupLayoutEntry, 3> cameraEntries{};
+    cameraEntries[0].binding = 0;
+    cameraEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+    cameraEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+    cameraEntries[0].buffer.minBindingSize = sizeof(CameraData);
+    cameraEntries[1].binding = 1;
+    cameraEntries[1].visibility = wgpu::ShaderStage::Fragment;
+    cameraEntries[1].texture.sampleType = wgpu::TextureSampleType::Depth;
+    cameraEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    cameraEntries[2].binding = 2;
+    cameraEntries[2].visibility = wgpu::ShaderStage::Fragment;
+    cameraEntries[2].sampler.type = wgpu::SamplerBindingType::Comparison;
     wgpu::BindGroupLayoutDescriptor cameraLayoutDescriptor;
-    cameraLayoutDescriptor.entryCount = 1;
-    cameraLayoutDescriptor.entries = &cameraEntry;
+    cameraLayoutDescriptor.entryCount = cameraEntries.size();
+    cameraLayoutDescriptor.entries = cameraEntries.data();
     m_cameraLayout = m_device.CreateBindGroupLayout(&cameraLayoutDescriptor);
 
-    wgpu::BindGroupEntry cameraBinding;
-    cameraBinding.binding = 0;
-    cameraBinding.buffer = m_cameraBuffer;
-    cameraBinding.size = sizeof(glm::mat4);
+    if (!m_cameraLayout || !CreateShadowResources())
+        return false;
+
+    std::array<wgpu::BindGroupEntry, 3> cameraBindings{};
+    cameraBindings[0].binding = 0;
+    cameraBindings[0].buffer = m_cameraBuffer;
+    cameraBindings[0].size = sizeof(CameraData);
+    cameraBindings[1].binding = 1;
+    cameraBindings[1].textureView = m_shadowView;
+    cameraBindings[2].binding = 2;
+    cameraBindings[2].sampler = m_shadowSampler;
     wgpu::BindGroupDescriptor cameraGroupDescriptor;
     cameraGroupDescriptor.layout = m_cameraLayout;
-    cameraGroupDescriptor.entryCount = 1;
-    cameraGroupDescriptor.entries = &cameraBinding;
+    cameraGroupDescriptor.entryCount = cameraBindings.size();
+    cameraGroupDescriptor.entries = cameraBindings.data();
     m_cameraGroup = m_device.CreateBindGroup(&cameraGroupDescriptor);
-    return m_cameraLayout && m_cameraGroup && CreatePipeline();
+
+    wgpu::BindGroupLayoutEntry shadowCameraEntry;
+    shadowCameraEntry.binding = 0;
+    shadowCameraEntry.visibility = wgpu::ShaderStage::Vertex;
+    shadowCameraEntry.buffer.type = wgpu::BufferBindingType::Uniform;
+    shadowCameraEntry.buffer.minBindingSize = sizeof(CameraData);
+    wgpu::BindGroupLayoutDescriptor shadowCameraLayoutDescriptor;
+    shadowCameraLayoutDescriptor.entryCount = 1;
+    shadowCameraLayoutDescriptor.entries = &shadowCameraEntry;
+    m_shadowCameraLayout = m_device.CreateBindGroupLayout(&shadowCameraLayoutDescriptor);
+
+    wgpu::BindGroupEntry shadowCameraBinding;
+    shadowCameraBinding.binding = 0;
+    shadowCameraBinding.buffer = m_cameraBuffer;
+    shadowCameraBinding.size = sizeof(CameraData);
+    wgpu::BindGroupDescriptor shadowCameraGroupDescriptor;
+    shadowCameraGroupDescriptor.layout = m_shadowCameraLayout;
+    shadowCameraGroupDescriptor.entryCount = 1;
+    shadowCameraGroupDescriptor.entries = &shadowCameraBinding;
+    m_shadowCameraGroup = m_device.CreateBindGroup(&shadowCameraGroupDescriptor);
+    return m_cameraGroup && m_shadowCameraLayout && m_shadowCameraGroup && CreatePipelines();
 }
 
-bool WebSceneRenderer::CreatePipeline()
+bool WebSceneRenderer::CreateShadowResources()
+{
+    wgpu::TextureDescriptor textureDescriptor;
+    textureDescriptor.dimension = wgpu::TextureDimension::e2D;
+    textureDescriptor.size = {m_shadowResolution, m_shadowResolution, 1};
+    textureDescriptor.format = wgpu::TextureFormat::Depth32Float;
+    textureDescriptor.mipLevelCount = 1;
+    textureDescriptor.sampleCount = 1;
+    textureDescriptor.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+    m_shadowTexture = m_device.CreateTexture(&textureDescriptor);
+    m_shadowView = m_shadowTexture ? m_shadowTexture.CreateView() : wgpu::TextureView{};
+
+    wgpu::SamplerDescriptor samplerDescriptor;
+    samplerDescriptor.addressModeU = wgpu::AddressMode::ClampToEdge;
+    samplerDescriptor.addressModeV = wgpu::AddressMode::ClampToEdge;
+    samplerDescriptor.minFilter = wgpu::FilterMode::Linear;
+    samplerDescriptor.magFilter = wgpu::FilterMode::Linear;
+    samplerDescriptor.compare = wgpu::CompareFunction::LessEqual;
+    m_shadowSampler = m_device.CreateSampler(&samplerDescriptor);
+    return m_shadowView && m_shadowSampler;
+}
+
+bool WebSceneRenderer::CreatePipelines()
 {
     wgpu::ShaderSourceWGSL shaderSource;
     shaderSource.code = kSceneShader;
@@ -201,7 +364,59 @@ bool WebSceneRenderer::CreatePipeline()
     pipelineDescriptor.depthStencil = &depth;
     pipelineDescriptor.multisample.count = 1;
     m_pipeline = m_device.CreateRenderPipeline(&pipelineDescriptor);
-    return static_cast<bool>(m_pipeline);
+    if (!m_pipeline)
+        return false;
+
+    wgpu::ShaderSourceWGSL skyShaderSource;
+    skyShaderSource.code = kSkyShader;
+    wgpu::ShaderModuleDescriptor skyShaderDescriptor;
+    skyShaderDescriptor.nextInChain = &skyShaderSource;
+    const wgpu::ShaderModule skyShader = m_device.CreateShaderModule(&skyShaderDescriptor);
+    wgpu::FragmentState skyFragment;
+    skyFragment.module = skyShader;
+    skyFragment.entryPoint = "fragment_main";
+    skyFragment.targetCount = 1;
+    skyFragment.targets = &colorTarget;
+    wgpu::RenderPipelineDescriptor skyPipelineDescriptor;
+    skyPipelineDescriptor.layout = pipelineDescriptor.layout;
+    skyPipelineDescriptor.vertex.module = skyShader;
+    skyPipelineDescriptor.vertex.entryPoint = "vertex_main";
+    skyPipelineDescriptor.fragment = &skyFragment;
+    skyPipelineDescriptor.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    skyPipelineDescriptor.primitive.cullMode = wgpu::CullMode::None;
+    wgpu::DepthStencilState skyDepth;
+    skyDepth.format = wgpu::TextureFormat::Depth24Plus;
+    skyDepth.depthWriteEnabled = wgpu::OptionalBool::False;
+    skyDepth.depthCompare = wgpu::CompareFunction::Always;
+    skyPipelineDescriptor.depthStencil = &skyDepth;
+    m_skyPipeline = m_device.CreateRenderPipeline(&skyPipelineDescriptor);
+
+    wgpu::ShaderSourceWGSL shadowShaderSource;
+    shadowShaderSource.code = kShadowShader;
+    wgpu::ShaderModuleDescriptor shadowShaderDescriptor;
+    shadowShaderDescriptor.nextInChain = &shadowShaderSource;
+    const wgpu::ShaderModule shadowShader = m_device.CreateShaderModule(&shadowShaderDescriptor);
+    wgpu::DepthStencilState shadowDepth;
+    shadowDepth.format = wgpu::TextureFormat::Depth32Float;
+    shadowDepth.depthWriteEnabled = wgpu::OptionalBool::True;
+    shadowDepth.depthCompare = wgpu::CompareFunction::LessEqual;
+    shadowDepth.depthBias = 2;
+    shadowDepth.depthBiasSlopeScale = 2.0f;
+    wgpu::PipelineLayoutDescriptor shadowPipelineLayoutDescriptor;
+    shadowPipelineLayoutDescriptor.bindGroupLayoutCount = 1;
+    shadowPipelineLayoutDescriptor.bindGroupLayouts = &m_shadowCameraLayout;
+    wgpu::RenderPipelineDescriptor shadowPipelineDescriptor;
+    shadowPipelineDescriptor.layout = m_device.CreatePipelineLayout(&shadowPipelineLayoutDescriptor);
+    shadowPipelineDescriptor.vertex.module = shadowShader;
+    shadowPipelineDescriptor.vertex.entryPoint = "vertex_main";
+    shadowPipelineDescriptor.vertex.bufferCount = 1;
+    shadowPipelineDescriptor.vertex.buffers = &vertexLayout;
+    shadowPipelineDescriptor.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    shadowPipelineDescriptor.primitive.frontFace = wgpu::FrontFace::CW;
+    shadowPipelineDescriptor.primitive.cullMode = wgpu::CullMode::None;
+    shadowPipelineDescriptor.depthStencil = &shadowDepth;
+    m_shadowPipeline = m_device.CreateRenderPipeline(&shadowPipelineDescriptor);
+    return m_skyPipeline && m_shadowPipeline;
 }
 
 void WebSceneRenderer::Resize(uint32_t width, uint32_t height)
@@ -252,19 +467,27 @@ bool WebSceneRenderer::EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, ui
 bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
 {
     Scene *scene = SceneManager::Instance().GetActiveScene();
-    if (!scene)
+    if (!scene) {
+        ReportFrameIssue("no-active-scene");
         return false;
+    }
     Camera *camera = scene->FindGameCamera(nullptr);
-    if (!camera)
+    if (!camera) {
+        ReportFrameIssue("no-game-camera");
         return false;
+    }
 
     camera->SetAspectRatio(static_cast<float>(width) / static_cast<float>(std::max(1u, height)));
     const size_t visibleCount = m_extractor.ExtractCameraFrame(m_world, camera);
-    if (visibleCount == 0)
+    if (visibleCount == 0) {
+        ReportFrameIssue("no-visible-renderers");
         return false;
+    }
     const auto frame = m_world.Acquire();
-    if (!frame || !frame->PrimaryView().valid)
+    if (!frame || !frame->PrimaryView().valid) {
+        ReportFrameIssue("invalid-render-snapshot");
         return false;
+    }
 
     m_vertices.clear();
     m_indices.clear();
@@ -310,15 +533,100 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
         }
     }
 
-    if (m_vertices.empty() || m_indices.empty())
+    if (m_vertices.empty() || m_indices.empty()) {
+        ReportFrameIssue("empty-draw-stream");
         return false;
-    m_queue.WriteBuffer(m_cameraBuffer, 0, &frame->PrimaryView().viewProjection, sizeof(glm::mat4));
+    }
+
+    const SceneEnvironmentSettings &environment = scene->GetEnvironment();
+    m_cameraData = {};
+    m_cameraData.viewProjection = frame->PrimaryView().viewProjection;
+    m_cameraData.inverseViewProjection = glm::inverse(frame->PrimaryView().viewProjection);
+    m_cameraData.cameraPosition = glm::vec4(frame->PrimaryView().position, 1.0f);
+    m_cameraData.skyTopExposure = glm::vec4(environment.skyTopColor, environment.skyExposure);
+    m_cameraData.skyHorizon = glm::vec4(environment.skyHorizonColor, 1.0f);
+    m_cameraData.skyGround = glm::vec4(environment.skyGroundColor, 1.0f);
+    m_drawSky = camera->GetClearFlags() == CameraClearFlags::Skybox;
+
+    using AmbientSource = SceneEnvironmentSettings::AmbientSource;
+    switch (static_cast<AmbientSource>(environment.ambientSource)) {
+    case AmbientSource::Color:
+        m_cameraData.ambient = glm::vec4(environment.ambientColor * environment.ambientIntensity, 1.0f);
+        break;
+    case AmbientSource::Gradient:
+        m_cameraData.ambient = glm::vec4(environment.ambientEquatorColor * environment.ambientIntensity, 1.0f);
+        break;
+    case AmbientSource::Skybox:
+    default:
+        m_cameraData.ambient = glm::vec4(environment.skyHorizonColor * (0.35f * environment.ambientIntensity), 1.0f);
+        break;
+    }
+
+    Light *directionalLight = nullptr;
+    for (Light *light : SceneManager::Instance().GetActiveLights()) {
+        if (light && light->IsEnabled() && light->GetLightType() == LightType::Directional &&
+            light->GetAffectGeometry()) {
+            directionalLight = light;
+            break;
+        }
+    }
+    glm::vec3 rayDirection(-0.35f, -0.82f, -0.45f);
+    glm::vec3 lightColor(1.0f);
+    float lightIntensity = 1.0f;
+    float shadowStrength = 0.0f;
+    if (directionalLight) {
+        if (Transform *transform = directionalLight->GetTransform()) {
+            const glm::vec3 forward = transform->GetWorldForward();
+            if (Finite(forward) && glm::dot(forward, forward) > 1.0e-8f)
+                rayDirection = glm::normalize(forward);
+        }
+        lightColor = directionalLight->GetColor();
+        lightIntensity = directionalLight->GetIntensity();
+        if (directionalLight->GetShadows() != LightShadows::None)
+            shadowStrength = directionalLight->GetShadowStrength();
+    }
+    const glm::vec3 towardLight = -glm::normalize(rayDirection);
+    m_cameraData.lightDirectionStrength = glm::vec4(towardLight, shadowStrength);
+    m_cameraData.lightColorIntensity = glm::vec4(lightColor, lightIntensity);
+    m_shadowEnabled = shadowStrength > 0.0f;
+
+    glm::vec3 boundsMin(std::numeric_limits<float>::max());
+    glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
+    for (const WebVertex &vertex : m_vertices) {
+        const glm::vec3 position(vertex.position[0], vertex.position[1], vertex.position[2]);
+        boundsMin = glm::min(boundsMin, position);
+        boundsMax = glm::max(boundsMax, position);
+    }
+    const glm::vec3 center = (boundsMin + boundsMax) * 0.5f;
+    const float radius = std::max(2.0f, glm::length(boundsMax - boundsMin) * 0.6f);
+    const glm::vec3 lightUp = std::abs(glm::dot(rayDirection, glm::vec3(0.0f, 1.0f, 0.0f))) > 0.95f
+                                  ? glm::vec3(1.0f, 0.0f, 0.0f)
+                                  : glm::vec3(0.0f, 1.0f, 0.0f);
+    const glm::vec3 lightPosition = center - rayDirection * (radius * 2.0f);
+    const glm::mat4 lightView = glm::lookAtRH(lightPosition, center, lightUp);
+    const glm::mat4 lightProjection = glm::orthoRH_ZO(-radius, radius, -radius, radius, 0.1f, radius * 4.5f);
+    m_cameraData.lightViewProjection = lightProjection * lightView;
+
+    if (!m_lastFrameIssue.empty()) {
+        std::printf("INFERNUX_WEB_SCENE_RENDER_RECOVERED previous=%s vertices=%zu indices=%zu\n",
+                    m_lastFrameIssue.c_str(), m_vertices.size(), m_indices.size());
+        m_lastFrameIssue.clear();
+    }
     return true;
 }
 
-bool WebSceneRenderer::Render(wgpu::RenderPassEncoder pass, uint32_t width, uint32_t height)
+void WebSceneRenderer::ReportFrameIssue(const char *issue)
 {
-    if (!m_pipeline || !pass || !BuildFrame(width, height))
+    if (m_lastFrameIssue == issue)
+        return;
+    m_lastFrameIssue = issue;
+    std::fprintf(stderr, "INFERNUX_WEB_SCENE_RENDER_EMPTY reason=%s\n", issue);
+}
+
+bool WebSceneRenderer::Prepare(wgpu::CommandEncoder encoder, uint32_t width, uint32_t height)
+{
+    m_framePrepared = false;
+    if (!m_pipeline || !m_shadowPipeline || !encoder || !BuildFrame(width, height))
         return false;
     const uint64_t vertexBytes = m_vertices.size() * sizeof(WebVertex);
     const uint64_t indexBytes = m_indices.size() * sizeof(uint32_t);
@@ -327,6 +635,42 @@ bool WebSceneRenderer::Render(wgpu::RenderPassEncoder pass, uint32_t width, uint
         return false;
     m_queue.WriteBuffer(m_vertexBuffer, 0, m_vertices.data(), vertexBytes);
     m_queue.WriteBuffer(m_indexBuffer, 0, m_indices.data(), indexBytes);
+    m_queue.WriteBuffer(m_cameraBuffer, 0, &m_cameraData, sizeof(m_cameraData));
+
+    if (m_shadowEnabled) {
+        wgpu::RenderPassDepthStencilAttachment depthAttachment;
+        depthAttachment.view = m_shadowView;
+        depthAttachment.depthLoadOp = wgpu::LoadOp::Clear;
+        depthAttachment.depthStoreOp = wgpu::StoreOp::Store;
+        depthAttachment.depthClearValue = 1.0f;
+        wgpu::RenderPassDescriptor descriptor;
+        descriptor.colorAttachmentCount = 0;
+        descriptor.colorAttachments = nullptr;
+        descriptor.depthStencilAttachment = &depthAttachment;
+        wgpu::RenderPassEncoder shadowPass = encoder.BeginRenderPass(&descriptor);
+        shadowPass.SetPipeline(m_shadowPipeline);
+        shadowPass.SetBindGroup(0, m_shadowCameraGroup);
+        shadowPass.SetVertexBuffer(0, m_vertexBuffer, 0, vertexBytes);
+        shadowPass.SetIndexBuffer(m_indexBuffer, wgpu::IndexFormat::Uint32, 0, indexBytes);
+        shadowPass.DrawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
+        shadowPass.End();
+    }
+    m_framePrepared = true;
+    return true;
+}
+
+bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
+{
+    if (!m_framePrepared || !pass)
+        return false;
+    const uint64_t vertexBytes = m_vertices.size() * sizeof(WebVertex);
+    const uint64_t indexBytes = m_indices.size() * sizeof(uint32_t);
+
+    if (m_drawSky && m_skyPipeline) {
+        pass.SetPipeline(m_skyPipeline);
+        pass.SetBindGroup(0, m_cameraGroup);
+        pass.Draw(3, 1, 0, 0);
+    }
 
     pass.SetPipeline(m_pipeline);
     pass.SetBindGroup(0, m_cameraGroup);
@@ -335,6 +679,10 @@ bool WebSceneRenderer::Render(wgpu::RenderPassEncoder pass, uint32_t width, uint
     pass.DrawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
     if (!m_reportedFirstFrame) {
         std::printf("INFERNUX_WEB_SCENE_RENDER_READY vertices=%zu indices=%zu\n", m_vertices.size(), m_indices.size());
+        if (m_drawSky)
+            std::printf("INFERNUX_WEB_SKY_READY mode=procedural\n");
+        if (m_shadowEnabled)
+            std::printf("INFERNUX_WEB_SHADOW_READY resolution=%u\n", m_shadowResolution);
         m_reportedFirstFrame = true;
     }
     return true;

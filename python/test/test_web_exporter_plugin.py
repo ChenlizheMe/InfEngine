@@ -222,6 +222,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
             (host_build / f"infernux-player.{revision}.{suffix}").write_bytes(
                 suffix.encode("ascii")
             )
+        (host_build / "infernux-logo.png").write_bytes(b"png")
         return ("host built",)
 
     monkeypatch.setattr(exporter_module, "_configure_and_build_host", _build_host)
@@ -230,7 +231,13 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
 
     assert result.success
     assert result.diagnostics == ()
-    assert [item.kind for item in result.artifacts] == ["html", "js", "wasm", "data"]
+    assert [item.kind for item in result.artifacts] == [
+        "html",
+        "js",
+        "wasm",
+        "data",
+        "png",
+    ]
     assert all(Path(item.path).is_file() for item in result.artifacts)
     assert result.manifest["scope"] == "cooked-player"
     assert result.manifest["game"] == "Balance"
@@ -293,7 +300,15 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "SampleCount::Four" not in rhi_backend
     assert "INFERNUX_WEBGPU_FULLSCREEN_RHI_READY" in main
     assert "g_sceneRenderer.Render" in main
+    assert "!g_webGpuValidationFailed && g_sceneRenderer.Prepare" in main
+    assert "scenePrepared && g_sceneRenderer.HasDepthTarget()" in main
     assert "INFERNUX_WEB_SCENE_RENDER_READY" in scene_renderer
+    assert "INFERNUX_WEB_SKY_READY" in scene_renderer
+    assert "INFERNUX_WEB_SHADOW_READY" in scene_renderer
+    assert "textureSampleCompareLevel" in scene_renderer
+    assert "shadowPass.SetBindGroup(0, m_shadowCameraGroup)" in scene_renderer
+    assert "shadowPass.SetBindGroup(0, m_cameraGroup)" not in scene_renderer
+    assert "descriptor.colorAttachmentCount = 0" in scene_renderer
     assert "ExtractCameraFrame" in scene_renderer
     assert "frame->DrawCalls()" in scene_renderer
     assert "skinBoneMatrices" in scene_renderer
@@ -334,6 +349,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "assetRevision" in shell
     assert "versionedAssets[path]" in shell
     assert "@INFERNUX_WEB_ASSET_REVISION@" in shell
+    assert "infernux-logo.png" in shell
+    assert "monitorRunDependencies(left)" in shell
+    assert "infernux-progress-track" in shell
     assert "copy_if_different" in revision_stamp
     assert "infernux-player.${INFERNUX_WEB_ASSET_REVISION}.js" in revision_stamp
     assert "INFERNUX_WEB_PYTHON_ARCHIVE_INVALID" in main

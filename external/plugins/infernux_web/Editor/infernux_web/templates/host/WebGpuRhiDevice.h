@@ -135,6 +135,7 @@ class WebGpuRhiDevice final : public rhi::Device
     struct ShaderModulePayload final
     {
         wgpu::ShaderModule module;
+        std::string source;
     };
 
     struct BindingLayoutPayload final
@@ -161,6 +162,7 @@ class WebGpuRhiDevice final : public rhi::Device
     {
         wgpu::ComputePipeline pipeline;
         std::array<wgpu::BindGroupLayout, rhi::ComputePipelineDesc::MaxBindingLayouts> layouts{};
+        std::array<std::vector<uint32_t>, rhi::ComputePipelineDesc::MaxBindingLayouts> usedBindings{};
         uint32_t layoutCount = 0;
         uint32_t pushConstantBytes = 0;
     };
@@ -183,9 +185,11 @@ class WebGpuRhiDevice final : public rhi::Device
     [[nodiscard]] const Payload *Resolve(const std::vector<Slot<Payload>> &slots, HandleType handle) const noexcept;
 
     [[nodiscard]] wgpu::BindGroupLayout CreateNativeBindingLayout(const rhi::BindingLayoutDesc &desc,
-                                                                  bool includePushConstant);
+                                                                  bool includePushConstant,
+                                                                  const std::vector<uint32_t> *usedBindings = nullptr);
     [[nodiscard]] wgpu::BindGroup CreateNativeBindGroup(const rhi::BindGroupDesc *desc, wgpu::BindGroupLayout layout,
-                                                        wgpu::Buffer pushConstantBuffer);
+                                                        wgpu::Buffer pushConstantBuffer,
+                                                        const std::vector<uint32_t> *usedBindings = nullptr);
     [[nodiscard]] wgpu::Buffer CreatePushConstantBuffer(uint32_t byteSize, const void *data);
     void BindGraphicsGroup(WebGpuGraphicsCommandContext &context, uint32_t setIndex);
     void BindComputeGroup(WebGpuComputeCommandContext &context, uint32_t setIndex);

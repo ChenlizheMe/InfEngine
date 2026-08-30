@@ -5,6 +5,8 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace infernux::web
@@ -24,9 +26,12 @@ class WebSceneRenderer final
     [[nodiscard]] bool HasDepthTarget() const noexcept;
     [[nodiscard]] wgpu::TextureView GetDepthView() const noexcept;
 
-    /// Extract and draw the current game-camera view. Returns false when no
-    /// renderable game camera or geometry is available.
-    bool Render(wgpu::RenderPassEncoder pass, uint32_t width, uint32_t height);
+    /// Extract, upload, and record the directional shadow map before the main
+    /// render pass begins.
+    bool Prepare(wgpu::CommandEncoder encoder, uint32_t width, uint32_t height);
+
+    /// Draw the prepared procedural sky and shadowed scene geometry.
+    bool RenderPrepared(wgpu::RenderPassEncoder pass);
 
   private:
     struct WebVertex
@@ -36,30 +41,59 @@ class WebSceneRenderer final
         float color[4];
     };
 
-    bool CreatePipeline();
+    struct alignas(16) CameraData
+    {
+        glm::mat4 viewProjection{1.0f};
+        glm::mat4 inverseViewProjection{1.0f};
+        glm::mat4 lightViewProjection{1.0f};
+        glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
+        glm::vec4 lightDirectionStrength{0.35f, 0.82f, 0.45f, 0.0f};
+        glm::vec4 lightColorIntensity{1.0f};
+        glm::vec4 skyTopExposure{0.431f, 0.494f, 0.612f, 1.0f};
+        glm::vec4 skyHorizon{0.651f, 0.725f, 0.816f, 1.0f};
+        glm::vec4 skyGround{0.345f, 0.345f, 0.345f, 1.0f};
+        glm::vec4 ambient{0.16f, 0.17f, 0.20f, 1.0f};
+    };
+
+    bool CreatePipelines();
+    bool CreateShadowResources();
     bool EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required, wgpu::BufferUsage usage);
     bool BuildFrame(uint32_t width, uint32_t height);
+    void ReportFrameIssue(const char *issue);
 
     wgpu::Device m_device;
     wgpu::Queue m_queue;
     wgpu::TextureFormat m_colorFormat = wgpu::TextureFormat::Undefined;
     wgpu::RenderPipeline m_pipeline;
+    wgpu::RenderPipeline m_skyPipeline;
+    wgpu::RenderPipeline m_shadowPipeline;
     wgpu::BindGroupLayout m_cameraLayout;
     wgpu::BindGroup m_cameraGroup;
+    wgpu::BindGroupLayout m_shadowCameraLayout;
+    wgpu::BindGroup m_shadowCameraGroup;
     wgpu::Buffer m_cameraBuffer;
     wgpu::Buffer m_vertexBuffer;
     wgpu::Buffer m_indexBuffer;
+    wgpu::Texture m_shadowTexture;
+    wgpu::TextureView m_shadowView;
+    wgpu::Sampler m_shadowSampler;
     uint64_t m_vertexCapacity = 0;
     uint64_t m_indexCapacity = 0;
     wgpu::Texture m_depthTexture;
     wgpu::TextureView m_depthView;
     uint32_t m_depthWidth = 0;
     uint32_t m_depthHeight = 0;
+    uint32_t m_shadowResolution = 2048;
     SceneRenderExtractor m_extractor;
     RenderWorldSnapshot m_world;
     std::vector<WebVertex> m_vertices;
     std::vector<uint32_t> m_indices;
+    CameraData m_cameraData;
+    std::string m_lastFrameIssue;
     bool m_reportedFirstFrame = false;
+    bool m_framePrepared = false;
+    bool m_drawSky = true;
+    bool m_shadowEnabled = false;
 };
 
 } // namespace infernux::web

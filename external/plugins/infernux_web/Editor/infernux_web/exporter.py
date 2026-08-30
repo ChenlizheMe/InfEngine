@@ -234,6 +234,7 @@ def _publish_web_player(
         f"infernux-player.{revision}.js",
         f"infernux-player.{revision}.wasm",
         f"infernux-player.{revision}.data",
+        "infernux-logo.png",
     )
     missing = [name for name in names if not (host_build / name).is_file()]
     if missing:
@@ -685,6 +686,7 @@ def _configure_and_build_host(
         "infernux-player.js",
         "infernux-player.wasm",
         "infernux-player.data",
+        "infernux-logo.png",
         f"infernux-player.{asset_revision}.js",
         f"infernux-player.{asset_revision}.wasm",
         f"infernux-player.{asset_revision}.data",
