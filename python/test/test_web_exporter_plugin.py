@@ -304,6 +304,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert 'MaterialFloat(draw.material, "smoothness", 0.5f)' in scene_renderer
     assert 'MaterialVector(draw.material, "emissionColor"' in scene_renderer
     assert "material=pbr" in scene_renderer
+    assert "geometric_specular_aa" in scene_renderer
+    assert "specular_highlights" in scene_renderer
+    assert "horizon_glow" in scene_renderer
+    assert "smoothstep(-0.10, 0.45, y)" in scene_renderer
     assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake
     assert "InxPack.cpp" in cmake
     assert "35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad" in cmake
@@ -461,6 +465,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEB_POST_PROCESS_READY" in post_process_renderer
     assert "bloom_threshold" in post_process_renderer
     assert "aces_film" in post_process_renderer
+    assert "mat3x3<f32>" in post_process_renderer
+    assert "0.59719" in post_process_renderer
+    assert "linear_to_srgb_channel" in post_process_renderer
     assert "WebScreenUIRenderer.cpp" in cmake
     assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
     assert "descriptor.depthStencil" not in screen_ui_renderer

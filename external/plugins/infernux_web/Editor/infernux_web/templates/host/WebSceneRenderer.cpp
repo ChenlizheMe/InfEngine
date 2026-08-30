@@ -64,6 +64,7 @@ struct VertexInput {
     @location(2) color: vec4<f32>,
     @location(3) emission: vec4<f32>,
     @location(4) material: vec4<f32>,
+    @location(5) surface: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -74,6 +75,7 @@ struct VertexOutput {
     @location(3) shadow_position: vec4<f32>,
     @location(4) emission: vec4<f32>,
     @location(5) material: vec4<f32>,
+    @location(6) surface: vec4<f32>,
 };
 
 @vertex
@@ -86,6 +88,7 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
     output.shadow_position = camera.light_view_projection * vec4<f32>(input.position, 1.0);
     output.emission = input.emission;
     output.material = input.material;
+    output.surface = input.surface;
     return output;
 }
 
@@ -160,6 +163,19 @@ fn specular_occlusion(ndotv: f32, occlusion: f32, perceptual_roughness: f32) -> 
                  - 1.0 + occlusion, 0.0, 1.0);
 }
 
+fn geometric_specular_aa(world_normal: vec3<f32>, roughness: f32) -> f32 {
+    let du = dpdx(world_normal);
+    let dv = dpdy(world_normal);
+    let variance = 0.25 * (dot(du, du) + dot(dv, dv));
+    let kernel_roughness = min(variance, 0.18);
+    return max(roughness, sqrt(roughness * roughness + kernel_roughness));
+}
+
+fn horizon_occlusion(reflection_direction: vec3<f32>, geometric_normal: vec3<f32>) -> f32 {
+    let horizon = clamp(1.0 + dot(reflection_direction, geometric_normal), 0.0, 1.0);
+    return horizon * horizon;
+}
+
 fn disney_diffuse(ndotv: f32, ndotl: f32, ldotv: f32, perceptual_roughness: f32) -> f32 {
     let fd90 = 0.5 + perceptual_roughness * (1.0 + ldotv);
     let light_x = 1.0 - ndotl;
@@ -180,7 +196,7 @@ fn dv_smith_joint_ggx(ndoth: f32, ndotl: f32, ndotv: f32, roughness: f32) -> f32
 fn evaluate_pbr_light(normal: vec3<f32>, view_direction: vec3<f32>, light_direction: vec3<f32>,
                       radiance: vec3<f32>, albedo: vec3<f32>, metallic: f32,
                       perceptual_roughness: f32, roughness: f32, f0: vec3<f32>, f90: f32,
-                      energy_compensation: vec3<f32>) -> vec3<f32> {
+                      energy_compensation: vec3<f32>, specular_highlights: f32) -> vec3<f32> {
     let half_vector_sum = view_direction + light_direction;
     var half_vector = normal;
     if (dot(half_vector_sum, half_vector_sum) > 1.0e-8) {
@@ -196,7 +212,7 @@ fn evaluate_pbr_light(normal: vec3<f32>, view_direction: vec3<f32>, light_direct
     let ldotv = max(dot(light_direction, view_direction), 0.0);
     let fresnel = fresnel_schlick(f0, f90, ldoth);
     let specular = fresnel * dv_smith_joint_ggx(ndoth, ndotl, ndotv, roughness)
-                   * energy_compensation;
+                   * energy_compensation * clamp(specular_highlights, 0.0, 1.0);
     let diffuse = albedo * (1.0 - metallic) *
                   disney_diffuse(ndotv, ndotl, ldotv, perceptual_roughness);
     return (diffuse + specular) * radiance * (ndotl * PI);
@@ -237,15 +253,20 @@ fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(input.normal);
-    if (input.material.w > 0.5) {
+    var perceptual_roughness = clamp(1.0 - input.material.y, 0.045, 1.0);
+    var roughness = perceptual_roughness * perceptual_roughness;
+    // Derivatives must execute in uniform fragment control flow on WebGPU.
+    // Evaluate geometric AA before the per-material unlit early return.
+    roughness = geometric_specular_aa(normal, roughness);
+    perceptual_roughness = max(perceptual_roughness, sqrt(roughness));
+    if (input.surface.x > 0.5) {
         return vec4<f32>(input.color.rgb + input.emission.rgb * input.emission.a, input.color.a);
     }
     let view_direction = normalize(camera.camera_position.xyz - input.world_position);
     let ndotv = max(dot(normal, view_direction), 0.0);
     let metallic = clamp(input.material.x, 0.0, 1.0);
-    let perceptual_roughness = clamp(1.0 - input.material.y, 0.045, 1.0);
-    let roughness = perceptual_roughness * perceptual_roughness;
     let occlusion = clamp(input.material.z, 0.0, 1.0);
+    let specular_highlights = clamp(input.material.w, 0.0, 1.0);
     let f0 = mix(vec3<f32>(0.04), input.color.rgb, vec3<f32>(metallic));
     let f90 = clamp(50.0 * dot(f0, vec3<f32>(0.33333)), 0.0, 1.0);
     let env_brdf = env_brdf_approx(perceptual_roughness, ndotv);
@@ -256,7 +277,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
     var direct = evaluate_pbr_light(normal, view_direction, toward_light, radiance, input.color.rgb,
                                     metallic, perceptual_roughness, roughness, f0, f90,
-                                    energy_compensation) * shadow;
+                                    energy_compensation, specular_highlights) * shadow;
 
     for (var light_index = 0u; light_index < camera.light_counts.x; light_index = light_index + 1u) {
         let light = camera.punctual_lights[light_index];
@@ -276,7 +297,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let local_radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation;
         direct += evaluate_pbr_light(normal, view_direction, local_direction, local_radiance,
                                      input.color.rgb, metallic, perceptual_roughness, roughness, f0, f90,
-                                     energy_compensation);
+                                     energy_compensation, specular_highlights);
     }
     let diffuse_irradiance = sample_ambient_irradiance(normal);
     let reflection_direction = specular_ambient_direction(normal, view_direction, perceptual_roughness);
@@ -288,7 +309,9 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let ambient_diffuse = diffuse_weight * input.color.rgb * diffuse_irradiance * occlusion;
     let ambient_specular = specular_irradiance * (f0 * env_brdf.x + vec3<f32>(env_brdf.y))
                            * energy_compensation
-                           * specular_occlusion(ndotv, occlusion, perceptual_roughness);
+                           * specular_occlusion(ndotv, occlusion, perceptual_roughness)
+                           * horizon_occlusion(reflection_direction, normal)
+                           * specular_highlights;
     let emission = input.emission.rgb * input.emission.a;
     return vec4<f32>(ambient_diffuse + ambient_specular + direct + emission,
                      input.color.a);
@@ -329,10 +352,19 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> SkyOutput {
 fn fragment_main(input: SkyOutput) -> @location(0) vec4<f32> {
     let far_world = camera.inverse_view_projection * vec4<f32>(input.clip_position, 1.0, 1.0);
     let direction = normalize(far_world.xyz / far_world.w - camera.camera_position.xyz);
-    let upper = smoothstep(0.0, 0.72, max(direction.y, 0.0));
-    let lower = smoothstep(0.0, 0.55, max(-direction.y, 0.0));
-    var color = mix(camera.sky_horizon.rgb, camera.sky_top_exposure.rgb, upper);
-    color = mix(color, camera.sky_ground.rgb, lower);
+    let y = direction.y;
+    let base = mix(camera.sky_ground.rgb, camera.sky_top_exposure.rgb,
+                   smoothstep(-0.10, 0.45, y));
+    var horizon_mask = 0.0;
+    if (y < 0.0) {
+        let side = 1.0 - smoothstep(0.0, 0.10, -y);
+        horizon_mask = side * side;
+    } else {
+        horizon_mask = 1.0 - smoothstep(0.0, 0.45, y);
+    }
+    var color = mix(base, camera.sky_horizon.rgb, horizon_mask * 0.35);
+    let horizon_glow = pow(1.0 - abs(y), 8.0) * 0.15;
+    color += vec3<f32>(horizon_glow);
     return vec4<f32>(color * camera.sky_top_exposure.w, 1.0);
 }
 )wgsl";
@@ -558,7 +590,7 @@ bool WebSceneRenderer::CreatePipelines()
     if (!shader)
         return false;
 
-    std::array<wgpu::VertexAttribute, 5> attributes{};
+    std::array<wgpu::VertexAttribute, 6> attributes{};
     attributes[0].format = wgpu::VertexFormat::Float32x3;
     attributes[0].offset = offsetof(WebVertex, position);
     attributes[0].shaderLocation = 0;
@@ -574,6 +606,9 @@ bool WebSceneRenderer::CreatePipelines()
     attributes[4].format = wgpu::VertexFormat::Float32x4;
     attributes[4].offset = offsetof(WebVertex, material);
     attributes[4].shaderLocation = 4;
+    attributes[5].format = wgpu::VertexFormat::Float32x4;
+    attributes[5].offset = offsetof(WebVertex, surface);
+    attributes[5].shaderLocation = 5;
     wgpu::VertexBufferLayout vertexLayout;
     vertexLayout.arrayStride = sizeof(WebVertex);
     vertexLayout.stepMode = wgpu::VertexStepMode::Vertex;
@@ -784,7 +819,8 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             std::clamp(MaterialFloat(draw.material, "metallic", 0.0f), 0.0f, 1.0f),
             std::clamp(MaterialFloat(draw.material, "smoothness", 0.5f), 0.0f, 1.0f),
             std::clamp(MaterialFloat(draw.material, "ambientOcclusion", 1.0f), 0.0f, 1.0f),
-            MaterialIsUnlit(draw.material) ? 1.0f : 0.0f);
+            std::clamp(MaterialFloat(draw.material, "specularHighlights", 1.0f), 0.0f, 1.0f));
+        const glm::vec4 surfaceParameters(MaterialIsUnlit(draw.material) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
         WebDrawRange range;
         range.firstIndex = static_cast<uint32_t>(m_indices.size());
         range.castsShadows = draw.castsShadows;
@@ -856,6 +892,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             std::memcpy(vertex.color, &color, sizeof(vertex.color));
             std::memcpy(vertex.emission, &emission, sizeof(vertex.emission));
             std::memcpy(vertex.material, &materialParameters, sizeof(vertex.material));
+            std::memcpy(vertex.surface, &surfaceParameters, sizeof(vertex.surface));
             m_vertices.push_back(vertex);
         }
 

@@ -74,12 +74,32 @@ fn bloom(uv: vec2<f32>) -> vec3<f32> {
 }
 
 fn aces_film(color: vec3<f32>) -> vec3<f32> {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+    let input_matrix = mat3x3<f32>(
+        vec3<f32>(0.59719, 0.07600, 0.02840),
+        vec3<f32>(0.35458, 0.90834, 0.13383),
+        vec3<f32>(0.04823, 0.01566, 0.83777));
+    let output_matrix = mat3x3<f32>(
+        vec3<f32>(1.60475, -0.10208, -0.00327),
+        vec3<f32>(-0.53108, 1.10813, -0.07276),
+        vec3<f32>(-0.07367, -0.00605, 1.07602));
+    var value = input_matrix * color;
+    let numerator = value * (value + vec3<f32>(0.0245786)) - vec3<f32>(0.000090537);
+    let denominator = value * (0.983729 * value + vec3<f32>(0.4329510)) + vec3<f32>(0.238081);
+    value = numerator / max(denominator, vec3<f32>(1.0e-6));
+    return clamp(output_matrix * value, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn linear_to_srgb_channel(value: f32) -> f32 {
+    if (value <= 0.0031308) {
+        return value * 12.92;
+    }
+    return 1.055 * pow(value, 1.0 / 2.4) - 0.055;
+}
+
+fn linear_to_srgb(color: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(linear_to_srgb_channel(color.r),
+                     linear_to_srgb_channel(color.g),
+                     linear_to_srgb_channel(color.b));
 }
 
 @fragment
@@ -87,7 +107,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let hdr = textureSampleLevel(scene_color, scene_sampler, input.uv, 0.0).rgb;
     var color = aces_film((hdr + bloom(input.uv)) * parameters.exposure);
     if (parameters.encode_srgb > 0.5) {
-        color = pow(color, vec3<f32>(1.0 / 2.2));
+        color = linear_to_srgb(color);
     }
     return vec4<f32>(color, 1.0);
 }

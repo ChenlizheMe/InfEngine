@@ -47,8 +47,10 @@ class WebSceneRenderer final
         float normal[3];
         float color[4];
         float emission[4];
-        // x = metallic, y = smoothness, z = occlusion, w = unlit.
+        // x = metallic, y = smoothness, z = occlusion, w = specular highlights.
         float material[4];
+        // x = unlit; remaining channels are reserved for shared shading-model flags.
+        float surface[4];
     };
 
     struct WebDrawRange
