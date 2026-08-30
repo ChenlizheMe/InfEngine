@@ -149,6 +149,7 @@ add_executable(InfernuxWebPlayerHost
     InfernuxWebHostModule.cpp
     WebGpuRhiDevice.cpp
     WebParticleRuntime.cpp
+    WebPostProcessRenderer.cpp
     WebSceneRenderer.cpp
     WebScreenUIRenderer.cpp
     "${INFERNUX_ENGINE_SOURCE_ROOT}/cpp/infernux/function/renderer/particle/ParticleGpuContactRuntime.cpp"

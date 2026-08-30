@@ -436,10 +436,11 @@ bool WebParticleRuntime::Initialize(WebGpuRhiDevice &device, rhi::PixelFormat co
     pipelineLayoutDesc.bindGroupLayoutCount = layouts.size();
     pipelineLayoutDesc.bindGroupLayouts = layouts.data();
     wgpu::ColorTargetState colorTarget;
-    colorTarget.format = colorFormat == rhi::PixelFormat::BGRA8Srgb    ? wgpu::TextureFormat::BGRA8UnormSrgb
-                         : colorFormat == rhi::PixelFormat::RGBA8Srgb  ? wgpu::TextureFormat::RGBA8UnormSrgb
-                         : colorFormat == rhi::PixelFormat::RGBA8UNorm ? wgpu::TextureFormat::RGBA8Unorm
-                                                                       : wgpu::TextureFormat::BGRA8Unorm;
+    colorTarget.format = colorFormat == rhi::PixelFormat::BGRA8Srgb      ? wgpu::TextureFormat::BGRA8UnormSrgb
+                         : colorFormat == rhi::PixelFormat::RGBA8Srgb    ? wgpu::TextureFormat::RGBA8UnormSrgb
+                         : colorFormat == rhi::PixelFormat::RGBA8UNorm   ? wgpu::TextureFormat::RGBA8Unorm
+                         : colorFormat == rhi::PixelFormat::RGBA16SFloat ? wgpu::TextureFormat::RGBA16Float
+                                                                         : wgpu::TextureFormat::BGRA8Unorm;
     wgpu::BlendState blend;
     blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
     blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;

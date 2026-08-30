@@ -274,6 +274,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     rhi_backend = (host_templates / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
     scene_renderer = (host_templates / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
     particle_runtime = (host_templates / "WebParticleRuntime.cpp").read_text(encoding="utf-8")
+    post_process_renderer = (host_templates / "WebPostProcessRenderer.cpp").read_text(
+        encoding="utf-8"
+    )
     screen_ui_renderer = (host_templates / "WebScreenUIRenderer.cpp").read_text(
         encoding="utf-8"
     )
@@ -295,6 +298,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "MAIN_MODULE" not in cmake
     assert "FullscreenRenderer.cpp" in cmake
     assert "WebSceneRenderer.cpp" in cmake
+    assert "WebPostProcessRenderer.cpp" in cmake
     assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake
     assert "InxPack.cpp" in cmake
     assert "35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad" in cmake
@@ -346,6 +350,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "frame->DrawCalls()" in scene_renderer
     assert "ToWebClipSpace(frame->PrimaryView().viewProjection)" in scene_renderer
     assert "ToWebClipSpace(camera->GetViewProjectionMatrix())" in particle_runtime
+    assert "rhi::PixelFormat::RGBA16SFloat" in particle_runtime
+    assert "wgpu::TextureFormat::RGBA16Float" in particle_runtime
     assert "correction[1][1] = -1.0f" in scene_renderer
     assert "correction[1][1] = -1.0f" in particle_runtime
     assert "skinBoneMatrices" in scene_renderer
@@ -439,8 +445,13 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert '"submit_screen_ui"' not in host_module
     assert "INFERNUX_WEB_FIXED_CANVAS" in main
     assert "g_screenUIRenderer.Render" in main
+    assert "g_postProcessRenderer.SceneColorView()" in main
+    assert "INFERNUX_WEB_POST_PROCESS_READY" in post_process_renderer
+    assert "bloom_threshold" in post_process_renderer
+    assert "aces_film" in post_process_renderer
     assert "WebScreenUIRenderer.cpp" in cmake
     assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
+    assert "descriptor.depthStencil" not in screen_ui_renderer
     assert "INFERNUX_WEB_SCREEN_UI_TEXTURE_READY" in host_module
     assert "screen_ui_resolve_texture" in host_module
     assert "AddImageRounded" in screen_ui_renderer

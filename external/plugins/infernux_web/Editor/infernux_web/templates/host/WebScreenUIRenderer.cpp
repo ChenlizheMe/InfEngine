@@ -238,11 +238,6 @@ bool WebScreenUIRenderer::CreatePipelineAndFontAtlas()
     descriptor.fragment = &fragment;
     descriptor.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     descriptor.primitive.cullMode = wgpu::CullMode::None;
-    wgpu::DepthStencilState depth;
-    depth.format = wgpu::TextureFormat::Depth24Plus;
-    depth.depthWriteEnabled = wgpu::OptionalBool::False;
-    depth.depthCompare = wgpu::CompareFunction::Always;
-    descriptor.depthStencil = &depth;
     descriptor.multisample.count = 1;
     m_pipeline = m_device.CreateRenderPipeline(&descriptor);
     return m_textureLayout && m_fontGroup && m_pipeline;

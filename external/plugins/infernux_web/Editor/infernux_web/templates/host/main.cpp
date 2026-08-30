@@ -17,6 +17,7 @@
 #include "InfernuxWebHostModule.h"
 #include "WebGpuRhiDevice.h"
 #include "WebParticleRuntime.h"
+#include "WebPostProcessRenderer.h"
 #include "WebSceneRenderer.h"
 #include "WebScreenUIRenderer.h"
 
@@ -50,6 +51,7 @@ infernux::FullscreenRenderer g_fullscreenRenderer;
 infernux::FullscreenPipelineKey g_fullscreenPipelineKey;
 infernux::web::WebSceneRenderer g_sceneRenderer;
 infernux::web::WebParticleRuntime g_particleRuntime;
+infernux::web::WebPostProcessRenderer g_postProcessRenderer;
 infernux::web::WebScreenUIRenderer g_screenUIRenderer;
 bool g_particleRuntimeReady = false;
 bool g_webGpuValidationFailed = false;
@@ -330,6 +332,8 @@ void ResizeCanvas()
         config.presentMode = wgpu::PresentMode::Fifo;
         g_surface.Configure(&config);
         g_sceneRenderer.Resize(g_width, g_height);
+        if (!g_postProcessRenderer.Resize(g_width, g_height))
+            std::fprintf(stderr, "INFERNUX_WEB_POST_PROCESS_RESIZE_FAILED width=%u height=%u\n", g_width, g_height);
     }
 
     PyObject *payload = PyDict_New();
@@ -641,14 +645,13 @@ infernux::rhi::PixelFormat ToRhiFormat(wgpu::TextureFormat format)
 
 bool CreateRhiPipeline()
 {
-    const auto format = ToRhiFormat(g_surfaceFormat);
-    if (format == infernux::rhi::PixelFormat::Undefined)
+    if (ToRhiFormat(g_surfaceFormat) == infernux::rhi::PixelFormat::Undefined)
         return false;
 
     g_rhi = std::make_unique<infernux::web::WebGpuRhiDevice>(g_device, g_queue);
     g_fullscreenRenderer.Initialize(std::make_shared<WebFullscreenRendererHost>(*g_rhi));
     g_fullscreenPipelineKey.shaderName = "Web Host";
-    g_fullscreenPipelineKey.colorFormat = format;
+    g_fullscreenPipelineKey.colorFormat = infernux::rhi::PixelFormat::RGBA16SFloat;
     g_fullscreenPipelineKey.useDynamicRendering = true;
     return g_fullscreenRenderer.EnsurePipeline(g_fullscreenPipelineKey).pipeline.IsValid();
 }
@@ -768,7 +771,7 @@ void Frame()
     if (surfaceTexture.texture) {
         wgpu::TextureView view = surfaceTexture.texture.CreateView();
         wgpu::RenderPassColorAttachment colorAttachment;
-        colorAttachment.view = view;
+        colorAttachment.view = g_postProcessRenderer.SceneColorView();
         colorAttachment.loadOp = wgpu::LoadOp::Clear;
         colorAttachment.storeOp = wgpu::StoreOp::Store;
         colorAttachment.clearValue = {0.015, 0.035, 0.065, 1.0};
@@ -797,13 +800,26 @@ void Frame()
             infernux::FullscreenPushConstants pushConstants;
             g_fullscreenRenderer.Draw(commands, pipeline, {}, {}, pushConstants, sizeof(pushConstants));
         }
-        if (!g_webGpuValidationFailed)
-            (void)g_screenUIRenderer.Render(pass, 0, g_width, g_height);
         if (scenePrepared && g_particleRuntimeReady && !g_webGpuValidationFailed)
             (void)g_particleRuntime.Render(pass, g_width, g_height);
-        if (!g_webGpuValidationFailed)
-            (void)g_screenUIRenderer.Render(pass, 1, g_width, g_height);
         pass.End();
+
+        wgpu::RenderPassColorAttachment presentAttachment;
+        presentAttachment.view = view;
+        presentAttachment.loadOp = wgpu::LoadOp::Clear;
+        presentAttachment.storeOp = wgpu::StoreOp::Store;
+        presentAttachment.clearValue = {0.0, 0.0, 0.0, 1.0};
+        wgpu::RenderPassDescriptor presentDescriptor;
+        presentDescriptor.colorAttachmentCount = 1;
+        presentDescriptor.colorAttachments = &presentAttachment;
+        wgpu::RenderPassEncoder presentPass = encoder.BeginRenderPass(&presentDescriptor);
+        if (!g_webGpuValidationFailed)
+            (void)g_postProcessRenderer.Render(presentPass);
+        if (!g_webGpuValidationFailed) {
+            (void)g_screenUIRenderer.Render(presentPass, 0, g_width, g_height);
+            (void)g_screenUIRenderer.Render(presentPass, 1, g_width, g_height);
+        }
+        presentPass.End();
         wgpu::CommandBuffer commands = encoder.Finish();
         g_queue.Submit(1, &commands);
     }
@@ -831,7 +847,12 @@ void StartSurface()
                      g_rhi ? g_rhi->LastError().c_str() : "unsupported surface format");
         return;
     }
-    if (!g_sceneRenderer.Initialize(g_device, g_queue, g_surfaceFormat)) {
+    if (!g_postProcessRenderer.Initialize(g_device, g_surfaceFormat)) {
+        std::fprintf(stderr, "INFERNUX_WEB_POST_PROCESS_INITIALIZATION_FAILED\n");
+        return;
+    }
+    const auto sceneColorFormat = g_postProcessRenderer.SceneColorFormat();
+    if (!g_sceneRenderer.Initialize(g_device, g_queue, sceneColorFormat)) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_SCENE_PIPELINE_FAILED\n");
         return;
     }
@@ -840,7 +861,7 @@ void StartSurface()
         return;
     }
     InfernuxWebSetScreenUIRenderer(&g_screenUIRenderer);
-    if (!g_particleRuntime.Initialize(*g_rhi, ToRhiFormat(g_surfaceFormat))) {
+    if (!g_particleRuntime.Initialize(*g_rhi, infernux::rhi::PixelFormat::RGBA16SFloat)) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_RUNTIME_FAILED %s\n", g_particleRuntime.LastError().c_str());
     } else {
         g_particleRuntimeReady = true;
