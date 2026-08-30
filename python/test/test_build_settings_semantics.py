@@ -46,6 +46,10 @@ class _Context:
         return value
 
     @staticmethod
+    def combo(_label: str, selected: int, _items: list[str]) -> int:
+        return selected
+
+    @staticmethod
     def set_next_item_width(_width: float) -> None:
         pass
 
@@ -319,6 +323,7 @@ def test_build_settings_disables_only_the_settings_body_while_building(monkeypat
     panel._execute_build_command = lambda _command_id: True
     for name in (
         "_render_output_section",
+        "_render_target_section",
         "_render_display_section",
         "_render_splash_section",
         "_render_scene_section",
@@ -560,7 +565,7 @@ def test_build_preparation_flushes_writes_before_publishing_asset_index(
     assert events == ["flush_writes", "refresh", "flush_index"]
 
 
-def test_bind_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path):
+def test_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path):
     index_path = tmp_path / "Library" / "AssetIndex.json"
     entries = [
         {
@@ -571,19 +576,72 @@ def test_bind_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path
             "dependencies": [],
         }
     ]
-    captured: dict[str, object] = {}
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
-    panel._make_builder = lambda: SimpleNamespace(
-        project_path=str(tmp_path),
-        freeze_asset_index_entries=lambda value: captured.setdefault(
-            "entries", list(value)
-        ),
-    )
 
-    builder = panel._bind_published_player_catalog(
+    snapshot = panel._published_player_catalog_entries(
         {"path": str(index_path), "entries": entries}
     )
 
     assert not index_path.exists()
-    assert captured["entries"] == entries
-    assert builder.project_path == str(tmp_path)
+    assert snapshot == entries
+    assert snapshot is not entries
+
+
+def test_build_target_falls_back_to_current_desktop_when_plugin_disappears(
+    monkeypatch,
+):
+    from Infernux.engine.build import current_desktop_target
+
+    desktop = current_desktop_target()
+    assert desktop is not None
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "android-arm64"
+    panel._settings_controller = None
+    monkeypatch.setattr(panel, "_available_build_targets", lambda: (desktop,))
+
+    selected = panel._synchronize_build_target(persist=True)
+
+    assert selected == desktop
+    assert panel._build_target == desktop.id
+
+
+def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatch):
+    from Infernux.engine.build import BuildTarget, PlatformCapabilities
+
+    target = BuildTarget(
+        "android-arm64",
+        "Android arm64",
+        "android",
+        "arm64-v8a",
+        PlatformCapabilities(graphics_api="vulkan"),
+    )
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "android-arm64"
+    panel._android_artifact = "apk"
+    panel._settings_controller = None
+    panel._save = lambda: None
+    monkeypatch.setattr(panel, "_available_build_targets", lambda: (target,))
+    ctx = _Context()
+
+    panel._render_target_section(ctx)
+
+    assert ctx.semantic_values["build_settings.target"] == "android-arm64"
+    assert ctx.semantic_values["build_settings.android_artifact"] == "apk"
+
+
+def test_platform_progress_mapping_is_phase_aware_and_monotonic(monkeypatch):
+    from Infernux.engine.build import BuildProgress
+    import Infernux.engine.ui.engine_status as engine_status
+
+    monkeypatch.setattr(engine_status.EngineStatus, "set", classmethod(lambda *_args, **_kwargs: None))
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_progress = 0.0
+    panel._cancel_event = threading.Event()
+    panel._build_cancellation = None
+
+    panel._on_platform_build_progress(BuildProgress("compile", 1, 2, "Compiling"))
+    compile_fraction = panel._build_progress
+    panel._on_platform_build_progress(BuildProgress("shaders", 2, 2, "Shaders ready"))
+
+    assert 0.78 < compile_fraction < 0.92
+    assert panel._build_progress == compile_fraction

@@ -8,13 +8,21 @@ from .registry import (
     exporter_registry,
 )
 from .service import BuildService, BuildUnavailableError, build_service
+from .desktop_exporter import (
+    DesktopPlatformExporter,
+    current_desktop_target,
+    ensure_desktop_exporter_registered,
+)
 
 __all__ = [
     *_contract_exports,
     "BuildExporterRegistry",
     "BuildService",
     "BuildUnavailableError",
+    "DesktopPlatformExporter",
     "ExporterRegistration",
     "build_service",
+    "current_desktop_target",
+    "ensure_desktop_exporter_registered",
     "exporter_registry",
 ]

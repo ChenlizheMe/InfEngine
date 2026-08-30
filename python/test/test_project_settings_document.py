@@ -8,6 +8,7 @@ from Infernux.engine.interaction import (
     ProjectSettingsDocumentController,
     ensure_project_settings_document,
 )
+from Infernux.engine.interaction.project_settings import normalize_build_settings
 from Infernux.engine.undo import UndoManager
 from Infernux.physics import settings as physics_settings
 
@@ -24,6 +25,24 @@ def _tag_document():
         "layers": layers,
         "layer_collision_masks": [0xFFFFFFFF] * 32,
     }
+
+
+def test_build_settings_persist_platform_target_and_android_artifact():
+    settings = normalize_build_settings(
+        {"build_target": "android-arm64", "android_artifact": "aab"}
+    )
+
+    assert settings["build_target"] == "android-arm64"
+    assert settings["android_artifact"] == "aab"
+
+
+def test_build_settings_reject_invalid_platform_target_and_artifact():
+    import pytest
+
+    with pytest.raises(ValueError, match="lowercase"):
+        normalize_build_settings({"build_target": "Android arm64"})
+    with pytest.raises(ValueError, match="android_artifact"):
+        normalize_build_settings({"android_artifact": "zip"})
 
 
 class _TagManager:

@@ -23,6 +23,8 @@ from .documents import (
 
 
 BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "build_target": "",
+    "android_artifact": "apk",
     "game_name": "",
     "scenes": [],
     "output_dir": "",
@@ -70,11 +72,24 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
         isinstance(item, dict) for item in result["splash_items"]
     ):
         raise TypeError("build settings splash_items must contain objects")
-    for field in ("game_name", "output_dir", "icon_path", "display_mode"):
+    for field in (
+        "build_target",
+        "android_artifact",
+        "game_name",
+        "output_dir",
+        "icon_path",
+        "display_mode",
+    ):
         if not isinstance(result[field], str):
             raise TypeError(f"build settings {field} must be a string")
     if result["display_mode"] not in {"fullscreen_borderless", "windowed"}:
         raise ValueError("build settings display_mode is invalid")
+    if result["android_artifact"] not in {"apk", "aab"}:
+        raise ValueError("build settings android_artifact is invalid")
+    if result["build_target"]:
+        from Infernux.engine.build import BuildTargetId
+
+        BuildTargetId(result["build_target"])
     for field in ("window_width", "window_height"):
         if isinstance(result[field], bool) or not isinstance(result[field], int):
             raise TypeError(f"build settings {field} must be an integer")

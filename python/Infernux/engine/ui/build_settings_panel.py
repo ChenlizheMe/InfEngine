@@ -30,6 +30,17 @@ from Infernux.engine.build_settings import (
     load_build_settings,
 )
 from Infernux.engine.build_cancellation import BuildCancelled
+from Infernux.engine.build import (
+    BuildCancellationToken,
+    BuildConfiguration,
+    BuildProfile,
+    BuildRequest,
+    BuildService,
+    BuildUnavailableError,
+    current_desktop_target,
+    ensure_desktop_exporter_registered,
+    exporter_registry,
+)
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.game_builder import (
     BuildOutputDirectoryError,
@@ -60,6 +71,36 @@ _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
 
 _DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
+_ANDROID_ARTIFACTS = ["apk", "aab"]
+
+_PLATFORM_PROGRESS_RANGES = {
+    "doctor": (0.00, 0.03),
+    "plan": (0.03, 0.05),
+    "execute": (0.05, 0.06),
+    "prepare": (0.06, 0.14),
+    "python-runtime": (0.14, 0.24),
+    "analyze": (0.24, 0.32),
+    "cook": (0.32, 0.55),
+    "shaders": (0.55, 0.64),
+    "native": (0.64, 0.78),
+    "compile": (0.78, 0.92),
+    "desktop": (0.06, 0.96),
+    "package": (0.92, 0.96),
+    "audit": (0.96, 0.99),
+    "smoke": (0.99, 0.995),
+    "complete": (0.995, 1.00),
+}
+
+
+def platform_progress_fraction(progress) -> float:
+    start, end = _PLATFORM_PROGRESS_RANGES.get(
+        str(progress.phase), (0.05, 0.95)
+    )
+    if progress.total > 0:
+        local = max(0.0, min(1.0, progress.completed / progress.total))
+    else:
+        local = 0.0
+    return start + (end - start) * local
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +130,9 @@ def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:
             ),
             "build.start_and_run": BoundPanelCommand(
                 lambda _context: panel.command_start_build(run_after=True),
-                lambda _context: panel.can_start_build(),
+                lambda _context: (
+                    panel.can_start_build() and panel.can_run_after_build()
+                ),
             ),
             "build.cancel": BoundPanelCommand(
                 lambda _context: panel.command_cancel_build(),
@@ -122,6 +165,8 @@ class BuildSettingsPanel(EditorPanel):
 
     def __init__(self):
         super().__init__(title="Build Settings", window_id="build_settings")
+        self._build_target: str = ""
+        self._android_artifact: str = "apk"
         self._game_name: str = ""
         self._scenes: List[str] = []
         self._output_dir: str = ""
@@ -144,6 +189,8 @@ class BuildSettingsPanel(EditorPanel):
         self._build_error: Optional[str] = None
         self._build_output_dir: Optional[str] = None
         self._cancel_event: threading.Event = threading.Event()
+        self._build_cancellation: BuildCancellationToken | None = None
+        self._active_build_target: str = ""
 
     def _initial_size(self) -> tuple[float, float]:
         return 980.0, 720.0
@@ -192,6 +239,52 @@ class BuildSettingsPanel(EditorPanel):
     def get_scene_list(self) -> List[str]:
         return list(self._scenes)
 
+    def _available_build_targets(self):
+        ensure_desktop_exporter_registered()
+        targets = exporter_registry.targets()
+        desktop = current_desktop_target()
+        desktop_id = str(desktop.id) if desktop is not None else ""
+        return tuple(
+            sorted(
+                targets,
+                key=lambda item: (
+                    str(item.id) != desktop_id,
+                    item.platform,
+                    item.display_name.casefold(),
+                ),
+            )
+        )
+
+    def _resolved_build_target(self):
+        targets = self._available_build_targets()
+        selected = str(getattr(self, "_build_target", "") or "")
+        for target in targets:
+            if target.id == selected:
+                return target
+        desktop = current_desktop_target()
+        if desktop is not None:
+            for target in targets:
+                if target.id == desktop.id:
+                    return target
+        return targets[0] if targets else None
+
+    def _synchronize_build_target(self, *, persist: bool) -> object | None:
+        target = self._resolved_build_target()
+        identifier = str(target.id) if target is not None else ""
+        if identifier == getattr(self, "_build_target", ""):
+            return target
+        self._build_target = identifier
+        if persist and getattr(self, "_settings_controller", None) is not None:
+            self._save()
+        return target
+
+    def _is_desktop_target(self, target_id: str | None = None) -> bool:
+        desktop = current_desktop_target()
+        identifier = str(
+            target_id if target_id is not None else getattr(self, "_build_target", "")
+        )
+        return desktop is not None and identifier == desktop.id
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -208,6 +301,8 @@ class BuildSettingsPanel(EditorPanel):
         self._apply_build_settings(document["build"])
 
     def _apply_build_settings(self, data: dict) -> None:
+        self._build_target = data.get("build_target", "")
+        self._android_artifact = data.get("android_artifact", "apk")
         self._game_name = data.get("game_name", "")
         self._scenes = list(data.get("scenes", []))
         self._output_dir = data.get("output_dir", "")
@@ -227,6 +322,8 @@ class BuildSettingsPanel(EditorPanel):
 
     def _capture_build_settings(self) -> dict:
         return normalize_build_settings({
+            "build_target": self._build_target,
+            "android_artifact": self._android_artifact,
             "game_name": self._game_name,
             "scenes": self._scenes,
             "output_dir": self._output_dir,
@@ -348,6 +445,8 @@ class BuildSettingsPanel(EditorPanel):
         if building_this_frame:
             ctx.begin_disabled(True)
         if ctx.begin_child("##build_body", 0, child_h, False):
+            self._render_target_section(ctx)
+            ctx.separator()
             self._render_output_section(ctx)
             ctx.separator()
             self._render_display_section(ctx)
@@ -363,6 +462,62 @@ class BuildSettingsPanel(EditorPanel):
 
         ctx.separator()
         self._render_build_controls(ctx)
+
+    def _render_target_section(self, ctx):
+        targets = self._available_build_targets()
+        target = self._synchronize_build_target(persist=True)
+        ctx.label(t("build.target"))
+        if not targets or target is None:
+            ctx.record_semantic_item(
+                "status",
+                t("build.target"),
+                False,
+                "build_settings.target",
+                string_value="",
+            )
+            ctx.label(t("build.no_targets"))
+            return
+
+        target_ids = [str(item.id) for item in targets]
+        selected_index = target_ids.index(str(target.id))
+        labels = [item.display_name for item in targets]
+        next_index = ctx.combo("##build_target", selected_index, labels)
+        next_index = max(0, min(len(targets) - 1, int(next_index)))
+        selected = targets[next_index]
+        ctx.record_semantic_item(
+            "combo",
+            t("build.target"),
+            True,
+            "build_settings.target",
+            string_value=str(selected.id),
+        )
+        if str(selected.id) != self._build_target:
+            self._build_target = str(selected.id)
+            self._save()
+
+        if selected.platform == "android":
+            ctx.same_line(0, 20)
+            ctx.label(t("build.android_artifact"))
+            ctx.same_line(0, 8)
+            artifact_index = _ANDROID_ARTIFACTS.index(self._android_artifact)
+            next_artifact_index = ctx.combo(
+                "##android_artifact",
+                artifact_index,
+                ["APK", "AAB"],
+            )
+            next_artifact = _ANDROID_ARTIFACTS[
+                max(0, min(len(_ANDROID_ARTIFACTS) - 1, int(next_artifact_index)))
+            ]
+            ctx.record_semantic_item(
+                "combo",
+                t("build.android_artifact"),
+                True,
+                "build_settings.android_artifact",
+                string_value=next_artifact,
+            )
+            if next_artifact != self._android_artifact:
+                self._android_artifact = next_artifact
+                self._save()
 
     # ------------------------------------------------------------------
     # OUTPUT DIRECTORY
@@ -996,29 +1151,39 @@ class BuildSettingsPanel(EditorPanel):
                 "status", "Ready", False, "build_settings.status", string_value="ready"
             )
             can_build = self.can_start_build()
-
-            if not can_build:
-                ctx.push_style_color(ImGuiCol.Button, *Theme.BTN_DISABLED)
-                ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.BTN_DISABLED)
-                ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.BTN_DISABLED)
+            can_build_and_run = can_build and self.can_run_after_build()
 
             # Align build buttons to the right
             ctx.same_line(max(ctx.get_window_width() - 360, 200))
 
-            ctx.button("  " + t("build.build") + "  ",
-                        lambda: self._execute_build_command("build.start") if can_build else None,
-                        width=140, height=36)
-            ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
-            ctx.same_line(0, 16)
-            ctx.button("  " + t("build.build_and_run") + "  ",
-                        lambda: self._execute_build_command("build.start_and_run") if can_build else None,
-                        width=160, height=36)
-            ctx.record_semantic_item(
-                "button", t("build.build_and_run"), can_build, "build_settings.build_and_run"
-            )
-
             if not can_build:
-                ctx.pop_style_color(3)
+                ctx.begin_disabled(True)
+            ctx.button(
+                "  " + t("build.build") + "  ",
+                lambda: self._execute_build_command("build.start"),
+                width=140,
+                height=36,
+            )
+            ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
+            if not can_build:
+                ctx.end_disabled()
+            ctx.same_line(0, 16)
+            if not can_build_and_run:
+                ctx.begin_disabled(True)
+            ctx.button(
+                "  " + t("build.build_and_run") + "  ",
+                lambda: self._execute_build_command("build.start_and_run"),
+                width=160,
+                height=36,
+            )
+            ctx.record_semantic_item(
+                "button",
+                t("build.build_and_run"),
+                can_build_and_run,
+                "build_settings.build_and_run",
+            )
+            if not can_build_and_run:
+                ctx.end_disabled()
 
     def _dismiss_build_error(self):
         self._build_error = None
@@ -1032,25 +1197,6 @@ class BuildSettingsPanel(EditorPanel):
     # ------------------------------------------------------------------
     # Build execution
     # ------------------------------------------------------------------
-
-    def _make_builder(self):
-        from Infernux.engine.game_builder import GameBuilder
-        project_root = get_project_root()
-        game_name = self._game_name.strip() or os.path.basename(project_root)
-        return GameBuilder(
-            project_root,
-            self._output_dir,
-            game_name=game_name,
-            icon_path=self._icon_path.strip() or None,
-            display_mode=_DISPLAY_MODE_KEYS[self._display_mode_idx],
-            window_width=self._window_width,
-            window_height=self._window_height,
-            window_resizable=self._window_resizable,
-            splash_items=self._splash_items,
-            debug_mode=self._debug_mode,
-            lto=self._lto,
-            enable_jit=self._enable_jit,
-        )
 
     def _execute_build_command(self, command_id: str) -> bool:
         from Infernux.engine.interaction import CommandSource
@@ -1079,13 +1225,27 @@ class BuildSettingsPanel(EditorPanel):
             preflight.cancel()
             return True
         self._cancel_event.set()
+        cancellation = getattr(self, "_build_cancellation", None)
+        if cancellation is not None:
+            cancellation.cancel()
         return True
 
     def can_start_build(self) -> bool:
-        return bool(not self._building and self._scenes and self._output_dir)
+        return bool(
+            not self._building
+            and self._scenes
+            and self._output_dir
+            and self._resolved_build_target() is not None
+        )
+
+    def can_run_after_build(self) -> bool:
+        target = self._resolved_build_target()
+        return bool(target is not None and self._is_desktop_target(str(target.id)))
 
     def command_start_build(self, *, run_after: bool) -> bool:
         if not self.can_start_build():
+            return False
+        if run_after and not self.can_run_after_build():
             return False
         return self._do_build(run_after=bool(run_after))
 
@@ -1144,14 +1304,9 @@ class BuildSettingsPanel(EditorPanel):
 
         return str(publish_player_asset_catalog(project_root, database)["path"])
 
-    def _bind_published_player_catalog(self, catalog):
-        """Freeze the preflight AssetIndex even if the live file vanished.
+    def _published_player_catalog_entries(self, catalog) -> list[dict]:
+        """Return the exact AssetIndex snapshot published by editor preflight."""
 
-        Document transactions treat ``Library/AssetIndex.json`` as a derived
-        artifact and delete it after source writes. Preflight can therefore
-        publish a valid catalog that is gone by the time the worker starts.
-        """
-        builder = self._make_builder()
         entries = None
         index_path = ""
         if isinstance(catalog, dict):
@@ -1174,9 +1329,83 @@ class BuildSettingsPanel(EditorPanel):
                 )
             from Infernux.engine.runtime_artifact_catalog import load_asset_index
 
-            entries = load_asset_index(builder.project_path)
-        builder.freeze_asset_index_entries(entries)
-        return builder
+            project_root = get_project_root()
+            if not project_root:
+                raise RuntimeError("No project root found")
+            entries = load_asset_index(project_root)
+        return [dict(item) for item in entries]
+
+    def _make_build_request(self, catalog, target_id: str) -> BuildRequest:
+        entries = self._published_player_catalog_entries(catalog)
+        cancellation = BuildCancellationToken()
+        self._build_cancellation = cancellation
+        configuration = (
+            BuildConfiguration.DEVELOPMENT
+            if self._debug_mode
+            else BuildConfiguration.RELEASE
+        )
+        return BuildRequest(
+            get_project_root(),
+            target_id,
+            self._output_dir,
+            BuildProfile(
+                configuration=configuration,
+                debug_symbols=self._debug_mode,
+                compress_resources=not self._debug_mode,
+                options={
+                    "android_artifact": self._android_artifact,
+                    "build_settings": self._capture_build_settings(),
+                },
+            ),
+            asset_catalog_entries=entries,
+            cancellation=cancellation,
+            progress=self._on_platform_build_progress,
+        )
+
+    def _on_platform_build_progress(self, progress) -> None:
+        self._build_message = progress.message or "Building player..."
+        self._build_progress = max(
+            self._build_progress,
+            platform_progress_fraction(progress),
+        )
+        from Infernux.engine.ui.engine_status import EngineStatus
+
+        EngineStatus.set(
+            self._build_message,
+            -1.0,
+            kind="activity",
+            source="build",
+            priority=20,
+        )
+        if self._cancel_event.is_set():
+            cancellation = self._build_cancellation
+            if cancellation is not None:
+                cancellation.cancel()
+            raise BuildCancelled("Build cancelled")
+
+    @staticmethod
+    def _build_failure_message(result) -> str:
+        lines = [
+            f"[{item.code}] {item.message}"
+            for item in result.diagnostics
+            if item.message
+        ]
+        if not lines:
+            lines.append("The platform exporter did not produce a Player artifact.")
+        if result.logs:
+            lines.extend(("", "Last build output:", *result.logs[-12:]))
+        return "\n".join(lines)
+
+    def _launch_desktop_result(self, result) -> None:
+        import subprocess
+
+        output = str(result.manifest.get("output_dir", self._output_dir))
+        game_name = self._game_name.strip() or os.path.basename(get_project_root())
+        executable = game_name + (".exe" if sys.platform == "win32" else "")
+        launcher = os.path.join(output, executable)
+        if not os.path.isfile(launcher):
+            raise RuntimeError(f"Built Player launcher is missing: {launcher}")
+        subprocess.Popen([launcher], cwd=output)
 
     def _begin_asset_catalog_for_build(self):
         """Begin durable writes without blocking the build button callback."""
@@ -1243,6 +1472,14 @@ class BuildSettingsPanel(EditorPanel):
     def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
             return False
+        target = self._synchronize_build_target(persist=True)
+        if target is None:
+            self._build_error = "No Player build target is currently available"
+            return False
+        target_id = str(target.id)
+        if run_after and not self._is_desktop_target(target_id):
+            self._build_error = "Build And Run is available only for the current desktop target"
+            return False
         self._building = True
         self._build_progress = 0.0
         self._build_message = "Starting build..."
@@ -1250,6 +1487,8 @@ class BuildSettingsPanel(EditorPanel):
         self._build_error = None
         self._build_output_dir = None
         self._cancel_event.clear()
+        self._build_cancellation = None
+        self._active_build_target = target_id
         from Infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.set(
             self._build_message,
@@ -1273,6 +1512,8 @@ class BuildSettingsPanel(EditorPanel):
 
         def _fail_preflight(exc: Exception) -> bool:
             self._building = False
+            self._build_cancellation = None
+            self._active_build_target = ""
             if isinstance(exc, BuildOutputDirectoryError):
                 self._show_output_directory_error(exc)
             else:
@@ -1287,32 +1528,32 @@ class BuildSettingsPanel(EditorPanel):
             )
             return False
 
-        def _start_worker(builder):
+        def _start_worker(request: BuildRequest):
             def _run():
                 try:
-                    result = builder.build(
-                        on_progress=self._on_build_progress,
-                        cancel_event=self._cancel_event,
-                    )
-                    self._build_output_dir = result
-
+                    service = BuildService(exporter_registry)
+                    plan = service.create_plan(request)
+                    result = service.execute(request, plan)
+                    if not result.success:
+                        self._build_error = self._build_failure_message(result)
+                        return
+                    self._build_output_dir = request.output_dir
                     if run_after:
-                        import subprocess
-                        exe_name = f"{builder.project_name}.exe"
-                        launcher = os.path.join(result, exe_name)
-                        if os.path.isfile(launcher):
-                            subprocess.Popen([launcher], cwd=result)
+                        self._launch_desktop_result(result)
                 except BuildCancelled:
                     self._build_cancelled = True
+                except BuildUnavailableError as exc:
+                    self._build_error = "\n".join(
+                        f"[{item.code}] {item.message}"
+                        for item in exc.diagnostics
+                    )
                 except BuildOutputDirectoryError as exc:
                     self._show_output_directory_error(exc)
                 except Exception as exc:
-                    log_path = os.path.join(builder.project_path, "Logs", "build.log")
-                    if os.path.isfile(log_path):
-                        self._build_error = f"{exc}\n\nSee: {log_path}"
-                    else:
-                        self._build_error = str(exc)
+                    self._build_error = str(exc)
                 finally:
+                    self._build_cancellation = None
+                    self._active_build_target = ""
                     self._building = False
                     if self._build_cancelled:
                         EngineStatus.flash(
@@ -1344,11 +1585,10 @@ class BuildSettingsPanel(EditorPanel):
 
         def _prepare_and_start(catalog):
             try:
-                builder = self._bind_published_player_catalog(catalog)
-                builder._validate_output_directory()
+                request = self._make_build_request(catalog, target_id)
             except Exception as exc:
                 return _fail_preflight(exc)
-            _start_worker(builder)
+            _start_worker(request)
             return True
 
         # A modal is deliberately presented before catalog work begins.  It
@@ -1361,6 +1601,8 @@ class BuildSettingsPanel(EditorPanel):
         def _complete_preflight(ok: bool, result: object, message: str) -> None:
             if not ok:
                 self._building = False
+                self._build_cancellation = None
+                self._active_build_target = ""
                 self._build_cancelled = message == "Build preparation cancelled"
                 if not self._build_cancelled:
                     self._build_error = message or "Build preparation failed"
@@ -1376,6 +1618,7 @@ class BuildSettingsPanel(EditorPanel):
             complete=_complete_preflight,
         ):
             self._building = False
+            self._active_build_target = ""
             self._build_error = "Another editor transaction is already running"
             EngineStatus.flash(self._build_error, 0.0, duration=2.5, kind="warning")
             return False

@@ -152,6 +152,7 @@ class BuildRequest:
     target: BuildTargetId
     output_dir: str
     profile: BuildProfile = field(default_factory=BuildProfile)
+    asset_catalog_entries: tuple[Mapping[str, object], ...] = ()
     cancellation: BuildCancellationToken = field(
         default_factory=BuildCancellationToken,
         compare=False,
@@ -173,6 +174,11 @@ class BuildRequest:
         object.__setattr__(self, "project_root", project_root)
         object.__setattr__(self, "output_dir", output_dir)
         object.__setattr__(self, "target", BuildTargetId(self.target))
+        object.__setattr__(
+            self,
+            "asset_catalog_entries",
+            tuple(_frozen_mapping(item) for item in self.asset_catalog_entries),
+        )
 
     def report(
         self,

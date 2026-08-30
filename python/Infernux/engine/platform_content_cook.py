@@ -52,8 +52,12 @@ def cook_platform_content(
         enable_jit=False,
     )
     request.report("cook", 0, 1000, "Publishing current project asset catalog")
-    catalog = publish_player_asset_catalog_for_host(request.project_root)
-    builder.freeze_asset_index_entries(list(catalog["entries"]))
+    if request.asset_catalog_entries:
+        catalog_entries = [dict(item) for item in request.asset_catalog_entries]
+    else:
+        catalog = publish_player_asset_catalog_for_host(request.project_root)
+        catalog_entries = list(catalog["entries"])
+    builder.freeze_asset_index_entries(catalog_entries)
 
     def report(message: str, fraction: float) -> None:
         request.report(
