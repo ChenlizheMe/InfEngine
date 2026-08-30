@@ -305,6 +305,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEB_SCENE_RENDER_READY" in scene_renderer
     assert "INFERNUX_WEB_SKY_READY" in scene_renderer
     assert "INFERNUX_WEB_SHADOW_READY" in scene_renderer
+    assert "SetSkyEnabledForDiagnostics" in scene_renderer
+    assert "SetShadowsEnabledForDiagnostics" in scene_renderer
     assert "textureSampleCompareLevel" in scene_renderer
     assert "shadowPass.SetBindGroup(0, m_shadowCameraGroup)" in scene_renderer
     assert "shadowPass.SetBindGroup(0, m_cameraGroup)" not in scene_renderer
@@ -335,6 +337,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "InfernuxWebViewportChanged" in main
     assert "InfernuxWebPageLifecycle" in main
     assert "InfernuxWebUserActivation" in main
+    assert "InfernuxWebSetRenderDiagnostic" in main
     assert "INFERNUX_WEB_AUDIO_READY" in main
     assert "pagehide" in shell
     assert "pageshow" in shell

@@ -449,6 +449,16 @@ wgpu::TextureView WebSceneRenderer::GetDepthView() const noexcept
     return m_depthView;
 }
 
+void WebSceneRenderer::SetSkyEnabledForDiagnostics(bool enabled) noexcept
+{
+    m_diagnosticSkyEnabled = enabled;
+}
+
+void WebSceneRenderer::SetShadowsEnabledForDiagnostics(bool enabled) noexcept
+{
+    m_diagnosticShadowsEnabled = enabled;
+}
+
 bool WebSceneRenderer::EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required,
                                     wgpu::BufferUsage usage)
 {
@@ -546,7 +556,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
     m_cameraData.skyTopExposure = glm::vec4(environment.skyTopColor, environment.skyExposure);
     m_cameraData.skyHorizon = glm::vec4(environment.skyHorizonColor, 1.0f);
     m_cameraData.skyGround = glm::vec4(environment.skyGroundColor, 1.0f);
-    m_drawSky = camera->GetClearFlags() == CameraClearFlags::Skybox;
+    m_drawSky = m_diagnosticSkyEnabled && camera->GetClearFlags() == CameraClearFlags::Skybox;
 
     using AmbientSource = SceneEnvironmentSettings::AmbientSource;
     switch (static_cast<AmbientSource>(environment.ambientSource)) {
@@ -586,9 +596,9 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             shadowStrength = directionalLight->GetShadowStrength();
     }
     const glm::vec3 towardLight = -glm::normalize(rayDirection);
-    m_cameraData.lightDirectionStrength = glm::vec4(towardLight, shadowStrength);
     m_cameraData.lightColorIntensity = glm::vec4(lightColor, lightIntensity);
-    m_shadowEnabled = shadowStrength > 0.0f;
+    m_shadowEnabled = m_diagnosticShadowsEnabled && shadowStrength > 0.0f;
+    m_cameraData.lightDirectionStrength = glm::vec4(towardLight, m_shadowEnabled ? shadowStrength : 0.0f);
 
     glm::vec3 boundsMin(std::numeric_limits<float>::max());
     glm::vec3 boundsMax(std::numeric_limits<float>::lowest());

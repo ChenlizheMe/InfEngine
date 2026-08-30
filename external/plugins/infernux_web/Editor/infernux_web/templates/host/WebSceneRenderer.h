@@ -33,6 +33,12 @@ class WebSceneRenderer final
     /// Draw the prepared procedural sky and shadowed scene geometry.
     bool RenderPrepared(wgpu::RenderPassEncoder pass);
 
+    /// Acceptance-only feature switches used to prove that sky and shadows
+    /// materially affect the composed browser frame. Gameplay cannot access
+    /// these switches through the Python runtime surface.
+    void SetSkyEnabledForDiagnostics(bool enabled) noexcept;
+    void SetShadowsEnabledForDiagnostics(bool enabled) noexcept;
+
   private:
     struct WebVertex
     {
@@ -94,6 +100,8 @@ class WebSceneRenderer final
     bool m_framePrepared = false;
     bool m_drawSky = true;
     bool m_shadowEnabled = false;
+    bool m_diagnosticSkyEnabled = true;
+    bool m_diagnosticShadowsEnabled = true;
 };
 
 } // namespace infernux::web

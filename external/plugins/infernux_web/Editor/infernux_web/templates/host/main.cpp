@@ -344,6 +344,21 @@ extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebResizeCanvas()
     ResizeCanvas();
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebSetRenderDiagnostic(int feature, int enabled)
+{
+    switch (feature) {
+    case 0:
+        g_sceneRenderer.SetSkyEnabledForDiagnostics(enabled != 0);
+        break;
+    case 1:
+        g_sceneRenderer.SetShadowsEnabledForDiagnostics(enabled != 0);
+        break;
+    default:
+        std::fprintf(stderr, "INFERNUX_WEB_RENDER_DIAGNOSTIC_INVALID feature=%d\n", feature);
+        break;
+    }
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebViewportChanged(double safeLeft, double safeTop, double safeRight,
                                                                 double safeBottom, int keyboardInsetKnown,
                                                                 double keyboardInset)

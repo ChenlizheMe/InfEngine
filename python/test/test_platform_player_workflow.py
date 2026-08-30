@@ -80,6 +80,9 @@ def test_web_smoke_rejects_black_or_flat_frames_after_input():
     assert 'const { PNG } = require("pngjs")' in smoke
     assert "frameAfterActivation" in smoke
     assert "frameAfterInput" in smoke
+    assert "shadowDifference" in smoke
+    assert "skyDifference" in smoke
+    assert "InfernuxWebSetRenderDiagnostic" in smoke
     assert "frameIsVisible" in smoke
     assert "inputPreservedFrame" in smoke
     assert '"pngjs": "7.0.0"' in package

@@ -51,8 +51,11 @@ async function activateCanvas(page, canvasBox, cdpEndpoint) {
   }
 }
 
-async function measureCanvasFrame(canvas) {
-  const image = PNG.sync.read(await canvas.screenshot({ animations: "disabled" }));
+async function readCanvasFrame(canvas) {
+  return PNG.sync.read(await canvas.screenshot({ animations: "disabled" }));
+}
+
+function summarizeCanvasFrame(image) {
   const stride = Math.max(1, Math.ceil(Math.sqrt(image.width * image.height / 65536)));
   let count = 0;
   let luminanceSum = 0;
@@ -102,6 +105,52 @@ async function measureCanvasFrame(canvas) {
     lowerMeanLuminance: lowerLuminance / Math.max(1, lowerCount),
     quantizedColorCount: quantizedColors.size,
   };
+}
+
+async function measureCanvasFrame(canvas) {
+  return summarizeCanvasFrame(await readCanvasFrame(canvas));
+}
+
+function compareCanvasFrames(reference, candidate) {
+  if (reference.width !== candidate.width || reference.height !== candidate.height) {
+    throw new Error("Web Player diagnostic frames changed dimensions");
+  }
+  const stride = Math.max(
+    1,
+    Math.ceil(Math.sqrt(reference.width * reference.height / 65536)),
+  );
+  let samples = 0;
+  let changed = 0;
+  let absoluteDifference = 0;
+  for (let y = 0; y < reference.height; y += stride) {
+    for (let x = 0; x < reference.width; x += stride) {
+      const index = (y * reference.width + x) * 4;
+      const difference = (
+        Math.abs(reference.data[index] - candidate.data[index]) +
+        Math.abs(reference.data[index + 1] - candidate.data[index + 1]) +
+        Math.abs(reference.data[index + 2] - candidate.data[index + 2])
+      ) / (3 * 255);
+      samples += 1;
+      absoluteDifference += difference;
+      if (difference > 2 / 255) changed += 1;
+    }
+  }
+  return {
+    meanAbsoluteDifference: absoluteDifference / samples,
+    changedPixelRatio: changed / samples,
+  };
+}
+
+async function setRenderDiagnostic(page, feature, enabled) {
+  await page.evaluate(({ feature, enabled }) => {
+    Module.ccall(
+      "InfernuxWebSetRenderDiagnostic",
+      null,
+      ["number", "number"],
+      [feature, enabled ? 1 : 0],
+    );
+  }, { feature, enabled });
+  await page.waitForTimeout(120);
 }
 
 async function main() {
@@ -205,6 +254,25 @@ async function main() {
     const stateBeforeActivation = await canvas.getAttribute("data-infernux-state");
     await page.waitForTimeout(250);
     const frameBeforeActivation = await measureCanvasFrame(canvas);
+    await page.evaluate(() => {
+      const loader = document.querySelector("#infernux-loader");
+      if (loader) loader.style.visibility = "hidden";
+    });
+    await page.waitForTimeout(120);
+    const featureBaseline = await readCanvasFrame(canvas);
+    await setRenderDiagnostic(page, 1, false);
+    const shadowsDisabled = await readCanvasFrame(canvas);
+    await setRenderDiagnostic(page, 1, true);
+    await setRenderDiagnostic(page, 0, false);
+    const skyDisabled = await readCanvasFrame(canvas);
+    await setRenderDiagnostic(page, 0, true);
+    const sceneFrame = summarizeCanvasFrame(featureBaseline);
+    const shadowDifference = compareCanvasFrames(featureBaseline, shadowsDisabled);
+    const skyDifference = compareCanvasFrames(featureBaseline, skyDisabled);
+    await page.evaluate(() => {
+      const loader = document.querySelector("#infernux-loader");
+      if (loader) loader.style.visibility = "";
+    });
     if (stateBeforeActivation !== "ready") {
       await activateCanvas(page, canvasBox, cdpEndpoint);
     }
@@ -272,6 +340,12 @@ async function main() {
         sceneRenderReady: diagnostics.some(
           (item) => item.includes("INFERNUX_WEB_SCENE_RENDER_READY"),
         ),
+        skyReady: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_SKY_READY"),
+        ),
+        shadowReady: diagnostics.some(
+          (item) => item.includes("INFERNUX_WEB_SHADOW_READY"),
+        ),
         firstFrameReady: diagnostics.some(
           (item) => item.includes("INFERNUX_WEB_FIRST_FRAME_READY"),
         ),
@@ -294,6 +368,9 @@ async function main() {
       };
     });
     result.frameBeforeActivation = frameBeforeActivation;
+    result.sceneFrame = sceneFrame;
+    result.shadowDifference = shadowDifference;
+    result.skyDifference = skyDifference;
     result.frameAfterActivation = frameAfterActivation;
     result.frameAfterInput = frameAfterInput;
     const frameIsVisible = (frame) => (
@@ -307,16 +384,25 @@ async function main() {
         frameAfterActivation.meanLuminance * 0.05,
       )
     );
+    const skyIsVisible = (
+      skyDifference.changedPixelRatio >= 0.2 &&
+      skyDifference.meanAbsoluteDifference >= 0.03
+    );
+    const shadowsAreVisible = (
+      shadowDifference.changedPixelRatio >= 0.005 &&
+      shadowDifference.meanAbsoluteDifference >= 0.0002
+    );
     if (pageErrors.length || consoleErrors.length || result.unhandledErrors.length ||
         !result.pythonReady || !result.nativeModuleReady || !result.sceneReady ||
-        !result.sceneRenderReady || !result.firstFrameReady || !result.runtimeActive ||
+        !result.sceneRenderReady || !result.skyReady || !result.shadowReady ||
+        !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
         !result.pageHide || !result.pageShow ||
         !frameIsVisible(frameAfterActivation) || !frameIsVisible(frameAfterInput) ||
-        !inputPreservedFrame) {
+        !inputPreservedFrame || !skyIsVisible || !shadowsAreVisible) {
       throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));
     }
     delete result.diagnosticTail;
