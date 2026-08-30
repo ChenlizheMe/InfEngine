@@ -19,6 +19,7 @@ _frame_count = 0
 _player_session: Any = None
 _player_scene_manager: Any = None
 _player_activated = False
+_screen_ui_signature: tuple[Any, ...] | None = None
 _player_root = "/infernux/player"
 _player_python = f"{_player_root}/python/site-packages"
 _runtime_data_root = ""
@@ -217,7 +218,12 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     math_module = importlib.import_module("Infernux.math")
     debug_module = importlib.import_module("Infernux.debug")
     component_module = importlib.import_module("Infernux.components.component")
+    decorators_module = importlib.import_module("Infernux.components.decorators")
     fields_module = importlib.import_module("Infernux.components.fields")
+    ref_wrappers_module = importlib.import_module("Infernux.components.ref_wrappers")
+    serializable_module = importlib.import_module(
+        "Infernux.components.serializable_object"
+    )
     lifecycle_module = importlib.import_module(
         "Infernux.components._component_lifecycle"
     )
@@ -252,7 +258,13 @@ def _install_platform_runtime_api(native_module: Any) -> None:
 
     component_exports = {
         "InxComponent": component_module.InxComponent,
+        "SerializableObject": serializable_module.SerializableObject,
         "serialized_field": fields_module.serialized_field,
+        "int_field": fields_module.int_field,
+        "list_field": fields_module.list_field,
+        "GameObjectRef": ref_wrappers_module.GameObjectRef,
+        "disallow_multiple": decorators_module.disallow_multiple,
+        "add_component_menu": decorators_module.add_component_menu,
         "RuntimeExecutionScheduler": lifecycle_module.RuntimeExecutionScheduler,
         "ParticleSystem": particle_module.ParticleSystem,
         "ParticleBoundsMode": particle_module.ParticleBoundsMode,
@@ -485,6 +497,174 @@ def infernux_web_drain_input() -> tuple[tuple[str, dict[str, Any]], ...]:
     return events
 
 
+def _screen_ui_color(value: Any, default: tuple[float, ...]) -> list[float]:
+    values = list(value) if isinstance(value, (list, tuple)) else list(default)
+    values.extend(default[len(values):])
+    return [float(values[index]) for index in range(4)]
+
+
+def _screen_ui_texture_path(value: Any) -> str:
+    path = str(value or "").strip()
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return os.path.normpath(path).replace("\\", "/")
+    return os.path.normpath(os.path.join(_runtime_data_root, path)).replace("\\", "/")
+
+
+def _publish_screen_ui() -> None:
+    """Publish engine-authored Screen UI through the browser platform adapter."""
+
+    global _screen_ui_signature
+    if _player_scene_manager is None:
+        return
+
+    from _InfernuxWebHost import submit_screen_ui
+    from Infernux.screen import Screen
+    from Infernux.ui.ui_canvas_utils import (
+        canvas_membership_revision,
+        collect_sorted_runtime_canvases,
+    )
+    from Infernux.ui.ui_render_revision import get_runtime_ui_revision
+
+    scene = _player_scene_manager.get_active_scene()
+    persistent_scene = _player_scene_manager.get_runtime_persistent_scene()
+    screen_width, screen_height = Screen.size
+    if scene is None or screen_width < 1 or screen_height < 1:
+        return
+    canvases = collect_sorted_runtime_canvases(
+        scene, persistent_scene, allow_stale_empty=True
+    )
+    signature = (
+        int(get_runtime_ui_revision()),
+        int(canvas_membership_revision()),
+        int(getattr(scene, "structure_version", 0)),
+        int(getattr(persistent_scene, "structure_version", 0)),
+        int(Screen.revision),
+        int(screen_width),
+        int(screen_height),
+    )
+    if signature == _screen_ui_signature:
+        return
+
+    commands: list[dict[str, Any]] = []
+    for canvas in canvases:
+        owner = getattr(canvas, "game_object", None)
+        if (
+            owner is not None
+            and not owner.active_in_hierarchy
+            or not getattr(canvas, "enabled", True)
+        ):
+            continue
+        scale_x, scale_y, text_scale = canvas.compute_scale(
+            float(screen_width), float(screen_height)
+        )
+        logical_width, logical_height = canvas.compute_logical_size(
+            float(screen_width), float(screen_height)
+        )
+        for element in canvas._get_elements():
+            element_owner = getattr(element, "game_object", None)
+            if (
+                element_owner is not None
+                and not element_owner.active_in_hierarchy
+                or not getattr(element, "enabled", True)
+            ):
+                continue
+            kind_name = type(element).__name__
+            if kind_name not in {"UIText", "UIImage", "UIButton"}:
+                continue
+            x, y, width, height = element.get_rect(logical_width, logical_height)
+            command: dict[str, Any] = {
+                "id": f"{int(getattr(element_owner, 'id', 0) or 0)}:{kind_name}",
+                "kind": kind_name[2:].casefold(),
+                "x": float(x) * scale_x,
+                "y": float(y) * scale_y,
+                "width": float(width) * scale_x,
+                "height": float(height) * scale_y,
+                "opacity": float(getattr(element, "opacity", 1.0)),
+                "corner_radius": float(getattr(element, "corner_radius", 0.0))
+                * min(scale_x, scale_y),
+                "rotation": float(getattr(element, "rotation", 0.0)),
+                "mirror_x": bool(getattr(element, "mirror_x", False)),
+                "mirror_y": bool(getattr(element, "mirror_y", False)),
+            }
+            if kind_name == "UIText":
+                command.update(
+                    {
+                        "text": str(getattr(element, "text", "") or ""),
+                        "text_color": _screen_ui_color(
+                            getattr(element, "color", None), (1.0, 1.0, 1.0, 1.0)
+                        ),
+                        "font_size": float(getattr(element, "font_size", 18.0))
+                        * text_scale,
+                        "line_height": float(getattr(element, "line_height", 1.2)),
+                        "letter_spacing": float(
+                            getattr(element, "letter_spacing", 0.0)
+                        )
+                        * text_scale,
+                        "align_h": int(getattr(element, "text_align_h", 0)),
+                        "align_v": int(getattr(element, "text_align_v", 0)),
+                        "overflow": int(getattr(element, "overflow", 0)),
+                    }
+                )
+            elif kind_name == "UIImage":
+                command.update(
+                    {
+                        "background_color": _screen_ui_color(
+                            getattr(element, "color", None), (1.0, 1.0, 1.0, 1.0)
+                        ),
+                        "texture_path": _screen_ui_texture_path(
+                            getattr(element, "texture_path", "")
+                        ),
+                    }
+                )
+            else:
+                tint = _screen_ui_color(
+                    element.get_current_tint()
+                    if hasattr(element, "get_current_tint")
+                    else None,
+                    (1.0, 1.0, 1.0, 1.0),
+                )
+                background = _screen_ui_color(
+                    getattr(element, "background_color", None),
+                    (0.922, 0.341, 0.341, 1.0),
+                )
+                command.update(
+                    {
+                        "text": str(getattr(element, "label", "") or ""),
+                        "text_color": _screen_ui_color(
+                            getattr(element, "label_color", None),
+                            (1.0, 1.0, 1.0, 1.0),
+                        ),
+                        "background_color": [
+                            background[index] * tint[index] for index in range(4)
+                        ],
+                        "texture_path": _screen_ui_texture_path(
+                            getattr(element, "texture_path", "")
+                        ),
+                        "font_size": float(getattr(element, "font_size", 18.0))
+                        * text_scale,
+                        "line_height": float(getattr(element, "line_height", 1.2)),
+                        "letter_spacing": float(
+                            getattr(element, "letter_spacing", 0.0)
+                        )
+                        * text_scale,
+                        "align_h": int(getattr(element, "text_align_h", 1)),
+                        "align_v": int(getattr(element, "text_align_v", 1)),
+                        "overflow": 1,
+                    }
+                )
+            commands.append(command)
+
+    payload = json.dumps(
+        {"revision": hash(signature), "commands": commands},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if submit_screen_ui(payload):
+        _screen_ui_signature = signature
+
+
 def infernux_web_tick(delta_time: float) -> None:
     """Advance the Python side once per browser animation frame."""
 
@@ -492,6 +672,7 @@ def infernux_web_tick(delta_time: float) -> None:
     if not _player_activated or _player_session is None:
         return
     _player_session.tick(max(0.0, min(float(delta_time), 0.25)))
+    _publish_screen_ui()
     _frame_count += 1
     if _frame_count == 1:
         print("INFERNUX_WEB_FIRST_FRAME_READY")

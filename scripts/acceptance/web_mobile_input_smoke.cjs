@@ -355,6 +355,8 @@ async function main() {
         pointerBridge: diagnostics.includes("INFERNUX_WEB_POINTER_BRIDGE_READY"),
         textBridge: diagnostics.includes("INFERNUX_WEB_TEXT_BRIDGE_READY"),
         visualViewport: diagnostics.includes("INFERNUX_WEB_VISUAL_VIEWPORT_READY"),
+        screenUiBridge: diagnostics.includes("INFERNUX_WEB_SCREEN_UI_BRIDGE_READY"),
+        screenUiText: document.querySelector("#infernux-screen-ui")?.textContent || "",
         audioReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_AUDIO_READY")),
         audioContextRunning: Module.SDL3?.audioContext?.state === "running",
         activeAudioVoices: Number(activeVoiceMarker.match(/count=(\d+)/)?.[1] || 0),
@@ -397,6 +399,7 @@ async function main() {
         !result.sceneRenderReady || !result.skyReady || !result.shadowReady ||
         !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
+        !result.screenUiBridge || !result.screenUiText.includes("FPS") ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||

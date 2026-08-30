@@ -294,6 +294,27 @@ PyObject *IsTextInputActive(PyObject *, PyObject *)
     return PyBool_FromLong(g_textInputActive ? 1 : 0);
 }
 
+PyObject *SubmitScreenUi(PyObject *, PyObject *arguments)
+{
+    const char *payload = nullptr;
+    Py_ssize_t payloadSize = 0;
+    if (!PyArg_ParseTuple(arguments, "s#:submit_screen_ui", &payload, &payloadSize))
+        return nullptr;
+    if (payload == nullptr || payloadSize < 0) {
+        PyErr_SetString(PyExc_ValueError, "screen UI payload is invalid");
+        return nullptr;
+    }
+    const int submitted = EM_ASM_INT(
+        {
+            if (!Module.infernuxSubmitScreenUI)
+                return 0;
+            Module.infernuxSubmitScreenUI(UTF8ToString($0, $1));
+            return 1;
+        },
+        payload, payloadSize);
+    return PyBool_FromLong(submitted != 0);
+}
+
 PyMethodDef kMethods[] = {
     {"read_entry", ReadPackageEntry, METH_VARARGS,
      "Read and validate one entry from the native Infernux Player container."},
@@ -312,6 +333,8 @@ PyMethodDef kMethods[] = {
     {"begin_text_input", BeginTextInput, METH_VARARGS, "Focus the browser text bridge and begin committed text input."},
     {"end_text_input", EndTextInput, METH_NOARGS, "End browser text input and dismiss the software keyboard."},
     {"is_text_input_active", IsTextInputActive, METH_NOARGS, "Return whether browser text input is active."},
+    {"submit_screen_ui", SubmitScreenUi, METH_VARARGS,
+     "Publish the current engine Screen UI snapshot to the browser presentation layer."},
     {nullptr, nullptr, 0, nullptr},
 };
 

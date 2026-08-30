@@ -1146,6 +1146,13 @@ class RenderGraph
     /// resource-state cursor. Used by both Execute() and batch execution.
     void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices);
 
+    /// Start a new graph frame without discarding the final state of graph-owned
+    /// resources. External resources receive an authoritative state from their
+    /// owner every frame; internal images and buffers are reused across frames
+    /// and therefore need their preceding access/layout as the source scope of
+    /// the next frame's first barrier.
+    void PrepareExecutionResourceStates();
+
 #if INFERNUX_FRAME_PROFILE
     void RecordParticleDispatch(uint32_t passId, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
                                 uint64_t inputCount, bool indirect);
@@ -1257,12 +1264,14 @@ class RenderGraph
     uint64_t m_structuralCacheHits = 0;
     uint64_t m_structuralCacheMisses = 0;
 
-    // Per-resource layout state (reset each Execute())
-    // Flat vector indexed by resource id — O(1) lookup, memcpy reset.
+    // Per-resource layout state. External entries are reset from the owner on
+    // every execution. Graph-owned entries retain their preceding final state
+    // so a later in-flight frame cannot reuse them without a real dependency.
+    // Flat vector indexed by resource id — O(1) lookup.
     std::vector<ResourceState> m_resourceStates;
-    // Initial states set during Import/SetBackbuffer — restored at the
-    // start of each Execute() so external layout changes (e.g.
-    // ResolveSceneMsaa) don't cause stale oldLayout in barriers.
+    // Initial states set during Import/SetBackbuffer. They seed first use and
+    // are reapplied to external resources at each Execute() so owner-driven
+    // layout changes (e.g. ResolveSceneMsaa) do not leave stale barriers.
     std::vector<ResourceState> m_initialResourceStates;
 
     // Pre-allocated scratch buffers reused every Execute() to avoid per-pass heap allocs.
@@ -1290,10 +1299,6 @@ class RenderGraph
     // Track which cache entries were used this frame
     std::vector<size_t> m_usedRenderPassKeys;
     std::vector<size_t> m_usedFramebufferKeys;
-
-    // Memory aliasing: shared VmaAllocation for transient resources
-    // with non-overlapping lifetimes (not owned by any single resource).
-    std::vector<VmaAllocation> m_aliasedMemoryHeaps;
 
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not.

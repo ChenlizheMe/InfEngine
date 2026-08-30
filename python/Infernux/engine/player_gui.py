@@ -240,7 +240,8 @@ class PlayerGUI(InxGUIRenderable):
         # internal render target may be smaller on constrained platforms.
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
 
-        # Build per-canvas positions in design (canvas) pixels
+        # Build per-canvas positions in the live logical Canvas rect. The
+        # reference resolution selects scale; it is not a centered crop.
         canvas_positions = []
         for canvas in canvases:
             ref_w = float(canvas.reference_width)
@@ -248,8 +249,11 @@ class PlayerGUI(InxGUIRenderable):
             if ref_w < 1 or ref_h < 1:
                 canvas_positions.append((0.0, 0.0))
                 continue
-            cx = gx * ref_w / float(game_w)
-            cy = gy * ref_h / float(game_h)
+            scale_x, scale_y, _ = canvas.compute_scale(
+                float(game_w), float(game_h)
+            )
+            cx = gx / max(scale_x, 1e-6)
+            cy = gy / max(scale_y, 1e-6)
             canvas_positions.append((cx, cy))
 
         scroll = (scroll_x, scroll_y)

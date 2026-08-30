@@ -262,6 +262,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     main = (host_templates / "main.cpp").read_text(encoding="utf-8")
     rhi_backend = (host_templates / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
     scene_renderer = (host_templates / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
+    particle_runtime = (host_templates / "WebParticleRuntime.cpp").read_text(encoding="utf-8")
     fullscreen = (
         ROOT / "cpp" / "infernux" / "function" / "renderer" / "FullscreenRenderer.cpp"
     ).read_text(encoding="utf-8")
@@ -313,6 +314,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "descriptor.colorAttachmentCount = 0" in scene_renderer
     assert "ExtractCameraFrame" in scene_renderer
     assert "frame->DrawCalls()" in scene_renderer
+    assert "ToWebClipSpace(frame->PrimaryView().viewProjection)" in scene_renderer
+    assert "ToWebClipSpace(camera->GetViewProjectionMatrix())" in particle_runtime
+    assert "correction[1][1] = -1.0f" in scene_renderer
+    assert "correction[1][1] = -1.0f" in particle_runtime
     assert "skinBoneMatrices" in scene_renderer
     assert "SetDepthStencilAttachment" not in scene_renderer
     assert "ShaderModuleDesc::FromWgsl" in main
@@ -343,6 +348,18 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "pageshow" in shell
     assert 'install_runtime_service("text-input", web_host)' in bootstrap
     assert '"AudioSource": "audio_source"' in bootstrap
+    assert 'import_module("Infernux.components.decorators")' in bootstrap
+    assert 'import_module("Infernux.components.ref_wrappers")' in bootstrap
+    assert '"SerializableObject": serializable_module.SerializableObject' in bootstrap
+    assert '"int_field": fields_module.int_field' in bootstrap
+    assert '"list_field": fields_module.list_field' in bootstrap
+    assert '"GameObjectRef": ref_wrappers_module.GameObjectRef' in bootstrap
+    assert '"disallow_multiple": decorators_module.disallow_multiple' in bootstrap
+    assert '"add_component_menu": decorators_module.add_component_menu' in bootstrap
+    assert "def _publish_screen_ui()" in bootstrap
+    assert "canvas.compute_logical_size" in bootstrap
+    assert "submit_screen_ui(payload)" in bootstrap
+    assert '"UIText", "UIImage", "UIButton"' in bootstrap
     assert "INFERNUX_WEB_USER_ACTIVATION_REQUIRED" in bootstrap
     assert 'importlib.import_module("Infernux.screen")' in bootstrap
     assert '"begin_text_input"' in host_module
@@ -355,6 +372,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "infernux-logo.png" in shell
     assert "monitorRunDependencies(left)" in shell
     assert "infernux-progress-track" in shell
+    assert "infernux-screen-ui" in shell
+    assert "infernuxSubmitScreenUI" in shell
+    assert "INFERNUX_WEB_SCREEN_UI_BRIDGE_READY" in shell
     assert "copy_if_different" in revision_stamp
     assert "infernux-player.${INFERNUX_WEB_ASSET_REVISION}.js" in revision_stamp
     assert "INFERNUX_WEB_PYTHON_ARCHIVE_INVALID" in main
@@ -365,6 +385,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "infernux::inxpack::ReadEntry" in host_module
     assert "infernux::inxpack::Extract" in host_module
     assert '"extract_package"' in host_module
+    assert '"submit_screen_ui"' in host_module
     assert "extract_package(package, data_root)" in bootstrap
     assert "INFERNUX_SINGLE_THREADED_RUNTIME=1" in cmake
     assert "register_shader" in host_module

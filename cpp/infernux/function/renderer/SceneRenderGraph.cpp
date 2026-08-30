@@ -3933,6 +3933,16 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                     // Declare color output
                     fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
+                    // FullscreenRenderer uses an opaque pipeline and its
+                    // procedural triangle covers the complete render area.
+                    // The previous attachment contents are therefore not an
+                    // input to this pass.  Explicitly clear them so Vulkan
+                    // does not issue LOAD for an uninitialised transient
+                    // target.  Loading undefined tiles is particularly
+                    // hazardous on mobile tile renderers and can surface as
+                    // random blocks when the target is sampled by the next
+                    // post-processing pass.
+                    builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
                     if (useDynamicFullscreen)
                         builder.UseDynamicRendering();

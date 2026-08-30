@@ -10,6 +10,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsAnimation;
+import android.view.WindowInsetsController;
 import android.window.OnBackInvokedDispatcher;
 
 import java.io.File;
@@ -55,21 +56,58 @@ public final class InfernuxActivity extends SDLActivity {
                     new File(getCacheDir(), "player").getAbsolutePath(),
                     true);
             Os.setenv("INFERNUX_RENDER_PROFILE", "mobile", true);
-            Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", "0.5", true);
-            Os.setenv("INFERNUX_PLAYER_FPS_CAP", "30", true);
             Os.setenv("INFERNUX_PRESENT_MODE", "fifo", true);
-            Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "1", true);
+            Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2", true);
             Os.setenv("TMPDIR", getCacheDir().getAbsolutePath(), true);
         } catch (IOException | ErrnoException exception) {
             throw new IllegalStateException("Failed to prepare embedded Python", exception);
         }
         super.onCreate(savedInstanceState);
+        applyImmersiveGameMode();
         installWindowInsetsBridge();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                     this::dispatchInfernuxBack);
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        applyImmersiveGameMode();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            applyImmersiveGameMode();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applyImmersiveGameMode() {
+        View decorView = getWindow().getDecorView();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.hide(
+                        WindowInsets.Type.statusBars()
+                                | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+            return;
+        }
+        decorView.setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }
 
     private void installWindowInsetsBridge() {

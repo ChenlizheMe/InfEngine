@@ -90,6 +90,13 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 )wgsl";
 
+glm::mat4 ToWebClipSpace(const glm::mat4 &vulkanViewProjection)
+{
+    glm::mat4 correction(1.0f);
+    correction[1][1] = -1.0f;
+    return correction * vulkanViewProjection;
+}
+
 template <typename T> bool ReadUnsigned(PyObject *value, T &result)
 {
     if (!value || !PyLong_Check(value))
@@ -873,7 +880,7 @@ bool WebParticleRuntime::Render(wgpu::RenderPassEncoder pass, uint32_t width, ui
         glm::vec4 right{1.0f, 0.0f, 0.0f, 0.0f};
         glm::vec4 up{0.0f, 1.0f, 0.0f, 0.0f};
     } data;
-    data.viewProjection = camera->GetViewProjectionMatrix();
+    data.viewProjection = ToWebClipSpace(camera->GetViewProjectionMatrix());
     const glm::mat4 cameraToWorld = glm::inverse(camera->GetViewMatrix());
     data.right = glm::vec4(glm::normalize(glm::vec3(cameraToWorld[0])), 0.0f);
     data.up = glm::vec4(glm::normalize(glm::vec3(cameraToWorld[1])), 0.0f);

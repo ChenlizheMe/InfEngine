@@ -264,6 +264,9 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     manifest = (project / "app/src/main/AndroidManifest.xml").read_text(
         encoding="utf-8"
     )
+    style = (project / "app/src/main/res/values/styles.xml").read_text(
+        encoding="utf-8"
+    )
     gradle = (project / "app/build.gradle").read_text(encoding="utf-8")
     root_gradle = (project / "build.gradle").read_text(encoding="utf-8")
     host_source = (project / "app/src/main/cpp/main.cpp").read_text(encoding="utf-8")
@@ -279,7 +282,16 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert '"${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/' in cmake
     assert "android.hardware.vulkan.version" in manifest
     assert 'android:screenOrientation="sensorLandscape"' in manifest
+    assert 'android:appCategory="game"' in manifest
+    assert 'android:isGame="true"' in manifest
+    assert 'android:resizeableActivity="false"' in manifest
+    assert "android.intent.category.GAME" in manifest
     assert "glEsVersion" not in manifest
+    assert "android:windowFullscreen" in style
+    assert "android:windowDrawsSystemBarBackgrounds" in style
+    assert "android:windowLayoutInDisplayCutoutMode" in style
+    assert "android:windowLightStatusBar" in style
+    assert "android:windowLightNavigationBar" in style
     assert "if (mScreenKeyboardShown)" in activity
     assert "registerOnBackInvokedCallback" in activity
     assert "OnBackInvokedDispatcher.PRIORITY_DEFAULT" in activity
@@ -296,10 +308,13 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET"' in activity
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN", "1"' in activity
     assert 'Os.setenv("INFERNUX_RENDER_PROFILE", "mobile"' in activity
-    assert 'Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", "0.5"' in activity
-    assert 'Os.setenv("INFERNUX_PLAYER_FPS_CAP", "30"' in activity
+    assert "INFERNUX_PLAYER_RENDER_SCALE" not in activity
+    assert "INFERNUX_PLAYER_FPS_CAP" not in activity
     assert 'Os.setenv("INFERNUX_PRESENT_MODE", "fifo"' in activity
-    assert 'Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "1"' in activity
+    assert 'Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2"' in activity
+    assert "applyImmersiveGameMode" in activity
+    assert "WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE" in activity
+    assert "View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY" in activity
     assert 'abiFilters "x86_64"' in gradle
     assert 'ignoreAssetsPattern = "!.svn:!.git:!.ds_store:' in gradle
     assert 'version "8.10.1"' in root_gradle

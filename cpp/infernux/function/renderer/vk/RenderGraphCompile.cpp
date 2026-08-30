@@ -1057,6 +1057,11 @@ bool RenderGraph::AllocateResources()
             imageInfo.arrayLayers = resource.textureDesc.arrayLayers;
             imageInfo.samples = resource.textureDesc.samples;
             imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            // Keep render-graph images independently backed. The previous
+            // interval allocator bound different transient images to the same
+            // memory without emitting aliasing dependencies when ownership
+            // moved from one image to the next. That is undefined on Vulkan
+            // and is especially visible as stale/random tiles on mobile GPUs.
 
             if (resource.type == ResourceType::DepthStencil) {
                 imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -1161,140 +1166,32 @@ bool RenderGraph::AllocateResources()
         }
     }
 
-    // ========================================================================
-    // Memory aliasing for transient images
-    //
-    // Group transient images with non-overlapping lifetimes and compatible
-    // memory types onto shared VkDeviceMemory allocations.  This reduces
-    // memory consumption and allocation count — critical on mobile/tiled
-    // GPUs and for large render graphs with many intermediate targets.
-    //
-    // Algorithm: greedy interval colouring with size-descending pre-sort.
-    //
-    // Pre-sort fix (P2): the previous code processed requests in arbitrary
-    // order, so a small resource could create a heap that was too small
-    // for a later large resource with a non-overlapping lifetime.  By
-    // sorting allocation requests largest-first, the heap is always
-    // created with the maximum size and subsequent smaller resources
-    // can alias into it unconditionally (as long as lifetimes don't overlap
-    // and the memory type matches).
-    // ========================================================================
-
-    // Sort allocation requests by size descending so the largest resource
-    // creates the heap first.
-    std::sort(imageAllocRequests.begin(), imageAllocRequests.end(),
-              [](const AllocationRequest &a, const AllocationRequest &b) { return a.memReqs.size > b.memReqs.size; });
-
-    struct MemoryHeap
-    {
-        VmaAllocation allocation = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE; // Cached from VmaAllocationInfo (for vkBindImageMemory)
-        VkDeviceSize size = 0;
-        uint32_t memoryTypeIndex = 0;
-        VkDeviceSize alignment = 0;
-
-        // Lifetime intervals currently occupying this heap.
-        // Each pair is (firstPass, lastPass) from the resource.
-        std::vector<std::pair<uint32_t, uint32_t>> occupants;
-    };
-
-    std::vector<MemoryHeap> heaps;
-
-    auto lifetimesOverlap = [](uint32_t aFirst, uint32_t aLast, uint32_t bFirst, uint32_t bLast) -> bool {
-        return aFirst <= bLast && bFirst <= aLast;
-    };
-
+    // Allocate every graph image independently. Reintroducing image-memory
+    // aliasing requires an explicit alias set in the compiled graph plus a
+    // full execution and memory dependency at every alias hand-off; lifetime
+    // interval overlap alone is not a sufficient Vulkan synchronization
+    // contract.
     for (auto &req : imageAllocRequests) {
         auto &resource = m_resources[req.resourceIndex];
-        bool placed = false;
+        VmaAllocator allocator = m_context->GetVmaAllocator();
+        VmaAllocationCreateInfo allocCreateInfo{};
+        // vmaAllocateMemory (raw) cannot infer the memory type from an image
+        // create descriptor, so select device-local memory explicitly.
+        allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
-        // Only alias transient resources with valid lifetimes
-        if (resource.textureDesc.isTransient && resource.firstPass <= resource.lastPass) {
-            for (auto &heap : heaps) {
-                // Must be same memory type
-                if (heap.memoryTypeIndex != req.memoryTypeIndex)
-                    continue;
-
-                // Check lifetime overlap with all occupants
-                bool overlaps = false;
-                for (auto &[oFirst, oLast] : heap.occupants) {
-                    if (lifetimesOverlap(resource.firstPass, resource.lastPass, oFirst, oLast)) {
-                        overlaps = true;
-                        break;
-                    }
-                }
-
-                if (!overlaps) {
-                    // With size-descending pre-sort the heap was created by
-                    // the largest resource, so any later (smaller) resource
-                    // is guaranteed to fit.  Non-overlapping lifetimes allow
-                    // binding at offset 0 (resources never coexist).
-                    if (req.memReqs.size > heap.size) {
-                        // Shouldn't happen after pre-sort, but guard anyway.
-                        continue;
-                    }
-
-                    // Compute aligned offset within the heap
-                    VkDeviceSize offset =
-                        ((heap.size - req.memReqs.size) / req.memReqs.alignment) * req.memReqs.alignment;
-                    // Actually, place sequentially: find the next aligned offset
-                    // after existing placements.  For aliased resources with
-                    // non-overlapping lifetimes, offset 0 is valid (they never
-                    // coexist).
-                    offset = 0; // Non-overlapping → same base address is safe
-
-                    if (vkBindImageMemory(device, resource.allocatedImage, heap.memory, offset) != VK_SUCCESS) {
-                        continue;
-                    }
-
-                    resource.allocatedMemory = VK_NULL_HANDLE; // Don't free — owned by heap
-                    heap.occupants.push_back({resource.firstPass, resource.lastPass});
-                    placed = true;
-                    break;
-                }
-            }
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VmaAllocationInfo vmaAllocInfo{};
+        if (vmaAllocateMemory(allocator, &req.memReqs, &allocCreateInfo, &allocation, &vmaAllocInfo) != VK_SUCCESS) {
+            INXLOG_ERROR("Failed to allocate memory for resource: ", resource.name);
+            return false;
         }
-
-        if (!placed) {
-            // Allocate new memory for this resource via VMA (becomes a new heap candidate).
-            // Use dedicated allocation so the entire VkDeviceMemory is owned by this heap,
-            // allowing aliased images to bind at offset 0.
-            VmaAllocator allocator = m_context->GetVmaAllocator();
-            VmaAllocationCreateInfo allocCreateInfo{};
-            // vmaAllocateMemory (raw) doesn't have resource creation info,
-            // so AUTO modes can't infer the correct memory type.
-            // Use legacy GPU_ONLY which maps directly to DEVICE_LOCAL.
-            allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-            allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-            VmaAllocation allocation = VK_NULL_HANDLE;
-            VmaAllocationInfo vmaAllocInfo;
-            if (vmaAllocateMemory(allocator, &req.memReqs, &allocCreateInfo, &allocation, &vmaAllocInfo) !=
-                VK_SUCCESS) {
-                INXLOG_ERROR("Failed to allocate memory for resource: ", resource.name);
-                return false;
-            }
-
-            if (vkBindImageMemory(device, resource.allocatedImage, vmaAllocInfo.deviceMemory, 0) != VK_SUCCESS) {
-                vmaFreeMemory(allocator, allocation);
-                INXLOG_ERROR("Failed to bind image memory for resource: ", resource.name);
-                return false;
-            }
-
-            resource.allocatedMemory = allocation;
-
-            // Register as a new heap for potential future aliasing
-            if (resource.textureDesc.isTransient && resource.firstPass <= resource.lastPass) {
-                MemoryHeap heap;
-                heap.allocation = allocation;
-                heap.memory = vmaAllocInfo.deviceMemory;
-                heap.size = req.memReqs.size;
-                heap.memoryTypeIndex = req.memoryTypeIndex;
-                heap.alignment = req.memReqs.alignment;
-                heap.occupants.push_back({resource.firstPass, resource.lastPass});
-                heaps.push_back(std::move(heap));
-            }
+        if (vkBindImageMemory(device, resource.allocatedImage, vmaAllocInfo.deviceMemory, 0) != VK_SUCCESS) {
+            vmaFreeMemory(allocator, allocation);
+            INXLOG_ERROR("Failed to bind image memory for resource: ", resource.name);
+            return false;
         }
+        resource.allocatedMemory = allocation;
 
         // Create image view (regardless of aliasing)
         VkImageViewCreateInfo viewInfo{};
@@ -1320,30 +1217,15 @@ bool RenderGraph::AllocateResources()
             m_rhiDevice ? m_rhiDevice->RegisterTexture(resource.allocatedImage) : rhi::TextureHandle{};
     }
 
-    // Track aliased memory heaps for cleanup
-    for (auto &heap : heaps) {
-        // Heaps whose allocation is also stored in a resource's allocatedMemory
-        // will be freed by FreeResources(). Heaps that were reused by
-        // aliased resources (allocatedMemory == VK_NULL_HANDLE on the aliasee)
-        // need separate tracking.
-        bool ownedByResource = false;
-        for (const auto &resource : m_resources) {
-            if (resource.allocatedMemory == heap.allocation) {
-                ownedByResource = true;
-                break;
-            }
-        }
-        if (!ownedByResource) {
-            m_aliasedMemoryHeaps.push_back(heap.allocation);
-        }
-    }
-
-    // Transient buffers use the same interval-colouring rule as images, but
-    // remain in separate heaps because Vulkan memory requirements are
-    // resource-class specific. Distinct VkBuffer handles alias only the raw
-    // allocation and therefore preserve their declared usages.
+    // Transient buffers retain interval-based allocation reuse. Unlike tiled
+    // images they have no image-layout metadata, and the graph already emits
+    // the storage/indirect access barriers represented by their passes.
     std::sort(bufferAllocRequests.begin(), bufferAllocRequests.end(),
               [](const AllocationRequest &a, const AllocationRequest &b) { return a.memReqs.size > b.memReqs.size; });
+
+    const auto lifetimesOverlap = [](uint32_t aFirst, uint32_t aLast, uint32_t bFirst, uint32_t bLast) {
+        return aFirst <= bLast && bFirst <= aLast;
+    };
 
     struct BufferMemoryHeap
     {
@@ -2201,7 +2083,7 @@ void RenderGraph::FreeResources()
         }
     }
 
-    if (!hasTransientResources && m_aliasedMemoryHeaps.empty() && m_framebufferCache.empty()) {
+    if (!hasTransientResources && m_framebufferCache.empty()) {
         // No GPU resources to destroy — just clear pass framebuffer references
         for (auto &pass : m_passes) {
             pass.framebuffer = VK_NULL_HANDLE;
@@ -2246,9 +2128,6 @@ void RenderGraph::FreeResources()
         }
     }
 
-    allocationSet.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
-    m_aliasedMemoryHeaps.clear();
-
     std::vector<VmaAllocation> allocations(allocationSet.begin(), allocationSet.end());
     const VmaAllocator allocator = m_context->GetVmaAllocator();
     auto destroyRetired = [device, allocator, framebuffers = std::move(framebuffers),
@@ -2287,8 +2166,6 @@ uint64_t RenderGraph::GetTransientResidentBytes() const
         if (!resource.isExternal && resource.allocatedMemory != VK_NULL_HANDLE)
             allocations.insert(resource.allocatedMemory);
     }
-    allocations.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
-
     uint64_t bytes = 0;
     for (const VmaAllocation allocation : allocations) {
         VmaAllocationInfo info{};
@@ -2305,7 +2182,6 @@ size_t RenderGraph::GetTransientAllocationCount() const
         if (!resource.isExternal && resource.allocatedMemory != VK_NULL_HANDLE)
             allocations.insert(resource.allocatedMemory);
     }
-    allocations.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
     return allocations.size();
 }
 

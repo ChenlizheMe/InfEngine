@@ -212,6 +212,17 @@ uint64_t GrowCapacity(uint64_t required)
     return std::max(capacity, required);
 }
 
+glm::mat4 ToWebClipSpace(const glm::mat4 &vulkanViewProjection)
+{
+    // Camera publishes the Vulkan projection used by the native renderer,
+    // including its Y inversion. WebGPU performs its own framebuffer-space Y
+    // mapping, so carrying that inversion across would present the whole game
+    // upside down. Keep the correction at this backend boundary.
+    glm::mat4 correction(1.0f);
+    correction[1][1] = -1.0f;
+    return correction * vulkanViewProjection;
+}
+
 } // namespace
 
 bool WebSceneRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::TextureFormat colorFormat)
@@ -550,8 +561,8 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
 
     const SceneEnvironmentSettings &environment = scene->GetEnvironment();
     m_cameraData = {};
-    m_cameraData.viewProjection = frame->PrimaryView().viewProjection;
-    m_cameraData.inverseViewProjection = glm::inverse(frame->PrimaryView().viewProjection);
+    m_cameraData.viewProjection = ToWebClipSpace(frame->PrimaryView().viewProjection);
+    m_cameraData.inverseViewProjection = glm::inverse(m_cameraData.viewProjection);
     m_cameraData.cameraPosition = glm::vec4(frame->PrimaryView().position, 1.0f);
     m_cameraData.skyTopExposure = glm::vec4(environment.skyTopColor, environment.skyExposure);
     m_cameraData.skyHorizon = glm::vec4(environment.skyHorizonColor, 1.0f);

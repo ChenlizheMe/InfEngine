@@ -346,6 +346,24 @@ def test_fullscreen_passes_use_render_graph_dynamic_rendering_contract() -> None
     assert "fullscreenShadowDependencyDeclared = true;" in scene_graph
 
 
+def test_fullscreen_passes_discard_undefined_attachment_contents() -> None:
+    scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+
+    fullscreen_setup = scene_graph.index(
+        "fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);"
+    )
+    clear = scene_graph.index(
+        "builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);",
+        fullscreen_setup,
+    )
+    render_area = scene_graph.index(
+        "builder.SetRenderArea(fsPassWidth, fsPassHeight);",
+        clear,
+    )
+
+    assert fullscreen_setup < clear < render_area
+
+
 def test_presentation_recreation_uses_queue_scoped_drain() -> None:
     swapchain = (VULKAN_BACKEND / "VkSwapchainManager.cpp").read_text(encoding="utf-8")
     core = (
@@ -610,6 +628,65 @@ def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None
     assert "AllocatePerViewDescriptorSet" not in core_header
     assert "m_perViewDescriptorLeases" not in core_header
     assert "AllocatePerViewDescriptorLease" in core_header
+
+
+def test_forward_plus_grid_orders_ssbo_clear_before_atomic_population() -> None:
+    source = (
+        RENDERER / "lighting" / "ForwardPlusLightGrid.cpp"
+    ).read_text(encoding="utf-8")
+    shader = _function_body(
+        source, "std::string_view ForwardPlusLightGrid::ShaderSource"
+    )
+
+    clear = "tile_light_masks[offset + word] = 0u;"
+    atomic = "atomicOr(tile_light_masks[offset + (local_index >> 5u)]"
+    first_memory_barrier = shader.index("memoryBarrierBuffer();", shader.index(clear))
+    first_control_barrier = shader.index("barrier();", first_memory_barrier)
+
+    assert shader.index(clear) < first_memory_barrier < first_control_barrier
+    assert first_control_barrier < shader.index(atomic)
+    assert shader.count("memoryBarrierBuffer();") >= 2
+
+
+def test_render_graph_images_do_not_use_unsynchronized_memory_aliasing() -> None:
+    source = (VULKAN_BACKEND / "RenderGraphCompile.cpp").read_text(encoding="utf-8")
+
+    assert "imageInfo.flags |= VK_IMAGE_CREATE_ALIAS_BIT;" not in source
+    assert "vkBindImageMemory(device, resource.allocatedImage, heap.memory" not in source
+    assert "Allocate every graph image independently" in source
+
+
+def test_render_graph_preserves_internal_resource_state_between_in_flight_frames() -> None:
+    source = (VULKAN_BACKEND / "RenderGraph.cpp").read_text(encoding="utf-8")
+    prepare = _function_body(
+        source, "void RenderGraph::PrepareExecutionResourceStates"
+    )
+    begin = _function_body(source, "void RenderGraph::BeginExecution")
+    execute = _function_body(source, "void RenderGraph::Execute")
+
+    assert "resource.isExternal" in prepare
+    assert "resource.type == ResourceType::RendererList" in prepare
+    assert "previous.writerPassId == UINT32_MAX" in prepare
+    assert "m_resourceStates[index] = m_initialResourceStates[index]" in prepare
+    assert "PrepareExecutionResourceStates();" in begin
+    assert "PrepareExecutionResourceStates();" in execute
+    assert "m_resourceStates = m_initialResourceStates;" not in begin
+    assert "m_resourceStates = m_initialResourceStates;" not in execute
+
+
+def test_fullscreen_triangle_uses_the_standard_three_vertex_extent() -> None:
+    source = (
+        ROOT
+        / "python"
+        / "Infernux"
+        / "resources"
+        / "shaders"
+        / "fullscreen_triangle.vert"
+    ).read_text(encoding="utf-8")
+
+    assert "(gl_VertexIndex & 1) << 2" in source
+    assert "(gl_VertexIndex & 2) << 1" in source
+    assert "(gl_VertexIndex & 2) << 2" not in source
 
 
 def test_per_view_descriptor_leases_follow_view_and_preview_lifetimes() -> None:

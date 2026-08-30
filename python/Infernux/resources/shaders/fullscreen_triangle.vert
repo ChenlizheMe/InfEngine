@@ -20,7 +20,7 @@ void main() {
     //   2: ( 3, -1)  UV (2, 0)
     // Covers the entire (-1,-1) to (1,1) clip space.
     float x = -1.0 + float((gl_VertexIndex & 1) << 2);
-    float y = -1.0 + float((gl_VertexIndex & 2) << 2);
+    float y = -1.0 + float((gl_VertexIndex & 2) << 1);
     outUV = vec2((x + 1.0) * 0.5, (y + 1.0) * 0.5);
     gl_Position = vec4(x, y, 0.0, 1.0);
 }

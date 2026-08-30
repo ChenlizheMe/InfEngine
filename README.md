@@ -37,14 +37,24 @@ A general-purpose game engine. Not a chat box glued onto someone else's editor.
 
 The runtime is C++17 and Vulkan. Gameplay, components, editor tools, assets, and render setup are written in Python 3.13.
 
-This development tree targets **0.4.0**. Windows x64 is stable; Android and Web Players are being validated on the same project. Linux Player support and the PyTorch stack are not ready yet.
+This development tree targets **0.4.0**. Windows x64 remains the released platform. Linux Editor/Player and Android/Web Players now build and run from this tree against the same acceptance project, but they remain development targets until the 0.4.0 platform gates and CI matrix are complete. The PyTorch stack follows in a later release.
 
 ## What you can do now
 
 - Scenes, components, physics, audio, UI, animation, particles, prefabs
 - Vulkan Forward / Forward+ / Deferred, PBR, RenderGraph, RenderStack
 - Hub, installer, and standalone Windows Player builds
+- Development builds of the Linux Player, Android APK/AAB, and Web Player through the same build service
 - Plugins, same idea as Unity packages
+
+| Target | Editor | Player | Graphics | 0.4.0 status |
+|---|---:|---:|---|---|
+| Windows x64 | Yes | Yes | Vulkan | Released baseline |
+| Linux x86_64 | Yes | Yes | Vulkan | Source and clean-wheel validation in progress |
+| Android arm64/x86_64 | No | APK/AAB | Vulkan | Emulator and physical-device validation in progress |
+| Web | No | HTML/JS/WASM | WebGPU | Desktop and mobile-browser validation in progress |
+
+Android and Web exporters are official InxPackages; their SDKs, templates, and target runtimes are not bundled into the core engine wheel. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
 
 MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.
 

@@ -18,6 +18,20 @@
     }
     #infernux-shell { position: fixed; inset: 0; }
     #canvas { width: 100%; height: 100%; display: block; outline: 0; }
+    #infernux-screen-ui {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      user-select: none;
+    }
+    .infernux-ui-element {
+      position: absolute;
+      margin: 0;
+      padding: 0;
+      transform-origin: center;
+      white-space: pre-wrap;
+    }
     #infernux-safe-area-probe {
       position: fixed;
       inset: 0;
@@ -79,6 +93,7 @@
 <body>
   <main id="infernux-shell">
     <canvas id="canvas" tabindex="0" aria-label="Infernux game canvas"></canvas>
+    <div id="infernux-screen-ui" aria-hidden="true"></div>
     <div id="infernux-safe-area-probe" aria-hidden="true"></div>
     <input id="infernux-text-input" type="text" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false">
     <section id="infernux-loader" class="indeterminate" aria-live="polite">
@@ -168,6 +183,80 @@
         input.value = '';
       };
       recordDiagnostic('INFERNUX_WEB_TEXT_BRIDGE_READY');
+    }
+    function installScreenUIBridge() {
+      const root = document.getElementById('infernux-screen-ui');
+      if (!root || root.dataset.infernuxBound === 'true') return;
+      root.dataset.infernuxBound = 'true';
+      let objectUrls = [];
+      const clamp = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+      const color = (rgba) => {
+        const values = Array.isArray(rgba) ? rgba : [1, 1, 1, 1];
+        return `rgba(${Math.round(clamp(values[0]) * 255)},${Math.round(clamp(values[1]) * 255)},${Math.round(clamp(values[2]) * 255)},${clamp(values[3])})`;
+      };
+      const alignX = (value) => value === 1 ? 'center' : (value === 2 ? 'flex-end' : 'flex-start');
+      const alignY = (value) => value === 1 ? 'center' : (value === 2 ? 'flex-end' : 'flex-start');
+      const imageMime = (path) => {
+        const lower = String(path || '').toLowerCase();
+        if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+        if (lower.endsWith('.webp')) return 'image/webp';
+        if (lower.endsWith('.svg')) return 'image/svg+xml';
+        return 'image/png';
+      };
+      Module.infernuxSubmitScreenUI = (payloadText) => {
+        let payload;
+        try { payload = JSON.parse(String(payloadText || '{}')); }
+        catch (error) {
+          recordDiagnostic(`ERROR: INFERNUX_WEB_SCREEN_UI_INVALID ${error}`);
+          return;
+        }
+        for (const url of objectUrls) URL.revokeObjectURL(url);
+        objectUrls = [];
+        root.replaceChildren();
+        for (const command of Array.isArray(payload.commands) ? payload.commands : []) {
+          const element = document.createElement('div');
+          element.className = 'infernux-ui-element';
+          element.dataset.infernuxUiId = String(command.id || '');
+          element.style.left = `${Number(command.x) || 0}px`;
+          element.style.top = `${Number(command.y) || 0}px`;
+          element.style.width = `${Math.max(0, Number(command.width) || 0)}px`;
+          element.style.height = `${Math.max(0, Number(command.height) || 0)}px`;
+          element.style.opacity = String(clamp(command.opacity ?? 1));
+          element.style.borderRadius = `${Math.max(0, Number(command.corner_radius) || 0)}px`;
+          const mirrorX = command.mirror_x ? -1 : 1;
+          const mirrorY = command.mirror_y ? -1 : 1;
+          element.style.transform = `rotate(${Number(command.rotation) || 0}deg) scale(${mirrorX},${mirrorY})`;
+          if (command.kind === 'text' || command.kind === 'button') {
+            element.style.display = 'flex';
+            element.style.justifyContent = alignX(Number(command.align_h) || 0);
+            element.style.alignItems = alignY(Number(command.align_v) || 0);
+            element.style.textAlign = Number(command.align_h) === 1 ? 'center' : (Number(command.align_h) === 2 ? 'right' : 'left');
+            element.style.color = color(command.text_color);
+            element.style.font = `${Math.max(1, Number(command.font_size) || 1)}px/` +
+              `${Math.max(0.5, Number(command.line_height) || 1.2)} system-ui,sans-serif`;
+            element.style.letterSpacing = `${Number(command.letter_spacing) || 0}px`;
+            element.style.overflow = Number(command.overflow) === 0 ? 'visible' : 'hidden';
+            element.textContent = String(command.text || '');
+          }
+          if (command.kind === 'button' || command.kind === 'image') {
+            element.style.backgroundColor = color(command.background_color);
+            const path = String(command.texture_path || '');
+            try {
+              if (path && typeof FS !== 'undefined' && FS.analyzePath(path).exists) {
+                const bytes = FS.readFile(path);
+                const url = URL.createObjectURL(new Blob([bytes], {type: imageMime(path)}));
+                objectUrls.push(url);
+                element.style.backgroundImage = `url(${url})`;
+                element.style.backgroundSize = '100% 100%';
+                element.style.backgroundRepeat = 'no-repeat';
+              }
+            } catch (_) { /* keep the authored tint when a browser cannot decode the source asset */ }
+          }
+          root.appendChild(element);
+        }
+        root.dataset.infernuxRevision = String(payload.revision || 0);
+      };
+      recordDiagnostic('INFERNUX_WEB_SCREEN_UI_BRIDGE_READY');
     }
     function installPointerBridge() {
       if (canvasNode.dataset.infernuxPointerBound === 'true') return;
@@ -265,7 +354,7 @@
       locateFile(path) {
         return versionedAssets[path] || path;
       },
-      postRun: [installTextInputBridge, installPointerBridge, installViewportBridge],
+      postRun: [installTextInputBridge, installPointerBridge, installViewportBridge, installScreenUIBridge],
       setStatus(text) {
         const message = String(text || '').trim();
         if (!message) return;

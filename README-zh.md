@@ -37,14 +37,24 @@
 
 运行时是 C++17 和 Vulkan。玩法、组件、编辑器、资源和渲染编排用 Python 3.13 编写。
 
-当前开发树面向 **0.4.0**。Windows x64 已稳定，Android 与 Web Player 正在用同一个项目验收；Linux Player 和 PyTorch 栈尚未完成。
+当前开发树面向 **0.4.0**。Windows x64 仍是已经发布的正式平台。Linux Editor/Player、Android Player 和 Web Player 已经能从这棵源码树构建，并在同一个验收项目上运行；但在 0.4.0 平台门禁和 CI 矩阵全部完成前，它们仍是开发目标。PyTorch 栈留到后续版本。
 
 ## 现在能干什么
 
 - 场景、组件、物理、音频、UI、动画、粒子、Prefab
 - Vulkan Forward / Forward+ / Deferred、PBR、RenderGraph、RenderStack
 - Hub、安装器、Windows 独立游戏打包
+- 通过同一构建服务生成开发阶段的 Linux Player、Android APK/AAB 和 Web Player
 - 插件，用法接近 Unity Package Manager
+
+| 目标 | 编辑器 | Player | 图形后端 | 0.4.0 状态 |
+|---|---:|---:|---|---|
+| Windows x64 | 有 | 有 | Vulkan | 已发布基线 |
+| Linux x86_64 | 有 | 有 | Vulkan | 源码与纯净 wheel 验收中 |
+| Android arm64/x86_64 | 无 | APK/AAB | Vulkan | 模拟器与真机验收中 |
+| Web | 无 | HTML/JS/WASM | WebGPU | 桌面与移动浏览器验收中 |
+
+Android 和 Web exporter 是官方 InxPackage；SDK、模板和目标运行时不会塞进核心引擎 wheel。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
 
 MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目会带上，不想用就关掉或卸掉。
 

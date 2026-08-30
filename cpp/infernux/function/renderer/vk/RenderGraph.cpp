@@ -810,8 +810,7 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_renderTargetLayoutCache(std::move(other.m_renderTargetLayoutCache)),
       m_framebufferCache(std::move(other.m_framebufferCache)),
       m_usedRenderPassKeys(std::move(other.m_usedRenderPassKeys)),
-      m_usedFramebufferKeys(std::move(other.m_usedFramebufferKeys)),
-      m_aliasedMemoryHeaps(std::move(other.m_aliasedMemoryHeaps))
+      m_usedFramebufferKeys(std::move(other.m_usedFramebufferKeys))
 {
     other.m_backbuffer = {};
     other.m_output = {};
@@ -856,7 +855,6 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_framebufferCache = std::move(other.m_framebufferCache);
         m_usedRenderPassKeys = std::move(other.m_usedRenderPassKeys);
         m_usedFramebufferKeys = std::move(other.m_usedFramebufferKeys);
-        m_aliasedMemoryHeaps = std::move(other.m_aliasedMemoryHeaps);
         m_structuralCompileCache = std::move(other.m_structuralCompileCache);
         m_structuralCacheHits = other.m_structuralCacheHits;
         m_structuralCacheMisses = other.m_structuralCacheMisses;
@@ -1613,8 +1611,10 @@ void RenderGraph::BeginExecution()
 
     // Resource state is shared by the ordered batch recording session. The
     // Vulkan executor records batches in plan order, so every later command
-    // buffer observes the state produced by the preceding batch.
-    m_resourceStates = m_initialResourceStates;
+    // buffer observes the state produced by the preceding batch. Preserve the
+    // final state of graph-owned resources across frames: unlike imported
+    // resources, they are the same physical allocations on every execution.
+    PrepareExecutionResourceStates();
 }
 
 bool RenderGraph::RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer)
@@ -1654,11 +1654,32 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordin
 
     m_recordingSubmissionBatches = false;
     m_immediateRecordingQueue = recordingQueue == rhi::QueueRole::Count ? rhi::QueueRole::Graphics : recordingQueue;
-    m_resourceStates = m_initialResourceStates;
+    PrepareExecutionResourceStates();
 #if INFERNUX_FRAME_PROFILE
     ++s_executeProfile.executeCalls;
 #endif
     RecordPasses(commandBuffer, m_executionOrder);
+}
+
+void RenderGraph::PrepareExecutionResourceStates()
+{
+    if (m_resourceStates.size() != m_resources.size() || m_initialResourceStates.size() != m_resources.size()) {
+        m_resourceStates = m_initialResourceStates;
+        return;
+    }
+
+    for (size_t index = 0; index < m_resources.size(); ++index) {
+        const auto &resource = m_resources[index];
+        const auto &previous = m_resourceStates[index];
+
+        // Imported images/buffers may change identity or layout between
+        // executions, and renderer lists have no GPU state to carry. An
+        // explicit SetResourceInitialState() also resets writerPassId and must
+        // take precedence over a state retained from an earlier execution.
+        if (resource.isExternal || resource.type == ResourceType::RendererList || previous.writerPassId == UINT32_MAX) {
+            m_resourceStates[index] = m_initialResourceStates[index];
+        }
+    }
 }
 
 void RenderGraph::ContinueExecution(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue)

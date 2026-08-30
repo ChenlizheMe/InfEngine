@@ -148,16 +148,15 @@ class RuntimeScreenUISubmission:
         else:
             return
 
-        reference_width = float(canvas.reference_width)
-        reference_height = float(canvas.reference_height)
-        if reference_width < 1 or reference_height < 1:
+        if float(canvas.reference_width) < 1 or float(canvas.reference_height) < 1:
             return
 
         scale_x, scale_y, text_scale = canvas.compute_scale(
             float(game_width), float(game_height)
         )
-        offset_x = (float(game_width) - reference_width * scale_x) * 0.5
-        offset_y = (float(game_height) - reference_height * scale_y) * 0.5
+        logical_width, logical_height = canvas.compute_logical_size(
+            float(game_width), float(game_height)
+        )
 
         for element in canvas._get_elements():
             element_object = getattr(element, "game_object", None)
@@ -166,18 +165,18 @@ class RuntimeScreenUISubmission:
             if not getattr(element, "enabled", True):
                 continue
 
-            x, y, width, height = element.get_rect(reference_width, reference_height)
+            x, y, width, height = element.get_rect(logical_width, logical_height)
             _ui_dispatch(
                 element,
                 "runtime",
                 renderer=renderer,
                 ui_list=ui_list,
-                sx=offset_x + x * scale_x,
-                sy=offset_y + y * scale_y,
+                sx=x * scale_x,
+                sy=y * scale_y,
                 sw=width * scale_x,
                 sh=height * scale_y,
-                ref_w=reference_width,
-                ref_h=reference_height,
+                ref_w=logical_width,
+                ref_h=logical_height,
                 scale_x=scale_x,
                 scale_y=scale_y,
                 text_scale=text_scale,

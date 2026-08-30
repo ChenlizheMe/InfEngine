@@ -2765,6 +2765,26 @@ def test_runtime_ui_revision_is_stable_and_tracks_visual_state():
     assert runtime_ui_revision(scene, canvases, 1280, 720, 2) != first
 
 
+def test_canvas_reference_resolution_scales_without_center_crop():
+    from Infernux.ui import UICanvas
+
+    canvas = UICanvas()
+    canvas.reference_width = 1920
+    canvas.reference_height = 1080
+    canvas.match_width_or_height = 0.5
+
+    wide_scale_x, wide_scale_y, _ = canvas.compute_scale(3200, 1440)
+    wide_width, wide_height = canvas.compute_logical_size(3200, 1440)
+    assert wide_scale_x == pytest.approx(wide_scale_y)
+    assert wide_width * wide_scale_x == pytest.approx(3200.0)
+    assert wide_height * wide_scale_y == pytest.approx(1440.0)
+
+    portrait_scale_x, portrait_scale_y, _ = canvas.compute_scale(824, 1830)
+    portrait_width, portrait_height = canvas.compute_logical_size(824, 1830)
+    assert portrait_scale_x == pytest.approx(portrait_scale_y)
+    assert portrait_width * portrait_scale_x == pytest.approx(824.0)
+    assert portrait_height * portrait_scale_y == pytest.approx(1830.0)
+
 def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands():
     from Infernux.ui import UIText
     from Infernux.ui.ui_render_revision import get_runtime_ui_revision

@@ -166,6 +166,19 @@ class UICanvas(InxUIComponent):
 
         return scale_x, scale_y, min(scale_x, scale_y)
 
+    def compute_logical_size(self, screen_w: float, screen_h: float) -> tuple:
+        """Return the live Canvas rect in logical canvas pixels.
+
+        The reference resolution selects the CanvasScaler scale factor; it is
+        not a fixed rectangle that should be centered and cropped. Anchors
+        resolve against the current screen divided by that scale.
+        """
+        scale_x, scale_y, _ = self.compute_scale(screen_w, screen_h)
+        return (
+            max(1.0, float(screen_w) / max(scale_x, 1e-6)),
+            max(1.0, float(screen_h) / max(scale_y, 1e-6)),
+        )
+
     # ------------------------------------------------------------------
     # Cached element list (invalidated when hierarchy changes)
     # ------------------------------------------------------------------

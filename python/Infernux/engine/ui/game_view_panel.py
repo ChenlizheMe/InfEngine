@@ -932,8 +932,9 @@ class GameViewPanel(EditorPanel):
             return
 
         scale_x, scale_y, _ = canvas.compute_scale(float(game_w), float(game_h))
-        offset_x = (float(game_w) - ref_w * scale_x) * 0.5
-        offset_y = (float(game_h) - ref_h * scale_y) * 0.5
+        logical_w, logical_h = canvas.compute_logical_size(
+            float(game_w), float(game_h)
+        )
         semantic_capture_enabled = bool(getattr(ctx, "semantic_capture_enabled", False))
 
         for elem in canvas._get_elements():
@@ -943,21 +944,21 @@ class GameViewPanel(EditorPanel):
             if not getattr(elem, 'enabled', True):
                 continue
 
-            ex, ey, ew, eh = elem.get_rect(ref_w, ref_h)
+            ex, ey, ew, eh = elem.get_rect(logical_w, logical_h)
             if semantic_capture_enabled:
-                vx, vy, vw, vh = elem.get_visual_rect(ref_w, ref_h)
+                vx, vy, vw, vh = elem.get_visual_rect(logical_w, logical_h)
                 self._record_game_ui_button_semantic(
                     ctx,
                     elem,
-                    vp_x + (offset_x + vx * scale_x) * (vp_w / float(game_w)),
-                    vp_y + (offset_y + vy * scale_y) * (vp_h / float(game_h)),
+                    vp_x + vx * scale_x * (vp_w / float(game_w)),
+                    vp_y + vy * scale_y * (vp_h / float(game_h)),
                     vw * scale_x * (vp_w / float(game_w)),
                     vh * scale_y * (vp_h / float(game_h)),
                 )
 
             if use_overlay:
-                ovl_scale_x = vp_w / ref_w
-                ovl_scale_y = vp_h / ref_h
+                ovl_scale_x = scale_x * vp_w / float(game_w)
+                ovl_scale_y = scale_y * vp_h / float(game_h)
                 _ui_dispatch(
                     elem, "editor",
                     ctx=ctx,
@@ -1034,10 +1035,8 @@ class GameViewPanel(EditorPanel):
                 canvas_positions.append((0.0, 0.0))
                 continue
             scale_x, scale_y, _ = canvas.compute_scale(float(game_w), float(game_h))
-            offset_x = (float(game_w) - ref_w * scale_x) * 0.5
-            offset_y = (float(game_h) - ref_h * scale_y) * 0.5
-            cx = (game_px - offset_x) / max(scale_x, 1e-6)
-            cy = (game_py - offset_y) / max(scale_y, 1e-6)
+            cx = game_px / max(scale_x, 1e-6)
+            cy = game_py / max(scale_y, 1e-6)
             canvas_positions.append((cx, cy))
 
         scroll = (scroll_x, scroll_y)
