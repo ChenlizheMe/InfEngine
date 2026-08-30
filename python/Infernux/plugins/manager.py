@@ -161,6 +161,7 @@ class PluginManager:
         self.engine = engine
         self.runtime = bool(runtime)
         self.official_catalog_error = ""
+        self.python_requirement_error = ""
         self.registry = PluginRegistry(self.project_root)
         self.preloads = PreloadManager(
             self.project_root,
@@ -189,6 +190,8 @@ class PluginManager:
         ):
             current.engine = engine
             current.preloads.engine = engine
+            if not runtime:
+                current._reconcile_python_requirements_for_startup()
             current.reload_all()
             return current
         if current is not None:
@@ -212,6 +215,7 @@ class PluginManager:
                     f"installed, local, Git, and pip sources: {exc}"
                 )
             install_bundled_packages(normalized, manager=manager)
+            manager._reconcile_python_requirements_for_startup()
         manager.registry.save(manager.registry.load())
         manager.reload_all()
         if not runtime:
@@ -701,6 +705,84 @@ class PluginManager:
             "command": command,
             "output": result.stdout[-4000:],
         }
+
+    def _reconcile_python_requirements_for_startup(self) -> tuple[str, ...]:
+        """Restore enabled plugin requirements before any plugin preload runs.
+
+        The project registry travels with a project, while its Python environment
+        may be recreated or moved to another host.  Installation-time dependency
+        records therefore need to be checked against the active project runtime
+        on every editor startup.
+        """
+
+        self.python_requirement_error = ""
+        requirements_by_plugin: dict[str, tuple[str, ...]] = {}
+        all_requirements: list[str] = []
+        for record in self.registry.installed():
+            if not bool(record.get("enabled", True)):
+                continue
+            reference = str(record.get("reference", "")).strip()
+            requirements = tuple(
+                str(item.get("requirement", "")).strip()
+                for item in record.get("python_requirements", [])
+                if isinstance(item, Mapping)
+                and str(item.get("requirement", "")).strip()
+            )
+            if requirements:
+                requirements_by_plugin[reference] = requirements
+                all_requirements.extend(requirements)
+        if not all_requirements:
+            return ()
+
+        try:
+            executable = self._project_python_executable()
+            before = self._python_environment_snapshot(executable)
+            missing = tuple(
+                dict.fromkeys(
+                    requirement
+                    for requirement in all_requirements
+                    if not _requirements_satisfied((requirement,), before)
+                )
+            )
+            if not missing:
+                return ()
+            self._run_pip_requirement_file(missing, executable=executable)
+            after = self._python_environment_snapshot(executable)
+            unresolved = tuple(
+                requirement
+                for requirement in all_requirements
+                if not _requirements_satisfied((requirement,), after)
+            )
+            if unresolved:
+                raise RuntimeError(
+                    "pip completed but plugin requirements remain unresolved: "
+                    + ", ".join(unresolved)
+                )
+            changes = _python_environment_changes(before, after)
+            self.registry.record_python_reconciliation(
+                requirements=missing,
+                changes=changes,
+            )
+        except Exception as exc:
+            self.python_requirement_error = str(exc)
+            Debug.log_warning(
+                "Installed plugin Python requirements could not be restored; "
+                "the editor will continue and affected plugins will report "
+                f"their preload errors: {exc}"
+            )
+            return ()
+
+        repaired = tuple(
+            reference
+            for reference, requirements in requirements_by_plugin.items()
+            if any(requirement in missing for requirement in requirements)
+        )
+        if repaired:
+            Debug.log(
+                "Restored Python requirements for installed plugins: "
+                + ", ".join(repaired)
+            )
+        return repaired
 
     def _install_pip_lines(
         self, lines: Iterable[str]
@@ -1425,11 +1507,7 @@ class PluginManager:
         for candidate in candidates:
             if os.path.isfile(candidate):
                 return candidate
-        if is_path_within(sys.executable, self.project_root, allow_root=False):
-            return sys.executable
-        raise RuntimeError(
-            "Project Python environment is unavailable; create/install the project runtime before pip dependencies"
-        )
+        return sys.executable
 
     def _cache_package(self, package_path: str, digest: str) -> tuple[str, str]:
         relative = f"Library/InxPackageCache/{digest}{PACKAGE_EXTENSION}"

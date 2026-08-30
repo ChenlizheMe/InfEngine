@@ -327,6 +327,41 @@ class PluginRegistry:
         self.save(document)
         return item
 
+    def record_python_reconciliation(
+        self,
+        *,
+        requirements: Iterable[str],
+        changes: Iterable[Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Record dependency repair in the active project Python environment."""
+
+        document = self.load()
+        normalized_changes = _normalize_python_changes(changes)
+        item = {
+            "transaction_id": uuid.uuid4().hex,
+            "installed_at": time.time(),
+            "syntax": "startup dependency reconciliation",
+            "command": [],
+            "requirements": [str(value) for value in requirements],
+            "output": "",
+            "owner": "@environment",
+            "changes": normalized_changes,
+        }
+        document["python_installs"].append(item)
+        changes_by_name = {change["name"]: change for change in normalized_changes}
+        for raw in document.get("python_dependencies", []):
+            if not isinstance(raw, dict):
+                continue
+            name = canonicalize_name(str(raw.get("name", "")))
+            change = changes_by_name.get(name)
+            if change is None:
+                continue
+            raw["managed"] = True
+            raw["baseline_version"] = change["before"]
+            raw["installed_version"] = change["after"]
+        self.save(document)
+        return item
+
     def python_release_plan(self, reference: str) -> tuple[dict[str, object], ...]:
         key = validate_reference(reference).casefold()
         result: list[dict[str, object]] = []

@@ -977,6 +977,65 @@ def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(
     assert manager.registry.load()["python_dependencies"] == []
 
 
+def test_startup_restores_installed_plugin_requirements_in_new_environment(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path / "source", "vendor/portable-python")
+    (source / "requirements.txt").write_text(
+        "shared-wheel>=1,<2\n", encoding="utf-8"
+    )
+    (source / "Data.bin").write_bytes(b"payload")
+    package = _export(source, tmp_path / "portable-python.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    environment: dict[str, str] = {}
+    commands: list[list[str]] = []
+
+    def run(command, cwd=None):
+        commands.append(list(command))
+        if command[2:5] == ["pip", "list", "--format=json"]:
+            return type(
+                "Result",
+                (),
+                {
+                    "stdout": json.dumps(
+                        [
+                            {"name": name, "version": version}
+                            for name, version in environment.items()
+                        ]
+                    )
+                },
+            )()
+        if command[2:4] == ["pip", "install"]:
+            environment["shared-wheel"] = "1.5"
+        return type("Result", (), {"stdout": "ok"})()
+
+    monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
+    monkeypatch.setattr(manager, "_run_process", run)
+    manager.install_package(str(package))
+    environment.clear()
+    commands.clear()
+
+    assert manager._reconcile_python_requirements_for_startup() == (
+        "vendor/portable-python",
+    )
+    assert environment == {"shared-wheel": "1.5"}
+    assert sum(command[2:4] == ["pip", "install"] for command in commands) == 1
+    ledger = manager.registry.load()["python_dependencies"]
+    assert ledger[0]["owners"] == [
+        {
+            "reference": "vendor/portable-python",
+            "requirements": ["shared-wheel>=1,<2"],
+        }
+    ]
+    assert ledger[0]["baseline_version"] == ""
+    assert ledger[0]["installed_version"] == "1.5"
+
+    commands.clear()
+    assert manager._reconcile_python_requirements_for_startup() == ()
+    assert not any(command[2:4] == ["pip", "install"] for command in commands)
+
+
 def test_reference_identity_is_casefolded_across_platforms(tmp_path):
     lower = _source(tmp_path / "lower", "Vendor/CaseIdentity")
     upper = _source(tmp_path / "upper", "vendor/caseidentity")
