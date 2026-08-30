@@ -341,6 +341,9 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY" in activity
     assert 'abiFilters "x86_64"' in gradle
     assert 'ignoreAssetsPattern = "!.svn:!.git:!.ds_store:' in gradle
+    assert 'System.getenv("INFERNUX_ANDROID_KEYSTORE")' in gradle
+    assert "signingConfig signingConfigs.release" in gradle
+    assert "storePassword infernuxKeystorePassword" in gradle
     assert 'version "8.10.1"' in root_gradle
     assert "run_platform_player" in host_source
     assert "SDL_SetHint(SDL_HINT_ORIENTATIONS" in host_source
@@ -534,6 +537,82 @@ def test_android_artifact_plan(
 
     assert (actual_kind, actual_variant) == (kind, variant)
     assert source == staging / Path(relative)
+
+
+def test_android_signed_release_apk_uses_signed_gradle_artifact(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(
+            configuration=BuildConfiguration.RELEASE,
+            options={"android_artifact": "apk"},
+        ),
+    )
+
+    _, _, source = exporter_module._android_artifact_plan(
+        request,
+        tmp_path / "staging",
+        release_signed=True,
+    )
+
+    assert source.name == "app-release.apk"
+
+
+def test_android_signing_environment_keeps_passwords_out_of_profile(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    keystore = tmp_path / "release.jks"
+    keystore.write_bytes(b"fixture")
+    monkeypatch.setenv("TEST_ANDROID_STORE_PASSWORD", "store-secret")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(
+            configuration=BuildConfiguration.RELEASE,
+            options={
+                "android_keystore": str(keystore),
+                "android_key_alias": "release",
+                "android_keystore_password_env": "TEST_ANDROID_STORE_PASSWORD",
+            },
+        ),
+    )
+
+    environment = exporter_module._android_signing_environment(request)
+
+    assert environment == {
+        "INFERNUX_ANDROID_KEYSTORE": str(keystore.resolve()),
+        "INFERNUX_ANDROID_KEY_ALIAS": "release",
+        "INFERNUX_ANDROID_KEYSTORE_PASSWORD": "store-secret",
+        "INFERNUX_ANDROID_KEY_PASSWORD": "store-secret",
+    }
+    assert "store-secret" not in repr(request.profile.options)
+
+
+def test_android_signing_environment_rejects_partial_configuration(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(
+            configuration=BuildConfiguration.RELEASE,
+            options={"android_key_alias": "release"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="partially configured"):
+        exporter_module._android_signing_environment(request)
 
 
 def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_path):

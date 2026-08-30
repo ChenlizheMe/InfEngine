@@ -2,6 +2,17 @@ plugins {
     id "com.android.application"
 }
 
+def infernuxKeystorePath = System.getenv("INFERNUX_ANDROID_KEYSTORE")
+def infernuxKeyAlias = System.getenv("INFERNUX_ANDROID_KEY_ALIAS")
+def infernuxKeystorePassword = System.getenv("INFERNUX_ANDROID_KEYSTORE_PASSWORD")
+def infernuxKeyPassword = System.getenv("INFERNUX_ANDROID_KEY_PASSWORD") ?: infernuxKeystorePassword
+def infernuxReleaseSigningReady = [
+    infernuxKeystorePath,
+    infernuxKeyAlias,
+    infernuxKeystorePassword,
+    infernuxKeyPassword,
+].every { value -> value != null && !value.trim().isEmpty() }
+
 android {
     namespace "com.infernux.bootstrap"
     compileSdk 36
@@ -22,12 +33,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (infernuxReleaseSigningReady) {
+            release {
+                storeFile file(infernuxKeystorePath)
+                storePassword infernuxKeystorePassword
+                keyAlias infernuxKeyAlias
+                keyPassword infernuxKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             debuggable true
         }
         release {
             minifyEnabled false
+            if (infernuxReleaseSigningReady) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

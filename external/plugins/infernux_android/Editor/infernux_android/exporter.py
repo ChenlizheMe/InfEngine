@@ -183,9 +183,44 @@ class AndroidPlatformExporter(PlatformExporter):
         abi = str(plan.metadata["abi"])
         output_root = Path(request.output_dir).resolve()
         staging = _android_staging_directory(request)
+        signing_environment: dict[str, str] = {}
+        signing_diagnostics: tuple[BuildDiagnostic, ...] = ()
+        release_signed = False
+        if request.profile.configuration is BuildConfiguration.RELEASE:
+            try:
+                signing_environment = _android_signing_environment(request)
+            except ValueError as error:
+                return BuildResult(
+                    request.target,
+                    False,
+                    diagnostics=(
+                        BuildDiagnostic(
+                            DiagnosticSeverity.ERROR,
+                            "android.signing.invalid",
+                            str(error),
+                            source=self.exporter_id,
+                        ),
+                    ),
+                    elapsed_seconds=time.perf_counter() - started,
+                )
+            release_signed = bool(signing_environment)
+            if not release_signed:
+                signing_diagnostics = (
+                    BuildDiagnostic(
+                        DiagnosticSeverity.WARNING,
+                        "android.signing.not-configured",
+                        "Release package is unsigned. Configure Android signing "
+                        "before store publication or device bundle installation.",
+                        source=self.exporter_id,
+                    ),
+                )
         try:
             artifact_kind, configuration_name, source_artifact = (
-                _android_artifact_plan(request, staging)
+                _android_artifact_plan(
+                    request,
+                    staging,
+                    release_signed=release_signed,
+                )
             )
         except ValueError as error:
             return BuildResult(
@@ -333,6 +368,7 @@ class AndroidPlatformExporter(PlatformExporter):
                 "ANDROID_SDK_ROOT": str(sdk_root),
                 "ANDROID_HOME": str(sdk_root),
                 "JAVA_HOME": str(details["java_home"]),
+                **signing_environment,
             },
             source="gradle",
         )
@@ -400,6 +436,7 @@ class AndroidPlatformExporter(PlatformExporter):
                     len(payload),
                 ),
             ),
+            diagnostics=signing_diagnostics,
             manifest={
                 "exporter": self.exporter_id,
                 "contract_version": self.contract_version,
@@ -413,6 +450,7 @@ class AndroidPlatformExporter(PlatformExporter):
                     request.profile.configuration
                 ),
                 "artifact_kind": artifact_kind,
+                "signed": release_signed,
                 "resolution_scaling": resolution_scaling,
                 "target_dpi": target_dpi,
             },
@@ -424,6 +462,8 @@ class AndroidPlatformExporter(PlatformExporter):
 def _android_artifact_plan(
     request: BuildRequest,
     staging: Path,
+    *,
+    release_signed: bool = False,
 ) -> tuple[str, str, Path]:
     """Select the Gradle publication contract for one build request."""
 
@@ -459,7 +499,11 @@ def _android_artifact_plan(
         apk_name = (
             "app-debug.apk"
             if configuration_name == "Debug"
-            else "app-release-unsigned.apk"
+            else (
+                "app-release.apk"
+                if release_signed
+                else "app-release-unsigned.apk"
+            )
         )
         source = (
             staging
@@ -471,6 +515,58 @@ def _android_artifact_plan(
             / apk_name
         )
     return configured, configuration_name, source
+
+
+def _android_signing_environment(request: BuildRequest) -> dict[str, str]:
+    """Resolve release signing without serializing credentials into staging."""
+
+    options = request.profile.options
+    keystore = str(
+        options.get("android_keystore", "")
+        or os.environ.get("INFERNUX_ANDROID_KEYSTORE", "")
+    ).strip()
+    key_alias = str(
+        options.get("android_key_alias", "")
+        or os.environ.get("INFERNUX_ANDROID_KEY_ALIAS", "")
+    ).strip()
+    store_password_name = str(
+        options.get("android_keystore_password_env", "")
+        or "INFERNUX_ANDROID_KEYSTORE_PASSWORD"
+    ).strip()
+    key_password_name = str(
+        options.get("android_key_password_env", "")
+        or "INFERNUX_ANDROID_KEY_PASSWORD"
+    ).strip()
+    store_password = os.environ.get(store_password_name, "")
+    configured_key_password = os.environ.get(key_password_name, "")
+    key_password = configured_key_password or store_password
+
+    supplied = bool(
+        keystore or key_alias or store_password or configured_key_password
+    )
+    if not supplied:
+        return {}
+    missing: list[str] = []
+    if not keystore:
+        missing.append("android_keystore or INFERNUX_ANDROID_KEYSTORE")
+    if not key_alias:
+        missing.append("android_key_alias or INFERNUX_ANDROID_KEY_ALIAS")
+    if not store_password:
+        missing.append(store_password_name)
+    if missing:
+        raise ValueError(
+            "Android release signing is partially configured; missing "
+            + ", ".join(missing)
+        )
+    keystore_path = Path(keystore).expanduser().resolve()
+    if not keystore_path.is_file():
+        raise ValueError(f"Android keystore does not exist: {keystore_path}")
+    return {
+        "INFERNUX_ANDROID_KEYSTORE": str(keystore_path),
+        "INFERNUX_ANDROID_KEY_ALIAS": key_alias,
+        "INFERNUX_ANDROID_KEYSTORE_PASSWORD": store_password,
+        "INFERNUX_ANDROID_KEY_PASSWORD": key_password,
+    }
 
 
 def _configure_project(
