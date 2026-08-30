@@ -47,6 +47,9 @@ class SmokeResult:
     reinstalled_after_signature_mismatch: bool
     resume_cycles: int
     back_action: bool
+    touch_action: bool
+    landscape_surface: bool
+    surface_extents: tuple[tuple[int, int], ...]
     fatal_count: int
     abandoned_buffer_count: int
     surface_creation_count: int
@@ -241,6 +244,39 @@ def physical_display_size(output: str) -> tuple[int, int] | None:
     return None
 
 
+def vulkan_surface_extents(log: str) -> tuple[tuple[int, int], ...]:
+    """Read the actual swapchain extents emitted by the Vulkan backend."""
+    return tuple(
+        (int(match.group(1)), int(match.group(2)))
+        for match in re.finditer(
+            r"INFERNUX_VULKAN_SURFACE\b[^\r\n]*\bextent=(\d+)x(\d+)", log
+        )
+    )
+
+
+def inject_touch_gesture(
+    adb: Adb, width: int, height: int, *, step_delay: float = 0.25
+) -> None:
+    """Inject a real multi-frame touchscreen gesture through Android input."""
+    points = (
+        ("DOWN", max(1, width // 4), max(1, height * 3 // 5)),
+        ("MOVE", max(1, width // 3), max(1, height // 2)),
+        ("UP", max(1, width * 2 // 5), max(1, height * 2 // 5)),
+    )
+    for index, (phase, x, y) in enumerate(points):
+        adb.run(
+            "shell",
+            "input",
+            "touchscreen",
+            "motionevent",
+            phase,
+            str(x),
+            str(y),
+        )
+        if index + 1 < len(points):
+            time.sleep(step_delay)
+
+
 def unlock_device(adb: Adb, timeout: float = 10.0) -> None:
     """Wake and dismiss a non-secure keyguard before launching the Player."""
     adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
@@ -317,6 +353,22 @@ def _wait_for_foreground(adb: Adb, package: str, timeout: float = 10.0) -> None:
     )
 
 
+def _wait_for_input_focus(adb: Adb, package: str, timeout: float = 10.0) -> None:
+    """Wait until Android will dispatch injected pointer events to the Player."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        window_state = adb.run("shell", "dumpsys", "window", "displays", check=False)
+        if any(
+            "mCurrentFocus=" in line and package in line
+            for line in window_state.splitlines()
+        ):
+            return
+        time.sleep(0.25)
+    raise RuntimeError(
+        f"Android Player did not gain input focus within {timeout:.1f}s"
+    )
+
+
 def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
     started = time.perf_counter()
     controller = Adb(arguments.adb)
@@ -374,6 +426,32 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
                 f"got {ready_pid}"
             )
 
+    touch_action = False
+    if arguments.touch:
+        extents = vulkan_surface_extents(log)
+        if not extents:
+            raise RuntimeError("Android Player emitted no Vulkan surface extent")
+        _wait_for_foreground(adb, arguments.package)
+        _wait_for_input_focus(adb, arguments.package)
+        # The focused window can be published one frame before an Android
+        # rotation transition's input consumer is removed. Give that consumer
+        # one short frame-independent settling interval before injection.
+        time.sleep(0.75)
+        width, height = extents[-1]
+        inject_touch_gesture(adb, width, height)
+        time.sleep(1.0)
+        log = adb.run("logcat", "-d", "-v", "brief", check=False)
+        touch_action = (
+            arguments.expect_touch_begin_log in log
+            and arguments.expect_touch_end_log in log
+        )
+        if not touch_action:
+            raise RuntimeError(
+                "Injected Android touchscreen gesture did not reach gameplay: "
+                f"expected {arguments.expect_touch_begin_log!r} and "
+                f"{arguments.expect_touch_end_log!r}"
+            )
+
     back_action = False
     if not arguments.no_back:
         _wait_for_foreground(adb, arguments.package)
@@ -414,7 +492,8 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         ]
         raise RuntimeError("Fatal Android log entries:\n" + "\n".join(fatal_lines))
 
-    surface_creation_count = log.count("INFERNUX_VULKAN_SURFACE")
+    surface_extents = vulkan_surface_extents(log)
+    surface_creation_count = len(surface_extents)
     max_surface_creations = (
         arguments.max_surface_creations
         if arguments.max_surface_creations is not None
@@ -431,6 +510,14 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             "Android Player kept rendering to an abandoned SurfaceView: "
             f"{abandoned_buffer_count} errors, limit {arguments.max_abandoned_buffers}"
         )
+    landscape_surface = bool(
+        surface_extents and surface_extents[-1][0] > surface_extents[-1][1]
+    )
+    if arguments.expect_landscape and not landscape_surface:
+        raise RuntimeError(
+            "Android Player final Vulkan surface is not landscape: "
+            f"{surface_extents[-1] if surface_extents else '<missing>'}"
+        )
 
     return SmokeResult(
         serial=device.serial,
@@ -444,6 +531,9 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         reinstalled_after_signature_mismatch=reinstalled_after_signature_mismatch,
         resume_cycles=arguments.resume_cycles,
         back_action=back_action,
+        touch_action=touch_action,
+        landscape_surface=landscape_surface,
+        surface_extents=surface_extents,
         fatal_count=fatal_count,
         abandoned_buffer_count=abandoned_buffer_count,
         surface_creation_count=surface_creation_count,
@@ -485,6 +575,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-install", action="store_true")
     parser.add_argument("--no-back", action="store_true")
+    parser.add_argument(
+        "--touch",
+        action="store_true",
+        help="Inject one touchscreen gesture and require gameplay touch markers",
+    )
+    parser.add_argument(
+        "--expect-touch-begin-log", default="BALANCE // TOUCH BEGIN"
+    )
+    parser.add_argument(
+        "--expect-touch-end-log", default="BALANCE // TOUCH END"
+    )
+    parser.add_argument(
+        "--expect-landscape",
+        action="store_true",
+        help="Require the final Vulkan swapchain extent to be landscape",
+    )
     parser.add_argument(
         "--keep-running",
         action="store_true",

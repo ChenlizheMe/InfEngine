@@ -243,6 +243,7 @@ jobs:
               out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \
               --serial emulator-5554 \
               --no-back \
+              --expect-landscape \
               --resume-cycles 2 \
               --report out/test-results/android-player-smoke.json
 

@@ -104,14 +104,96 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
     module = _module()
 
     arguments = module._parser().parse_args(
-        ["player.apk", "--expect-ready-log", "BALANCE 040 //"]
+        [
+            "player.apk",
+            "--expect-ready-log",
+            "BALANCE 040 //",
+            "--touch",
+            "--expect-landscape",
+        ]
     )
 
     assert arguments.expect_ready_log == "BALANCE 040 //"
     assert arguments.serial is None
     assert arguments.max_surface_creations is None
     assert arguments.max_abandoned_buffers == 8
+    assert arguments.touch
+    assert arguments.expect_landscape
     assert not arguments.keep_running
+
+
+def test_vulkan_surface_extents_follow_creation_order():
+    module = _module()
+    log = """
+I/SDL: INFERNUX_VULKAN_SURFACE requested=1220x2712 current=1220x2712 extent=1220x2712 currentTransform=1 preTransform=1 supportedTransforms=3
+I/SDL: unrelated
+I/SDL: INFERNUX_VULKAN_SURFACE requested=2712x1220 current=2712x1220 extent=2712x1220 currentTransform=2 preTransform=1 supportedTransforms=3
+"""
+
+    assert module.vulkan_surface_extents(log) == ((1220, 2712), (2712, 1220))
+
+
+def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
+    module = _module()
+    commands = []
+    delays = []
+
+    class FakeAdb:
+        def run(self, *arguments):
+            commands.append(arguments)
+
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    module.inject_touch_gesture(FakeAdb(), 3200, 1440)
+
+    assert commands == [
+        (
+            "shell",
+            "input",
+            "touchscreen",
+            "motionevent",
+            "DOWN",
+            "800",
+            "864",
+        ),
+        (
+            "shell",
+            "input",
+            "touchscreen",
+            "motionevent",
+            "MOVE",
+            "1066",
+            "720",
+        ),
+        (
+            "shell",
+            "input",
+            "touchscreen",
+            "motionevent",
+            "UP",
+            "1280",
+            "576",
+        ),
+    ]
+    assert delays == [0.25, 0.25]
+
+
+def test_input_focus_requires_the_player_current_focus():
+    module = _module()
+    states = iter(
+        (
+            "mCurrentFocus=Window{123 u0 com.miui.home/.Launcher}",
+            "mCurrentFocus=Window{456 u0 com.infernux.bootstrap/.InfernuxActivity}",
+        )
+    )
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert arguments == ("shell", "dumpsys", "window", "displays")
+            assert options == {"check": False}
+            return next(states)
+
+    module._wait_for_input_focus(FakeAdb(), "com.infernux.bootstrap")
 
 
 def test_smoke_parser_allows_manual_session_to_remain_running():
