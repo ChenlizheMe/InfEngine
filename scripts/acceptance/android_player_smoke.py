@@ -49,6 +49,7 @@ class SmokeResult:
     back_action: bool
     touch_action: bool
     touch_attempts: int
+    required_logs: tuple[str, ...]
     landscape_surface: bool
     surface_extents: tuple[tuple[int, int], ...]
     fatal_count: int
@@ -337,6 +338,37 @@ def _wait_for_player(
     )
 
 
+def _wait_for_required_logs(
+    adb: Adb,
+    package: str,
+    expected_pid: str,
+    required_logs: tuple[str, ...],
+    timeout: float,
+) -> str:
+    """Wait until one Player process has published every required marker."""
+
+    deadline = time.monotonic() + timeout
+    last_log = ""
+    missing = required_logs
+    while time.monotonic() < deadline:
+        current_pid = adb.run("shell", "pidof", package, check=False).strip()
+        if current_pid != expected_pid:
+            raise RuntimeError(
+                "Android Player PID changed while waiting for runtime diagnostics: "
+                f"expected {expected_pid}, got {current_pid or '<missing>'}"
+            )
+        last_log = adb.run("logcat", "-d", "-v", "brief", check=False)
+        missing = tuple(marker for marker in required_logs if marker not in last_log)
+        if not missing:
+            return last_log
+        time.sleep(0.5)
+    raise RuntimeError(
+        "Android Player did not publish required runtime diagnostics within "
+        f"{timeout:.1f}s: {list(missing)!r}\n"
+        + "\n".join(last_log.splitlines()[-120:])
+    )
+
+
 def _wait_for_foreground(adb: Adb, package: str, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     last_state = ""
@@ -500,7 +532,17 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
                 f"Player PID changed across resume: expected {pid}, got {current_pid}"
             )
 
-    log = adb.run("logcat", "-d", "-v", "brief", check=False)
+    required_logs = tuple(dict.fromkeys(arguments.require_log))
+    if required_logs:
+        log = _wait_for_required_logs(
+            adb,
+            arguments.package,
+            pid,
+            required_logs,
+            arguments.startup_timeout,
+        )
+    else:
+        log = adb.run("logcat", "-d", "-v", "brief", check=False)
     fatal_count = sum(log.count(pattern) for pattern in _FATAL_PATTERNS)
     if fatal_count:
         fatal_lines = [
@@ -549,6 +591,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         back_action=back_action,
         touch_action=touch_action,
         touch_attempts=touch_attempts,
+        required_logs=required_logs,
         landscape_surface=landscape_surface,
         surface_extents=surface_extents,
         fatal_count=fatal_count,
@@ -570,6 +613,12 @@ def _parser() -> argparse.ArgumentParser:
         default="com.infernux.bootstrap/com.infernux.bootstrap.InfernuxActivity",
     )
     parser.add_argument("--expect-log", default="ENGINE_LOADED")
+    parser.add_argument(
+        "--require-log",
+        action="append",
+        default=[],
+        help="Require this runtime log marker; may be repeated",
+    )
     parser.add_argument(
         "--expect-ready-log",
         default="",

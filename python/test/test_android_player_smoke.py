@@ -110,6 +110,10 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
             "BALANCE 040 //",
             "--touch",
             "--expect-landscape",
+            "--require-log",
+            "INFERNUX_ACCEPTANCE_LINE_READY",
+            "--require-log",
+            "INFERNUX_ACCEPTANCE_PARTICLE_READY",
         ]
     )
 
@@ -118,9 +122,38 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
     assert arguments.max_surface_creations is None
     assert arguments.max_abandoned_buffers == 8
     assert arguments.touch_attempts == 3
+    assert arguments.require_log == [
+        "INFERNUX_ACCEPTANCE_LINE_READY",
+        "INFERNUX_ACCEPTANCE_PARTICLE_READY",
+    ]
     assert arguments.touch
     assert arguments.expect_landscape
     assert not arguments.keep_running
+
+
+def test_required_runtime_logs_wait_for_every_marker(monkeypatch):
+    module = _module()
+    logs = iter(("LINE_READY", "LINE_READY\nPARTICLE_READY\nANIMATION_READY"))
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert options == {"check": False}
+            if arguments == ("shell", "pidof", "com.infernux.bootstrap"):
+                return "321"
+            assert arguments == ("logcat", "-d", "-v", "brief")
+            return next(logs)
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    log = module._wait_for_required_logs(
+        FakeAdb(),
+        "com.infernux.bootstrap",
+        "321",
+        ("LINE_READY", "PARTICLE_READY", "ANIMATION_READY"),
+        5.0,
+    )
+
+    assert "ANIMATION_READY" in log
 
 
 def test_vulkan_surface_extents_follow_creation_order():

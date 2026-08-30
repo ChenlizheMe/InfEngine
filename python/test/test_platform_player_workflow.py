@@ -58,6 +58,7 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
         "a421e43855164a8197daf9d8d40fe71c6996bb0d" in text
     )
     assert '"--keep-running"' in smoke
+    assert '"--require-log"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke
 
 
