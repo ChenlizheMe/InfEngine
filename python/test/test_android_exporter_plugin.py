@@ -154,6 +154,74 @@ def test_android_doctor_reports_every_missing_root(monkeypatch):
     }
 
 
+def test_android_exporter_doctor_requires_target_python_runtime(
+    monkeypatch, tmp_path
+):
+    module = _android_module(monkeypatch)
+    for name, value in _toolchain(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("INFERNUX_ANDROID_PYTHON_PREFIX_ARM64", raising=False)
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(),
+    )
+
+    report = module.AndroidPlatformExporter().doctor(request)
+
+    assert not report.available
+    assert [item.code for item in report.diagnostics] == [
+        "android.python.runtime-missing"
+    ]
+    assert "INFERNUX_ANDROID_PYTHON_PREFIX_ARM64" in report.diagnostics[0].message
+
+
+def test_android_exporter_doctor_validates_target_python_runtime(
+    monkeypatch, tmp_path
+):
+    module = _android_module(monkeypatch)
+    for name, value in _toolchain(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    prefix = tmp_path / "python-arm64"
+    prefix.mkdir()
+    _stamp_android_python_prefix(module, prefix, abi="arm64-v8a")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"android_python_prefix": str(prefix)}),
+    )
+
+    report = module.AndroidPlatformExporter().doctor(request)
+
+    assert report.available
+    assert report.details["python_prefix"] == str(prefix.resolve())
+
+
+def test_android_exporter_doctor_rejects_wrong_runtime_abi(monkeypatch, tmp_path):
+    module = _android_module(monkeypatch)
+    for name, value in _toolchain(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    prefix = tmp_path / "python-x64"
+    prefix.mkdir()
+    _stamp_android_python_prefix(module, prefix, abi="x86_64")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"android_python_prefix": str(prefix)}),
+    )
+
+    report = module.AndroidPlatformExporter().doctor(request)
+
+    assert not report.available
+    assert [item.code for item in report.diagnostics] == [
+        "android.python.runtime-invalid"
+    ]
+    assert "targets x86_64" in report.diagnostics[0].message
+
+
 def test_android_exporter_plan_is_inspectable(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     exporter = module.AndroidPlatformExporter()

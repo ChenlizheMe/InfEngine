@@ -94,7 +94,57 @@ class AndroidPlatformExporter(PlatformExporter):
         )
 
     def doctor(self, request: BuildRequest) -> CapabilityReport:
-        return inspect_android_toolchain(request.target)
+        toolchain = inspect_android_toolchain(request.target)
+        if not toolchain.available:
+            return toolchain
+
+        abi = (
+            "x86_64"
+            if request.target == "android-x64-emulator"
+            else "arm64-v8a"
+        )
+        python_prefix = _python_prefix(request, abi)
+        details = dict(toolchain.details)
+        if python_prefix is None:
+            suffix = "X86_64" if abi == "x86_64" else "ARM64"
+            return CapabilityReport(
+                False,
+                (
+                    BuildDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        "android.python.runtime-missing",
+                        "Install an Android CPython 3.13 runtime, then set "
+                        "android_python_prefix in the build profile or "
+                        f"INFERNUX_ANDROID_PYTHON_PREFIX_{suffix}.",
+                        source=self.exporter_id,
+                        detail={"abi": abi},
+                    ),
+                ),
+                details,
+            )
+        details["python_prefix"] = str(python_prefix)
+        try:
+            validate_runtime_manifest(
+                python_prefix,
+                expected_abi=abi,
+                expected_python_series=_ANDROID_PYTHON_SERIES,
+                application_minimum_android_api=_ANDROID_MINIMUM_API,
+            )
+        except (OSError, ValueError) as error:
+            return CapabilityReport(
+                False,
+                (
+                    BuildDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        "android.python.runtime-invalid",
+                        str(error),
+                        source=self.exporter_id,
+                        detail={"abi": abi, "python_prefix": str(python_prefix)},
+                    ),
+                ),
+                details,
+            )
+        return CapabilityReport(True, toolchain.diagnostics, details)
 
     def create_plan(self, request: BuildRequest) -> BuildPlan:
         architecture = (
@@ -159,6 +209,7 @@ class AndroidPlatformExporter(PlatformExporter):
         )
         python_prefix = _python_prefix(request, abi)
         if python_prefix is None:
+            suffix = "X86_64" if abi == "x86_64" else "ARM64"
             return BuildResult(
                 request.target,
                 False,
@@ -167,7 +218,8 @@ class AndroidPlatformExporter(PlatformExporter):
                         DiagnosticSeverity.ERROR,
                         "android.python.runtime-missing",
                         "Provide an Android CPython prefix through the build profile option "
-                        "android_python_prefix or INFERNUX_ANDROID_PYTHON_PREFIX_X86_64.",
+                        "android_python_prefix or "
+                        f"INFERNUX_ANDROID_PYTHON_PREFIX_{suffix}.",
                         source=self.exporter_id,
                         detail={"abi": abi},
                     ),
