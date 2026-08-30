@@ -90,6 +90,40 @@ def test_desktop_target_loads_the_core_exporter():
     assert [target.id for target in exporter.targets()] == [module.DESKTOP_TARGET]
 
 
+def test_source_player_host_is_discovered_from_the_preset_build(tmp_path):
+    module = _module()
+    native_root = tmp_path / "python-sync"
+    native_root.mkdir()
+    host_name = (
+        "InfernuxPlayerHost.exe"
+        if module.sys.platform == "win32"
+        else "InfernuxPlayerHost"
+    )
+    host = tmp_path / "player-runtime" / host_name
+    host.parent.mkdir()
+    host.write_bytes(b"host")
+    environment = {"INFERNUX_NATIVE_MODULE_DIR": str(native_root)}
+
+    discovered = module._configure_source_player_host(environment)
+
+    assert discovered == host.resolve()
+    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())
+
+
+def test_explicit_player_host_is_never_replaced(tmp_path):
+    module = _module()
+    explicit = tmp_path / "custom-host"
+    environment = {
+        "INFERNUX_PLAYER_HOST_PATH": str(explicit),
+        "INFERNUX_NATIVE_MODULE_DIR": str(tmp_path / "python-sync"),
+    }
+
+    discovered = module._configure_source_player_host(environment)
+
+    assert discovered == explicit.resolve()
+    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(explicit)
+
+
 def test_raw_build_tool_output_is_not_retained_as_phase_progress():
     module = _module()
 

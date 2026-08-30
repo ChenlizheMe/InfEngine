@@ -11,7 +11,7 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import MutableMapping, Sequence
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +76,29 @@ def _load_exporter(target: str):
         sys.path.insert(0, editor_root)
     module = importlib.import_module(module_name)
     return getattr(module, class_name)()
+
+
+def _configure_source_player_host(
+    environment: MutableMapping[str, str] | None = None,
+) -> Path | None:
+    """Bind a preset-built desktop host when this CLI runs from a source tree."""
+    accepted_environment = os.environ if environment is None else environment
+    configured = accepted_environment.get("INFERNUX_PLAYER_HOST_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    native_root = accepted_environment.get("INFERNUX_NATIVE_MODULE_DIR", "").strip()
+    if not native_root:
+        return None
+    host_name = "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
+    candidate = (
+        Path(native_root).expanduser().resolve().parent
+        / "player-runtime"
+        / host_name
+    )
+    if not candidate.is_file():
+        return None
+    accepted_environment["INFERNUX_PLAYER_HOST_PATH"] = str(candidate)
+    return candidate
 
 
 def _diagnostic_payload(item) -> dict[str, object]:
@@ -166,6 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     python_root = str(REPOSITORY_ROOT / "python")
     if python_root not in sys.path:
         sys.path.insert(0, python_root)
+    _configure_source_player_host()
     from Infernux.engine.build import (
         BuildConfiguration,
         BuildExporterRegistry,
