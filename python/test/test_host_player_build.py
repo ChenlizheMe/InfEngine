@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ from Infernux.engine.build import (
     exporter_registry,
 )
 from Infernux.host import EditorAutomationHost, OperationError
+from Infernux.plugins.registry import PluginRegistry
 
 
 class _FixtureExporter(PlatformExporter):
@@ -120,6 +122,30 @@ def test_host_build_reports_available_targets_for_missing_plugin(tmp_path):
     assert error.value.details["available_targets"] == []
 
 
+def test_host_build_reports_required_platform_plugin(tmp_path):
+    project = _project(tmp_path)
+    PluginRegistry(str(project)).add_package(
+        "infernux/platform-android",
+        name="Infernux Android Platform",
+        source={"type": "git", "location": "https://example.test/android.git"},
+        category="Platform",
+        targets=("android-arm64",),
+    )
+
+    with pytest.raises(OperationError) as error:
+        EditorAutomationHost().build_player(
+            str(project),
+            target="android-arm64",
+            persist_settings=False,
+        )
+
+    assert error.value.code == "platform_plugin_required"
+    assert error.value.details["requested_target"] == "android-arm64"
+    assert error.value.details["plugin_reference"] == "infernux/platform-android"
+    assert error.value.details["installed"] is False
+    assert error.value.details["enabled"] is False
+
+
 def test_host_build_target_catalog_is_json_serializable():
     payload = EditorAutomationHost().player_build_targets()
 
@@ -128,3 +154,36 @@ def test_host_build_target_catalog_is_json_serializable():
     assert "current_host_target" in encoded
     assert payload["current_host_target"] == ""
     assert payload["targets"] == []
+
+
+def test_host_build_target_catalog_exposes_required_platform_plugin(monkeypatch):
+    monkeypatch.setattr(
+        "Infernux.engine.build.platform_support_catalog",
+        lambda: (
+            SimpleNamespace(
+                target_id="web-wasm32",
+                package_reference="infernux/platform-web",
+                installed=False,
+                enabled=False,
+                registered=False,
+                cached=True,
+            ),
+        ),
+    )
+
+    payload = EditorAutomationHost().player_build_targets()
+
+    assert payload["targets"] == [
+        {
+            "id": "web-wasm32",
+            "display_name": "Web Wasm32",
+            "platform": "web",
+            "architecture": "",
+            "capabilities": None,
+            "available": False,
+            "plugin_reference": "infernux/platform-web",
+            "installed": False,
+            "enabled": False,
+            "cached": True,
+        }
+    ]

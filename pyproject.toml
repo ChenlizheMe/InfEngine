@@ -37,6 +37,9 @@ Documentation = "https://infernux-engine.com/wiki.html"
 Repository = "https://github.com/ChenlizheMe/Infernux"
 Issues = "https://github.com/ChenlizheMe/Infernux/issues"
 
+[project.scripts]
+inx = "Infernux.plugins.cli:main"
+
 [project.optional-dependencies]
 launcher = ["PySide6>=6.5.0"]
 
@@ -71,8 +74,8 @@ Infernux = [
     "resources/pictures/*.png",
     "resources/schemas/*.json",
     "resources/project_templates/*.txt",
+    "resources/*.inxpkg",
     "resources/official_packages/*.json",
-    "resources/official_packages/*.inxpkg",
 ]
 
 [tool.setuptools.exclude-package-data]

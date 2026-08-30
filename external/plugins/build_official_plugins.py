@@ -49,6 +49,7 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
             raise RuntimeError("Official plugin source entry must be an object")
         relative = str(source_entry.get("path", "")).strip()
         repository = str(source_entry.get("repository", "")).strip()
+        subdirectory = str(source_entry.get("subdirectory", "")).strip().strip("/")
         plugin_source = (source_root / relative).resolve()
         if plugin_source.parent != source_root.resolve() or not plugin_source.is_dir():
             raise RuntimeError(f"Official plugin source is missing or unsafe: {relative}")
@@ -66,6 +67,14 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         )
         artifact_path = output_root / artifact
         artifact_payload = artifact_path.read_bytes()
+        source: dict[str, object] = {}
+        if repository:
+            source = {
+                "type": "github" if "github.com" in repository.casefold() else "git",
+                "location": repository,
+            }
+            if subdirectory:
+                source["subdirectory"] = subdirectory
         registry.append(
             {
                 "reference": reference,
@@ -79,6 +88,9 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
                 "engine": str(preview.metadata.get("engine", "")),
                 "dependencies": list(preview.metadata.get("dependencies", [])),
                 "repository": repository,
+                "source": source,
+                "category": str(source_entry.get("category", "Other")),
+                "targets": [str(value) for value in source_entry.get("targets", [])],
                 "pages": list(preview.metadata.get("pages", [])),
             }
         )

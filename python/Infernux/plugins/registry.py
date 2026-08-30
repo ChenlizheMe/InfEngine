@@ -164,6 +164,8 @@ class PluginRegistry:
         dependencies: Iterable[str] = (),
         name: str = "",
         pages: Iterable[Mapping[str, object] | str] = (),
+        category: str = "Other",
+        targets: Iterable[str] = (),
     ) -> dict[str, object]:
         reference = validate_reference(reference)
         source_value = dict(source)
@@ -182,6 +184,8 @@ class PluginRegistry:
             "dependencies": sorted({validate_reference(item) for item in dependencies}),
             "source": source_value,
             "pages": [normalize_page_descriptor(page) for page in pages],
+            "category": str(category or "Other"),
+            "targets": sorted({str(target) for target in targets if str(target)}),
         }
         packages = [
             entry

@@ -26,6 +26,7 @@ DEFAULT_LIBRARIES_FILENAME = "default-libraries.json"
 OFFICIAL_REGISTRY_SCHEMA = "infernux.official_plugin_registry"
 DEFAULT_LIBRARIES_SCHEMA = "infernux.default_libraries"
 CATALOG_VERSION = 1
+_REMOTE_SOURCE_TYPES = {"git", "github", "url"}
 
 
 class OfficialCatalogError(RuntimeError):
@@ -65,6 +66,24 @@ def _read_document(path: str, schema: str) -> dict[str, object]:
     return document
 
 
+def _remote_source(raw: object, *, reference: str) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        raise OfficialCatalogError(
+            f"Official plugin has no downloadable source: {reference}"
+        )
+    source = dict(raw)
+    source_type = str(source.get("type", "")).strip().casefold()
+    location = str(source.get("location", "")).strip()
+    if source_type not in _REMOTE_SOURCE_TYPES or not location:
+        raise OfficialCatalogError(
+            f"Official plugin source is invalid: {reference}"
+        )
+    source["type"] = source_type
+    source["location"] = location
+    source["official"] = True
+    return source
+
+
 def sync_official_registry(
     project_root: str,
     *,
@@ -99,39 +118,49 @@ def sync_official_registry(
         if not artifact or os.path.basename(artifact) != artifact:
             raise OfficialCatalogError("Official plugin registry entry is invalid")
         package_path = os.path.join(official_packages, artifact)
-        if not os.path.isfile(package_path):
-            raise OfficialCatalogError(
-                f"Official plugin artifact is missing: {package_path}"
-            )
         expected_sha256 = str(raw.get("artifact_sha256", "")).strip().casefold()
-        try:
-            actual_sha256 = _file_sha256(package_path)
-        except OSError as exc:
+        if not expected_sha256:
             raise OfficialCatalogError(
-                f"Official plugin artifact is unreadable: {package_path}"
-            ) from exc
-        if not expected_sha256 or actual_sha256 != expected_sha256:
-            raise OfficialCatalogError(
-                f"Official plugin artifact hash mismatch: {reference}: {package_path}"
+                f"Official plugin artifact hash is missing: {reference}"
             )
-        # Registry locations are project-relative and resolve through the
-        # Library/Resources mirror created from this exact engine version.
-        source = {
-            "type": "local",
-            "location": f"Library/Resources/official_packages/{artifact}",
-            "official": True,
-            "sha256": expected_sha256,
-        }
+        if os.path.isfile(package_path):
+            try:
+                actual_sha256 = _file_sha256(package_path)
+            except OSError as exc:
+                raise OfficialCatalogError(
+                    f"Official plugin artifact is unreadable: {package_path}"
+                ) from exc
+            if actual_sha256 != expected_sha256:
+                raise OfficialCatalogError(
+                    f"Official plugin artifact hash mismatch: {reference}: {package_path}"
+                )
+            # Development catalogs and release assembly may keep the artifact
+            # beside the catalog. Prefer that exact verified blob when present.
+            source = {
+                "type": "local",
+                "location": f"Library/Resources/official_packages/{artifact}",
+                "official": True,
+                "sha256": expected_sha256,
+            }
+        else:
+            # Host wheels intentionally carry only their direct built-in
+            # packages. Other official entries remain discoverable and are
+            # acquired on demand from their catalog-owned source.
+            source = _remote_source(raw.get("source"), reference=reference)
+            source["release_sha256"] = expected_sha256
+            source["reference"] = reference
         repository = str(raw.get("repository", "")).strip()
         if repository:
             source["repository"] = repository
         dependencies = raw.get("dependencies", [])
         pages = raw.get("pages", [])
         intros = raw.get("intros", {})
+        targets = raw.get("targets", [])
         if (
             not isinstance(dependencies, list)
             or not isinstance(pages, list)
             or not isinstance(intros, Mapping)
+            or not isinstance(targets, list)
         ):
             raise OfficialCatalogError(
                 f"Official plugin registry entry has invalid content metadata: {reference}"
@@ -160,6 +189,8 @@ def sync_official_registry(
                 "intro": str(raw.get("intro", "")),
                 "intros": dict(intros),
                 "pages": normalized_pages,
+                "category": str(raw.get("category", "Other")),
+                "targets": [str(value) for value in targets],
                 "source": source,
             }
         )
@@ -189,8 +220,10 @@ def sync_official_registry(
                 dependencies=item["dependencies"],
                 intro=str(item["intro"]),
                 intros=item["intros"],
-                pages=item["pages"],
-                source=item["source"],
+            pages=item["pages"],
+            category=str(item["category"]),
+            targets=item["targets"],
+            source=item["source"],
             )
         )
     return tuple(added)
@@ -355,7 +388,12 @@ def bootstrap_new_project(project_root: str) -> tuple[PluginState, ...]:
     from Infernux.engine.library_sync import sync_resources
 
     sync_resources(project_root)
-    return install_default_libraries(project_root)
+    manager = PluginManager(project_root, runtime=False)
+    try:
+        install_bundled_packages(project_root, manager=manager)
+        return install_default_libraries(project_root, manager=manager)
+    finally:
+        manager.shutdown()
 
 
 def main(argv: list[str] | None = None) -> int:

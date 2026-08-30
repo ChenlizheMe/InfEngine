@@ -10,6 +10,7 @@ from .content import (
     split_markdown_images,
 )
 from .manager import PackageConflictError, PluginManager, PluginState
+from .cache import PackageBlobCache, package_cache_root
 from .package import (
     InxPackage,
     InxPackagePreview,
@@ -24,10 +25,12 @@ __all__ = [
     "InxPreload",
     "PLUGIN_PAGES_DIRECTORY",
     "PackageConflictError",
+    "PackageBlobCache",
     "PreloadContext",
     "PluginManager",
     "PluginRegistry",
     "PluginState",
+    "package_cache_root",
     "markdown_to_plain_text",
     "localized_intro",
     "parse_markdown_blocks",

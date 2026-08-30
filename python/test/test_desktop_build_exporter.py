@@ -184,7 +184,11 @@ def test_host_exporter_publishes_catalog_for_a_clean_standalone_project(
     assert lifecycle == ["publish", "builder"]
 
 
-def test_host_build_target_follows_installed_plugin_lifecycle(tmp_path):
+def test_host_build_target_follows_installed_plugin_lifecycle(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "INFERNUX_PACKAGE_CACHE_ROOT",
+        str(tmp_path / "hub-package-cache"),
+    )
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()

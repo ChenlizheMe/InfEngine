@@ -40,6 +40,7 @@ from Infernux.engine.build import (
     build_progress_fraction,
     current_host_player_target,
     exporter_registry,
+    platform_support_catalog,
 )
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.game_builder import (
@@ -230,6 +231,11 @@ class BuildSettingsPanel(EditorPanel):
         for target in targets:
             if target.id == selected:
                 return target
+        # A persisted non-empty target is intentional. If its platform plugin
+        # is unavailable, keep the selection visible instead of silently
+        # changing the project to the current host target.
+        if selected:
+            return None
         desktop = current_host_player_target(targets)
         if desktop is not None:
             for target in targets:
@@ -239,6 +245,8 @@ class BuildSettingsPanel(EditorPanel):
 
     def _synchronize_build_target(self, *, persist: bool) -> object | None:
         target = self._resolved_build_target()
+        if str(getattr(self, "_build_target", "") or ""):
+            return target
         identifier = str(target.id) if target is not None else ""
         if identifier == getattr(self, "_build_target", ""):
             return target
@@ -435,8 +443,23 @@ class BuildSettingsPanel(EditorPanel):
     def _render_target_section(self, ctx):
         targets = self._available_build_targets()
         target = self._synchronize_build_target(persist=True)
+        target_by_id = {str(item.id): item for item in targets}
+        support_by_id = {
+            item.target_id: item
+            for item in platform_support_catalog(get_project_root())
+            if not item.registered
+        }
+        target_ids = [str(item.id) for item in targets]
+        target_ids.extend(
+            identifier
+            for identifier in support_by_id
+            if identifier not in target_by_id
+        )
+        selected_id = str(getattr(self, "_build_target", "") or "")
+        if selected_id and selected_id not in target_ids:
+            target_ids.append(selected_id)
         ctx.label(t("build.target"))
-        if not targets or target is None:
+        if not target_ids:
             ctx.record_semantic_item(
                 "status",
                 t("build.target"),
@@ -447,24 +470,66 @@ class BuildSettingsPanel(EditorPanel):
             ctx.label(t("build.no_targets"))
             return
 
-        target_ids = [str(item.id) for item in targets]
-        selected_index = target_ids.index(str(target.id))
-        labels = [item.display_name for item in targets]
+        if not selected_id:
+            selected_id = str(target.id) if target is not None else target_ids[0]
+            self._build_target = selected_id
+            self._save()
+        selected_index = target_ids.index(selected_id)
+        labels = []
+        for identifier in target_ids:
+            installed_target = target_by_id.get(identifier)
+            if installed_target is not None:
+                labels.append(installed_target.display_name)
+                continue
+            support = support_by_id.get(identifier)
+            display = identifier.replace("-", " ").strip().title()
+            if support is not None:
+                display = f"{display} — {t('build.plugin_required_short')}"
+            else:
+                display = f"{display} — {t('build.target_unavailable_short')}"
+            labels.append(display)
         next_index = ctx.combo("##build_target", selected_index, labels)
-        next_index = max(0, min(len(targets) - 1, int(next_index)))
-        selected = targets[next_index]
+        next_index = max(0, min(len(target_ids) - 1, int(next_index)))
+        next_id = target_ids[next_index]
         ctx.record_semantic_item(
             "combo",
             t("build.target"),
             True,
             "build_settings.target",
-            string_value=str(selected.id),
+            string_value=next_id,
         )
-        if str(selected.id) != self._build_target:
-            self._build_target = str(selected.id)
+        if next_id != self._build_target:
+            self._build_target = next_id
             self._save()
 
-        if selected.platform == "android":
+        selected = target_by_id.get(next_id)
+        selected_support = support_by_id.get(next_id)
+        if selected_support is not None:
+            ctx.dummy(0.0, 4.0)
+            message_key = (
+                "build.plugin_disabled"
+                if selected_support.installed and not selected_support.enabled
+                else "build.plugin_required"
+            )
+            ctx.text_wrapped(
+                t(message_key).format(
+                    reference=selected_support.package_reference,
+                )
+            )
+            ctx.record_semantic_item(
+                "status",
+                t("build.target"),
+                False,
+                "build_settings.target_support",
+                string_value=selected_support.package_reference,
+            )
+
+        selected_platform = (
+            str(selected.platform)
+            if selected is not None
+            else next_id.split("-", 1)[0]
+        )
+        if selected_platform == "android":
             ctx.same_line(0, 20)
             ctx.label(t("build.android_artifact"))
             ctx.same_line(0, 8)

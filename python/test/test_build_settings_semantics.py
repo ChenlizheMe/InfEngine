@@ -608,7 +608,7 @@ def test_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path):
     assert snapshot is not entries
 
 
-def test_build_target_falls_back_to_current_host_when_plugin_disappears(
+def test_build_target_remains_selected_when_platform_plugin_disappears(
     monkeypatch,
 ):
     desktop = _host_build_target()
@@ -619,8 +619,48 @@ def test_build_target_falls_back_to_current_host_when_plugin_disappears(
 
     selected = panel._synchronize_build_target(persist=True)
 
-    assert selected == desktop
-    assert panel._build_target == desktop.id
+    assert selected is None
+    assert panel._build_target == "android-arm64"
+
+
+def test_missing_platform_plugin_is_visible_and_blocks_build(monkeypatch):
+    desktop = _host_build_target()
+    support = SimpleNamespace(
+        target_id="android-arm64",
+        package_reference="infernux/platform-android",
+        installed=False,
+        enabled=False,
+        registered=False,
+    )
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "android-arm64"
+    panel._android_artifact = "apk"
+    panel._settings_controller = None
+    panel._building = False
+    panel._scenes = ["Assets/Main.scene"]
+    panel._output_dir = "C:/Builds/Game"
+    panel._save = lambda: None
+    monkeypatch.setattr(panel, "_available_build_targets", lambda: (desktop,))
+    monkeypatch.setattr(
+        "Infernux.engine.ui.build_settings_panel.platform_support_catalog",
+        lambda _root: (support,),
+    )
+    monkeypatch.setattr(
+        "Infernux.engine.ui.build_settings_panel.get_project_root",
+        lambda: "C:/Project",
+    )
+    ctx = _Context()
+
+    panel._render_target_section(ctx)
+
+    assert panel._build_target == "android-arm64"
+    assert not panel.can_start_build()
+    assert ctx.semantic_values["build_settings.target"] == "android-arm64"
+    assert (
+        ctx.semantic_values["build_settings.target_support"]
+        == "infernux/platform-android"
+    )
+    assert any("infernux/platform-android" in text for text in ctx.wrapped_texts)
 
 
 def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatch):

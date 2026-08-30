@@ -4,15 +4,19 @@ import hashlib
 import json
 import os
 import shutil
+import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import Infernux.plugins.manager as plugin_manager_module
 import Infernux.plugins.preload as preload_module
+import Infernux.plugins.github_releases as github_releases_module
 from Infernux.engine import player_package_native
 from Infernux.plugins import (
     InxPackage,
+    PackageBlobCache,
     PackageConflictError,
     PluginManager,
     PluginRegistry,
@@ -23,11 +27,17 @@ from Infernux.plugins import (
 )
 from Infernux.plugins.official import (
     OfficialCatalogError,
+    bootstrap_new_project,
     install_bundled_packages,
     sync_official_registry,
 )
 from Infernux.plugins.content import normalize_page_descriptor
 from Infernux.plugins.project_index import project_guid_paths
+from Infernux.plugins.github_releases import (
+    RELEASE_MANIFEST_NAME,
+    resolve_github_release,
+)
+from Infernux.plugins.cli import main as package_cli_main
 
 
 class _FakeInxPack:
@@ -77,7 +87,11 @@ class _FakeInxPack:
 
 
 @pytest.fixture(autouse=True)
-def _fake_inxpack():
+def _fake_inxpack(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "INFERNUX_PACKAGE_CACHE_ROOT",
+        str(tmp_path / "hub-package-cache"),
+    )
     _FakeInxPack.archives.clear()
     player_package_native.set_test_backend(_FakeInxPack)
     yield
@@ -374,6 +388,55 @@ def test_invalid_official_catalog_does_not_mutate_project_registry(tmp_path):
     assert registry.load() == before
 
 
+def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_path):
+    project = _project(tmp_path / "project")
+    resources = tmp_path / "resources"
+    official = resources / "official_packages"
+    official.mkdir(parents=True)
+    (official / "official-registry.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.official_plugin_registry",
+                "catalog_version": 1,
+                "packages": [
+                    {
+                        "reference": "infernux/platform-web",
+                        "name": "Infernux Web Platform",
+                        "version": "0.1.0",
+                        "engine": ">=0.4,<0.5",
+                        "artifact": "infernux.platform-web.inxpkg",
+                        "artifact_sha256": "a" * 64,
+                        "dependencies": [],
+                        "pages": [],
+                        "intros": {},
+                        "category": "Platform",
+                        "targets": ["web-wasm32"],
+                        "source": {
+                            "type": "github",
+                            "location": "https://github.com/example/infernux-web",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    added = sync_official_registry(str(project), resources_root=str(resources))
+
+    assert len(added) == 1
+    entry = PluginRegistry(str(project)).find("infernux/platform-web")
+    assert entry["category"] == "Platform"
+    assert entry["targets"] == ["web-wasm32"]
+    assert entry["source"] == {
+        "type": "github",
+        "location": "https://github.com/example/infernux-web",
+        "official": True,
+        "release_sha256": "a" * 64,
+        "reference": "infernux/platform-web",
+    }
+
+
 def test_startup_degrades_when_official_catalog_is_unavailable(tmp_path):
     project = _project(tmp_path / "project")
     registry = PluginRegistry(str(project))
@@ -436,6 +499,74 @@ def test_startup_installs_resources_root_inxpackages_without_official_catalog(
 
     assert manager.registry.installed_record("infernux/platform-fixture") is not None
     assert "Official plugin catalog is unavailable" in manager.official_catalog_error
+
+
+def test_new_project_installs_builtins_before_resolving_default_registry(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path / "source", "infernux/default-fixture")
+    (source / "Runtime").mkdir()
+    (source / "Runtime" / "fixture.py").write_text(
+        "DEFAULT_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    package = _export(source, resources / "infernux.default-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    official = resources / "official_packages"
+    official.mkdir(parents=True)
+    digest = hashlib.sha256(package.read_bytes()).hexdigest()
+    (official / "official-registry.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.official_plugin_registry",
+                "catalog_version": 1,
+                "packages": [
+                    {
+                        "reference": "infernux/default-fixture",
+                        "name": "Default Fixture",
+                        "version": "1.0.0",
+                        "artifact": "infernux.default-fixture.inxpkg",
+                        "artifact_sha256": digest,
+                        "dependencies": [],
+                        "pages": [],
+                        "intros": {},
+                        "source": {
+                            "type": "git",
+                            "location": "https://example.invalid/must-not-clone.git",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (official / "default-libraries.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.default_libraries",
+                "catalog_version": 1,
+                "libraries": ["infernux/default-fixture"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+    )
+    monkeypatch.setattr("Infernux.engine.library_sync.sync_resources", lambda _root: None)
+    monkeypatch.setattr(
+        PluginManager,
+        "_run_process",
+        staticmethod(lambda *_args, **_kwargs: pytest.fail("default cloned remotely")),
+    )
+
+    states = bootstrap_new_project(str(project))
+
+    assert [state.reference for state in states] == ["infernux/default-fixture"]
+    assert PluginRegistry(str(project)).installed_record(
+        "infernux/default-fixture"
+    ) is not None
 
 
 def test_duplicate_resources_root_package_reference_is_rejected_before_install(
@@ -607,7 +738,7 @@ def test_direct_package_uses_verified_cache_for_offline_reinstall_and_lock(tmp_p
     first = manager.install_package(str(package), install_dependencies=False)
     record = manager.registry.installed_record("vendor/offline")
     digest = hashlib.sha256(package.read_bytes()).hexdigest()
-    cache = project / f"Library/InxPackageCache/{digest}.inxpkg"
+    cache = Path(PackageBlobCache().path(digest))
     assert first.loaded is True
     assert cache.is_file()
     _FakeInxPack.archives[str(cache.resolve())] = dict(
@@ -627,6 +758,245 @@ def test_direct_package_uses_verified_cache_for_offline_reinstall_and_lock(tmp_p
     assert manager.registry.installed_record("vendor/offline")["source"][
         "cache_location"
     ].endswith(f"{digest}.inxpkg")
+    assert manager.registry.installed_record("vendor/offline")["source"][
+        "cache_scope"
+    ] == "hub"
+
+
+def test_projects_share_one_immutable_hub_package_blob(tmp_path):
+    source = _source(tmp_path / "source", "vendor/shared")
+    (source / "Data.bin").write_bytes(b"shared payload")
+    package = _export(source, tmp_path / "shared.inxpkg")
+    first_project = _project(tmp_path / "first-project")
+    second_project = _project(tmp_path / "second-project")
+    first = PluginManager(str(first_project))
+    second = PluginManager(str(second_project))
+
+    first.install_package(str(package), install_dependencies=False)
+    second.install_package(str(package), install_dependencies=False)
+
+    first_source = first.registry.installed_record("vendor/shared")["source"]
+    second_source = second.registry.installed_record("vendor/shared")["source"]
+    assert first_source["cache_scope"] == "hub"
+    assert second_source["cache_scope"] == "hub"
+    assert first_source["cache_location"] == second_source["cache_location"]
+    assert len(list((tmp_path / "hub-package-cache/blobs/sha256").glob("*.inxpkg"))) == 1
+
+    first.uninstall("vendor/shared")
+    assert Path(PackageBlobCache().path(first_source["sha256"])).is_file()
+    assert second.registry.installed_record("vendor/shared") is not None
+
+
+def test_download_and_import_are_separate_registry_actions(tmp_path):
+    source = _source(tmp_path / "source", "vendor/preloaded")
+    (source / "Data.bin").write_bytes(b"preloaded payload")
+    package = _export(source, tmp_path / "preloaded.inxpkg")
+    archive = dict(_FakeInxPack.archives[str(package.resolve())])
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.registry.add_package(
+        "vendor/preloaded",
+        source={"type": "local", "location": str(package)},
+        version="1.0.0",
+    )
+
+    downloaded = manager.download_reference("vendor/preloaded")
+
+    assert downloaded["cached"] is False
+    assert manager.registry.installed() == ()
+    cached = Path(downloaded["path"])
+    assert cached.is_file()
+    _FakeInxPack.archives[str(cached.resolve())] = archive
+    package.unlink()
+
+    installed = manager.install_reference(
+        "vendor/preloaded", install_dependencies=False
+    )
+    assert installed.reference == "vendor/preloaded"
+    assert manager.registry.installed_record("vendor/preloaded") is not None
+
+
+def test_github_source_prefers_highest_compatible_protocol_release(
+    tmp_path, monkeypatch
+):
+    artifact = b"released inxpackage"
+    digest = hashlib.sha256(artifact).hexdigest()
+    manifest = {
+        "$schema": "infernux.plugin_release",
+        "manifest_version": 1,
+        "reference": "vendor/released",
+        "version": "2.0.0",
+        "engine": ">=0.4,<0.5",
+        "artifact": {
+            "name": "vendor.released.inxpkg",
+            "sha256": digest,
+        },
+    }
+    releases = [
+        {
+            "tag_name": "v2.0.0",
+            "draft": False,
+            "prerelease": False,
+            "html_url": "https://github.com/vendor/released/releases/tag/v2.0.0",
+            "assets": [
+                {
+                    "name": RELEASE_MANIFEST_NAME,
+                    "browser_download_url": "https://downloads.invalid/manifest",
+                },
+                {
+                    "name": "vendor.released.inxpkg",
+                    "browser_download_url": "https://downloads.invalid/package",
+                },
+            ],
+        }
+    ]
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+            self.offset = 0
+            self.headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            if size < 0:
+                return self.payload
+            chunk = self.payload[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def open_request(request):
+        url = request.full_url
+        if url.startswith("https://api.github.com/"):
+            return Response(json.dumps(releases).encode("utf-8"))
+        if url.endswith("/manifest"):
+            return Response(json.dumps(manifest).encode("utf-8"))
+        if url.endswith("/package"):
+            return Response(artifact)
+        raise AssertionError(url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(
+        "Infernux.plugins.github_releases.InxPackage.inspect",
+        lambda _path: SimpleNamespace(
+            metadata={
+                "reference": "vendor/released",
+                "version": "2.0.0",
+                "engine": ">=0.4,<0.5",
+            }
+        ),
+    )
+
+    result = resolve_github_release(
+        "https://github.com/vendor/released",
+        str(tmp_path / "downloads"),
+        expected_reference="vendor/released",
+    )
+
+    assert Path(result.path).read_bytes() == artifact
+    assert result.source["type"] == "github-release"
+    assert result.source["release_tag"] == "v2.0.0"
+    assert result.source["sha256"] == digest
+
+
+def test_incompatible_github_protocol_release_never_falls_back_to_head(
+    tmp_path, monkeypatch
+):
+    releases = [
+        {
+            "tag_name": "v1.0.0",
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": RELEASE_MANIFEST_NAME,
+                    "browser_download_url": "https://downloads.invalid/manifest",
+                },
+                {
+                    "name": "vendor.strict.inxpkg",
+                    "browser_download_url": "https://downloads.invalid/package",
+                },
+            ],
+        }
+    ]
+    monkeypatch.setattr(
+        github_releases_module,
+        "_request_bytes",
+        lambda *_args, **_kwargs: json.dumps(releases).encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        github_releases_module,
+        "_release_manifest",
+        lambda _asset: {
+            "$schema": "infernux.plugin_release",
+            "manifest_version": 1,
+            "reference": "vendor/strict",
+            "version": "1.0.0",
+            "engine": ">=9",
+            "artifact": {
+                "name": "vendor.strict.inxpkg",
+                "sha256": "a" * 64,
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="No compatible Infernux plugin release"):
+        resolve_github_release(
+            "https://github.com/vendor/strict",
+            str(tmp_path / "downloads"),
+            expected_reference="vendor/strict",
+        )
+
+
+def test_package_cli_build_verify_and_release_manifest(tmp_path):
+    source = _source(tmp_path / "source", "vendor/cli", version="1.2.3")
+    (source / "Runtime").mkdir()
+    (source / "Runtime" / "api.py").write_text("VALUE = 3\n", encoding="utf-8")
+    package = tmp_path / "vendor.cli.inxpkg"
+    manifest = tmp_path / RELEASE_MANIFEST_NAME
+
+    assert package_cli_main(
+        ["package", "build", str(source), str(package), "--profile", "release"]
+    ) == 0
+    assert package_cli_main(
+        ["package", "verify", str(package), "--engine", "0.4.0"]
+    ) == 0
+    assert package_cli_main(
+        [
+            "package",
+            "release-manifest",
+            str(package),
+            "--output",
+            str(manifest),
+            "--tag",
+            "v1.2.3",
+        ]
+    ) == 0
+
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    assert document["$schema"] == "infernux.plugin_release"
+    assert document["reference"] == "vendor/cli"
+    assert document["version"] == "1.2.3"
+    assert document["artifact"]["name"] == package.name
+    assert document["artifact"]["sha256"] == hashlib.sha256(
+        package.read_bytes()
+    ).hexdigest()
+    assert package_cli_main(
+        [
+            "package",
+            "release-manifest",
+            str(package),
+            "--output",
+            str(manifest),
+            "--tag",
+            "v9.9.9",
+        ]
+    ) == 1
 
 
 def test_arbitrary_pip_syntax_is_project_scoped_and_written_to_lock(tmp_path, monkeypatch):
@@ -682,7 +1052,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
     cases = (
         ("direct", str(package)),
         ("local", {"type": "local", "location": str(source)}),
-        ("github", {"type": "github", "location": "https://github.test/vendor/repo.git"}),
+        ("github", {"type": "github", "location": "https://github.com/vendor/repo.git"}),
         ("git", {"type": "git", "location": "ssh://git.internal/vendor/repo.git"}),
         ("http", {"type": "url", "location": "https://packages.internal/distributed.inxpkg"}),
     )
@@ -694,9 +1064,14 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
             if command[:2] == ["git", "clone"]:
                 checkout = Path(command[-1])
                 shutil.copytree(source, checkout, dirs_exist_ok=True)
-            return type("Result", (), {"stdout": ""})()
+            output = "a" * 40 if command[:3] == ["git", "rev-parse", "HEAD"] else ""
+            return type("Result", (), {"stdout": output})()
 
         monkeypatch.setattr(manager, "_run_process", run_process)
+        monkeypatch.setattr(
+            "Infernux.plugins.github_releases.resolve_github_release",
+            lambda *_args, **_kwargs: None,
+        )
 
         def retrieve(_url, destination):
             shutil.copy2(package, destination)

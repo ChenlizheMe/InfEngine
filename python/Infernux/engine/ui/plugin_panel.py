@@ -177,6 +177,15 @@ class PluginPanel(EditorPanel):
             row = dict(value)
             key = str(row.get("reference", "")).casefold()
             row["_registry"] = True
+            source = row.get("source", {})
+            row["_official"] = bool(
+                isinstance(source, Mapping) and source.get("official", False)
+            )
+            row["_cached"] = bool(
+                manager.cached_reference_path(
+                    str(row.get("reference", "")), verify=False
+                )
+            )
             row["_installed"] = key in installed
             if key in installed:
                 installed_version = str(installed[key].get("version", "")).strip()
@@ -185,6 +194,8 @@ class PluginPanel(EditorPanel):
                 merged["_registry"] = True
                 merged["_installed"] = True
                 merged["_installed_version"] = installed_version
+                merged["_official"] = row["_official"]
+                merged["_cached"] = row["_cached"]
                 row = merged
             rows.append(row)
             known.add(key)
@@ -193,6 +204,8 @@ class PluginPanel(EditorPanel):
                 continue
             value["_registry"] = False
             value["_installed"] = True
+            value["_official"] = False
+            value["_cached"] = False
             value["_installed_version"] = str(value.get("version", "")).strip()
             rows.append(value)
 
@@ -264,6 +277,8 @@ class PluginPanel(EditorPanel):
                     state = manager.states.get(key)
                     status, status_color = self._state_visual(state, row)
                     name = str(row.get("name") or reference)
+                    if row.get("_official"):
+                        name = f"{name}  [{t('plugins.official')}]"
                     selected = key == self._selected_reference.casefold()
                     if ctx.selectable(f"##plugin_row_{key}", selected, 0, 0.0, 26.0):
                         self._selected_reference = reference
@@ -511,7 +526,8 @@ class PluginPanel(EditorPanel):
                 if ctx.button(t("plugins.open_location") + "##plugin_open_location", width=button_w):
                     self._open_plugin_location(location)
 
-            action_count = 3 if installed else 1
+            cached = bool(row.get("_cached"))
+            action_count = 3 if installed else (2 if cached else 1)
             action_x = footer_start_x + max(
                 0.0,
                 footer_w - action_count * button_w - (action_count - 1) * Theme.INSPECTOR_TITLE_GAP,
@@ -532,14 +548,42 @@ class PluginPanel(EditorPanel):
                 blocked = bool(str(row.get("diagnostic", "")).strip())
                 if blocked:
                     ctx.begin_disabled(True)
-                if self._primary_button(ctx, t("plugins.install") + f"##plugin_install_{key}"):
+                if cached:
+                    if ctx.button(
+                        t("plugins.redownload") + f"##plugin_redownload_{key}",
+                        width=button_w,
+                    ):
+                        self._begin_install(
+                            label=reference,
+                            work=lambda report, ref=reference: manager.download_reference(
+                                ref,
+                                force=True,
+                                progress=report,
+                            ),
+                            action="download",
+                        )
+                    ctx.same_line(0.0, Theme.INSPECTOR_TITLE_GAP)
+                    if self._primary_button(
+                        ctx, t("plugins.import") + f"##plugin_import_{key}"
+                    ):
+                        self._begin_install(
+                            label=reference,
+                            work=lambda report, ref=reference: manager.install_reference(
+                                ref,
+                                progress=report,
+                            ),
+                            action="install",
+                        )
+                elif self._primary_button(
+                    ctx, t("plugins.download") + f"##plugin_download_{key}"
+                ):
                     self._begin_install(
                         label=reference,
-                        work=lambda report, ref=reference: manager.install_reference(
+                        work=lambda report, ref=reference: manager.download_reference(
                             ref,
                             progress=report,
                         ),
-                        action="install",
+                        action="download",
                     )
                 if blocked:
                     ctx.end_disabled()
@@ -566,6 +610,11 @@ class PluginPanel(EditorPanel):
         value_w = max(120.0, ctx.get_content_region_avail_width() - 112.0)
         for label, value in (
             (t("plugins.detail.reference"), reference),
+            (t("plugins.detail.category"), str(row.get("category", "Other"))),
+            (
+                t("plugins.detail.targets"),
+                ", ".join(str(value) for value in row.get("targets", [])) or "-",
+            ),
             (t("plugins.detail.source"), source),
             (t("plugins.detail.root"), root_value),
         ):

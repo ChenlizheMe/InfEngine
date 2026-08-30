@@ -757,10 +757,12 @@ class EditorAutomationHost:
         from Infernux.engine.build import (
             current_host_player_target,
             exporter_registry,
+            platform_support_catalog,
         )
 
         targets = exporter_registry.targets()
         desktop = current_host_player_target(targets)
+        support = {item.target_id: item for item in platform_support_catalog()}
         def _capabilities(item) -> dict[str, object]:
             result = asdict(item.capabilities)
             result["features"] = sorted(result["features"])
@@ -775,8 +777,28 @@ class EditorAutomationHost:
                     "platform": item.platform,
                     "architecture": item.architecture,
                     "capabilities": _capabilities(item),
+                    "available": True,
+                    "plugin_reference": (
+                        support[item.id].package_reference if item.id in support else ""
+                    ),
                 }
                 for item in targets
+            ]
+            + [
+                {
+                    "id": item.target_id,
+                    "display_name": item.target_id.replace("-", " ").title(),
+                    "platform": item.target_id.split("-", 1)[0],
+                    "architecture": "",
+                    "capabilities": None,
+                    "available": False,
+                    "plugin_reference": item.package_reference,
+                    "installed": item.installed,
+                    "enabled": item.enabled,
+                    "cached": item.cached,
+                }
+                for item in support.values()
+                if not item.registered
             ],
         }
 
@@ -809,6 +831,7 @@ class EditorAutomationHost:
             build_progress_fraction,
             current_host_player_target,
             exporter_registry,
+            required_platform_plugin,
         )
         from Infernux.engine.interaction import normalize_build_settings
         from Infernux.engine.path_utils import resolved_path
@@ -862,6 +885,22 @@ class EditorAutomationHost:
         if not final_target or all(
             item.id != final_target for item in available_targets
         ):
+            required = required_platform_plugin(final_target, root)
+            if required is not None:
+                raise OperationError(
+                    "platform_plugin_required",
+                    "Player build target requires an installed and enabled "
+                    f"platform plugin: {required.package_reference}",
+                    details={
+                        "requested_target": final_target,
+                        "plugin_reference": required.package_reference,
+                        "plugin_name": required.package_name,
+                        "installed": required.installed,
+                        "enabled": required.enabled,
+                        "cached": required.cached,
+                        "source": dict(required.source),
+                    },
+                )
             raise OperationError(
                 "player.target_unavailable",
                 f"Player build target is not installed or enabled: {final_target or '<none>'}",

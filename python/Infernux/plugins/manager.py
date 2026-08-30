@@ -41,6 +41,7 @@ from .content import (
     read_plugin_pages,
     resolve_plugin_page_asset,
 )
+from .cache import PackageBlobCache
 from .package import (
     InxPackage,
     InxPackagePreview,
@@ -376,6 +377,7 @@ class PluginManager:
             resolved_source.setdefault("location", package_path)
             resolved_source["sha256"] = package_sha256
             resolved_source["cache_location"] = cache_relative
+            resolved_source["cache_scope"] = "hub"
             dependencies: list[str] = []
             if install_dependencies:
                 _report_progress(progress, "resolve_dependencies", 0.48)
@@ -564,9 +566,17 @@ class PluginManager:
             str(descriptor.get("cache_location", ""))
         ).strip("/")
         if cache_location:
-            cache_path = resolved_path(
-                os.path.join(self.project_root, *cache_location.split("/"))
-            )
+            if str(descriptor.get("cache_scope", "")).casefold() == "hub":
+                cache_path = resolved_path(
+                    os.path.join(
+                        PackageBlobCache().root,
+                        *cache_location.split("/"),
+                    )
+                )
+            else:
+                cache_path = resolved_path(
+                    os.path.join(self.project_root, *cache_location.split("/"))
+                )
             if os.path.isfile(cache_path):
                 cached = dict(descriptor)
                 cached["type"] = "local"
@@ -582,6 +592,110 @@ class PluginManager:
             progress=progress,
         )
 
+    def cached_reference_path(self, reference: str, *, verify: bool = True) -> str:
+        record = self.registry.find(reference)
+        if record is None or not isinstance(record.get("source"), Mapping):
+            return ""
+        source = record["source"]
+        location = portable_path(str(source.get("cache_location", ""))).strip("/")
+        if not location:
+            return ""
+        if str(source.get("cache_scope", "")).casefold() == "hub":
+            candidate = resolved_path(
+                os.path.join(PackageBlobCache().root, *location.split("/"))
+            )
+        else:
+            candidate = resolved_path(
+                os.path.join(self.project_root, *location.split("/"))
+            )
+        digest = str(source.get("sha256", "")).strip().casefold()
+        if not os.path.isfile(candidate):
+            return ""
+        if verify and digest and _file_hash(candidate) != digest:
+            return ""
+        return candidate
+
+    def download_reference(
+        self,
+        reference: str,
+        *,
+        force: bool = False,
+        progress: _InstallProgress | None = None,
+    ) -> dict[str, object]:
+        """Download one registry package into the shared Hub cache only."""
+
+        record = self.registry.find(reference)
+        if record is None:
+            raise KeyError(f"Plugin reference was not found: {reference}")
+        cached = self.cached_reference_path(reference)
+        if cached and not force:
+            return {"reference": reference, "path": cached, "cached": True}
+        source = record.get("source")
+        if not isinstance(source, Mapping):
+            raise ValueError(f"Plugin registry source is invalid: {reference}")
+        descriptor = self._source_descriptor(source)
+        descriptor.update(
+            {
+                key: value
+                for key, value in source.items()
+                if key not in {"cache_location", "cache_scope", "sha256"}
+            }
+        )
+        with tempfile.TemporaryDirectory(prefix="infernux-plugin-download-") as workspace:
+            package_path, acquired_source = self._materialize_source(
+                descriptor,
+                workspace,
+                progress=progress,
+            )
+            preview = InxPackage.inspect(package_path)
+            actual_reference = validate_reference(
+                str(preview.metadata.get("reference", ""))
+            )
+            if actual_reference.casefold() != validate_reference(reference).casefold():
+                raise RuntimeError(
+                    f"Downloaded plugin reference mismatch: expected {reference}, "
+                    f"found {actual_reference}"
+                )
+            compatibility = str(preview.metadata.get("engine", "")).strip()
+            if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(
+                compatibility
+            ):
+                raise RuntimeError(
+                    f"InxPackage requires Infernux {compatibility}, current engine "
+                    f"is {ENGINE_VERSION}"
+                )
+            digest = _file_hash(package_path)
+            cache = PackageBlobCache()
+            destination = cache.store(package_path, digest=digest)
+            cached_source = dict(acquired_source)
+            cached_source.update(
+                {
+                    "cache_scope": "hub",
+                    "cache_location": cache.relative_path(digest),
+                    "sha256": digest,
+                }
+            )
+            self.registry.add_package(
+                actual_reference,
+                name=str(preview.metadata.get("name", record.get("name", ""))),
+                version=str(preview.metadata.get("version", "")),
+                engine=compatibility,
+                dependencies=preview.metadata.get("dependencies", ()),
+                intro=str(preview.metadata.get("intro", record.get("intro", ""))),
+                intros=preview.metadata.get("intros", record.get("intros", {})),
+                pages=preview.metadata.get("pages", record.get("pages", ())),
+                category=str(record.get("category", "Other")),
+                targets=record.get("targets", ()),
+                source=cached_source,
+            )
+            _report_progress(progress, "download_complete", 1.0)
+            return {
+                "reference": actual_reference,
+                "path": destination,
+                "sha256": digest,
+                "cached": False,
+            }
+
     def install_source(
         self,
         source: Mapping[str, object] | str,
@@ -591,60 +705,17 @@ class PluginManager:
     ) -> PluginState:
         _report_progress(progress, "resolve_source", 0.04)
         descriptor = self._source_descriptor(source)
-        source_type = str(descriptor["type"])
-        location = str(descriptor["location"])
-        if source_type == "local":
-            _report_progress(progress, "read_local_source", 0.16)
-            local = resolved_path(
-                location
-                if os.path.isabs(location)
-                else os.path.join(self.project_root, location)
-            )
-            return self._install_local(
-                local,
+        descriptor.update(dict(source) if isinstance(source, Mapping) else {})
+        with tempfile.TemporaryDirectory(prefix="infernux-plugin-source-") as workspace:
+            package_path, acquired_source = self._materialize_source(
                 descriptor,
-                install_dependencies=install_dependencies,
+                workspace,
                 progress=progress,
             )
-        if source_type == "url":
-            with tempfile.TemporaryDirectory(prefix="infernux-plugin-url-") as workspace:
-                target = os.path.join(workspace, "download.inxpkg")
-                _report_progress(progress, "download_package", 0.08)
-                if progress is None:
-                    _download_url_package(location, target)
-                else:
-                    _download_url_package(location, target, progress=progress)
-                return self.install_package(
-                    target,
-                    install_dependencies=install_dependencies,
-                    source=descriptor,
-                    progress=progress,
-                )
-        with tempfile.TemporaryDirectory(prefix="infernux-plugin-git-") as workspace:
-            command = ["git", "clone", "--depth", "1"]
-            revision = str(descriptor.get("revision", "")).strip()
-            if revision:
-                command.extend(["--branch", revision])
-            command.extend([location, workspace])
-            _report_progress(progress, "clone_repository", 0.08)
-            self._run_process(command)
-            _report_progress(progress, "read_repository", 0.28)
-            subdirectory = portable_path(str(descriptor.get("subdirectory", ""))).strip(
-                "/"
-            )
-            root = (
-                resolved_path(os.path.join(workspace, *subdirectory.split("/")))
-                if subdirectory
-                else workspace
-            )
-            if not is_path_within(root, workspace, allow_root=True):
-                raise ValueError("Git plugin subdirectory escapes the checkout")
-            package_path = portable_path(str(descriptor.get("package", ""))).strip("/")
-            target = os.path.join(root, *package_path.split("/")) if package_path else root
-            return self._install_local(
-                target,
-                descriptor,
+            return self.install_package(
+                package_path,
                 install_dependencies=install_dependencies,
+                source=acquired_source,
                 progress=progress,
             )
 
@@ -1147,53 +1218,114 @@ class PluginManager:
         self._refresh_editor_assets()
         return {**record, "removed_files": removed, "preserved_modified_files": preserved}
 
-    def _install_local(
+    def _materialize_source(
+        self,
+        source: Mapping[str, object],
+        workspace: str,
+        *,
+        progress: _InstallProgress | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        descriptor = dict(source)
+        source_type = str(descriptor["type"])
+        location = str(descriptor["location"])
+        if source_type == "local":
+            _report_progress(progress, "read_local_source", 0.16)
+            local = resolved_path(
+                location
+                if os.path.isabs(location)
+                else os.path.join(self.project_root, location)
+            )
+            return self._materialize_local(local, descriptor, workspace, progress)
+        if source_type == "url":
+            target = os.path.join(workspace, "download.inxpkg")
+            _report_progress(progress, "download_package", 0.08)
+            if progress is None:
+                _download_url_package(location, target)
+            else:
+                _download_url_package(location, target, progress=progress)
+            return target, descriptor
+        if source_type == "github":
+            from .github_releases import resolve_github_release
+
+            _report_progress(progress, "resolve_releases", 0.06)
+            released = resolve_github_release(
+                location,
+                workspace,
+                expected_reference=str(descriptor.get("reference", "")),
+                progress=progress,
+            )
+            if released is not None:
+                released_source = dict(descriptor)
+                released_source.update(
+                    {
+                        key: value
+                        for key, value in released.source.items()
+                        if key not in {"type", "location"}
+                    }
+                )
+                released_source["acquisition"] = "github-release"
+                return released.path, released_source
+
+        checkout = os.path.join(workspace, "checkout")
+        command = ["git", "clone", "--depth", "1"]
+        revision = str(descriptor.get("revision", "")).strip()
+        if revision:
+            command.extend(["--branch", revision])
+        command.extend([location, checkout])
+        _report_progress(progress, "clone_repository", 0.08)
+        self._run_process(command)
+        commit = self._run_process(
+            ["git", "rev-parse", "HEAD"], cwd=checkout
+        ).stdout.strip()
+        if len(commit) != 40 or any(
+            character not in "0123456789abcdefABCDEF" for character in commit
+        ):
+            raise RuntimeError("Git plugin source did not resolve to a commit SHA")
+        descriptor["commit"] = commit.casefold()
+        descriptor["source_snapshot"] = True
+        _report_progress(progress, "read_repository", 0.28)
+        subdirectory = portable_path(
+            str(descriptor.get("subdirectory", ""))
+        ).strip("/")
+        root = (
+            resolved_path(os.path.join(checkout, *subdirectory.split("/")))
+            if subdirectory
+            else checkout
+        )
+        if not is_path_within(root, checkout, allow_root=True):
+            raise ValueError("Git plugin subdirectory escapes the checkout")
+        return self._materialize_local(root, descriptor, workspace, progress)
+
+    def _materialize_local(
         self,
         path: str,
         source: Mapping[str, object],
-        *,
-        install_dependencies: bool,
-        progress: _InstallProgress | None = None,
-    ) -> PluginState:
+        workspace: str,
+        progress: _InstallProgress | None,
+    ) -> tuple[str, dict[str, object]]:
         if os.path.isfile(path):
             if not path.casefold().endswith(PACKAGE_EXTENSION):
                 raise ValueError("A local plugin file must be an .inxpkg")
-            return self.install_package(
-                path,
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
+            return path, dict(source)
         if not os.path.isdir(path):
             raise FileNotFoundError(path)
         configured = portable_path(str(source.get("package", ""))).strip("/")
         if configured:
-            return self.install_package(
-                os.path.join(path, *configured.split("/")),
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
+            package_path = resolved_path(os.path.join(path, *configured.split("/")))
+            if not is_path_within(package_path, path, allow_root=False):
+                raise ValueError("Plugin package path escapes the source root")
+            if not os.path.isfile(package_path):
+                raise FileNotFoundError(package_path)
+            return package_path, dict(source)
         packages = sorted(Path(path).glob(f"*{PACKAGE_EXTENSION}"))
         if len(packages) == 1 and not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
-            return self.install_package(
-                str(packages[0]),
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
+            return str(packages[0]), dict(source)
         if not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
             raise ValueError("Plugin source must contain InxPackage.json or one .inxpkg")
-        with tempfile.TemporaryDirectory(prefix="infernux-plugin-source-") as workspace:
-            package = os.path.join(workspace, "Source.inxpkg")
-            _report_progress(progress, "build_source_package", 0.28)
-            InxPackage.export_source(path, package)
-            return self.install_package(
-                package,
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
+        package = os.path.join(workspace, f"source-{uuid.uuid4().hex}.inxpkg")
+        _report_progress(progress, "build_source_package", 0.28)
+        InxPackage.export_source(path, package)
+        return package, dict(source)
 
     def _install_requirements(
         self,
@@ -1560,24 +1692,9 @@ class PluginManager:
         return sys.executable
 
     def _cache_package(self, package_path: str, digest: str) -> tuple[str, str]:
-        relative = f"Library/InxPackageCache/{digest}{PACKAGE_EXTENSION}"
-        destination = resolved_path(
-            os.path.join(self.project_root, *relative.split("/"))
-        )
-        if not os.path.isfile(destination) or _file_hash(destination) != digest:
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            temporary = destination + f".tmp.{uuid.uuid4().hex}"
-            try:
-                shutil.copy2(package_path, temporary)
-                if _file_hash(temporary) != digest:
-                    raise RuntimeError("InxPackage cache copy hash mismatch")
-                os.replace(temporary, destination)
-            finally:
-                try:
-                    os.remove(temporary)
-                except FileNotFoundError:
-                    pass
-        return destination, relative
+        cache = PackageBlobCache()
+        destination = cache.store(package_path, digest=digest)
+        return destination, cache.relative_path(digest)
 
     def _source_descriptor(
         self, source: Mapping[str, object] | str

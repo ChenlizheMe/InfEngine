@@ -20,6 +20,14 @@ from Infernux.plugins.content import parse_markdown_blocks
 from Infernux.plugins.official import install_default_libraries
 
 
+@pytest.fixture(autouse=True)
+def _isolated_package_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "INFERNUX_PACKAGE_CACHE_ROOT",
+        str(tmp_path / "hub-package-cache"),
+    )
+
+
 def _native_available() -> bool:
     try:
         player_package_native._backend()
