@@ -27,10 +27,43 @@ function resolveBrowserExecutable() {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
+async function activateCanvas(page, canvasBox, cdpEndpoint) {
+  const x = canvasBox.x + canvasBox.width * 0.5;
+  const y = canvasBox.y + canvasBox.height * 0.5;
+  if (!cdpEndpoint) {
+    await page.touchscreen.tap(x, y);
+    return;
+  }
+
+  const session = await page.context().newCDPSession(page);
+  try {
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x, y, id: 1, radiusX: 12, radiusY: 9, force: 0.65 }],
+    });
+    await session.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+  } finally {
+    await session.detach();
+  }
+}
+
 async function main() {
   const url = process.argv[2];
-  if (!url) throw new Error("usage: node web_mobile_input_smoke.cjs <url> [--require-active-audio] [--startup-timeout-ms N]");
+  if (!url) {
+    throw new Error(
+      "usage: node web_mobile_input_smoke.cjs <url> " +
+      "[--cdp-endpoint URL] [--require-active-audio] [--startup-timeout-ms N]",
+    );
+  }
   const requireActiveAudio = process.argv.includes("--require-active-audio");
+  const cdpIndex = process.argv.indexOf("--cdp-endpoint");
+  const cdpEndpoint = cdpIndex >= 0 ? process.argv[cdpIndex + 1] : "";
+  if (cdpIndex >= 0 && !cdpEndpoint) {
+    throw new Error("--cdp-endpoint requires a URL");
+  }
   const timeoutIndex = process.argv.indexOf("--startup-timeout-ms");
   const startupTimeout = timeoutIndex >= 0
     ? Number(process.argv[timeoutIndex + 1])
@@ -38,19 +71,34 @@ async function main() {
   if (!Number.isFinite(startupTimeout) || startupTimeout <= 0) {
     throw new Error("--startup-timeout-ms must be a positive number");
   }
-  const executablePath = resolveBrowserExecutable();
-  const browser = await chromium.launch({
-    executablePath,
-    headless: true,
-    timeout: 30000,
-    args: ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"],
-  });
-  const page = await browser.newPage({
-    viewport: { width: 412, height: 915 },
-    deviceScaleFactor: 2,
-    hasTouch: true,
-    isMobile: true,
-  });
+  let browser;
+  let page;
+  if (cdpEndpoint) {
+    browser = await chromium.connectOverCDP(cdpEndpoint, { timeout: 30000 });
+    const contexts = browser.contexts();
+    if (!contexts.length) {
+      throw new Error("the CDP browser did not expose a browser context");
+    }
+    const pages = contexts.flatMap((context) => context.pages());
+    page = pages.find((candidate) => candidate.url() === url) ||
+      pages.find((candidate) => candidate.url().includes("infernux-player")) ||
+      pages[0] ||
+      await contexts[0].newPage();
+  } else {
+    const executablePath = resolveBrowserExecutable();
+    browser = await chromium.launch({
+      executablePath,
+      headless: true,
+      timeout: 30000,
+      args: ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"],
+    });
+    page = await browser.newPage({
+      viewport: { width: 412, height: 915 },
+      deviceScaleFactor: 2,
+      hasTouch: true,
+      isMobile: true,
+    });
+  }
   const pageErrors = [];
   const consoleErrors = [];
   const consoleMessages = [];
@@ -64,7 +112,9 @@ async function main() {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
     try {
       await page.waitForFunction(
-        () => document.querySelector("#canvas")?.dataset.infernuxState === "awaiting-user-activation",
+        () => ["awaiting-user-activation", "ready"].includes(
+          document.querySelector("#canvas")?.dataset.infernuxState,
+        ),
         null,
         { timeout: startupTimeout },
       );
@@ -95,12 +145,13 @@ async function main() {
         cause: String(error),
       }));
     }
-    const canvasBox = await page.locator("#canvas").boundingBox();
+    const canvas = page.locator("#canvas");
+    const canvasBox = await canvas.boundingBox();
     if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
-    await page.touchscreen.tap(
-      canvasBox.x + canvasBox.width * 0.5,
-      canvasBox.y + canvasBox.height * 0.5,
-    );
+    const stateBeforeActivation = await canvas.getAttribute("data-infernux-state");
+    if (stateBeforeActivation !== "ready") {
+      await activateCanvas(page, canvasBox, cdpEndpoint);
+    }
     await page.waitForFunction(
       () => document.querySelector("#canvas")?.dataset.infernuxState === "ready",
       null,

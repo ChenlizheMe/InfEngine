@@ -59,3 +59,14 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     )
     assert '"--keep-running"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke
+
+
+def test_web_smoke_can_attach_to_a_physical_mobile_browser():
+    smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"--cdp-endpoint"' in smoke
+    assert "chromium.connectOverCDP" in smoke
+    assert 'session.send("Input.dispatchTouchEvent"' in smoke
+    assert '["awaiting-user-activation", "ready"]' in smoke
