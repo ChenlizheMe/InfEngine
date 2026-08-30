@@ -57,3 +57,44 @@ def test_platform_cook_consumes_editor_catalog_snapshot_without_rescanning(
     assert result.game_name == "SnapshotGame"
     assert captured["entries"] == [{"guid": "a" * 32}]
     assert result.data_directory == output / "SnapshotGame_Data"
+
+
+def test_platform_cook_releases_headless_catalog_host_before_builder(
+    monkeypatch, tmp_path
+):
+    project = tmp_path / "Project"
+    (project / "Assets").mkdir(parents=True)
+    (project / "ProjectSettings").mkdir()
+    output = tmp_path / "Cook"
+    lifecycle = []
+
+    def publish(_root):
+        lifecycle.append("publish")
+        return {"entries": [{"guid": "b" * 32}]}
+
+    class _Builder:
+        def __init__(self, *_args, **_kwargs):
+            lifecycle.append("builder")
+
+        def freeze_asset_index_entries(self, entries):
+            assert entries == [{"guid": "b" * 32}]
+
+        def cook_platform_content(self, package_root, **_kwargs):
+            data = Path(package_root) / "Project_Data"
+            data.mkdir(parents=True)
+            return str(data)
+
+    monkeypatch.setattr(
+        "Infernux.engine.platform_content_cook.publish_player_asset_catalog_for_host",
+        publish,
+    )
+    monkeypatch.setattr("Infernux.engine.platform_content_cook.GameBuilder", _Builder)
+
+    result = cook_platform_content(
+        BuildRequest(str(project), "web-wasm32", str(tmp_path / "Published")),
+        output,
+        platform_host={"identity": "fixture"},
+    )
+
+    assert result.data_directory == output / "Project_Data"
+    assert lifecycle == ["publish", "builder"]

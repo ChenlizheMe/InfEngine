@@ -141,6 +141,18 @@ class DesktopPlatformExporter(PlatformExporter):
         game_name = str(settings.get("game_name", "") or "").strip()
         if not game_name:
             game_name = Path(request.project_root).name
+        # A standalone build may need a temporary headless Engine to publish
+        # the AssetDatabase snapshot. Complete that lifecycle before creating
+        # GameBuilder and its runtime-facing caches.
+        if request.asset_catalog_entries:
+            catalog_entries = [dict(item) for item in request.asset_catalog_entries]
+        else:
+            from Infernux.engine.player_build_preflight import (
+                publish_player_asset_catalog_for_host,
+            )
+
+            catalog = publish_player_asset_catalog_for_host(request.project_root)
+            catalog_entries = [dict(item) for item in catalog["entries"]]
         builder = GameBuilder(
             request.project_root,
             request.output_dir,
@@ -160,15 +172,6 @@ class DesktopPlatformExporter(PlatformExporter):
             lto=bool(settings.get("lto", True)),
             enable_jit=bool(settings.get("enable_jit", False)),
         )
-        if request.asset_catalog_entries:
-            catalog_entries = [dict(item) for item in request.asset_catalog_entries]
-        else:
-            from Infernux.engine.player_build_preflight import (
-                publish_player_asset_catalog_for_host,
-            )
-
-            catalog = publish_player_asset_catalog_for_host(request.project_root)
-            catalog_entries = [dict(item) for item in catalog["entries"]]
         builder.freeze_asset_index_entries(catalog_entries)
         builder._validate_output_directory()
 

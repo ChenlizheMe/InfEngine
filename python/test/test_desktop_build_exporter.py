@@ -129,10 +129,11 @@ def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
     monkeypatch, tmp_path
 ):
     captured = {}
+    lifecycle = []
 
     class _Builder:
         def __init__(self, *_args, **_kwargs):
-            pass
+            lifecycle.append("builder")
 
         def freeze_asset_index_entries(self, entries):
             captured["entries"] = entries
@@ -144,12 +145,16 @@ def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
             return str(tmp_path / "Player")
 
     monkeypatch.setattr("Infernux.engine.game_builder.GameBuilder", _Builder)
-    monkeypatch.setattr(
-        "Infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
-        lambda root: {
+    def publish(root):
+        lifecycle.append("publish")
+        return {
             "path": str(Path(root) / "Library" / "AssetIndex.json"),
             "entries": [{"guid": "b" * 32}],
-        },
+        }
+
+    monkeypatch.setattr(
+        "Infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
+        publish,
     )
 
     request = _request(tmp_path)
@@ -160,3 +165,4 @@ def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
 
     assert result.success
     assert captured["entries"] == [{"guid": "b" * 32}]
+    assert lifecycle == ["publish", "builder"]
