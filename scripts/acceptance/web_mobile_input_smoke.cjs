@@ -270,6 +270,19 @@ async function main() {
     const canvasBox = await canvas.boundingBox();
     if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
     const stateBeforeActivation = await canvas.getAttribute("data-infernux-state");
+    const initialKeyboardFocus = await page.evaluate(
+      () => document.activeElement === document.querySelector("#canvas"),
+    );
+    await page.keyboard.down("w");
+    await page.waitForTimeout(120);
+    const nativeWPressed = await page.evaluate(() => Module.ccall(
+      "InfernuxWebGetKeyState", "number", ["number"], [26],
+    ) === 1);
+    await page.keyboard.up("w");
+    await page.waitForTimeout(120);
+    const nativeWReleased = await page.evaluate(() => Module.ccall(
+      "InfernuxWebGetKeyState", "number", ["number"], [26],
+    ) === 0);
     await page.waitForTimeout(250);
     const frameBeforeActivation = await measureCanvasFrame(canvas);
     await page.evaluate(() => {
@@ -385,6 +398,7 @@ async function main() {
         pointerBridge: diagnostics.includes("INFERNUX_WEB_POINTER_BRIDGE_READY"),
         textBridge: diagnostics.includes("INFERNUX_WEB_TEXT_BRIDGE_READY"),
         visualViewport: diagnostics.includes("INFERNUX_WEB_VISUAL_VIEWPORT_READY"),
+        keyboardFocusBridge: diagnostics.includes("INFERNUX_WEB_KEYBOARD_FOCUS_READY"),
         audioReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_AUDIO_READY")),
         audioContextRunning: Module.SDL3?.audioContext?.state === "running",
         activeAudioVoices: Number(activeVoiceMarker.match(/count=(\d+)/)?.[1] || 0),
@@ -418,6 +432,9 @@ async function main() {
     result.frameAfterActivation = frameAfterActivation;
     result.frameAfterInput = frameAfterInput;
     result.contextMenuPrevented = contextMenuPrevented;
+    result.initialKeyboardFocus = initialKeyboardFocus;
+    result.nativeWPressed = nativeWPressed;
+    result.nativeWReleased = nativeWReleased;
     const frameIsVisible = (frame) => (
       frame.nonBlackRatio >= 0.1 &&
       frame.luminanceDeviation >= 0.01 &&
@@ -461,6 +478,8 @@ async function main() {
         !result.screenUiReady ||
         !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
+        !result.keyboardFocusBridge || !result.initialKeyboardFocus ||
+        !result.nativeWPressed || !result.nativeWReleased ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||

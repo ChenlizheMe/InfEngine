@@ -343,6 +343,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "emscripten_set_mousedown_callback" not in main
     assert "emscripten_set_keydown_callback" in main
     assert "emscripten_set_wheel_callback" in main
+    assert "InfernuxWebGetKeyState" in main
     assert "emscripten_set_visibilitychange_callback" in main
     assert "emscripten_sample_gamepad_data" in main
     assert "InfernuxWebTextInput" in main
@@ -391,6 +392,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEB_SCREEN_UI_BRIDGE_READY" not in shell
     assert "contextmenu" in shell
     assert "event.preventDefault()" in shell
+    assert 'autofocus aria-label="Infernux game canvas"' in shell
+    assert "installKeyboardFocusBridge" in shell
+    assert "focusGameplayCanvas()" in shell
+    assert "INFERNUX_WEB_KEYBOARD_FOCUS_READY" in shell
     assert "Tap, click, or press a key to play" not in shell
     assert "INFERNUX_WEB_FIRST_FRAME_READY" in shell
     assert "playerPresentation.mode === 'windowed'" in shell

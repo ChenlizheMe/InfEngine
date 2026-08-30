@@ -454,6 +454,11 @@ EM_BOOL OnKey(int eventType, const EmscriptenKeyboardEvent *event, void *)
     return EM_TRUE;
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE int InfernuxWebGetKeyState(int scancode)
+{
+    return infernux::InputManager::Instance().GetKey(scancode) ? 1 : 0;
+}
+
 EM_BOOL OnWheel(int, const EmscriptenWheelEvent *event, void *)
 {
     infernux::InputManager::Instance().ProcessScrollEvent(static_cast<float>(event->deltaX),

@@ -78,7 +78,7 @@
 </head>
 <body>
   <main id="infernux-shell">
-    <canvas id="canvas" tabindex="0" aria-label="Infernux game canvas"></canvas>
+    <canvas id="canvas" tabindex="0" autofocus aria-label="Infernux game canvas"></canvas>
     <div id="infernux-safe-area-probe" aria-hidden="true"></div>
     <input id="infernux-text-input" type="text" aria-label="Game text input" autocomplete="off" autocapitalize="off" spellcheck="false">
     <section id="infernux-loader" class="indeterminate" aria-live="polite">
@@ -173,6 +173,28 @@
         input.value = '';
       };
       recordDiagnostic('INFERNUX_WEB_TEXT_BRIDGE_READY');
+    }
+    function focusGameplayCanvas() {
+      const textInput = document.getElementById('infernux-text-input');
+      if (document.activeElement === textInput) return false;
+      try {
+        canvasNode.focus({preventScroll: true});
+      } catch (_) {
+        canvasNode.focus();
+      }
+      return document.activeElement === canvasNode;
+    }
+    function installKeyboardFocusBridge() {
+      if (canvasNode.dataset.infernuxKeyboardFocusBound === 'true') return;
+      canvasNode.dataset.infernuxKeyboardFocusBound = 'true';
+      const restore = () => requestAnimationFrame(() => focusGameplayCanvas());
+      window.addEventListener('focus', restore);
+      window.addEventListener('pageshow', restore);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) restore();
+      });
+      focusGameplayCanvas();
+      recordDiagnostic('INFERNUX_WEB_KEYBOARD_FOCUS_READY');
     }
     function installPointerBridge() {
       if (canvasNode.dataset.infernuxPointerBound === 'true') return;
@@ -297,7 +319,7 @@
       locateFile(path) {
         return versionedAssets[path] || path;
       },
-      postRun: [installTextInputBridge, installPointerBridge, installViewportBridge],
+      postRun: [installTextInputBridge, installPointerBridge, installKeyboardFocusBridge, installViewportBridge],
       setStatus(text) {
         const message = String(text || '').trim();
         if (!message) return;
@@ -332,6 +354,7 @@
         }
         if (text.includes('INFERNUX_WEB_FIRST_FRAME_READY')) {
           canvasNode.dataset.infernuxState = 'ready';
+          focusGameplayCanvas();
           loaderNode.classList.add('hidden');
           setTimeout(() => loaderNode.remove(), 200);
         }
