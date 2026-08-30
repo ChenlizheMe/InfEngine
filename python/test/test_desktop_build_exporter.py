@@ -123,3 +123,40 @@ def test_desktop_exporter_routes_settings_catalog_progress_and_cancellation(
     assert [(item.phase, item.completed, item.total) for item in progress] == [
         ("desktop", 250, 1000)
     ]
+
+
+def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _Builder:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def freeze_asset_index_entries(self, entries):
+            captured["entries"] = entries
+
+        def _validate_output_directory(self):
+            pass
+
+        def build(self, **_kwargs):
+            return str(tmp_path / "Player")
+
+    monkeypatch.setattr("Infernux.engine.game_builder.GameBuilder", _Builder)
+    monkeypatch.setattr(
+        "Infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
+        lambda root: {
+            "path": str(Path(root) / "Library" / "AssetIndex.json"),
+            "entries": [{"guid": "b" * 32}],
+        },
+    )
+
+    request = _request(tmp_path)
+    result = DesktopPlatformExporter().execute(
+        request,
+        DesktopPlatformExporter().create_plan(request),
+    )
+
+    assert result.success
+    assert captured["entries"] == [{"guid": "b" * 32}]
