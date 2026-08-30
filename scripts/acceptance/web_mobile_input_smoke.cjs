@@ -162,7 +162,8 @@ async function main() {
       "[--viewport-width N] [--viewport-height N] " +
       "[--expect-presentation fullscreen-borderless|windowed] " +
       "[--expect-render-width N] [--expect-render-height N] " +
-      "[--track-object NAME] [--movement-key KEY] [--min-displacement N]",
+      "[--track-object NAME] [--movement-key KEY|--movement-touch] " +
+      "[--min-displacement N] [--skip-frame-checks]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -170,6 +171,8 @@ async function main() {
     return index >= 0 ? process.argv[index + 1] : fallback;
   };
   const requireActiveAudio = process.argv.includes("--require-active-audio");
+  const movementTouch = process.argv.includes("--movement-touch");
+  const skipFrameChecks = process.argv.includes("--skip-frame-checks");
   const cdpIndex = process.argv.indexOf("--cdp-endpoint");
   const cdpEndpoint = cdpIndex >= 0 ? process.argv[cdpIndex + 1] : "";
   if (cdpIndex >= 0 && !cdpEndpoint) {
@@ -322,12 +325,38 @@ async function main() {
         throw new Error(`Web Player could not find tracked object: ${trackedObject}`);
       }
       let whileHeld;
-      await page.keyboard.down(movementKey);
-      try {
-        await page.waitForTimeout(1200);
-        whileHeld = await readPosition(trackedObject);
-      } finally {
-        await page.keyboard.up(movementKey);
+      if (movementTouch) {
+        const touchSession = await page.context().newCDPSession(page);
+        const touchPoint = {
+          x: canvasBox.x + canvasBox.width * 0.325,
+          y: canvasBox.y + canvasBox.height * 0.1,
+          id: 91,
+          radiusX: 14,
+          radiusY: 12,
+          force: 0.7,
+        };
+        try {
+          await touchSession.send("Input.dispatchTouchEvent", {
+            type: "touchStart",
+            touchPoints: [touchPoint],
+          });
+          await page.waitForTimeout(1200);
+          whileHeld = await readPosition(trackedObject);
+        } finally {
+          await touchSession.send("Input.dispatchTouchEvent", {
+            type: "touchEnd",
+            touchPoints: [],
+          });
+          await touchSession.detach();
+        }
+      } else {
+        await page.keyboard.down(movementKey);
+        try {
+          await page.waitForTimeout(1200);
+          whileHeld = await readPosition(trackedObject);
+        } finally {
+          await page.keyboard.up(movementKey);
+        }
       }
       await page.waitForTimeout(120);
       const after = await readPosition(trackedObject);
@@ -350,7 +379,7 @@ async function main() {
       );
       gameplayMovement = {
         object: trackedObject,
-        key: movementKey,
+        input: movementTouch ? "touch:left-zone-forward" : `key:${movementKey}`,
         before,
         whileHeld,
         after,
@@ -360,27 +389,33 @@ async function main() {
         runtimeAfter,
       };
     }
-    await page.waitForTimeout(250);
-    const frameBeforeActivation = await measureCanvasFrame(canvas);
-    await page.evaluate(() => {
-      const loader = document.querySelector("#infernux-loader");
-      if (loader) loader.style.visibility = "hidden";
-    });
-    await page.waitForTimeout(120);
-    const featureBaseline = await readCanvasFrame(canvas);
-    await setRenderDiagnostic(page, 1, false);
-    const shadowsDisabled = await readCanvasFrame(canvas);
-    await setRenderDiagnostic(page, 1, true);
-    await setRenderDiagnostic(page, 0, false);
-    const skyDisabled = await readCanvasFrame(canvas);
-    await setRenderDiagnostic(page, 0, true);
-    const sceneFrame = summarizeCanvasFrame(featureBaseline);
-    const shadowDifference = compareCanvasFrames(featureBaseline, shadowsDisabled);
-    const skyDifference = compareCanvasFrames(featureBaseline, skyDisabled);
-    await page.evaluate(() => {
-      const loader = document.querySelector("#infernux-loader");
-      if (loader) loader.style.visibility = "";
-    });
+    let frameBeforeActivation = null;
+    let sceneFrame = null;
+    let shadowDifference = null;
+    let skyDifference = null;
+    if (!skipFrameChecks) {
+      await page.waitForTimeout(250);
+      frameBeforeActivation = await measureCanvasFrame(canvas);
+      await page.evaluate(() => {
+        const loader = document.querySelector("#infernux-loader");
+        if (loader) loader.style.visibility = "hidden";
+      });
+      await page.waitForTimeout(120);
+      const featureBaseline = await readCanvasFrame(canvas);
+      await setRenderDiagnostic(page, 1, false);
+      const shadowsDisabled = await readCanvasFrame(canvas);
+      await setRenderDiagnostic(page, 1, true);
+      await setRenderDiagnostic(page, 0, false);
+      const skyDisabled = await readCanvasFrame(canvas);
+      await setRenderDiagnostic(page, 0, true);
+      sceneFrame = summarizeCanvasFrame(featureBaseline);
+      shadowDifference = compareCanvasFrames(featureBaseline, shadowsDisabled);
+      skyDifference = compareCanvasFrames(featureBaseline, skyDisabled);
+      await page.evaluate(() => {
+        const loader = document.querySelector("#infernux-loader");
+        if (loader) loader.style.visibility = "";
+      });
+    }
     await activateCanvas(page, canvasBox, cdpEndpoint);
     await page.waitForFunction(() => {
       const diagnostics = JSON.parse(
@@ -389,7 +424,7 @@ async function main() {
       return diagnostics.some((item) => item.includes("INFERNUX_WEB_AUDIO_READY"));
     }, null, { timeout: 30000 });
     await page.waitForTimeout(250);
-    const frameAfterActivation = await measureCanvasFrame(canvas);
+    const frameAfterActivation = skipFrameChecks ? null : await measureCanvasFrame(canvas);
     const contextMenuPrevented = await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
       const contextMenu = new MouseEvent("contextmenu", {
@@ -440,7 +475,7 @@ async function main() {
       return contextMenu.defaultPrevented;
     });
     await page.waitForTimeout(1000);
-    const frameAfterInput = await measureCanvasFrame(canvas);
+    const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
     const result = await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
       const diagnostics = JSON.parse(canvas.dataset.infernuxDiagnostics || "[]");
@@ -514,22 +549,22 @@ async function main() {
     result.nativeWReleased = nativeWReleased;
     result.pythonWPressed = pythonWPressed;
     result.gameplayMovement = gameplayMovement;
-    const frameIsVisible = (frame) => (
+    const frameIsVisible = (frame) => frame && (
       frame.nonBlackRatio >= 0.1 &&
       frame.luminanceDeviation >= 0.01 &&
       frame.quantizedColorCount >= 8
     );
-    const inputPreservedFrame = (
+    const inputPreservedFrame = skipFrameChecks || (
       frameAfterInput.meanLuminance >= Math.max(
         0.01,
         frameAfterActivation.meanLuminance * 0.05,
       )
     );
-    const skyIsVisible = (
+    const skyIsVisible = skipFrameChecks || (
       skyDifference.changedPixelRatio >= 0.2 &&
       skyDifference.meanAbsoluteDifference >= 0.03
     );
-    const shadowsAreVisible = (
+    const shadowsAreVisible = skipFrameChecks || (
       shadowDifference.changedPixelRatio >= 0.003 &&
       shadowDifference.meanAbsoluteDifference >= 0.0002
     );
@@ -567,8 +602,9 @@ async function main() {
         !result.pageHide || !result.pageShow ||
         stateBeforeActivation !== "ready" || !result.contextMenuPrevented ||
         !presentationMatches || !renderSizeMatches || !centeredWindowMatches ||
-        !frameIsVisible(frameBeforeActivation) ||
-        !frameIsVisible(frameAfterActivation) || !frameIsVisible(frameAfterInput) ||
+        (!skipFrameChecks && !frameIsVisible(frameBeforeActivation)) ||
+        (!skipFrameChecks && !frameIsVisible(frameAfterActivation)) ||
+        (!skipFrameChecks && !frameIsVisible(frameAfterInput)) ||
         !inputPreservedFrame || !skyIsVisible || !shadowsAreVisible) {
       throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));
     }
