@@ -313,6 +313,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "material_base_color" in scene_renderer
     assert "MaterialBaseColorTexture" in scene_renderer
     assert "INFERNUX_WEB_MATERIAL_TEXTURE_READY" in scene_renderer
+    assert "DecodeBcTextureToRgba8" in scene_renderer
+    assert "TextureFormat::BC1RgbaSrgb" in scene_renderer
+    assert "TextureFormat::BC3Srgb" in scene_renderer
     assert "source.texCoord" in scene_renderer
     assert "horizon_glow" in scene_renderer
     assert "smoothstep(-0.10, 0.45, y)" in scene_renderer

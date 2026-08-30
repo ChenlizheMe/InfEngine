@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 namespace infernux::web
 {
@@ -539,6 +540,124 @@ wgpu::TextureFormat ToWebTextureFormat(TextureFormat format)
     }
 }
 
+std::array<uint8_t, 4> DecodeRgb565(uint16_t packed)
+{
+    const uint8_t red = static_cast<uint8_t>((packed >> 11u) & 0x1fu);
+    const uint8_t green = static_cast<uint8_t>((packed >> 5u) & 0x3fu);
+    const uint8_t blue = static_cast<uint8_t>(packed & 0x1fu);
+    return {static_cast<uint8_t>((red << 3u) | (red >> 2u)), static_cast<uint8_t>((green << 2u) | (green >> 4u)),
+            static_cast<uint8_t>((blue << 3u) | (blue >> 2u)), 255u};
+}
+
+std::array<std::array<uint8_t, 4>, 4> DecodeBcColorTable(const uint8_t *block, bool allowTransparent)
+{
+    const uint16_t endpoint0 = static_cast<uint16_t>(block[0]) | static_cast<uint16_t>(block[1]) << 8u;
+    const uint16_t endpoint1 = static_cast<uint16_t>(block[2]) | static_cast<uint16_t>(block[3]) << 8u;
+    std::array<std::array<uint8_t, 4>, 4> table{};
+    table[0] = DecodeRgb565(endpoint0);
+    table[1] = DecodeRgb565(endpoint1);
+    if (!allowTransparent || endpoint0 > endpoint1) {
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            table[2][channel] = static_cast<uint8_t>((2u * table[0][channel] + table[1][channel]) / 3u);
+            table[3][channel] = static_cast<uint8_t>((table[0][channel] + 2u * table[1][channel]) / 3u);
+        }
+        table[2][3] = 255u;
+        table[3][3] = 255u;
+    } else {
+        for (uint32_t channel = 0; channel < 3; ++channel)
+            table[2][channel] = static_cast<uint8_t>((table[0][channel] + table[1][channel]) / 2u);
+        table[2][3] = 255u;
+        table[3] = {0u, 0u, 0u, 0u};
+    }
+    return table;
+}
+
+std::array<uint8_t, 8> DecodeBc3AlphaTable(uint8_t endpoint0, uint8_t endpoint1)
+{
+    std::array<uint8_t, 8> table{endpoint0, endpoint1};
+    if (endpoint0 > endpoint1) {
+        for (uint32_t index = 1; index <= 6; ++index)
+            table[index + 1] = static_cast<uint8_t>(((7u - index) * endpoint0 + index * endpoint1) / 7u);
+    } else {
+        for (uint32_t index = 1; index <= 4; ++index)
+            table[index + 1] = static_cast<uint8_t>(((5u - index) * endpoint0 + index * endpoint1) / 5u);
+        table[6] = 0u;
+        table[7] = 255u;
+    }
+    return table;
+}
+
+std::optional<TextureCpuData> DecodeBcTextureToRgba8(const TextureCpuData &source)
+{
+    const bool bc1 = source.format == TextureFormat::BC1RgbaUNorm || source.format == TextureFormat::BC1RgbaSrgb;
+    const bool bc3 = source.format == TextureFormat::BC3UNorm || source.format == TextureFormat::BC3Srgb;
+    if ((!bc1 && !bc3) || source.dimension != TextureDimension::Texture2D || source.mipLevels.empty())
+        return std::nullopt;
+
+    const TextureMipLevel &mip = source.mipLevels.front();
+    const uint32_t blockBytes = bc1 ? 8u : 16u;
+    const uint32_t blockColumns = std::max(1u, (mip.width + 3u) / 4u);
+    const uint32_t blockRows = std::max(1u, (mip.height + 3u) / 4u);
+    const uint64_t requiredRowPitch = static_cast<uint64_t>(blockColumns) * blockBytes;
+    if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.rowPitch < requiredRowPitch ||
+        mip.byteOffset > source.bytes.size() || mip.byteSize > source.bytes.size() - mip.byteOffset)
+        return std::nullopt;
+    const uint64_t requiredBytes = static_cast<uint64_t>(blockRows - 1u) * mip.rowPitch + requiredRowPitch;
+    if (mip.byteSize < requiredBytes)
+        return std::nullopt;
+
+    TextureCpuData decoded;
+    decoded.dimension = TextureDimension::Texture2D;
+    decoded.semantic = source.semantic;
+    decoded.format = TextureFormatIsSrgb(source.format) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+    const uint64_t rowPitch = static_cast<uint64_t>(mip.width) * 4u;
+    const uint64_t byteSize = rowPitch * mip.height;
+    TextureMipLevel decodedMip;
+    decodedMip.width = mip.width;
+    decodedMip.height = mip.height;
+    decodedMip.depth = 1;
+    decodedMip.byteOffset = 0;
+    decodedMip.byteSize = byteSize;
+    decodedMip.rowPitch = rowPitch;
+    decodedMip.slicePitch = byteSize;
+    decoded.mipLevels.push_back(decodedMip);
+    decoded.bytes.resize(static_cast<size_t>(byteSize));
+
+    for (uint32_t blockY = 0; blockY < blockRows; ++blockY) {
+        for (uint32_t blockX = 0; blockX < blockColumns; ++blockX) {
+            const uint8_t *block = source.bytes.data() + mip.byteOffset + static_cast<uint64_t>(blockY) * mip.rowPitch +
+                                   static_cast<uint64_t>(blockX) * blockBytes;
+            const uint8_t *colorBlock = block + (bc3 ? 8u : 0u);
+            const auto colors = DecodeBcColorTable(colorBlock, bc1);
+            const uint32_t colorIndices =
+                static_cast<uint32_t>(colorBlock[4]) | static_cast<uint32_t>(colorBlock[5]) << 8u |
+                static_cast<uint32_t>(colorBlock[6]) << 16u | static_cast<uint32_t>(colorBlock[7]) << 24u;
+
+            std::array<uint8_t, 8> alphas{};
+            uint64_t alphaIndices = 0;
+            if (bc3) {
+                alphas = DecodeBc3AlphaTable(block[0], block[1]);
+                for (uint32_t byte = 0; byte < 6; ++byte)
+                    alphaIndices |= static_cast<uint64_t>(block[2 + byte]) << (8u * byte);
+            }
+
+            for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+                const uint32_t x = blockX * 4u + pixel % 4u;
+                const uint32_t y = blockY * 4u + pixel / 4u;
+                if (x >= mip.width || y >= mip.height)
+                    continue;
+                const uint32_t colorIndex = (colorIndices >> (pixel * 2u)) & 0x3u;
+                std::array<uint8_t, 4> rgba = colors[colorIndex];
+                if (bc3)
+                    rgba[3] = alphas[(alphaIndices >> (pixel * 3u)) & 0x7u];
+                std::memcpy(decoded.bytes.data() + static_cast<uint64_t>(y) * rowPitch + x * 4u, rgba.data(),
+                            rgba.size());
+            }
+        }
+    }
+    return decoded;
+}
+
 bool MaterialIsUnlit(const std::shared_ptr<InxMaterial> &material)
 {
     if (!material)
@@ -731,10 +850,18 @@ WebSceneRenderer::GPUTexture WebSceneRenderer::UploadMaterialTexture(const Textu
     GPUTexture gpu;
     if (!m_device || !m_queue || texture.dimension != TextureDimension::Texture2D || !texture.IsValid())
         return gpu;
-    const wgpu::TextureFormat format = ToWebTextureFormat(texture.format);
-    const TextureMipLevel &mip = texture.mipLevels.front();
+    std::optional<TextureCpuData> decoded;
+    const TextureCpuData *upload = &texture;
+    if (TextureFormatIsBlockCompressed(texture.format)) {
+        decoded = DecodeBcTextureToRgba8(texture);
+        if (!decoded)
+            return gpu;
+        upload = &*decoded;
+    }
+    const wgpu::TextureFormat format = ToWebTextureFormat(upload->format);
+    const TextureMipLevel &mip = upload->mipLevels.front();
     if (format == wgpu::TextureFormat::Undefined || mip.width == 0 || mip.height == 0 || mip.depth != 1 ||
-        mip.byteOffset > texture.bytes.size() || mip.byteSize > texture.bytes.size() - mip.byteOffset ||
+        mip.byteOffset > upload->bytes.size() || mip.byteSize > upload->bytes.size() - mip.byteOffset ||
         mip.rowPitch > std::numeric_limits<uint32_t>::max())
         return gpu;
 
@@ -762,7 +889,7 @@ WebSceneRenderer::GPUTexture WebSceneRenderer::UploadMaterialTexture(const Textu
     layout.bytesPerRow = static_cast<uint32_t>(mip.rowPitch);
     layout.rowsPerImage = mip.height;
     const wgpu::Extent3D extent{mip.width, mip.height, 1};
-    m_queue.WriteTexture(&destination, texture.bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize),
+    m_queue.WriteTexture(&destination, upload->bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize),
                          &layout, &extent);
     std::array<wgpu::BindGroupEntry, 2> entries{};
     entries[0].binding = 0;
