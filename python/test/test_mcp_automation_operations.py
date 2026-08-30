@@ -396,7 +396,7 @@ def test_player_build_is_available_without_global_validation(tmp_path):
 
     host.build_player = build_player
     host.player_build_targets = lambda: {
-        "current_desktop_target": "windows-x64",
+        "current_host_target": "windows-x64",
         "targets": [{"id": "windows-x64"}, {"id": "android-arm64"}],
     }
     EditorAutomationHost.set_provider(host)

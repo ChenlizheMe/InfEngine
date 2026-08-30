@@ -117,7 +117,7 @@ def test_host_build_reports_available_targets_for_missing_plugin(tmp_path):
 
     assert error.value.code == "player.target_unavailable"
     assert error.value.details["requested_target"] == "android-arm64"
-    assert error.value.details["available_targets"]
+    assert error.value.details["available_targets"] == []
 
 
 def test_host_build_target_catalog_is_json_serializable():
@@ -125,5 +125,6 @@ def test_host_build_target_catalog_is_json_serializable():
 
     encoded = json.dumps(payload)
 
-    assert "current_desktop_target" in encoded
-    assert payload["targets"]
+    assert "current_host_target" in encoded
+    assert payload["current_host_target"] == ""
+    assert payload["targets"] == []

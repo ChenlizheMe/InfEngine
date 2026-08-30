@@ -1,0 +1,11 @@
+{
+  "reference": "infernux/platform-linux",
+  "name": "Infernux Linux Platform",
+  "version": "0.1.0",
+  "intro": "Build Infernux games for Linux with Vulkan.",
+  "intros": {
+    "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Linux。"
+  },
+  "engine": ">=0.4.0,<0.5",
+  "dependencies": []
+}

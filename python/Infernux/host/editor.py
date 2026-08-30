@@ -751,24 +751,23 @@ class EditorAutomationHost:
         return type(value).__name__
 
     def player_build_targets(self) -> dict[str, object]:
-        """List targets currently owned by core and enabled platform plugins."""
+        """List targets currently owned by enabled platform plugins."""
         from dataclasses import asdict
 
         from Infernux.engine.build import (
-            current_desktop_target,
-            ensure_desktop_exporter_registered,
+            current_host_player_target,
             exporter_registry,
         )
 
-        ensure_desktop_exporter_registered()
-        desktop = current_desktop_target()
+        targets = exporter_registry.targets()
+        desktop = current_host_player_target(targets)
         def _capabilities(item) -> dict[str, object]:
             result = asdict(item.capabilities)
             result["features"] = sorted(result["features"])
             return result
 
         return {
-            "current_desktop_target": str(desktop.id) if desktop is not None else "",
+            "current_host_target": str(desktop.id) if desktop is not None else "",
             "targets": [
                 {
                     "id": str(item.id),
@@ -777,7 +776,7 @@ class EditorAutomationHost:
                     "architecture": item.architecture,
                     "capabilities": _capabilities(item),
                 }
-                for item in exporter_registry.targets()
+                for item in targets
             ],
         }
 
@@ -808,8 +807,7 @@ class EditorAutomationHost:
             BuildService,
             BuildUnavailableError,
             build_progress_fraction,
-            current_desktop_target,
-            ensure_desktop_exporter_registered,
+            current_host_player_target,
             exporter_registry,
         )
         from Infernux.engine.interaction import normalize_build_settings
@@ -854,14 +852,13 @@ class EditorAutomationHost:
                 "player.build_settings",
                 "android_artifact must be apk or aab.",
             )
-        ensure_desktop_exporter_registered()
-        desktop = current_desktop_target()
+        available_targets = exporter_registry.targets()
+        desktop = current_host_player_target(available_targets)
         final_target = str(
             target
             or settings.get("build_target", "")
             or (desktop.id if desktop is not None else "")
         ).strip()
-        available_targets = exporter_registry.targets()
         if not final_target or all(
             item.id != final_target for item in available_targets
         ):

@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from types import SimpleNamespace
 
+from Infernux.engine.build import BuildTarget, PlatformCapabilities
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
+
+
+def _host_build_target() -> BuildTarget:
+    platform_name = "windows" if sys.platform == "win32" else "linux"
+    return BuildTarget(
+        f"{platform_name}-x64",
+        f"{platform_name.title()} x64",
+        platform_name,
+        "x86_64",
+        PlatformCapabilities(graphics_api="vulkan"),
+    )
 
 
 class _Context:
@@ -345,6 +358,10 @@ def test_build_click_cannot_unbalance_the_disabled_stack_mid_frame():
     panel._build_output_dir = None
     panel._scenes = ["Assets/MainMenu.scene"]
     panel._output_dir = "C:/Builds/RacingPilot"
+    host_target = _host_build_target()
+    panel._build_target = str(host_target.id)
+    panel._available_build_targets = lambda: (host_target,)
+    panel.can_run_after_build = lambda: True
     commands: list[str] = []
     panel._execute_build_command = lambda command_id: (
         commands.append(command_id)
@@ -496,6 +513,10 @@ def test_build_commands_gate_start_and_cancel_without_entering_undo():
     panel._building = False
     panel._scenes = ["Assets/Main.scene"]
     panel._output_dir = "C:/Builds/RacingPilot"
+    host_target = _host_build_target()
+    panel._build_target = str(host_target.id)
+    panel._available_build_targets = lambda: (host_target,)
+    panel._is_desktop_target = lambda _target_id=None: True
     panel._cancel_event = threading.Event()
     starts: list[bool] = []
     panel._do_build = lambda *, run_after: starts.append(run_after) or True
@@ -587,13 +608,10 @@ def test_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path):
     assert snapshot is not entries
 
 
-def test_build_target_falls_back_to_current_desktop_when_plugin_disappears(
+def test_build_target_falls_back_to_current_host_when_plugin_disappears(
     monkeypatch,
 ):
-    from Infernux.engine.build import current_desktop_target
-
-    desktop = current_desktop_target()
-    assert desktop is not None
+    desktop = _host_build_target()
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._build_target = "android-arm64"
     panel._settings_controller = None

@@ -268,6 +268,21 @@ install(
     OPTIONAL
 )
 
+if(WIN32)
+    set(INFERNUX_HOST_PLATFORM_PACKAGE
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-windows.inxpkg")
+elseif(UNIX AND NOT APPLE)
+    set(INFERNUX_HOST_PLATFORM_PACKAGE
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-linux.inxpkg")
+endif()
+if(INFERNUX_HOST_PLATFORM_PACKAGE)
+    install(
+        FILES "${INFERNUX_HOST_PLATFORM_PACKAGE}"
+        DESTINATION "python/Infernux/resources"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    )
+endif()
+
 if(TARGET InfernuxPlayerHost)
     install(
         TARGETS InfernuxPlayerHost

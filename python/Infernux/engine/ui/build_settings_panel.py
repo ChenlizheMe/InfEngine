@@ -38,8 +38,7 @@ from Infernux.engine.build import (
     BuildService,
     BuildUnavailableError,
     build_progress_fraction,
-    current_desktop_target,
-    ensure_desktop_exporter_registered,
+    current_host_player_target,
     exporter_registry,
 )
 from Infernux.engine.project_context import get_project_root
@@ -211,9 +210,8 @@ class BuildSettingsPanel(EditorPanel):
         return list(self._scenes)
 
     def _available_build_targets(self):
-        ensure_desktop_exporter_registered()
         targets = exporter_registry.targets()
-        desktop = current_desktop_target()
+        desktop = current_host_player_target(targets)
         desktop_id = str(desktop.id) if desktop is not None else ""
         return tuple(
             sorted(
@@ -232,7 +230,7 @@ class BuildSettingsPanel(EditorPanel):
         for target in targets:
             if target.id == selected:
                 return target
-        desktop = current_desktop_target()
+        desktop = current_host_player_target(targets)
         if desktop is not None:
             for target in targets:
                 if target.id == desktop.id:
@@ -250,7 +248,7 @@ class BuildSettingsPanel(EditorPanel):
         return target
 
     def _is_desktop_target(self, target_id: str | None = None) -> bool:
-        desktop = current_desktop_target()
+        desktop = current_host_player_target(exporter_registry.targets())
         identifier = str(
             target_id if target_id is not None else getattr(self, "_build_target", "")
         )

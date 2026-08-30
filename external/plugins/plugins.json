@@ -8,6 +8,16 @@
       "default": true
     },
     {
+      "path": "infernux_windows",
+      "repository": "",
+      "default": false
+    },
+    {
+      "path": "infernux_linux",
+      "repository": "",
+      "default": false
+    },
+    {
       "path": "infernux_android",
       "repository": "",
       "default": false

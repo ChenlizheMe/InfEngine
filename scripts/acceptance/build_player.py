@@ -16,6 +16,8 @@ from typing import MutableMapping, Sequence
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_EDITORS = {
+    "windows": REPOSITORY_ROOT / "external" / "plugins" / "infernux_windows" / "Editor",
+    "linux": REPOSITORY_ROOT / "external" / "plugins" / "infernux_linux" / "Editor",
     "android": REPOSITORY_ROOT / "external" / "plugins" / "infernux_android" / "Editor",
     "web": REPOSITORY_ROOT / "external" / "plugins" / "infernux_web" / "Editor",
 }
@@ -42,9 +44,19 @@ def _desktop_target_for_host() -> str | None:
 
 
 DESKTOP_TARGET = _desktop_target_for_host()
-SUPPORTED_TARGETS = tuple(
-    sorted((*EXPORTERS, *((DESKTOP_TARGET,) if DESKTOP_TARGET is not None else ())))
-)
+if DESKTOP_TARGET == "windows-x64":
+    EXPORTERS[DESKTOP_TARGET] = (
+        "windows",
+        "infernux_windows",
+        "WindowsPlatformExporter",
+    )
+elif DESKTOP_TARGET == "linux-x64":
+    EXPORTERS[DESKTOP_TARGET] = (
+        "linux",
+        "infernux_linux",
+        "LinuxPlatformExporter",
+    )
+SUPPORTED_TARGETS = tuple(sorted(EXPORTERS))
 
 
 def _parse_option(value: str) -> tuple[str, object]:
@@ -62,10 +74,6 @@ def _parse_option(value: str) -> tuple[str, object]:
 
 
 def _load_exporter(target: str):
-    if target == DESKTOP_TARGET:
-        from Infernux.engine.build import DesktopPlatformExporter
-
-        return DesktopPlatformExporter()
     try:
         plugin, module_name, class_name = EXPORTERS[target]
     except KeyError as error:

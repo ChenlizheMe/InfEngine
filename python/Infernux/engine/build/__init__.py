@@ -8,11 +8,7 @@ from .registry import (
     exporter_registry,
 )
 from .service import BuildService, BuildUnavailableError, build_service
-from .desktop_exporter import (
-    DesktopPlatformExporter,
-    current_desktop_target,
-    ensure_desktop_exporter_registered,
-)
+from .host_player_export import current_host_player_target
 from .progress import build_progress_fraction
 
 __all__ = [
@@ -20,11 +16,9 @@ __all__ = [
     "BuildExporterRegistry",
     "BuildService",
     "BuildUnavailableError",
-    "DesktopPlatformExporter",
     "ExporterRegistration",
     "build_service",
     "build_progress_fraction",
-    "current_desktop_target",
-    "ensure_desktop_exporter_registered",
+    "current_host_player_target",
     "exporter_registry",
 ]

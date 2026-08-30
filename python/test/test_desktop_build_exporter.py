@@ -1,19 +1,34 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
 from Infernux.engine.build import (
     BuildConfiguration,
     BuildExporterRegistry,
     BuildProfile,
     BuildRequest,
-    DesktopPlatformExporter,
-    current_desktop_target,
-    ensure_desktop_exporter_registered,
+    current_host_player_target,
+    exporter_registry,
 )
+from Infernux.plugins import InxPackage, PluginManager
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "external" / "plugins"
+if sys.platform == "win32":
+    EDITOR_ROOT = PLUGIN_ROOT / "infernux_windows" / "Editor"
+    sys.path.insert(0, str(EDITOR_ROOT))
+    from infernux_windows import WindowsPlatformExporter as HostPlatformExporter
+    from infernux_windows.exporter import windows_target as host_target
+else:
+    EDITOR_ROOT = PLUGIN_ROOT / "infernux_linux" / "Editor"
+    sys.path.insert(0, str(EDITOR_ROOT))
+    from infernux_linux import LinuxPlatformExporter as HostPlatformExporter
+    from infernux_linux.exporter import linux_target as host_target
 
 
 def _request(tmp_path: Path, **options) -> BuildRequest:
-    target = current_desktop_target()
+    target = host_target()
     assert target is not None
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
@@ -31,45 +46,49 @@ def _request(tmp_path: Path, **options) -> BuildRequest:
     )
 
 
-def test_desktop_exporter_contributes_only_the_current_vulkan_target():
-    target = current_desktop_target()
+def test_host_plugin_contributes_only_the_current_vulkan_target():
+    target = host_target()
     assert target is not None
 
-    targets = DesktopPlatformExporter().targets()
+    targets = HostPlatformExporter().targets()
 
     assert targets == (target,)
     assert target.id in {"windows-x64", "linux-x64"}
     assert target.capabilities.graphics_api == "vulkan"
+    assert current_host_player_target(targets) == target
 
 
-def test_desktop_exporter_registration_is_idempotent():
+def test_host_plugin_owns_its_registered_target():
     registry = BuildExporterRegistry()
+    exporter = HostPlatformExporter()
+    registration = registry.register("package:host-platform", exporter)
 
-    registration = ensure_desktop_exporter_registered(registry)
-    repeated = ensure_desktop_exporter_registered(registry)
+    target = host_target()
+    assert target is not None
+    assert registry.resolve(target.id)[0] is exporter
 
-    assert registration is not None
-    assert repeated is None
-    assert registry.resolve(current_desktop_target().id)[0].exporter_id == (
-        "infernux/platform-desktop"
-    )
+    registry.unregister(registration)
+    assert registry.targets() == ()
 
 
-def test_desktop_exporter_doctor_rejects_invalid_project(tmp_path):
-    target = current_desktop_target()
+def test_host_exporter_doctor_rejects_invalid_project(tmp_path):
+    target = host_target()
+    assert target is not None
     request = BuildRequest(
         str(tmp_path / "MissingProject"),
         target.id,
         str(tmp_path / "Player"),
     )
 
-    report = DesktopPlatformExporter().doctor(request)
+    report = HostPlatformExporter().doctor(request)
 
     assert not report.available
-    assert [item.code for item in report.diagnostics] == ["desktop.project.invalid"]
+    assert [item.code for item in report.diagnostics] == [
+        "host-player.project.invalid"
+    ]
 
 
-def test_desktop_exporter_routes_settings_catalog_progress_and_cancellation(
+def test_host_exporter_routes_settings_catalog_progress_and_cancellation(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -106,11 +125,9 @@ def test_desktop_exporter_routes_settings_catalog_progress_and_cancellation(
         asset_catalog_entries=[{"guid": "a" * 32}],
     )
     object.__setattr__(request, "progress", progress.append)
+    exporter = HostPlatformExporter()
 
-    result = DesktopPlatformExporter().execute(
-        request,
-        DesktopPlatformExporter().create_plan(request),
-    )
+    result = exporter.execute(request, exporter.create_plan(request))
 
     assert result.success
     assert result.artifacts[0].kind == "player-directory"
@@ -125,7 +142,7 @@ def test_desktop_exporter_routes_settings_catalog_progress_and_cancellation(
     ]
 
 
-def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
+def test_host_exporter_publishes_catalog_for_a_clean_standalone_project(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -145,6 +162,7 @@ def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
             return str(tmp_path / "Player")
 
     monkeypatch.setattr("Infernux.engine.game_builder.GameBuilder", _Builder)
+
     def publish(root):
         lifecycle.append("publish")
         return {
@@ -158,11 +176,46 @@ def test_desktop_exporter_publishes_catalog_for_a_clean_standalone_project(
     )
 
     request = _request(tmp_path)
-    result = DesktopPlatformExporter().execute(
-        request,
-        DesktopPlatformExporter().create_plan(request),
-    )
+    exporter = HostPlatformExporter()
+    result = exporter.execute(request, exporter.create_plan(request))
 
     assert result.success
     assert captured["entries"] == [{"guid": "b" * 32}]
     assert lifecycle == ["publish", "builder"]
+
+
+def test_host_build_target_follows_installed_plugin_lifecycle(tmp_path):
+    project = tmp_path / "Project"
+    (project / "Assets").mkdir(parents=True)
+    (project / "ProjectSettings").mkdir()
+    source_name = "infernux_windows" if sys.platform == "win32" else "infernux_linux"
+    package = tmp_path / "host-platform.inxpkg"
+    InxPackage.export_source(str(PLUGIN_ROOT / source_name), str(package))
+    reference = f"infernux/platform-{'windows' if sys.platform == 'win32' else 'linux'}"
+    expected_target = "windows-x64" if sys.platform == "win32" else "linux-x64"
+    manager = PluginManager(str(project), runtime=False)
+    exporter_registry.clear()
+
+    try:
+        assert exporter_registry.targets() == ()
+
+        state = manager.install_package(str(package), install_dependencies=False)
+        assert state.loaded is True
+        assert [str(item.id) for item in exporter_registry.targets()] == [
+            expected_target
+        ]
+
+        manager.set_enabled(reference, False)
+        assert exporter_registry.targets() == ()
+
+        state = manager.set_enabled(reference, True)
+        assert state.loaded is True
+        assert [str(item.id) for item in exporter_registry.targets()] == [
+            expected_target
+        ]
+
+        manager.uninstall(reference)
+        assert exporter_registry.targets() == ()
+    finally:
+        manager.shutdown()
+        exporter_registry.clear()
