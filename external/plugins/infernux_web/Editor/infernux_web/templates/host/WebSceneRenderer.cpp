@@ -69,6 +69,7 @@ struct VertexInput {
     @location(4) emission: vec4<f32>,
     @location(5) material: vec4<f32>,
     @location(6) surface: vec4<f32>,
+    @location(7) tangent: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -81,10 +82,19 @@ struct VertexOutput {
     @location(5) material: vec4<f32>,
     @location(6) surface: vec4<f32>,
     @location(7) uv: vec2<f32>,
+    @location(8) tangent: vec4<f32>,
 };
 
-@group(1) @binding(0) var material_sampler: sampler;
+@group(1) @binding(0) var material_base_color_sampler: sampler;
 @group(1) @binding(1) var material_base_color: texture_2d<f32>;
+@group(1) @binding(2) var material_metallic_sampler: sampler;
+@group(1) @binding(3) var material_metallic_map: texture_2d<f32>;
+@group(1) @binding(4) var material_smoothness_sampler: sampler;
+@group(1) @binding(5) var material_smoothness_map: texture_2d<f32>;
+@group(1) @binding(6) var material_ao_sampler: sampler;
+@group(1) @binding(7) var material_ao_map: texture_2d<f32>;
+@group(1) @binding(8) var material_normal_sampler: sampler;
+@group(1) @binding(9) var material_normal_map: texture_2d<f32>;
 
 @vertex
 fn vertex_main(input: VertexInput) -> VertexOutput {
@@ -98,6 +108,7 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
     output.material = input.material;
     output.surface = input.surface;
     output.uv = input.uv;
+    output.tangent = input.tangent;
     return output;
 }
 
@@ -283,15 +294,36 @@ fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0 - camera.light_direction_strength.w, 1.0, filtered);
 }
 
+fn sample_material_normal(input: VertexOutput, geometric_normal: vec3<f32>) -> vec3<f32> {
+    var tangent = input.tangent.xyz - geometric_normal * dot(input.tangent.xyz, geometric_normal);
+    if (dot(tangent, tangent) <= 1.0e-8) {
+        let fallback = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 0.0, 1.0),
+                              abs(geometric_normal.y) > 0.999);
+        tangent = normalize(cross(fallback, geometric_normal));
+    } else {
+        tangent = normalize(tangent);
+    }
+    let handedness = select(-1.0, 1.0, input.tangent.w >= 0.0);
+    let bitangent = normalize(cross(geometric_normal, tangent)) * handedness;
+    var encoded = textureSample(material_normal_map, material_normal_sampler, input.uv).rg * 2.0 - 1.0;
+    encoded *= abs(input.tangent.w);
+    let normal_z = sqrt(max(1.0 - dot(encoded, encoded), 0.0));
+    return normalize(tangent * encoded.x + bitangent * encoded.y + geometric_normal * normal_z);
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(input.normal);
-    let sampled_color = textureSample(material_base_color, material_sampler, input.uv);
+    let geometric_normal = normalize(input.normal);
+    let normal = sample_material_normal(input, geometric_normal);
+    let sampled_color = textureSample(material_base_color, material_base_color_sampler, input.uv);
     let surface_color = input.color * sampled_color;
     if (input.surface.w >= 0.0 && surface_color.a < input.surface.w) {
         discard;
     }
-    var perceptual_roughness = clamp(1.0 - input.material.y, 0.045, 1.0);
+    let sampled_metallic = textureSample(material_metallic_map, material_metallic_sampler, input.uv).r;
+    let sampled_smoothness = textureSample(material_smoothness_map, material_smoothness_sampler, input.uv).r;
+    let sampled_occlusion = textureSample(material_ao_map, material_ao_sampler, input.uv).r;
+    var perceptual_roughness = clamp(1.0 - input.material.y * sampled_smoothness, 0.045, 1.0);
     var roughness = perceptual_roughness * perceptual_roughness;
     // Derivatives must execute in uniform fragment control flow on WebGPU.
     // Evaluate geometric AA before the per-material unlit early return.
@@ -336,8 +368,8 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
                          surface_color.a);
     }
     let ndotv = max(dot(normal, view_direction), 0.0);
-    let metallic = clamp(input.material.x, 0.0, 1.0);
-    let occlusion = clamp(input.material.z, 0.0, 1.0);
+    let metallic = clamp(input.material.x * sampled_metallic, 0.0, 1.0);
+    let occlusion = clamp(input.material.z * sampled_occlusion, 0.0, 1.0);
     let specular_highlights = clamp(input.material.w, 0.0, 1.0);
     let f0 = mix(vec3<f32>(0.04), surface_color.rgb, vec3<f32>(metallic));
     let f90 = clamp(50.0 * dot(f0, vec3<f32>(0.33333)), 0.0, 1.0);
@@ -506,12 +538,12 @@ glm::vec4 MaterialVector(const std::shared_ptr<InxMaterial> &material, const cha
     return fallback;
 }
 
-std::string MaterialBaseColorTexture(const std::shared_ptr<InxMaterial> &material)
+template <size_t Size>
+std::string MaterialTextureGuid(const std::shared_ptr<InxMaterial> &material,
+                                const std::array<const char *, Size> &names, const char *fallback)
 {
     if (!material)
-        return "white";
-    constexpr std::array<const char *, 5> names = {"baseColorTexture", "albedoMap", "albedoTexture", "mainTexture",
-                                                   "texSampler"};
+        return fallback;
     for (const char *name : names) {
         const MaterialProperty *property = material->GetProperty(name);
         if (!property || property->type != MaterialPropertyType::Texture2D)
@@ -519,7 +551,20 @@ std::string MaterialBaseColorTexture(const std::shared_ptr<InxMaterial> &materia
         if (const auto *guid = std::get_if<std::string>(&property->value); guid && !guid->empty())
             return *guid;
     }
-    return "white";
+    return fallback;
+}
+
+std::array<std::string, 5> MaterialTextureGuids(const std::shared_ptr<InxMaterial> &material)
+{
+    constexpr std::array<const char *, 5> baseNames = {"baseColorTexture", "albedoMap", "albedoTexture", "mainTexture",
+                                                       "texSampler"};
+    constexpr std::array<const char *, 3> metallicNames = {"metallicMap", "metalnessMap", "metallicTexture"};
+    constexpr std::array<const char *, 2> smoothnessNames = {"smoothnessMap", "smoothnessTexture"};
+    constexpr std::array<const char *, 3> aoNames = {"aoMap", "occlusionMap", "ambientOcclusionMap"};
+    constexpr std::array<const char *, 3> normalNames = {"normalMap", "normalTexture", "bumpMap"};
+    return {MaterialTextureGuid(material, baseNames, "white"), MaterialTextureGuid(material, metallicNames, "white"),
+            MaterialTextureGuid(material, smoothnessNames, "white"), MaterialTextureGuid(material, aoNames, "white"),
+            MaterialTextureGuid(material, normalNames, "normal")};
 }
 
 wgpu::TextureFormat ToWebTextureFormat(TextureFormat format)
@@ -587,71 +632,104 @@ std::array<uint8_t, 8> DecodeBc3AlphaTable(uint8_t endpoint0, uint8_t endpoint1)
     return table;
 }
 
+uint64_t DecodeBcScalarIndices(const uint8_t *block)
+{
+    uint64_t indices = 0;
+    for (uint32_t byte = 0; byte < 6; ++byte)
+        indices |= static_cast<uint64_t>(block[2 + byte]) << (8u * byte);
+    return indices;
+}
+
 std::optional<TextureCpuData> DecodeBcTextureToRgba8(const TextureCpuData &source)
 {
     const bool bc1 = source.format == TextureFormat::BC1RgbaUNorm || source.format == TextureFormat::BC1RgbaSrgb;
     const bool bc3 = source.format == TextureFormat::BC3UNorm || source.format == TextureFormat::BC3Srgb;
-    if ((!bc1 && !bc3) || source.dimension != TextureDimension::Texture2D || source.mipLevels.empty())
-        return std::nullopt;
-
-    const TextureMipLevel &mip = source.mipLevels.front();
-    const uint32_t blockBytes = bc1 ? 8u : 16u;
-    const uint32_t blockColumns = std::max(1u, (mip.width + 3u) / 4u);
-    const uint32_t blockRows = std::max(1u, (mip.height + 3u) / 4u);
-    const uint64_t requiredRowPitch = static_cast<uint64_t>(blockColumns) * blockBytes;
-    if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.rowPitch < requiredRowPitch ||
-        mip.byteOffset > source.bytes.size() || mip.byteSize > source.bytes.size() - mip.byteOffset)
-        return std::nullopt;
-    const uint64_t requiredBytes = static_cast<uint64_t>(blockRows - 1u) * mip.rowPitch + requiredRowPitch;
-    if (mip.byteSize < requiredBytes)
+    const bool bc4 = source.format == TextureFormat::BC4UNorm;
+    const bool bc5 = source.format == TextureFormat::BC5UNorm;
+    if ((!bc1 && !bc3 && !bc4 && !bc5) || source.dimension != TextureDimension::Texture2D || source.mipLevels.empty())
         return std::nullopt;
 
     TextureCpuData decoded;
     decoded.dimension = TextureDimension::Texture2D;
     decoded.semantic = source.semantic;
     decoded.format = TextureFormatIsSrgb(source.format) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
-    const uint64_t rowPitch = static_cast<uint64_t>(mip.width) * 4u;
-    const uint64_t byteSize = rowPitch * mip.height;
-    TextureMipLevel decodedMip;
-    decodedMip.width = mip.width;
-    decodedMip.height = mip.height;
-    decodedMip.depth = 1;
-    decodedMip.byteOffset = 0;
-    decodedMip.byteSize = byteSize;
-    decodedMip.rowPitch = rowPitch;
-    decodedMip.slicePitch = byteSize;
-    decoded.mipLevels.push_back(decodedMip);
-    decoded.bytes.resize(static_cast<size_t>(byteSize));
 
-    for (uint32_t blockY = 0; blockY < blockRows; ++blockY) {
-        for (uint32_t blockX = 0; blockX < blockColumns; ++blockX) {
-            const uint8_t *block = source.bytes.data() + mip.byteOffset + static_cast<uint64_t>(blockY) * mip.rowPitch +
-                                   static_cast<uint64_t>(blockX) * blockBytes;
-            const uint8_t *colorBlock = block + (bc3 ? 8u : 0u);
-            const auto colors = DecodeBcColorTable(colorBlock, bc1);
-            const uint32_t colorIndices =
-                static_cast<uint32_t>(colorBlock[4]) | static_cast<uint32_t>(colorBlock[5]) << 8u |
-                static_cast<uint32_t>(colorBlock[6]) << 16u | static_cast<uint32_t>(colorBlock[7]) << 24u;
+    const uint32_t blockBytes = (bc1 || bc4) ? 8u : 16u;
+    for (const TextureMipLevel &mip : source.mipLevels) {
+        const uint32_t blockColumns = std::max(1u, (mip.width + 3u) / 4u);
+        const uint32_t blockRows = std::max(1u, (mip.height + 3u) / 4u);
+        const uint64_t requiredRowPitch = static_cast<uint64_t>(blockColumns) * blockBytes;
+        if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.rowPitch < requiredRowPitch ||
+            mip.byteOffset > source.bytes.size() || mip.byteSize > source.bytes.size() - mip.byteOffset)
+            return std::nullopt;
+        const uint64_t requiredBytes = static_cast<uint64_t>(blockRows - 1u) * mip.rowPitch + requiredRowPitch;
+        if (mip.byteSize < requiredBytes)
+            return std::nullopt;
 
-            std::array<uint8_t, 8> alphas{};
-            uint64_t alphaIndices = 0;
-            if (bc3) {
-                alphas = DecodeBc3AlphaTable(block[0], block[1]);
-                for (uint32_t byte = 0; byte < 6; ++byte)
-                    alphaIndices |= static_cast<uint64_t>(block[2 + byte]) << (8u * byte);
-            }
+        const uint64_t rowPitch = static_cast<uint64_t>(mip.width) * 4u;
+        const uint64_t byteSize = rowPitch * mip.height;
+        if (byteSize > std::numeric_limits<size_t>::max() - decoded.bytes.size())
+            return std::nullopt;
+        TextureMipLevel decodedMip;
+        decodedMip.width = mip.width;
+        decodedMip.height = mip.height;
+        decodedMip.depth = 1;
+        decodedMip.byteOffset = decoded.bytes.size();
+        decodedMip.byteSize = byteSize;
+        decodedMip.rowPitch = rowPitch;
+        decodedMip.slicePitch = byteSize;
+        decoded.mipLevels.push_back(decodedMip);
+        decoded.bytes.resize(decoded.bytes.size() + static_cast<size_t>(byteSize));
 
-            for (uint32_t pixel = 0; pixel < 16; ++pixel) {
-                const uint32_t x = blockX * 4u + pixel % 4u;
-                const uint32_t y = blockY * 4u + pixel / 4u;
-                if (x >= mip.width || y >= mip.height)
-                    continue;
-                const uint32_t colorIndex = (colorIndices >> (pixel * 2u)) & 0x3u;
-                std::array<uint8_t, 4> rgba = colors[colorIndex];
-                if (bc3)
-                    rgba[3] = alphas[(alphaIndices >> (pixel * 3u)) & 0x7u];
-                std::memcpy(decoded.bytes.data() + static_cast<uint64_t>(y) * rowPitch + x * 4u, rgba.data(),
-                            rgba.size());
+        for (uint32_t blockY = 0; blockY < blockRows; ++blockY) {
+            for (uint32_t blockX = 0; blockX < blockColumns; ++blockX) {
+                const uint8_t *block = source.bytes.data() + mip.byteOffset +
+                                       static_cast<uint64_t>(blockY) * mip.rowPitch +
+                                       static_cast<uint64_t>(blockX) * blockBytes;
+                std::array<std::array<uint8_t, 4>, 4> colors{};
+                uint32_t colorIndices = 0;
+                std::array<uint8_t, 8> alphaOrRed{};
+                std::array<uint8_t, 8> green{};
+                uint64_t alphaOrRedIndices = 0;
+                uint64_t greenIndices = 0;
+                if (bc1 || bc3) {
+                    const uint8_t *colorBlock = block + (bc3 ? 8u : 0u);
+                    colors = DecodeBcColorTable(colorBlock, bc1);
+                    colorIndices = static_cast<uint32_t>(colorBlock[4]) | static_cast<uint32_t>(colorBlock[5]) << 8u |
+                                   static_cast<uint32_t>(colorBlock[6]) << 16u |
+                                   static_cast<uint32_t>(colorBlock[7]) << 24u;
+                    if (bc3) {
+                        alphaOrRed = DecodeBc3AlphaTable(block[0], block[1]);
+                        alphaOrRedIndices = DecodeBcScalarIndices(block);
+                    }
+                } else {
+                    alphaOrRed = DecodeBc3AlphaTable(block[0], block[1]);
+                    alphaOrRedIndices = DecodeBcScalarIndices(block);
+                    if (bc5) {
+                        green = DecodeBc3AlphaTable(block[8], block[9]);
+                        greenIndices = DecodeBcScalarIndices(block + 8u);
+                    }
+                }
+
+                for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+                    const uint32_t x = blockX * 4u + pixel % 4u;
+                    const uint32_t y = blockY * 4u + pixel / 4u;
+                    if (x >= mip.width || y >= mip.height)
+                        continue;
+                    std::array<uint8_t, 4> rgba{};
+                    if (bc1 || bc3) {
+                        rgba = colors[(colorIndices >> (pixel * 2u)) & 0x3u];
+                        if (bc3)
+                            rgba[3] = alphaOrRed[(alphaOrRedIndices >> (pixel * 3u)) & 0x7u];
+                    } else {
+                        const uint8_t red = alphaOrRed[(alphaOrRedIndices >> (pixel * 3u)) & 0x7u];
+                        const uint8_t greenValue = bc5 ? green[(greenIndices >> (pixel * 3u)) & 0x7u] : red;
+                        rgba = {red, greenValue, static_cast<uint8_t>(bc5 ? 255u : red), 255u};
+                    }
+                    std::memcpy(decoded.bytes.data() + decodedMip.byteOffset + static_cast<uint64_t>(y) * rowPitch +
+                                    x * 4u,
+                                rgba.data(), rgba.size());
+                }
             }
         }
     }
@@ -816,14 +894,18 @@ bool WebSceneRenderer::CreateShadowResources()
 
 bool WebSceneRenderer::CreateMaterialTextureResources()
 {
-    std::array<wgpu::BindGroupLayoutEntry, 2> entries{};
-    entries[0].binding = 0;
-    entries[0].visibility = wgpu::ShaderStage::Fragment;
-    entries[0].sampler.type = wgpu::SamplerBindingType::Filtering;
-    entries[1].binding = 1;
-    entries[1].visibility = wgpu::ShaderStage::Fragment;
-    entries[1].texture.sampleType = wgpu::TextureSampleType::Float;
-    entries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    std::array<wgpu::BindGroupLayoutEntry, 10> entries{};
+    for (uint32_t textureIndex = 0; textureIndex < 5; ++textureIndex) {
+        const uint32_t samplerBinding = textureIndex * 2u;
+        const uint32_t textureBinding = samplerBinding + 1u;
+        entries[samplerBinding].binding = samplerBinding;
+        entries[samplerBinding].visibility = wgpu::ShaderStage::Fragment;
+        entries[samplerBinding].sampler.type = wgpu::SamplerBindingType::Filtering;
+        entries[textureBinding].binding = textureBinding;
+        entries[textureBinding].visibility = wgpu::ShaderStage::Fragment;
+        entries[textureBinding].texture.sampleType = wgpu::TextureSampleType::Float;
+        entries[textureBinding].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    }
     wgpu::BindGroupLayoutDescriptor layoutDescriptor;
     layoutDescriptor.entryCount = entries.size();
     layoutDescriptor.entries = entries.data();
@@ -831,21 +913,47 @@ bool WebSceneRenderer::CreateMaterialTextureResources()
     if (!m_materialTextureLayout)
         return false;
 
-    const auto createSolid = [this](const std::array<uint8_t, 4> &pixel) {
+    const auto createSolid = [this](const std::array<uint8_t, 4> &pixel, bool srgb) {
         TextureCpuData data;
         data.dimension = TextureDimension::Texture2D;
         data.semantic = TextureSemantic::Color;
-        data.format = TextureFormat::Rgba8Srgb;
+        data.format = srgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
         data.mipLevels.push_back(TextureMipLevel{1, 1, 1, 0, 4, 4, 4});
         data.bytes.assign(pixel.begin(), pixel.end());
-        return UploadMaterialTexture(data);
+        return UploadMaterialTexture(data, "linear", "repeat", 1);
     };
-    m_whiteTexture = createSolid({255, 255, 255, 255});
-    m_blackTexture = createSolid({0, 0, 0, 255});
-    return m_whiteTexture.group && m_blackTexture.group;
+    m_whiteTexture = createSolid({255, 255, 255, 255}, true);
+    m_blackTexture = createSolid({0, 0, 0, 255}, true);
+    m_normalTexture = createSolid({128, 128, 255, 255}, false);
+    const std::array<GPUTexture, 5> defaults = {m_whiteTexture, m_whiteTexture, m_whiteTexture, m_whiteTexture,
+                                                m_normalTexture};
+    m_defaultMaterialTextureGroup = CreateMaterialTextureGroup(defaults);
+    return m_whiteTexture.view && m_blackTexture.view && m_normalTexture.view && m_defaultMaterialTextureGroup;
 }
 
-WebSceneRenderer::GPUTexture WebSceneRenderer::UploadMaterialTexture(const TextureCpuData &texture)
+wgpu::BindGroup WebSceneRenderer::CreateMaterialTextureGroup(const std::array<GPUTexture, 5> &textures)
+{
+    std::array<wgpu::BindGroupEntry, 10> entries{};
+    for (uint32_t textureIndex = 0; textureIndex < textures.size(); ++textureIndex) {
+        if (!textures[textureIndex].view || !textures[textureIndex].sampler)
+            return {};
+        const uint32_t samplerBinding = textureIndex * 2u;
+        const uint32_t textureBinding = samplerBinding + 1u;
+        entries[samplerBinding].binding = samplerBinding;
+        entries[samplerBinding].sampler = textures[textureIndex].sampler;
+        entries[textureBinding].binding = textureBinding;
+        entries[textureBinding].textureView = textures[textureIndex].view;
+    }
+    wgpu::BindGroupDescriptor descriptor;
+    descriptor.layout = m_materialTextureLayout;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    return m_device.CreateBindGroup(&descriptor);
+}
+
+WebSceneRenderer::GPUTexture WebSceneRenderer::UploadMaterialTexture(const TextureCpuData &texture,
+                                                                     const std::string &filterMode,
+                                                                     const std::string &wrapMode, int anisoLevel)
 {
     GPUTexture gpu;
     if (!m_device || !m_queue || texture.dimension != TextureDimension::Texture2D || !texture.IsValid())
@@ -859,62 +967,74 @@ WebSceneRenderer::GPUTexture WebSceneRenderer::UploadMaterialTexture(const Textu
         upload = &*decoded;
     }
     const wgpu::TextureFormat format = ToWebTextureFormat(upload->format);
-    const TextureMipLevel &mip = upload->mipLevels.front();
-    if (format == wgpu::TextureFormat::Undefined || mip.width == 0 || mip.height == 0 || mip.depth != 1 ||
-        mip.byteOffset > upload->bytes.size() || mip.byteSize > upload->bytes.size() - mip.byteOffset ||
-        mip.rowPitch > std::numeric_limits<uint32_t>::max())
+    const TextureMipLevel &baseMip = upload->mipLevels.front();
+    if (format == wgpu::TextureFormat::Undefined || baseMip.width == 0 || baseMip.height == 0 ||
+        upload->mipLevels.size() > std::numeric_limits<uint32_t>::max())
         return gpu;
+    for (const TextureMipLevel &mip : upload->mipLevels) {
+        if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.byteOffset > upload->bytes.size() ||
+            mip.byteSize > upload->bytes.size() - mip.byteOffset || mip.rowPitch > std::numeric_limits<uint32_t>::max())
+            return {};
+    }
 
     wgpu::TextureDescriptor descriptor;
     descriptor.dimension = wgpu::TextureDimension::e2D;
-    descriptor.size = {mip.width, mip.height, 1};
+    descriptor.size = {baseMip.width, baseMip.height, 1};
     descriptor.format = format;
-    descriptor.mipLevelCount = 1;
+    descriptor.mipLevelCount = static_cast<uint32_t>(upload->mipLevels.size());
     descriptor.sampleCount = 1;
     descriptor.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding;
     gpu.texture = m_device.CreateTexture(&descriptor);
     gpu.view = gpu.texture ? gpu.texture.CreateView() : wgpu::TextureView{};
     wgpu::SamplerDescriptor samplerDescriptor;
-    samplerDescriptor.addressModeU = wgpu::AddressMode::Repeat;
-    samplerDescriptor.addressModeV = wgpu::AddressMode::Repeat;
-    samplerDescriptor.minFilter = wgpu::FilterMode::Linear;
-    samplerDescriptor.magFilter = wgpu::FilterMode::Linear;
+    const wgpu::AddressMode addressMode = wrapMode == "clamp"    ? wgpu::AddressMode::ClampToEdge
+                                          : wrapMode == "mirror" ? wgpu::AddressMode::MirrorRepeat
+                                                                 : wgpu::AddressMode::Repeat;
+    samplerDescriptor.addressModeU = addressMode;
+    samplerDescriptor.addressModeV = addressMode;
+    samplerDescriptor.addressModeW = addressMode;
+    const bool point = filterMode == "point";
+    const uint16_t anisotropy = point ? 1u : static_cast<uint16_t>(std::clamp(anisoLevel < 0 ? 16 : anisoLevel, 1, 16));
+    samplerDescriptor.minFilter = point ? wgpu::FilterMode::Nearest : wgpu::FilterMode::Linear;
+    samplerDescriptor.magFilter = point ? wgpu::FilterMode::Nearest : wgpu::FilterMode::Linear;
+    samplerDescriptor.mipmapFilter =
+        filterMode == "trilinear" || anisotropy > 1u ? wgpu::MipmapFilterMode::Linear : wgpu::MipmapFilterMode::Nearest;
+    samplerDescriptor.lodMaxClamp = static_cast<float>(upload->mipLevels.size() - 1u);
+    samplerDescriptor.maxAnisotropy = anisotropy;
     gpu.sampler = m_device.CreateSampler(&samplerDescriptor);
     if (!gpu.texture || !gpu.view || !gpu.sampler)
         return {};
 
-    wgpu::TexelCopyTextureInfo destination;
-    destination.texture = gpu.texture;
-    wgpu::TexelCopyBufferLayout layout;
-    layout.bytesPerRow = static_cast<uint32_t>(mip.rowPitch);
-    layout.rowsPerImage = mip.height;
-    const wgpu::Extent3D extent{mip.width, mip.height, 1};
-    m_queue.WriteTexture(&destination, upload->bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize),
-                         &layout, &extent);
-    std::array<wgpu::BindGroupEntry, 2> entries{};
-    entries[0].binding = 0;
-    entries[0].sampler = gpu.sampler;
-    entries[1].binding = 1;
-    entries[1].textureView = gpu.view;
-    wgpu::BindGroupDescriptor groupDescriptor;
-    groupDescriptor.layout = m_materialTextureLayout;
-    groupDescriptor.entryCount = entries.size();
-    groupDescriptor.entries = entries.data();
-    gpu.group = m_device.CreateBindGroup(&groupDescriptor);
+    for (uint32_t mipLevel = 0; mipLevel < upload->mipLevels.size(); ++mipLevel) {
+        const TextureMipLevel &mip = upload->mipLevels[mipLevel];
+        wgpu::TexelCopyTextureInfo destination;
+        destination.texture = gpu.texture;
+        destination.mipLevel = mipLevel;
+        wgpu::TexelCopyBufferLayout layout;
+        layout.bytesPerRow = static_cast<uint32_t>(mip.rowPitch);
+        layout.rowsPerImage = mip.height;
+        const wgpu::Extent3D extent{mip.width, mip.height, 1};
+        m_queue.WriteTexture(&destination, upload->bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize),
+                             &layout, &extent);
+    }
+    gpu.mipLevels = static_cast<uint32_t>(upload->mipLevels.size());
     return gpu;
 }
 
-wgpu::BindGroup WebSceneRenderer::ResolveMaterialTexture(const std::string &guid)
+WebSceneRenderer::GPUTexture WebSceneRenderer::ResolveMaterialTexture(const std::string &guid,
+                                                                      const GPUTexture &fallback)
 {
-    if (guid.empty() || guid == "white" || guid == "normal")
-        return m_whiteTexture.group;
+    if (guid.empty() || guid == "white")
+        return m_whiteTexture;
+    if (guid == "normal")
+        return m_normalTexture;
     if (guid == "black")
-        return m_blackTexture.group;
+        return m_blackTexture;
     MaterialTextureState &state = m_materialTextures[guid];
-    if (state.gpu.group)
-        return state.gpu.group;
+    if (state.gpu.view)
+        return state.gpu;
     if (state.failed)
-        return m_whiteTexture.group;
+        return fallback;
 
     AssetRegistry &registry = AssetRegistry::Instance();
     if (!state.ticket) {
@@ -922,24 +1042,49 @@ wgpu::BindGroup WebSceneRenderer::ResolveMaterialTexture(const std::string &guid
         if (!texture) {
             state.failed = true;
             std::fprintf(stderr, "INFERNUX_WEB_MATERIAL_TEXTURE_FAILED guid=%s reason=asset-load\n", guid.c_str());
-            return m_whiteTexture.group;
+            return fallback;
         }
+        state.filterMode = texture->GetFilterMode();
+        state.wrapMode = texture->GetWrapMode();
+        state.anisoLevel = texture->GetAnisoLevel();
         state.ticket = registry.BeginTextureUploadStaging(guid);
     }
     const auto staging = registry.TryConsumeTextureUploadStaging(state.ticket);
     if (!staging)
-        return m_whiteTexture.group;
-    state.gpu = UploadMaterialTexture(*staging);
+        return fallback;
+    state.gpu = UploadMaterialTexture(*staging, state.filterMode, state.wrapMode, state.anisoLevel);
     state.ticket.reset();
-    if (!state.gpu.group) {
+    if (!state.gpu.view) {
         state.failed = true;
         std::fprintf(stderr, "INFERNUX_WEB_MATERIAL_TEXTURE_FAILED guid=%s format=%s\n", guid.c_str(),
                      TextureFormatName(staging->format));
-        return m_whiteTexture.group;
+        return fallback;
     }
-    std::printf("INFERNUX_WEB_MATERIAL_TEXTURE_READY guid=%s width=%u height=%u\n", guid.c_str(),
-                staging->mipLevels.front().width, staging->mipLevels.front().height);
-    return state.gpu.group;
+    ++m_materialTextureGeneration;
+    std::printf("INFERNUX_WEB_MATERIAL_TEXTURE_READY guid=%s width=%u height=%u mips=%u filter=%s wrap=%s\n",
+                guid.c_str(), staging->mipLevels.front().width, staging->mipLevels.front().height, state.gpu.mipLevels,
+                state.filterMode.c_str(), state.wrapMode.c_str());
+    return state.gpu;
+}
+
+wgpu::BindGroup WebSceneRenderer::ResolveMaterialTextureSet(const std::shared_ptr<InxMaterial> &material)
+{
+    const std::array<std::string, 5> guids = MaterialTextureGuids(material);
+    std::array<GPUTexture, 5> textures{};
+    std::string key;
+    for (size_t index = 0; index < guids.size(); ++index) {
+        if (index > 0)
+            key.push_back('\x1f');
+        key.append(guids[index]);
+        const GPUTexture &fallback = index == 4 ? m_normalTexture : m_whiteTexture;
+        textures[index] = ResolveMaterialTexture(guids[index], fallback);
+    }
+    MaterialTextureSetState &state = m_materialTextureSets[key];
+    if (!state.group || state.textureGeneration != m_materialTextureGeneration) {
+        state.group = CreateMaterialTextureGroup(textures);
+        state.textureGeneration = m_materialTextureGeneration;
+    }
+    return state.group ? state.group : m_defaultMaterialTextureGroup;
 }
 
 bool WebSceneRenderer::CreatePipelines()
@@ -952,7 +1097,7 @@ bool WebSceneRenderer::CreatePipelines()
     if (!shader)
         return false;
 
-    std::array<wgpu::VertexAttribute, 7> attributes{};
+    std::array<wgpu::VertexAttribute, 8> attributes{};
     attributes[0].format = wgpu::VertexFormat::Float32x3;
     attributes[0].offset = offsetof(WebVertex, position);
     attributes[0].shaderLocation = 0;
@@ -974,6 +1119,9 @@ bool WebSceneRenderer::CreatePipelines()
     attributes[6].format = wgpu::VertexFormat::Float32x4;
     attributes[6].offset = offsetof(WebVertex, surface);
     attributes[6].shaderLocation = 6;
+    attributes[7].format = wgpu::VertexFormat::Float32x4;
+    attributes[7].offset = offsetof(WebVertex, tangent);
+    attributes[7].shaderLocation = 7;
     wgpu::VertexBufferLayout vertexLayout;
     vertexLayout.arrayStride = sizeof(WebVertex);
     vertexLayout.stepMode = wgpu::VertexStepMode::Vertex;
@@ -1186,6 +1334,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             std::clamp(MaterialFloat(draw.material, "smoothness", 0.5f), 0.0f, 1.0f),
             std::clamp(MaterialFloat(draw.material, "ambientOcclusion", 1.0f), 0.0f, 1.0f),
             std::clamp(MaterialFloat(draw.material, "specularHighlights", 1.0f), 0.0f, 1.0f));
+        const float normalScale = std::max(0.0f, MaterialFloat(draw.material, "normalScale", 1.0f));
         float shadingModel = 0.0f;
         if (MaterialIsUnlit(draw.material))
             shadingModel = 1.0f;
@@ -1200,7 +1349,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
         WebDrawRange range;
         range.firstIndex = static_cast<uint32_t>(m_indices.size());
         range.castsShadows = draw.castsShadows;
-        range.materialTextureGroup = ResolveMaterialTexture(MaterialBaseColorTexture(draw.material));
+        range.materialTextureGroup = ResolveMaterialTextureSet(draw.material);
         if (draw.material) {
             const RenderState &state = draw.material->GetRenderState();
             range.transparent = state.blendEnable || state.renderQueue >= 3000 || materialColor.a < 0.999f;
@@ -1215,6 +1364,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             range.line = range.line || lineVertex;
             glm::vec3 worldPosition;
             glm::vec3 worldNormalValue;
+            glm::vec4 worldTangentValue(1.0f, 0.0f, 0.0f, normalScale);
             float vertexAlpha = 1.0f;
             if (lineVertex) {
                 const glm::vec3 center = glm::vec3(draw.worldMatrix * glm::vec4(source.pos, 1.0f));
@@ -1249,6 +1399,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
                 }
                 worldPosition = center + side * source.boneWeights.x;
                 worldNormalValue = source.boneIndices.y != 0u ? facing : worldNormal * source.normal;
+                worldTangentValue = glm::vec4(tangent, normalScale);
                 vertexAlpha = std::clamp(source.boneWeights.y, 0.0f, 1.0f);
             } else {
                 const glm::mat4 skin = SkinMatrix(source, draw.skinBoneMatrices);
@@ -1256,16 +1407,32 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
                 worldPosition = glm::vec3(draw.worldMatrix * glm::vec4(localPosition, 1.0f));
                 const glm::vec3 localNormal = glm::mat3(skin) * source.normal;
                 worldNormalValue = worldNormal * localNormal;
+                const glm::mat3 tangentTransform = glm::mat3(draw.worldMatrix) * glm::mat3(skin);
+                glm::vec3 tangent = tangentTransform * glm::vec3(source.tangent);
+                const float transformSign = glm::determinant(tangentTransform) < 0.0f ? -1.0f : 1.0f;
+                const float handedness = source.tangent.w < 0.0f ? -1.0f : 1.0f;
+                worldTangentValue = glm::vec4(tangent, handedness * transformSign * normalScale);
             }
             if (!Finite(worldNormalValue) || glm::dot(worldNormalValue, worldNormalValue) < 1.0e-8f)
                 worldNormalValue = glm::vec3(0.0f, 1.0f, 0.0f);
             else
                 worldNormalValue = glm::normalize(worldNormalValue);
+            glm::vec3 tangent = glm::vec3(worldTangentValue);
+            tangent -= worldNormalValue * glm::dot(worldNormalValue, tangent);
+            if (!Finite(tangent) || glm::dot(tangent, tangent) < 1.0e-8f) {
+                const glm::vec3 axis =
+                    std::abs(worldNormalValue.y) > 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+                tangent = glm::normalize(glm::cross(axis, worldNormalValue));
+            } else {
+                tangent = glm::normalize(tangent);
+            }
+            worldTangentValue = glm::vec4(tangent, worldTangentValue.w);
             const glm::vec4 color = glm::vec4(source.color, vertexAlpha) * materialColor;
             range.transparent = range.transparent || color.a < 0.999f;
             WebVertex vertex{};
             std::memcpy(vertex.position, &worldPosition, sizeof(vertex.position));
             std::memcpy(vertex.normal, &worldNormalValue, sizeof(vertex.normal));
+            std::memcpy(vertex.tangent, &worldTangentValue, sizeof(vertex.tangent));
             std::memcpy(vertex.uv, &source.texCoord, sizeof(vertex.uv));
             std::memcpy(vertex.color, &color, sizeof(vertex.color));
             std::memcpy(vertex.emission, &emission, sizeof(vertex.emission));
@@ -1463,7 +1630,7 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
     if (m_drawSky && m_skyPipeline) {
         pass.SetPipeline(m_skyPipeline);
         pass.SetBindGroup(0, m_cameraGroup);
-        pass.SetBindGroup(1, m_whiteTexture.group);
+        pass.SetBindGroup(1, m_defaultMaterialTextureGroup);
         pass.Draw(3, 1, 0, 0);
     }
 
@@ -1481,7 +1648,7 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
         }
         transparentCount += range.transparent ? 1u : 0u;
         lineCount += range.line ? 1u : 0u;
-        pass.SetBindGroup(1, range.materialTextureGroup ? range.materialTextureGroup : m_whiteTexture.group);
+        pass.SetBindGroup(1, range.materialTextureGroup ? range.materialTextureGroup : m_defaultMaterialTextureGroup);
         pass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
     }
     if (!m_reportedFirstFrame) {

@@ -311,11 +311,23 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "alphaClipThreshold" in scene_renderer
     assert "discard;" in scene_renderer
     assert "material_base_color" in scene_renderer
-    assert "MaterialBaseColorTexture" in scene_renderer
+    assert "material_metallic_map" in scene_renderer
+    assert "material_smoothness_map" in scene_renderer
+    assert "material_ao_map" in scene_renderer
+    assert "material_normal_map" in scene_renderer
+    assert "MaterialTextureGuids" in scene_renderer
+    assert "ResolveMaterialTextureSet" in scene_renderer
+    assert 'MaterialFloat(draw.material, "normalScale", 1.0f)' in scene_renderer
     assert "INFERNUX_WEB_MATERIAL_TEXTURE_READY" in scene_renderer
     assert "DecodeBcTextureToRgba8" in scene_renderer
     assert "TextureFormat::BC1RgbaSrgb" in scene_renderer
     assert "TextureFormat::BC3Srgb" in scene_renderer
+    assert "TextureFormat::BC4UNorm" in scene_renderer
+    assert "TextureFormat::BC5UNorm" in scene_renderer
+    assert "descriptor.mipLevelCount" in scene_renderer
+    assert "samplerDescriptor.mipmapFilter" in scene_renderer
+    assert "samplerDescriptor.maxAnisotropy" in scene_renderer
+    assert "offsetof(WebVertex, tangent)" in scene_renderer
     assert "source.texCoord" in scene_renderer
     assert "horizon_glow" in scene_renderer
     assert "smoothstep(-0.10, 0.45, y)" in scene_renderer

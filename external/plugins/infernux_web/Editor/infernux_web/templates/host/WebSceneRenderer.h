@@ -13,6 +13,7 @@
 
 namespace infernux
 {
+class InxMaterial;
 class TextureUploadStagingTicket;
 struct TextureCpuData;
 } // namespace infernux
@@ -52,6 +53,7 @@ class WebSceneRenderer final
     {
         float position[3];
         float normal[3];
+        float tangent[4];
         float uv[2];
         float color[4];
         float emission[4];
@@ -77,14 +79,23 @@ class WebSceneRenderer final
         wgpu::Texture texture;
         wgpu::TextureView view;
         wgpu::Sampler sampler;
-        wgpu::BindGroup group;
+        uint32_t mipLevels = 0;
     };
 
     struct MaterialTextureState
     {
         std::shared_ptr<TextureUploadStagingTicket> ticket;
         GPUTexture gpu;
+        std::string filterMode = "linear";
+        std::string wrapMode = "repeat";
+        int anisoLevel = 1;
         bool failed = false;
+    };
+
+    struct MaterialTextureSetState
+    {
+        wgpu::BindGroup group;
+        uint64_t textureGeneration = 0;
     };
 
     struct alignas(16) CameraData
@@ -119,8 +130,11 @@ class WebSceneRenderer final
     bool CreatePipelines();
     bool CreateShadowResources();
     bool CreateMaterialTextureResources();
-    [[nodiscard]] wgpu::BindGroup ResolveMaterialTexture(const std::string &guid);
-    [[nodiscard]] GPUTexture UploadMaterialTexture(const TextureCpuData &texture);
+    [[nodiscard]] GPUTexture ResolveMaterialTexture(const std::string &guid, const GPUTexture &fallback);
+    [[nodiscard]] wgpu::BindGroup ResolveMaterialTextureSet(const std::shared_ptr<InxMaterial> &material);
+    [[nodiscard]] wgpu::BindGroup CreateMaterialTextureGroup(const std::array<GPUTexture, 5> &textures);
+    [[nodiscard]] GPUTexture UploadMaterialTexture(const TextureCpuData &texture, const std::string &filterMode,
+                                                   const std::string &wrapMode, int anisoLevel);
     bool EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required, wgpu::BufferUsage usage);
     bool BuildFrame(uint32_t width, uint32_t height);
     void ReportFrameIssue(const char *issue);
@@ -139,7 +153,11 @@ class WebSceneRenderer final
     wgpu::BindGroupLayout m_materialTextureLayout;
     GPUTexture m_whiteTexture;
     GPUTexture m_blackTexture;
+    GPUTexture m_normalTexture;
+    wgpu::BindGroup m_defaultMaterialTextureGroup;
     std::unordered_map<std::string, MaterialTextureState> m_materialTextures;
+    std::unordered_map<std::string, MaterialTextureSetState> m_materialTextureSets;
+    uint64_t m_materialTextureGeneration = 1;
     wgpu::Buffer m_cameraBuffer;
     wgpu::Buffer m_vertexBuffer;
     wgpu::Buffer m_indexBuffer;
