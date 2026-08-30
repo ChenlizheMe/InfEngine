@@ -242,6 +242,22 @@ def test_android_exporter_plan_is_inspectable(monkeypatch, tmp_path):
     assert plan.metadata["graphics_api"] == "vulkan"
 
 
+def test_android_native_builds_keep_development_symbols_without_debug_runtime_cost(
+    monkeypatch,
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+
+    assert (
+        exporter_module._native_build_type(BuildConfiguration.DEVELOPMENT)
+        == "RelWithDebInfo"
+    )
+    assert (
+        exporter_module._native_build_type(BuildConfiguration.RELEASE)
+        == "Release"
+    )
+
+
 def test_android_host_template_disables_opengl_and_configures_vulkan(
     monkeypatch, tmp_path
 ):
@@ -282,6 +298,10 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert '"${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/' in cmake
     assert "android.hardware.vulkan.version" in manifest
     assert 'android:screenOrientation="sensorLandscape"' in manifest
+    assert 'android:name="infernux.resolution_scaling"' in manifest
+    assert 'android:value="fixed_dpi"' in manifest
+    assert 'android:name="infernux.target_dpi"' in manifest
+    assert 'android:value="320"' in manifest
     assert 'android:appCategory="game"' in manifest
     assert 'android:isGame="true"' in manifest
     assert 'android:resizeableActivity="false"' in manifest
@@ -308,10 +328,14 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET"' in activity
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN", "1"' in activity
     assert 'Os.setenv("INFERNUX_RENDER_PROFILE", "mobile"' in activity
-    assert "INFERNUX_PLAYER_RENDER_SCALE" not in activity
+    assert 'Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", scaleText' in activity
+    assert "getDisplayMetrics().densityDpi" in activity
+    assert "INFERNUX_ANDROID_RESOLUTION_SCALING" in activity
     assert "INFERNUX_PLAYER_FPS_CAP" not in activity
     assert 'Os.setenv("INFERNUX_PRESENT_MODE", "fifo"' in activity
     assert 'Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2"' in activity
+    assert 'getBooleanExtra("infernux.profile_frames", false)' in activity
+    assert 'Os.setenv("_INFERNUX_PLAYER_PROFILE_FRAMES", "1"' in activity
     assert "applyImmersiveGameMode" in activity
     assert "WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE" in activity
     assert "View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY" in activity
@@ -403,6 +427,58 @@ def test_android_orientation_contract_rejects_unknown_policy(monkeypatch, tmp_pa
 
     with pytest.raises(ValueError, match="android_orientation"):
         exporter_module._android_orientation_contract(request, {})
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    (
+        ({}, ("fixed_dpi", 320)),
+        (
+            {"android_resolution_scaling": "disabled", "android_target_dpi": 480},
+            ("disabled", 480),
+        ),
+        (
+            {"android_resolution_scaling": "fixed_dpi", "android_target_dpi": "360"},
+            ("fixed_dpi", 360),
+        ),
+    ),
+)
+def test_android_resolution_contract(monkeypatch, tmp_path, options, expected):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options=options),
+    )
+
+    assert exporter_module._android_resolution_contract(request) == expected
+
+
+@pytest.mark.parametrize(
+    "options",
+    (
+        {"android_resolution_scaling": "dynamic"},
+        {"android_target_dpi": "not-a-number"},
+        {"android_target_dpi": 60},
+        {"android_target_dpi": 1200},
+    ),
+)
+def test_android_resolution_contract_rejects_invalid_values(
+    monkeypatch, tmp_path, options
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options=options),
+    )
+
+    with pytest.raises(ValueError, match="android_"):
+        exporter_module._android_resolution_contract(request)
 
 
 @pytest.mark.parametrize(

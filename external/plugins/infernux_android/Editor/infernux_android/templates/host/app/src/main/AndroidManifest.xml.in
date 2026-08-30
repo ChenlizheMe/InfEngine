@@ -19,6 +19,12 @@
         android:isGame="true"
         android:label="@string/app_name"
         android:theme="@style/AppTheme">
+        <meta-data
+            android:name="infernux.resolution_scaling"
+            android:value="@ANDROID_RESOLUTION_SCALING@" />
+        <meta-data
+            android:name="infernux.target_dpi"
+            android:value="@ANDROID_TARGET_DPI@" />
         <activity
             android:name=".InfernuxActivity"
             android:alwaysRetainTaskState="true"

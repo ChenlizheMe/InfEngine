@@ -250,6 +250,7 @@ class AndroidPlatformExporter(PlatformExporter):
             game_name, sdl_orientations, android_orientation = (
                 _cook_player_content(request, staging, abi)
             )
+            resolution_scaling, target_dpi = _android_resolution_contract(request)
         except (OSError, RuntimeError, ValueError) as error:
             return BuildResult(
                 request.target,
@@ -273,6 +274,8 @@ class AndroidPlatformExporter(PlatformExporter):
             python_version=python_version,
             sdl_orientations=sdl_orientations,
             android_orientation=android_orientation,
+            resolution_scaling=resolution_scaling,
+            target_dpi=target_dpi,
         )
         request.report("prepare", 1, 1, "Android SDL host project ready")
 
@@ -406,7 +409,12 @@ class AndroidPlatformExporter(PlatformExporter):
                 "python": python_version,
                 "game": game_name,
                 "configuration": configuration_slug,
+                "native_configuration": _native_build_type(
+                    request.profile.configuration
+                ),
                 "artifact_kind": artifact_kind,
+                "resolution_scaling": resolution_scaling,
+                "target_dpi": target_dpi,
             },
             logs=logs,
             elapsed_seconds=time.perf_counter() - started,
@@ -474,6 +482,8 @@ def _configure_project(
     python_version: str = _ANDROID_PYTHON_SERIES,
     sdl_orientations: str = "LandscapeLeft LandscapeRight",
     android_orientation: str = "sensorLandscape",
+    resolution_scaling: str = "fixed_dpi",
+    target_dpi: int = 320,
 ) -> None:
     replacements = {
         "@INFERNUX_SOURCE_ROOT@": source_root.as_posix(),
@@ -484,6 +494,8 @@ def _configure_project(
         "@ANDROID_PYTHON_VERSION@": python_version,
         "@ANDROID_ORIENTATIONS@": sdl_orientations,
         "@ANDROID_SCREEN_ORIENTATION@": android_orientation,
+        "@ANDROID_RESOLUTION_SCALING@": resolution_scaling,
+        "@ANDROID_TARGET_DPI@": str(target_dpi),
     }
     for path in project_root.rglob("*.in"):
         payload = path.read_text(encoding="utf-8")
@@ -658,6 +670,27 @@ def _android_orientation_contract(
         raise ValueError(
             "android_orientation must be auto, landscape, portrait, or sensor"
         ) from error
+
+
+def _android_resolution_contract(request: BuildRequest) -> tuple[str, int]:
+    """Resolve Unity-style native or fixed-DPI mobile resolution scaling."""
+
+    mode = str(
+        request.profile.options.get("android_resolution_scaling", "fixed_dpi")
+        or "fixed_dpi"
+    ).strip().casefold()
+    if mode not in {"disabled", "fixed_dpi"}:
+        raise ValueError(
+            "android_resolution_scaling must be disabled or fixed_dpi"
+        )
+    raw_target = request.profile.options.get("android_target_dpi", 320)
+    try:
+        target_dpi = int(raw_target)
+    except (TypeError, ValueError) as error:
+        raise ValueError("android_target_dpi must be an integer") from error
+    if target_dpi < 120 or target_dpi > 1000:
+        raise ValueError("android_target_dpi must be between 120 and 1000")
+    return mode, target_dpi
 
 
 def _python_prefix(request: BuildRequest, abi: str) -> Path | None:
@@ -941,11 +974,7 @@ def _build_engine_runtime(
         / f"libpython{python_version}.so"
     )
     pybind11_dir = _host_pybind11_cmake_dir()
-    build_type = (
-        "Release"
-        if request.profile.configuration is BuildConfiguration.RELEASE
-        else "Debug"
-    )
+    build_type = _native_build_type(request.profile.configuration)
     build_root = staging.parents[2] / "AndroidEngine" / abi / build_type
     configure_command = [
         str(cmake),
@@ -1028,6 +1057,17 @@ def _build_engine_runtime(
     _stage_engine_native_libraries(build_root, staging, abi)
     request.report("native", 2, 2, f"Android engine runtime staged ({abi})")
     return 0, logs
+
+
+def _native_build_type(configuration: BuildConfiguration) -> str:
+    """Select an optimized native runtime while retaining development symbols."""
+
+    # A development Player must remain representative of shipped gameplay.
+    # RelWithDebInfo keeps native symbols and frame diagnostics without the
+    # unoptimised C++ runtime cost of a CMake Debug build on physical devices.
+    if configuration is BuildConfiguration.RELEASE:
+        return "Release"
+    return "RelWithDebInfo"
 
 
 def _host_pybind11_cmake_dir() -> Path:

@@ -1207,6 +1207,23 @@ def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
     )
 
 
+def test_vulkan_surface_loss_escalates_beyond_swapchain_recreation() -> None:
+    swapchain_h = (RENDERER / "vk" / "VkSwapchainManager.h").read_text(
+        encoding="utf-8"
+    )
+    swapchain_cpp = (RENDERER / "vk" / "VkSwapchainManager.cpp").read_text(
+        encoding="utf-8"
+    )
+    draw = (RENDERER / "VkCoreDraw.cpp").read_text(encoding="utf-8")
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+
+    assert "SurfaceLost" in swapchain_h
+    assert swapchain_cpp.count("VK_ERROR_SURFACE_LOST_KHR") >= 2
+    assert "m_presentationSurfaceLost = true" in draw
+    assert "ConsumePresentationSurfaceLost()" in renderer
+    assert "RequestSurfaceRecreation()" in renderer
+
+
 def test_prepare_pipeline_pumps_between_engine_shader_compiles() -> None:
     source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void InxRenderer::PreparePipeline")

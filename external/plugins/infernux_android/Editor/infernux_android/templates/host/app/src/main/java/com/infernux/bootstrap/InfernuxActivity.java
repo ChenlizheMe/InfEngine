@@ -1,5 +1,7 @@
 package com.infernux.bootstrap;
 
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.os.Bundle;
 import android.os.Build;
@@ -22,6 +24,7 @@ import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 
 import org.libsdl.app.SDLActivity;
 
@@ -58,8 +61,14 @@ public final class InfernuxActivity extends SDLActivity {
             Os.setenv("INFERNUX_RENDER_PROFILE", "mobile", true);
             Os.setenv("INFERNUX_PRESENT_MODE", "fifo", true);
             Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2", true);
+            if (getIntent() != null
+                    && getIntent().getBooleanExtra("infernux.profile_frames", false)) {
+                Os.setenv("_INFERNUX_PLAYER_PROFILE_FRAMES", "1", true);
+                Log.i(LOG_TAG, "INFERNUX_ANDROID_FRAME_PROFILE enabled by launch intent");
+            }
+            configureResolutionScaling();
             Os.setenv("TMPDIR", getCacheDir().getAbsolutePath(), true);
-        } catch (IOException | ErrnoException exception) {
+        } catch (IOException | ErrnoException | PackageManager.NameNotFoundException exception) {
             throw new IllegalStateException("Failed to prepare embedded Python", exception);
         }
         super.onCreate(savedInstanceState);
@@ -70,6 +79,32 @@ public final class InfernuxActivity extends SDLActivity {
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                     this::dispatchInfernuxBack);
         }
+    }
+
+    private void configureResolutionScaling()
+            throws ErrnoException, PackageManager.NameNotFoundException {
+        ApplicationInfo applicationInfo = getPackageManager().getApplicationInfo(
+                getPackageName(),
+                PackageManager.GET_META_DATA);
+        Bundle metadata = applicationInfo.metaData;
+        String mode = metadata != null
+                ? metadata.getString("infernux.resolution_scaling", "fixed_dpi")
+                : "fixed_dpi";
+        int targetDpi = metadata != null
+                ? metadata.getInt("infernux.target_dpi", 320)
+                : 320;
+        int deviceDpi = Math.max(1, getResources().getDisplayMetrics().densityDpi);
+        float renderScale = "fixed_dpi".equals(mode)
+                ? Math.min((float) targetDpi / (float) deviceDpi, 1.0f)
+                : 1.0f;
+        String scaleText = String.format(Locale.ROOT, "%.6f", renderScale);
+        Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", scaleText, true);
+        Log.i(
+                LOG_TAG,
+                "INFERNUX_ANDROID_RESOLUTION_SCALING mode=" + mode
+                        + " target_dpi=" + targetDpi
+                        + " device_dpi=" + deviceDpi
+                        + " scale=" + scaleText);
     }
 
     @Override

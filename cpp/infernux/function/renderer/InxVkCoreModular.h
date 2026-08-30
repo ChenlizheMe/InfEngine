@@ -268,6 +268,17 @@ class InxVkCoreModular
      */
     void DrawFrame(const float *viewPos, const float *viewLookAt, const float *viewUp);
 
+    /// Consume a platform-surface loss reported by acquire or present. A
+    /// surface loss is stronger than an out-of-date swapchain: Android may
+    /// have replaced the ANativeWindow, so the caller must rebind VkSurfaceKHR
+    /// before creating another swapchain generation.
+    [[nodiscard]] bool ConsumePresentationSurfaceLost() noexcept
+    {
+        const bool lost = m_presentationSurfaceLost;
+        m_presentationSurfaceLost = false;
+        return lost;
+    }
+
     /**
      * @brief Draw scene objects filtered by render queue range
      *
@@ -1181,6 +1192,7 @@ class InxVkCoreModular
     // These are exposed for InxRenderer compatibility (friend class can access)
     VkInstance m_instance = VK_NULL_HANDLE;
     VkSurfaceKHR m_surface = VK_NULL_HANDLE;
+    bool m_presentationSurfaceLost = false;
 
   private:
     // Scene render target dimensions for aspect ratio calculation

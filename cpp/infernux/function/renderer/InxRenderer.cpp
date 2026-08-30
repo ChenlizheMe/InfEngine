@@ -1424,6 +1424,12 @@ void InxRenderer::DrawFrame()
     // Render frame with scene camera
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderGraph);
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
+    if (m_vkCore->ConsumePresentationSurfaceLost()) {
+        // VK_ERROR_SURFACE_LOST_KHR cannot be repaired by recreating a
+        // swapchain against the old VkSurfaceKHR. Route it through the same
+        // platform-surface rebind used by Android lifecycle transitions.
+        m_view->RequestSurfaceRecreation();
+    }
     SubmitPendingCaptureReadbacks();
     if (m_captureService)
         m_captureService->Poll();

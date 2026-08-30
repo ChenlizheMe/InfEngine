@@ -192,6 +192,11 @@ class PlayerGUI(InxGUIRenderable):
             self._engine.resize_game_render_target(target_w, target_h)
             self._last_w = target_w
             self._last_h = target_h
+            Debug.log(
+                "Player viewport "
+                f"{display_w}x{display_h}; internal render target "
+                f"{target_w}x{target_h} (scale={self._render_scale:.3f})"
+            )
 
         game_tex = self._engine.get_game_texture_id()
         if game_tex == 0:

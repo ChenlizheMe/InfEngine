@@ -137,6 +137,11 @@ class InxView
     {
         return m_surfaceRecreationPending.load(std::memory_order_acquire);
     }
+    void RequestSurfaceRecreation() noexcept
+    {
+        m_surfaceRecreationPending.store(true, std::memory_order_release);
+        RequestExternalWake();
+    }
     void AcknowledgeSurfaceRecreation() noexcept
     {
         m_surfaceRecreationPending.store(false, std::memory_order_release);

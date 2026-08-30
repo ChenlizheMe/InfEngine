@@ -86,6 +86,12 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     uint32_t imageIndex;
     auto result = m_backend.Presentation().AcquireNextImage(frameSlot, imageIndex);
 
+    if (result == vk::SwapchainResult::SurfaceLost) {
+        m_presentationSurfaceLost = true;
+        INXLOG_WARN("Platform presentation surface was lost while acquiring an image; scheduling a surface rebind");
+        return;
+    }
+
     if (result == vk::SwapchainResult::NeedRecreate) {
         RecreateSwapchain();
         return;
@@ -475,7 +481,10 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
 
     // Present
     result = m_backend.Presentation().Present(m_backend.Queues(), imageIndex);
-    if (result == vk::SwapchainResult::NeedRecreate || m_framebufferResized) {
+    if (result == vk::SwapchainResult::SurfaceLost) {
+        m_presentationSurfaceLost = true;
+        INXLOG_WARN("Platform presentation surface was lost while presenting; scheduling a surface rebind");
+    } else if (result == vk::SwapchainResult::NeedRecreate || m_framebufferResized) {
         m_framebufferResized = false;
         RecreateSwapchain();
     }

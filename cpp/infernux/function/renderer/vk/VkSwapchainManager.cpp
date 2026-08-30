@@ -280,6 +280,9 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
     VkResult result = vkAcquireNextImageKHR(m_device, m_generation.swapchain, kAcquireTimeoutNs,
                                             m_imageAvailableSemaphores[frameSlot], VK_NULL_HANDLE, &imageIndex);
 
+    if (result == VK_ERROR_SURFACE_LOST_KHR) {
+        return SwapchainResult::SurfaceLost;
+    }
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return SwapchainResult::NeedRecreate;
     }
@@ -328,6 +331,9 @@ SwapchainResult VkSwapchainManager::Present(VulkanQueueManager &queues, uint32_t
 
     VkResult result = queues.Present(presentInfo);
 
+    if (result == VK_ERROR_SURFACE_LOST_KHR) {
+        return SwapchainResult::SurfaceLost;
+    }
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return SwapchainResult::NeedRecreate;
     }
