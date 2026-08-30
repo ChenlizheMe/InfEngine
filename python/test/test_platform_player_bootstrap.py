@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,34 @@ def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path)
     assert Path(prepare_platform_player(str(data_root), str(cache_root))) == project_root
     assert Path(os.environ["_INFERNUX_PLAYER_LOG"]) == cache_root / "Logs/player.log"
     assert os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"
+
+
+def test_platform_player_prunes_only_complete_stale_content_generations(tmp_path):
+    data_root = _platform_package(tmp_path)
+    cache_root = tmp_path / "cache"
+    active = Path(prepare_platform_player(str(data_root), str(cache_root)))
+    now = time.time_ns()
+    stale_generations = []
+    for index in range(3):
+        generation = cache_root / f"content-{index + 1:024x}"
+        generation.mkdir()
+        (generation / ".ready").write_text("f" * 64 + "\n", encoding="ascii")
+        timestamp = now - ((index + 1) * 1_000_000_000)
+        os.utime(generation, ns=(timestamp, timestamp))
+        stale_generations.append(generation)
+    incomplete = cache_root / f"content-{'a' * 24}"
+    incomplete.mkdir()
+    unrelated = cache_root / "content-user-data"
+    unrelated.mkdir()
+
+    assert Path(prepare_platform_player(str(data_root), str(cache_root))) == active
+
+    assert active.is_dir()
+    assert stale_generations[0].is_dir()
+    assert not stale_generations[1].exists()
+    assert not stale_generations[2].exists()
+    assert incomplete.is_dir()
+    assert unrelated.is_dir()
 
 
 def test_platform_player_asset_root_requires_one_cooked_data_directory(tmp_path):

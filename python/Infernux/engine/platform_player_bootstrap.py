@@ -25,6 +25,8 @@ _CONTENT_ROOTS = {
     "Splash",
     "_script_guid_map.json",
 }
+_CONTENT_CACHE_PREFIX = "content-"
+_CONTENT_CACHE_DIGEST_LENGTH = 24
 
 
 def _package_index(data_root: Path) -> dict[str, tuple[str, int]]:
@@ -84,6 +86,7 @@ def _content_cache(data_root: Path, cache_root: Path) -> Path:
     ready = destination / ".ready"
     try:
         if ready.read_text(encoding="ascii").strip() == expected_hash:
+            _prune_content_caches(cache_root, destination)
             return destination
     except OSError:
         pass
@@ -114,7 +117,46 @@ def _content_cache(data_root: Path, cache_root: Path) -> Path:
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
+    _prune_content_caches(cache_root, destination)
     return destination
+
+
+def _prune_content_caches(
+    cache_root: Path,
+    active: Path,
+    *,
+    retained_generations: int = 2,
+) -> None:
+    """Best-effort pruning for complete, engine-owned content generations."""
+
+    retained_generations = max(1, int(retained_generations))
+    previous: list[tuple[int, Path]] = []
+    try:
+        children = tuple(cache_root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child == active or not child.is_dir():
+            continue
+        name = child.name
+        if not name.startswith(_CONTENT_CACHE_PREFIX):
+            continue
+        digest = name[len(_CONTENT_CACHE_PREFIX) :]
+        if (
+            len(digest) != _CONTENT_CACHE_DIGEST_LENGTH
+            or any(character not in "0123456789abcdef" for character in digest)
+            or not (child / ".ready").is_file()
+        ):
+            continue
+        try:
+            modified_ns = child.stat().st_mtime_ns
+        except OSError:
+            continue
+        previous.append((modified_ns, child))
+
+    previous.sort(key=lambda item: item[0], reverse=True)
+    for _, stale in previous[retained_generations - 1 :]:
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 def prepare_platform_player(package_root: str, cache_root: str) -> str:
