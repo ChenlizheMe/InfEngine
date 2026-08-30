@@ -71,6 +71,9 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert 'session.send("Input.dispatchTouchEvent"' in smoke
     assert 'process.argv.includes("--movement-touch")' in smoke
     assert 'process.argv.includes("--skip-frame-checks")' in smoke
+    assert 'argumentValues("--require-diagnostic")' in smoke
+    assert "requiredDiagnostics: Object.fromEntries" in smoke
+    assert "Object.values(result.requiredDiagnostics)" in smoke
     assert '"touch:left-zone-forward"' in smoke
     assert 'dataset.infernuxState === "ready"' in smoke
     assert "awaiting-user-activation" not in smoke

@@ -34,6 +34,7 @@ class WebParticleRuntime final
     [[nodiscard]] bool SetPlaying(uint64_t emitterId, bool playing);
     [[nodiscard]] bool Reset(uint64_t emitterId);
     [[nodiscard]] uint64_t ArtifactRevision(uint64_t emitterId) const noexcept;
+    [[nodiscard]] bool StateWasPreserved(uint64_t emitterId) const noexcept;
 
     void RecordCompute(wgpu::CommandEncoder encoder);
     [[nodiscard]] bool Render(wgpu::RenderPassEncoder pass, uint32_t width, uint32_t height);

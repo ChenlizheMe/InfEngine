@@ -335,6 +335,14 @@ PyObject *GpuParticleArtifactRevision(PyObject *, PyObject *arguments)
         g_particleRuntime ? g_particleRuntime->ArtifactRevision(static_cast<uint64_t>(emitterId)) : 0);
 }
 
+PyObject *GpuParticleStateWasPreserved(PyObject *, PyObject *arguments)
+{
+    unsigned long long emitterId = 0;
+    if (!PyArg_ParseTuple(arguments, "K:_gpu_particle_state_was_preserved", &emitterId))
+        return nullptr;
+    return PyBool_FromLong(g_particleRuntime && g_particleRuntime->StateWasPreserved(static_cast<uint64_t>(emitterId)));
+}
+
 PyObject *BeginTextInput(PyObject *, PyObject *arguments)
 {
     const char *initialValue = nullptr;
@@ -555,6 +563,7 @@ PyMethodDef kMethods[] = {
     {"_set_gpu_particle_emitter_playing", SetGpuParticleEmitterPlaying, METH_VARARGS, nullptr},
     {"_reset_gpu_particle_emitter", ResetGpuParticleEmitter, METH_VARARGS, nullptr},
     {"_gpu_particle_artifact_revision", GpuParticleArtifactRevision, METH_VARARGS, nullptr},
+    {"_gpu_particle_state_was_preserved", GpuParticleStateWasPreserved, METH_VARARGS, nullptr},
     {"begin_text_input", BeginTextInput, METH_VARARGS, "Focus the browser text bridge and begin committed text input."},
     {"end_text_input", EndTextInput, METH_NOARGS, "End browser text input and dismiss the software keyboard."},
     {"is_text_input_active", IsTextInputActive, METH_NOARGS, "Return whether browser text input is active."},

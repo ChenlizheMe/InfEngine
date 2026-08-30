@@ -366,6 +366,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "emscripten_sample_gamepad_data" in main
     assert "InfernuxWebTextInput" in main
     assert '"configure_physics", ConfigurePhysics' in host_module
+    assert '"_gpu_particle_artifact_revision", GpuParticleArtifactRevision' in host_module
+    assert '"_gpu_particle_state_was_preserved", GpuParticleStateWasPreserved' in host_module
+    assert "StateWasPreserved(uint64_t emitterId) const noexcept" in particle_runtime
     assert "config.physicsMaxBodies" in host_module
     assert "infernuxBeginTextInput" in shell
     assert "setPointerCapture" in shell

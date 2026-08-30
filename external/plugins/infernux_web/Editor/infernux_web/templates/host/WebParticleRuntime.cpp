@@ -303,6 +303,7 @@ struct WebParticleRuntime::State
         uint64_t id = 0;
         uint64_t graphId = 0;
         uint64_t artifactRevision = 0;
+        bool stateWasPreserved = false;
         uint32_t slot = 0;
         bool playing = true;
         bool resetPending = false;
@@ -769,6 +770,12 @@ uint64_t WebParticleRuntime::ArtifactRevision(uint64_t emitterId) const noexcept
 {
     const auto found = m_state->emitters.find(emitterId);
     return found == m_state->emitters.end() ? 0 : found->second->artifactRevision;
+}
+
+bool WebParticleRuntime::StateWasPreserved(uint64_t emitterId) const noexcept
+{
+    const auto found = m_state->emitters.find(emitterId);
+    return found != m_state->emitters.end() && found->second->stateWasPreserved;
 }
 
 void WebParticleRuntime::RecordCompute(wgpu::CommandEncoder commandEncoder)

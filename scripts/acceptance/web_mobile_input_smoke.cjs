@@ -163,12 +163,25 @@ async function main() {
       "[--expect-presentation fullscreen-borderless|windowed] " +
       "[--expect-render-width N] [--expect-render-height N] " +
       "[--track-object NAME] [--movement-key KEY|--movement-touch] " +
-      "[--min-displacement N] [--skip-frame-checks]",
+      "[--min-displacement N] [--require-diagnostic TEXT] " +
+      "[--skip-frame-checks]",
     );
   }
   const argumentValue = (name, fallback = "") => {
     const index = process.argv.indexOf(name);
     return index >= 0 ? process.argv[index + 1] : fallback;
+  };
+  const argumentValues = (name) => {
+    const values = [];
+    for (let index = 0; index < process.argv.length; index += 1) {
+      if (process.argv[index] !== name) continue;
+      const value = process.argv[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error(`${name} requires a value`);
+      }
+      values.push(value);
+    }
+    return values;
   };
   const requireActiveAudio = process.argv.includes("--require-active-audio");
   const movementTouch = process.argv.includes("--movement-touch");
@@ -193,6 +206,7 @@ async function main() {
   const trackedObject = argumentValue("--track-object");
   const movementKey = argumentValue("--movement-key", "w");
   const minimumDisplacement = Number(argumentValue("--min-displacement", "0.02"));
+  const requiredDiagnostics = argumentValues("--require-diagnostic");
   if (!Number.isInteger(viewportWidth) || viewportWidth <= 0 ||
       !Number.isInteger(viewportHeight) || viewportHeight <= 0) {
     throw new Error("viewport dimensions must be positive integers");
@@ -476,7 +490,7 @@ async function main() {
     });
     await page.waitForTimeout(1000);
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
-    const result = await page.evaluate(() => {
+    const result = await page.evaluate((requirements) => {
       const canvas = document.querySelector("#canvas");
       const diagnostics = JSON.parse(canvas.dataset.infernuxDiagnostics || "[]");
       const activeVoiceMarker = diagnostics.find(
@@ -534,9 +548,15 @@ async function main() {
           };
         })(),
         unhandledErrors: diagnostics.filter((item) => item.startsWith("ERROR:")),
+        requiredDiagnostics: Object.fromEntries(
+          requirements.map((requirement) => [
+            requirement,
+            diagnostics.find((item) => item.includes(requirement)) || "",
+          ]),
+        ),
         diagnosticTail: diagnostics.slice(-80),
       };
-    });
+    }, requiredDiagnostics);
     result.frameBeforeActivation = frameBeforeActivation;
     result.sceneFrame = sceneFrame;
     result.shadowDifference = shadowDifference;
@@ -596,6 +616,7 @@ async function main() {
         !result.nativeWPressed || !result.nativeWReleased || !result.pythonWPressed ||
         (result.gameplayMovement &&
           result.gameplayMovement.horizontalDisplacement < minimumDisplacement) ||
+        Object.values(result.requiredDiagnostics).some((match) => !match) ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
