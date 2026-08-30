@@ -970,6 +970,17 @@ class Engine():
         if self._resources_manager:
             self._resources_manager.cleanup()
 
+        # Native AssetDatabase/AssetRegistry bindings become dangling as soon
+        # as C++ cleanup starts. Release Python caches while those objects are
+        # still alive so a later standalone builder cannot dereference stale
+        # pybind wrappers left by a temporary headless preflight.
+        try:
+            from Infernux.core.assets import AssetManager
+
+            AssetManager.release_engine(self)
+        except Exception as exc:
+            Debug.log_suppressed("Engine.exit.AssetManager", exc)
+
         # 2. C++ Cleanup — destroys renderer, Vulkan device, etc.
         if self._engine:
             self._engine.cleanup()

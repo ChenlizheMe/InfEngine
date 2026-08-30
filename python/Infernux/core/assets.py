@@ -175,6 +175,31 @@ class AssetManager:
         cls._registry = cls._resolve_registry()
 
     @classmethod
+    def release_engine(cls, engine=None) -> None:
+        """Drop every project/native reference before its Engine is destroyed."""
+        if engine is not None and cls._engine is not engine:
+            return
+        cls._cache.clear()
+        cls._texture_cache.clear()
+        with cls._pending_gpu_texture_reloads_lock:
+            cls._pending_gpu_texture_reloads.clear()
+        cls._scheduled_saves.clear()
+        cls._material_save_snapshots.clear()
+        cls._render_effect_save_snapshots.clear()
+        cls._document_save_expected_states.clear()
+        cls._document_write_metadata.clear()
+        cls._asset_revision_states.clear()
+        cls._pending_document_writes.clear()
+        cls._pending_document_write_callbacks.clear()
+        cls._pending_document_write_records.clear()
+        cls._self_write_commits.clear()
+        cls._meta_write_suppression.clear()
+        cls._watcher_echo_suppression.clear()
+        cls._asset_database = None
+        cls._registry = None
+        cls._engine = None
+
+    @classmethod
     def refresh_pending(cls) -> bool:
         """Return whether the native catalog is scanning or committing.
 
