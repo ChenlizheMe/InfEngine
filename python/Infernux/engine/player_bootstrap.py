@@ -589,8 +589,9 @@ class PlayerBootstrap:
         scheduler = getattr(self.runtime_session, "execution_scheduler", None)
         if scheduler is not None:
             try:
+                snapshot = scheduler.phase_plan_snapshot()
                 plans = {
-                    phase: len(scheduler.phase_plan(phase))
+                    phase: len(snapshot.get(phase, ()))
                     for phase in ("fixed_update", "update", "late_update")
                 }
                 _plog(

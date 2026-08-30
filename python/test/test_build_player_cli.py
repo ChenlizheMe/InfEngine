@@ -64,6 +64,7 @@ def test_exporter_mapping_covers_plugin_targets():
         "android-arm64",
         "android-x64-emulator",
         "web-wasm32",
+        module.DESKTOP_TARGET,
     }
     assert all(path.is_dir() for path in module.PLUGIN_EDITORS.values())
 
@@ -86,7 +87,11 @@ def test_desktop_target_loads_the_core_exporter():
 
     exporter = module._load_exporter(module.DESKTOP_TARGET)
 
-    assert exporter.exporter_id == "infernux/platform-desktop"
+    assert exporter.exporter_id == (
+        "infernux/platform-windows"
+        if module.DESKTOP_TARGET == "windows-x64"
+        else "infernux/platform-linux"
+    )
     assert [target.id for target in exporter.targets()] == [module.DESKTOP_TARGET]
 
 

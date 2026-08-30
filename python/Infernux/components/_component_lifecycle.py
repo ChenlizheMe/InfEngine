@@ -721,6 +721,10 @@ class RuntimeExecutionScheduler:
             raise ValueError(f"unknown runtime phase: {phase}")
         return self.prepare_frame()[phase]
 
+    def phase_plan_snapshot(self) -> dict[str, tuple[Any, ...]]:
+        """Return the last published plan without entering a scheduler safe point."""
+        return {phase: tuple(plan) for phase, plan in self._phase_plan.items()}
+
     def execute_phase(self, phase: str, delta_time: float) -> None:
         """Execute one standalone phase for tests and headless composition."""
         if phase not in _RUNTIME_SCHEDULER_PHASES:

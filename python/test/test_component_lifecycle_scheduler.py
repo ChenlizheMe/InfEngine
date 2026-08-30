@@ -87,6 +87,19 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     assert counters["plan_prepare_calls"] == 2
 
 
+def test_phase_plan_snapshot_is_safe_while_native_frame_is_active():
+    scheduler = RuntimeExecutionScheduler()
+    component = _ScheduledProbe(1)
+    scheduler.register_component(component)
+    scheduler.begin_native_frame()
+    try:
+        snapshot = scheduler.phase_plan_snapshot()
+    finally:
+        scheduler.end_native_frame()
+
+    assert snapshot["update"] == (component,)
+
+
 def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild(monkeypatch):
     import Infernux.lib as native_lib
 

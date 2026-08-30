@@ -13,6 +13,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from Infernux.version import ENGINE_VERSION
+from Infernux.engine.path_utils import resolved_path
 
 from .github_releases import (
     RELEASE_MANIFEST_SCHEMA,
@@ -46,8 +47,8 @@ def _validated_metadata(package: Path) -> dict[str, object]:
 
 
 def package_build(args: argparse.Namespace) -> int:
-    source = Path(args.source).resolve()
-    output = Path(args.output).resolve()
+    source = Path(resolved_path(args.source))
+    output = Path(resolved_path(args.output))
     output.parent.mkdir(parents=True, exist_ok=True)
     preview = InxPackage.export_source(
         str(source),
@@ -70,7 +71,7 @@ def package_build(args: argparse.Namespace) -> int:
 
 
 def package_verify(args: argparse.Namespace) -> int:
-    package = Path(args.package).resolve()
+    package = Path(resolved_path(args.package))
     metadata = _validated_metadata(package)
     requested_engine = str(args.engine or "").strip()
     engine = str(metadata.get("engine", "")).strip()
@@ -96,8 +97,8 @@ def package_verify(args: argparse.Namespace) -> int:
 
 
 def package_release_manifest(args: argparse.Namespace) -> int:
-    package = Path(args.package).resolve()
-    output = Path(args.output).resolve()
+    package = Path(resolved_path(args.package))
+    output = Path(resolved_path(args.output))
     metadata = _validated_metadata(package)
     version = str(metadata.get("version", "")).strip()
     expected_tag = f"v{version}"

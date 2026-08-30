@@ -2826,16 +2826,14 @@ def test_game_data_rejects_missing_current_library_artifact(tmp_path):
 def test_game_data_includes_particle_artifacts(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     _reference_particle_graph(Path(builder.project_path), "smoke")
+    guid = hashlib.md5(b"smoke").hexdigest()
     artifact = (
         Path(builder.project_path)
         / "Library"
         / "Artifacts"
         / "Particle"
-        / "smoke.inxparticle"
+        / f"{guid}.inxparticle"
     )
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    graph_path = Path(builder.project_path) / "Assets" / "VFX" / "smoke.particlegraph"
-    _write_particle_artifact(artifact, graph_path)
     final_dir = tmp_path / "dist"
 
     builder._copy_game_data(str(final_dir))
@@ -2848,6 +2846,7 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         / artifact.name
     )
     assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+    assert json.loads(shipped.read_text(encoding="utf-8"))["source_hash"]
     runtime_index = json.loads(
         (shipped.parent / builder._PARTICLE_RUNTIME_INDEX_FILENAME).read_text(
             encoding="utf-8"
@@ -2871,7 +2870,7 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         final_dir / "TestGame_Data" / builder._CONTENT_ARCHIVE_FILENAME
     )
     names = {entry["path"] for entry in header["files"]}
-    assert "Library/Artifacts/Particle/smoke.inxparticle" in names
+    assert f"Library/Artifacts/Particle/{guid}.inxparticle" in names
     assert "Library/Artifacts/Particle/RuntimeIndex.json" in names
 
 
@@ -2881,8 +2880,7 @@ def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
     _reference_particle_graph(project, "reachable")
     artifact_root = project / "Library" / "Artifacts" / "Particle"
     artifact_root.mkdir(parents=True, exist_ok=True)
-    graph_path = project / "Assets" / "VFX" / "reachable.particlegraph"
-    _write_particle_artifact(artifact_root / "reachable.inxparticle", graph_path)
+    guid = hashlib.md5(b"reachable").hexdigest()
     (artifact_root / "unreachable.inxparticle").write_text(
         '{"$schema":"infernux.particle_artifact"}',
         encoding="utf-8",
@@ -2892,7 +2890,7 @@ def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
     builder._copy_game_data(str(final_dir))
 
     shipped = final_dir / "Data" / "Library" / "Artifacts" / "Particle"
-    assert (shipped / "reachable.inxparticle").is_file()
+    assert (shipped / f"{guid}.inxparticle").is_file()
     assert not (shipped / "unreachable.inxparticle").exists()
 
 

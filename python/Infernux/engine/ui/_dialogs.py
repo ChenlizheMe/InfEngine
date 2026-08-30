@@ -12,6 +12,7 @@ import sys
 from typing import Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import lexical_path
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +200,7 @@ def _run_sdl_file_dialog(
     result = _show_native_file_dialog(
         kind,
         title,
-        os.path.abspath(default_location) if default_location else "",
+        lexical_path(default_location) if default_location else "",
         _sdl_file_filters(tk_filetypes) if kind != "open_folder" else [],
     )
     error = str(result.get("error", ""))
