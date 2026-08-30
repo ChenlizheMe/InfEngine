@@ -4960,6 +4960,14 @@ def test_generated_player_log_is_lazy(tmp_path):
     assert "open(_LOG, \"w\", encoding=\"utf-8\").close()" not in source
 
 
+def test_generated_player_boot_registers_lowercase_public_namespace(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    source = Path(builder._generate_boot_script()).read_text(encoding="utf-8")
+
+    assert "import Infernux as _public_api" in source
+    assert 'sys.modules["infernux"] = _public_api' in source
+
+
 def test_payload_manifest_rejects_invalid_native_package(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"

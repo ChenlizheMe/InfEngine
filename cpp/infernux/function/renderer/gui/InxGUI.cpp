@@ -336,7 +336,7 @@ void InxGUI::ReloadGUIFont()
     // grows incrementally instead of pre-baking all CJK glyphs up-front.
     ImFont *font = io.Fonts->AddFontFromFileTTF(dpiState.fontPath.c_str(), scaledSize, &fontConfig);
     if (font == nullptr) {
-        INXLOG_WARN("InxGUI::SetGUIFont(): Failed to load font from ", fontPath);
+        INXLOG_WARN("InxGUI::ReloadGUIFont(): Failed to load font from ", dpiState.fontPath);
         return;
     }
 

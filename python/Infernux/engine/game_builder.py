@@ -1580,6 +1580,8 @@ try:
         + ", ".join(_name + "=" + format(_elapsed, ".3f") + "s" for _name, _elapsed in _BOOT_PHASES)
     )
     _log("boot: importing run_player")
+    import Infernux as _public_api
+    sys.modules["infernux"] = _public_api
     from Infernux.engine import run_player
     from Infernux.lib import LogLevel
     _log("boot: imports ready at " + format(time.perf_counter() - _BOOT_STARTED, ".3f") + "s")

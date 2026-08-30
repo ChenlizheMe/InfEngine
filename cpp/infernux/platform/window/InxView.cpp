@@ -746,6 +746,12 @@ int InxView::GetUserEvent()
 void InxView::Show()
 {
     if (m_window) {
+        // A token-authenticated Player control channel is an automated test
+        // surface. Keep its Vulkan window alive and rendering, but never let
+        // the test steal foreground focus from the developer's desktop.
+        const char *controlFile = std::getenv("_INFERNUX_PLAYER_CONTROL_FILE");
+        if (controlFile != nullptr && *controlFile != '\0')
+            return;
         SDL_ShowWindow(m_window);
     } else {
         INXLOG_ERROR("InxView Window is not initialized.");
