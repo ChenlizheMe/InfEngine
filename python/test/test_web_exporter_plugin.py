@@ -306,6 +306,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "material=pbr" in scene_renderer
     assert "geometric_specular_aa" in scene_renderer
     assert "specular_highlights" in scene_renderer
+    assert "evaluate_toon_light" in scene_renderer
+    assert "MaterialIsToon" in scene_renderer
+    assert "alphaClipThreshold" in scene_renderer
+    assert "discard;" in scene_renderer
     assert "horizon_glow" in scene_renderer
     assert "smoothstep(-0.10, 0.45, y)" in scene_renderer
     assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake

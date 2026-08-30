@@ -226,6 +226,30 @@ fn punctual_attenuation(distance_to_light: f32, range: f32) -> f32 {
     return factor * factor / (distance_squared + 1.0);
 }
 
+fn toon_step(value: f32, threshold: f32, softness: f32) -> f32 {
+    let width = max(softness, 0.0001);
+    return smoothstep(threshold - width, threshold + width, value);
+}
+
+fn evaluate_toon_light(normal: vec3<f32>, view_direction: vec3<f32>,
+                       light_direction: vec3<f32>, radiance: vec3<f32>,
+                       albedo: vec3<f32>, threshold: f32, softness: f32,
+                       smoothness: f32, specular_strength: f32) -> vec3<f32> {
+    let ndotl = max(dot(normal, light_direction), 0.0);
+    let diffuse_band = toon_step(ndotl, threshold, softness);
+    let half_sum = view_direction + light_direction;
+    var half_vector = normal;
+    if (dot(half_sum, half_sum) > 1.0e-8) {
+        half_vector = normalize(half_sum);
+    }
+    let exponent = mix(12.0, 256.0, clamp(smoothness, 0.0, 1.0));
+    let raw_specular = pow(max(dot(normal, half_vector), 0.0), exponent);
+    let specular_band = toon_step(raw_specular, 0.5, softness * 0.5);
+    let diffuse = albedo * mix(0.18, 1.0, diffuse_band);
+    let specular = vec3<f32>(specular_band * clamp(specular_strength, 0.0, 1.0));
+    return (diffuse + specular) * radiance * select(0.0, 1.0, ndotl >= 0.0001);
+}
+
 fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
     if (camera.light_direction_strength.w <= 0.0 || position.w <= 0.0) {
         return 1.0;
@@ -253,16 +277,53 @@ fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(input.normal);
+    if (input.surface.w >= 0.0 && input.color.a < input.surface.w) {
+        discard;
+    }
     var perceptual_roughness = clamp(1.0 - input.material.y, 0.045, 1.0);
     var roughness = perceptual_roughness * perceptual_roughness;
     // Derivatives must execute in uniform fragment control flow on WebGPU.
     // Evaluate geometric AA before the per-material unlit early return.
     roughness = geometric_specular_aa(normal, roughness);
     perceptual_roughness = max(perceptual_roughness, sqrt(roughness));
-    if (input.surface.x > 0.5) {
+    if (input.surface.x > 0.5 && input.surface.x < 1.5) {
         return vec4<f32>(input.color.rgb + input.emission.rgb * input.emission.a, input.color.a);
     }
     let view_direction = normalize(camera.camera_position.xyz - input.world_position);
+    if (input.surface.x >= 1.5) {
+        let toward_light = normalize(camera.light_direction_strength.xyz);
+        let shadow = sample_shadow(input.shadow_position, normal);
+        let radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
+        var direct = evaluate_toon_light(
+            normal, view_direction, toward_light, radiance, input.color.rgb,
+            clamp(input.surface.y, 0.0, 1.0), clamp(input.surface.z, 0.0, 0.25),
+            input.material.y, input.material.w) * shadow;
+        for (var light_index = 0u; light_index < camera.light_counts.x; light_index = light_index + 1u) {
+            let light = camera.punctual_lights[light_index];
+            let to_light = light.position_range.xyz - input.world_position;
+            let distance_to_light = length(to_light);
+            if (distance_to_light <= 1.0e-5 || distance_to_light >= light.position_range.w) {
+                continue;
+            }
+            let local_direction = to_light / distance_to_light;
+            var cone = 1.0;
+            if (light.parameters.y > 0.5) {
+                let theta = dot(local_direction, -normalize(light.direction_outer_cos.xyz));
+                cone = clamp((theta - light.direction_outer_cos.w) /
+                             max(light.parameters.x - light.direction_outer_cos.w, 1.0e-4), 0.0, 1.0);
+            }
+            let attenuation = punctual_attenuation(distance_to_light, light.position_range.w) * cone;
+            direct += evaluate_toon_light(
+                normal, view_direction, local_direction,
+                light.color_intensity.rgb * light.color_intensity.w * attenuation,
+                input.color.rgb, clamp(input.surface.y, 0.0, 1.0),
+                clamp(input.surface.z, 0.0, 0.25), input.material.y, input.material.w);
+        }
+        let ambient = sample_ambient_irradiance(normal) * input.color.rgb
+                      * clamp(input.material.z, 0.0, 1.0) * 0.65;
+        return vec4<f32>(ambient + direct + input.emission.rgb * input.emission.a,
+                         input.color.a);
+    }
     let ndotv = max(dot(normal, view_direction), 0.0);
     let metallic = clamp(input.material.x, 0.0, 1.0);
     let occlusion = clamp(input.material.z, 0.0, 1.0);
@@ -442,6 +503,16 @@ bool MaterialIsUnlit(const std::shared_ptr<InxMaterial> &material)
     std::transform(shader.begin(), shader.end(), shader.begin(),
                    [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
     return shader.find("unlit") != std::string::npos;
+}
+
+bool MaterialIsToon(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return false;
+    std::string shader = material->GetFragShaderName();
+    std::transform(shader.begin(), shader.end(), shader.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return shader.find("toon") != std::string::npos;
 }
 
 bool Finite(const glm::vec3 &value)
@@ -820,7 +891,19 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             std::clamp(MaterialFloat(draw.material, "smoothness", 0.5f), 0.0f, 1.0f),
             std::clamp(MaterialFloat(draw.material, "ambientOcclusion", 1.0f), 0.0f, 1.0f),
             std::clamp(MaterialFloat(draw.material, "specularHighlights", 1.0f), 0.0f, 1.0f));
-        const glm::vec4 surfaceParameters(MaterialIsUnlit(draw.material) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        float shadingModel = 0.0f;
+        if (MaterialIsUnlit(draw.material))
+            shadingModel = 1.0f;
+        else if (MaterialIsToon(draw.material))
+            shadingModel = 2.0f;
+        float alphaClipThreshold = -1.0f;
+        if (draw.material && draw.material->GetRenderState().alphaClipEnabled)
+            alphaClipThreshold = std::clamp(draw.material->GetRenderState().alphaClipThreshold, 0.0f, 1.0f);
+        const glm::vec4 surfaceParameters(
+            shadingModel,
+            std::clamp(MaterialFloat(draw.material, "diffuseThreshold", 0.45f), 0.0f, 1.0f),
+            std::clamp(MaterialFloat(draw.material, "bandSoftness", 0.04f), 0.0f, 0.25f),
+            alphaClipThreshold);
         WebDrawRange range;
         range.firstIndex = static_cast<uint32_t>(m_indices.size());
         range.castsShadows = draw.castsShadows;

@@ -49,7 +49,8 @@ class WebSceneRenderer final
         float emission[4];
         // x = metallic, y = smoothness, z = occlusion, w = specular highlights.
         float material[4];
-        // x = unlit; remaining channels are reserved for shared shading-model flags.
+        // x = 0 PBR / 1 unlit / 2 toon, y/z = toon threshold/softness,
+        // w = alpha-clip threshold or -1 when clipping is disabled.
         float surface[4];
     };
 
