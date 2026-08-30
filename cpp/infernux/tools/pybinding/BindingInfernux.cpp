@@ -22,6 +22,7 @@
 #include <function/scene/EditorCameraController.h>
 #include <function/scene/SkinnedMeshRenderer.h>
 #include <glm/glm.hpp>
+#include <platform/window/NativeFileDialog.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -2882,6 +2883,42 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
     m.def(
         "inflog_internal", [](const std::string &msg) { INXLOG_INFO_INTERNAL(msg); }, py::arg("msg"),
         "Write an internal INFO-level message to the engine log without surfacing it in the editor console.");
+
+    m.def(
+        "_show_native_file_dialog",
+        [](const std::string &kind, const std::string &title, const std::string &defaultLocation,
+           const std::vector<std::pair<std::string, std::string>> &filters) {
+            NativeFileDialogKind nativeKind;
+            if (kind == "open_file")
+                nativeKind = NativeFileDialogKind::OpenFile;
+            else if (kind == "save_file")
+                nativeKind = NativeFileDialogKind::SaveFile;
+            else if (kind == "open_folder")
+                nativeKind = NativeFileDialogKind::OpenFolder;
+            else
+                throw py::value_error("Unknown native file dialog kind: " + kind);
+
+            std::vector<NativeFileDialogFilter> nativeFilters;
+            nativeFilters.reserve(filters.size());
+            for (const auto &[name, pattern] : filters)
+                nativeFilters.push_back({name, pattern});
+
+            NativeFileDialogResult result;
+            {
+                py::gil_scoped_release release;
+                result = ShowNativeFileDialog(nativeKind, title, defaultLocation, nativeFilters);
+            }
+            py::dict payload;
+            payload["accepted"] = result.accepted;
+            payload["cancelled"] = result.cancelled;
+            payload["path"] = result.path;
+            payload["error"] = result.error;
+            payload["selected_filter"] = result.selectedFilter;
+            return payload;
+        },
+        py::arg("kind"), py::arg("title"), py::arg("default_location") = "",
+        py::arg("filters") = std::vector<std::pair<std::string, std::string>>{},
+        "Show one modal system file dialog through SDL's platform backend.");
 
     // ====================================================================
     // Gizmo geometry generation helpers (pure math, no engine state needed)

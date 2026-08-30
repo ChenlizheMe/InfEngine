@@ -7,6 +7,7 @@ duplicated in ``build_settings_panel.py`` and ``scene_manager.py``.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Optional
 
@@ -147,6 +148,68 @@ def _win32_pick_file(title: str, filter_text: str) -> Optional[str]:
 # Cross-platform public API
 # ---------------------------------------------------------------------------
 
+def _sdl_file_filters(tk_filetypes: list | None) -> list[tuple[str, str]]:
+    """Translate Tk-style wildcard filters to SDL extension patterns."""
+
+    source = tk_filetypes or [("All Files", "*")]
+    result: list[tuple[str, str]] = []
+    for name, raw_patterns in source:
+        patterns = (
+            raw_patterns
+            if isinstance(raw_patterns, (tuple, list))
+            else (raw_patterns,)
+        )
+        extensions: list[str] = []
+        for raw_pattern in patterns:
+            for token in re.split(r"[;,\s]+", str(raw_pattern).strip()):
+                if not token:
+                    continue
+                if token in {"*", "*.*"}:
+                    extensions = ["*"]
+                    break
+                if token.startswith("*."):
+                    token = token[2:]
+                elif token.startswith("."):
+                    token = token[1:]
+                if token and not any(character in token for character in "*?[]"):
+                    extensions.append(token)
+            if extensions == ["*"]:
+                break
+        if extensions:
+            result.append((str(name), ";".join(dict.fromkeys(extensions))))
+    return result or [("All Files", "*")]
+
+
+def _run_sdl_file_dialog(
+    kind: str,
+    *,
+    title: str,
+    default_location: str = "",
+    tk_filetypes: list | None = None,
+) -> Optional[str]:
+    """Use the Editor's native SDL window as the parent for a system dialog."""
+
+    try:
+        from Infernux.lib import _Infernux as _native
+        _show_native_file_dialog = _native._show_native_file_dialog
+    except (AttributeError, ImportError) as exc:
+        Debug.log_warning(f"Native file dialog bridge is unavailable: {exc}")
+        return None
+
+    result = _show_native_file_dialog(
+        kind,
+        title,
+        os.path.abspath(default_location) if default_location else "",
+        _sdl_file_filters(tk_filetypes) if kind != "open_folder" else [],
+    )
+    error = str(result.get("error", ""))
+    if error:
+        Debug.log_warning(f"System file dialog failed: {error}")
+        return None
+    path = str(result.get("path", ""))
+    return path or None
+
+
 def pick_folder_dialog(title: str) -> Optional[str]:
     if sys.platform == "win32":
         try:
@@ -154,6 +217,11 @@ def pick_folder_dialog(title: str) -> Optional[str]:
         except Exception as exc:
             Debug.log_warning(f"Win32 folder dialog failed: {exc}")
             return None
+
+    if sys.platform.startswith("linux"):
+        return _run_sdl_file_dialog(
+            "open_folder", title=title, default_location=os.getcwd()
+        )
 
     import tkinter as tk
     from tkinter import filedialog
@@ -175,6 +243,14 @@ def pick_file_dialog(title: str, win32_filter: str = "",
         except Exception as exc:
             Debug.log_warning(f"Win32 open-file dialog failed: {exc}")
             return None
+
+    if sys.platform.startswith("linux"):
+        return _run_sdl_file_dialog(
+            "open_file",
+            title=title,
+            default_location=os.getcwd(),
+            tk_filetypes=tk_filetypes,
+        )
 
     import tkinter as tk
     from tkinter import filedialog
@@ -332,6 +408,18 @@ def save_file_dialog(
         except Exception as exc:
             Debug.log_warning(f"Win32 save dialog failed: {exc}")
             return None
+
+    if sys.platform.startswith("linux"):
+        selected = _run_sdl_file_dialog(
+            "save_file",
+            title=title,
+            default_location=os.path.join(initial_dir, default_filename),
+            tk_filetypes=tk_filetypes,
+        )
+        normalized_ext = default_ext.lstrip(".")
+        if selected and normalized_ext and not os.path.splitext(selected)[1]:
+            selected = f"{selected}.{normalized_ext}"
+        return selected
 
     # Fallback: tkinter
     import tkinter as tk
