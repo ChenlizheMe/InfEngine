@@ -104,18 +104,23 @@ else()
             -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
         COMMENT "Stage dependent shared libraries in the build tree"
     )
+    # The extension and engine libraries live below
+    # <environment>/lib/pythonX.Y/site-packages/Infernux/lib.  Keep sibling
+    # engine dependencies relocatable while also allowing the embedded-Python
+    # link to resolve the environment-owned libpython from <environment>/lib.
+    set(_infernux_linux_python_rpath "$ORIGIN;$ORIGIN/../../../..")
     set_target_properties(_Infernux PROPERTIES
-        BUILD_RPATH "$ORIGIN"
-        INSTALL_RPATH "$ORIGIN"
+        BUILD_RPATH "${_infernux_linux_python_rpath}"
+        INSTALL_RPATH "${_infernux_linux_python_rpath}"
     )
     set_target_properties(_InfernuxBootstrap PROPERTIES
-        BUILD_RPATH "$ORIGIN"
-        INSTALL_RPATH "$ORIGIN"
+        BUILD_RPATH "${_infernux_linux_python_rpath}"
+        INSTALL_RPATH "${_infernux_linux_python_rpath}"
     )
     foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
         set_target_properties(${_infernux_dll} PROPERTIES
-            BUILD_RPATH "$ORIGIN"
-            INSTALL_RPATH "$ORIGIN"
+            BUILD_RPATH "${_infernux_linux_python_rpath}"
+            INSTALL_RPATH "${_infernux_linux_python_rpath}"
         )
     endforeach()
 endif()
