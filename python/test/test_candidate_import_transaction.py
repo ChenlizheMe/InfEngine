@@ -67,6 +67,30 @@ def test_trusted_import_bypasses_project_descendant_scan(candidate_project, monk
     broker.rollback()
 
 
+def test_lowercase_public_engine_namespace_is_lazily_admitted(candidate_project):
+    previous = sys.modules.pop("infernux", None)
+    try:
+        broker = _broker(
+            candidate_project,
+            "lowercase_engine_candidate",
+            "import infernux as inx\nBASE = inx.InxComponent\n",
+        )
+
+        module = broker.load("lowercase_engine_candidate")
+
+        from Infernux import InxComponent
+
+        assert module.BASE is InxComponent
+        assert sys.modules["infernux"].InxComponent is InxComponent
+        assert "lowercase_engine_candidate" not in sys.modules
+        broker.rollback()
+    finally:
+        if previous is None:
+            sys.modules.pop("infernux", None)
+        else:
+            sys.modules["infernux"] = previous
+
+
 def test_candidate_scc_uses_private_table_until_commit(candidate_project):
     assets = candidate_project
     (assets / "scc_a.py").write_text(

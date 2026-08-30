@@ -33,6 +33,7 @@ class CandidateImportError(ImportError):
 _TRUSTED_MODULE_PREFIXES = frozenset(
     {
         "Infernux",
+        "infernux",
         "__future__",
         "dataclasses",
         "typing",
@@ -54,7 +55,7 @@ _TRUSTED_MODULE_PREFIXES = frozenset(
 # These public engine modules are safe to materialize on first candidate use.
 # Keep this list deliberately narrow: general ``Infernux.*`` imports must not
 # turn candidate loading into an uncontrolled engine-module import mechanism.
-_LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "__future__"})
+_LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "infernux", "__future__"})
 
 
 def _is_trusted_module(name: str) -> bool:
