@@ -288,8 +288,10 @@ def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
 def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
                           scale_x, scale_y, get_tex_id, **_kw):
     """Render a UIImage element via the GPU ScreenUI renderer."""
+    tex_path = getattr(elem, "texture_path", "") or ""
+    tex_id = get_tex_id(tex_path) if tex_path else 0
     revision = int(getattr(elem, "_ui_render_revision", 0))
-    packet_key = (id(renderer), ui_list, revision, sx, sy, sw, sh, scale_x, scale_y)
+    packet_key = (id(renderer), ui_list, revision, tex_id, sx, sy, sw, sh, scale_x, scale_y)
     packet = getattr(elem, "_runtime_image_packet", None)
     if packet is not None and packet[0] == packet_key:
         kind, arguments = packet[1]
@@ -303,8 +305,6 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
     color = attrs["color"]
     cr, cg, cb = color[0], color[1], color[2]
     ca = color[3] * attrs["opacity"]
-    tex_path = getattr(elem, "texture_path", "") or ""
-    tex_id = get_tex_id(tex_path) if tex_path else 0
     rounding = attrs["corner_radius"] * min(scale_x, scale_y)
     if tex_id:
         kind = "image"
@@ -413,9 +413,11 @@ def _editor_render_button(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, g
 def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
                            scale_x, scale_y, text_scale, get_tex_id, **_kw):
     """Render a UIButton element via the GPU ScreenUI renderer."""
+    tex_path = getattr(elem, "texture_path", "") or ""
+    tex_id = get_tex_id(tex_path) if tex_path else 0
     revision = int(getattr(elem, "_ui_render_revision", 0))
     state = getattr(elem, "_current_state", None)
-    packet_key = (id(renderer), ui_list, revision, state, sx, sy, sw, sh, scale_x, scale_y, text_scale)
+    packet_key = (id(renderer), ui_list, revision, state, tex_id, sx, sy, sw, sh, scale_x, scale_y, text_scale)
     packet = getattr(elem, "_runtime_button_packet", None)
     if packet is not None and packet[0] == packet_key:
         for kind, arguments in packet[1]:
@@ -437,8 +439,6 @@ def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
     rounding = attrs["corner_radius"] * min(scale_x, scale_y)
 
     # Background: texture image or solid fill
-    tex_path = getattr(elem, "texture_path", "") or ""
-    tex_id = get_tex_id(tex_path) if tex_path else 0
     commands = []
     if tex_id:
         arguments = (

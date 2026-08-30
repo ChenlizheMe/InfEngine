@@ -18,6 +18,7 @@
 #include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
 #include <function/resources/InxMaterial/MaterialLoader.h>
 #include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
 #endif
@@ -36,6 +37,16 @@ std::unordered_map<std::string, std::string> g_shaderSources;
 infernux::web::WebParticleRuntime *g_particleRuntime = nullptr;
 infernux::web::WebScreenUIRenderer *g_screenUIRenderer = nullptr;
 bool g_textInputActive = false;
+
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+struct ScreenUITextureLoad
+{
+    std::shared_ptr<infernux::TextureUploadStagingTicket> ticket;
+    uint64_t textureId = 0;
+    bool failed = false;
+};
+std::unordered_map<std::string, ScreenUITextureLoad> g_screenUITextures;
+#endif
 
 std::string ShaderKey(const std::string &name, const char *stage)
 {
@@ -413,6 +424,62 @@ PyObject *ScreenUIMeasureText(PyObject *, PyObject *arguments)
     return Py_BuildValue("ff", measured.first, measured.second);
 }
 
+PyObject *ScreenUIResolveTexture(PyObject *, PyObject *arguments)
+{
+#if !defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    return PyLong_FromLongLong(-1);
+#else
+    const char *identifier = nullptr;
+    if (!PyArg_ParseTuple(arguments, "s:screen_ui_resolve_texture", &identifier))
+        return nullptr;
+    if (!g_screenUIRenderer || identifier == nullptr || *identifier == '\0')
+        return PyLong_FromLongLong(-1);
+    try {
+        auto &registry = infernux::AssetRegistry::Instance();
+        auto *database = registry.GetAssetDatabase();
+        if (!database)
+            return PyLong_FromLongLong(-1);
+        std::string guid(identifier);
+        if (!database->ContainsGuid(guid))
+            guid = database->GetGuidFromPath(identifier);
+        if (guid.empty())
+            return PyLong_FromLongLong(-1);
+
+        auto &state = g_screenUITextures[guid];
+        if (state.textureId != 0)
+            return PyLong_FromUnsignedLongLong(state.textureId);
+        if (state.failed)
+            return PyLong_FromLongLong(-1);
+        if (!state.ticket) {
+            const auto texture = registry.LoadAsset<infernux::InxTexture>(guid, infernux::ResourceType::Texture);
+            if (!texture) {
+                state.failed = true;
+                return PyLong_FromLongLong(-1);
+            }
+            state.ticket = registry.BeginTextureUploadStaging(guid);
+        }
+        const auto staging = registry.TryConsumeTextureUploadStaging(state.ticket);
+        if (!staging)
+            return PyLong_FromLongLong(0);
+        state.textureId = g_screenUIRenderer->UploadTexture(*staging);
+        state.ticket.reset();
+        if (state.textureId == 0) {
+            state.failed = true;
+            std::fprintf(stderr, "INFERNUX_WEB_SCREEN_UI_TEXTURE_UNSUPPORTED guid=%s format=%s\n", guid.c_str(),
+                         infernux::TextureFormatName(staging->format));
+            return PyLong_FromLongLong(-1);
+        }
+        std::printf("INFERNUX_WEB_SCREEN_UI_TEXTURE_READY guid=%s id=%llu\n", guid.c_str(),
+                    static_cast<unsigned long long>(state.textureId));
+        return PyLong_FromUnsignedLongLong(state.textureId);
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "INFERNUX_WEB_SCREEN_UI_TEXTURE_FAILED identifier=%s error=%s\n", identifier,
+                     error.what());
+        return PyLong_FromLongLong(-1);
+    }
+#endif
+}
+
 PyMethodDef kMethods[] = {
     {"read_entry", ReadPackageEntry, METH_VARARGS,
      "Read and validate one entry from the native Infernux Player container."},
@@ -437,6 +504,7 @@ PyMethodDef kMethods[] = {
     {"screen_ui_add_image", ScreenUIAddImage, METH_VARARGS, nullptr},
     {"screen_ui_add_text", ScreenUIAddText, METH_VARARGS, nullptr},
     {"screen_ui_measure_text", ScreenUIMeasureText, METH_VARARGS, nullptr},
+    {"screen_ui_resolve_texture", ScreenUIResolveTexture, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 

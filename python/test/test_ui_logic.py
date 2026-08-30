@@ -4203,6 +4203,60 @@ def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity()
     )
 
 
+def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
+    from types import SimpleNamespace
+
+    from Infernux.ui.ui_render_dispatch import _runtime_render_image
+
+    class Renderer:
+        def __init__(self):
+            self.rects = []
+            self.images = []
+
+        def add_filled_rect(self, *arguments):
+            self.rects.append(arguments)
+
+        def add_image(self, *arguments):
+            self.images.append(arguments)
+
+    renderer = Renderer()
+    element = SimpleNamespace(
+        texture_path="Assets/Textures/hud.png",
+        color=[1.0, 1.0, 1.0, 1.0],
+        opacity=1.0,
+        rotation=0.0,
+        mirror_x=False,
+        mirror_y=False,
+        corner_radius=0.0,
+        _ui_render_revision=7,
+    )
+    texture_id = [0]
+
+    def render():
+        _runtime_render_image(
+            element,
+            renderer,
+            0,
+            10.0,
+            20.0,
+            100.0,
+            50.0,
+            1.0,
+            1.0,
+            lambda _path: texture_id[0],
+        )
+
+    render()
+    assert len(renderer.rects) == 1
+    assert renderer.images == []
+
+    texture_id[0] = 73
+    render()
+    assert len(renderer.rects) == 1
+    assert len(renderer.images) == 1
+    assert renderer.images[0][1] == 73
+
+
 def test_ui_editor_continuous_manipulation_is_core_owned_and_fail_closed():
     from types import SimpleNamespace
 

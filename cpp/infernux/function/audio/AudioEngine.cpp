@@ -88,6 +88,24 @@ bool AudioEngine::Initialize()
     }
 
     m_initialized = true;
+
+    // Browser audio devices cannot be opened until a trusted user gesture.
+    // Sources may therefore have completed Start() before the device exists.
+    // Replay only the play-on-awake request that could not create a voice;
+    // already-playing sources and inactive components remain untouched.
+    std::vector<AudioSource *> deferredSources;
+    {
+        std::lock_guard<std::mutex> lock(m_sourcesMutex);
+        deferredSources.assign(m_registeredSources.begin(), m_registeredSources.end());
+    }
+    for (AudioSource *source : deferredSources) {
+        if (!source || !source->GetPlayOnAwake() || source->IsPlaying() || !source->IsEnabled())
+            continue;
+        GameObject *owner = source->GetGameObject();
+        if (owner && owner->IsActiveInHierarchy())
+            source->Play(0);
+    }
+
     INXLOG_INFO("AudioEngine initialized successfully");
     return true;
 }

@@ -1,6 +1,7 @@
 #include "WebScreenUIRenderer.h"
 
 #include <function/renderer/gui/InxTextLayout.h>
+#include <function/resources/InxTexture/InxTexture.h>
 #include <imgui_internal.h>
 
 #include <algorithm>
@@ -50,6 +51,24 @@ uint64_t GrowCapacity(uint64_t required)
     while (capacity < required)
         capacity *= 2;
     return capacity;
+}
+
+wgpu::TextureFormat ToWebTextureFormat(TextureFormat format)
+{
+    switch (format) {
+    case TextureFormat::Rgba8UNorm:
+        return wgpu::TextureFormat::RGBA8Unorm;
+    case TextureFormat::Rgba8Srgb:
+        return wgpu::TextureFormat::RGBA8UnormSrgb;
+    case TextureFormat::Rgba16UNorm:
+        return wgpu::TextureFormat::RGBA16Unorm;
+    case TextureFormat::Rgba16Float:
+        return wgpu::TextureFormat::RGBA16Float;
+    case TextureFormat::Rgba32Float:
+        return wgpu::TextureFormat::RGBA32Float;
+    default:
+        return wgpu::TextureFormat::Undefined;
+    }
 }
 
 void ResetDrawList(ImDrawList &drawList, uint32_t width, uint32_t height)
@@ -268,16 +287,17 @@ void WebScreenUIRenderer::AddImage(int list, uint64_t textureId, float minX, flo
                                    float uv0X, float uv0Y, float uv1X, float uv1Y, float r, float g, float b, float a,
                                    float rotation, bool mirrorH, bool mirrorV, float rounding)
 {
-    (void)textureId;
-    (void)uv0X;
-    (void)uv0Y;
-    (void)uv1X;
-    (void)uv1Y;
     ImDrawList *draw = DrawList(list);
-    if (!draw)
+    if (!draw || m_textures.find(textureId) == m_textures.end())
         return;
     const int firstVertex = draw->VtxBuffer.Size;
-    draw->AddRectFilled({minX, minY}, {maxX, maxY}, ImGui::ColorConvertFloat4ToU32({r, g, b, a}), rounding);
+    const ImU32 tint = ImGui::ColorConvertFloat4ToU32({r, g, b, a});
+    if (rounding > 0.5f)
+        draw->AddImageRounded(static_cast<ImTextureID>(textureId), {minX, minY}, {maxX, maxY}, {uv0X, uv0Y},
+                              {uv1X, uv1Y}, tint, rounding);
+    else
+        draw->AddImage(static_cast<ImTextureID>(textureId), {minX, minY}, {maxX, maxY}, {uv0X, uv0Y}, {uv1X, uv1Y},
+                       tint);
     TransformVertices(*draw, firstVertex, minX, minY, maxX, maxY, rotation, mirrorH, mirrorV);
 }
 
@@ -308,6 +328,66 @@ std::pair<float, float> WebScreenUIRenderer::MeasureText(const std::string &text
     const textlayout::TextLayoutResult layout = textlayout::LayoutText(
         {text, fontPath, textlayout::ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing});
     return {layout.totalWidth, layout.totalHeight};
+}
+
+uint64_t WebScreenUIRenderer::UploadTexture(const TextureCpuData &texture)
+{
+    if (!m_device || !m_queue || texture.dimension != TextureDimension::Texture2D || !texture.IsValid())
+        return 0;
+    const wgpu::TextureFormat format = ToWebTextureFormat(texture.format);
+    if (format == wgpu::TextureFormat::Undefined)
+        return 0;
+    const TextureMipLevel &mip = texture.mipLevels.front();
+    if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.byteOffset > texture.bytes.size() ||
+        mip.byteSize > texture.bytes.size() - mip.byteOffset || mip.rowPitch > std::numeric_limits<uint32_t>::max())
+        return 0;
+
+    wgpu::TextureDescriptor descriptor;
+    descriptor.dimension = wgpu::TextureDimension::e2D;
+    descriptor.size = {mip.width, mip.height, 1};
+    descriptor.format = format;
+    descriptor.mipLevelCount = 1;
+    descriptor.sampleCount = 1;
+    descriptor.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding;
+    GPUTexture gpu;
+    gpu.texture = m_device.CreateTexture(&descriptor);
+    gpu.view = gpu.texture ? gpu.texture.CreateView() : wgpu::TextureView{};
+
+    wgpu::SamplerDescriptor samplerDescriptor;
+    samplerDescriptor.addressModeU = wgpu::AddressMode::ClampToEdge;
+    samplerDescriptor.addressModeV = wgpu::AddressMode::ClampToEdge;
+    samplerDescriptor.minFilter = wgpu::FilterMode::Linear;
+    samplerDescriptor.magFilter = wgpu::FilterMode::Linear;
+    gpu.sampler = m_device.CreateSampler(&samplerDescriptor);
+    if (!gpu.texture || !gpu.view || !gpu.sampler)
+        return 0;
+
+    wgpu::TexelCopyTextureInfo destination;
+    destination.texture = gpu.texture;
+    wgpu::TexelCopyBufferLayout layout;
+    layout.bytesPerRow = static_cast<uint32_t>(mip.rowPitch);
+    layout.rowsPerImage = mip.height;
+    const wgpu::Extent3D extent{mip.width, mip.height, 1};
+    m_queue.WriteTexture(&destination, texture.bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize),
+                         &layout, &extent);
+
+    std::array<wgpu::BindGroupEntry, 2> entries{};
+    entries[0].binding = 0;
+    entries[0].sampler = gpu.sampler;
+    entries[1].binding = 1;
+    entries[1].textureView = gpu.view;
+    wgpu::BindGroupDescriptor groupDescriptor;
+    groupDescriptor.layout = m_textureLayout;
+    groupDescriptor.entryCount = entries.size();
+    groupDescriptor.entries = entries.data();
+    gpu.group = m_device.CreateBindGroup(&groupDescriptor);
+    if (!gpu.group)
+        return 0;
+
+    const uint64_t id = m_nextTextureId++;
+    m_textures.emplace(id, std::move(gpu));
+    m_cacheValid = false;
+    return id;
 }
 
 bool WebScreenUIRenderer::EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required,
@@ -353,7 +433,6 @@ bool WebScreenUIRenderer::Render(wgpu::RenderPassEncoder pass, int list, uint32_
     m_queue.WriteBuffer(m_vertexBuffer, 0, vertices.data(), vertexBytes);
     m_queue.WriteBuffer(m_indexBuffer, 0, draw->IdxBuffer.Data, indexBytes);
     pass.SetPipeline(m_pipeline);
-    pass.SetBindGroup(0, m_fontGroup);
     pass.SetVertexBuffer(0, m_vertexBuffer, 0, vertexBytes);
     pass.SetIndexBuffer(m_indexBuffer, sizeof(ImDrawIdx) == 2 ? wgpu::IndexFormat::Uint16 : wgpu::IndexFormat::Uint32,
                         0, indexBytes);
@@ -366,6 +445,15 @@ bool WebScreenUIRenderer::Render(wgpu::RenderPassEncoder pass, int list, uint32_
         const int bottom = std::min(static_cast<int>(height), static_cast<int>(std::ceil(command.ClipRect.w)));
         if (right <= left || bottom <= top)
             continue;
+        const uint64_t textureId = static_cast<uint64_t>(command.GetTexID());
+        if (textureId == kFontTextureId) {
+            pass.SetBindGroup(0, m_fontGroup);
+        } else {
+            const auto texture = m_textures.find(textureId);
+            if (texture == m_textures.end())
+                continue;
+            pass.SetBindGroup(0, texture->second.group);
+        }
         pass.SetScissorRect(static_cast<uint32_t>(left), static_cast<uint32_t>(top),
                             static_cast<uint32_t>(right - left), static_cast<uint32_t>(bottom - top));
         pass.DrawIndexed(command.ElemCount, 1, command.IdxOffset, static_cast<int32_t>(command.VtxOffset), 0);

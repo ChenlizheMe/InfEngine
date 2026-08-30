@@ -43,7 +43,7 @@ void AudioSource::Awake()
 void AudioSource::Start()
 {
     const auto clip = m_tracks.empty() ? nullptr : m_tracks[0].GetClip();
-    if (m_playOnAwake && clip && clip->IsLoaded()) {
+    if (m_playOnAwake && !IsPlaying() && clip && clip->IsLoaded()) {
         Play(0);
     }
 }

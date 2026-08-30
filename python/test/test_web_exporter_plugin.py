@@ -413,7 +413,13 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "g_screenUIRenderer.Render" in main
     assert "WebScreenUIRenderer.cpp" in cmake
     assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
+    assert "INFERNUX_WEB_SCREEN_UI_TEXTURE_READY" in host_module
+    assert "screen_ui_resolve_texture" in host_module
+    assert "AddImageRounded" in screen_ui_renderer
+    assert "command.GetTexID()" in screen_ui_renderer
     assert "screen_ui_add_text" in host_module
+    assert "_WebScreenUITextureCache" in bootstrap
+    assert "_screen_ui_texture_cache.get" in bootstrap
     assert "RuntimeScreenUISubmission._submit_canvas" in bootstrap
     assert "INFERNUX_WEB_DISPLAY_MODE" in cmake
     assert "INFERNUX_WEB_CANVAS_WIDTH" in cmake

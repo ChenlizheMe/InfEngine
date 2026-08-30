@@ -22,6 +22,7 @@ _player_activated = False
 _screen_width = 1
 _screen_height = 1
 _screen_ui_renderer: Any = None
+_screen_ui_texture_cache: Any = None
 _player_root = "/infernux/player"
 _player_python = f"{_player_root}/python/site-packages"
 _runtime_data_root = ""
@@ -457,7 +458,7 @@ def _prepare_player_runtime() -> None:
 def infernux_web_ready(details: dict[str, Any]) -> None:
     """Receive the browser graphics and viewport contract from the native host."""
 
-    global _player_activated, _screen_width, _screen_height, _screen_ui_renderer
+    global _player_activated, _screen_width, _screen_height, _screen_ui_renderer, _screen_ui_texture_cache
 
     print(
         "INFERNUX_WEB_HOST_READY "
@@ -471,6 +472,7 @@ def infernux_web_ready(details: dict[str, Any]) -> None:
     _screen_width = max(1, int(details.get("width", 1)))
     _screen_height = max(1, int(details.get("height", 1)))
     _screen_ui_renderer = _WebScreenUIRenderer()
+    _screen_ui_texture_cache = _WebScreenUITextureCache()
     _player_activated = True
     print("INFERNUX_WEB_RUNTIME_ACTIVE")
     print("INFERNUX_WEB_AUDIO_USER_ACTIVATION_PENDING")
@@ -547,8 +549,53 @@ class _WebScreenUIRenderer:
         return float(measured[0]), float(measured[1])
 
 
+class _WebScreenUITextureCache:
+    """GUID-resolved bridge from runtime UI assets to WebGPU texture handles."""
+
+    def __init__(self) -> None:
+        import _InfernuxWebHost as host
+
+        self._host = host
+        self._textures: dict[str, int] = {}
+        self._pending: set[str] = set()
+        self._failed: set[str] = set()
+        self.generation = 0
+
+    @property
+    def has_pending(self) -> bool:
+        return bool(self._pending)
+
+    def get(self, identifier: str) -> int:
+        identifier = str(identifier or "")
+        if not identifier or identifier in self._failed:
+            return 0
+        ready = self._textures.get(identifier)
+        if ready:
+            return ready
+        resolved = int(self._host.screen_ui_resolve_texture(identifier))
+        if resolved > 0:
+            self._textures[identifier] = resolved
+            self._pending.discard(identifier)
+            self.generation += 1
+            return resolved
+        if resolved < 0:
+            self._failed.add(identifier)
+            self._pending.discard(identifier)
+        else:
+            self._pending.add(identifier)
+        return 0
+
+    def poll(self) -> None:
+        for identifier in tuple(self._pending):
+            self.get(identifier)
+
+
 def _submit_screen_ui() -> None:
-    if _player_scene_manager is None or _screen_ui_renderer is None:
+    if (
+        _player_scene_manager is None
+        or _screen_ui_renderer is None
+        or _screen_ui_texture_cache is None
+    ):
         return
 
     from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
@@ -566,22 +613,25 @@ def _submit_screen_ui() -> None:
         canvases = tuple(
             collect_sorted_runtime_canvas_snapshot(scene, persistent_scene)
         )
+    _screen_ui_texture_cache.poll()
     revision = runtime_ui_revision(
         scene,
         canvases,
         _screen_width,
         _screen_height,
-        0,
+        _screen_ui_texture_cache.generation,
     )
-    if _screen_ui_renderer.begin_frame_cached(
+    if not _screen_ui_texture_cache.has_pending and _screen_ui_renderer.begin_frame_cached(
         _screen_width, _screen_height, revision
     ):
         return
+    if _screen_ui_texture_cache.has_pending:
+        _screen_ui_renderer.begin_frame(_screen_width, _screen_height)
     for canvas in canvases:
         RuntimeScreenUISubmission._submit_canvas(
             canvas,
             _screen_ui_renderer,
-            lambda _path: 0,
+            _screen_ui_texture_cache.get,
             _screen_width,
             _screen_height,
             _WebScreenUIList,
