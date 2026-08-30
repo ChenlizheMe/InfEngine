@@ -1,4 +1,5 @@
 import gc
+import math
 import os
 import time
 import weakref
@@ -123,6 +124,24 @@ class Engine():
         except Exception as exc:
             Debug.log_warning(f"Failed to apply startup present mode override '{raw}': {exc}")
 
+    def _apply_startup_play_fps_cap(self):
+        raw = os.environ.get("INFERNUX_PLAYER_FPS_CAP")
+        if raw is None:
+            return
+        try:
+            fps = float(raw)
+        except (TypeError, ValueError):
+            Debug.log_warning(f"Ignoring invalid player FPS cap '{raw}'")
+            return
+        if not math.isfinite(fps) or fps < 0.0:
+            Debug.log_warning(f"Ignoring invalid player FPS cap '{raw}'")
+            return
+        try:
+            self._engine.set_play_fps_cap(fps)
+            Debug.log_internal(f"Startup player FPS cap applied: {fps:g}")
+        except Exception as exc:
+            Debug.log_warning(f"Failed to apply startup player FPS cap '{raw}': {exc}")
+
     def init_renderer(self, width, height, project_path):
         if self._mode != RuntimeMode.Graphical:
             raise RuntimeError("init_renderer is unavailable in headless mode")
@@ -136,6 +155,7 @@ class Engine():
         if _PLAYER_MODE:
             self.pump_events()
         self._apply_startup_present_mode()
+        self._apply_startup_play_fps_cap()
         set_project_root(project_path)
 
         from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission

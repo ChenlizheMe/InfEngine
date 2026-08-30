@@ -117,6 +117,7 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
     assert arguments.serial is None
     assert arguments.max_surface_creations is None
     assert arguments.max_abandoned_buffers == 8
+    assert arguments.touch_attempts == 3
     assert arguments.touch
     assert arguments.expect_landscape
     assert not arguments.keep_running
@@ -153,7 +154,7 @@ def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
             "touchscreen",
             "motionevent",
             "DOWN",
-            "800",
+            "1400",
             "864",
         ),
         (
@@ -162,7 +163,7 @@ def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
             "touchscreen",
             "motionevent",
             "MOVE",
-            "1066",
+            "1600",
             "720",
         ),
         (
@@ -171,7 +172,7 @@ def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
             "touchscreen",
             "motionevent",
             "UP",
-            "1280",
+            "1800",
             "576",
         ),
     ]

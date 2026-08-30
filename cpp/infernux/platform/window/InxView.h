@@ -22,11 +22,12 @@ namespace infernux
 /// Power-save / idle configuration for the editor main loop.
 /// When no user input is detected for a short period, the loop sleeps
 /// via ``SDL_WaitEventTimeout`` to reduce CPU/GPU usage.
-/// An optional editor FPS cap can limit edit mode when explicitly requested.
+/// Optional editor and play-mode FPS caps can limit work when explicitly requested.
 struct FpsIdling
 {
     float fpsIdle = 10.0f;     ///< Target FPS when idling (0 = disable idle)
     float editorFpsCap = 0.0f; ///< Max FPS in editor mode (0 = uncapped)
+    float playFpsCap = 0.0f;   ///< Max FPS in play/player mode (0 = uncapped)
     bool enableIdling = true;  ///< Master switch for idle detection
     bool isIdling = false;     ///< Output — true when the last frame went idle
 };

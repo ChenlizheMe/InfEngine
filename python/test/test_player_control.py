@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from Infernux.engine import player_control
 from Infernux.engine.player_control import PlayerControlChannel
-from Infernux.engine.player_gui import PlayerGUI
+from Infernux.engine.player_gui import PlayerGUI, _player_render_scale
 from Infernux.input import Input
 
 
@@ -96,6 +98,16 @@ def test_standalone_player_keeps_gameplay_input_enabled_without_hover(monkeypatc
     player._tick(None)
 
     assert focused == [True]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("0.5", 0.5), ("0.01", 0.25), ("2", 1.0), ("invalid", 1.0), ("nan", 1.0)],
+)
+def test_player_render_scale_is_bounded(monkeypatch, value, expected):
+    monkeypatch.setenv("INFERNUX_PLAYER_RENDER_SCALE", value)
+
+    assert _player_render_scale() == expected
 
 
 def test_standalone_player_enables_input_before_game_texture_exists(monkeypatch):

@@ -1,10 +1,15 @@
 package com.infernux.bootstrap;
 
+import android.graphics.Insets;
 import android.os.Bundle;
 import android.os.Build;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.util.Log;
 import android.view.KeyEvent;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.window.OnBackInvokedDispatcher;
 
 import java.io.File;
@@ -15,14 +20,17 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.libsdl.app.SDLActivity;
 
 public final class InfernuxActivity extends SDLActivity {
+    private static final String LOG_TAG = "InfernuxActivity";
     private static final String PYTHON_ASSET_ROOT = "python";
     private static final String PYTHON_RUNTIME_ID = "infernux-runtime.id";
     private static final String PLAYER_ASSET_ROOT = "player";
     private static final String PLAYER_CONTENT_ID = "infernux-content.id";
+    private int lastPublishedKeyboardInset = Integer.MIN_VALUE;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -46,15 +54,69 @@ public final class InfernuxActivity extends SDLActivity {
                     "INFERNUX_PLAYER_CACHE_ROOT",
                     new File(getCacheDir(), "player").getAbsolutePath(),
                     true);
+            Os.setenv("INFERNUX_RENDER_PROFILE", "mobile", true);
+            Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", "0.5", true);
+            Os.setenv("INFERNUX_PLAYER_FPS_CAP", "30", true);
+            Os.setenv("INFERNUX_PRESENT_MODE", "fifo", true);
+            Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "1", true);
             Os.setenv("TMPDIR", getCacheDir().getAbsolutePath(), true);
         } catch (IOException | ErrnoException exception) {
             throw new IllegalStateException("Failed to prepare embedded Python", exception);
         }
         super.onCreate(savedInstanceState);
+        installWindowInsetsBridge();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                     this::dispatchInfernuxBack);
+        }
+    }
+
+    private void installWindowInsetsBridge() {
+        View decorView = getWindow().getDecorView();
+        decorView.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            publishKeyboardInset(windowInsets);
+            return windowInsets;
+        });
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            decorView.setWindowInsetsAnimationCallback(
+                    new WindowInsetsAnimation.Callback(
+                            WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                        @Override
+                        public WindowInsets onProgress(
+                                WindowInsets windowInsets,
+                                List<WindowInsetsAnimation> runningAnimations) {
+                            publishKeyboardInset(windowInsets);
+                            return windowInsets;
+                        }
+                    });
+        }
+        decorView.requestApplyInsets();
+    }
+
+    private void publishKeyboardInset(WindowInsets windowInsets) {
+        int keyboardInset = 0;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Insets ime = windowInsets.getInsets(WindowInsets.Type.ime());
+            Insets systemBars = windowInsets.getInsets(WindowInsets.Type.systemBars());
+            if (windowInsets.isVisible(WindowInsets.Type.ime())) {
+                keyboardInset = Math.max(0, ime.bottom - systemBars.bottom);
+            }
+        } else {
+            keyboardInset = Math.max(
+                    0,
+                    windowInsets.getSystemWindowInsetBottom()
+                            - windowInsets.getStableInsetBottom());
+        }
+        if (keyboardInset == lastPublishedKeyboardInset) {
+            return;
+        }
+        try {
+            Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET", Integer.toString(keyboardInset), true);
+            Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN", "1", true);
+            lastPublishedKeyboardInset = keyboardInset;
+        } catch (ErrnoException exception) {
+            Log.e(LOG_TAG, "Failed to publish Android keyboard insets", exception);
         }
     }
 

@@ -13,6 +13,7 @@ sees it.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Callable, Dict, List, Optional
@@ -23,6 +24,16 @@ from Infernux.input import Input, KeyCode
 from Infernux.engine.ui.viewport_utils import capture_viewport_info
 from Infernux.ui.ui_event_system import UIEventProcessor
 from Infernux.ui.ui_canvas_utils import collect_sorted_runtime_canvases
+
+
+def _player_render_scale() -> float:
+    try:
+        scale = float(os.environ.get("INFERNUX_PLAYER_RENDER_SCALE", "1"))
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(scale):
+        return 1.0
+    return max(0.25, min(1.0, scale))
 
 
 class PlayerGUI(InxGUIRenderable):
@@ -37,6 +48,7 @@ class PlayerGUI(InxGUIRenderable):
         self._engine = engine
         self._last_w = 0
         self._last_h = 0
+        self._render_scale = _player_render_scale()
         self._ui_event_processor = UIEventProcessor()
         self._last_frame_time = time.time()
         self._control = control_channel
@@ -171,8 +183,10 @@ class PlayerGUI(InxGUIRenderable):
                     Debug.log_suppressed("player_gui.frame_profile", exc)
 
     def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
-        target_w = max(1, int(vp_w))
-        target_h = max(1, int(vp_h))
+        display_w = max(1, int(vp_w))
+        display_h = max(1, int(vp_h))
+        target_w = max(1, int(display_w * self._render_scale))
+        target_h = max(1, int(display_h * self._render_scale))
 
         if target_w != self._last_w or target_h != self._last_h:
             self._engine.resize_game_render_target(target_w, target_h)
@@ -184,7 +198,7 @@ class PlayerGUI(InxGUIRenderable):
             ctx.label("Waiting for camera...")
             return
 
-        ctx.image(game_tex, float(target_w), float(target_h), 0.0, 0.0, 1.0, 1.0)
+        ctx.image(game_tex, float(display_w), float(display_h), 0.0, 0.0, 1.0, 1.0)
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
 
@@ -201,7 +215,7 @@ class PlayerGUI(InxGUIRenderable):
 
         # Process UI events
         if game_hovered:
-            self._process_ui_events(target_w, target_h)
+            self._process_ui_events(display_w, display_h)
         else:
             self._ui_event_processor.reset()
 
@@ -222,7 +236,8 @@ class PlayerGUI(InxGUIRenderable):
             return
 
         # Mouse position in viewport pixels (relative to game image top-left).
-        # In player mode display_scale is 1.0 (render target == viewport).
+        # Pointer coordinates are expressed in displayed viewport pixels. The
+        # internal render target may be smaller on constrained platforms.
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
 
         # Build per-canvas positions in design (canvas) pixels

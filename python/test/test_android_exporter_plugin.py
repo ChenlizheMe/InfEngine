@@ -288,6 +288,18 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "onNativeKeyDown(KeyEvent.KEYCODE_BACK)" in activity
     assert "onNativeKeyUp(KeyEvent.KEYCODE_BACK)" in activity
     assert "super.onBackPressed()" not in activity
+    assert "setOnApplyWindowInsetsListener" in activity
+    assert "setWindowInsetsAnimationCallback" in activity
+    assert "DISPATCH_MODE_CONTINUE_ON_SUBTREE" in activity
+    assert "WindowInsets.Type.ime()" in activity
+    assert "WindowInsets.Type.systemBars()" in activity
+    assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET"' in activity
+    assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN", "1"' in activity
+    assert 'Os.setenv("INFERNUX_RENDER_PROFILE", "mobile"' in activity
+    assert 'Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", "0.5"' in activity
+    assert 'Os.setenv("INFERNUX_PLAYER_FPS_CAP", "30"' in activity
+    assert 'Os.setenv("INFERNUX_PRESENT_MODE", "fifo"' in activity
+    assert 'Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "1"' in activity
     assert 'abiFilters "x86_64"' in gradle
     assert 'ignoreAssetsPattern = "!.svn:!.git:!.ds_store:' in gradle
     assert 'version "8.10.1"' in root_gradle

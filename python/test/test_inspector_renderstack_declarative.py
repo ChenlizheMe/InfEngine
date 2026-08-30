@@ -100,6 +100,29 @@ def test_default_forward_pipeline_uses_forward_for_opaque_and_transparent():
     assert draws["TransparentPass"]._sort_mode == "back_to_front"
 
 
+def test_mobile_profile_bounds_builtin_pipeline_cost_without_rewriting_authored_values(
+    monkeypatch,
+):
+    from Infernux.rendergraph.graph import RenderGraph
+
+    monkeypatch.setenv("INFERNUX_RENDER_PROFILE", "mobile")
+    forward = DefaultForwardPipeline()
+    forward.shadow_resolution = 4096
+    graph = RenderGraph("Mobile Default Forward")
+    forward.define_topology(graph)
+
+    assert graph._msaa_samples == 1
+    assert graph.get_texture("shadow_map").size == (1024, 1024)
+    assert forward.shadow_resolution == 4096
+    assert int(forward.msaa_samples) == 4
+
+    deferred = DefaultDeferredPipeline()
+    deferred.shadow_resolution = 8192
+    deferred_graph = RenderGraph("Mobile Default Deferred")
+    deferred.define_topology(deferred_graph)
+    assert deferred_graph.get_texture("shadow_map").size == (1024, 1024)
+
+
 def test_builtin_pipeline_route_selector_is_not_an_exposed_parameter():
     from Infernux.components.fields import get_serialized_fields
 

@@ -48,6 +48,7 @@ class SmokeResult:
     resume_cycles: int
     back_action: bool
     touch_action: bool
+    touch_attempts: int
     landscape_surface: bool
     surface_extents: tuple[tuple[int, int], ...]
     fatal_count: int
@@ -259,9 +260,12 @@ def inject_touch_gesture(
 ) -> None:
     """Inject a real multi-frame touchscreen gesture through Android input."""
     points = (
-        ("DOWN", max(1, width // 4), max(1, height * 3 // 5)),
-        ("MOVE", max(1, width // 3), max(1, height // 2)),
-        ("UP", max(1, width * 2 // 5), max(1, height * 2 // 5)),
+        # Stay inside the sample's left gameplay zone while avoiding OEM edge
+        # gestures and game/sidebar overlays that commonly reserve the outer
+        # quarter of a landscape display.
+        ("DOWN", max(1, width * 7 // 16), max(1, height * 3 // 5)),
+        ("MOVE", max(1, width // 2), max(1, height // 2)),
+        ("UP", max(1, width * 9 // 16), max(1, height * 2 // 5)),
     )
     for index, (phase, x, y) in enumerate(points):
         adb.run(
@@ -427,6 +431,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             )
 
     touch_action = False
+    touch_attempts = 0
     if arguments.touch:
         extents = vulkan_surface_extents(log)
         if not extents:
@@ -438,18 +443,29 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         # one short frame-independent settling interval before injection.
         time.sleep(0.75)
         width, height = extents[-1]
-        inject_touch_gesture(adb, width, height)
-        time.sleep(1.0)
-        log = adb.run("logcat", "-d", "-v", "brief", check=False)
-        touch_action = (
-            arguments.expect_touch_begin_log in log
-            and arguments.expect_touch_end_log in log
-        )
+        for touch_attempts in range(1, arguments.touch_attempts + 1):
+            inject_touch_gesture(adb, width, height)
+            time.sleep(1.0)
+            log = adb.run("logcat", "-d", "-v", "brief", check=False)
+            touch_action = (
+                arguments.expect_touch_begin_log in log
+                and arguments.expect_touch_end_log in log
+            )
+            if touch_action:
+                break
+            if touch_attempts < arguments.touch_attempts:
+                _wait_for_foreground(adb, arguments.package)
+                _wait_for_input_focus(adb, arguments.package)
+                # OEM game/sidebar overlays can receive the first injected
+                # ACTION_OUTSIDE while their launch animation is retiring.
+                # Retry the same real Android input path after it settles.
+                time.sleep(2.0)
         if not touch_action:
             raise RuntimeError(
                 "Injected Android touchscreen gesture did not reach gameplay: "
                 f"expected {arguments.expect_touch_begin_log!r} and "
-                f"{arguments.expect_touch_end_log!r}"
+                f"{arguments.expect_touch_end_log!r} after "
+                f"{arguments.touch_attempts} attempts"
             )
 
     back_action = False
@@ -532,6 +548,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         resume_cycles=arguments.resume_cycles,
         back_action=back_action,
         touch_action=touch_action,
+        touch_attempts=touch_attempts,
         landscape_surface=landscape_surface,
         surface_extents=surface_extents,
         fatal_count=fatal_count,
@@ -579,6 +596,12 @@ def _parser() -> argparse.ArgumentParser:
         "--touch",
         action="store_true",
         help="Inject one touchscreen gesture and require gameplay touch markers",
+    )
+    parser.add_argument(
+        "--touch-attempts",
+        type=int,
+        default=3,
+        help="Maximum real touchscreen gesture attempts after gameplay becomes ready",
     )
     parser.add_argument(
         "--expect-touch-begin-log", default="BALANCE // TOUCH BEGIN"
@@ -647,6 +670,8 @@ def main() -> int:
             raise ValueError("--max-surface-creations must be positive")
         if arguments.max_abandoned_buffers < 0:
             raise ValueError("--max-abandoned-buffers cannot be negative")
+        if arguments.touch_attempts < 1:
+            raise ValueError("--touch-attempts must be positive")
         run_started = True
         result = run_smoke(arguments)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:

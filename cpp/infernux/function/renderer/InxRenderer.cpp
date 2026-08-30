@@ -33,8 +33,10 @@
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
+#include <core/config/EngineConfig.h>
 #include <core/config/MathConstants.h>
 #include <core/threading/JobSystem.h>
 #include <cstdlib>
@@ -405,6 +407,21 @@ CompiledParticleProgramBundle CompileParticleProgramBundle()
     return result;
 }
 
+uint32_t ResolveMaxFramesInFlight() noexcept
+{
+    auto &config = EngineConfig::Get();
+    uint32_t frames = std::clamp(config.maxFramesInFlight, 1u, 4u);
+    if (const char *raw = std::getenv("INFERNUX_MAX_FRAMES_IN_FLIGHT")) {
+        const char *end = raw + std::strlen(raw);
+        uint32_t requested = 0;
+        const auto parsed = std::from_chars(raw, end, requested);
+        if (parsed.ec == std::errc{} && parsed.ptr == end && requested >= 1u && requested <= 4u)
+            frames = requested;
+    }
+    config.maxFramesInFlight = frames;
+    return frames;
+}
+
 } // namespace
 
 struct ParticleProgramBootstrap
@@ -415,7 +432,7 @@ struct ParticleProgramBootstrap
 
 InxRenderer::InxRenderer()
 {
-    m_vkCore = std::make_unique<InxVkCoreModular>();
+    m_vkCore = std::make_unique<InxVkCoreModular>(static_cast<int>(ResolveMaxFramesInFlight()));
     m_view = std::make_unique<InxView>();
     m_captureService = std::make_unique<CaptureService>();
     m_scenePickingService = std::make_unique<ScenePickingService>();
@@ -4666,6 +4683,17 @@ void InxRenderer::SetEditorFpsCap(float fps)
 float InxRenderer::GetEditorFpsCap() const
 {
     return m_view ? m_view->GetIdling().editorFpsCap : 0.0f;
+}
+
+void InxRenderer::SetPlayFpsCap(float fps)
+{
+    if (m_view)
+        m_view->GetIdling().playFpsCap = std::max(0.0f, fps);
+}
+
+float InxRenderer::GetPlayFpsCap() const
+{
+    return m_view ? m_view->GetIdling().playFpsCap : 0.0f;
 }
 
 void InxRenderer::SetPlayModeRendering(bool play)

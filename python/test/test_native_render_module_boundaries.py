@@ -1078,6 +1078,35 @@ def test_touch_events_wake_the_frame_loop_and_request_ui_refresh() -> None:
         assert event_name in process_one
 
 
+def test_play_mode_supports_an_explicit_frame_cap() -> None:
+    view_header = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.h"
+    ).read_text(encoding="utf-8")
+    view_source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    process_events = _function_body(view_source, "void InxView::ProcessEvent")
+    engine = (ROOT / "python" / "Infernux" / "engine" / "engine.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "float playFpsCap = 0.0f" in view_header
+    assert "m_isPlayMode ? m_idling.playFpsCap" in process_events
+    assert "m_isPlayMode && targetFps <= 0.0f" in process_events
+    assert 'os.environ.get("INFERNUX_PLAYER_FPS_CAP")' in engine
+    assert "self._engine.set_play_fps_cap(fps)" in engine
+
+
+def test_renderer_honors_the_configured_frames_in_flight() -> None:
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    constructor = _function_body(renderer, "InxRenderer::InxRenderer")
+
+    assert "auto &config = EngineConfig::Get()" in renderer
+    assert "config.maxFramesInFlight" in renderer
+    assert 'std::getenv("INFERNUX_MAX_FRAMES_IN_FLIGHT")' in renderer
+    assert "ResolveMaxFramesInFlight()" in constructor
+
+
 def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
     view = (
         ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"

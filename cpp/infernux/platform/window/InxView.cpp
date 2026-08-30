@@ -216,7 +216,7 @@ void InxView::ProcessEvent()
     // Frame-rate limiter
     //
     // Three tiers:
-    //   play mode      → no sleep, full speed (bypass entirely)
+    //   play mode      → optional explicit cap, otherwise full speed
     //   editor active  → hard cap to editorFpsCap via SDL_Delay
     //   editor idle    → sleep via SDL_WaitEventTimeout, wake on input
     //
@@ -228,7 +228,6 @@ void InxView::ProcessEvent()
     m_idling.isIdling = false;
 
     FramePacingSample pacing{};
-    pacing.playModeBypass = m_isPlayMode;
     const auto pacingStart = std::chrono::steady_clock::now();
     pacing.cooldownRemainingMs = static_cast<int>(std::max<int64_t>(
         0, std::chrono::duration_cast<std::chrono::milliseconds>(m_activeUntil - pacingStart).count()));
@@ -236,47 +235,48 @@ void InxView::ProcessEvent()
     SDL_Event firstEvent{};
     bool gotFirstEvent = false;
 
-    if (!m_isPlayMode) {
-        bool isIdle = m_idling.enableIdling && m_idling.fpsIdle > 0.0f && pacingStart >= m_activeUntil &&
-                      !HasPendingSyntheticInput();
-        float targetFps = isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap;
+    const bool isIdle = !m_isPlayMode && m_idling.enableIdling && m_idling.fpsIdle > 0.0f &&
+                        pacingStart >= m_activeUntil && !HasPendingSyntheticInput();
+    const float targetFps = m_isPlayMode ? m_idling.playFpsCap : (isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap);
+    pacing.playModeBypass = m_isPlayMode && targetFps <= 0.0f;
 
-        pacing.idleMode = isIdle;
-        pacing.targetFps = targetFps;
+    pacing.idleMode = isIdle;
+    pacing.targetFps = targetFps;
 
-        if (targetFps > 0.0f) {
-            auto now = std::chrono::steady_clock::now();
-            double elapsed = std::chrono::duration<double>(now - m_lastFrameStart).count();
-            double budget = 1.0 / static_cast<double>(targetFps);
-            double requestedSleepMs = (budget - elapsed) * 1000.0;
-            int sleepMs = static_cast<int>(requestedSleepMs);
+    if (targetFps > 0.0f) {
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - m_lastFrameStart).count();
+        double budget = 1.0 / static_cast<double>(targetFps);
+        double requestedSleepMs = (budget - elapsed) * 1000.0;
+        int sleepMs = static_cast<int>(requestedSleepMs);
 
-            pacing.elapsedBeforeSleepMs = elapsed * 1000.0;
-            pacing.frameBudgetMs = budget * 1000.0;
-            pacing.requestedSleepMs = requestedSleepMs > 0.0 ? requestedSleepMs : 0.0;
+        pacing.elapsedBeforeSleepMs = elapsed * 1000.0;
+        pacing.frameBudgetMs = budget * 1000.0;
+        pacing.requestedSleepMs = requestedSleepMs > 0.0 ? requestedSleepMs : 0.0;
 
-            if (sleepMs > 0) {
-                if (isIdle) {
-                    // Idle: block until an event arrives OR the timeout expires.
-                    // A real event struct is used so the event data is preserved.
-                    auto sleepStart = std::chrono::steady_clock::now();
-                    gotFirstEvent = SDL_WaitEventTimeout(&firstEvent, sleepMs);
+        if (sleepMs > 0) {
+            if (isIdle) {
+                // Idle: block until an event arrives OR the timeout expires.
+                // A real event struct is used so the event data is preserved.
+                auto sleepStart = std::chrono::steady_clock::now();
+                gotFirstEvent = SDL_WaitEventTimeout(&firstEvent, sleepMs);
 
-                    auto sleepEnd = std::chrono::steady_clock::now();
-                    double actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
-                    pacing.slept = true;
-                    pacing.wokeByEvent = gotFirstEvent;
-                    pacing.actualSleepMs = actualSleepMs;
+                auto sleepEnd = std::chrono::steady_clock::now();
+                double actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
+                pacing.slept = true;
+                pacing.wokeByEvent = gotFirstEvent;
+                pacing.actualSleepMs = actualSleepMs;
 
-                    m_idling.isIdling = (actualSleepMs > pacing.frameBudgetMs * 0.9);
-                } else {
-                    // Active editor: hard sleep for the remaining frame budget.
-                    auto sleepStart = std::chrono::steady_clock::now();
-                    SDL_Delay(sleepMs);
-                    auto sleepEnd = std::chrono::steady_clock::now();
-                    pacing.slept = true;
-                    pacing.actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
-                }
+                m_idling.isIdling = (actualSleepMs > pacing.frameBudgetMs * 0.9);
+            } else {
+                // Active editor or capped play mode: hard sleep for the
+                // remaining frame budget without delaying event dispatch more
+                // than one frame.
+                auto sleepStart = std::chrono::steady_clock::now();
+                SDL_Delay(sleepMs);
+                auto sleepEnd = std::chrono::steady_clock::now();
+                pacing.slept = true;
+                pacing.actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
             }
         }
     }

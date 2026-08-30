@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <core/log/InxLog.h>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -798,9 +799,25 @@ void InputManager::RefreshScreenState()
     SDL_Rect safeArea{0, 0, logicalWidth, logicalHeight};
     SDL_GetWindowSafeArea(m_window, &safeArea);
     const float displayScale = SDL_GetWindowDisplayScale(m_window);
+    bool keyboardInsetKnown = false;
+    int keyboardInset = 0;
+#if defined(__ANDROID__)
+    const char *keyboardInsetKnownValue = std::getenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN");
+    const char *keyboardInsetValue = std::getenv("INFERNUX_ANDROID_KEYBOARD_INSET");
+    keyboardInsetKnown = keyboardInsetKnownValue != nullptr && std::strcmp(keyboardInsetKnownValue, "1") == 0 &&
+                         keyboardInsetValue != nullptr;
+    if (keyboardInsetKnown) {
+        char *end = nullptr;
+        const long parsedInset = std::strtol(keyboardInsetValue, &end, 10);
+        keyboardInsetKnown = end != keyboardInsetValue && end != nullptr && *end == '\0';
+        if (keyboardInsetKnown) {
+            keyboardInset = static_cast<int>(std::clamp(parsedInset, 0L, static_cast<long>(logicalHeight)));
+        }
+    }
+#endif
     ProcessScreenMetrics(logicalWidth, logicalHeight, framebufferWidth, framebufferHeight,
                          displayScale > 0.0f ? displayScale : 1.0f, safeArea.x, safeArea.y, safeArea.w, safeArea.h,
-                         false, 0);
+                         keyboardInsetKnown, keyboardInset);
 #endif
 }
 

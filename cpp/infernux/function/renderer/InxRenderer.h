@@ -617,8 +617,14 @@ class InxRenderer
     /// @brief Get the editor-mode FPS cap.
     float GetEditorFpsCap() const;
 
+    /// @brief Set the play/player-mode FPS cap. 0 = uncapped.
+    void SetPlayFpsCap(float fps);
+
+    /// @brief Get the play/player-mode FPS cap.
+    float GetPlayFpsCap() const;
+
     /// @brief Tell the renderer whether the engine is in play mode.
-    /// In play mode, the frame-rate cap and idle sleep are both disabled.
+    /// In play mode, editor idling is disabled; an explicit play cap may remain.
     /// A Play/Stop edge also drains GPU work and drops Game/Scene view caches
     /// so particle graphs cannot keep retired buffer bindings.
     void SetPlayModeRendering(bool play);
