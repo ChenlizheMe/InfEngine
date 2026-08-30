@@ -95,3 +95,14 @@ def test_linux_wheel_native_modules_are_relocatable_across_virtual_environments(
         assert 'INSTALL_RPATH "${_infernux_linux_rpath}"' in block
     assert "readelf" in verifier
     assert "direct libpython dependency" in verifier
+
+
+def test_wheel_build_requires_cmake_staging_and_a_native_extension() -> None:
+    setup_script = (ROOT / "setup.py").read_text(encoding="utf-8")
+    packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(encoding="utf-8")
+
+    assert 'os.environ.get("INFERNUX_STAGED_WHEEL_BUILD") != "1"' in setup_script
+    assert 'native_source = Path.cwd() / "python" / "Infernux" / "lib"' in setup_script
+    assert 'native_source.glob("_Infernux*.pyd")' in setup_script
+    assert 'native_source.glob("_Infernux*.so")' in setup_script
+    assert '"INFERNUX_STAGED_WHEEL_BUILD=1"' in packaging

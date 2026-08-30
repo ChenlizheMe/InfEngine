@@ -30,6 +30,7 @@ add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E chdir "${INFERNUX_PYTHON_STAGE_DIR}"
         ${CMAKE_COMMAND} -E env
         "INFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}"
+        "INFERNUX_STAGED_WHEEL_BUILD=1"
         "${Python3_EXECUTABLE}" -m build --wheel --no-isolation
         --outdir "${INFERNUX_PYTHON_WHEEL_DIR}"
 

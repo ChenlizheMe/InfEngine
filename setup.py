@@ -10,6 +10,7 @@ from setuptools import setup
 from setuptools.dist import Distribution
 from setuptools.command.build_py import build_py as _build_py
 
+import os
 import shutil
 from pathlib import Path
 
@@ -31,6 +32,23 @@ class CleanPackageDataBuild(_build_py):
     )
 
     def run(self):
+        if os.environ.get("INFERNUX_STAGED_WHEEL_BUILD") != "1":
+            raise RuntimeError(
+                "Infernux wheels contain compiled native runtime files and cannot be "
+                "built directly from the source checkout. Build the platform wheel "
+                "through the CMake package_python target instead."
+            )
+
+        native_source = Path.cwd() / "python" / "Infernux" / "lib"
+        native_extensions = tuple(native_source.glob("_Infernux*.pyd")) + tuple(
+            native_source.glob("_Infernux*.so")
+        ) + tuple(native_source.glob("_Infernux*.dylib"))
+        if not native_extensions:
+            raise RuntimeError(
+                "The staged Infernux wheel source is missing the compiled _Infernux "
+                "native extension. Rebuild the CMake package_python target."
+            )
+
         font_output = Path(self.build_lib) / "Infernux" / "resources" / "fonts"
         if font_output.is_dir():
             shutil.rmtree(font_output)
