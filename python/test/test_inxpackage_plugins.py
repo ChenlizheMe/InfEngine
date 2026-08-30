@@ -185,6 +185,30 @@ def test_export_preserves_meta_guid_and_is_deterministic(tmp_path):
     assert first.metadata["control_guid"] == second.metadata["control_guid"]
 
 
+def test_generated_guid_is_stable_when_package_content_changes(tmp_path):
+    source = _source(tmp_path / "source", "vendor/stable-identity")
+    asset = source / "Runtime" / "backend.py"
+    asset.parent.mkdir()
+    asset.write_text("VALUE = 1\n", encoding="utf-8")
+
+    first = InxPackage.inspect(str(_export(source, tmp_path / "first.inxpkg")))
+    first_record = next(
+        item
+        for item in first.file_records
+        if item["logical_path"] == "Runtime/backend.py"
+    )
+    asset.write_text("VALUE = 2\n", encoding="utf-8")
+    second = InxPackage.inspect(str(_export(source, tmp_path / "second.inxpkg")))
+    second_record = next(
+        item
+        for item in second.file_records
+        if item["logical_path"] == "Runtime/backend.py"
+    )
+
+    assert first_record["guid"] == second_record["guid"]
+    assert first_record["sha256"] != second_record["sha256"]
+
+
 def test_engine_compatibility_is_validated_and_enforced_before_install(tmp_path):
     invalid = _source(tmp_path / "invalid", "vendor/invalid-engine", engine=">=oops")
     (invalid / "Data.bin").write_bytes(b"payload")
@@ -404,6 +428,44 @@ def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path)
 
     assert occupied.read_bytes() == b"user bytes"
     assert manager.registry.installed() == ()
+
+
+def test_identical_orphaned_payload_is_adopted_with_package_guid(tmp_path):
+    source = _source(tmp_path / "source", "vendor/adopt-identical")
+    payload = source / "Runtime" / "backend.py"
+    payload.parent.mkdir()
+    payload.write_text("VALUE = 7\n", encoding="utf-8")
+    package = _export(source, tmp_path / "adopt-identical.inxpkg")
+    preview = InxPackage.inspect(str(package))
+    expected = next(
+        item
+        for item in preview.file_records
+        if item["logical_path"] == "Runtime/backend.py"
+    )
+
+    project = _project(tmp_path / "project")
+    occupied = project / "Packages/vendor/adopt-identical/Runtime/backend.py"
+    occupied.parent.mkdir(parents=True)
+    occupied.write_bytes(payload.read_bytes())
+    previous_guid = "22222222222222222222222222222222"
+    Path(str(occupied) + ".meta").write_text(
+        _meta(previous_guid), encoding="utf-8"
+    )
+    manager = PluginManager(str(project))
+
+    manager.install_package(str(package), install_dependencies=False)
+
+    document = json.loads(
+        Path(str(occupied) + ".meta").read_text(encoding="utf-8")
+    )
+    assert document["metadata"]["guid"]["value"] == expected["guid"]
+    record = manager.registry.installed_record("vendor/adopt-identical")
+    installed = next(
+        item
+        for item in record["files"]
+        if item["logical_path"] == "Runtime/backend.py"
+    )
+    assert installed["owned"] is True
 
 
 def test_install_rolls_back_files_and_registry_if_registration_fails(tmp_path, monkeypatch):

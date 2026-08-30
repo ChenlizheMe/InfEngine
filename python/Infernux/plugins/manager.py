@@ -1274,6 +1274,14 @@ class PluginManager:
         if os.path.exists(destination):
             target_guid = _meta_guid(destination)
             if target_guid.casefold() != guid.casefold():
+                # Asset importers may have assigned a project-local identity to an
+                # otherwise byte-identical package payload before the package was
+                # installed (or while an older development package was detached).
+                # Re-identifying that exact payload is safe and keeps the package
+                # identity stable.  Different bytes remain a hard conflict so an
+                # install can never claim or overwrite user-authored content.
+                if _file_hash(destination) == digest:
+                    return True, destination
                 raise PackageConflictError(
                     f"Destination is occupied by another GUID: {destination}"
                 )
