@@ -359,6 +359,9 @@ if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR
         set(USE_TZCNT OFF CACHE BOOL "" FORCE)
         set(USE_F16C OFF CACHE BOOL "" FORCE)
         set(USE_FMADD OFF CACHE BOOL "" FORCE)
+        # Must match external/CMakeLists.txt so wasm physics stays trajectory-
+        # compatible with desktop/Android builds.
+        set(CROSS_PLATFORM_DETERMINISTIC ON CACHE BOOL "" FORCE)
         set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)
         set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
         set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
@@ -379,6 +382,17 @@ if(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE OR
             "${CMAKE_CURRENT_BINARY_DIR}/_deps/infernux-web-jolt"
             EXCLUDE_FROM_ALL
         )
+        # These object libraries compile engine translation units that include
+        # Jolt headers. Consume Jolt's PUBLIC compile contract as well as its
+        # archive so JPH_VERSION_ID cannot diverge from the linked library.
+        foreach(_web_jolt_consumer
+                InfernuxWebNativeModuleProbe
+                InfernuxWebPortableBindingsProbe
+                InfernuxWebRuntimeBindingsProbe
+                InfernuxWebSceneRuntimeProbe
+                InfernuxWebResourceRuntimeProbe)
+            target_link_libraries(${_web_jolt_consumer} PRIVATE Jolt)
+        endforeach()
         target_sources(InfernuxWebPlayerHost PRIVATE
             $<TARGET_OBJECTS:InfernuxWebRuntimeBindingsProbe>
             $<TARGET_OBJECTS:InfernuxWebSceneRuntimeProbe>
@@ -405,6 +419,7 @@ target_link_options(InfernuxWebPlayerHost PRIVATE
     "-sALLOW_MEMORY_GROWTH=1"
     "-sINITIAL_MEMORY=134217728"
     "-sMAXIMUM_MEMORY=2147483648"
+    "-sSTACK_SIZE=2097152"
     "-sFORCE_FILESYSTEM=1"
     "-sENVIRONMENT=web"
     "-sEXIT_RUNTIME=0"

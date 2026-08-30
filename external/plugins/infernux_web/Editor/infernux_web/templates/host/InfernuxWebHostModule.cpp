@@ -11,6 +11,7 @@
 #include <emscripten.h>
 
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+#include <core/config/EngineConfig.h>
 #include <function/audio/AudioClipLoader.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -21,11 +22,14 @@
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
+#include <function/scene/SceneManager.h>
 #endif
 
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
 
@@ -181,6 +185,60 @@ PyObject *InitializeRuntimeAssets(PyObject *, PyObject *arguments)
         return PyLong_FromSize_t(assetCount);
     } catch (const std::exception &error) {
         PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+#endif
+}
+
+PyObject *ConfigurePhysics(PyObject *, PyObject *arguments)
+{
+#if !defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    PyErr_SetString(PyExc_RuntimeError, "the Web engine runtime is not linked");
+    return nullptr;
+#else
+    const char *documentText = nullptr;
+    Py_ssize_t documentSize = 0;
+    if (!PyArg_ParseTuple(arguments, "s#:configure_physics", &documentText, &documentSize))
+        return nullptr;
+
+    try {
+        const auto document = nlohmann::json::parse(documentText, documentText + documentSize);
+        const auto &gravity = document.at("gravity");
+        if (!document.is_object() || !gravity.is_array() || gravity.size() != 3)
+            throw std::invalid_argument("physics configuration has an invalid shape");
+
+        const uint64_t temporaryBytes = document.at("temp_allocator_mb").get<uint64_t>() * 1024ULL * 1024ULL;
+        if (temporaryBytes > std::numeric_limits<size_t>::max())
+            throw std::out_of_range("physics temporary allocator exceeds the Web address space");
+
+        auto &config = infernux::EngineConfig::Get();
+        config.physicsTempAllocatorSize = static_cast<size_t>(temporaryBytes);
+        config.physicsMaxJobs = document.at("max_jobs").get<uint32_t>();
+        config.physicsMaxBarriers = document.at("max_barriers").get<uint32_t>();
+        config.physicsMaxBodies = document.at("max_bodies").get<uint32_t>();
+        config.physicsMaxBodyPairs = document.at("max_body_pairs").get<uint32_t>();
+        config.physicsMaxContactConstraints = document.at("max_contact_constraints").get<uint32_t>();
+        config.physicsMaxConcurrency = document.at("max_concurrency").get<uint32_t>();
+        config.physicsCollisionSteps = document.at("collision_steps").get<int>();
+        config.physicsVelocitySteps = document.at("velocity_steps").get<int>();
+        config.physicsPositionSteps = document.at("position_steps").get<int>();
+        config.physicsPenetrationSlop = document.at("penetration_slop").get<float>();
+        config.physicsSpeculativeContactDistance = document.at("speculative_contact_distance").get<float>();
+        config.physicsLinearCastMaxPenetration = document.at("linear_cast_max_penetration").get<float>();
+        config.physicsBaumgarte = document.at("baumgarte").get<float>();
+        config.physicsMaxPenetrationDistance = document.at("max_penetration_distance").get<float>();
+        config.physicsLinearCastThreshold = document.at("linear_cast_threshold").get<float>();
+        config.physicsMinVelocityForRestitution = document.at("min_velocity_for_restitution").get<float>();
+        config.physicsTimeBeforeSleep = document.at("time_before_sleep").get<float>();
+        config.physicsPointVelocitySleepThreshold = document.at("point_velocity_sleep_threshold").get<float>();
+        config.physicsGravity = {gravity.at(0).get<float>(), gravity.at(1).get<float>(), gravity.at(2).get<float>()};
+
+        auto &sceneManager = infernux::SceneManager::Instance();
+        sceneManager.SetFixedTimeStep(document.at("fixed_delta_time").get<float>());
+        sceneManager.SetMaxFixedDeltaTime(document.at("max_fixed_delta_time").get<float>());
+        Py_RETURN_NONE;
+    } catch (const std::exception &error) {
+        PyErr_SetString(PyExc_ValueError, error.what());
         return nullptr;
     }
 #endif
@@ -488,6 +546,8 @@ PyMethodDef kMethods[] = {
      "Register one validated WGSL shader in the browser runtime catalog."},
     {"initialize_runtime_assets", InitializeRuntimeAssets, METH_VARARGS,
      "Install the immutable cooked GUID catalog and runtime asset loaders."},
+    {"configure_physics", ConfigurePhysics, METH_VARARGS,
+     "Apply validated project physics settings before the Web physics world is created."},
     {"_replace_gpu_particle_graph", ReplaceGpuParticleGraph, METH_VARARGS, nullptr},
     {"_replace_gpu_particle_graphs", ReplaceGpuParticleGraphs, METH_VARARGS, nullptr},
     {"_update_gpu_particle_parameters", UpdateGpuParticleParameters, METH_VARARGS, nullptr},

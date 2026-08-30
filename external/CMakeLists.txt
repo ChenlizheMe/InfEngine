@@ -67,6 +67,13 @@ set(USE_LZCNT OFF CACHE BOOL "" FORCE)
 set(USE_TZCNT OFF CACHE BOOL "" FORCE)
 set(USE_F16C OFF CACHE BOOL "" FORCE)
 set(USE_FMADD OFF CACHE BOOL "" FORCE)
+# Cross-platform determinism: compile Jolt with precise FP (/fp:precise,
+# -ffp-contract=off) and its deterministic math paths so the same simulation
+# inputs produce identical trajectories on Windows/Linux/Android/Web. Required
+# for reproducible headless simulation and RL experiments. FMADD must stay OFF
+# (it already is above). JPH_CROSS_PLATFORM_DETERMINISTIC is a PUBLIC define,
+# so engine translation units that include Jolt headers stay consistent.
+set(CROSS_PLATFORM_DETERMINISTIC ON CACHE BOOL "" FORCE)
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)   # pybind11 requires /MD (dynamic CRT)
 set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)                # Don't override parent project's CXX flags
 set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)      # Avoid LTO issues with pybind11 module

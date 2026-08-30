@@ -161,7 +161,8 @@ async function main() {
       "[--cdp-endpoint URL] [--require-active-audio] [--startup-timeout-ms N] " +
       "[--viewport-width N] [--viewport-height N] " +
       "[--expect-presentation fullscreen-borderless|windowed] " +
-      "[--expect-render-width N] [--expect-render-height N]",
+      "[--expect-render-width N] [--expect-render-height N] " +
+      "[--track-object NAME] [--movement-key KEY] [--min-displacement N]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -186,6 +187,9 @@ async function main() {
   const expectedPresentation = argumentValue("--expect-presentation");
   const expectedRenderWidth = Number(argumentValue("--expect-render-width", "0"));
   const expectedRenderHeight = Number(argumentValue("--expect-render-height", "0"));
+  const trackedObject = argumentValue("--track-object");
+  const movementKey = argumentValue("--movement-key", "w");
+  const minimumDisplacement = Number(argumentValue("--min-displacement", "0.02"));
   if (!Number.isInteger(viewportWidth) || viewportWidth <= 0 ||
       !Number.isInteger(viewportHeight) || viewportHeight <= 0) {
     throw new Error("viewport dimensions must be positive integers");
@@ -193,6 +197,9 @@ async function main() {
   if (expectedPresentation &&
       !["fullscreen-borderless", "windowed"].includes(expectedPresentation)) {
     throw new Error("--expect-presentation must be fullscreen-borderless or windowed");
+  }
+  if (!Number.isFinite(minimumDisplacement) || minimumDisplacement < 0) {
+    throw new Error("--min-displacement must be a non-negative number");
   }
   let browser;
   let page;
@@ -278,11 +285,81 @@ async function main() {
     const nativeWPressed = await page.evaluate(() => Module.ccall(
       "InfernuxWebGetKeyState", "number", ["number"], [26],
     ) === 1);
+    const pythonWPressed = await page.evaluate(() => Module.ccall(
+      "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [0, 26],
+    ) === 1);
     await page.keyboard.up("w");
     await page.waitForTimeout(120);
     const nativeWReleased = await page.evaluate(() => Module.ccall(
       "InfernuxWebGetKeyState", "number", ["number"], [26],
     ) === 0);
+    let gameplayMovement = null;
+    if (trackedObject) {
+      const readPosition = async () => page.evaluate((name) => [0, 1, 2].map((axis) =>
+        Module.ccall(
+          "InfernuxWebGetObjectPositionAxis",
+          "number",
+          ["string", "number"],
+          [name, axis],
+        )
+      ), trackedObject);
+      const before = await readPosition(trackedObject);
+      const runtimeBefore = await page.evaluate(() => ({
+        fixedPlanCount: Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [1, 0],
+        ),
+        updatePlanCount: Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [2, 0],
+        ),
+        nativePhaseDispatches: Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [3, 0],
+        ),
+        phaseErrors: Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [4, 0],
+        ),
+      }));
+      if (!before.every(Number.isFinite)) {
+        throw new Error(`Web Player could not find tracked object: ${trackedObject}`);
+      }
+      let whileHeld;
+      await page.keyboard.down(movementKey);
+      try {
+        await page.waitForTimeout(1200);
+        whileHeld = await readPosition(trackedObject);
+      } finally {
+        await page.keyboard.up(movementKey);
+      }
+      await page.waitForTimeout(120);
+      const after = await readPosition(trackedObject);
+      const runtimeAfter = await page.evaluate(() => ({
+        nativePhaseDispatches: Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [3, 0],
+        ),
+        phaseErrors: Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [4, 0],
+        ),
+      }));
+      const displacement = Math.hypot(
+        after[0] - before[0],
+        after[1] - before[1],
+        after[2] - before[2],
+      );
+      const horizontalDisplacement = Math.hypot(
+        after[0] - before[0],
+        after[2] - before[2],
+      );
+      gameplayMovement = {
+        object: trackedObject,
+        key: movementKey,
+        before,
+        whileHeld,
+        after,
+        displacement,
+        horizontalDisplacement,
+        runtimeBefore,
+        runtimeAfter,
+      };
+    }
     await page.waitForTimeout(250);
     const frameBeforeActivation = await measureCanvasFrame(canvas);
     await page.evaluate(() => {
@@ -435,6 +512,8 @@ async function main() {
     result.initialKeyboardFocus = initialKeyboardFocus;
     result.nativeWPressed = nativeWPressed;
     result.nativeWReleased = nativeWReleased;
+    result.pythonWPressed = pythonWPressed;
+    result.gameplayMovement = gameplayMovement;
     const frameIsVisible = (frame) => (
       frame.nonBlackRatio >= 0.1 &&
       frame.luminanceDeviation >= 0.01 &&
@@ -479,7 +558,9 @@ async function main() {
         !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
         !result.keyboardFocusBridge || !result.initialKeyboardFocus ||
-        !result.nativeWPressed || !result.nativeWReleased ||
+        !result.nativeWPressed || !result.nativeWReleased || !result.pythonWPressed ||
+        (result.gameplayMovement &&
+          result.gameplayMovement.horizontalDisplacement < minimumDisplacement) ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||

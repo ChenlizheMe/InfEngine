@@ -54,6 +54,24 @@ def _fake_scene_manager(monkeypatch, scene):
     return SceneManager
 
 
+def test_player_runtime_default_scheduler_publishes_native_phase_work(monkeypatch):
+    import Infernux.components._component_lifecycle as lifecycle
+    from Infernux.engine.player_runtime import PlayerRuntimeSession
+
+    created = []
+
+    class Scheduler:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(lifecycle, "RuntimeExecutionScheduler", Scheduler)
+
+    session = PlayerRuntimeSession(scene_service=object())
+
+    assert session.execution_scheduler is not None
+    assert created == [{"name": "player", "native_bridge": True}]
+
+
 def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path):
     from Infernux.engine.player_runtime import PlayerRuntimeSession
     from Infernux.scene import SceneManager as RuntimeSceneManager

@@ -23,6 +23,7 @@ _screen_width = 1
 _screen_height = 1
 _screen_ui_renderer: Any = None
 _screen_ui_texture_cache: Any = None
+_runtime_api_installed = False
 _player_root = "/infernux/player"
 _player_python = f"{_player_root}/python/site-packages"
 _runtime_data_root = ""
@@ -123,6 +124,49 @@ def _prepare_cooked_player_content() -> str:
 _runtime_data_root = _prepare_cooked_player_content()
 
 
+def infernux_web_configure_physics() -> bool:
+    """Apply project physics settings before the native world is created."""
+
+    if not _runtime_data_root:
+        raise RuntimeError("Web Player has no extracted runtime data root")
+    import _Infernux as native_module
+
+    _install_platform_runtime_api(native_module)
+    from Infernux.physics import settings as physics_settings
+
+    physics_path = physics_settings.settings_path(_runtime_data_root)
+    authored = os.path.isfile(physics_path)
+    configuration = physics_settings.load(_runtime_data_root)
+    if not authored:
+        # Desktop defaults reserve for very large simulations. A project that
+        # needs those capacities can author PhysicsSettings explicitly; a Web
+        # project with no file should not commit hundreds of MiB at startup.
+        configuration.update(
+            temp_allocator_mb=32,
+            max_jobs=1024,
+            max_barriers=8,
+            max_bodies=8192,
+            max_body_pairs=16384,
+            max_contact_constraints=8192,
+        )
+    # The current Web runtime is intentionally owner-thread driven. Jolt may
+    # still publish jobs, but the shared scheduler consumes them serially.
+    configuration["max_concurrency"] = 1
+    from _InfernuxWebHost import configure_physics
+    from Infernux.timing import Time
+
+    configure_physics(json.dumps(configuration, separators=(",", ":")))
+    Time._fixed_delta_time = configuration["fixed_delta_time"]
+    Time._maximum_delta_time = configuration["max_fixed_delta_time"]
+    print(
+        "INFERNUX_WEB_PHYSICS_CONFIGURED "
+        f"source={'project' if authored else 'web-default'} "
+        f"temp_mb={configuration['temp_allocator_mb']} "
+        f"bodies={configuration['max_bodies']}"
+    )
+    return True
+
+
 def _register_web_shaders() -> None:
     """Load the deterministic WGSL catalog produced by the Web cook."""
 
@@ -201,6 +245,10 @@ def _package_namespace(name: str, path: str) -> ModuleType:
 
 def _install_platform_runtime_api(native_module: Any) -> None:
     """Assemble the game-facing package without importing editor bootstrap."""
+
+    global _runtime_api_installed
+    if _runtime_api_installed:
+        return
 
     package_root = os.path.join(_player_python, "Infernux")
     package = _package_namespace("Infernux", package_root)
@@ -323,6 +371,7 @@ def _install_platform_runtime_api(native_module: Any) -> None:
             }
         )
     )
+    _runtime_api_installed = True
 
 
 def _install_runtime_lifecycle_bridge(scene_manager: Any, scheduler: Any) -> None:
@@ -500,6 +549,28 @@ def infernux_web_input(kind: str, payload: dict[str, Any]) -> None:
     if kind not in _seen_event_kinds:
         _seen_event_kinds.add(kind)
         print(f"INFERNUX_WEB_INPUT_READY kind={kind}")
+
+
+def infernux_web_runtime_diagnostic(probe: int, argument: int) -> float:
+    """Return one numeric, read-only runtime probe for browser acceptance."""
+
+    if probe == 0:
+        from Infernux.input import Input
+
+        return float(Input.get_key(int(argument)))
+    if _player_session is None:
+        return float("nan")
+    scheduler = _player_session.execution_scheduler
+    if probe == 1:
+        return float(len(scheduler.phase_plan("fixed_update")))
+    if probe == 2:
+        return float(len(scheduler.phase_plan("update")))
+    counters = scheduler.profiler_snapshot()
+    if probe == 3:
+        return float(counters.get("native_phase_dispatches", 0))
+    if probe == 4:
+        return float(counters.get("phase_errors", 0))
+    return float("nan")
 
 
 def infernux_web_drain_input() -> tuple[tuple[str, dict[str, Any]], ...]:

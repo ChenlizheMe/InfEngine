@@ -31,7 +31,8 @@ class PlayerRuntimeSession:
         self._native_engine = native_engine
         if scheduler is None:
             from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-            scheduler = RuntimeExecutionScheduler(name="player")
+
+            scheduler = RuntimeExecutionScheduler(name="player", native_bridge=True)
         self._execution_scheduler = scheduler
         self._scene_service = scene_service or PlayerSceneService(
             asset_database=asset_database,

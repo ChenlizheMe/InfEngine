@@ -289,6 +289,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
 
     assert "libpython3.13.a" in cmake
     assert "--use-port=emdawnwebgpu" in cmake
+    assert "-sSTACK_SIZE=2097152" in cmake
+    assert "set(CROSS_PLATFORM_DETERMINISTIC ON" in cmake
+    assert "target_link_libraries(${_web_jolt_consumer} PRIVATE Jolt)" in cmake
     assert "MAIN_MODULE" not in cmake
     assert "FullscreenRenderer.cpp" in cmake
     assert "WebSceneRenderer.cpp" in cmake
@@ -300,6 +303,19 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "AudioEngine.cpp" in cmake
     assert "Py_Initialize" in main
     assert "JobSystem::InitializeInline" in main
+    assert "PhysicsWorld::Instance().Initialize()" in main
+    assert "infernux_web_configure_physics" in main
+    assert "INFERNUX_WEB_PHYSICS_READY" in main
+    assert main.index("Py_Initialize()") < main.index(
+        "PhysicsWorld::Instance().Initialize()"
+    ) < main.index('PyObject_GetAttrString(mainModule, "infernux_web_tick")')
+    assert "def infernux_web_configure_physics()" in bootstrap
+    assert "_install_platform_runtime_api(native_module)" in bootstrap
+    assert "if _runtime_api_installed:" in bootstrap
+    assert "configure_physics(json.dumps(configuration" in bootstrap
+    assert 'Time._fixed_delta_time = configuration["fixed_delta_time"]' in bootstrap
+    assert "source={'project' if authored else 'web-default'}" in bootstrap
+    assert 'configuration["max_concurrency"] = 1' in bootstrap
     assert "RunPendingJobs(64)" in main
     assert "wgpuCreateInstance" in main
     assert "WebGpuRhiDevice" in main
@@ -344,9 +360,13 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "emscripten_set_keydown_callback" in main
     assert "emscripten_set_wheel_callback" in main
     assert "InfernuxWebGetKeyState" in main
+    assert "InfernuxWebGetObjectPositionAxis" in main
+    assert "InfernuxWebGetRuntimeDiagnostic" in main
     assert "emscripten_set_visibilitychange_callback" in main
     assert "emscripten_sample_gamepad_data" in main
     assert "InfernuxWebTextInput" in main
+    assert '"configure_physics", ConfigurePhysics' in host_module
+    assert "config.physicsMaxBodies" in host_module
     assert "infernuxBeginTextInput" in shell
     assert "setPointerCapture" in shell
     assert "lostpointercapture" in shell

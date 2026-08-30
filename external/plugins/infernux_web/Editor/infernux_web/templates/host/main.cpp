@@ -11,6 +11,7 @@
 #include <platform/input/InputManager.h>
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
 #include <function/scene/SceneManager.h>
+#include <function/scene/physics/PhysicsWorld.h>
 #endif
 
 #include "InfernuxWebHostModule.h"
@@ -21,7 +22,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
+#include <exception>
+#include <limits>
 #include <memory>
 #include <string_view>
 #include <unordered_map>
@@ -53,6 +57,7 @@ wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
 PyObject *g_input = nullptr;
 PyObject *g_activate = nullptr;
+PyObject *g_runtimeDiagnostic = nullptr;
 uint32_t g_width = 1;
 uint32_t g_height = 1;
 double g_cssWidth = 1.0;
@@ -459,6 +464,54 @@ extern "C" EMSCRIPTEN_KEEPALIVE int InfernuxWebGetKeyState(int scancode)
     return infernux::InputManager::Instance().GetKey(scancode) ? 1 : 0;
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE double InfernuxWebGetObjectPositionAxis(const char *name, int axis)
+{
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (name == nullptr || axis < 0 || axis > 2)
+        return std::numeric_limits<double>::quiet_NaN();
+
+    auto readScene = [&](infernux::Scene *scene) -> double {
+        if (scene == nullptr)
+            return std::numeric_limits<double>::quiet_NaN();
+        for (infernux::GameObject *object : scene->GetAllObjects()) {
+            if (object == nullptr || object->GetName() != name)
+                continue;
+            const glm::vec3 position = object->GetTransform()->GetWorldPosition();
+            return static_cast<double>(position[axis]);
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    auto &sceneManager = infernux::SceneManager::Instance();
+    const double activeValue = readScene(sceneManager.GetActiveScene());
+    if (!std::isnan(activeValue))
+        return activeValue;
+    return readScene(sceneManager.GetRuntimePersistentScene());
+#else
+    (void)name;
+    (void)axis;
+    return std::numeric_limits<double>::quiet_NaN();
+#endif
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE double InfernuxWebGetRuntimeDiagnostic(int probe, int argument)
+{
+    if (g_runtimeDiagnostic == nullptr)
+        return std::numeric_limits<double>::quiet_NaN();
+    PyObject *result = PyObject_CallFunction(g_runtimeDiagnostic, "ii", probe, argument);
+    if (result == nullptr) {
+        PrintPythonError("runtime-diagnostic");
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double value = PyFloat_AsDouble(result);
+    Py_DECREF(result);
+    if (PyErr_Occurred()) {
+        PrintPythonError("runtime-diagnostic-value");
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return value;
+}
+
 EM_BOOL OnWheel(int, const EmscriptenWheelEvent *event, void *)
 {
     infernux::InputManager::Instance().ProcessScrollEvent(static_cast<float>(event->deltaX),
@@ -643,11 +696,43 @@ bool InitializePython()
         return false;
     }
     PyObject *mainModule = PyImport_AddModule("__main__");
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    PyObject *configurePhysics = PyObject_GetAttrString(mainModule, "infernux_web_configure_physics");
+    if (configurePhysics == nullptr || !PyCallable_Check(configurePhysics)) {
+        Py_XDECREF(configurePhysics);
+        PrintPythonError("physics-configuration-contract");
+        return false;
+    }
+    PyObject *physicsConfiguration = PyObject_CallNoArgs(configurePhysics);
+    Py_DECREF(configurePhysics);
+    if (physicsConfiguration == nullptr) {
+        PrintPythonError("physics-configuration");
+        return false;
+    }
+    const int physicsConfigured = PyObject_IsTrue(physicsConfiguration);
+    Py_DECREF(physicsConfiguration);
+    if (physicsConfigured != 1) {
+        std::fprintf(stderr, "INFERNUX_WEB_PHYSICS_CONFIGURATION_FAILED\n");
+        return false;
+    }
+    try {
+        // The Web host does not construct the desktop Infernux application.
+        // Bootstrap has extracted and applied project settings, but it has not
+        // loaded the scene yet, so Collider creation still happens after Jolt.
+        infernux::PhysicsWorld::Instance().Initialize();
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "INFERNUX_WEB_PHYSICS_INITIALIZATION_FAILED %s\n", error.what());
+        return false;
+    }
+    std::printf("INFERNUX_WEB_PHYSICS_READY\n");
+#endif
     g_tick = PyObject_GetAttrString(mainModule, "infernux_web_tick");
     g_input = PyObject_GetAttrString(mainModule, "infernux_web_input");
     g_activate = PyObject_GetAttrString(mainModule, "infernux_web_activate");
+    g_runtimeDiagnostic = PyObject_GetAttrString(mainModule, "infernux_web_runtime_diagnostic");
     return g_tick != nullptr && PyCallable_Check(g_tick) && g_input != nullptr && PyCallable_Check(g_input) &&
-           g_activate != nullptr && PyCallable_Check(g_activate);
+           g_activate != nullptr && PyCallable_Check(g_activate) && g_runtimeDiagnostic != nullptr &&
+           PyCallable_Check(g_runtimeDiagnostic);
 }
 
 void Frame()
