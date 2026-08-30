@@ -21,7 +21,11 @@ from Infernux.plugins import (
     player_file_exported,
     split_markdown_images,
 )
-from Infernux.plugins.official import OfficialCatalogError, sync_official_registry
+from Infernux.plugins.official import (
+    OfficialCatalogError,
+    install_bundled_packages,
+    sync_official_registry,
+)
 from Infernux.plugins.content import normalize_page_descriptor
 from Infernux.plugins.project_index import project_guid_paths
 
@@ -382,6 +386,79 @@ def test_startup_degrades_when_official_catalog_is_unavailable(tmp_path):
 
     assert "Official plugin catalog is unavailable" in manager.official_catalog_error
     assert manager.registry.find("vendor/local") is not None
+
+
+def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "Runtime").mkdir()
+    (source / "Runtime" / "fixture.py").write_text(
+        "PLATFORM_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    package = _export(source, resources / "infernux.platform-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    first = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+    second = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in first] == ["infernux/platform-fixture"]
+    assert [state.reference for state in second] == ["infernux/platform-fixture"]
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    assert record["source"]["location"] == str(package.resolve())
+    assert record["source"]["builtin"] is True
+    assert (project / "Packages/infernux/platform-fixture/Runtime/fixture.py").is_file()
+
+
+def test_startup_installs_resources_root_inxpackages_without_official_catalog(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "Runtime").mkdir()
+    (source / "Runtime" / "fixture.py").write_text(
+        "PLATFORM_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(source, resources / "infernux.platform-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    monkeypatch.setattr(
+        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+    )
+
+    manager = PluginManager.startup(str(project), runtime=False)
+
+    assert manager.registry.installed_record("infernux/platform-fixture") is not None
+    assert "Official plugin catalog is unavailable" in manager.official_catalog_error
+
+
+def test_duplicate_resources_root_package_reference_is_rejected_before_install(
+    tmp_path,
+):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "Runtime").mkdir()
+    (source / "Runtime" / "fixture.py").write_text(
+        "PLATFORM_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(source, resources / "first.inxpkg")
+    _export(source, resources / "second.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    with pytest.raises(OfficialCatalogError, match="duplicated"):
+        install_bundled_packages(
+            str(project), resources_root=str(resources), manager=manager
+        )
+
+    assert manager.registry.installed() == ()
 
 
 def test_guid_conflict_is_rejected_without_partial_files(tmp_path):

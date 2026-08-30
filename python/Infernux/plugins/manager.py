@@ -197,7 +197,11 @@ class PluginManager:
         cls._instance = manager
         if not runtime:
             mirrored_resources = os.path.join(normalized, "Library", "Resources")
-            from .official import OfficialCatalogError, sync_official_registry
+            from .official import (
+                OfficialCatalogError,
+                install_bundled_packages,
+                sync_official_registry,
+            )
 
             try:
                 sync_official_registry(normalized, resources_root=mirrored_resources)
@@ -207,6 +211,7 @@ class PluginManager:
                     "Official plugin catalog is unavailable; continuing with "
                     f"installed, local, Git, and pip sources: {exc}"
                 )
+            install_bundled_packages(normalized, manager=manager)
         manager.registry.save(manager.registry.load())
         manager.reload_all()
         if not runtime:

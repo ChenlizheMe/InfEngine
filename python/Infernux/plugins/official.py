@@ -12,7 +12,12 @@ from Infernux.engine.path_utils import resolved_path
 
 from .content import normalize_page_descriptor
 from .manager import PluginManager, PluginState
-from .package import validate_reference
+from .package import (
+    InxPackage,
+    InxPackagePreview,
+    PACKAGE_EXTENSION,
+    validate_reference,
+)
 from .registry import PluginRegistry
 
 
@@ -33,6 +38,14 @@ def _official_packages_root(resources_root: str | None = None) -> str:
     from Infernux.resources import get_package_resources_path
 
     return os.path.join(get_package_resources_path(), "official_packages")
+
+
+def _package_resources_root(resources_root: str | None = None) -> str:
+    if resources_root:
+        return resolved_path(resources_root)
+    from Infernux.resources import get_package_resources_path
+
+    return get_package_resources_path()
 
 
 def _read_document(path: str, schema: str) -> dict[str, object]:
@@ -191,6 +204,99 @@ def _file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def install_bundled_packages(
+    project_root: str,
+    *,
+    resources_root: str | None = None,
+    manager: PluginManager | None = None,
+) -> tuple[PluginState, ...]:
+    """Install every wheel-mandatory InxPackage from the resources root.
+
+    A direct child named ``*.inxpkg`` is part of the host wheel's built-in
+    package set.  The set is authoritative and local: startup never replaces
+    a missing or incompatible artifact with a network download.
+    """
+
+    project = resolved_path(project_root)
+    root = _package_resources_root(resources_root)
+    try:
+        candidates = sorted(
+            (
+                os.path.join(root, name)
+                for name in os.listdir(root)
+                if name.casefold().endswith(PACKAGE_EXTENSION)
+                and os.path.isfile(os.path.join(root, name))
+            ),
+            key=lambda path: os.path.basename(path).casefold(),
+        )
+    except OSError as exc:
+        raise OfficialCatalogError(
+            f"Built-in package resources are unavailable: {root}"
+        ) from exc
+
+    previews: list[tuple[str, InxPackagePreview, str]] = []
+    references: dict[str, str] = {}
+    for package_path in candidates:
+        try:
+            preview = InxPackage.inspect(package_path)
+            reference = validate_reference(str(preview.metadata.get("reference", "")))
+            package_sha256 = _file_sha256(package_path)
+        except Exception as exc:
+            raise OfficialCatalogError(
+                f"Built-in InxPackage is invalid: {package_path}"
+            ) from exc
+        key = reference.casefold()
+        if key in references:
+            raise OfficialCatalogError(
+                "Built-in package reference is duplicated: "
+                f"{reference}: {references[key]}, {package_path}"
+            )
+        references[key] = package_path
+        previews.append((package_path, preview, package_sha256))
+
+    active = PluginManager.instance()
+    if (
+        manager is None
+        and active is not None
+        and active.project_root == project
+        and not active.runtime
+    ):
+        manager = active
+    owned_manager = manager is None
+    manager = manager or PluginManager(project, runtime=False)
+    if manager.project_root != project:
+        raise ValueError("Built-in package manager belongs to another project")
+
+    try:
+        # Publish the complete local set before installation so one built-in
+        # package can resolve another regardless of filename ordering.
+        for package_path, preview, package_sha256 in previews:
+            metadata = preview.metadata
+            manager.registry.add_package(
+                str(metadata["reference"]),
+                name=str(metadata.get("name", "")),
+                version=str(metadata.get("version", "")),
+                engine=str(metadata.get("engine", "")),
+                dependencies=metadata.get("dependencies", ()),
+                intro=str(metadata.get("intro", "")),
+                intros=metadata.get("intros", {}),
+                pages=metadata.get("pages", ()),
+                source={
+                    "type": "local",
+                    "location": package_path,
+                    "sha256": package_sha256,
+                    "builtin": True,
+                },
+            )
+        return tuple(
+            manager.install_reference(str(preview.metadata["reference"]))
+            for _package_path, preview, _package_sha256 in previews
+        )
+    finally:
+        if owned_manager:
+            manager.shutdown()
+
+
 def install_default_libraries(
     project_root: str,
     *,
@@ -270,6 +376,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "bootstrap_new_project",
+    "install_bundled_packages",
     "install_default_libraries",
     "OfficialCatalogError",
     "sync_official_registry",

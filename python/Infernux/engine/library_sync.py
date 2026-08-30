@@ -35,6 +35,11 @@ def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
         for filename in sorted(files):
             if filename in _SKIP or filename.endswith(".meta"):
                 continue
+            # Direct .inxpkg children are wheel-mandatory packages.  Plugin
+            # startup consumes them from the installed Python resources root;
+            # they are not ordinary project-visible engine resources.
+            if directory == root and filename.casefold().endswith(".inxpkg"):
+                continue
             source = os.path.join(directory, filename)
             relative = relative_path(source, root)
             stat = os.stat(source)
