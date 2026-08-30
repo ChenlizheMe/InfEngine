@@ -728,6 +728,8 @@ class PluginManager:
                 if isinstance(item, Mapping)
                 and str(item.get("requirement", "")).strip()
             )
+            if not requirements:
+                requirements = self._discover_installed_python_requirements(record)
             if requirements:
                 requirements_by_plugin[reference] = requirements
                 all_requirements.extend(requirements)
@@ -762,6 +764,10 @@ class PluginManager:
             self.registry.record_python_reconciliation(
                 requirements=missing,
                 changes=changes,
+                owners={
+                    reference: _pip_requirement_targets(requirements)
+                    for reference, requirements in requirements_by_plugin.items()
+                },
             )
         except Exception as exc:
             self.python_requirement_error = str(exc)
@@ -783,6 +789,50 @@ class PluginManager:
                 + ", ".join(repaired)
             )
         return repaired
+
+    def _discover_installed_python_requirements(
+        self, record: Mapping[str, object]
+    ) -> tuple[str, ...]:
+        """Recover pip declarations from an installed package's control files."""
+
+        reference = str(record.get("reference", "")).strip()
+        requirement_name = portable_path(
+            str(record.get("requirements", "requirements.txt"))
+        ).strip("/")
+        if not reference or not requirement_name:
+            return ()
+        control_root = package_control_root(self.project_root, reference)
+        requirement_path = resolved_path(
+            os.path.join(control_root, *requirement_name.split("/"))
+        )
+        if not is_path_within(requirement_path, control_root, allow_root=False):
+            Debug.log_warning(
+                f"Ignoring unsafe plugin requirements path for {reference}: "
+                f"{requirement_name}"
+            )
+            return ()
+        try:
+            text = Path(requirement_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return ()
+        except OSError as exc:
+            Debug.log_warning(
+                f"Installed plugin requirements are unreadable for {reference}: {exc}"
+            )
+            return ()
+
+        result: list[str] = []
+        for line in text.splitlines():
+            requirement = line.strip()
+            if not requirement or requirement.startswith("#"):
+                continue
+            if requirement.casefold().endswith(PACKAGE_EXTENSION):
+                continue
+            if self._registry_reference_for_requirement(requirement) is not None:
+                continue
+            if _pip_requirement_targets((requirement,)):
+                result.append(requirement)
+        return tuple(dict.fromkeys(result))
 
     def _install_pip_lines(
         self, lines: Iterable[str]

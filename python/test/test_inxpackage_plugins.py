@@ -1013,6 +1013,10 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
     monkeypatch.setattr(manager, "_run_process", run)
     manager.install_package(str(package))
+    legacy_registry = manager.registry.load()
+    legacy_registry["installed"][0]["python_requirements"] = []
+    legacy_registry["python_dependencies"] = []
+    manager.registry.save(legacy_registry)
     environment.clear()
     commands.clear()
 
@@ -1030,6 +1034,9 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     ]
     assert ledger[0]["baseline_version"] == ""
     assert ledger[0]["installed_version"] == "1.5"
+    assert manager.registry.installed_record("vendor/portable-python")[
+        "python_requirements"
+    ] == [{"name": "shared-wheel", "requirement": "shared-wheel>=1,<2"}]
 
     commands.clear()
     assert manager._reconcile_python_requirements_for_startup() == ()

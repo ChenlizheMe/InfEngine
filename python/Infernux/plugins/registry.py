@@ -332,6 +332,7 @@ class PluginRegistry:
         *,
         requirements: Iterable[str],
         changes: Iterable[Mapping[str, object]],
+        owners: Mapping[str, Iterable[Mapping[str, object]]] | None = None,
     ) -> dict[str, object]:
         """Record dependency repair in the active project Python environment."""
 
@@ -348,6 +349,24 @@ class PluginRegistry:
             "changes": normalized_changes,
         }
         document["python_installs"].append(item)
+        installed_by_reference = {
+            str(record.get("reference", "")).casefold(): record
+            for record in document.get("installed", [])
+            if isinstance(record, dict)
+        }
+        for reference, raw_requirements in (owners or {}).items():
+            normalized_requirements = _normalize_python_requirements(raw_requirements)
+            if not normalized_requirements:
+                continue
+            _register_python_dependency_owner(
+                document,
+                reference,
+                normalized_requirements,
+                normalized_changes,
+            )
+            installed = installed_by_reference.get(str(reference).casefold())
+            if installed is not None:
+                installed["python_requirements"] = normalized_requirements
         changes_by_name = {change["name"]: change for change in normalized_changes}
         for raw in document.get("python_dependencies", []):
             if not isinstance(raw, dict):
