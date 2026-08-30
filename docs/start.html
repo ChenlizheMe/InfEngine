@@ -130,14 +130,14 @@
                     <div>
                         <h2>Write your first Python component</h2>
                         <p>Create <code>Spin.py</code> in your project, then add <code>Spin</code> to a GameObject from the Inspector.</p>
-                        <pre><code>from Infernux import InxComponent, Vector3, serialized_field
+                        <pre><code>import infernux as inx
 
 
-class Spin(InxComponent):
-    speed: float = serialized_field(default=90.0, range=(0.0, 360.0))
+class Spin(inx.InxComponent):
+    speed: float = inx.serialized_field(default=90.0, range=(0.0, 360.0))
 
     def update(self, delta_time: float) -> None:
-        self.transform.rotate(Vector3(0.0, self.speed * delta_time, 0.0))</code></pre>
+        self.transform.rotate(inx.Vector3(0.0, self.speed * delta_time, 0.0))</code></pre>
                         <p>Save the scene and hit Play. The object turns, and <strong>Speed</strong> is right there in the Inspector, editable while the game runs. That is the whole loop: an ordinary Python class, one lifecycle method, and a field the editor knows how to show.</p>
                     </div>
                 </section>
@@ -214,14 +214,14 @@ class Spin(InxComponent):
                     <div>
                         <h2>写下第一个 Python 组件</h2>
                         <p>在项目里新建 <code>Spin.py</code>，然后在 Inspector 里把 <code>Spin</code> 挂到一个 GameObject 上。</p>
-                        <pre><code>from Infernux import InxComponent, Vector3, serialized_field
+                        <pre><code>import infernux as inx
 
 
-class Spin(InxComponent):
-    speed: float = serialized_field(default=90.0, range=(0.0, 360.0))
+class Spin(inx.InxComponent):
+    speed: float = inx.serialized_field(default=90.0, range=(0.0, 360.0))
 
     def update(self, delta_time: float) -> None:
-        self.transform.rotate(Vector3(0.0, self.speed * delta_time, 0.0))</code></pre>
+        self.transform.rotate(inx.Vector3(0.0, self.speed * delta_time, 0.0))</code></pre>
                         <p>保存场景，点 Play。物体转了起来，<strong>Speed</strong> 就在 Inspector 里，运行时也能随手改。整个循环就这么多：一个普通的 Python 类，一个生命周期方法，一个编辑器认得出来的字段。</p>
                     </div>
                 </section>

@@ -1,7 +1,8 @@
-"""Convenient top-level runtime API for game scripts.
+"""Implementation package for the public Infernux runtime API.
 
-This module intentionally re-exports the most common scripting symbols so
-user scripts can simply do ``from Infernux import *``.
+New game scripts use ``import infernux as inx``.  This package retains the
+engine implementation and the compatibility surface required by existing
+projects while that public namespace is adopted throughout the toolchain.
 """
 
 import importlib
@@ -54,7 +55,7 @@ from Infernux.instantiate import Instantiate, Destroy
 
 
 def __getattr__(name: str):
-    """Lazily expose optional JIT helpers without bloating ``from Infernux import *``.
+    """Lazily expose optional JIT helpers without loading them at startup.
 
     This keeps Numba out of ordinary star-import paths while still supporting:
 
@@ -76,7 +77,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'Infernux' has no attribute {name!r}")
 
 
-# ── Public API surface for ``from Infernux import *`` ──────────────
+# ── Public game-scripting API surface ──────────────────────────────
 # Curated list: only symbols commonly needed in game scripts.
 # Internal / advanced helpers stay accessible via their submodules
 # (e.g. ``from Infernux.debug import debug``).

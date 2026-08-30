@@ -686,6 +686,8 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     bootstrap = package / "engine/platform_player_bootstrap.py"
     bootstrap.parent.mkdir(parents=True)
     bootstrap.write_text("def run_platform_player(): pass\n", encoding="utf-8")
+    public_api = source_root / "python/infernux.py"
+    public_api.write_text("import Infernux as _api\n", encoding="utf-8")
     shader = package / "resources/shaders/standard.vert"
     shader.parent.mkdir(parents=True)
     shader.write_text("void main() {}\n", encoding="utf-8")
@@ -712,6 +714,9 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     exporter_module._stage_engine_python_package(request, staging, source_root)
 
     destination = staging / "app/src/main/assets/python/site-packages/Infernux"
+    assert (destination.parent / "infernux.py").read_text(encoding="utf-8") == public_api.read_text(
+        encoding="utf-8"
+    )
     assert (destination / "engine/platform_player_bootstrap.py").is_file()
     assert (destination / "resources/shaders/standard.vert").is_file()
     assert not (destination / "_runtime_packs").exists()

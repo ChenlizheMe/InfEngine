@@ -216,6 +216,12 @@ install(
 )
 
 install(
+    FILES "${CMAKE_SOURCE_DIR}/python/infernux.py"
+    DESTINATION "python"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
     FILES
         "${CMAKE_SOURCE_DIR}/pyproject.toml"
         "${CMAKE_SOURCE_DIR}/setup.py"

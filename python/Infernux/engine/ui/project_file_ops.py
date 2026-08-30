@@ -26,11 +26,10 @@ from Infernux.engine.path_utils import (
 # ---------------------------------------------------------------------------
 
 SCRIPT_TEMPLATE = '''
-from Infernux import *
-from Infernux.components import *
+import infernux as inx
 
 
-class {class_name}(InxComponent):
+class {class_name}(inx.InxComponent):
     # Public fields (automatically serialized and shown in Inspector)
     # speed = 5.0       # float (use .0 for decimals)
     

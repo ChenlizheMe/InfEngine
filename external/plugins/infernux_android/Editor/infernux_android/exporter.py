@@ -644,6 +644,10 @@ def _stage_engine_python_package(
             "test",
         ),
     )
+    public_api = source_root / "python" / "infernux.py"
+    if not public_api.is_file():
+        raise ValueError(f"Infernux public Python API is missing: {public_api}")
+    shutil.copy2(public_api, site_packages / public_api.name)
 
     packaging_spec = importlib.util.find_spec("packaging")
     packaging_source = (

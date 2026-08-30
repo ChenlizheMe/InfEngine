@@ -46,6 +46,7 @@ launcher = ["PySide6>=6.5.0"]
 [tool.setuptools]
 packages = {find = {where = ["python"], exclude = ["test", "test.*", "*.test", "*.test.*", "*.tests", "*.tests.*", "*.__pycache__", "*.__pycache__.*"]}}
 package-dir = {"" = "python"}
+py-modules = ["infernux"]
 include-package-data = true
 
 [tool.setuptools.package-data]
