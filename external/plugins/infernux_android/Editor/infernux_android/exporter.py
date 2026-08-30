@@ -581,10 +581,12 @@ def _cook_player_content(
 ) -> tuple[str, str, str]:
     """Run the shared GUID-based Player cook and stage its native package."""
 
-    from Infernux.engine.build_settings import load_build_settings
-    from Infernux.engine.platform_content_cook import cook_platform_content
+    from Infernux.engine.platform_content_cook import (
+        build_settings_for_request,
+        cook_platform_content,
+    )
 
-    settings = load_build_settings(request.project_root)
+    settings = build_settings_for_request(request)
     sdl_orientations, android_orientation = _android_orientation_contract(
         request,
         settings,

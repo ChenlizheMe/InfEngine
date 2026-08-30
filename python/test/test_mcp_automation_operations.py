@@ -395,15 +395,31 @@ def test_player_build_is_available_without_global_validation(tmp_path):
         return {"output_dir": str(tmp_path / "Build"), "executable_exists": True}
 
     host.build_player = build_player
+    host.player_build_targets = lambda: {
+        "current_desktop_target": "windows-x64",
+        "targets": [{"id": "windows-x64"}, {"id": "android-arm64"}],
+    }
     EditorAutomationHost.set_provider(host)
     try:
         operations = {item.schema.id: item.handler for item in build_operations(str(tmp_path))}
+        targets = operations["infernux.player.targets"]()
         result = operations["infernux.player.build"](
-            game_name="BalanceBall", debug_mode=True
+            target="android-arm64",
+            game_name="BalanceBall",
+            debug_mode=True,
+            android_artifact="aab",
+            compress_resources=True,
         )
+        assert [item["id"] for item in targets["targets"]] == [
+            "windows-x64",
+            "android-arm64",
+        ]
         assert result["executable_exists"] is True
         assert received["project_root"] == str(tmp_path)
         assert received["game_name"] == "BalanceBall"
         assert received["debug_mode"] is True
+        assert received["target"] == "android-arm64"
+        assert received["android_artifact"] == "aab"
+        assert received["compress_resources"] is True
     finally:
         EditorAutomationHost.set_provider(None)

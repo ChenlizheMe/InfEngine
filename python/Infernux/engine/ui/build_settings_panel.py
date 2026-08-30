@@ -37,6 +37,7 @@ from Infernux.engine.build import (
     BuildRequest,
     BuildService,
     BuildUnavailableError,
+    build_progress_fraction,
     current_desktop_target,
     ensure_desktop_exporter_registered,
     exporter_registry,
@@ -72,36 +73,6 @@ _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
 _DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
 _ANDROID_ARTIFACTS = ["apk", "aab"]
-
-_PLATFORM_PROGRESS_RANGES = {
-    "doctor": (0.00, 0.03),
-    "plan": (0.03, 0.05),
-    "execute": (0.05, 0.06),
-    "prepare": (0.06, 0.14),
-    "python-runtime": (0.14, 0.24),
-    "analyze": (0.24, 0.32),
-    "cook": (0.32, 0.55),
-    "shaders": (0.55, 0.64),
-    "native": (0.64, 0.78),
-    "compile": (0.78, 0.92),
-    "desktop": (0.06, 0.96),
-    "package": (0.92, 0.96),
-    "audit": (0.96, 0.99),
-    "smoke": (0.99, 0.995),
-    "complete": (0.995, 1.00),
-}
-
-
-def platform_progress_fraction(progress) -> float:
-    start, end = _PLATFORM_PROGRESS_RANGES.get(
-        str(progress.phase), (0.05, 0.95)
-    )
-    if progress.total > 0:
-        local = max(0.0, min(1.0, progress.completed / progress.total))
-    else:
-        local = 0.0
-    return start + (end - start) * local
-
 
 # ---------------------------------------------------------------------------
 # Drag-drop type & style constants
@@ -1366,7 +1337,7 @@ class BuildSettingsPanel(EditorPanel):
         self._build_message = progress.message or "Building player..."
         self._build_progress = max(
             self._build_progress,
-            platform_progress_fraction(progress),
+            build_progress_fraction(progress),
         )
         from Infernux.engine.ui.engine_status import EngineStatus
 

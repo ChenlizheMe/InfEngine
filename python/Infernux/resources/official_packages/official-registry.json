@@ -11,8 +11,8 @@
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "artifact_sha256": "10921e09605674fdce870b68950e29b428d5839741122e5fc6c74f83dc3b25f2",
-      "artifact_size": 549248,
+      "artifact_sha256": "b98b27098a1250e05e68f0adec4a1f10dcab2df29fe4543d34852eec242f4679",
+      "artifact_size": 549568,
       "engine": ">=0.4,<0.5",
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
@@ -73,8 +73,8 @@
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
       },
       "artifact": "infernux.platform-android.inxpkg",
-      "artifact_sha256": "7c4ed8ac114f44d0856cb3b4d9653ff87c2d2c2cbf46402e7ea4a3ee8dee8ef0",
-      "artifact_size": 32768,
+      "artifact_sha256": "fe005177a2f1b128402679588e8bd8c8d4ec7f2f3c6374d81f3ad69e96610c10",
+      "artifact_size": 36608,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
       "repository": "",
@@ -109,8 +109,8 @@
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
       },
       "artifact": "infernux.platform-web.inxpkg",
-      "artifact_sha256": "62a7f75497ed752390d92ae058b8d09604b0a9e4a28e970b54ba71ff8814be48",
-      "artifact_size": 79040,
+      "artifact_sha256": "2be835b3d94a50265d8cc131b23089c54f7c53152c9b17827ae69551e8421ae4",
+      "artifact_size": 79936,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
       "repository": "",

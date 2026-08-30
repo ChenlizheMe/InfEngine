@@ -750,25 +750,73 @@ class EditorAutomationHost:
             return "object"
         return type(value).__name__
 
+    def player_build_targets(self) -> dict[str, object]:
+        """List targets currently owned by core and enabled platform plugins."""
+        from dataclasses import asdict
+
+        from Infernux.engine.build import (
+            current_desktop_target,
+            ensure_desktop_exporter_registered,
+            exporter_registry,
+        )
+
+        ensure_desktop_exporter_registered()
+        desktop = current_desktop_target()
+        def _capabilities(item) -> dict[str, object]:
+            result = asdict(item.capabilities)
+            result["features"] = sorted(result["features"])
+            return result
+
+        return {
+            "current_desktop_target": str(desktop.id) if desktop is not None else "",
+            "targets": [
+                {
+                    "id": str(item.id),
+                    "display_name": item.display_name,
+                    "platform": item.platform,
+                    "architecture": item.architecture,
+                    "capabilities": _capabilities(item),
+                }
+                for item in exporter_registry.targets()
+            ],
+        }
+
     def build_player(
         self,
         project_root: str,
         *,
+        target: str = "",
         output_dir: str = "",
         game_name: str = "",
         debug_mode: bool | None = None,
         lto: bool | None = None,
         enable_jit: bool | None = None,
+        android_artifact: str = "",
+        compress_resources: bool | None = None,
         persist_settings: bool = True,
     ) -> dict[str, object]:
-        """Build one Player from project Build Settings outside editor state."""
+        """Build one registered Player target through the shared build service."""
+        from dataclasses import replace
         import json
         import os
         import tempfile
-        import time
 
-        from Infernux.engine.game_builder import GameBuilder
+        from Infernux.engine.build import (
+            BuildConfiguration,
+            BuildProfile,
+            BuildRequest,
+            BuildService,
+            BuildUnavailableError,
+            build_progress_fraction,
+            current_desktop_target,
+            ensure_desktop_exporter_registered,
+            exporter_registry,
+        )
+        from Infernux.engine.interaction import normalize_build_settings
         from Infernux.engine.path_utils import resolved_path
+        from Infernux.engine.player_build_preflight import (
+            publish_player_asset_catalog_for_host,
+        )
 
         root = resolved_path(project_root)
         settings_path = os.path.join(root, "ProjectSettings", "BuildSettings.json")
@@ -782,58 +830,179 @@ class EditorAutomationHost:
             ) from exc
         if not isinstance(settings, dict):
             raise OperationError("player.build_settings", "Build Settings must be an object.")
+        try:
+            settings = normalize_build_settings(settings)
+        except (TypeError, ValueError) as exc:
+            raise OperationError("player.build_settings", str(exc)) from exc
 
         raw_output = str(output_dir or settings.get("output_dir", "") or "").strip()
         final_output = resolved_path(raw_output) if raw_output else ""
-        final_name = str(game_name or settings.get("game_name", "") or "").strip()
-        if not final_output or not final_name:
+        final_name = str(game_name or settings.get("game_name", "") or "").strip() or os.path.basename(root)
+        if not final_output:
             raise OperationError(
                 "player.build_settings",
-                "Player build requires output_dir and game_name.",
+                "Player build requires output_dir.",
             )
         final_debug = bool(settings.get("debug_mode", False)) if debug_mode is None else bool(debug_mode)
         final_lto = bool(settings.get("lto", True)) if lto is None else bool(lto)
         final_jit = bool(settings.get("enable_jit", False)) if enable_jit is None else bool(enable_jit)
-        progress: list[dict[str, object]] = []
-
-        def record(message: str, fraction: float) -> None:
-            entry = {"message": str(message), "progress": float(fraction)}
-            if progress and progress[-1] == entry:
-                return
-            if progress and progress[-1]["message"] == entry["message"]:
-                progress[-1] = entry
-            else:
-                progress.append(entry)
-            if len(progress) > 64:
-                del progress[:-64]
-
-        started = time.perf_counter()
-        builder = GameBuilder(
-            root,
-            final_output,
-            game_name=final_name,
-            icon_path=str(settings.get("icon_path", "") or "") or None,
-            display_mode=str(settings.get("display_mode", "windowed") or "windowed"),
-            window_width=int(settings.get("window_width", 1280)),
-            window_height=int(settings.get("window_height", 720)),
-            window_resizable=bool(settings.get("window_resizable", True)),
-            splash_items=list(settings.get("splash_items", []) or []),
-            debug_mode=final_debug,
-            lto=final_lto,
-            enable_jit=final_jit,
+        final_artifact = str(
+            android_artifact or settings.get("android_artifact", "apk") or "apk"
+        ).strip().casefold()
+        if final_artifact not in {"apk", "aab"}:
+            raise OperationError(
+                "player.build_settings",
+                "android_artifact must be apk or aab.",
+            )
+        ensure_desktop_exporter_registered()
+        desktop = current_desktop_target()
+        final_target = str(
+            target
+            or settings.get("build_target", "")
+            or (desktop.id if desktop is not None else "")
+        ).strip()
+        available_targets = exporter_registry.targets()
+        if not final_target or all(
+            item.id != final_target for item in available_targets
+        ):
+            raise OperationError(
+                "player.target_unavailable",
+                f"Player build target is not installed or enabled: {final_target or '<none>'}",
+                details={
+                    "requested_target": final_target,
+                    "available_targets": [
+                        {
+                            "id": str(item.id),
+                            "display_name": item.display_name,
+                            "platform": item.platform,
+                            "architecture": item.architecture,
+                        }
+                        for item in available_targets
+                    ],
+                },
+            )
+        final_compress = (
+            not final_debug
+            if compress_resources is None
+            else bool(compress_resources)
         )
-        result = resolved_path(builder.build(record))
+        settings.update(
+            {
+                "build_target": final_target,
+                "android_artifact": final_artifact,
+                "output_dir": final_output,
+                "game_name": final_name,
+                "debug_mode": final_debug,
+                "lto": final_lto,
+                "enable_jit": final_jit,
+            }
+        )
+        progress: list[dict[str, object]] = []
+        phase_counts: dict[str, int] = {}
+        omitted_verbose = 0
+        last_fraction = 0.0
 
-        if persist_settings:
-            settings.update(
+        def record(item) -> None:
+            nonlocal last_fraction, omitted_verbose
+            phase = str(item.phase)
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+            source = str(item.detail.get("source", "")).casefold()
+            if source in {"cmake", "gradle", "web-toolchain"}:
+                omitted_verbose += 1
+                return
+            last_fraction = max(last_fraction, build_progress_fraction(item))
+            progress.append(
                 {
-                    "output_dir": result,
-                    "game_name": final_name,
-                    "debug_mode": final_debug,
-                    "lto": final_lto,
-                    "enable_jit": final_jit,
+                    "phase": phase,
+                    "completed": item.completed,
+                    "total": item.total,
+                    "message": item.message,
+                    "progress": last_fraction,
+                    "detail": dict(item.detail),
                 }
             )
+            if len(progress) > 128:
+                del progress[:-128]
+
+        request = BuildRequest(
+            root,
+            final_target,
+            final_output,
+            BuildProfile(
+                configuration=(
+                    BuildConfiguration.DEVELOPMENT
+                    if final_debug
+                    else BuildConfiguration.RELEASE
+                ),
+                debug_symbols=final_debug,
+                compress_resources=final_compress,
+                options={
+                    "android_artifact": final_artifact,
+                    "build_settings": settings,
+                },
+            ),
+            progress=record,
+        )
+        service = BuildService(exporter_registry)
+        try:
+            plan = service.create_plan(request)
+            catalog = publish_player_asset_catalog_for_host(root)
+            request = replace(
+                request,
+                asset_catalog_entries=tuple(catalog["entries"]),
+            )
+            result = service.execute(request, plan)
+        except BuildUnavailableError as exc:
+            raise OperationError(
+                "player.target_unavailable",
+                "; ".join(item.message for item in exc.diagnostics),
+                details={
+                    "target": final_target,
+                    "diagnostics": [
+                        {
+                            "severity": item.severity.value,
+                            "code": item.code,
+                            "message": item.message,
+                            "source": item.source,
+                            "detail": dict(item.detail),
+                        }
+                        for item in exc.diagnostics
+                    ],
+                },
+            ) from exc
+        diagnostics = [
+            {
+                "severity": item.severity.value,
+                "code": item.code,
+                "message": item.message,
+                "source": item.source,
+                "detail": dict(item.detail),
+            }
+            for item in result.diagnostics
+        ]
+        artifacts = [
+            {
+                "path": item.path,
+                "kind": item.kind,
+                "sha256": item.sha256,
+                "size": item.size,
+            }
+            for item in result.artifacts
+        ]
+        if not result.success:
+            raise OperationError(
+                "player.build_failed",
+                "; ".join(item["message"] for item in diagnostics)
+                or "The platform exporter did not produce a Player artifact.",
+                details={
+                    "target": final_target,
+                    "diagnostics": diagnostics,
+                    "manifest": dict(result.manifest),
+                    "logs": list(result.logs[-100:]),
+                },
+            )
+
+        if persist_settings:
             os.makedirs(os.path.dirname(settings_path), exist_ok=True)
             descriptor, temporary_path = tempfile.mkstemp(
                 prefix=".build-settings-",
@@ -855,20 +1024,38 @@ class EditorAutomationHost:
                     pass
                 raise
 
-        executable = os.path.join(
-            result,
-            final_name + (".exe" if os.name == "nt" else ""),
+        is_desktop = desktop is not None and final_target == desktop.id
+        desktop_output = str(result.manifest.get("output_dir", final_output))
+        executable = (
+            os.path.join(
+                desktop_output,
+                final_name + (".exe" if os.name == "nt" else ""),
+            )
+            if is_desktop
+            else ""
         )
         return {
-            "output_dir": result,
+            "target": final_target,
+            "output_dir": final_output,
             "game_name": final_name,
             "executable_path": executable,
-            "executable_exists": os.path.isfile(executable),
+            "executable_exists": bool(executable and os.path.isfile(executable)),
             "debug_mode": final_debug,
             "lto": final_lto,
             "enable_jit": final_jit,
-            "elapsed_seconds": time.perf_counter() - started,
+            "compress_resources": final_compress,
+            "android_artifact": final_artifact,
+            "elapsed_seconds": result.elapsed_seconds,
+            "artifacts": artifacts,
+            "diagnostics": diagnostics,
+            "manifest": dict(result.manifest),
             "progress": progress,
+            "progress_summary": {
+                "event_count": sum(phase_counts.values()),
+                "retained_count": len(progress),
+                "omitted_verbose_count": omitted_verbose,
+                "phase_counts": dict(sorted(phase_counts.items())),
+            },
         }
 
     @staticmethod

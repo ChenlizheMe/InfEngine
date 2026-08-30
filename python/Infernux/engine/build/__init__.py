@@ -13,6 +13,7 @@ from .desktop_exporter import (
     current_desktop_target,
     ensure_desktop_exporter_registered,
 )
+from .progress import build_progress_fraction
 
 __all__ = [
     *_contract_exports,
@@ -22,6 +23,7 @@ __all__ = [
     "DesktopPlatformExporter",
     "ExporterRegistration",
     "build_service",
+    "build_progress_fraction",
     "current_desktop_target",
     "ensure_desktop_exporter_registered",
     "exporter_registry",

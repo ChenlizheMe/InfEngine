@@ -22,6 +22,13 @@ class PlatformContentCookResult:
     settings: Mapping[str, object]
 
 
+def build_settings_for_request(request: BuildRequest) -> dict[str, object]:
+    configured = request.profile.options.get("build_settings")
+    if isinstance(configured, Mapping):
+        return dict(configured)
+    return dict(load_build_settings(request.project_root))
+
+
 def cook_platform_content(
     request: BuildRequest,
     output_root: str | Path,
@@ -30,7 +37,7 @@ def cook_platform_content(
 ) -> PlatformContentCookResult:
     """Cook one immutable Player content closure for a native platform host."""
 
-    settings = load_build_settings(request.project_root)
+    settings = build_settings_for_request(request)
     game_name = str(settings.get("game_name", "")).strip() or Path(
         resolved_path(request.project_root)
     ).name
@@ -81,4 +88,8 @@ def cook_platform_content(
     return PlatformContentCookResult(game_name, cooked, dict(settings))
 
 
-__all__ = ["PlatformContentCookResult", "cook_platform_content"]
+__all__ = [
+    "PlatformContentCookResult",
+    "build_settings_for_request",
+    "cook_platform_content",
+]

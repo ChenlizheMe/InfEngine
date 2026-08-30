@@ -64,7 +64,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
     try:
         state = register_gateways(mcp, str(tmp_path), {})
 
-        assert state["operation_count"] == 81
+        assert state["operation_count"] == 82
         assert state["gateway_count"] == 14
         assert 0.0 < state["registration_ms"] < 5000.0
         assert 0 < state["compact_schema_bytes"] < 128 * 1024
@@ -101,7 +101,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
             "capabilities",
             "cost",
         }
-        assert len(documents) == 81
+        assert len(documents) == 82
         assert all(required <= set(document) for document in documents)
         operation_ids = {document["id"] for document in documents}
         assert {
@@ -126,6 +126,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
             "infernux.ui.semantic.snapshot",
             "infernux.capture.request",
             "infernux.player.validation.launch",
+            "infernux.player.targets",
             "infernux.docs.search",
             "infernux.console.read",
         } <= operation_ids

@@ -325,7 +325,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    assert capabilities_result["data"]["operation_count"] == 81
+    assert capabilities_result["data"]["operation_count"] == 82
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()
