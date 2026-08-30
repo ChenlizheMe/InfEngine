@@ -107,5 +107,32 @@ foreach(_bootstrap_source_file IN LISTS _bootstrap_source_files)
     endif()
 endforeach()
 
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    find_program(_infernux_readelf NAMES readelf llvm-readelf REQUIRED)
+    file(GLOB _linux_binding_modules
+        "${_verify_root}/Infernux/lib/_Infernux*.so"
+    )
+    foreach(_linux_binding_module IN LISTS _linux_binding_modules)
+        execute_process(
+            COMMAND "${_infernux_readelf}" -d "${_linux_binding_module}"
+            RESULT_VARIABLE _readelf_result
+            OUTPUT_VARIABLE _dynamic_section
+            ERROR_VARIABLE _readelf_error
+        )
+        if(NOT _readelf_result EQUAL 0)
+            message(FATAL_ERROR
+                "Unable to inspect Linux wheel module ${_linux_binding_module}: "
+                "${_readelf_error}"
+            )
+        endif()
+        if(_dynamic_section MATCHES "Shared library: \\[libpython[^]]+\\]")
+            message(FATAL_ERROR
+                "Linux wheel module has a direct libpython dependency and will "
+                "not relocate into an ordinary venv: ${_linux_binding_module}"
+            )
+        endif()
+    endforeach()
+endif()
+
 file(REMOVE_RECURSE "${_verify_root}")
 message(STATUS "Verified native payload for ${_wheel}")

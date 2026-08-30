@@ -108,7 +108,12 @@ target_link_libraries(InfernuxRuntime PUBLIC
 if(INFERNUX_USE_TARGET_PYTHON)
     target_link_libraries(InfernuxRuntime PRIVATE pybind11::headers InfernuxTargetPython)
 else()
-    target_link_libraries(InfernuxRuntime PRIVATE pybind11::embed)
+    # InfernuxRuntime is ultimately loaded through the _Infernux extension.
+    # Python3::Module links the import library where a platform requires it
+    # (Windows), but deliberately leaves Python symbols for the interpreter on
+    # ELF platforms. pybind11::embed would add a DT_NEEDED libpython entry to
+    # the wheel and make an otherwise valid venv depend on its creator prefix.
+    target_link_libraries(InfernuxRuntime PRIVATE pybind11::headers Python3::Module)
 endif()
 target_link_libraries(_Infernux PRIVATE InfernuxRuntime)
 target_link_libraries(_InfernuxBootstrap PRIVATE InfernuxFoundation)

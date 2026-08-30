@@ -71,13 +71,27 @@ def test_clang_format_is_an_explicit_developer_target_dependency() -> None:
     assert 'COMMAND "${CMAKE_COMMAND}" -E false' in module
 
 
-def test_linux_wheel_native_modules_resolve_environment_libpython() -> None:
+def test_linux_wheel_native_modules_are_relocatable_across_virtual_environments() -> None:
+    native_targets = (ROOT / "cmake/InfernuxNativeTargets.cmake").read_text(
+        encoding="utf-8"
+    )
     installer = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+    verifier = (ROOT / "cmake/verify_python_wheel.cmake").read_text(
+        encoding="utf-8"
+    )
     linux_block = installer.split("    # Linux: copy shared libraries (.so) and set RPATH", 1)[1]
     linux_block = linux_block.split("# ------------------------------------------------------------------------------", 1)[0]
 
-    assert 'set(_infernux_linux_python_rpath "$ORIGIN;$ORIGIN/../../../..")' in linux_block
+    assert "pybind11::headers Python3::Module" in native_targets
+    assert (
+        "target_link_libraries(InfernuxRuntime PRIVATE pybind11::embed)"
+        not in native_targets
+    )
+    assert 'set(_infernux_linux_rpath "$ORIGIN")' in linux_block
+    assert "$ORIGIN/../../../.." not in linux_block
     for target in ("_Infernux", "_InfernuxBootstrap"):
         block = linux_block.split(f"set_target_properties({target} PROPERTIES", 1)[1]
         block = block.split(")", 1)[0]
-        assert 'INSTALL_RPATH "${_infernux_linux_python_rpath}"' in block
+        assert 'INSTALL_RPATH "${_infernux_linux_rpath}"' in block
+    assert "readelf" in verifier
+    assert "direct libpython dependency" in verifier
