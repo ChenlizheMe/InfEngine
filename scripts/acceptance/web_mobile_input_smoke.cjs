@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
+const { PNG } = require("pngjs");
 
 function resolveBrowserExecutable() {
   if (process.env.INFERNUX_WEB_BROWSER) {
@@ -48,6 +49,59 @@ async function activateCanvas(page, canvasBox, cdpEndpoint) {
   } finally {
     await session.detach();
   }
+}
+
+async function measureCanvasFrame(canvas) {
+  const image = PNG.sync.read(await canvas.screenshot({ animations: "disabled" }));
+  const stride = Math.max(1, Math.ceil(Math.sqrt(image.width * image.height / 65536)));
+  let count = 0;
+  let luminanceSum = 0;
+  let luminanceSquareSum = 0;
+  let nonBlack = 0;
+  let opaque = 0;
+  let upperLuminance = 0;
+  let lowerLuminance = 0;
+  let upperCount = 0;
+  let lowerCount = 0;
+  const quantizedColors = new Set();
+  for (let y = 0; y < image.height; y += stride) {
+    for (let x = 0; x < image.width; x += stride) {
+      const index = (y * image.width + x) * 4;
+      const red = image.data[index] / 255;
+      const green = image.data[index + 1] / 255;
+      const blue = image.data[index + 2] / 255;
+      const alpha = image.data[index + 3] / 255;
+      const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      count += 1;
+      luminanceSum += luminance;
+      luminanceSquareSum += luminance * luminance;
+      if (luminance > 2 / 255) nonBlack += 1;
+      if (alpha > 0.99) opaque += 1;
+      if (y < image.height / 3) {
+        upperLuminance += luminance;
+        upperCount += 1;
+      }
+      if (y >= image.height * 2 / 3) {
+        lowerLuminance += luminance;
+        lowerCount += 1;
+      }
+      quantizedColors.add(
+        `${image.data[index] >> 4}:${image.data[index + 1] >> 4}:${image.data[index + 2] >> 4}`,
+      );
+    }
+  }
+  const mean = luminanceSum / count;
+  return {
+    width: image.width,
+    height: image.height,
+    meanLuminance: mean,
+    luminanceDeviation: Math.sqrt(Math.max(0, luminanceSquareSum / count - mean * mean)),
+    nonBlackRatio: nonBlack / count,
+    opaqueRatio: opaque / count,
+    upperMeanLuminance: upperLuminance / Math.max(1, upperCount),
+    lowerMeanLuminance: lowerLuminance / Math.max(1, lowerCount),
+    quantizedColorCount: quantizedColors.size,
+  };
 }
 
 async function main() {
@@ -149,6 +203,8 @@ async function main() {
     const canvasBox = await canvas.boundingBox();
     if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
     const stateBeforeActivation = await canvas.getAttribute("data-infernux-state");
+    await page.waitForTimeout(250);
+    const frameBeforeActivation = await measureCanvasFrame(canvas);
     if (stateBeforeActivation !== "ready") {
       await activateCanvas(page, canvasBox, cdpEndpoint);
     }
@@ -157,6 +213,8 @@ async function main() {
       null,
       { timeout: 30000 },
     );
+    await page.waitForTimeout(250);
+    const frameAfterActivation = await measureCanvasFrame(canvas);
     await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
       const pointer = (type, pointerId, x, y, primary) => {
@@ -197,6 +255,7 @@ async function main() {
       Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [1]);
     });
     await page.waitForTimeout(1000);
+    const frameAfterInput = await measureCanvasFrame(canvas);
     const result = await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
       const diagnostics = JSON.parse(canvas.dataset.infernuxDiagnostics || "[]");
@@ -234,6 +293,20 @@ async function main() {
         diagnosticTail: diagnostics.slice(-80),
       };
     });
+    result.frameBeforeActivation = frameBeforeActivation;
+    result.frameAfterActivation = frameAfterActivation;
+    result.frameAfterInput = frameAfterInput;
+    const frameIsVisible = (frame) => (
+      frame.nonBlackRatio >= 0.1 &&
+      frame.luminanceDeviation >= 0.01 &&
+      frame.quantizedColorCount >= 8
+    );
+    const inputPreservedFrame = (
+      frameAfterInput.meanLuminance >= Math.max(
+        0.01,
+        frameAfterActivation.meanLuminance * 0.05,
+      )
+    );
     if (pageErrors.length || consoleErrors.length || result.unhandledErrors.length ||
         !result.pythonReady || !result.nativeModuleReady || !result.sceneReady ||
         !result.sceneRenderReady || !result.firstFrameReady || !result.runtimeActive ||
@@ -241,7 +314,9 @@ async function main() {
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
-        !result.pageHide || !result.pageShow) {
+        !result.pageHide || !result.pageShow ||
+        !frameIsVisible(frameAfterActivation) || !frameIsVisible(frameAfterInput) ||
+        !inputPreservedFrame) {
       throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));
     }
     delete result.diagnosticTail;

@@ -10,6 +10,7 @@
     "web-mobile-input": "node web_mobile_input_smoke.cjs"
   },
   "devDependencies": {
-    "playwright": "1.62.1"
+    "playwright": "1.62.1",
+    "pngjs": "7.0.0"
   }
 }

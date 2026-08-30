@@ -70,3 +70,16 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert "chromium.connectOverCDP" in smoke
     assert 'session.send("Input.dispatchTouchEvent"' in smoke
     assert '["awaiting-user-activation", "ready"]' in smoke
+
+
+def test_web_smoke_rejects_black_or_flat_frames_after_input():
+    acceptance = ROOT / "scripts" / "acceptance"
+    smoke = (acceptance / "web_mobile_input_smoke.cjs").read_text(encoding="utf-8")
+    package = (acceptance / "package.json").read_text(encoding="utf-8")
+
+    assert 'const { PNG } = require("pngjs")' in smoke
+    assert "frameAfterActivation" in smoke
+    assert "frameAfterInput" in smoke
+    assert "frameIsVisible" in smoke
+    assert "inputPreservedFrame" in smoke
+    assert '"pngjs": "7.0.0"' in package
