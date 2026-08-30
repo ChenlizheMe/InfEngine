@@ -8,7 +8,14 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+namespace infernux
+{
+class TextureUploadStagingTicket;
+struct TextureCpuData;
+} // namespace infernux
 
 namespace infernux::web
 {
@@ -45,6 +52,7 @@ class WebSceneRenderer final
     {
         float position[3];
         float normal[3];
+        float uv[2];
         float color[4];
         float emission[4];
         // x = metallic, y = smoothness, z = occlusion, w = specular highlights.
@@ -61,6 +69,22 @@ class WebSceneRenderer final
         bool transparent = false;
         bool castsShadows = true;
         bool line = false;
+        wgpu::BindGroup materialTextureGroup;
+    };
+
+    struct GPUTexture
+    {
+        wgpu::Texture texture;
+        wgpu::TextureView view;
+        wgpu::Sampler sampler;
+        wgpu::BindGroup group;
+    };
+
+    struct MaterialTextureState
+    {
+        std::shared_ptr<TextureUploadStagingTicket> ticket;
+        GPUTexture gpu;
+        bool failed = false;
     };
 
     struct alignas(16) CameraData
@@ -94,6 +118,9 @@ class WebSceneRenderer final
 
     bool CreatePipelines();
     bool CreateShadowResources();
+    bool CreateMaterialTextureResources();
+    [[nodiscard]] wgpu::BindGroup ResolveMaterialTexture(const std::string &guid);
+    [[nodiscard]] GPUTexture UploadMaterialTexture(const TextureCpuData &texture);
     bool EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required, wgpu::BufferUsage usage);
     bool BuildFrame(uint32_t width, uint32_t height);
     void ReportFrameIssue(const char *issue);
@@ -109,6 +136,10 @@ class WebSceneRenderer final
     wgpu::BindGroup m_cameraGroup;
     wgpu::BindGroupLayout m_shadowCameraLayout;
     wgpu::BindGroup m_shadowCameraGroup;
+    wgpu::BindGroupLayout m_materialTextureLayout;
+    GPUTexture m_whiteTexture;
+    GPUTexture m_blackTexture;
+    std::unordered_map<std::string, MaterialTextureState> m_materialTextures;
     wgpu::Buffer m_cameraBuffer;
     wgpu::Buffer m_vertexBuffer;
     wgpu::Buffer m_indexBuffer;

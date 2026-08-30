@@ -1,7 +1,9 @@
 #include "WebSceneRenderer.h"
 
 #include <core/types/ColorSpace.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxTexture/InxTexture.h>
 #include <function/scene/Camera.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Light.h>
@@ -61,10 +63,11 @@ struct CameraData {
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) emission: vec4<f32>,
-    @location(4) material: vec4<f32>,
-    @location(5) surface: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) emission: vec4<f32>,
+    @location(5) material: vec4<f32>,
+    @location(6) surface: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -76,7 +79,11 @@ struct VertexOutput {
     @location(4) emission: vec4<f32>,
     @location(5) material: vec4<f32>,
     @location(6) surface: vec4<f32>,
+    @location(7) uv: vec2<f32>,
 };
+
+@group(1) @binding(0) var material_sampler: sampler;
+@group(1) @binding(1) var material_base_color: texture_2d<f32>;
 
 @vertex
 fn vertex_main(input: VertexInput) -> VertexOutput {
@@ -89,6 +96,7 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
     output.emission = input.emission;
     output.material = input.material;
     output.surface = input.surface;
+    output.uv = input.uv;
     return output;
 }
 
@@ -277,7 +285,9 @@ fn sample_shadow(position: vec4<f32>, normal: vec3<f32>) -> f32 {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(input.normal);
-    if (input.surface.w >= 0.0 && input.color.a < input.surface.w) {
+    let sampled_color = textureSample(material_base_color, material_sampler, input.uv);
+    let surface_color = input.color * sampled_color;
+    if (input.surface.w >= 0.0 && surface_color.a < input.surface.w) {
         discard;
     }
     var perceptual_roughness = clamp(1.0 - input.material.y, 0.045, 1.0);
@@ -287,7 +297,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     roughness = geometric_specular_aa(normal, roughness);
     perceptual_roughness = max(perceptual_roughness, sqrt(roughness));
     if (input.surface.x > 0.5 && input.surface.x < 1.5) {
-        return vec4<f32>(input.color.rgb + input.emission.rgb * input.emission.a, input.color.a);
+        return vec4<f32>(surface_color.rgb + input.emission.rgb * input.emission.a, surface_color.a);
     }
     let view_direction = normalize(camera.camera_position.xyz - input.world_position);
     if (input.surface.x >= 1.5) {
@@ -295,7 +305,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let shadow = sample_shadow(input.shadow_position, normal);
         let radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
         var direct = evaluate_toon_light(
-            normal, view_direction, toward_light, radiance, input.color.rgb,
+            normal, view_direction, toward_light, radiance, surface_color.rgb,
             clamp(input.surface.y, 0.0, 1.0), clamp(input.surface.z, 0.0, 0.25),
             input.material.y, input.material.w) * shadow;
         for (var light_index = 0u; light_index < camera.light_counts.x; light_index = light_index + 1u) {
@@ -316,19 +326,19 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
             direct += evaluate_toon_light(
                 normal, view_direction, local_direction,
                 light.color_intensity.rgb * light.color_intensity.w * attenuation,
-                input.color.rgb, clamp(input.surface.y, 0.0, 1.0),
+                surface_color.rgb, clamp(input.surface.y, 0.0, 1.0),
                 clamp(input.surface.z, 0.0, 0.25), input.material.y, input.material.w);
         }
-        let ambient = sample_ambient_irradiance(normal) * input.color.rgb
+        let ambient = sample_ambient_irradiance(normal) * surface_color.rgb
                       * clamp(input.material.z, 0.0, 1.0) * 0.65;
         return vec4<f32>(ambient + direct + input.emission.rgb * input.emission.a,
-                         input.color.a);
+                         surface_color.a);
     }
     let ndotv = max(dot(normal, view_direction), 0.0);
     let metallic = clamp(input.material.x, 0.0, 1.0);
     let occlusion = clamp(input.material.z, 0.0, 1.0);
     let specular_highlights = clamp(input.material.w, 0.0, 1.0);
-    let f0 = mix(vec3<f32>(0.04), input.color.rgb, vec3<f32>(metallic));
+    let f0 = mix(vec3<f32>(0.04), surface_color.rgb, vec3<f32>(metallic));
     let f90 = clamp(50.0 * dot(f0, vec3<f32>(0.33333)), 0.0, 1.0);
     let env_brdf = env_brdf_approx(perceptual_roughness, ndotv);
     let reflectivity = env_brdf.x + env_brdf.y;
@@ -336,7 +346,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let toward_light = normalize(camera.light_direction_strength.xyz);
     let shadow = sample_shadow(input.shadow_position, normal);
     let radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
-    var direct = evaluate_pbr_light(normal, view_direction, toward_light, radiance, input.color.rgb,
+    var direct = evaluate_pbr_light(normal, view_direction, toward_light, radiance, surface_color.rgb,
                                     metallic, perceptual_roughness, roughness, f0, f90,
                                     energy_compensation, specular_highlights) * shadow;
 
@@ -357,7 +367,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let attenuation = punctual_attenuation(distance_to_light, light.position_range.w) * cone;
         let local_radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation;
         direct += evaluate_pbr_light(normal, view_direction, local_direction, local_radiance,
-                                     input.color.rgb, metallic, perceptual_roughness, roughness, f0, f90,
+                                     surface_color.rgb, metallic, perceptual_roughness, roughness, f0, f90,
                                      energy_compensation, specular_highlights);
     }
     let diffuse_irradiance = sample_ambient_irradiance(normal);
@@ -367,7 +377,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
                                   sample_ambient_irradiance(reflection_direction), prefilter);
     let environment_fresnel = fresnel_schlick_roughness(f0, f90, ndotv, perceptual_roughness);
     let diffuse_weight = (vec3<f32>(1.0) - environment_fresnel) * (1.0 - metallic);
-    let ambient_diffuse = diffuse_weight * input.color.rgb * diffuse_irradiance * occlusion;
+    let ambient_diffuse = diffuse_weight * surface_color.rgb * diffuse_irradiance * occlusion;
     let ambient_specular = specular_irradiance * (f0 * env_brdf.x + vec3<f32>(env_brdf.y))
                            * energy_compensation
                            * specular_occlusion(ndotv, occlusion, perceptual_roughness)
@@ -375,7 +385,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
                            * specular_highlights;
     let emission = input.emission.rgb * input.emission.a;
     return vec4<f32>(ambient_diffuse + ambient_specular + direct + emission,
-                     input.color.a);
+                     surface_color.a);
 }
 )wgsl";
 
@@ -495,6 +505,40 @@ glm::vec4 MaterialVector(const std::shared_ptr<InxMaterial> &material, const cha
     return fallback;
 }
 
+std::string MaterialBaseColorTexture(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return "white";
+    constexpr std::array<const char *, 5> names = {"baseColorTexture", "albedoMap", "albedoTexture", "mainTexture",
+                                                   "texSampler"};
+    for (const char *name : names) {
+        const MaterialProperty *property = material->GetProperty(name);
+        if (!property || property->type != MaterialPropertyType::Texture2D)
+            continue;
+        if (const auto *guid = std::get_if<std::string>(&property->value); guid && !guid->empty())
+            return *guid;
+    }
+    return "white";
+}
+
+wgpu::TextureFormat ToWebTextureFormat(TextureFormat format)
+{
+    switch (format) {
+    case TextureFormat::Rgba8UNorm:
+        return wgpu::TextureFormat::RGBA8Unorm;
+    case TextureFormat::Rgba8Srgb:
+        return wgpu::TextureFormat::RGBA8UnormSrgb;
+    case TextureFormat::Rgba16UNorm:
+        return wgpu::TextureFormat::RGBA16Unorm;
+    case TextureFormat::Rgba16Float:
+        return wgpu::TextureFormat::RGBA16Float;
+    case TextureFormat::Rgba32Float:
+        return wgpu::TextureFormat::RGBA32Float;
+    default:
+        return wgpu::TextureFormat::Undefined;
+    }
+}
+
 bool MaterialIsUnlit(const std::shared_ptr<InxMaterial> &material)
 {
     if (!material)
@@ -590,7 +634,7 @@ bool WebSceneRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::
     cameraLayoutDescriptor.entries = cameraEntries.data();
     m_cameraLayout = m_device.CreateBindGroupLayout(&cameraLayoutDescriptor);
 
-    if (!m_cameraLayout || !CreateShadowResources())
+    if (!m_cameraLayout || !CreateShadowResources() || !CreateMaterialTextureResources())
         return false;
 
     std::array<wgpu::BindGroupEntry, 3> cameraBindings{};
@@ -651,6 +695,126 @@ bool WebSceneRenderer::CreateShadowResources()
     return m_shadowView && m_shadowSampler;
 }
 
+bool WebSceneRenderer::CreateMaterialTextureResources()
+{
+    std::array<wgpu::BindGroupLayoutEntry, 2> entries{};
+    entries[0].binding = 0;
+    entries[0].visibility = wgpu::ShaderStage::Fragment;
+    entries[0].sampler.type = wgpu::SamplerBindingType::Filtering;
+    entries[1].binding = 1;
+    entries[1].visibility = wgpu::ShaderStage::Fragment;
+    entries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+    entries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    wgpu::BindGroupLayoutDescriptor layoutDescriptor;
+    layoutDescriptor.entryCount = entries.size();
+    layoutDescriptor.entries = entries.data();
+    m_materialTextureLayout = m_device.CreateBindGroupLayout(&layoutDescriptor);
+    if (!m_materialTextureLayout)
+        return false;
+
+    const auto createSolid = [this](const std::array<uint8_t, 4> &pixel) {
+        TextureCpuData data;
+        data.dimension = TextureDimension::Texture2D;
+        data.semantic = TextureSemantic::Color;
+        data.format = TextureFormat::Rgba8Srgb;
+        data.mipLevels.push_back(TextureMipLevel{1, 1, 1, 0, 4, 4, 4});
+        data.bytes.assign(pixel.begin(), pixel.end());
+        return UploadMaterialTexture(data);
+    };
+    m_whiteTexture = createSolid({255, 255, 255, 255});
+    m_blackTexture = createSolid({0, 0, 0, 255});
+    return m_whiteTexture.group && m_blackTexture.group;
+}
+
+WebSceneRenderer::GPUTexture WebSceneRenderer::UploadMaterialTexture(const TextureCpuData &texture)
+{
+    GPUTexture gpu;
+    if (!m_device || !m_queue || texture.dimension != TextureDimension::Texture2D || !texture.IsValid())
+        return gpu;
+    const wgpu::TextureFormat format = ToWebTextureFormat(texture.format);
+    const TextureMipLevel &mip = texture.mipLevels.front();
+    if (format == wgpu::TextureFormat::Undefined || mip.width == 0 || mip.height == 0 || mip.depth != 1 ||
+        mip.byteOffset > texture.bytes.size() || mip.byteSize > texture.bytes.size() - mip.byteOffset ||
+        mip.rowPitch > std::numeric_limits<uint32_t>::max())
+        return gpu;
+
+    wgpu::TextureDescriptor descriptor;
+    descriptor.dimension = wgpu::TextureDimension::e2D;
+    descriptor.size = {mip.width, mip.height, 1};
+    descriptor.format = format;
+    descriptor.mipLevelCount = 1;
+    descriptor.sampleCount = 1;
+    descriptor.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding;
+    gpu.texture = m_device.CreateTexture(&descriptor);
+    gpu.view = gpu.texture ? gpu.texture.CreateView() : wgpu::TextureView{};
+    wgpu::SamplerDescriptor samplerDescriptor;
+    samplerDescriptor.addressModeU = wgpu::AddressMode::Repeat;
+    samplerDescriptor.addressModeV = wgpu::AddressMode::Repeat;
+    samplerDescriptor.minFilter = wgpu::FilterMode::Linear;
+    samplerDescriptor.magFilter = wgpu::FilterMode::Linear;
+    gpu.sampler = m_device.CreateSampler(&samplerDescriptor);
+    if (!gpu.texture || !gpu.view || !gpu.sampler)
+        return {};
+
+    wgpu::TexelCopyTextureInfo destination;
+    destination.texture = gpu.texture;
+    wgpu::TexelCopyBufferLayout layout;
+    layout.bytesPerRow = static_cast<uint32_t>(mip.rowPitch);
+    layout.rowsPerImage = mip.height;
+    const wgpu::Extent3D extent{mip.width, mip.height, 1};
+    m_queue.WriteTexture(&destination, texture.bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize),
+                         &layout, &extent);
+    std::array<wgpu::BindGroupEntry, 2> entries{};
+    entries[0].binding = 0;
+    entries[0].sampler = gpu.sampler;
+    entries[1].binding = 1;
+    entries[1].textureView = gpu.view;
+    wgpu::BindGroupDescriptor groupDescriptor;
+    groupDescriptor.layout = m_materialTextureLayout;
+    groupDescriptor.entryCount = entries.size();
+    groupDescriptor.entries = entries.data();
+    gpu.group = m_device.CreateBindGroup(&groupDescriptor);
+    return gpu;
+}
+
+wgpu::BindGroup WebSceneRenderer::ResolveMaterialTexture(const std::string &guid)
+{
+    if (guid.empty() || guid == "white" || guid == "normal")
+        return m_whiteTexture.group;
+    if (guid == "black")
+        return m_blackTexture.group;
+    MaterialTextureState &state = m_materialTextures[guid];
+    if (state.gpu.group)
+        return state.gpu.group;
+    if (state.failed)
+        return m_whiteTexture.group;
+
+    AssetRegistry &registry = AssetRegistry::Instance();
+    if (!state.ticket) {
+        const auto texture = registry.LoadAsset<InxTexture>(guid, ResourceType::Texture);
+        if (!texture) {
+            state.failed = true;
+            std::fprintf(stderr, "INFERNUX_WEB_MATERIAL_TEXTURE_FAILED guid=%s reason=asset-load\n", guid.c_str());
+            return m_whiteTexture.group;
+        }
+        state.ticket = registry.BeginTextureUploadStaging(guid);
+    }
+    const auto staging = registry.TryConsumeTextureUploadStaging(state.ticket);
+    if (!staging)
+        return m_whiteTexture.group;
+    state.gpu = UploadMaterialTexture(*staging);
+    state.ticket.reset();
+    if (!state.gpu.group) {
+        state.failed = true;
+        std::fprintf(stderr, "INFERNUX_WEB_MATERIAL_TEXTURE_FAILED guid=%s format=%s\n", guid.c_str(),
+                     TextureFormatName(staging->format));
+        return m_whiteTexture.group;
+    }
+    std::printf("INFERNUX_WEB_MATERIAL_TEXTURE_READY guid=%s width=%u height=%u\n", guid.c_str(),
+                staging->mipLevels.front().width, staging->mipLevels.front().height);
+    return state.gpu.group;
+}
+
 bool WebSceneRenderer::CreatePipelines()
 {
     wgpu::ShaderSourceWGSL shaderSource;
@@ -661,25 +825,28 @@ bool WebSceneRenderer::CreatePipelines()
     if (!shader)
         return false;
 
-    std::array<wgpu::VertexAttribute, 6> attributes{};
+    std::array<wgpu::VertexAttribute, 7> attributes{};
     attributes[0].format = wgpu::VertexFormat::Float32x3;
     attributes[0].offset = offsetof(WebVertex, position);
     attributes[0].shaderLocation = 0;
     attributes[1].format = wgpu::VertexFormat::Float32x3;
     attributes[1].offset = offsetof(WebVertex, normal);
     attributes[1].shaderLocation = 1;
-    attributes[2].format = wgpu::VertexFormat::Float32x4;
-    attributes[2].offset = offsetof(WebVertex, color);
+    attributes[2].format = wgpu::VertexFormat::Float32x2;
+    attributes[2].offset = offsetof(WebVertex, uv);
     attributes[2].shaderLocation = 2;
     attributes[3].format = wgpu::VertexFormat::Float32x4;
-    attributes[3].offset = offsetof(WebVertex, emission);
+    attributes[3].offset = offsetof(WebVertex, color);
     attributes[3].shaderLocation = 3;
     attributes[4].format = wgpu::VertexFormat::Float32x4;
-    attributes[4].offset = offsetof(WebVertex, material);
+    attributes[4].offset = offsetof(WebVertex, emission);
     attributes[4].shaderLocation = 4;
     attributes[5].format = wgpu::VertexFormat::Float32x4;
-    attributes[5].offset = offsetof(WebVertex, surface);
+    attributes[5].offset = offsetof(WebVertex, material);
     attributes[5].shaderLocation = 5;
+    attributes[6].format = wgpu::VertexFormat::Float32x4;
+    attributes[6].offset = offsetof(WebVertex, surface);
+    attributes[6].shaderLocation = 6;
     wgpu::VertexBufferLayout vertexLayout;
     vertexLayout.arrayStride = sizeof(WebVertex);
     vertexLayout.stepMode = wgpu::VertexStepMode::Vertex;
@@ -701,8 +868,9 @@ bool WebSceneRenderer::CreatePipelines()
     depth.depthCompare = wgpu::CompareFunction::LessEqual;
 
     wgpu::PipelineLayoutDescriptor pipelineLayoutDescriptor;
-    pipelineLayoutDescriptor.bindGroupLayoutCount = 1;
-    pipelineLayoutDescriptor.bindGroupLayouts = &m_cameraLayout;
+    const std::array<wgpu::BindGroupLayout, 2> sceneLayouts = {m_cameraLayout, m_materialTextureLayout};
+    pipelineLayoutDescriptor.bindGroupLayoutCount = sceneLayouts.size();
+    pipelineLayoutDescriptor.bindGroupLayouts = sceneLayouts.data();
 
     wgpu::RenderPipelineDescriptor pipelineDescriptor;
     pipelineDescriptor.layout = m_device.CreatePipelineLayout(&pipelineLayoutDescriptor);
@@ -900,13 +1068,12 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
         if (draw.material && draw.material->GetRenderState().alphaClipEnabled)
             alphaClipThreshold = std::clamp(draw.material->GetRenderState().alphaClipThreshold, 0.0f, 1.0f);
         const glm::vec4 surfaceParameters(
-            shadingModel,
-            std::clamp(MaterialFloat(draw.material, "diffuseThreshold", 0.45f), 0.0f, 1.0f),
-            std::clamp(MaterialFloat(draw.material, "bandSoftness", 0.04f), 0.0f, 0.25f),
-            alphaClipThreshold);
+            shadingModel, std::clamp(MaterialFloat(draw.material, "diffuseThreshold", 0.45f), 0.0f, 1.0f),
+            std::clamp(MaterialFloat(draw.material, "bandSoftness", 0.04f), 0.0f, 0.25f), alphaClipThreshold);
         WebDrawRange range;
         range.firstIndex = static_cast<uint32_t>(m_indices.size());
         range.castsShadows = draw.castsShadows;
+        range.materialTextureGroup = ResolveMaterialTexture(MaterialBaseColorTexture(draw.material));
         if (draw.material) {
             const RenderState &state = draw.material->GetRenderState();
             range.transparent = state.blendEnable || state.renderQueue >= 3000 || materialColor.a < 0.999f;
@@ -972,6 +1139,7 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             WebVertex vertex{};
             std::memcpy(vertex.position, &worldPosition, sizeof(vertex.position));
             std::memcpy(vertex.normal, &worldNormalValue, sizeof(vertex.normal));
+            std::memcpy(vertex.uv, &source.texCoord, sizeof(vertex.uv));
             std::memcpy(vertex.color, &color, sizeof(vertex.color));
             std::memcpy(vertex.emission, &emission, sizeof(vertex.emission));
             std::memcpy(vertex.material, &materialParameters, sizeof(vertex.material));
@@ -1168,6 +1336,7 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
     if (m_drawSky && m_skyPipeline) {
         pass.SetPipeline(m_skyPipeline);
         pass.SetBindGroup(0, m_cameraGroup);
+        pass.SetBindGroup(1, m_whiteTexture.group);
         pass.Draw(3, 1, 0, 0);
     }
 
@@ -1185,6 +1354,7 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
         }
         transparentCount += range.transparent ? 1u : 0u;
         lineCount += range.line ? 1u : 0u;
+        pass.SetBindGroup(1, range.materialTextureGroup ? range.materialTextureGroup : m_whiteTexture.group);
         pass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
     }
     if (!m_reportedFirstFrame) {
