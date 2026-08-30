@@ -8,6 +8,7 @@ from collections import Counter
 import importlib
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -29,6 +30,23 @@ EXPORTERS = {
 }
 
 
+def _desktop_target_for_host() -> str | None:
+    machine = platform.machine().strip().casefold()
+    if machine not in {"amd64", "x86_64"}:
+        return None
+    if sys.platform == "win32":
+        return "windows-x64"
+    if sys.platform.startswith("linux"):
+        return "linux-x64"
+    return None
+
+
+DESKTOP_TARGET = _desktop_target_for_host()
+SUPPORTED_TARGETS = tuple(
+    sorted((*EXPORTERS, *((DESKTOP_TARGET,) if DESKTOP_TARGET is not None else ())))
+)
+
+
 def _parse_option(value: str) -> tuple[str, object]:
     key, separator, encoded = value.partition("=")
     key = key.strip()
@@ -44,10 +62,14 @@ def _parse_option(value: str) -> tuple[str, object]:
 
 
 def _load_exporter(target: str):
+    if target == DESKTOP_TARGET:
+        from Infernux.engine.build import DesktopPlatformExporter
+
+        return DesktopPlatformExporter()
     try:
         plugin, module_name, class_name = EXPORTERS[target]
     except KeyError as error:
-        supported = ", ".join(sorted(EXPORTERS))
+        supported = ", ".join(SUPPORTED_TARGETS)
         raise ValueError(f"unsupported Player target {target!r}; choose {supported}") from error
     editor_root = str(PLUGIN_EDITORS[plugin])
     if editor_root not in sys.path:
@@ -85,7 +107,7 @@ def _write_report(path: Path, payload: dict[str, object]) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project", type=Path, help="Infernux project root")
-    parser.add_argument("target", choices=sorted(EXPORTERS))
+    parser.add_argument("target", choices=SUPPORTED_TARGETS)
     parser.add_argument("output", type=Path, help="published Player output directory")
     parser.add_argument(
         "--report",

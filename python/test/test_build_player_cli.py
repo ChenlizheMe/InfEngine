@@ -68,6 +68,28 @@ def test_exporter_mapping_covers_plugin_targets():
     assert all(path.is_dir() for path in module.PLUGIN_EDITORS.values())
 
 
+def test_supported_targets_include_the_current_desktop_host():
+    module = _module()
+
+    assert module.DESKTOP_TARGET in {"windows-x64", "linux-x64"}
+    assert module.DESKTOP_TARGET in module.SUPPORTED_TARGETS
+    assert set(module.SUPPORTED_TARGETS) == set(module.EXPORTERS) | {
+        module.DESKTOP_TARGET
+    }
+
+
+def test_desktop_target_loads_the_core_exporter():
+    module = _module()
+    python_root = str(ROOT / "python")
+    if python_root not in module.sys.path:
+        module.sys.path.insert(0, python_root)
+
+    exporter = module._load_exporter(module.DESKTOP_TARGET)
+
+    assert exporter.exporter_id == "infernux/platform-desktop"
+    assert [target.id for target in exporter.targets()] == [module.DESKTOP_TARGET]
+
+
 def test_raw_build_tool_output_is_not_retained_as_phase_progress():
     module = _module()
 
