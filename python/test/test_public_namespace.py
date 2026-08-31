@@ -16,6 +16,8 @@ def test_lowercase_namespace_exposes_gameplay_api() -> None:
 
 
 def test_lowercase_namespace_lazily_forwards_subsystems() -> None:
+    assert "input" in inx.__all__
+    assert "ui" in inx.__all__
     assert inx.input.__name__ == "Infernux.input"
     assert inx.renderstack.__name__ == "Infernux.renderstack"
 

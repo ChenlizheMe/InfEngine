@@ -18,6 +18,7 @@ _seen_event_kinds: set[str] = set()
 _frame_count = 0
 _player_session: Any = None
 _player_scene_manager: Any = None
+_player_initial_scene_path = ""
 _player_activated = False
 _screen_width = 1
 _screen_height = 1
@@ -330,6 +331,12 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     runtime_services.install_runtime_service("gpu-particles", web_host)
     runtime_services.install_runtime_service("text-input", web_host)
     screen_module = importlib.import_module("Infernux.screen")
+    timing_module = importlib.import_module("Infernux.timing")
+    mathf_module = importlib.import_module("Infernux.mathf")
+    scene_module = importlib.import_module("Infernux.scene")
+    coroutine_module = importlib.import_module("Infernux.coroutine")
+    batch_module = importlib.import_module("Infernux.batch")
+    instantiate_module = importlib.import_module("Infernux.instantiate")
 
     for source in (lib, math_module):
         exports = getattr(source, "__all__", None)
@@ -342,6 +349,27 @@ def _install_platform_runtime_api(native_module: Any) -> None:
         setattr(package, name, getattr(components, name))
     for name in screen_module.__all__:
         setattr(package, name, getattr(screen_module, name))
+    gameplay_exports = {
+        "Time": timing_module.Time,
+        "Mathf": mathf_module.Mathf,
+        "GameObjectQuery": scene_module.GameObjectQuery,
+        "LayerMask": scene_module.LayerMask,
+        "SceneManager": scene_module.SceneManager,
+        "Coroutine": coroutine_module.Coroutine,
+        "WaitForSeconds": coroutine_module.WaitForSeconds,
+        "WaitForSecondsRealtime": coroutine_module.WaitForSecondsRealtime,
+        "WaitForEndOfFrame": coroutine_module.WaitForEndOfFrame,
+        "WaitForFrames": coroutine_module.WaitForFrames,
+        "WaitForFixedUpdate": coroutine_module.WaitForFixedUpdate,
+        "WaitUntil": coroutine_module.WaitUntil,
+        "WaitWhile": coroutine_module.WaitWhile,
+        "batch_read": batch_module.batch_read,
+        "batch_write": batch_module.batch_write,
+        "Instantiate": instantiate_module.Instantiate,
+        "Destroy": instantiate_module.Destroy,
+    }
+    for name, value in gameplay_exports.items():
+        setattr(package, name, value)
     package.Debug = debug_module.Debug
     package.__version__ = "0.4.0"
     package.__all__ = tuple(
@@ -351,6 +379,7 @@ def _install_platform_runtime_api(native_module: Any) -> None:
                 *screen_module.__all__,
                 *getattr(math_module, "__all__", ()),
                 *components.__all__,
+                *gameplay_exports,
                 *(
                     name
                     for name in (
@@ -415,7 +444,7 @@ def _install_runtime_lifecycle_bridge(scene_manager: Any, scheduler: Any) -> Non
 
 
 def _prepare_player_runtime() -> None:
-    global _player_session, _player_scene_manager
+    global _player_initial_scene_path, _player_session, _player_scene_manager
 
     if not _runtime_data_root:
         raise RuntimeError("Web Player has no extracted runtime data root")
@@ -490,6 +519,7 @@ def _prepare_player_runtime() -> None:
             "Web Player could not load its initial scene: "
             f"{session.last_scene_error or scenes[0]}"
         )
+    _player_initial_scene_path = scene_path
     scene_manager = SceneManager.instance()
     _install_runtime_lifecycle_bridge(scene_manager, session.execution_scheduler)
     active_scene = scene_manager.get_active_scene()
@@ -504,7 +534,7 @@ def _prepare_player_runtime() -> None:
     )
 
 
-def infernux_web_ready(details: dict[str, Any]) -> None:
+def infernux_web_ready(details: dict[str, Any]) -> dict[str, Any]:
     """Receive the browser graphics and viewport contract from the native host."""
 
     global _player_activated, _screen_width, _screen_height, _screen_ui_renderer, _screen_ui_texture_cache
@@ -525,6 +555,140 @@ def infernux_web_ready(details: dict[str, Any]) -> None:
     _player_activated = True
     print("INFERNUX_WEB_RUNTIME_ACTIVE")
     print("INFERNUX_WEB_AUDIO_USER_ACTIVATION_PENDING")
+    return infernux_web_render_settings()
+
+
+def infernux_web_render_settings() -> dict[str, Any]:
+    """Return the active RenderStack subset implemented by the Web host."""
+
+    settings: dict[str, Any] = {
+        "bloom_enabled": False,
+        "bloom_threshold": 1.0,
+        "bloom_intensity": 0.8,
+        "bloom_scatter": 0.7,
+        "bloom_clamp": 65472.0,
+        "bloom_tint": [1.0, 1.0, 1.0],
+        "bloom_iterations": 5,
+        "tonemapping_mode": 0,
+        "tonemapping_exposure": 1.0,
+    }
+    stack = _web_render_stack_document()
+    if stack is not None:
+        for slot in stack.get("effect_slots") or ():
+            fields = slot.get("fields") if isinstance(slot, dict) else None
+            if not isinstance(fields, dict) or not fields.get("enabled", False):
+                continue
+            reference = fields.get("effect")
+            if not isinstance(reference, dict):
+                continue
+            for feature_type, parameters in _iter_web_render_effects(reference):
+                if feature_type == "infernux.post.bloom":
+                    settings["bloom_enabled"] = True
+                    settings["bloom_threshold"] = float(parameters.get("threshold", 1.0))
+                    settings["bloom_intensity"] = float(parameters.get("intensity", 0.8))
+                    settings["bloom_scatter"] = float(parameters.get("scatter", 0.7))
+                    settings["bloom_clamp"] = float(parameters.get("clamp", 65472.0))
+                    settings["bloom_iterations"] = int(parameters.get("max_iterations", 5))
+                    tint = parameters.get("tint", [1.0, 1.0, 1.0, 1.0])
+                    if isinstance(tint, (list, tuple)) and len(tint) >= 3:
+                        settings["bloom_tint"] = [float(tint[0]), float(tint[1]), float(tint[2])]
+                elif feature_type == "infernux.post.tonemapping":
+                    settings["tonemapping_mode"] = int(parameters.get("mode", 2))
+                    settings["tonemapping_exposure"] = float(parameters.get("exposure", 1.0))
+    print(
+        "INFERNUX_WEB_RENDER_STACK_READY "
+        f"bloom={int(bool(settings['bloom_enabled']))} "
+        f"iterations={settings['bloom_iterations']} "
+        f"tonemapping={settings['tonemapping_mode']}"
+    )
+    return settings
+
+
+def _web_render_stack_document() -> dict[str, Any] | None:
+    """Read the initial scene's serialized RenderStack configuration."""
+
+    if not _player_initial_scene_path:
+        return None
+    scene_document = _read_json(_player_initial_scene_path)
+    pending = list(scene_document.get("objects") or scene_document.get("game_objects") or ())
+    while pending:
+        game_object = pending.pop()
+        if not isinstance(game_object, dict):
+            continue
+        pending.extend(game_object.get("children") or ())
+        for component in game_object.get("components") or ():
+            if not isinstance(component, dict):
+                continue
+            type_id = str(component.get("type_id", ""))
+            if type_id.rsplit(":", 1)[-1] == "RenderStack":
+                data = component.get("data")
+                return data if isinstance(data, dict) else None
+    return None
+
+
+def _iter_web_render_effects(
+    reference: Any,
+    overrides: dict[str, Any] | None = None,
+    trail: frozenset[str] = frozenset(),
+):
+    """Expand packaged effect groups without importing editor render modules."""
+
+    guid = str(
+        reference.get("guid", "")
+        if isinstance(reference, dict)
+        else getattr(reference, "guid", "")
+    )
+    path_hint = str(
+        reference.get("path_hint", "")
+        if isinstance(reference, dict)
+        else getattr(reference, "path_hint", "")
+    )
+    path = _web_render_effect_path(guid, path_hint)
+    identity = guid.casefold() or os.path.normcase(os.path.abspath(path))
+    if not path or identity in trail:
+        return
+    with open(path, encoding="utf-8") as stream:
+        document = json.load(stream)
+    if not isinstance(document, dict):
+        raise RuntimeError(f"Web Player render effect is not an object: {path}")
+    schema = document.get("$schema")
+    if schema == "infernux.render_effect":
+        parameters = dict(document.get("parameters") or {})
+        parameters.update(overrides or {})
+        yield str(document.get("feature_type", "")), parameters
+        return
+    if schema != "infernux.render_effect_group":
+        raise RuntimeError(f"Web Player render effect has an unsupported schema: {path}")
+    next_trail = trail | {identity}
+    for entry in document.get("entries") or ():
+        if not isinstance(entry, dict) or not entry.get("enabled", True):
+            continue
+        child = entry.get("asset")
+        if not isinstance(child, dict):
+            continue
+        child_overrides = dict(entry.get("overrides") or {})
+        yield from _iter_web_render_effects(child, child_overrides, next_trail)
+
+
+def _web_render_effect_path(guid: str, path_hint: str) -> str:
+    """Resolve a packaged render-effect reference through its GUID first."""
+
+    from Infernux.lib import AssetRegistry
+
+    database = AssetRegistry.instance().get_asset_database()
+    path = str(database.get_path_from_guid(guid) or "") if database and guid else ""
+    if not path:
+        path = path_hint
+    candidates = [path]
+    if path and not os.path.isabs(path):
+        candidates = [os.path.join(_runtime_data_root, path), path]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    raise RuntimeError(
+        "Web Player could not resolve render effect "
+        f"guid={guid!r} path_hint={path_hint!r}"
+    )
 
 
 def infernux_web_activate(audio_ready: bool) -> bool:

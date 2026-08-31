@@ -84,9 +84,10 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32,
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let centered = input.uv * 2.0 - vec2<f32>(1.0);
-    let coverage = clamp((1.0 - dot(centered, centered)) * 5.0, 0.0, 1.0);
-    return vec4<f32>(input.color.rgb, input.color.a * coverage);
+    // Sprite geometry is a quad. Coverage belongs to the selected particle
+    // material/texture; imposing a radial mask here made every untextured
+    // particle circular and diverged from the Vulkan renderer.
+    return input.color;
 }
 )wgsl";
 

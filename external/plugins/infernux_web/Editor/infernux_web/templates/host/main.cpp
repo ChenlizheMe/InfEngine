@@ -258,6 +258,70 @@ void SetDictBool(PyObject *dictionary, const char *key, bool value)
     }
 }
 
+bool ReadSettingFloat(PyObject *settings, const char *key, float &value)
+{
+    PyObject *item = settings && PyDict_Check(settings) ? PyDict_GetItemString(settings, key) : nullptr;
+    if (!item)
+        return false;
+    const double decoded = PyFloat_AsDouble(item);
+    if (PyErr_Occurred() || !std::isfinite(decoded)) {
+        PyErr_Clear();
+        return false;
+    }
+    value = static_cast<float>(decoded);
+    return true;
+}
+
+bool ReadSettingUInt(PyObject *settings, const char *key, uint32_t &value)
+{
+    PyObject *item = settings && PyDict_Check(settings) ? PyDict_GetItemString(settings, key) : nullptr;
+    if (!item || !PyLong_Check(item))
+        return false;
+    const unsigned long decoded = PyLong_AsUnsignedLong(item);
+    if (PyErr_Occurred() || decoded > std::numeric_limits<uint32_t>::max()) {
+        PyErr_Clear();
+        return false;
+    }
+    value = static_cast<uint32_t>(decoded);
+    return true;
+}
+
+bool ConfigurePostProcess(PyObject *settings)
+{
+    if (!settings || !PyDict_Check(settings))
+        return false;
+    infernux::web::WebPostProcessRenderer::Settings values;
+    PyObject *bloomEnabled = PyDict_GetItemString(settings, "bloom_enabled");
+    const int enabled = bloomEnabled ? PyObject_IsTrue(bloomEnabled) : -1;
+    if (enabled < 0 || !ReadSettingFloat(settings, "bloom_threshold", values.bloomThreshold) ||
+        !ReadSettingFloat(settings, "bloom_intensity", values.bloomIntensity) ||
+        !ReadSettingFloat(settings, "bloom_scatter", values.bloomScatter) ||
+        !ReadSettingFloat(settings, "bloom_clamp", values.bloomClamp) ||
+        !ReadSettingUInt(settings, "bloom_iterations", values.bloomIterations) ||
+        !ReadSettingUInt(settings, "tonemapping_mode", values.toneMappingMode) ||
+        !ReadSettingFloat(settings, "tonemapping_exposure", values.exposure))
+        return false;
+    values.bloomEnabled = enabled != 0;
+    PyObject *tint = PyDict_GetItemString(settings, "bloom_tint");
+    PyObject *sequence = tint ? PySequence_Fast(tint, "bloom_tint must contain three numbers") : nullptr;
+    if (!sequence || PySequence_Fast_GET_SIZE(sequence) < 3) {
+        Py_XDECREF(sequence);
+        PyErr_Clear();
+        return false;
+    }
+    for (Py_ssize_t index = 0; index < 3; ++index) {
+        const double component = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(sequence, index));
+        if (PyErr_Occurred() || !std::isfinite(component)) {
+            Py_DECREF(sequence);
+            PyErr_Clear();
+            return false;
+        }
+        values.bloomTint[static_cast<size_t>(index)] = static_cast<float>(component);
+    }
+    Py_DECREF(sequence);
+    return g_postProcessRenderer.Configure(values);
+}
+
 void DispatchInput(const char *kind, PyObject *payload)
 {
     if (g_input == nullptr || payload == nullptr)
@@ -803,6 +867,10 @@ void Frame()
         if (scenePrepared && g_particleRuntimeReady && !g_webGpuValidationFailed)
             (void)g_particleRuntime.Render(pass, g_width, g_height);
         pass.End();
+        if (!g_webGpuValidationFailed && !g_postProcessRenderer.PrepareBloom(encoder)) {
+            std::fprintf(stderr, "INFERNUX_WEB_BLOOM_RECORDING_FAILED\n");
+            g_webGpuValidationFailed = true;
+        }
 
         wgpu::RenderPassColorAttachment presentAttachment;
         presentAttachment.view = view;
@@ -886,8 +954,13 @@ void StartSurface()
         PyObject *result = PyObject_CallOneArg(ready, details);
         if (result == nullptr)
             PrintPythonError("ready");
-        else
+        else {
+            if (!ConfigurePostProcess(result)) {
+                std::fprintf(stderr, "INFERNUX_WEB_RENDER_STACK_CONFIGURATION_FAILED\n");
+                g_webGpuValidationFailed = true;
+            }
             Py_DECREF(result);
+        }
         Py_DECREF(ready);
     }
     Py_DECREF(details);

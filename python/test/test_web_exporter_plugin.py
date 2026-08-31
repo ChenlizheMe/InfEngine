@@ -391,6 +391,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "ToWebClipSpace(camera->GetViewProjectionMatrix())" in particle_runtime
     assert "rhi::PixelFormat::RGBA16SFloat" in particle_runtime
     assert "wgpu::TextureFormat::RGBA16Float" in particle_runtime
+    assert "let coverage =" not in particle_runtime
+    assert "return input.color;" in particle_runtime
     assert "correction[1][1] = -1.0f" in scene_renderer
     assert "correction[1][1] = -1.0f" in particle_runtime
     assert "skinBoneMatrices" in scene_renderer
@@ -439,6 +441,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert '"GameObjectRef": ref_wrappers_module.GameObjectRef' in bootstrap
     assert '"disallow_multiple": decorators_module.disallow_multiple' in bootstrap
     assert '"add_component_menu": decorators_module.add_component_menu' in bootstrap
+    assert '"Time": timing_module.Time' in bootstrap
+    assert '"SceneManager": scene_module.SceneManager' in bootstrap
     assert "def _publish_screen_ui()" not in bootstrap
     assert "submit_screen_ui(payload)" not in bootstrap
     assert "INFERNUX_WEB_USER_ACTIVATION_REQUIRED" not in bootstrap
@@ -485,12 +489,24 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEB_FIXED_CANVAS" in main
     assert "g_screenUIRenderer.Render" in main
     assert "g_postProcessRenderer.SceneColorView()" in main
+    assert "g_postProcessRenderer.PrepareBloom(encoder)" in main
+    assert "ConfigurePostProcess(result)" in main
     assert "INFERNUX_WEB_POST_PROCESS_READY" in post_process_renderer
     assert "bloom_threshold" in post_process_renderer
+    assert "downsample_13" in post_process_renderer
+    assert "quadratic_threshold" in post_process_renderer
+    assert "m_settings.bloomScatter" in post_process_renderer
     assert "aces_film" in post_process_renderer
     assert "mat3x3<f32>" in post_process_renderer
     assert "0.59719" in post_process_renderer
     assert "linear_to_srgb_channel" in post_process_renderer
+    assert "def infernux_web_render_settings()" in bootstrap
+    assert "def _web_render_stack_document()" in bootstrap
+    assert "def _iter_web_render_effects(" in bootstrap
+    assert "database.get_path_from_guid(guid)" in bootstrap
+    assert "render_effect_compiler" not in bootstrap
+    assert '"infernux.post.bloom"' in bootstrap
+    assert '"infernux.post.tonemapping"' in bootstrap
     assert "WebScreenUIRenderer.cpp" in cmake
     assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
     assert "descriptor.depthStencil" not in screen_ui_renderer
