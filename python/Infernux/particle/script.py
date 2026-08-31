@@ -1148,7 +1148,7 @@ class ParticleScriptCompiler:
                             )
                             output_value_links.append(
                                 GraphLinkRecord(
-                                    f"{stage}.shader_property.{index}.{len(shader_property_links)}",
+                                    f"{stage}.shader_property.{index}.{len(output_value_links)}",
                                     source[0],
                                     source[1],
                                     uid,
