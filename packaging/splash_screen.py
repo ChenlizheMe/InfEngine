@@ -315,11 +315,12 @@ class EngineSplashScreen(QWidget):
         except OSError as exc:
             remove_project_lock(project_path, self._lock_token)
             self._status.setText(tr("Launch failed"))
+            detail = f"The engine process could not be started.\n\n{exc}"
             QTimer.singleShot(
                 0,
                 lambda: self._show_failure(
                     tr("Engine Launch Failed"),
-                    f"The engine process could not be started.\n\n{exc}",
+                    detail,
                 ),
             )
             return
