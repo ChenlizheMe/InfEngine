@@ -36,6 +36,7 @@ from typing import Dict, Optional, TYPE_CHECKING
 from Infernux.components.component import InxComponent
 from Infernux.components.fields import FieldType, list_field
 from Infernux.components.decorators import disallow_multiple, add_component_menu
+from Infernux.debug import Debug
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
     ensure_standard_post_process_points,

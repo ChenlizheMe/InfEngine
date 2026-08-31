@@ -13,6 +13,7 @@ import time as _time
 from dataclasses import replace
 from types import SimpleNamespace
 from Infernux.components.component import InxComponent
+from Infernux.debug import Debug
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from . import inspector_support as _inspector_support
