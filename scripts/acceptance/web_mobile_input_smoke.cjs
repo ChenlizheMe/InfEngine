@@ -164,7 +164,7 @@ async function main() {
       "[--expect-render-width N] [--expect-render-height N] " +
       "[--track-object NAME] [--movement-key KEY|--movement-touch] " +
       "[--min-displacement N] [--require-diagnostic TEXT] " +
-      "[--skip-frame-checks]",
+      "[--capture-frame-output PATH] [--skip-frame-checks]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -207,6 +207,7 @@ async function main() {
   const movementKey = argumentValue("--movement-key", "w");
   const minimumDisplacement = Number(argumentValue("--min-displacement", "0.02"));
   const requiredDiagnostics = argumentValues("--require-diagnostic");
+  const captureFrameOutput = argumentValue("--capture-frame-output");
   if (!Number.isInteger(viewportWidth) || viewportWidth <= 0 ||
       !Number.isInteger(viewportHeight) || viewportHeight <= 0) {
     throw new Error("viewport dimensions must be positive integers");
@@ -297,6 +298,12 @@ async function main() {
     const initialKeyboardFocus = await page.evaluate(
       () => document.activeElement === document.querySelector("#canvas"),
     );
+    let captureFramePath = "";
+    if (captureFrameOutput) {
+      captureFramePath = path.resolve(captureFrameOutput);
+      fs.mkdirSync(path.dirname(captureFramePath), { recursive: true });
+      await canvas.screenshot({ path: captureFramePath, animations: "disabled" });
+    }
     await page.keyboard.down("w");
     await page.waitForTimeout(120);
     const nativeWPressed = await page.evaluate(() => Module.ccall(
@@ -569,6 +576,7 @@ async function main() {
     result.nativeWReleased = nativeWReleased;
     result.pythonWPressed = pythonWPressed;
     result.gameplayMovement = gameplayMovement;
+    if (captureFramePath) result.captureFramePath = captureFramePath;
     const frameIsVisible = (frame) => frame && (
       frame.nonBlackRatio >= 0.1 &&
       frame.luminanceDeviation >= 0.01 &&

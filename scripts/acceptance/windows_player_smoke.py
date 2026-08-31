@@ -35,6 +35,7 @@ class SmokeResult:
     axis_delta: float
     fatal_count: int
     elapsed_seconds: float
+    capture_path: str
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -100,6 +101,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--press-duration", type=float, default=1.0)
     parser.add_argument("--axis", choices=("x", "y", "z"), default="z")
     parser.add_argument("--minimum-axis-delta", type=float, default=0.1)
+    parser.add_argument(
+        "--capture-file",
+        default="",
+        help="Optional plain .png basename captured from the Player game render target",
+    )
+    parser.add_argument("--capture-timeout", type=float, default=30.0)
     return parser
 
 
@@ -111,6 +118,14 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         raise FileNotFoundError(f"Windows Player is missing: {player}")
     if args.startup_timeout <= 0.0 or args.press_duration <= 0.0:
         raise ValueError("timeouts and press duration must be positive")
+    capture_file = str(args.capture_file or "").strip()
+    if capture_file and (
+        Path(capture_file).name != capture_file
+        or Path(capture_file).suffix.casefold() != ".png"
+    ):
+        raise ValueError("--capture-file must be a plain .png basename")
+    if args.capture_timeout <= 0.0 or args.capture_timeout > 60.0:
+        raise ValueError("--capture-timeout must be in (0, 60]")
 
     manifest = _load_manifest(player)
     game = str(manifest.get("game_name", "") or player.stem)
@@ -167,6 +182,23 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 f"Windows Player did not publish object '{args.object}' before startup timeout"
             )
 
+        capture_path = ""
+        if capture_file:
+            capture = control.call(
+                "capture",
+                {
+                    "file_name": capture_file,
+                    "timeout_seconds": args.capture_timeout,
+                },
+                timeout=args.capture_timeout + 5.0,
+                process=process,
+            )
+            capture_path = str(capture.get("output_path", "") or "")
+            if str(capture.get("status", "")) != "completed":
+                raise RuntimeError(f"Player render-target capture failed: {capture!r}")
+            if not capture_path or not Path(capture_path).is_file():
+                raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
+
         press = control.call(
             "press",
             {
@@ -207,6 +239,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             axis_delta=delta,
             fatal_count=0,
             elapsed_seconds=time.monotonic() - started,
+            capture_path=capture_path,
         )
     finally:
         _terminate(process)

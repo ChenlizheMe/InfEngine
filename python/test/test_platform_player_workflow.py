@@ -73,11 +73,23 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert 'process.argv.includes("--movement-touch")' in smoke
     assert 'process.argv.includes("--skip-frame-checks")' in smoke
     assert 'argumentValues("--require-diagnostic")' in smoke
+    assert 'argumentValue("--capture-frame-output")' in smoke
+    assert "result.captureFramePath" in smoke
     assert "requiredDiagnostics: Object.fromEntries" in smoke
     assert "Object.values(result.requiredDiagnostics)" in smoke
     assert '"touch:left-zone-forward"' in smoke
     assert 'dataset.infernuxState === "ready"' in smoke
     assert "awaiting-user-activation" not in smoke
+
+
+def test_windows_smoke_can_capture_the_engine_game_render_target():
+    smoke = (ROOT / "scripts" / "acceptance" / "windows_player_smoke.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"--capture-file"' in smoke
+    assert 'control.call(\n                "capture"' in smoke
+    assert 'capture.get("output_path"' in smoke
 
 
 def test_web_smoke_rejects_black_or_flat_frames_after_input():
