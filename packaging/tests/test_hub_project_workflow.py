@@ -16,6 +16,8 @@ if str(PACKAGING_DIR) not in sys.path:
 from database import ProjectDatabase
 import model.project_model as project_model_module
 from model.project_model import ProjectModel
+from hub_utils import HubLaunchContext
+from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from project_paths import ProjectPathError, inspect_existing_project, validate_project_name
 from project_migration import ProjectMigrationService
 from i18n import configure_language, resolve_language, tr
@@ -32,6 +34,78 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
     if version:
         (path / ".infernux-version").write_text(f"# pin\n{version}\n", encoding="utf-8")
     return path
+
+
+def test_source_import_does_not_apply_installed_version_catalog_rules(
+    tmp_path: Path, monkeypatch
+):
+    project = _make_project(tmp_path / "Imported", name="Imported", version="9.9.9")
+    database = ProjectDatabase(str(tmp_path / "hub.db"))
+
+    class ProjectList:
+        def refresh(self):
+            pass
+
+        def select_project(self, _project_id):
+            pass
+
+    class VersionManager:
+        def is_installed(self, _version):
+            raise AssertionError("source imports must not query installed Hub versions")
+
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.QFileDialog.getExistingDirectory",
+        lambda *_args: str(project),
+    )
+    viewmodel = ControlPaneViewModel(
+        ProjectModel(database),
+        ProjectList(),
+        VersionManager(),
+        launch_context=HubLaunchContext.SOURCE,
+    )
+
+    viewmodel.open_existing_project(None)
+
+    assert database.find_project_by_path(str(project)) is not None
+    database.close()
+
+
+def test_installed_import_keeps_version_catalog_warning(tmp_path: Path, monkeypatch):
+    project = _make_project(tmp_path / "Imported", name="Imported", version="9.9.9")
+    database = ProjectDatabase(str(tmp_path / "hub.db"))
+    messages = []
+
+    class ProjectList:
+        def refresh(self):
+            pass
+
+        def select_project(self, _project_id):
+            pass
+
+    class VersionManager:
+        @staticmethod
+        def is_installed(_version):
+            return False
+
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.QFileDialog.getExistingDirectory",
+        lambda *_args: str(project),
+    )
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.QMessageBox.information",
+        lambda _parent, title, body: messages.append((title, body)),
+    )
+    viewmodel = ControlPaneViewModel(
+        ProjectModel(database),
+        ProjectList(),
+        VersionManager(),
+        launch_context=HubLaunchContext.INSTALLED,
+    )
+
+    viewmodel.open_existing_project(None)
+
+    assert messages and "9.9.9" in messages[0][1]
+    database.close()
 
 
 def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path, monkeypatch):

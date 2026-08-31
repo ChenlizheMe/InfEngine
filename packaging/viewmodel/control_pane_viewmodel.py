@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QThread, Signal, QObject, QTimer, Qt
 from model.project_model import ProjectModel
-from hub_utils import is_frozen, is_project_open
+from hub_utils import HubLaunchContext, is_project_open
 from project_paths import ProjectPathError
 from project_migration import ProjectMigrationService
 from i18n import tr
@@ -112,11 +112,12 @@ class LaunchPreparationWorker(QObject):
     finished = Signal(str)
     error = Signal(str)
 
-    def __init__(self, model, version_manager, project_path: str):
+    def __init__(self, model, version_manager, project_path: str, launch_context=None):
         super().__init__()
         self.model = model
         self.version_manager = version_manager
         self.project_path = project_path
+        self.launch_context = launch_context or HubLaunchContext.current()
 
     def run(self):
         try:
@@ -140,7 +141,8 @@ class LaunchPreparationWorker(QObject):
                 else ""
             )
             if (
-                pinned_version
+                self.launch_context.uses_installed_versions
+                and pinned_version
                 and self.version_manager
                 and not self.version_manager.is_installed(
                     pinned_version, python_version
@@ -152,7 +154,7 @@ class LaunchPreparationWorker(QObject):
                     "that exact engine/Python combination before launching."
                 )
 
-            if is_frozen():
+            if self.launch_context.uses_installed_versions:
                 self.progress.emit("Checking project runtime...", 7)
                 python_exe = ProjectModel._get_project_python(project_path)
                 if not os.path.isfile(python_exe):
@@ -168,13 +170,12 @@ class LaunchPreparationWorker(QObject):
             else:
                 import sys
 
-                self.progress.emit("Synchronizing development runtime...", 7)
-                self.model._install_infernux_in_runtime(
-                    project_path,
-                    pinned_version,
-                    on_status=lambda message: self.progress.emit(message, 8),
-                    validate_current=False,
-                )
+                # A source-launched Hub is a development/test frontend for the
+                # Python environment that started it.  Infernux is therefore
+                # already supplied by that environment; consulting the Hub
+                # install catalog or trying to locate/install a wheel would
+                # incorrectly turn this path back into the packaged-Hub flow.
+                self.progress.emit("Using current development environment...", 7)
                 self.progress.emit("Updating editor integration...", 9)
                 self.model._create_vscode_workspace(project_path)
                 python_exe = sys.executable
@@ -185,11 +186,19 @@ class LaunchPreparationWorker(QObject):
 
 
 class ControlPaneViewModel:
-    def __init__(self, model, project_list, version_manager=None, runtime_manager=None):
+    def __init__(
+        self,
+        model,
+        project_list,
+        version_manager=None,
+        runtime_manager=None,
+        launch_context=None,
+    ):
         self.model = model
         self.project_list = project_list
         self.version_manager = version_manager
         self.runtime_manager = runtime_manager
+        self.launch_context = launch_context or HubLaunchContext.current()
         self._launch_thread = None
         self._launch_worker = None
         self._launch_splash = None
@@ -231,6 +240,7 @@ class ControlPaneViewModel:
             self.model,
             self.version_manager,
             project_path,
+            self.launch_context,
         )
         self._launch_worker.moveToThread(self._launch_thread)
 
@@ -257,7 +267,7 @@ class ControlPaneViewModel:
                     python_exe,
                     script,
                     project_path,
-                    detached=is_frozen(),
+                    detached=self.launch_context.uses_installed_versions,
                 )
 
             if worker is not None:
@@ -300,7 +310,12 @@ class ControlPaneViewModel:
         self.project_list.refresh()
         self.project_list.select_project(record.project_id)
 
-        if info.engine_version and self.version_manager is not None and not self.version_manager.is_installed(info.engine_version):
+        if (
+            self.launch_context.uses_installed_versions
+            and info.engine_version
+            and self.version_manager is not None
+            and not self.version_manager.is_installed(info.engine_version)
+        ):
             QMessageBox.information(
                 parent,
                 tr("Engine Version Not Installed"),

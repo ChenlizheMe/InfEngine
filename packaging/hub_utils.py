@@ -4,6 +4,22 @@ import json
 import logging
 import os
 import sys
+from enum import Enum
+
+
+class HubLaunchContext(Enum):
+    """Explicit policy boundary between source and installed Hub launches."""
+
+    SOURCE = "source"
+    INSTALLED = "installed"
+
+    @classmethod
+    def current(cls) -> "HubLaunchContext":
+        return cls.INSTALLED if is_frozen() else cls.SOURCE
+
+    @property
+    def uses_installed_versions(self) -> bool:
+        return self is HubLaunchContext.INSTALLED
 
 
 def is_frozen() -> bool:

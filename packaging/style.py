@@ -102,6 +102,24 @@ class StyleManager:
                 font-size: 12px;
                 padding-top: 2px;
             }}
+            /* ── Common prompts ──
+               Qt stylesheet pixels are device-independent under high-DPI
+               scaling, keeping these shared dimensions readable everywhere. */
+            QMessageBox {{
+                padding: 18px;
+            }}
+            QMessageBox QLabel {{
+                font-size: 15px;
+                min-width: 360px;
+                padding: 6px 4px 10px 4px;
+            }}
+            QMessageBox QPushButton {{
+                min-width: 88px;
+                min-height: 34px;
+                padding: 0 16px;
+                font-size: 14px;
+                font-weight: 600;
+            }}
             QMenu {{
                 background-color: {bg_surface};
                 color: {text_primary};

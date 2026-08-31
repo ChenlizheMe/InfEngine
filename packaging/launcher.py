@@ -30,7 +30,7 @@ from ui_project_list import ProjectListPane
 from database import ProjectDatabase
 from style import StyleManager
 from hub_resources import ICON_PATH, FONT_PATH
-from hub_utils import is_frozen
+from hub_utils import HubLaunchContext, is_frozen
 from python_runtime import PythonRuntimeManager
 from version_manager import VersionManager
 
@@ -46,7 +46,8 @@ import logging
 
 
 class GameEngineLauncher(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, launch_context: HubLaunchContext | None = None) -> None:
+        self.launch_context = launch_context or HubLaunchContext.current()
         self._own_app = False
         if QApplication.instance() is None:
             self._own_app = True
@@ -109,6 +110,7 @@ class GameEngineLauncher(QMainWindow):
             self.project_list,
             self.version_manager,
             self.runtime_manager,
+            launch_context=self.launch_context,
         )
         self.viewmodel = viewmodel
         self.project_list.remove_requested.connect(self._remove_project_from_card)
@@ -380,5 +382,5 @@ def _handle_uninstall_linux() -> int:
 if __name__ == "__main__":
     if "--uninstall" in sys.argv:
         raise SystemExit(_handle_uninstall())
-    launcher = GameEngineLauncher()
+    launcher = GameEngineLauncher(HubLaunchContext.current())
     launcher.run()

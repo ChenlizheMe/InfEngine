@@ -27,3 +27,13 @@ def test_install_dialog_scroll_surface_uses_dark_hub_palette():
     assert container.palette().color(QPalette.ColorRole.Window).name() == "#191919"
 
     scroll.close()
+
+
+def test_common_message_boxes_use_shared_readable_metrics():
+    stylesheet = StyleManager.get_stylesheet(True)
+
+    assert "QMessageBox QLabel" in stylesheet
+    assert "font-size: 15px" in stylesheet
+    assert "min-width: 360px" in stylesheet
+    assert "QMessageBox QPushButton" in stylesheet
+    assert "min-height: 34px" in stylesheet

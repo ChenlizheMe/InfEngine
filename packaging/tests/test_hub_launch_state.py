@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QMessageBox
 
 from launcher import GameEngineLauncher
+from hub_utils import HubLaunchContext
 from splash_screen import EngineSplashScreen
 import splash_screen
 import viewmodel.control_pane_viewmodel as control_pane_viewmodel
@@ -121,7 +122,6 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
         def is_installed(_version, _python_version=None):
             return True
 
-    monkeypatch.setattr(control_pane_viewmodel, "is_frozen", lambda: True)
     monkeypatch.setattr(control_pane_viewmodel, "is_project_open", lambda _path: False)
     monkeypatch.setattr(
         control_pane_viewmodel.ProjectModel,
@@ -138,7 +138,9 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
         ),
     )
 
-    worker = LaunchPreparationWorker(object(), VersionManager(), str(tmp_path))
+    worker = LaunchPreparationWorker(
+        object(), VersionManager(), str(tmp_path), HubLaunchContext.INSTALLED
+    )
     finished = []
     errors = []
     worker.finished.connect(finished.append)
@@ -148,6 +150,51 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
 
     assert errors == []
     assert finished == [str(runtime_python)]
+
+
+def test_source_launch_preparation_uses_current_python_without_catalog_gate(
+    tmp_path: Path, monkeypatch
+):
+    (tmp_path / "ProjectSettings").mkdir()
+
+    class Model:
+        @staticmethod
+        def _install_infernux_in_runtime(*_args, **_kwargs):
+            raise AssertionError(
+                "source launches must not locate or install an Infernux wheel"
+            )
+
+        @staticmethod
+        def _create_vscode_workspace(_project_path):
+            pass
+
+    class VersionManager:
+        @staticmethod
+        def read_project_version(_path):
+            return "9.9.9"
+
+        @staticmethod
+        def is_installed(*_args):
+            raise AssertionError("source launches must not query installed Hub versions")
+
+    monkeypatch.setattr(control_pane_viewmodel, "is_project_open", lambda _path: False)
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "get_project_python_version",
+        staticmethod(lambda _path: f"{sys.version_info.major}.{sys.version_info.minor}"),
+    )
+    worker = LaunchPreparationWorker(
+        Model(), VersionManager(), str(tmp_path), HubLaunchContext.SOURCE
+    )
+    finished = []
+    errors = []
+    worker.finished.connect(finished.append)
+    worker.error.connect(errors.append)
+
+    worker.run()
+
+    assert errors == []
+    assert finished == [sys.executable]
 
 
 def test_upgraded_hub_requires_the_new_default_runtime(monkeypatch):
