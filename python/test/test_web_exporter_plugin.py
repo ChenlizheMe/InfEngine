@@ -305,6 +305,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert 'MaterialVector(draw.material, "emissionColor"' in scene_renderer
     assert "material=pbr" in scene_renderer
     assert "geometric_specular_aa" in scene_renderer
+    assert "max(vec3<f32>(1.0 - perceptual_roughness), f0)" in scene_renderer
+    assert "horizon_occlusion(reflection_direction, geometric_normal)" in scene_renderer
     assert "specular_highlights" in scene_renderer
     assert "evaluate_toon_light" in scene_renderer
     assert "MaterialIsToon" in scene_renderer

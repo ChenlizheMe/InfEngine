@@ -123,7 +123,11 @@ fn fresnel_schlick(f0: vec3<f32>, f90: f32, u: f32) -> vec3<f32> {
 
 fn fresnel_schlick_roughness(f0: vec3<f32>, f90: f32, ndotv: f32,
                              perceptual_roughness: f32) -> vec3<f32> {
-    let grazing = max(vec3<f32>(f90 * (1.0 - perceptual_roughness)), f0);
+    // Match PBR.glsl F_SchlickRoughness exactly. f90 is part of the shared
+    // signature, but HDRP's roughness-aware indirect Fresnel uses a white
+    // grazing target attenuated by perceptual roughness rather than scaling
+    // that target by the material's direct-light f90.
+    let grazing = max(vec3<f32>(1.0 - perceptual_roughness), f0);
     let x = 1.0 - ndotv;
     let x2 = x * x;
     let x5 = x * x2 * x2;
@@ -414,7 +418,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let ambient_specular = specular_irradiance * (f0 * env_brdf.x + vec3<f32>(env_brdf.y))
                            * energy_compensation
                            * specular_occlusion(ndotv, occlusion, perceptual_roughness)
-                           * horizon_occlusion(reflection_direction, normal)
+                            * horizon_occlusion(reflection_direction, geometric_normal)
                            * specular_highlights;
     let emission = input.emission.rgb * input.emission.a;
     return vec4<f32>(ambient_diffuse + ambient_specular + direct + emission,
