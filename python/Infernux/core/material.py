@@ -30,6 +30,7 @@ from __future__ import annotations
 import time
 from typing import Optional, Tuple
 
+from Infernux.debug import Debug
 from Infernux.lib import InxMaterial
 
 _EMBEDDED_MODEL_MAT_TOKEN = "::submat:"
