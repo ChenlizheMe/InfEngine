@@ -557,8 +557,7 @@ def test_material_document_save_completes_from_native_document_store(tmp_path):
     finally:
         AssetManager._scheduled_saves.pop(str(path), None)
         AssetManager._material_save_snapshots.pop(normalized, None)
-        AssetManager._pending_document_writes.pop(normalized, None)
-        AssetManager._pending_document_write_callbacks.pop(normalized, None)
+        AssetManager._pending_document_write_records.pop(normalized, None)
         DocumentRegistry._instance = previous_registry
 
 
@@ -628,8 +627,7 @@ def test_document_controller_claims_write_submitted_by_runtime_owner(tmp_path):
     finally:
         AssetManager._scheduled_saves.pop(str(path), None)
         AssetManager._material_save_snapshots.pop(normalized, None)
-        AssetManager._pending_document_writes.pop(normalized, None)
-        AssetManager._pending_document_write_callbacks.pop(normalized, None)
+        AssetManager._pending_document_write_records.pop(normalized, None)
         DocumentRegistry._instance = previous_registry
 
 

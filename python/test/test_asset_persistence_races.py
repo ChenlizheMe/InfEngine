@@ -22,8 +22,6 @@ def _clean_asset_write_ledger():
         AssetManager._render_effect_save_snapshots,
         AssetManager._document_save_expected_states,
         AssetManager._document_write_metadata,
-        AssetManager._pending_document_writes,
-        AssetManager._pending_document_write_callbacks,
         AssetManager._pending_document_write_records,
         AssetManager._self_write_commits,
     )

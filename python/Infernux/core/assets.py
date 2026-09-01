@@ -139,11 +139,8 @@ class AssetManager:
     _document_save_expected_states: Dict[str, Any] = {}
     _document_write_metadata: Dict[str, Dict[str, Any]] = {}
     _asset_revision_states: Dict[str, _AssetRevisionState] = {}
-    _pending_document_writes: Dict[str, Any] = {}
-    _pending_document_write_callbacks: Dict[str, tuple[Any, Callable[[str], None]]] = {}
     # Keep every ticket, including a ticket superseded by a newer queued
-    # generation.  The legacy single-ticket map above remains as a lookup
-    # compatibility path for callers that only need the latest receipt.
+    # generation. This queue is the sole owner of pending document writes.
     _pending_document_write_records: Dict[str, list[_PendingDocumentWrite]] = {}
     _self_write_commits: Dict[str, list[_SelfWriteCommit]] = {}
 
@@ -167,12 +164,28 @@ class AssetManager:
         Called once during engine startup. Sets up the C++ AssetDatabase
         reference and AssetRegistry for unified asset management.
         """
+        native = getattr(engine, "_engine", engine)
+        if native is None or not hasattr(native, "get_asset_database"):
+            raise RuntimeError("AssetManager requires an initialized native engine")
+        database = native.get_asset_database()
+        if database is None:
+            raise RuntimeError("AssetManager requires an initialized AssetDatabase")
+
+        from Infernux.lib import AssetRegistry
+
+        registry = AssetRegistry.instance()
+        if registry is None:
+            raise RuntimeError("AssetManager requires the native AssetRegistry")
         cls._engine = engine
-        native = cls._native_engine()
-        if native is not None and hasattr(native, "get_asset_database"):
-            cls._asset_database = native.get_asset_database()
-        # Cache the AssetRegistry singleton
-        cls._registry = cls._resolve_registry()
+        cls._asset_database = database
+        cls._registry = registry
+
+    @classmethod
+    def require_asset_database(cls):
+        """Return the process AssetDatabase or fail on invalid engine lifecycle."""
+        if cls._asset_database is None:
+            raise RuntimeError("AssetManager is not initialized with an AssetDatabase")
+        return cls._asset_database
 
     @classmethod
     def release_engine(cls, engine=None) -> None:
@@ -189,8 +202,6 @@ class AssetManager:
         cls._document_save_expected_states.clear()
         cls._document_write_metadata.clear()
         cls._asset_revision_states.clear()
-        cls._pending_document_writes.clear()
-        cls._pending_document_write_callbacks.clear()
         cls._pending_document_write_records.clear()
         cls._self_write_commits.clear()
         cls._meta_write_suppression.clear()
@@ -435,26 +446,25 @@ class AssetManager:
         lower = str(path or "").lower()
         if not lower.endswith(".py") or lower.endswith(".particle.py"):
             return
-        try:
-            from Infernux.engine.interaction import current_action_origin
-            from Infernux.engine.resources_manager import ResourcesManager
+        # A lost script-change event silently breaks component/script refresh;
+        # failures here must surface instead of being suppressed.
+        from Infernux.engine.interaction import current_action_origin
+        from Infernux.engine.resources_manager import ResourcesManager
 
-            action_origin = current_action_origin()
-            origin_value = getattr(action_origin, "value", str(action_origin))
-            collector_origin = {
-                "automation": "automation",
-                "external": "watchdog",
-            }.get(origin_value, "editor")
-            manager = ResourcesManager.instance()
-            if manager is not None:
-                manager.submit_script_change(
-                    path,
-                    origin=collector_origin,
-                    catalog_event=catalog_event,
-                    change_kind=catalog_event or "modified",
-                )
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._submit_internal_script_change", exc)
+        action_origin = current_action_origin()
+        origin_value = getattr(action_origin, "value", str(action_origin))
+        collector_origin = {
+            "automation": "automation",
+            "external": "watchdog",
+        }.get(origin_value, "editor")
+        manager = ResourcesManager.instance()
+        if manager is not None:
+            manager.submit_script_change(
+                path,
+                origin=collector_origin,
+                catalog_event=catalog_event,
+                change_kind=catalog_event or "modified",
+            )
 
     @classmethod
     def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
@@ -715,23 +725,22 @@ class AssetManager:
         """Publish one committed database consequence to Interaction Core."""
         if not path:
             return
-        try:
-            from Infernux.engine.interaction import (
-                AssetMutationKind,
-                AssetMutationService,
-                current_action_origin,
-            )
+        # Dropped mutation events desynchronize every listener (panels,
+        # preload catalogs, undo); failures must surface.
+        from Infernux.engine.interaction import (
+            AssetMutationKind,
+            AssetMutationService,
+            current_action_origin,
+        )
 
-            service = AssetMutationService.instance()
-            if service is not None:
-                service.publish_content_change(
-                    path,
-                    AssetMutationKind(str(event_type).casefold()),
-                    guid=guid,
-                    origin=current_action_origin(),
-                )
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._publish_asset_content_change", exc)
+        service = AssetMutationService.instance()
+        if service is not None:
+            service.publish_content_change(
+                path,
+                AssetMutationKind(str(event_type).casefold()),
+                guid=guid,
+                origin=current_action_origin(),
+            )
 
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
@@ -792,16 +801,13 @@ class AssetManager:
             if plan is not None:
                 mutations.commit_relocation(plan)
             elif publish_interaction:
-                try:
-                    mutations.publish_move(
-                        old_path,
-                        new_path,
-                        guid=guid,
-                        origin=origin,
-                        operation_id=operation_id,
-                    )
-                except Exception as exc:
-                    Debug.log_suppressed("AssetManager.move_asset.external_interaction", exc)
+                mutations.publish_move(
+                    old_path,
+                    new_path,
+                    guid=guid,
+                    origin=origin,
+                    operation_id=operation_id,
+                )
         return result
 
     @classmethod
@@ -1513,9 +1519,6 @@ class AssetManager:
             callback=callback,
         )
         cls._pending_document_write_records.setdefault(normalized, []).append(record)
-        cls._pending_document_writes[normalized] = ticket
-        if callback is not None:
-            cls._pending_document_write_callbacks[normalized] = (ticket, callback)
         return ticket
 
     @classmethod
@@ -1558,29 +1561,12 @@ class AssetManager:
                     and record.imported_disk_revision == state.imported_disk_revision
                 )
                 if record.callback is not None and current_revision:
-                    try:
-                        record.callback(status)
-                    except Exception as exc:
-                        Debug.log_suppressed(
-                            "AssetManager.poll_pending_asset_writes.callback",
-                            exc,
-                        )
+                    record.callback(status)
 
             if remaining:
                 cls._pending_document_write_records[path] = remaining
-                latest = remaining[-1]
-                cls._pending_document_writes[path] = latest.ticket
-                if latest.callback is not None:
-                    cls._pending_document_write_callbacks[path] = (
-                        latest.ticket,
-                        latest.callback,
-                    )
-                else:
-                    cls._pending_document_write_callbacks.pop(path, None)
             else:
                 cls._pending_document_write_records.pop(path, None)
-                cls._pending_document_writes.pop(path, None)
-                cls._pending_document_write_callbacks.pop(path, None)
 
     @classmethod
     def _save_render_effect_resource(cls, resource_obj):
@@ -1656,14 +1642,11 @@ class AssetManager:
         cls.invalidate_path(path)
         cls._invalidate_material_ui_cache(path)
         if not cls.has_pending_local_revision(path):
-            try:
-                from Infernux.engine.ui.asset_resource_preview import (
-                    invalidate_live_material_preview,
-                )
+            from Infernux.engine.ui.asset_resource_preview import (
+                invalidate_live_material_preview,
+            )
 
-                invalidate_live_material_preview(path)
-            except Exception as exc:
-                Debug.log_suppressed("AssetManager.on_material_saved.preview", exc)
+            invalidate_live_material_preview(path)
 
     @classmethod
     def _save_animclip_resource(cls, resource_obj):
@@ -1709,7 +1692,8 @@ class AssetManager:
                 # submitted the shared path before its Inspector controller
                 # reaches the footer in the same frame. Return that exact
                 # receipt so DocumentRegistry can still own completion.
-                return cls._pending_document_writes.get(path_key(key), False)
+                pending = cls._pending_document_write_records.get(path_key(key), ())
+                return pending[-1].ticket if pending else False
             if not force and bool(record.get("wait_one_flush", False)):
                 record["wait_one_flush"] = False
                 return False
@@ -2098,18 +2082,14 @@ class AssetManager:
     @classmethod
     def _invalidate_project_panel_cache(cls) -> None:
         """Refresh Project Panel listing (embedded materials/animations depend on .meta)."""
-        try:
-            from Infernux.engine.bootstrap import EditorBootstrap
-            bs = EditorBootstrap.instance()
-            pp = getattr(bs, "project_panel", None) if bs else None
-            if pp is not None:
-                pp.invalidate_dir_cache()
-                native = cls._native_engine()
-                if native is not None and hasattr(native, "request_full_speed_frame"):
-                    native.request_full_speed_frame()
-        except Exception as exc:
-            from Infernux.debug import Debug
-            Debug.log_suppressed("AssetManager._invalidate_project_panel_cache", exc)
+        from Infernux.engine.bootstrap import EditorBootstrap
+        bs = EditorBootstrap.instance()
+        pp = getattr(bs, "project_panel", None) if bs else None
+        if pp is not None:
+            pp.invalidate_dir_cache()
+            native = cls._native_engine()
+            if native is not None and hasattr(native, "request_full_speed_frame"):
+                native.request_full_speed_frame()
 
     @classmethod
     def _prime_material_preview(cls, path: str, material_json: str = "") -> None:
@@ -2151,45 +2131,29 @@ class AssetManager:
         if guid:
             identifiers.add(guid)
 
-        try:
-            from Infernux.ui import get_shared_cache
-            cache = get_shared_cache()
-            for ident in identifiers:
-                if ident:
-                    cache.invalidate(ident)
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._invalidate_texture_ui_cache.shared_cache", exc)
+        from Infernux.ui import get_shared_cache
+        cache = get_shared_cache()
+        for ident in identifiers:
+            if ident:
+                cache.invalidate(ident)
 
         native = cls._native_engine()
 
         if native is not None:
             for ident in identifiers:
-                if not ident:
-                    continue
-                try:
+                if ident:
                     native.invalidate_texture_preview_task(f"ui_img|{ident}")
-                except Exception as exc:
-                    Debug.log_suppressed(
-                        "AssetManager._invalidate_texture_ui_cache.native_preview_task",
-                        exc,
-                    )
 
-        try:
-            from Infernux.engine.ui.asset_resource_preview import invalidate_resource_preview
-            invalidate_resource_preview(path)
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._invalidate_texture_ui_cache.resource_preview", exc)
+        from Infernux.engine.ui.asset_resource_preview import invalidate_resource_preview
+        invalidate_resource_preview(path)
 
-        try:
-            from Infernux.engine.ui.window_manager import WindowManager
-            wm = WindowManager.instance()
-            if wm is not None:
-                for panel in list(getattr(wm, "_window_instances", {}).values()):
-                    invalidate = getattr(panel, "invalidate_texture_thumbnail", None)
-                    if callable(invalidate):
-                        invalidate(path)
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._invalidate_texture_ui_cache.panels", exc)
+        from Infernux.engine.ui.window_manager import WindowManager
+        wm = WindowManager.instance()
+        if wm is not None:
+            for panel in list(getattr(wm, "_window_instances", {}).values()):
+                invalidate = getattr(panel, "invalidate_texture_thumbnail", None)
+                if callable(invalidate):
+                    invalidate(path)
 
     @classmethod
     def _invalidate_material_ui_cache(cls, path: str) -> None:
@@ -2205,16 +2169,13 @@ class AssetManager:
         # every save was causing unnecessary GPU render-pass stalls during
         # continuous slider dragging.
 
-        try:
-            from Infernux.engine.ui.window_manager import WindowManager
-            wm = WindowManager.instance()
-            if wm is not None:
-                for panel in list(getattr(wm, "_window_instances", {}).values()):
-                    invalidate = getattr(panel, "invalidate_material_thumbnail", None)
-                    if callable(invalidate):
-                        invalidate(path)
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._invalidate_material_ui_cache.panels", exc)
+        from Infernux.engine.ui.window_manager import WindowManager
+        wm = WindowManager.instance()
+        if wm is not None:
+            for panel in list(getattr(wm, "_window_instances", {}).values()):
+                invalidate = getattr(panel, "invalidate_material_thumbnail", None)
+                if callable(invalidate):
+                    invalidate(path)
 
     @classmethod
     def _remove_material_pipeline(cls, material_key: str) -> None:
