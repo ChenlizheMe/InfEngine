@@ -323,7 +323,7 @@ def test_supersede_save_candidates_and_failed_batch_rollback_are_deterministic(
     for request in requests[:-1]:
         assert journal.complete(request, succeeded=True) is False
     assert journal.complete(requests[-1], succeeded=True) is True
-    claimed = journal.claim_ready(str(path))
+    claimed = journal.claim_ready_batch((str(path),))
     assert [item.request.generation for item in claimed] == [8]
     assert journal.commit_published_batch((claimed[0].request,)) is True
     assert journal.last_known_good(str(path)).source == b"value = 7"
