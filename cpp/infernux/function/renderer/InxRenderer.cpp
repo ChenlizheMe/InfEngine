@@ -1356,7 +1356,7 @@ void InxRenderer::DrawFrame()
         m_outlineRenderer->Initialize(m_vkCore.get(), m_sceneRenderTarget.get());
         m_outlineRenderer->SetOutlineObjectIds(m_selectedOutlineObjectIds);
     } else if (m_outlineRenderer) {
-        m_outlineRenderer->SetOutlineObjectId(0);
+        m_outlineRenderer->SetOutlineObjectIds({});
     }
 
     if (m_sceneRenderGraph)
