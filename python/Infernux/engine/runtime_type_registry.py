@@ -8,7 +8,6 @@ from typing import Any, Optional
 
 
 RUNTIME_TYPE_REGISTRY_SCHEMA = "infernux.runtime_type_registry"
-RUNTIME_TYPE_REGISTRY_VERSION = 1
 _runtime_types: dict[str, dict[str, Any]] = {}
 _runtime_registry_installed = False
 _RUNTIME_LIFECYCLE_METHODS = frozenset(
@@ -34,10 +33,12 @@ _RUNTIME_LIFECYCLE_METHODS = frozenset(
 def install_runtime_type_registry(path: str) -> int:
     with open(path, "r", encoding="utf-8") as stream:
         document = json.load(stream)
-    if document.get("$schema") != RUNTIME_TYPE_REGISTRY_SCHEMA:
+    if (
+        not isinstance(document, dict)
+        or document.get("$schema") != RUNTIME_TYPE_REGISTRY_SCHEMA
+        or set(document) != {"$schema", "types"}
+    ):
         raise RuntimeError("Unsupported Player runtime type registry schema")
-    if document.get("registry_version") != RUNTIME_TYPE_REGISTRY_VERSION:
-        raise RuntimeError("Unsupported Player runtime type registry version")
     entries = document.get("types")
     if not isinstance(entries, list):
         raise RuntimeError("Player runtime type registry has no type list")
@@ -121,9 +122,6 @@ def bind_runtime_lifecycle_contract(component_type: type, record: Optional[dict[
             f"Player component lifecycle differs from RuntimeTypeRegistry: "
             f"{component_type.__module__}.{component_type.__qualname__}"
         )
-    component_type._runtime_declared_phases_ = frozenset(
-        lifecycle.intersection({"fixed_update", "update", "late_update"})
-    )
 
 
 def clear_runtime_type_registry() -> None:
@@ -134,7 +132,6 @@ def clear_runtime_type_registry() -> None:
 
 __all__ = [
     "RUNTIME_TYPE_REGISTRY_SCHEMA",
-    "RUNTIME_TYPE_REGISTRY_VERSION",
     "bind_runtime_lifecycle_contract",
     "clear_runtime_type_registry",
     "install_runtime_type_registry",

@@ -9,7 +9,6 @@ import pytest
 from Infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
-    refresh_runtime_dispatch_cache,
 )
 from Infernux.components.script_loader import (
     ComponentBodyReloadRequest,
@@ -21,7 +20,6 @@ from Infernux.engine.runtime_dispatch import (
     RuntimeDispatchPublication,
     build_type_dispatch_descriptor,
     current_runtime_epoch,
-    ensure_runtime_compatibility_mirror,
     publish_runtime_dispatch_epoch,
     resolve_runtime_method,
 )
@@ -58,9 +56,9 @@ class _EpochProbe(ComponentLifecycleMixin):
 
 
 def _publish(component_type, instance):
+    del instance
     publication = publish_runtime_dispatch_epoch(
         (component_type,),
-        {component_type: (instance,)},
     )
     publication.commit()
     return publication
@@ -188,7 +186,7 @@ def test_phase_plan_is_not_rebuilt_for_update_or_helper_replacement():
     assert scheduler.profiler_snapshot()["plan_builds"] == 1
 
 
-def test_direct_lifecycle_entry_lazily_establishes_one_epoch_compatibility_mirror():
+def test_direct_lifecycle_entry_requires_a_published_epoch_descriptor():
     class DirectEntryProbe(ComponentLifecycleMixin):
         def __init__(self):
             self._enabled = True
@@ -204,21 +202,22 @@ def test_direct_lifecycle_entry_lazily_establishes_one_epoch_compatibility_mirro
         def late_update(self, _delta_time):
             self.calls.append("late")
 
-    # This deliberately models the old direct/native proxy path for a
-    # lightweight mixin that never went through InxComponent's class hook.
     assert "_runtime_phase_dispatch" not in DirectEntryProbe.__dict__
     assert "_runtime_phase_invokers" not in DirectEntryProbe.__dict__
     probe = DirectEntryProbe()
-    probe._call_update(0.1)
-    probe._call_fixed_update(0.1)
-    probe._call_late_update(0.1)
-
-    descriptor = ensure_runtime_compatibility_mirror(DirectEntryProbe)
-    assert DirectEntryProbe.__dict__["_runtime_phase_dispatch"] is descriptor.phase_dispatch
-    assert DirectEntryProbe.__dict__["_runtime_phase_invokers"] is descriptor.phase_invokers
-    assert descriptor.phase_dispatch is descriptor.phase_dispatch
-    assert descriptor.phase_invokers is descriptor.phase_invokers
-    assert probe.calls == ["update", "fixed", "late"]
+    publication = publish_runtime_dispatch_epoch((DirectEntryProbe,))
+    publication.commit()
+    try:
+        probe._call_update(0.1)
+        probe._call_fixed_update(0.1)
+        probe._call_late_update(0.1)
+        descriptor = current_runtime_epoch().require_descriptor(DirectEntryProbe)
+        assert len(descriptor.phase_invokers) == 3
+        assert probe.calls == ["update", "fixed", "late"]
+        assert "_runtime_phase_dispatch" not in DirectEntryProbe.__dict__
+        assert "_runtime_phase_invokers" not in DirectEntryProbe.__dict__
+    finally:
+        publication.rollback()
 
 
 def test_scheduler_shares_one_cached_invoker_tuple_across_instances_and_frames():
@@ -376,60 +375,48 @@ def test_active_frame_rejects_transaction_before_class_mutation():
     assert ActiveTarget.helper(probe) == "old"
 
 
-def test_compatibility_mirror_failure_does_not_advance_epoch(monkeypatch):
-    class MirrorProbe(ComponentLifecycleMixin):
+def test_publication_validation_failure_does_not_advance_epoch(monkeypatch):
+    class ValidationProbe(ComponentLifecycleMixin):
         def helper(self):
             return "stable"
 
     before = current_runtime_epoch()
     import Infernux.engine.runtime_dispatch as runtime_dispatch
 
-    def fail_mirror(*_args, **_kwargs):
-        raise RuntimeError("mirror failure")
-
-    monkeypatch.setattr(runtime_dispatch, "_set_compatibility_mirrors", fail_mirror)
-    try:
-        publish_runtime_dispatch_epoch((MirrorProbe,))
-    except RuntimeError as exc:
-        assert "mirror failure" in str(exc)
-    else:
-        raise AssertionError("mirror failure unexpectedly published")
-    assert current_runtime_epoch() is before
-
-
-def test_deferred_commit_restores_partial_mirror_write_on_failure(monkeypatch):
-    class DeferredMirrorProbe(ComponentLifecycleMixin):
-        def helper(self):
-            return "stable"
-
-    import Infernux.engine.runtime_dispatch as runtime_dispatch
-
-    before = current_runtime_epoch()
-    old_dispatch = DeferredMirrorProbe.__dict__.get("_runtime_phase_dispatch")
-    old_present = "_runtime_phase_dispatch" in DeferredMirrorProbe.__dict__
-    publication = publish_runtime_dispatch_epoch(
-        (DeferredMirrorProbe,),
-        defer_commit=True,
-    )
-
-    def partially_apply_then_fail(*_args, **_kwargs):
-        DeferredMirrorProbe._runtime_phase_dispatch = ("partial",)
-        raise RuntimeError("deferred mirror failure")
+    def fail_validation(*_args, **_kwargs):
+        raise RuntimeError("validation failure")
 
     monkeypatch.setattr(
         runtime_dispatch,
-        "_apply_compatibility_publication",
-        partially_apply_then_fail,
+        "validate_runtime_callback_bindings",
+        fail_validation,
     )
-    with pytest.raises(RuntimeError, match="deferred mirror failure"):
-        publication.commit()
+    try:
+        publish_runtime_dispatch_epoch((ValidationProbe,))
+    except RuntimeError as exc:
+        assert "validation failure" in str(exc)
+    else:
+        raise AssertionError("validation failure unexpectedly published")
+    assert current_runtime_epoch() is before
+
+
+def test_deferred_commit_publishes_only_at_commit():
+    class DeferredProbe(ComponentLifecycleMixin):
+        def helper(self):
+            return "stable"
+
+    before = current_runtime_epoch()
+    publication = publish_runtime_dispatch_epoch(
+        (DeferredProbe,),
+        defer_commit=True,
+    )
 
     assert current_runtime_epoch() is before
-    assert publication.committed is False
-    assert publication.rolled_back is False
-    assert ("_runtime_phase_dispatch" in DeferredMirrorProbe.__dict__) is old_present
-    if old_present:
-        assert DeferredMirrorProbe.__dict__["_runtime_phase_dispatch"] is old_dispatch
+    publication.commit()
+    assert current_runtime_epoch() is publication.after
+    assert publication.committed is True
+    publication.rollback()
+    assert current_runtime_epoch() is before
 
 
 def test_runtime_epoch_publication_rejects_non_owner_thread():

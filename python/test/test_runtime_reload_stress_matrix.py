@@ -291,7 +291,7 @@ def test_cross_file_play_pause_step_reload_keeps_identity_and_switches_epoch(
     new_coroutine = a_first.start_coroutine(a_first._routine())
     assert new_coroutine.creation_epoch_id == current_runtime_epoch().epoch_id
     assert ("new-generator", "A-new") in a_first.coroutine_values
-    assert old_coroutine.is_legacy
+    assert old_coroutine.is_stale_epoch
 
     assert manager.pause() is True
     manager.step_frame()
@@ -352,8 +352,8 @@ def test_supersede_save_candidates_and_failed_batch_rollback_are_deterministic(
     import Infernux.components.script_loader as script_loader
     apply_real = script_loader._apply_component_body_patch_plans
 
-    def apply_then_fail(plans, instances_by_type=None):
-        apply_real(plans, instances_by_type=instances_by_type)
+    def apply_then_fail(plans):
+        apply_real(plans)
         raise RuntimeError("matrix publish failure")
 
     monkeypatch.setattr(script_loader, "_apply_component_body_patch_plans", apply_then_fail)

@@ -171,10 +171,7 @@ class ComponentNativeMixin:
             except Exception as exc:
                 from Infernux.debug import Debug
                 Debug.log_warning(f"[InxComponent] Failed to read enabled during bind: {exc}")
-            # A coroutine may have started before the native proxy existed, or
-            # this may be a rebind to a new proxy. Do not let the cached Python
-            # publication state suppress the first authoritative update.
-            self._sync_native_coroutine_scheduler_state(force=True)
+            self._sync_coroutine_scheduler_state()
 
     def _sync_native_state(
         self,
@@ -203,7 +200,6 @@ class ComponentNativeMixin:
         """Invalidate native references after scene rebuild/destruction."""
         self._release_component_data_slot()
         self._cpp_component = None
-        self.__dict__.pop("_native_coroutine_scheduler_state", None)
         self._native_handle = None
         self._native_scene = None
         self._bound_structure_version = None
@@ -221,7 +217,7 @@ class ComponentNativeMixin:
         scheduler = getattr(self, '_coroutine_scheduler', None)
         if scheduler is not None:
             scheduler.stop_all()
-            self._sync_native_coroutine_scheduler_state()
+            self._sync_coroutine_scheduler_state()
             self._coroutine_scheduler = None
         self._invalidate_native_binding()
 

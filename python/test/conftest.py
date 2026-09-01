@@ -40,6 +40,7 @@ from Infernux.lib import (
 )
 from Infernux.resources import resources_path
 from Infernux.input import Input
+from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
 
 @pytest.fixture(autouse=True)
@@ -120,6 +121,37 @@ def engine():
             # The native engine is pointed at this disposable project. Cleaning
             # that directory is sufficient and never touches tracked resources.
             shutil.rmtree(project, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def runtime_scheduler(engine):
+    """Install the same shared Python lifecycle owner used by Editor and Player."""
+    scheduler = RuntimeExecutionScheduler(name="pytest-native", native_bridge=True)
+    manager = SceneManager.instance()
+    try:
+        yield scheduler
+    finally:
+        manager.clear_runtime_lifecycle_callbacks()
+        scheduler.clear()
+        scheduler.unbind_native_bridge()
+
+
+@pytest.fixture(autouse=True)
+def _install_runtime_scheduler_bridge(runtime_scheduler):
+    """Restore the authoritative bridge before every native integration test."""
+    manager = SceneManager.instance()
+    manager.clear_runtime_lifecycle_callbacks()
+    runtime_scheduler.end_native_frame()
+    manager.set_runtime_lifecycle_callbacks(
+        runtime_scheduler.begin_native_frame,
+        lambda delta: runtime_scheduler.execute_native_phase("fixed_update", delta),
+        lambda delta: runtime_scheduler.execute_native_phase("update", delta),
+        lambda delta: runtime_scheduler.execute_native_phase("late_update", delta),
+        runtime_scheduler.execute_native_editor_update,
+        runtime_scheduler.end_native_frame,
+    )
+    runtime_scheduler.bind_native_bridge(manager)
+    yield runtime_scheduler
 
 
 @pytest.fixture()

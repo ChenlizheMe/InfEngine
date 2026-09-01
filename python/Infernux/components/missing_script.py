@@ -79,6 +79,10 @@ def create_missing_script_component(
     cls._type_guid_ = type_guid
     cls._asset_script_guid_ = script_guid
     cls._intrinsic_script_guid_ = script_guid
+    from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+
+    publication = publish_runtime_dispatch_epoch((cls,))
+    publication.commit()
 
     instance = cls()
     instance._is_broken = True

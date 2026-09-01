@@ -5,8 +5,8 @@ from __future__ import annotations
 from Infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
-    refresh_runtime_dispatch_cache,
 )
+from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 from Infernux.components.component import InxComponent
 from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
 
@@ -100,9 +100,7 @@ def test_phase_plan_snapshot_is_safe_while_native_frame_is_active():
     assert snapshot["update"] == (component,)
 
 
-def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild(monkeypatch):
-    import Infernux.lib as native_lib
-
+def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild():
     class _NativeManager:
         def __init__(self) -> None:
             self.available = False
@@ -118,13 +116,8 @@ def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild(monkey
 
     manager = _NativeManager()
 
-    class _SceneManager:
-        @staticmethod
-        def instance():
-            return manager
-
-    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
     scheduler = RuntimeExecutionScheduler(name="native-plan", native_bridge=True)
+    scheduler.bind_native_bridge(manager)
     scheduler.register_component(_ScheduledProbe(1))
 
     scheduler.prepare_frame()
@@ -486,16 +479,20 @@ def test_runtime_frame_keeps_one_dispatch_revision_across_all_phases():
     BodyProbe.fixed_update = new_fixed_update
     BodyProbe.update = new_update
     BodyProbe.late_update = new_late_update
-    refresh_runtime_dispatch_cache(BodyProbe, (probe,))
+    publication = publish_runtime_dispatch_epoch((BodyProbe,))
+    publication.commit()
 
     assert probe.calls == ["fixed-old", "update-old", "late-old"]
-    next_frame = scheduler.begin_frame()
     try:
-        next_frame.execute_phase("fixed_update", 0.02)
-        next_frame.execute_phase("update", 0.016)
-        next_frame.execute_phase("late_update", 0.016)
+        next_frame = scheduler.begin_frame()
+        try:
+            next_frame.execute_phase("fixed_update", 0.02)
+            next_frame.execute_phase("update", 0.016)
+            next_frame.execute_phase("late_update", 0.016)
+        finally:
+            next_frame.close()
     finally:
-        next_frame.close()
+        publication.rollback()
     assert probe.calls == [
         "fixed-old",
         "update-old",

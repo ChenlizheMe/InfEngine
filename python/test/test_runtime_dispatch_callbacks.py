@@ -112,12 +112,11 @@ def test_callback_invoke_does_not_reflect_signature_after_registration(monkeypat
         publication.rollback()
 
 
-def test_plain_bound_method_is_legacy_pinned_and_keeps_owner_alive():
+def test_plain_bound_method_is_direct_and_keeps_owner_alive():
     owner = _PlainCallbackOwner()
     registry = ReloadableCallbackRegistry()
     reference = registry.add_listener(owner.handle)
-    assert reference.is_legacy is True
-    assert reference.pinned_revision == current_runtime_epoch().epoch_id
+    assert reference.is_direct is True
 
     del owner
     gc.collect()
@@ -183,17 +182,17 @@ def test_remove_or_incompatible_signature_rejects_epoch_publication():
         _ReloadableCallbackComponent.handle = old_method
 
 
-def test_lambda_is_pinned_and_registry_can_return_diagnostic_results():
+def test_lambda_is_direct_and_registry_can_return_diagnostic_results():
     values = []
     registry = ReloadableCallbackRegistry()
     reference = registry.add_listener(lambda value: values.append(value))
-    assert reference.is_legacy is True
+    assert reference.is_direct is True
     results = registry.invoke(4)
-    assert results[0].status == "legacy_pinned"
+    assert results[0].status == "direct"
     assert values == [4]
 
 
-def test_legacy_callback_reports_the_epoch_it_remains_pinned_to():
+def test_direct_callback_is_independent_of_runtime_epochs():
     values = []
     registry = ReloadableCallbackRegistry()
     reference = registry.add_listener(lambda value: values.append(value))
@@ -201,9 +200,8 @@ def test_legacy_callback_reports_the_epoch_it_remains_pinned_to():
 
     result = registry.invoke(5, epoch=newer)[0]
 
-    assert result.status == "legacy_pinned"
-    assert str(reference.registration_epoch) in result.message
-    assert str(newer.epoch_id) in result.message
+    assert result.status == "direct"
+    assert result.message == ""
     assert values == [5]
 
 
@@ -234,7 +232,7 @@ def test_direct_body_patch_restores_old_body_when_callback_contract_rejects_epoc
     assert owner.values == [("old", 7)]
 
 
-def test_missing_type_in_a_new_epoch_does_not_use_callback_fallback_descriptor():
+def test_missing_type_in_a_new_epoch_does_not_reuse_previous_descriptor():
     class UnregisteredCallbackOwner(InxComponent):
         def activate(self) -> None:
             self.calls += 1

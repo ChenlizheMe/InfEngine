@@ -550,11 +550,7 @@ class PlayModeManager(PlayModeSerializationMixin):
     def register_runtime_hidden_object(self, game_object) -> None:
         if game_object is None:
             return
-        try:
-            object_id = int(game_object.id)
-        except Exception as exc:
-            Debug.log_suppressed("PlayModeManager.register_runtime_hidden_object", exc)
-            return
+        object_id = int(game_object.id)
         if object_id > 0:
             previous_count = len(self._runtime_hidden_object_ids)
             self._runtime_hidden_object_ids.add(object_id)
@@ -573,20 +569,13 @@ class PlayModeManager(PlayModeSerializationMixin):
 
     def _notify_runtime_hidden_changed(self) -> None:
         for callback in tuple(self._runtime_hidden_listeners):
-            try:
-                callback()
-            except Exception as exc:
-                Debug.log_suppressed("PlayModeManager.runtime_hidden_listener", exc)
+            callback()
 
     def get_runtime_hidden_object_ids(self) -> set[int]:
         return set(self._runtime_hidden_object_ids)
 
     def is_runtime_hidden_object_id(self, object_id: int) -> bool:
-        try:
-            return int(object_id) in self._runtime_hidden_object_ids
-        except Exception as exc:
-            Debug.log_suppressed("PlayModeManager.is_runtime_hidden_object_id", exc)
-            return False
+        return int(object_id) in self._runtime_hidden_object_ids
     
     # ========================================================================
     # Properties
@@ -705,11 +694,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
             transition_started = time.perf_counter()
             sprite_init_started = transition_started
-            try:
-                from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-                SpriteRenderer.init_all_in_scene()
-            except Exception as exc:
-                Debug.log_suppressed("PlayModeManager.step_enter.SpriteRenderer.init_all_in_scene", exc)
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene()
             sprite_init_ms = (time.perf_counter() - sprite_init_started) * 1000.0
             # 1. Serialize scene + init timing (do not clear undo — asset editors keep history)
             snapshot_started = time.perf_counter()
@@ -725,8 +711,6 @@ class PlayModeManager(PlayModeSerializationMixin):
             except ImportError:
                 # Time module not yet importable during early bootstrap — benign.
                 pass
-            except Exception as exc:
-                Debug.log_suppressed("PlayModeManager.step_enter.Time._reset", exc)
             from Infernux.components.builtin_component import BuiltinComponent
             BuiltinComponent._clear_cache()
 
@@ -874,15 +858,12 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         # 3. Discard any pending runtime scene load queued by user scripts
         #    during the last play frame — we're about to restore the backup.
-        try:
-            from Infernux.scene import SceneManager as _SceneMgr
-            _SceneMgr._scene_load_generation += 1
-            transaction = _SceneMgr._active_scene_transaction
-            if transaction is not None and not transaction.is_complete:
-                transaction.cancel()
-            _SceneMgr._clear_runtime_load_state()
-        except Exception as exc:
-            Debug.log_suppressed("PlayModeManager.exit_play_mode.discard_pending_load", exc)
+        from Infernux.scene import SceneManager as _SceneMgr
+        _SceneMgr._scene_load_generation += 1
+        transaction = _SceneMgr._active_scene_transaction
+        if transaction is not None and not transaction.is_complete:
+            transaction.cancel()
+        _SceneMgr._clear_runtime_load_state()
 
         from Infernux.components.builtin_component import BuiltinComponent
         BuiltinComponent._clear_cache()
@@ -1165,10 +1146,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._total_play_time = Time.time
             # Read game-only frame cost from C++ (previous frame's measurement)
             if self._native_engine is not None:
-                try:
-                    Time._game_delta_time = self._native_engine.get_game_only_frame_ms() / 1000.0
-                except Exception as exc:
-                    Debug.log_suppressed("PlayModeManager.tick.read_game_only_frame_ms", exc)
+                Time._game_delta_time = self._native_engine.get_game_only_frame_ms() / 1000.0
         except ImportError:
             self._delta_time = min(raw_dt * self._time_scale, 0.1)
             self._total_play_time += self._delta_time
@@ -1674,11 +1652,8 @@ class PlayModeManager(PlayModeSerializationMixin):
                 str(exc),
             )
         if changed_by_type:
-            try:
-                from Infernux.engine.undo import _bump_inspector_structure
-                _bump_inspector_structure()
-            except Exception as exc:
-                Debug.log_suppressed("PlayModeManager.commit_script_reload_batch.bump_inspector_structure", exc)
+            from Infernux.engine.undo import _bump_inspector_structure
+            _bump_inspector_structure()
             Debug.log_internal(
                 f"Reloaded {len(changed_by_type)} component type(s) in one script batch"
             )
@@ -1812,11 +1787,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             replaced += 1
 
         if replaced:
-            try:
-                from Infernux.engine.undo import _bump_inspector_structure
-                _bump_inspector_structure()
-            except Exception as exc:
-                Debug.log_suppressed("PlayModeManager.mark_components_missing.bump_inspector_structure", exc)
+            from Infernux.engine.undo import _bump_inspector_structure
+            _bump_inspector_structure()
             Debug.log_internal(
                 f"Marked {replaced} component(s) missing after deleting {os.path.basename(file_path)}"
             )
@@ -1929,14 +1901,11 @@ class PlayModeManager(PlayModeSerializationMixin):
     
     def _mark_native_scene_temporal_discontinuity(self) -> None:
         """Ask the renderer to drop Game/Scene caches on the next frame."""
-        try:
-            from Infernux.lib import SceneManager as NativeSceneManager
+        from Infernux.lib import SceneManager as NativeSceneManager
 
-            native = NativeSceneManager.instance()
-            if native is not None:
-                native.mark_temporal_discontinuity()
-        except Exception as exc:
-            Debug.log_suppressed("PlayModeManager.mark_native_scene_temporal_discontinuity", exc)
+        native = NativeSceneManager.instance()
+        if native is not None:
+            native.mark_temporal_discontinuity()
 
     def _invalidate_native_gpu_view_state(self) -> None:
         """Drain GPU work after Play/Stop retires native particle graphs.
@@ -1951,12 +1920,8 @@ class PlayModeManager(PlayModeSerializationMixin):
         if engine is None:
             return
         wait = getattr(engine, "wait_for_gpu_idle", None)
-        if not callable(wait):
-            return
-        try:
+        if callable(wait):
             wait()
-        except Exception as exc:
-            Debug.log_suppressed("PlayModeManager.invalidate_native_gpu_view_state.wait", exc)
 
     def _notify_state_change(self, old_state: PlayModeState, new_state: PlayModeState):
         """Notify all listeners of state change."""
@@ -1964,10 +1929,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         # bypass the editor FPS cap and idle sleep.
         is_playing = new_state != PlayModeState.EDIT
         if self._native_engine is not None:
-            try:
-                self._native_engine.set_play_mode_rendering(is_playing)
-            except Exception as exc:
-                Debug.log_suppressed("PlayModeManager._notify_state_change.set_play_mode_rendering", exc)
+            self._native_engine.set_play_mode_rendering(is_playing)
 
         event = PlayModeEvent(
             old_state=old_state,

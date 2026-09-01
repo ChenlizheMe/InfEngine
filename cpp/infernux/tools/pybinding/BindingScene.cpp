@@ -508,40 +508,6 @@ static py::object InstantiateGameObjectsBatch(Scene &scene, GameObject *source, 
 /**
  * @brief Helper function to create a GameObject from a mesh asset GUID.
  */
-/// Apply FBX-extracted material data to a MeshRenderer's slots.
-static void ApplyFbxMaterialData(MeshRenderer *renderer, const std::shared_ptr<InxMesh> &mesh)
-{
-    if (!renderer || !mesh)
-        return;
-    const auto &slotData = mesh->GetMaterialSlotData();
-    const auto &slotNames = mesh->GetMaterialSlotNames();
-    if (slotData.empty())
-        return;
-    auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
-    if (!defaultMat)
-        return;
-
-    uint32_t slotCount = static_cast<uint32_t>(renderer->GetMaterialGuids().size());
-    for (uint32_t s = 0; s < slotCount && s < static_cast<uint32_t>(slotData.size()); ++s) {
-        // Skip slots that already have an assigned material
-        if (renderer->GetMaterial(s))
-            continue;
-        const auto &sd = slotData[s];
-        auto mat = defaultMat->Clone();
-        mat->SetColor("baseColor", sd.baseColor);
-        mat->SetColor("emissionColor", sd.emissionColor);
-        mat->SetFloat("metallic", sd.metallic);
-        mat->SetFloat("smoothness", sd.smoothness);
-        if (s < slotNames.size() && !slotNames[s].empty())
-            mat->SetName(slotNames[s]);
-        else
-            mat->SetName("EmbeddedMaterial_" + std::to_string(s));
-        if (!mesh->GetFilePath().empty())
-            mat->SetFilePath(mesh->GetFilePath() + "::submat:" + std::to_string(s));
-        renderer->SetMaterial(s, std::move(mat));
-    }
-}
-
 static std::string TrimCopy(std::string s)
 {
     auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
@@ -650,13 +616,11 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             auto *renderer = obj->AddComponent<SkinnedMeshRenderer>();
             if (renderer) {
                 renderer->SetSourceModelGuid(guid);
-                ApplyFbxMaterialData(renderer, mesh);
             }
         } else {
             MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
             if (renderer) {
                 renderer->SetMeshAsset(guid, mesh);
-                ApplyFbxMaterialData(renderer, mesh);
             }
         }
         return obj;
@@ -679,14 +643,12 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             if (renderer) {
                 renderer->SetSourceModelGuid(guid);
                 renderer->SetNodeGroup(static_cast<int32_t>(g));
-                ApplyFbxMaterialData(renderer, mesh);
             }
         } else {
             MeshRenderer *renderer = child->AddComponent<MeshRenderer>();
             if (renderer) {
                 renderer->SetMeshAsset(guid, mesh);
                 renderer->SetNodeGroup(static_cast<int32_t>(g));
-                ApplyFbxMaterialData(renderer, mesh);
             }
         }
     }
@@ -1071,7 +1033,6 @@ void RegisterSceneBindings(py::module_ &m)
                 auto mesh = AssetRegistry::Instance().LoadAsset<InxMesh>(guid, ResourceType::Mesh);
                 if (mesh) {
                     mr.SetMeshAsset(guid, mesh);
-                    ApplyFbxMaterialData(&mr, mesh);
                     return;
                 }
                 mr.SetMeshAssetGuid(guid);
@@ -1319,13 +1280,8 @@ void RegisterSceneBindings(py::module_ &m)
                       "GUID of the independently imported model that owns the active animation take")
         .def(
             "set_source_model_guid",
-            [](SkinnedMeshRenderer &sr, const std::string &guid) {
-                sr.SetSourceModelGuid(guid);
-                const auto mesh = sr.GetMeshAssetRef().Get();
-                if (mesh)
-                    ApplyFbxMaterialData(&sr, mesh);
-            },
-            py::arg("guid"), "Assign the skinned source model by GUID")
+            [](SkinnedMeshRenderer &sr, const std::string &guid) { sr.SetSourceModelGuid(guid); }, py::arg("guid"),
+            "Assign the skinned source model by GUID")
         .def_property("active_take_name", &SkinnedMeshRenderer::GetActiveTakeName,
                       &SkinnedMeshRenderer::SetActiveTakeName, "Currently selected animation take name")
         .def_property_readonly("has_animation_takes", &SkinnedMeshRenderer::HasAnimationTakes,
@@ -1489,16 +1445,10 @@ void RegisterSceneBindings(py::module_ &m)
         .def("get_py_component", &PyComponentProxy::GetPyComponent, "Get the underlying Python component")
         .def("get_py_type_name", &PyComponentProxy::GetPyTypeName, "Get the Python type name")
         .def("is_valid", &PyComponentProxy::IsValid, "Check if this proxy holds a valid Python component")
-        .def("set_coroutine_scheduler_active", &PyComponentProxy::SetCoroutineSchedulerActive,
-             "Update the native coroutine dispatch bit after a scheduler transition")
         .def("refresh_python_lifecycle_dispatch", &PyComponentProxy::RefreshPythonLifecycleDispatch,
-             "Refresh cached Python lifecycle wrappers and native phase gates")
+             "Refresh cached non-frame lifecycle wrappers and physics callback gates")
         .def("_reset_lifecycle_for_play", &PyComponentProxy::ResetLifecycleForPlay,
-             "Internal Edit-to-Play lifecycle reset for a fresh Python mirror")
-        .def_property_readonly("overrides_update", &PyComponentProxy::OverridesUpdate)
-        .def_property_readonly("has_coroutine_scheduler", &PyComponentProxy::HasCoroutineScheduler)
-        .def_property_readonly("update_dispatch_count", &PyComponentProxy::GetUpdateDispatchCount)
-        .def_property_readonly("update_forward_count", &PyComponentProxy::GetUpdateForwardCount);
+             "Internal Edit-to-Play lifecycle reset for a fresh Python mirror");
 
     // ========================================================================
     // CameraProjection enum
@@ -2514,6 +2464,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("stop", &SceneManager::Stop, "Stop play mode")
         .def("pause", &SceneManager::Pause, "Pause play mode")
         .def("is_paused", &SceneManager::IsPaused, "Check if paused")
+        .def_property_readonly("runtime_frame_count", &SceneManager::GetRuntimeFrameCount,
+                               "Completed gameplay frames for the current active runtime scene")
         .def("get_fixed_time_step", &SceneManager::GetFixedTimeStep, "Get the fixed physics timestep in seconds")
         .def("set_fixed_time_step", &SceneManager::SetFixedTimeStep, py::arg("value"),
              "Set the fixed physics timestep in seconds")

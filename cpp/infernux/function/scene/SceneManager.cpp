@@ -149,7 +149,7 @@ void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 Scene *SceneManager::CreateScene(const std::string &name)
 {
     auto scene = std::make_unique<Scene>(name);
-    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable);
+    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     Scene *ptr = scene.get();
     m_scenes.push_back(std::move(scene));
 
@@ -178,8 +178,7 @@ void SceneManager::SetActiveScene(Scene *scene)
         m_resetDeltaTimeOnNextFrame = true;
     }
     if (m_activeScene) {
-        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled &&
-                                                           m_runtimeLifecycleWorkAvailable);
+        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         m_activeScene->SetPlaying(m_isPlaying);
     }
 
@@ -315,13 +314,12 @@ void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback be
         static_cast<bool>(m_runtimeLifecycleBegin) && static_cast<bool>(m_runtimeLifecycleFixedUpdate) &&
         static_cast<bool>(m_runtimeLifecycleUpdate) && static_cast<bool>(m_runtimeLifecycleLateUpdate) &&
         static_cast<bool>(m_runtimeLifecycleEditorUpdate) && static_cast<bool>(m_runtimeLifecycleEnd);
-    const bool schedulerActive = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
     for (const auto &scene : m_scenes) {
         if (scene)
-            scene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
+            scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     }
     if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
 }
 
 void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
@@ -330,13 +328,6 @@ void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
         return;
 
     m_runtimeLifecycleWorkAvailable = available;
-    const bool schedulerActive = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
-    for (const auto &scene : m_scenes) {
-        if (scene)
-            scene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
-    }
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
 }
 
 void SceneManager::SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
@@ -457,6 +448,7 @@ void SceneManager::Update(float deltaTime)
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(t0);
+        ++m_runtimeFrameCount;
     }
 }
 
@@ -540,6 +532,7 @@ void SceneManager::Play()
         m_fixedTime = 0.0;
         m_fixedUnscaledTime = 0.0;
         m_lastScaledDeltaTime = 0.0f;
+        m_runtimeFrameCount = 0;
     }
 
     m_isPlaying = true;
@@ -559,6 +552,11 @@ void SceneManager::StartActiveSceneForPlay()
 {
     if (!m_activeScene)
         return;
+
+    // Scene-relative frame numbering is the useful contract for deterministic
+    // capture and diagnostics. A transactional scene replacement therefore
+    // starts a fresh sequence even though the play session itself continues.
+    m_runtimeFrameCount = 0;
 
     const auto transitionStart = ProfileClock::now();
     m_activeScene->SetPlaying(true);
@@ -619,6 +617,7 @@ void SceneManager::Stop()
     m_fixedTime = 0.0;
     m_fixedUnscaledTime = 0.0;
     m_lastScaledDeltaTime = 0.0f;
+    m_runtimeFrameCount = 0;
 
     // Notify renderer that play stopped.
     if (m_onPlayStateChanged)
@@ -681,6 +680,7 @@ void SceneManager::Step(float deltaTime)
         m_activeScene->LateUpdate(deltaTime);
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->LateUpdate(deltaTime);
+    ++m_runtimeFrameCount;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
     if (m_activeScene)
@@ -720,8 +720,7 @@ Scene *SceneManager::EnsureRuntimePersistentScene()
         return nullptr;
     if (!m_runtimePersistentScene) {
         m_runtimePersistentScene = std::make_unique<Scene>("DontDestroyOnLoad");
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled &&
-                                                                      m_runtimeLifecycleWorkAvailable);
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         m_runtimePersistentScene->SetPlaying(true);
         // Start the empty Scene once. Trees transferred into it already own
         // their lifecycle state and must never replay Awake/Start/OnEnable.

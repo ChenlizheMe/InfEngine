@@ -591,13 +591,7 @@ def test_player_control_capture_rejects_late_arm_in_target_scene(tmp_path, monke
     assert "must be armed before the target scene" in payload["error"]
 
 
-def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
-    class _Proxy:
-        overrides_update = True
-        has_coroutine_scheduler = False
-        update_dispatch_count = 41
-        update_forward_count = 41
-
+def test_player_observation_reports_component_diagnostics(monkeypatch):
     class RaceHUDController:
         enabled = True
         _awake_called = True
@@ -608,7 +602,6 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
         current_speed_kph = 42.5
         current_rank = 1
         _is_broken = False
-        _cpp_component = _Proxy()
 
         def update(self, _delta_time):
             return None
@@ -628,6 +621,7 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
         "get_active_scene": lambda self: scene,
         "is_playing": lambda self: True,
         "is_paused": lambda self: False,
+        "runtime_frame_count": 37,
     })()
     native = type("_NativeObserve", (), {
         "renderer_frame_snapshot": {},
@@ -668,6 +662,8 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     assert data["scene_playing"] is True
     assert data["scene_manager_playing"] is True
     assert data["scene_manager_paused"] is False
+    assert data["runtime_frame_count"] == 37
+    assert data["gameplay_ready"] is True
     assert data["play_state"] == "playing"
     component = data["objects"]["Prompt"]["python_components"][0]
     assert component["update_overridden"] is True
@@ -676,12 +672,6 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     assert component["trigger_key"] == "space"
     assert component["broken_script"] is False
     assert component["broken_error"] == ""
-    assert component["proxy"] == {
-        "overrides_update": True,
-        "has_coroutine_scheduler": False,
-        "update_dispatch_count": 41,
-        "update_forward_count": 41,
-    }
     assert data["objects"]["Prompt"]["component_fields"] == {
         "RaceHUDController[0]": {"current_speed_kph": 42.5, "current_rank": 1}
     }
@@ -704,6 +694,7 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     paused_data = player_control._observe_player(engine, ["Prompt"])
 
     assert paused_data["play_state"] == "paused"
+    assert paused_data["gameplay_ready"] is True
 
 
 def test_player_control_capture_uses_player_game_render_target(tmp_path, monkeypatch):
@@ -773,6 +764,7 @@ def test_player_observation_discovers_bounded_objects_by_public_component_type(m
         "get_active_scene": lambda self: scene,
         "is_playing": lambda self: True,
         "is_paused": lambda self: False,
+        "runtime_frame_count": 5,
     })()
     native = type("_NativeObserve", (), {
         "renderer_frame_snapshot": {},

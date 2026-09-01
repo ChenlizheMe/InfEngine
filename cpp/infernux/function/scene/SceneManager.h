@@ -167,6 +167,14 @@ class SceneManager
         return m_lastFrameProfile;
     }
 
+    /// Number of gameplay frames completed for the current active runtime
+    /// scene. The counter advances only when Update() actually runs the play
+    /// graph; editor, loading, and paused render frames do not affect it.
+    [[nodiscard]] uint64_t GetRuntimeFrameCount() const noexcept
+    {
+        return m_runtimeFrameCount;
+    }
+
     [[nodiscard]] size_t GetLastColliderSyncCandidateCount() const
     {
         return static_cast<size_t>(m_lastFrameProfile.colliderSyncCandidates);
@@ -536,6 +544,7 @@ class SceneManager
     // Play mode state
     bool m_isPlaying = false;
     bool m_isPaused = false;
+    uint64_t m_runtimeFrameCount = 0;
 
     // Callbacks
     SceneCallback m_onSceneLoaded;

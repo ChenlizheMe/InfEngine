@@ -1058,11 +1058,15 @@ def _observe_player(
     native_scene_manager = SceneManager.instance()
     scene = native_scene_manager.get_active_scene()
     play_manager = engine.get_play_mode_manager()
-    if native_scene_manager.is_paused():
+    scene_playing = bool(scene is not None and scene.is_playing())
+    manager_playing = bool(native_scene_manager.is_playing())
+    manager_paused = bool(native_scene_manager.is_paused())
+    runtime_frame_count = int(native_scene_manager.runtime_frame_count)
+    if manager_paused:
         state = "paused"
     elif play_manager is not None:
         state = getattr(getattr(play_manager, "state", None), "name", "unknown")
-    elif native_scene_manager.is_playing():
+    elif manager_playing:
         state = "playing"
     else:
         state = "stopped"
@@ -1077,17 +1081,6 @@ def _observe_player(
             component_type = type(component)
             update_method = getattr(component_type, "update", None)
             update_globals = getattr(update_method, "__globals__", {})
-            cpp_component = getattr(component, "_cpp_component", None)
-            proxy_diagnostics = {}
-            if cpp_component is not None:
-                for field in (
-                    "overrides_update",
-                    "has_coroutine_scheduler",
-                    "update_dispatch_count",
-                    "update_forward_count",
-                ):
-                    if hasattr(cpp_component, field):
-                        proxy_diagnostics[field] = getattr(cpp_component, field)
             components.append({
                 "type_name": component_type.__name__,
                 "enabled": bool(getattr(component, "enabled", False)),
@@ -1101,7 +1094,6 @@ def _observe_player(
                 "trigger_key": getattr(component, "trigger_key", None),
                 "broken_script": bool(getattr(component, "_is_broken", False)),
                 "broken_error": str(getattr(component, "_broken_error", "") or ""),
-                "proxy": proxy_diagnostics,
             })
         objects[name] = {
             "id": int(obj.id),
@@ -1119,9 +1111,13 @@ def _observe_player(
     renderer_state = _renderer_state_from_native(native)
     result = {
         "scene_name": str(getattr(scene, "name", "") or ""),
-        "scene_playing": bool(scene is not None and scene.is_playing()),
-        "scene_manager_playing": bool(native_scene_manager.is_playing()),
-        "scene_manager_paused": bool(native_scene_manager.is_paused()),
+        "scene_playing": scene_playing,
+        "scene_manager_playing": manager_playing,
+        "scene_manager_paused": manager_paused,
+        "runtime_frame_count": runtime_frame_count,
+        "gameplay_ready": bool(
+            scene_playing and manager_playing and runtime_frame_count > 0
+        ),
         "play_state": str(state).lower(),
         "objects": objects,
         "renderer_frame": renderer_state["frame"],

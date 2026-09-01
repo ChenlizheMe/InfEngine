@@ -67,6 +67,7 @@ class RuntimeExecutionScheduler:
             change_journal = runtime_change_journal()
         self.name = str(name)
         self._native_bridge = bool(native_bridge)
+        self._native_scene_manager = None
         self._change_journal = change_journal
         self._change_cursor = change_journal.create_cursor(
             f"runtime-execution:{self.name}:{id(self):x}"
@@ -96,50 +97,39 @@ class RuntimeExecutionScheduler:
 
     def _sync_native_work_availability(self) -> None:
         """Publish structural work state without adding a per-frame crossing."""
-        if not self._native_bridge:
+        if not self._native_bridge or self._native_scene_manager is None:
             return
         has_work = any(
             self._active_coroutine_scheduler(component) is not None
             or any(self._has_phase(component, phase) for phase in _RUNTIME_SCHEDULER_PHASES)
             for component in self._components.values()
         )
-        try:
-            from Infernux.lib import SceneManager
-
-            setter = getattr(
-                SceneManager.instance(),
-                "set_runtime_lifecycle_work_available",
-                None,
-            )
-            if callable(setter):
-                setter(has_work)
-        except (ImportError, AttributeError, RuntimeError):
-            # The scheduler is created before the native bridge is installed.
-            # Engine wiring publishes the authoritative state once installation
-            # has completed.
-            return
+        self._native_scene_manager.set_runtime_lifecycle_work_available(has_work)
 
     def _publish_native_plan(self) -> None:
         """Publish one structural plan summary; never crosses per component/frame."""
-        if not self._native_bridge:
+        if not self._native_bridge or self._native_scene_manager is None:
             return
-        try:
-            from Infernux.lib import SceneManager
+        self._native_scene_manager.set_runtime_lifecycle_plan(
+            max(0, int(self._plan_revision)),
+            len(self._phase_plan["fixed_update"]),
+            len(self._phase_plan["update"]),
+            len(self._phase_plan["late_update"]),
+        )
 
-            setter = getattr(
-                SceneManager.instance(),
-                "set_runtime_lifecycle_plan",
-                None,
-            )
-            if callable(setter):
-                setter(
-                    max(0, int(self._plan_revision)),
-                    len(self._phase_plan["fixed_update"]),
-                    len(self._phase_plan["update"]),
-                    len(self._phase_plan["late_update"]),
-                )
-        except (ImportError, AttributeError, RuntimeError):
-            return
+    def bind_native_bridge(self, scene_manager: Any) -> None:
+        """Bind the one native SceneManager that owns runtime phase boundaries."""
+        if not self._native_bridge:
+            raise RuntimeError("scheduler was not configured for a native bridge")
+        if scene_manager is None:
+            raise TypeError("scene_manager is required")
+        if self._native_scene_manager is not None and self._native_scene_manager is not scene_manager:
+            raise RuntimeError("runtime scheduler is already bound to another SceneManager")
+        self._native_scene_manager = scene_manager
+        self.sync_native_work_availability()
+
+    def unbind_native_bridge(self) -> None:
+        self._native_scene_manager = None
 
     def sync_native_work_availability(self) -> None:
         """Synchronize the native fast-path after lifecycle bridge installation."""
@@ -433,9 +423,6 @@ class RuntimeExecutionScheduler:
 
     @staticmethod
     def _has_phase(component: Any, phase: str) -> bool:
-        declared = getattr(type(component), "_runtime_declared_phases_", None)
-        if declared is not None:
-            return phase in declared
         from Infernux.engine.runtime_dispatch import has_runtime_phase
 
         return has_runtime_phase(type(component), phase)
@@ -499,10 +486,7 @@ class RuntimeExecutionScheduler:
         scheduler = component.__dict__.get("_runtime_coroutine_scheduler")
         if scheduler is None:
             return None
-        try:
-            return scheduler if int(getattr(scheduler, "count", 0)) > 0 else None
-        except (AttributeError, TypeError, ValueError):
-            return None
+        return scheduler if scheduler.count > 0 else None
 
     def _build_plan(self) -> None:
         components = []
@@ -552,14 +536,7 @@ class RuntimeExecutionScheduler:
                 component_key = id(component)
                 if component_key in components:
                     continue
-                descriptor = epoch.descriptor_for(type(component))
-                if descriptor is None:
-                    # This is only possible for a lightweight test double
-                    # entering a scheduler outside normal component creation.
-                    from Infernux.engine.runtime_dispatch import ensure_runtime_dispatch_types
-
-                    epoch = ensure_runtime_dispatch_types((type(component),))
-                    descriptor = epoch.descriptor_for(type(component))
+                descriptor = epoch.require_descriptor(type(component))
                 components[component_key] = (component, descriptor.phase_invokers)
 
         snapshot = _RuntimeExecutionSnapshot(
@@ -647,9 +624,8 @@ class RuntimeExecutionScheduler:
             # enabled transitions visible between phases just like the legacy
             # Scene traversal. A disable in fixed_update therefore suppresses
             # the following update/late_update callbacks immediately.
-            # Coroutines intentionally keep their native TickWhileDisabled*
-            # behavior: component ``enabled`` gates the user callback, but
-            # the owning hierarchy still gates the coroutine scheduler.
+            # Component ``enabled`` gates the user callback, while the owning
+            # hierarchy independently gates coroutine work.
             coroutine_scheduler = self._active_coroutine_scheduler(component)
             if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
                 continue
@@ -901,99 +877,13 @@ class RuntimeExecutionFrame:
             active_frames.discard(self)
 
 
-def _build_runtime_phase_dispatch(component_type):
-    """Build the immutable phase call table for one component class.
+def _runtime_phase_invokers(component, *, epoch=None):
+    """Return phase invokers from the selected published epoch."""
+    if epoch is None:
+        from Infernux.engine.runtime_dispatch import current_runtime_epoch
 
-    Normal lifecycle methods are stored as unbound functions so the hot path
-    can call ``fn(component, dt)`` without doing a string lookup or creating a
-    bound method.  Static/class methods retain their old descriptor semantics
-    through the small ``bind_instance`` flag; they are unusual, but should not
-    silently change behavior just because dispatch was optimized.
-    """
-    from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
-
-    return build_type_dispatch_descriptor(component_type).phase_dispatch
-
-
-def _runtime_phase_dispatch(component):
-    """Return a class-owned immutable dispatch table, building it once."""
-    component_type = type(component)
-    # Read the class' own entry rather than an inherited table.  This matters
-    # for test doubles and for a body-only reload that publishes a new Python
-    # class derived from an existing component type.
-    dispatch = component_type.__dict__.get("_runtime_phase_dispatch")
-    if dispatch is None:
-        from Infernux.engine.runtime_dispatch import ensure_runtime_compatibility_mirror
-
-        dispatch = ensure_runtime_compatibility_mirror(component_type).phase_dispatch
-    return dispatch
-
-
-def _build_runtime_phase_invokers(component_type):
-    """Build callables that erase descriptor branching from the frame path.
-
-    The native proxy already caches the wrapper methods.  This second cache is
-    deliberately per Python type: it turns the normal instance-method case
-    into one callable invocation and keeps static/classmethod compatibility in
-    the uncommon cases without inspecting descriptors during a frame.
-    """
-    from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
-
-    return build_type_dispatch_descriptor(component_type).phase_invokers
-
-
-def _runtime_phase_dispatch_for_type(component_type):
-    """Return a type table without requiring a component instance."""
-    dispatch = component_type.__dict__.get("_runtime_phase_dispatch")
-    if dispatch is None:
-        from Infernux.engine.runtime_dispatch import ensure_runtime_compatibility_mirror
-
-        dispatch = ensure_runtime_compatibility_mirror(component_type).phase_dispatch
-    return dispatch
-
-
-def _runtime_phase_invokers(component):
-    """Return the cached invokers for *component*, lazily for test doubles."""
-    component_type = type(component)
-    invokers = component_type.__dict__.get("_runtime_phase_invokers")
-    if invokers is None:
-        from Infernux.engine.runtime_dispatch import ensure_runtime_compatibility_mirror
-
-        invokers = ensure_runtime_compatibility_mirror(component_type).phase_invokers
-    return invokers
-
-
-def refresh_runtime_dispatch_cache(
-    component_type,
-    instances=(),
-    *,
-    publish_epoch: bool = True,
-):
-    """Refresh compatibility caches, optionally publishing an epoch.
-
-    ``publish_epoch=False`` is reserved for a staged body transaction.  It
-    keeps legacy class/instance mirrors and the native proxy in sync while the
-    transaction is still reversible; the owner publishes the actual epoch
-    only after every batch member has committed.
-    """
-    from Infernux.engine.runtime_dispatch import (
-        assert_runtime_dispatch_safe_point,
-        _set_compatibility_mirrors,
-        build_type_dispatch_descriptor,
-        publish_runtime_dispatch_epoch,
-    )
-
-    if not publish_epoch:
-        assert_runtime_dispatch_safe_point()
-        descriptor = build_type_dispatch_descriptor(component_type)
-        _set_compatibility_mirrors(descriptor, tuple(instances))
-        return
-
-    publication = publish_runtime_dispatch_epoch(
-        (component_type,),
-        {component_type: tuple(instances)},
-    )
-    publication.commit()
+        epoch = current_runtime_epoch()
+    return epoch.require_descriptor(type(component)).phase_invokers
 
 
 def resolve_runtime_method(component: Any, name: str, *, epoch: Any = None) -> Any:
@@ -1077,19 +967,7 @@ class ComponentLifecycleMixin:
 
                 epoch = current_runtime_epoch()
             callback = self._resolve_runtime_method(method_name, epoch=epoch)
-            if callback is None and epoch.descriptor_for(type(self)) is None:
-                # Lightweight mixins used by the headless scheduler are not
-                # registered component types.  Keep their cache-miss path on
-                # the same descriptor implementation without making them a
-                # second publication system.
-                from Infernux.engine.runtime_dispatch import (
-                    ensure_runtime_compatibility_mirror,
-                )
-
-                callback = ensure_runtime_compatibility_mirror(type(self)).resolve_method(
-                    self,
-                    method_name,
-                )
+            epoch.require_descriptor(type(self))
             if callback is None:
                 raise AttributeError(
                     f"{type(self).__name__} has no lifecycle method '{method_name}'"
@@ -1154,10 +1032,7 @@ class ComponentLifecycleMixin:
         if not self._enabled:
             return
         try:
-            invokers = self.__dict__.get("_runtime_phase_invokers_instance")
-            if invokers is None:
-                invokers = _runtime_phase_invokers(self)
-                self.__dict__["_runtime_phase_invokers_instance"] = invokers
+            invokers = _runtime_phase_invokers(self)
             invokers[0](self, delta_time)
         except Exception as exc:
             self._report_lifecycle_exception(exc)
@@ -1173,10 +1048,7 @@ class ComponentLifecycleMixin:
         if not self._enabled:
             return
         try:
-            invokers = self.__dict__.get("_runtime_phase_invokers_instance")
-            if invokers is None:
-                invokers = _runtime_phase_invokers(self)
-                self.__dict__["_runtime_phase_invokers_instance"] = invokers
+            invokers = _runtime_phase_invokers(self)
             invokers[1](self, fixed_delta_time)
         except Exception as exc:
             self._report_lifecycle_exception(exc)
@@ -1189,10 +1061,7 @@ class ComponentLifecycleMixin:
         if not self._enabled:
             return
         try:
-            invokers = self.__dict__.get("_runtime_phase_invokers_instance")
-            if invokers is None:
-                invokers = _runtime_phase_invokers(self)
-                self.__dict__["_runtime_phase_invokers_instance"] = invokers
+            invokers = _runtime_phase_invokers(self)
             invokers[2](self, delta_time)
         except Exception as exc:
             self._report_lifecycle_exception(exc)
@@ -1209,14 +1078,13 @@ class ComponentLifecycleMixin:
         # Stop all coroutines before on_destroy callback
         if self._coroutine_scheduler is not None:
             self._coroutine_scheduler.stop_all()
-            self._sync_native_coroutine_scheduler_state()
+            self._sync_coroutine_scheduler_state()
             self._coroutine_scheduler = None
         # Remove from active-instances registry (safety net; _set_game_object(None)
         # should have done this already, but guard against missed calls)
         self._remove_from_active_registry()
         if self._awake_called:
             self._safe_lifecycle_call("on_destroy")
-        self.__dict__.pop("_runtime_phase_invokers_instance", None)
         self.__dict__["_runtime_coroutine_scheduler"] = None
         # Clear references to help garbage collection
         self._cpp_component = None
@@ -1248,7 +1116,6 @@ class ComponentLifecycleMixin:
                 self.on_destroy()
             except Exception as exc:
                 self._report_lifecycle_exception(exc)
-        self.__dict__.pop("_runtime_phase_invokers_instance", None)
         self.__dict__["_runtime_coroutine_scheduler"] = None
 
     def _release_component_data_slot(self):
@@ -1293,13 +1160,7 @@ class ComponentLifecycleMixin:
 
         epoch = current_runtime_epoch()
         callback = self._resolve_runtime_method("on_after_deserialize", epoch=epoch)
-        if callback is None and epoch.descriptor_for(type(self)) is None:
-            from Infernux.engine.runtime_dispatch import ensure_runtime_compatibility_mirror
-
-            callback = ensure_runtime_compatibility_mirror(type(self)).resolve_method(
-                self,
-                "on_after_deserialize",
-            )
+        epoch.require_descriptor(type(self))
         if callback is None:
             raise AttributeError(
                 f"{type(self).__name__} has no lifecycle method 'on_after_deserialize'"

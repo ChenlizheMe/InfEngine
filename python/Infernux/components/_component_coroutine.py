@@ -32,30 +32,15 @@ from Infernux.lib import GameObject
 class ComponentCoroutineMixin:
     """ComponentCoroutineMixin method group for InxComponent."""
 
-    def _sync_native_coroutine_scheduler_state(self, active=None, *, force: bool = False) -> None:
-        """Publish a scheduler transition without a per-frame native query."""
-        scheduler = getattr(self, "_coroutine_scheduler", None)
+    def _sync_coroutine_scheduler_state(self, active=None) -> None:
+        """Publish active coroutine work to the shared lifecycle scheduler."""
+        scheduler = self._coroutine_scheduler
         if active is None:
             active = scheduler is not None and scheduler.count > 0
-        active = bool(active)
-        if not force and self.__dict__.get("_native_coroutine_scheduler_state") is active:
+        runtime_scheduler = scheduler if bool(active) else None
+        if self.__dict__.get("_runtime_coroutine_scheduler") is runtime_scheduler:
             return
-
-        cpp_component = getattr(self, "_cpp_component", None)
-        setter = getattr(cpp_component, "set_coroutine_scheduler_active", None)
-        if setter is not None:
-            try:
-                setter(active)
-            except (AttributeError, ReferenceError, RuntimeError):
-                # The native binding may already be detached during teardown.
-                return
-
-        self.__dict__["_native_coroutine_scheduler_state"] = active
-        # Lifecycle dispatch reads this mirror instead of looking up the
-        # retained scheduler on every phase for components without active
-        # coroutines.  The scheduler object itself remains retained so a later
-        # start_coroutine call preserves existing ownership semantics.
-        self.__dict__["_runtime_coroutine_scheduler"] = scheduler if active else None
+        self.__dict__["_runtime_coroutine_scheduler"] = runtime_scheduler
         from ._component_lifecycle import RuntimeExecutionScheduler
 
         RuntimeExecutionScheduler._notify_component_runtime_work(self)
@@ -92,7 +77,7 @@ class ComponentCoroutineMixin:
         creation_epoch = current_runtime_epoch()
         if self._coroutine_scheduler is None:
             self._coroutine_scheduler = CoroutineScheduler(
-                on_active_changed=self._sync_native_coroutine_scheduler_state,
+                on_active_changed=self._sync_coroutine_scheduler_state,
                 creation_epoch=creation_epoch,
             )
         coroutine = self._coroutine_scheduler.start(
@@ -110,13 +95,13 @@ class ComponentCoroutineMixin:
         """
         if self._coroutine_scheduler is not None:
             self._coroutine_scheduler.stop(coroutine)
-            self._sync_native_coroutine_scheduler_state()
+            self._sync_coroutine_scheduler_state()
 
     def stop_all_coroutines(self) -> None:
         """Stop **all** coroutines running on this component."""
         if self._coroutine_scheduler is not None:
             self._coroutine_scheduler.stop_all()
-            self._sync_native_coroutine_scheduler_state()
+            self._sync_coroutine_scheduler_state()
 
     def _tick_coroutines_update(self, delta_time: float):
         """Advance coroutine work scheduled for the Update phase."""
@@ -140,7 +125,7 @@ class ComponentCoroutineMixin:
         """Unity stops all coroutines when the owning GameObject is deactivated."""
         if self._coroutine_scheduler is not None:
             self._coroutine_scheduler.stop_all()
-            self._sync_native_coroutine_scheduler_state()
+            self._sync_coroutine_scheduler_state()
             self._coroutine_scheduler = None
 
     @classmethod

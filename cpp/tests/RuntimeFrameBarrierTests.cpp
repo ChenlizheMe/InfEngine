@@ -77,7 +77,9 @@ int main()
     // synchronization is introduced merely to emit a barrier.
     observed.clear();
     manager.Play();
+    assert(manager.GetRuntimeFrameCount() == 0);
     manager.Update(manager.GetFixedTimeStep());
+    assert(manager.GetRuntimeFrameCount() == 1);
     manager.LateUpdate(manager.GetFixedTimeStep());
     manager.EmitRuntimeFrameBarrier(Barrier::FinalTransformResolve);
     manager.EmitRuntimeFrameBarrier(Barrier::AnimationTimeline);
@@ -102,6 +104,7 @@ int main()
                         }));
     assert(endCount == 2);
     manager.Stop();
+    assert(manager.GetRuntimeFrameCount() == 0);
 
     // Frame-cache commits retain mutation origin. A physics-authored root pose
     // must not feed the same Rigidbody back into transform-to-physics sync,

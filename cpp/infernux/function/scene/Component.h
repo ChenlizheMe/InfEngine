@@ -95,26 +95,6 @@ class Component
     {
     }
 
-    /// @brief Internal hook for work that must continue while the component is disabled.
-    /// Unity coroutines on MonoBehaviours keep running while the script is disabled,
-    /// and PyComponentProxy uses this hook to advance them without invoking Update().
-    virtual void TickWhileDisabledUpdate(float deltaTime)
-    {
-        (void)deltaTime;
-    }
-
-    /// @brief Internal hook for fixed-step work that must continue while disabled.
-    virtual void TickWhileDisabledFixedUpdate(float fixedDeltaTime)
-    {
-        (void)fixedDeltaTime;
-    }
-
-    /// @brief Internal hook for end-of-frame work that must continue while disabled.
-    virtual void TickWhileDisabledLateUpdate(float deltaTime)
-    {
-        (void)deltaTime;
-    }
-
     /// @brief Called when the component becomes disabled
     virtual void OnDisable()
     {

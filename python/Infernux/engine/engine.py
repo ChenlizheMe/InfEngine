@@ -77,6 +77,13 @@ class Engine():
         self._headless_scene_file_manager = None
         self._before_exit_callback = None
         self._editor_frame_sync_callback = None
+        # Standalone Editor/Player entry points terminate the entire process
+        # immediately after persistent writes and native cleanup complete.
+        # Their plugin threads, modules, sockets and heaps are process-owned;
+        # running per-plugin unload hooks on this path only serializes work the
+        # operating system is about to reclaim. Embedded/headless callers keep
+        # the normal unload contract because their Python process survives.
+        self._process_owned_exit = False
         from Infernux.application import Application
         Application._bind_engine(self, self._application_role)
 
@@ -298,71 +305,54 @@ class Engine():
 
         self._engine.set_pre_scene_update_callback(_pre_scene_tick)
 
-        try:
-            from Infernux.lib import NativeRuntimeFrameBarrier, SceneManager
-            from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+        from Infernux.lib import NativeRuntimeFrameBarrier, SceneManager
+        from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
-            scene_manager = SceneManager.instance()
-            self._runtime_scene_manager = scene_manager
-            transform_serial_getter = getattr(
-                scene_manager,
-                "get_global_transform_serial",
-                None,
-            )
-            if callable(transform_serial_getter):
-                self._last_native_transform_serial = int(transform_serial_getter())
-            setter = getattr(scene_manager, "set_runtime_lifecycle_callbacks", None)
-            if callable(setter):
-                scheduler = self._runtime_scheduler
-                setter(
-                    scheduler.begin_native_frame,
-                    lambda delta: scheduler.execute_native_phase("fixed_update", delta),
-                    lambda delta: scheduler.execute_native_phase("update", delta),
-                    lambda delta: scheduler.execute_native_phase("late_update", delta),
-                    scheduler.execute_native_editor_update,
-                    scheduler.end_native_frame,
-                )
-                barrier_setter = getattr(
-                    scene_manager,
-                    "set_runtime_frame_barrier_callback",
-                    None,
-                )
-                if callable(barrier_setter):
-                    barrier_map = {
-                        NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
-                            RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
-                        NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
-                            RuntimeFrameBarrier.PHYSICS_SIMULATION,
-                        NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
-                            RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
-                        NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
-                            RuntimeFrameBarrier.TRANSFORM_RESOLVE,
-                        NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
-                            RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
-                        NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
-                            RuntimeFrameBarrier.ANIMATION_TIMELINE,
-                        NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
-                            RuntimeFrameBarrier.RENDER_EXTRACTION,
-                        NativeRuntimeFrameBarrier.RENDER_GRAPH:
-                            RuntimeFrameBarrier.RENDER_GRAPH,
-                        NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
-                            RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
-                        NativeRuntimeFrameBarrier.PENDING_DESTROY:
-                            RuntimeFrameBarrier.PENDING_DESTROY,
-                    }
-                    def _consume_native_barrier(barrier, _map=barrier_map):
-                        engine = engine_ref()
-                        if engine is None:
-                            return None
-                        return engine._consume_runtime_frame_barrier(_map[barrier])
+        scene_manager = SceneManager.instance()
+        self._runtime_scene_manager = scene_manager
+        self._last_native_transform_serial = int(
+            scene_manager.get_global_transform_serial()
+        )
+        scheduler = self._runtime_scheduler
+        scene_manager.set_runtime_lifecycle_callbacks(
+            scheduler.begin_native_frame,
+            lambda delta: scheduler.execute_native_phase("fixed_update", delta),
+            lambda delta: scheduler.execute_native_phase("update", delta),
+            lambda delta: scheduler.execute_native_phase("late_update", delta),
+            scheduler.execute_native_editor_update,
+            scheduler.end_native_frame,
+        )
+        barrier_map = {
+            NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
+                RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
+            NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
+                RuntimeFrameBarrier.PHYSICS_SIMULATION,
+            NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
+                RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
+            NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
+                RuntimeFrameBarrier.TRANSFORM_RESOLVE,
+            NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
+                RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
+            NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
+                RuntimeFrameBarrier.ANIMATION_TIMELINE,
+            NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
+                RuntimeFrameBarrier.RENDER_EXTRACTION,
+            NativeRuntimeFrameBarrier.RENDER_GRAPH:
+                RuntimeFrameBarrier.RENDER_GRAPH,
+            NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
+                RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
+            NativeRuntimeFrameBarrier.PENDING_DESTROY:
+                RuntimeFrameBarrier.PENDING_DESTROY,
+        }
 
-                    barrier_setter(_consume_native_barrier)
-                scheduler.sync_native_work_availability()
-        except Exception as exc:
-            # Older installed wheels can still start without the optional
-            # bridge. The source-side C++ binding will activate it after the
-            # matching wheel is installed.
-            Debug.log_suppressed("Engine.install_runtime_lifecycle_bridge", exc)
+        def _consume_native_barrier(barrier, _map=barrier_map):
+            engine = engine_ref()
+            if engine is None:
+                return None
+            return engine._consume_runtime_frame_barrier(_map[barrier])
+
+        scene_manager.set_runtime_frame_barrier_callback(_consume_native_barrier)
+        scheduler.bind_native_bridge(scene_manager)
 
     def _consume_runtime_frame_barrier(self, barrier):
         from Infernux.engine.runtime_change_journal import (
@@ -464,34 +454,26 @@ class Engine():
         # (which may mutate the scene via deserialize) execute BEFORE
         # any ImGui panel renders.  This prevents panels from accessing
         # destroyed pybind11 objects during play-mode Stop.
+        # No per-step exception swallowing here: a failure in frame
+        # maintenance is a real bug and propagates to the C++ DrawFrame
+        # boundary, which logs it loudly. Fabricating a "healthy" frame by
+        # skipping broken steps only hides corruption.
         def _pre_gui_tick():
             if not _PLAYER_MODE:
                 from Infernux.engine.deferred_task import DeferredTaskRunner
-                try:
-                    DeferredTaskRunner.instance().tick()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.pre_gui_tick.DeferredTaskRunner", exc)
-                try:
-                    from Infernux.host import MainThreadCommandQueue
-                    MainThreadCommandQueue.instance().drain()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.pre_gui_tick.MainThreadCommandQueue", exc)
-            if not _PLAYER_MODE:
-                try:
-                    from Infernux.engine.ui.window_manager import WindowManager
-                    manager = WindowManager.instance()
-                    if manager is not None:
-                        manager.process_pending_actions()
-                        manager.sync_native_gui_focus()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.pre_gui_tick.WindowManager", exc)
-                try:
-                    from Infernux.engine.undo import UndoManager
-                    undo_manager = UndoManager.instance()
-                    if undo_manager is not None:
-                        undo_manager.process_pending_replay()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.pre_gui_tick.UndoReplay", exc)
+                from Infernux.host import MainThreadCommandQueue
+                from Infernux.engine.ui.window_manager import WindowManager
+                from Infernux.engine.undo import UndoManager
+
+                DeferredTaskRunner.instance().tick()
+                MainThreadCommandQueue.instance().drain()
+                manager = WindowManager.instance()
+                if manager is not None:
+                    manager.process_pending_actions()
+                    manager.sync_native_gui_focus()
+                undo_manager = UndoManager.instance()
+                if undo_manager is not None:
+                    undo_manager.process_pending_replay()
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
         # Install a post-draw callback that runs AFTER GPU submit + present.
@@ -534,66 +516,35 @@ class Engine():
             _plugin_install_progress = PluginInstallProgressService.instance()
             _plugin_reload_progress = PluginReloadProgressService.instance()
 
+        # Same policy as _pre_gui_tick: failures propagate to the C++
+        # DrawFrame boundary instead of being swallowed step by step.
         def _post_draw_tick():
             if _plugin_install_progress is not None:
-                try:
-                    _plugin_install_progress.post_present_tick()
-                except Exception as exc:
-                    Debug.log_suppressed(
-                        "Engine.post_draw_tick.plugin_install_progress",
-                        exc,
-                    )
+                _plugin_install_progress.post_present_tick()
             if _plugin_reload_progress is not None:
-                try:
-                    _plugin_reload_progress.post_present_tick()
-                except Exception as exc:
-                    Debug.log_suppressed(
-                        "Engine.post_draw_tick.plugin_reload_progress",
-                        exc,
-                    )
+                _plugin_reload_progress.post_present_tick()
             if _build_preflight_progress is not None:
-                try:
-                    _build_preflight_progress.post_present_tick()
-                except Exception as exc:
-                    Debug.log_suppressed(
-                        "Engine.post_draw_tick.build_preflight_progress",
-                        exc,
-                    )
+                _build_preflight_progress.post_present_tick()
             if _asset_import_progress is not None:
-                try:
-                    _asset_import_progress.post_present_tick()
-                except Exception as exc:
-                    Debug.log_suppressed(
-                        "Engine.post_draw_tick.asset_import_progress",
-                        exc,
-                    )
-                try:
-                    from Infernux.engine.interaction import DocumentRegistry
-                    DocumentRegistry.instance().process_deferred_saves()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.post_draw_tick.process_deferred_saves", exc)
-            try:
-                from Infernux.core.assets import AssetManager
-                AssetManager.flush_pending_gpu_texture_reloads()
-                if not _PLAYER_MODE:
-                    # Asset persistence is an editor service, not a panel
-                    # rendering side effect.  Drain due debounced snapshots
-                    # even when no Inspector/Project view is visible.
-                    AssetManager.flush_scheduled_saves()
-                    AssetManager.poll_pending_asset_writes()
-                    from Infernux.engine.interaction import DocumentRegistry
-                    DocumentRegistry.instance().process_pending_saves()
-            except Exception as exc:
-                Debug.log_suppressed("Engine.post_draw_tick.flush_texture_reloads", exc)
+                _asset_import_progress.post_present_tick()
+                from Infernux.engine.interaction import DocumentRegistry
+                DocumentRegistry.instance().process_deferred_saves()
+            from Infernux.core.assets import AssetManager
+            AssetManager.flush_pending_gpu_texture_reloads()
+            if not _PLAYER_MODE:
+                # Asset persistence is an editor service, not a panel
+                # rendering side effect.  Drain due debounced snapshots
+                # even when no Inspector/Project view is visible.
+                AssetManager.flush_scheduled_saves()
+                AssetManager.poll_pending_asset_writes()
+                from Infernux.engine.interaction import DocumentRegistry
+                DocumentRegistry.instance().process_pending_saves()
 
             if not _PLAYER_MODE:
                 from Infernux.engine.scene_manager import SceneFileManager
                 sfm = SceneFileManager.instance()
                 if sfm is not None:
-                    try:
-                        sfm.poll_deferred_load()
-                    except Exception as exc:
-                        Debug.log_suppressed("Engine.post_draw_tick.poll_deferred_load", exc)
+                    sfm.poll_deferred_load()
             # Keep collection cadence independent of render FPS. At 3000 FPS
             # the old 120/600/3000-frame policy ran at 40/200/1000 ms and a
             # script reload's retired module graph made the following full
@@ -642,7 +593,13 @@ class Engine():
 
     def tick(self, delta_time: float):
         if self._mode != RuntimeMode.Headless:
-            raise RuntimeError("tick is only available in headless mode")
+            # Graphical manual stepping: one native tick simulates AND renders
+            # one frame with an exact delta time. Between-frame maintenance
+            # (deferred tasks, command queue, asset saves) already runs inside
+            # DrawFrame through the registered pre-GUI/post-draw callbacks, so
+            # running it here as well would double-drain those queues.
+            self._engine.tick(float(delta_time))
+            return
 
         from Infernux.engine.deferred_task import DeferredTaskRunner
         DeferredTaskRunner.instance().tick()
@@ -670,15 +627,14 @@ class Engine():
     def request_exit(self):
         """Request a safe close, preserving graphical Editor confirmations."""
         if self._mode == RuntimeMode.Graphical and self._application_role == "editor":
-            try:
-                from Infernux.engine.scene_manager import SceneFileManager
+            from Infernux.engine.scene_manager import SceneFileManager
 
-                manager = SceneFileManager.instance()
-                if manager is not None:
-                    manager.request_close()
-                    return
-            except Exception as exc:
-                Debug.log_suppressed("Engine.request_exit.scene_manager", exc)
+            manager = SceneFileManager.instance()
+            if manager is not None:
+                # A failure here must NOT silently fall through to a hard
+                # exit: that would bypass the unsaved-changes confirmation.
+                manager.request_close()
+                return
         if self._engine:
             self._engine.exit()
     
@@ -804,16 +760,11 @@ class Engine():
     @staticmethod
     def _flush_pending_material_saves():
         """Flush throttled mutable rendering-asset saves."""
-        try:
-            from Infernux.core.material import Material
-            Material.flush_all_pending()
-        except Exception as exc:
-            Debug.log_suppressed("Engine._flush_pending_material_saves", exc)
-        try:
-            from Infernux.renderstack.render_effect import RenderEffect
-            RenderEffect.flush_all_pending()
-        except Exception as exc:
-            Debug.log_suppressed("Engine._flush_pending_effect_saves", exc)
+        from Infernux.core.material import Material
+        from Infernux.renderstack.render_effect import RenderEffect
+
+        Material.flush_all_pending()
+        RenderEffect.flush_all_pending()
 
     def _clear_uploaded_gizmos(self):
         """Clear uploaded gizmo buffers once when Scene View is hidden."""
@@ -860,6 +811,20 @@ class Engine():
     def set_before_exit_callback(self, callback):
         """Register a callback invoked right before native engine cleanup."""
         self._before_exit_callback = callback
+
+    def _set_process_owned_exit(self) -> None:
+        """Mark this engine as the final owner of its Python process."""
+        self._process_owned_exit = True
+
+    def _shutdown_plugins_for_exit(self) -> None:
+        """Unload plugins only when the surrounding Python process survives."""
+        if self._process_owned_exit:
+            return
+        from Infernux.plugins import PluginManager
+
+        plugin_manager = PluginManager.instance()
+        if plugin_manager is not None:
+            plugin_manager.shutdown()
     
     def exit(self):
         """
@@ -914,28 +879,13 @@ class Engine():
         except Exception as exc:
             Debug.log_suppressed("Engine.exit.MainThreadCommandQueue", exc)
 
-        try:
-            from Infernux.plugins import PluginManager
+        self._shutdown_plugins_for_exit()
 
-            plugin_manager = PluginManager.instance()
-            if plugin_manager is not None:
-                plugin_manager.shutdown()
-        except Exception as exc:
-            Debug.log_suppressed("Engine.exit.PluginManager", exc)
-
-        try:
-            from Infernux.lib import SceneManager
-
-            clear_bridge = getattr(SceneManager.instance(), "clear_runtime_lifecycle_callbacks", None)
-            if callable(clear_bridge):
-                clear_bridge()
-        except Exception as exc:
-            Debug.log_suppressed("Engine.clear_runtime_lifecycle_bridge", exc)
-
-        try:
-            self._runtime_scheduler.clear()
-        except Exception as exc:
-            Debug.log_suppressed("Engine.clear_runtime_scheduler", exc)
+        if self._runtime_scene_manager is not None:
+            self._runtime_scene_manager.clear_runtime_lifecycle_callbacks()
+            self._runtime_scheduler.unbind_native_bridge()
+            self._runtime_scene_manager = None
+        self._runtime_scheduler.clear()
 
         if not _PLAYER_MODE:
             try:

@@ -167,7 +167,7 @@ def _build_component_registration(
 
 
 def register_component_type(component_type: Type['InxComponent'], *, script_path: str = "") -> None:
-    """Register the newest loaded definition of one Python component type."""
+    """Register and publish one current Python component type."""
     from ._component_registration import stage_candidate_component_type
 
     if stage_candidate_component_type(component_type):
@@ -176,7 +176,11 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
     if built is None:
         return
     type_key, registration = built
+    global _registration_revision
     with _registration_lock:
+        before_types = tuple(_type_registrations.items())
+        before_scripts = tuple(_script_registrations.items())
+        before_revision = _registration_revision
         if registration.project_script and registration.script_path:
             normalized = _normalized_path(registration.script_path)
             for key, previous in tuple(_type_registrations.items()):
@@ -186,6 +190,19 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
         if registration.project_script and registration.script_path:
             _script_registrations[_normalized_path(registration.script_path)] = registration
         _bump_revision()
+    from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+
+    try:
+        publication = publish_runtime_dispatch_epoch((component_type,))
+        publication.commit()
+    except Exception:
+        with _registration_lock:
+            _type_registrations.clear()
+            _type_registrations.update(before_types)
+            _script_registrations.clear()
+            _script_registrations.update(before_scripts)
+            _registration_revision = before_revision
+        raise
 
 
 def snapshot_component_script_registry(file_path: str) -> ComponentScriptRegistrySnapshot:
@@ -438,7 +455,6 @@ def unregister_component_script(
             publication = publish_runtime_dispatch_epoch(
                 (),
                 retired_types=retired_types,
-                sync_compatibility=True,
                 defer_commit=True,
             )
             publication.commit()
