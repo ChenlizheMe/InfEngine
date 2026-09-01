@@ -69,7 +69,7 @@ void VerifyTransactionalFailure()
     assert(material.SerializeDocument() == before);
 
     invalid = before;
-    invalid["shaders"]["vertex"]["legacy_path"] = "Assets/Shaders/Legacy.vert";
+    invalid["shaders"]["vertex"]["unexpected"] = true;
     assert(!material.DeserializeDocument(invalid));
     assert(material.SerializeDocument() == before);
 }
