@@ -335,7 +335,7 @@ def _archive_entry_records(
     relative_archive: str,
     *,
     payload_candidates: defaultdict[
-        int, list[tuple[str, Path | None, str | None]]
+        int, list[tuple[str, Path | tuple[Path, str], str | None]]
     ],
     archive_entries: list[dict[str, object]],
     forbidden: list[str],
@@ -414,16 +414,12 @@ def _archive_entry_records(
         if entry_bytes < 0 or stored_bytes < 0:
             forbidden.append(f"{entry_relative}: native entry size is negative")
             continue
-        entry_hash = str(item.get("sha256", ""))
-        if len(entry_hash) != 64 or any(char not in "0123456789abcdefABCDEF" for char in entry_hash):
-            forbidden.append(f"{entry_relative}: native entry raw hash is invalid")
-            continue
         raw_bytes_total += entry_bytes
         stored_bytes_total += stored_bytes
-        archive_entries.append(
-            {"path": entry_relative, "bytes": entry_bytes, "sha256": entry_hash}
+        archive_entries.append({"path": entry_relative, "bytes": entry_bytes})
+        payload_candidates[entry_bytes].append(
+            (entry_relative, (archive_path, entry_name), None)
         )
-        payload_candidates[entry_bytes].append((entry_relative, None, entry_hash))
         entry_suffix = Path(entry_name).suffix.casefold()
 
         payload = None
@@ -439,9 +435,6 @@ def _archive_entry_records(
                         f"{entry_relative}: raw payload size mismatch "
                         f"(manifest={entry_bytes}, actual={len(payload)})"
                     )
-                elif hashlib.sha256(payload).hexdigest().casefold() != entry_hash.casefold():
-                    forbidden.append(f"{entry_relative}: raw payload checksum mismatch")
-
         if entry_suffix == ".meta":
             meta_files.append(entry_relative)
         if (
@@ -607,7 +600,7 @@ def audit_player_package(
     files: list[dict[str, object]] = []
     hashes: defaultdict[str, list[str]] = defaultdict(list)
     payload_candidates: defaultdict[
-        int, list[tuple[str, Path | None, str | None]]
+        int, list[tuple[str, Path | tuple[Path, str], str | None]]
     ] = defaultdict(list)
     forbidden: list[str] = []
     author_sources: list[str] = []
@@ -692,14 +685,15 @@ def audit_player_package(
     for candidates in payload_candidates.values():
         if len(candidates) < 2:
             continue
-        for relative, payload_path, known_digest in candidates:
+        for relative, payload_source, known_digest in candidates:
             digest = known_digest
             if digest is None:
-                if payload_path is None:
-                    raise RuntimeError(
-                        f"Player audit has no payload for duplicate candidate: {relative}"
-                    )
-                digest = _sha256(payload_path)
+                if isinstance(payload_source, tuple):
+                    digest = hashlib.sha256(
+                        read_entry(payload_source[0], payload_source[1])
+                    ).hexdigest()
+                else:
+                    digest = _sha256(payload_source)
             hashes[digest].append(relative)
 
     for archive_entry in archive_entries:

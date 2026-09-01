@@ -53,7 +53,6 @@ py::dict InxPackManifestToPython(const inxpack::Manifest &manifest)
 {
     py::dict result;
     result["format"] = "infernux-native-inxpack";
-    result["revision"] = manifest.revision;
     result["codec"] = "zstd-or-store";
     result["file_count"] = manifest.entries.size();
     result["raw_bytes"] = manifest.rawBytes;
@@ -69,8 +68,6 @@ py::dict InxPackManifestToPython(const inxpack::Manifest &manifest)
         item["stored_bytes"] = entry.storedBytes;
         item["raw_bytes"] = entry.rawBytes;
         item["codec"] = inxpack::CodecName(entry.codec);
-        item["sha256"] = inxpack::HashToHex(entry.hash);
-        item["stored_sha256"] = inxpack::HashToHex(entry.storedHash);
         files.append(std::move(item));
     }
     result["files"] = std::move(files);

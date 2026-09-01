@@ -4003,7 +4003,7 @@ finally:
         source_bytes = 0
         forbidden_plaintext: list[str] = []
         forbidden_direct_payloads: list[str] = []
-        catalog_payloads: dict[str, bytes] = {}
+        catalog_payloads: set[str] = set()
         processed = 0
         last_report = 0.0
         # This cache belongs to exactly one Content.inxpkg generation.  Clear
@@ -4088,8 +4088,7 @@ finally:
                     forbidden_direct_payloads.append(relative)
                 self._rewrite_player_document_paths(path, suffix)
                 if self._runtime_catalog_payload_required(portable_relative):
-                    with open(path, "rb") as source:
-                        catalog_payloads[portable_relative] = source.read()
+                    catalog_payloads.add(portable_relative)
                 files.append((relative, path))
                 source_bytes += os.path.getsize(path)
                 processed += 1
@@ -4133,25 +4132,10 @@ finally:
             on_progress=on_progress,
             cancel_event=cancel_event,
         )
-        manifest_entries = {
-            str(entry["path"]).replace("\\", "/"): entry
-            for entry in native_manifest.get("files", [])
+        self._packed_content_catalog_payloads = {
+            entry_path: read_entry(archive_path, entry_path)
+            for entry_path in catalog_payloads
         }
-        verified_payloads: dict[str, tuple[str, bytes]] = {}
-        for entry_path, payload in catalog_payloads.items():
-            manifest_entry = manifest_entries.get(entry_path)
-            if manifest_entry is None:
-                raise RuntimeError(
-                    f"Packed content manifest omitted catalog payload: {entry_path}"
-                )
-            expected_sha256 = str(manifest_entry["sha256"])
-            actual_sha256 = hashlib.sha256(payload).hexdigest()
-            if actual_sha256.casefold() != expected_sha256.casefold():
-                raise RuntimeError(
-                    f"Packed content catalog payload changed while packing: {entry_path}"
-                )
-            verified_payloads[entry_path] = (expected_sha256, payload)
-        self._packed_content_catalog_payloads = verified_payloads
         self._report_content_pack_progress(
             on_progress,
             cancel_event,
@@ -4331,7 +4315,6 @@ finally:
                         "package": package_relative,
                         "runtime_path": entry_path,
                         "bytes": entry["raw_bytes"],
-                        "sha256": entry["sha256"],
                     }
                     if self._runtime_catalog_payload_required(entry_path):
                         # Payload is optional catalog input used only for
@@ -4343,12 +4326,8 @@ finally:
                             cached_payload = getattr(
                                 self, "_packed_content_catalog_payloads", {}
                             ).get(entry_path)
-                        if (
-                            cached_payload is not None
-                            and str(cached_payload[0]).casefold()
-                            == str(entry["sha256"]).casefold()
-                        ):
-                            package_entry["payload"] = cached_payload[1]
+                        if cached_payload is not None:
+                            package_entry["payload"] = cached_payload
                         else:
                             package_entry["payload"] = read_entry(
                                 package_path,

@@ -39,9 +39,9 @@ namespace infernux::inxpack
 namespace
 {
 
-constexpr uint32_t kHeaderBytes = 256;
-constexpr uint32_t kTocPrefixBytes = 32;
-constexpr uint32_t kEntryBytes = 128;
+constexpr uint32_t kHeaderBytes = 128;
+constexpr uint32_t kTocPrefixBytes = 24;
+constexpr uint32_t kEntryBytes = 64;
 constexpr size_t kHashChunkBytes = 64u * 1024u;
 constexpr std::array<char, 4> kTocMagic = {'T', 'O', 'C', '0'};
 
@@ -49,10 +49,10 @@ constexpr std::array<char, 4> kTocMagic = {'T', 'O', 'C', '0'};
 struct HeaderDisk
 {
     char magic[8];
-    uint32_t revision;
     uint32_t headerBytes;
     uint32_t flags;
     uint32_t entryBytes;
+    uint32_t reserved0;
     uint64_t tocOffset;
     uint64_t tocBytes;
     uint64_t payloadOffset;
@@ -60,17 +60,13 @@ struct HeaderDisk
     uint64_t entryCount;
     uint64_t stringBytes;
     uint64_t rawBytes;
-    uint8_t tocHash[32];
-    uint8_t payloadHash[32];
     uint8_t packageHash[32];
-    uint8_t reserved[80];
+    uint8_t reserved[16];
 };
 
 struct TocPrefixDisk
 {
     char magic[4];
-    uint32_t revision;
-    uint32_t entryBytes;
     uint32_t flags;
     uint64_t entryCount;
     uint64_t stringBytes;
@@ -86,8 +82,6 @@ struct EntryDisk
     uint64_t rawBytes;
     uint8_t codec;
     uint8_t codecReserved[7];
-    uint8_t hash[32];
-    uint8_t storedHash[32];
     uint32_t alignment;
     uint32_t reserved;
     uint8_t tailReserved[8];
@@ -337,36 +331,11 @@ class Sha256
     uint64_t bitCount_ = 0;
 };
 
-std::array<uint8_t, 32> HashBytes(const uint8_t *data, size_t size)
-{
-    Sha256 digest;
-    digest.Update(data, size);
-    return digest.Final();
-}
-
 std::array<uint8_t, 32> CopyHash(const uint8_t *data)
 {
     std::array<uint8_t, 32> result{};
     std::copy(data, data + result.size(), result.begin());
     return result;
-}
-
-std::string HashFile(const std::filesystem::path &path)
-{
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        throw std::runtime_error("InxPack cannot open file for hashing: " + FromFsPath(path));
-    Sha256 digest;
-    std::vector<uint8_t> buffer(kHashChunkBytes);
-    while (input) {
-        input.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
-        const auto count = input.gcount();
-        if (count > 0)
-            digest.Update(buffer.data(), static_cast<size_t>(count));
-    }
-    if (!input.eof())
-        throw std::runtime_error("InxPack failed while hashing file: " + FromFsPath(path));
-    return HashToHex(digest.Final());
 }
 
 std::array<uint8_t, 32> HashFileRange(const std::filesystem::path &path, uint64_t offset, uint64_t size,
@@ -480,17 +449,6 @@ void WriteZeros(std::ostream &output, uint64_t count)
     }
 }
 
-void WriteZerosHashed(std::ostream &output, uint64_t count, Sha256 &digest)
-{
-    std::array<uint8_t, 4096> zeros{};
-    while (count != 0) {
-        const auto amount = static_cast<size_t>(std::min<uint64_t>(count, zeros.size()));
-        WriteExact(output, zeros.data(), amount);
-        digest.Update(zeros.data(), amount);
-        count -= amount;
-    }
-}
-
 bool IsAllowedRoot(const std::string &path, const std::vector<std::string> &allowedRoots)
 {
     if (allowedRoots.empty())
@@ -500,16 +458,14 @@ bool IsAllowedRoot(const std::string &path, const std::vector<std::string> &allo
     return std::find(allowedRoots.begin(), allowedRoots.end(), root) != allowedRoots.end();
 }
 
-Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path, const bool validateWholeArchive)
+Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path)
 {
     HeaderDisk header{};
     ReadExact(input, &header, sizeof(header));
     if (!std::equal(std::begin(header.magic), std::end(header.magic), kMagic.begin()))
-        throw std::runtime_error("unsupported InxPack magic (legacy ZIP/LZMA packages are not accepted): " +
-                                 FromFsPath(path));
-    if (header.revision != kFormatRevision || header.headerBytes != sizeof(HeaderDisk) ||
-        header.entryBytes != sizeof(EntryDisk))
-        throw std::runtime_error("unsupported InxPack revision or record size: " + FromFsPath(path));
+        throw std::runtime_error("unsupported InxPack magic: " + FromFsPath(path));
+    if (header.headerBytes != sizeof(HeaderDisk) || header.entryBytes != sizeof(EntryDisk))
+        throw std::runtime_error("unsupported InxPack record layout: " + FromFsPath(path));
     if (header.tocOffset != sizeof(HeaderDisk) || header.tocOffset % kAlignment != 0 ||
         header.payloadOffset % kAlignment != 0 || header.entryCount > std::numeric_limits<size_t>::max())
         throw std::runtime_error("invalid InxPack offsets or alignment: " + FromFsPath(path));
@@ -530,25 +486,11 @@ Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path, 
     input.seekg(static_cast<std::streamoff>(header.tocOffset));
     std::vector<uint8_t> toc(static_cast<size_t>(header.tocBytes));
     ReadExact(input, toc.data(), toc.size());
-    if (HashBytes(toc.data(), toc.size()) != CopyHash(header.tocHash))
-        throw std::runtime_error("InxPack TOC checksum mismatch: " + FromFsPath(path));
-    if (validateWholeArchive) {
-        // packageHash covers the payload, fixed header and TOC. payloadHash is
-        // deliberately not recomputed as that would reread every large Player
-        // archive without adding corruption coverage.
-        const auto packageHash = HashFileRange(
-            path, 0, fileBytes,
-            std::make_pair(static_cast<uint64_t>(offsetof(HeaderDisk, packageHash)), sizeof(header.packageHash)));
-        if (packageHash != CopyHash(header.packageHash))
-            throw std::runtime_error("InxPack package checksum mismatch: " + FromFsPath(path));
-    }
-
     if (toc.size() < sizeof(TocPrefixDisk))
         throw std::runtime_error("InxPack TOC is truncated: " + FromFsPath(path));
     TocPrefixDisk prefix{};
     std::memcpy(&prefix, toc.data(), sizeof(prefix));
     if (!std::equal(std::begin(prefix.magic), std::end(prefix.magic), kTocMagic.begin()) ||
-        prefix.revision != kFormatRevision || prefix.entryBytes != sizeof(EntryDisk) ||
         prefix.entryCount != header.entryCount || prefix.stringBytes != header.stringBytes)
         throw std::runtime_error("InxPack TOC header is invalid: " + FromFsPath(path));
     const size_t tocDataBytes = toc.size() - sizeof(TocPrefixDisk);
@@ -560,7 +502,6 @@ Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path, 
         throw std::runtime_error("InxPack TOC tables are out of range: " + FromFsPath(path));
 
     Manifest manifest;
-    manifest.revision = header.revision;
     manifest.rawBytes = header.rawBytes;
     manifest.storedBytes = 0;
     manifest.payloadBytes = header.payloadBytes;
@@ -592,8 +533,6 @@ Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path, 
         entry.storedBytes = disk.storedBytes;
         entry.rawBytes = disk.rawBytes;
         entry.codec = static_cast<Codec>(disk.codec);
-        std::copy(std::begin(disk.hash), std::end(disk.hash), entry.hash.begin());
-        std::copy(std::begin(disk.storedHash), std::end(disk.storedHash), entry.storedHash.begin());
         manifest.storedBytes = CheckedAdd(manifest.storedBytes, entry.storedBytes, "stored byte count");
         manifest.entries.push_back(std::move(entry));
     }
@@ -601,12 +540,10 @@ Manifest ParseManifest(std::ifstream &input, const std::filesystem::path &path, 
 }
 
 HeaderDisk MakeHeader(const Manifest &manifest, uint64_t tocOffset, uint64_t tocBytes, uint64_t payloadOffset,
-                      uint64_t stringBytes, const std::array<uint8_t, 32> &tocHash,
-                      const std::array<uint8_t, 32> &payloadHash, const std::array<uint8_t, 32> &packageHash)
+                      uint64_t stringBytes, const std::array<uint8_t, 32> &packageHash)
 {
     HeaderDisk header{};
     std::copy(kMagic.begin(), kMagic.end(), std::begin(header.magic));
-    header.revision = kFormatRevision;
     header.headerBytes = sizeof(HeaderDisk);
     header.entryBytes = sizeof(EntryDisk);
     header.tocOffset = tocOffset;
@@ -616,8 +553,6 @@ HeaderDisk MakeHeader(const Manifest &manifest, uint64_t tocOffset, uint64_t toc
     header.entryCount = manifest.entries.size();
     header.stringBytes = stringBytes;
     header.rawBytes = manifest.rawBytes;
-    std::copy(tocHash.begin(), tocHash.end(), std::begin(header.tocHash));
-    std::copy(payloadHash.begin(), payloadHash.end(), std::begin(header.payloadHash));
     std::copy(packageHash.begin(), packageHash.end(), std::begin(header.packageHash));
     return header;
 }
@@ -697,7 +632,6 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
     // stay wide all the way through the exclusive reservation and publish.
     const auto temporaryOutputPath = MakeUniqueTemporaryPath(destinationPath);
     TemporaryOutputGuard temporaryGuard(temporaryOutputPath);
-    Sha256 payloadDigest;
     {
         std::ofstream output(temporaryOutputPath, std::ios::binary | std::ios::trunc);
         if (!output)
@@ -721,19 +655,16 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
             auto &entry = manifest.entries[index];
             entry.offset = cursor;
             entry.rawBytes = raw.size();
-            entry.hash = HashBytes(raw.data(), raw.size());
             const std::vector<uint8_t> &stored = compressed.size() + 16 < raw.size() ? compressed : raw;
             entry.codec = &stored == &compressed ? Codec::Zstandard : Codec::Store;
             entry.storedBytes = stored.size();
-            entry.storedHash = HashBytes(stored.data(), stored.size());
             manifest.rawBytes += entry.rawBytes;
             manifest.storedBytes += entry.storedBytes;
 
             WriteExact(output, stored.data(), stored.size());
-            payloadDigest.Update(stored.data(), stored.size());
             cursor = AlignUp(cursor + stored.size(), kAlignment);
             const uint64_t written = entry.offset + stored.size();
-            WriteZerosHashed(output, cursor - written, payloadDigest);
+            WriteZeros(output, cursor - written);
         }
         manifest.payloadBytes = cursor;
         output.flush();
@@ -744,8 +675,6 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
     std::vector<uint8_t> toc(static_cast<size_t>(tocBytes));
     TocPrefixDisk prefix{};
     std::copy(kTocMagic.begin(), kTocMagic.end(), std::begin(prefix.magic));
-    prefix.revision = kFormatRevision;
-    prefix.entryBytes = sizeof(EntryDisk);
     prefix.entryCount = manifest.entries.size();
     prefix.stringBytes = stringBytes;
     std::memcpy(toc.data(), &prefix, sizeof(prefix));
@@ -760,15 +689,12 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
         disk.storedBytes = entry.storedBytes;
         disk.rawBytes = entry.rawBytes;
         disk.codec = static_cast<uint8_t>(entry.codec);
-        std::copy(entry.hash.begin(), entry.hash.end(), std::begin(disk.hash));
-        std::copy(entry.storedHash.begin(), entry.storedHash.end(), std::begin(disk.storedHash));
         disk.alignment = kAlignment;
         std::memcpy(toc.data() + sizeof(TocPrefixDisk) + index * sizeof(EntryDisk), &disk, sizeof(disk));
         std::memcpy(toc.data() + stringOffset + pathOffset, entry.path.data(), entry.path.size());
         pathOffset += entry.path.size();
     }
 
-    const auto tocHash = HashBytes(toc.data(), toc.size());
     {
         std::fstream output(temporaryOutputPath, std::ios::binary | std::ios::in | std::ios::out);
         if (!output)
@@ -780,9 +706,7 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
             throw std::runtime_error("InxPack failed to write its table of contents: " + FromFsPath(destination));
     }
 
-    const auto payloadHash = payloadDigest.Final();
-    HeaderDisk header = MakeHeader(manifest, tocOffset, tocBytes, payloadOffset, stringBytes, tocHash, payloadHash,
-                                   HashBytes(nullptr, 0));
+    HeaderDisk header = MakeHeader(manifest, tocOffset, tocBytes, payloadOffset, stringBytes, {});
     {
         std::fstream output(temporaryOutputPath, std::ios::binary | std::ios::in | std::ios::out);
         if (!output)
@@ -793,7 +717,7 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
     const auto packageHash = HashFileRange(
         temporaryOutputPath, 0, static_cast<uint64_t>(std::filesystem::file_size(temporaryOutputPath)),
         std::make_pair(static_cast<uint64_t>(offsetof(HeaderDisk, packageHash)), sizeof(header.packageHash)));
-    header = MakeHeader(manifest, tocOffset, tocBytes, payloadOffset, stringBytes, tocHash, payloadHash, packageHash);
+    header = MakeHeader(manifest, tocOffset, tocBytes, payloadOffset, stringBytes, packageHash);
     {
         std::fstream output(temporaryOutputPath, std::ios::binary | std::ios::in | std::ios::out);
         if (!output)
@@ -826,7 +750,7 @@ Manifest ReadManifest(const std::filesystem::path &path)
     std::ifstream input(path, std::ios::binary);
     if (!input)
         throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
-    return ParseManifest(input, path, true);
+    return ParseManifest(input, path);
 }
 
 std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::string &entryPath)
@@ -834,7 +758,7 @@ std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::str
     std::ifstream manifestInput(path, std::ios::binary);
     if (!manifestInput)
         throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
-    const Manifest manifest = ParseManifest(manifestInput, path, false);
+    const Manifest manifest = ParseManifest(manifestInput, path);
     const std::string normalized = NormalizePath(entryPath);
     const auto found = std::find_if(manifest.entries.begin(), manifest.entries.end(),
                                     [&normalized](const Entry &entry) { return entry.path == normalized; });
@@ -853,9 +777,6 @@ std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::str
     std::vector<uint8_t> stored(static_cast<size_t>(found->storedBytes));
     if (!stored.empty())
         ReadExact(input, stored.data(), stored.size());
-    if (HashBytes(stored.data(), stored.size()) != found->storedHash)
-        throw std::runtime_error("InxPack stored block checksum mismatch: " + found->path);
-
     std::vector<uint8_t> raw(static_cast<size_t>(found->rawBytes));
     if (found->codec == Codec::Store) {
         if (stored.size() != raw.size())
@@ -868,8 +789,6 @@ std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::str
     } else {
         throw std::runtime_error("InxPack entry uses an unsupported codec: " + found->path);
     }
-    if (HashBytes(raw.data(), raw.size()) != found->hash)
-        throw std::runtime_error("InxPack raw block checksum mismatch: " + found->path);
     return raw;
 }
 
@@ -879,7 +798,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
     std::ifstream manifestInput(path, std::ios::binary);
     if (!manifestInput)
         throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
-    const Manifest manifest = ParseManifest(manifestInput, path, false);
+    const Manifest manifest = ParseManifest(manifestInput, path);
     const auto &targetRoot = destination;
     if (!targetRoot.empty())
         std::filesystem::create_directories(targetRoot);
@@ -919,9 +838,6 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
         std::vector<uint8_t> stored(static_cast<size_t>(entry.storedBytes));
         if (!stored.empty())
             ReadExact(input, stored.data(), stored.size());
-        if (HashBytes(stored.data(), stored.size()) != entry.storedHash)
-            throw std::runtime_error("InxPack stored block checksum mismatch: " + entry.path);
-
         std::vector<uint8_t> raw(static_cast<size_t>(entry.rawBytes));
         if (entry.codec == Codec::Store) {
             if (stored.size() != raw.size())
@@ -934,16 +850,13 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
         } else {
             throw std::runtime_error("InxPack entry uses an unsupported codec: " + entry.path);
         }
-        if (HashBytes(raw.data(), raw.size()) != entry.hash)
-            throw std::runtime_error("InxPack raw block checksum mismatch: " + entry.path);
-
         std::ofstream destinationFile(outputs[index], std::ios::binary | std::ios::trunc);
         if (!destinationFile || (!raw.empty() && !destinationFile.write(reinterpret_cast<const char *>(raw.data()),
                                                                         static_cast<std::streamsize>(raw.size()))))
             throw std::runtime_error("InxPack cannot extract entry: " + entry.path);
     };
 
-    // Archive entries are independently compressed and hashed. Browser builds
+    // Archive entries are independently compressed. Browser builds
     // deliberately remain single-threaded unless a future Player profile opts
     // into wasm threads and the required cross-origin isolation contract.
 #if defined(INFERNUX_SINGLE_THREADED_RUNTIME)

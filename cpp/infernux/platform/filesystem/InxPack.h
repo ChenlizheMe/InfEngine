@@ -9,10 +9,8 @@
 namespace infernux::inxpack
 {
 
-// The shipping container is deliberately a single current format.  This is
-// not compatible with the former JSON/LZMA INXPCK1 experiment.
+// This is the only supported InxPack container layout.
 inline constexpr std::array<char, 8> kMagic = {'I', 'N', 'X', 'P', 'K', 'G', '\0', '\0'};
-inline constexpr uint32_t kFormatRevision = 0x00010000u;
 inline constexpr uint32_t kAlignment = 64u;
 
 enum class Codec : uint8_t
@@ -55,13 +53,10 @@ struct Entry
     uint64_t storedBytes = 0;
     uint64_t rawBytes = 0;
     Codec codec = Codec::Store;
-    std::array<uint8_t, 32> hash{};
-    std::array<uint8_t, 32> storedHash{};
 };
 
 struct Manifest
 {
-    uint32_t revision = kFormatRevision;
     uint64_t rawBytes = 0;
     uint64_t storedBytes = 0;
     uint64_t payloadBytes = 0;
@@ -80,7 +75,7 @@ int ResolveCompressionLevel(const WriteOptions &options);
 Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile> sources,
                const WriteOptions &options = {});
 
-/// Read and fully validate the fixed header, TOC, payload and package hash.
+/// Read and validate the current fixed header, TOC and package identity.
 Manifest ReadManifest(const std::filesystem::path &path);
 
 /// Validate and extract the package.  Empty allowedRoots means no root filter.

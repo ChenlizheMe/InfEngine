@@ -51,7 +51,7 @@ class _FakeInxPack:
         }
         path = os.path.abspath(destination)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_bytes(b"INXPKG-v2-test")
+        Path(path).write_bytes(b"INXPKG-test")
         cls.archives[path] = entries
         return cls._manifest(path)
 
@@ -60,14 +60,12 @@ class _FakeInxPack:
         entries = cls.archives[os.path.abspath(path)]
         return {
             "format": "infernux-native-inxpack",
-            "revision": 0x00010000,
             "file_count": len(entries),
             "files": [
                 {
                     "path": name,
                     "raw_bytes": len(payload),
                     "stored_bytes": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
                 }
                 for name, payload in entries.items()
             ],
@@ -153,7 +151,7 @@ def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path)
     assert preview.file_records[0]["guid"] == guid
 
 
-def test_v2_layout_routes_code_control_content_and_nested_packages(tmp_path):
+def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path):
     source = _source(tmp_path / "source", "aabbc/physics/jolt")
     (source / "Runtime").mkdir()
     (source / "Runtime" / "backend.py").write_text("BACKEND = 'jolt'\n", encoding="utf-8")
@@ -164,18 +162,17 @@ def test_v2_layout_routes_code_control_content_and_nested_packages(tmp_path):
     (source / "Scenes").mkdir()
     (source / "Scenes" / "Demo.scene").write_text("scene", encoding="utf-8")
     (source / "Variants").mkdir()
-    (source / "Variants" / "Legacy.inxpkg").write_bytes(b"opaque nested package")
+    (source / "Variants" / "Alternative.inxpkg").write_bytes(b"opaque nested package")
 
     preview = InxPackage.inspect(str(_export(source, tmp_path / "Jolt.inxpkg")))
 
     assert preview.metadata["$schema"] == "infernux.inxpackage"
-    assert preview.metadata["format_version"] == 2
     assert len({item["guid"] for item in preview.file_records}) == len(preview.file_records)
     assert "Packages/aabbc/physics/jolt/Runtime/backend.py" in preview.project_entries
     assert "Packages/aabbc/physics/jolt/Editor/panel.py" in preview.project_entries
     assert "Packages/aabbc/physics/jolt/README.md" in preview.project_entries
     assert "Assets/Plugins/aabbc/physics/jolt/Scenes/Demo.scene" in preview.project_entries
-    assert "Assets/Plugins/aabbc/physics/jolt/Variants/Legacy.inxpkg" in preview.project_entries
+    assert "Assets/Plugins/aabbc/physics/jolt/Variants/Alternative.inxpkg" in preview.project_entries
 
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))

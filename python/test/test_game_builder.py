@@ -155,7 +155,6 @@ class _FakeNativeInxPack:
         for offset, (logical, source) in enumerate(sorted(sources)):
             logical = str(logical).replace("\\", "/")
             payload = Path(source).read_bytes()
-            digest = hashlib.sha256(payload).hexdigest()
             records.append(
                 {
                     "path": logical,
@@ -163,22 +162,19 @@ class _FakeNativeInxPack:
                     "stored_bytes": len(payload),
                     "raw_bytes": len(payload),
                     "codec": "store",
-                    "sha256": digest,
-                    "stored_sha256": digest,
                 }
             )
             cls.entries[(archive_key, logical)] = payload
             raw_total += len(payload)
         manifest = {
             "format": "infernux-native-inxpack",
-            "revision": 65536,
             "codec": "store",
             "compression_profile": profile,
             "file_count": len(records),
             "raw_bytes": raw_total,
             "stored_bytes": raw_total,
             "payload_bytes": raw_total,
-            "archive_bytes": 256 + len(records) * 128 + raw_total,
+            "archive_bytes": 128 + len(records) * 64 + raw_total,
             "files": records,
         }
         encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
@@ -386,7 +382,6 @@ def test_runtime_catalog_rejects_serialized_and_direct_payloads():
         "package": "Content.inxpkg",
         "runtime_path": "Assets/Main.scene",
         "bytes": 2,
-        "sha256": hashlib.sha256(b"{}").hexdigest(),
         "payload": b"{}",
     }
 
@@ -483,7 +478,6 @@ def test_all_runtime_document_and_audio_sources_are_library_only(suffix):
                     "package": "Content.inxpkg",
                     "runtime_path": source_path,
                     "bytes": 2,
-                    "sha256": hashlib.sha256(b"{}").hexdigest(),
                     "payload": b"{}",
                     "asset_binding": {
                         "source_guid": f"guid-{suffix[1:]}",
@@ -705,7 +699,6 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
                 "logical_path": logical,
                 "path_hint": path.relative_to(project).as_posix(),
                 "guid": guid,
-                "sha256": hashlib.sha256(payload).hexdigest(),
                 "role": role,
                 "owned": True,
             }
@@ -725,7 +718,6 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
             "logical_path": "InxPackage.json",
             "path_hint": control.relative_to(project).as_posix(),
             "guid": "control-guid",
-            "sha256": hashlib.sha256(control_payload).hexdigest(),
             "role": "control",
             "owned": True,
         },
@@ -4861,7 +4853,6 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
             "package": "Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/scene-guid.scene",
             "bytes": len(scene_payload),
-            "sha256": hashlib.sha256(scene_payload).hexdigest(),
             "payload": scene_payload,
             "asset_binding": {
                 "source_guid": "scene-guid",
@@ -4873,7 +4864,6 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
             "package": "Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/material-guid.mat",
             "bytes": len(material_payload),
-            "sha256": hashlib.sha256(material_payload).hexdigest(),
             "payload": material_payload,
             "asset_binding": {
                 "source_guid": "material-guid",
@@ -4971,7 +4961,6 @@ def test_runtime_catalog_does_not_treat_type_or_stable_ids_as_assets():
             "package": "Content.inxpkg",
             "runtime_path": "Assets/Scripts/Game.pyc",
             "bytes": len(script_payload),
-            "sha256": hashlib.sha256(script_payload).hexdigest(),
             "asset_binding": {
                 "source_guid": script_guid,
                 "source_path": "Assets/Scripts/Game.py",
@@ -4982,7 +4971,6 @@ def test_runtime_catalog_does_not_treat_type_or_stable_ids_as_assets():
             "package": "Content.inxpkg",
             "runtime_path": f"Library/Artifacts/Particle/{particle_guid}.inxparticle",
             "bytes": len(particle_payload),
-            "sha256": hashlib.sha256(particle_payload).hexdigest(),
             "asset_binding": {
                 "source_guid": particle_guid,
                 "source_path": "Assets/VFX/Wind.particlegraph",
@@ -4993,14 +4981,12 @@ def test_runtime_catalog_does_not_treat_type_or_stable_ids_as_assets():
             "package": "Content.inxpkg",
             "runtime_path": "Library/RuntimeTypeRegistry.json",
             "bytes": len(type_registry),
-            "sha256": hashlib.sha256(type_registry).hexdigest(),
             "payload": type_registry,
         },
         {
             "package": "Content.inxpkg",
             "runtime_path": "Library/Artifacts/Particle/RuntimeIndex.json",
             "bytes": len(particle_index),
-            "sha256": hashlib.sha256(particle_index).hexdigest(),
             "payload": particle_index,
         },
     ]
@@ -5044,7 +5030,6 @@ def test_animclip3d_catalog_depends_on_independent_animation_model():
             "package": "Content.inxpkg",
             "runtime_path": f"Library/Artifacts/Document/{clip_guid}.animclip3d",
             "bytes": len(clip_payload),
-            "sha256": hashlib.sha256(clip_payload).hexdigest(),
             "payload": clip_payload,
             "asset_binding": {
                 "source_guid": clip_guid,
@@ -5056,7 +5041,6 @@ def test_animclip3d_catalog_depends_on_independent_animation_model():
             "package": "Content.inxpkg",
             "runtime_path": f"Library/Artifacts/Mesh/{animation_model_guid}.inxmesh",
             "bytes": len(mesh_payload),
-            "sha256": hashlib.sha256(mesh_payload).hexdigest(),
             "asset_binding": {
                 "source_guid": animation_model_guid,
                 "source_path": "Assets/Animations/Run.fbx",
@@ -5116,7 +5100,6 @@ def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
                 "package": "Content.inxpkg",
                 "runtime_path": runtime_path,
                 "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
                 "payload": payload,
                 "asset_binding": {
                     "source_guid": guid,

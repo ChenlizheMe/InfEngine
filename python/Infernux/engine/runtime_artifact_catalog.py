@@ -638,8 +638,8 @@ def build_catalog(
 
     Each item must contain ``package``, ``runtime_path`` and ``bytes``.
     ``payload`` is optional and is used only to derive dependency IDs; it is
-    never copied into the catalog. Package and entry hashes remain owned by the
-    native package format and are deliberately not duplicated here.
+    never copied into the catalog. Package identity remains owned by the
+    container and is deliberately not duplicated here.
     """
 
     prepared: list[dict[str, Any]] = []
