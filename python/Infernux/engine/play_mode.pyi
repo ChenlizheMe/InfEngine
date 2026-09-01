@@ -159,13 +159,6 @@ class PlayModeManager:
     def get_runtime_hidden_object_ids(self) -> set[int]: ...
     def add_runtime_hidden_listener(self, callback: Callable[[], None]) -> None: ...
     def remove_runtime_hidden_listener(self, callback: Callable[[], None]) -> None: ...
-    def reload_components_from_script(
-        self,
-        file_path: str,
-        *,
-        source: bytes | str | None = ...,
-        code: CodeType | None = ...,
-    ) -> int: ...
     def reload_components_from_script_result(
         self,
         file_path: str,

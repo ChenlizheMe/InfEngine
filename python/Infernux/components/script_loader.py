@@ -1380,22 +1380,6 @@ def reload_component_bodies(
     return result
 
 
-def reload_component_body(
-    file_path: str,
-    target_type: type,
-    *,
-    script_guid: str = "",
-    source: bytes | str | None = None,
-) -> tuple[str, ...]:
-    """Compatibility wrapper for a one-target body-only reload."""
-    return reload_component_bodies(
-        file_path,
-        (target_type,),
-        script_guid=script_guid,
-        source=source,
-    )[target_type]
-
-
 # ---------------------------------------------------------------------------
 # Script error tracking — allows the editor to know which scripts are broken
 # without crashing.  Components backed by broken scripts can still be

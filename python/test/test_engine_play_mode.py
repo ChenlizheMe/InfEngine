@@ -548,7 +548,7 @@ class TestPlayModeManager:
                 return script_guid
 
         manager.set_asset_database(_AssetDatabase())
-        manager.reload_components_from_script(str(script))
+        manager.reload_components_from_script_result(str(script))
 
         restored = game_object.components[0]
         assert not isinstance(restored, MissingScript)

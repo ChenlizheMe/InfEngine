@@ -1253,23 +1253,6 @@ class PlayModeManager(PlayModeSerializationMixin):
     # Python component helpers (serialization / reload)
     # ========================================================================
 
-    def reload_components_from_script(
-        self,
-        file_path: str,
-        *,
-        source: bytes | str | None = None,
-        code: types.CodeType | None = None,
-    ) -> int:
-        """Reload components and retain the legacy count-based return value."""
-        outcome = self.reload_components_from_script_result(
-            file_path,
-            source=source,
-            code=code,
-        )
-        if not outcome.success or not outcome.had_live_targets:
-            return 0
-        return outcome.reloaded_count
-
     def reload_components_from_script_result(
         self,
         file_path: str,
