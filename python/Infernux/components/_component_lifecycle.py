@@ -546,12 +546,6 @@ class RuntimeExecutionScheduler:
                 {phase: tuple(values) for phase, values in self._phase_plan.items()}
             ),
             component_snapshots=MappingProxyType(components),
-            type_revisions=MappingProxyType(
-                {
-                    component_type: epoch.epoch_id
-                    for component_type in epoch.descriptors
-                }
-            ),
         )
         self._execution_snapshot = snapshot
         self._counters["execution_snapshot_builds"] += 1
@@ -808,7 +802,6 @@ class _RuntimeExecutionSnapshot:
     epoch: Any
     phase_plan: Mapping[str, tuple[Any, ...]]
     component_snapshots: Mapping[int, tuple[Any, tuple[Any, ...]]]
-    type_revisions: Mapping[type, int]
 
 
 class RuntimeExecutionFrame:
@@ -830,9 +823,6 @@ class RuntimeExecutionFrame:
         self.component_snapshots = snapshot.component_snapshots
         self.structure_revision = snapshot.structure_revision
         self.epoch = snapshot.epoch
-        # Compatibility view for older diagnostics.  Dispatch ownership is
-        # the epoch above; this map is derived and never mutated independently.
-        self.type_revisions = snapshot.type_revisions
         self.barrier_changes: dict[Any, Any] = {}
         self.barrier_sequence: list[tuple[Any, Any]] = []
         self._closed = False

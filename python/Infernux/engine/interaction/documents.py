@@ -147,12 +147,6 @@ class DocumentLocator:
         object.__setattr__(self, "resource_path", str(self.resource_path or ""))
         object.__setattr__(self, "title", str(self.title or ""))
 
-    @property
-    def key(self) -> DocumentKey:
-        """Compatibility/readability alias for the current key hint."""
-        return self.key_hint
-
-
 class DocumentState(str, Enum):
     READY = "ready"
     SAVING = "saving"
@@ -317,7 +311,6 @@ class _DormantDocumentRecord:
 class DocumentRegistry:
     """Single authority for editor document identity and dirty revisions."""
 
-    SESSION_STATE_VERSION = 1
     _instance: Optional["DocumentRegistry"] = None
 
     def __init__(self) -> None:
@@ -502,7 +495,7 @@ class DocumentRegistry:
             )
             records.append(record)
         records.sort(key=lambda item: (item["kind"], item["stable_id"]))
-        return {"version": self.SESSION_STATE_VERSION, "documents": records}
+        return {"documents": records}
 
     def queue_session_restore(self, data: dict[str, Any] | None) -> int:
         """Validate persistent authoring snapshots for lazy View claims."""
@@ -512,12 +505,8 @@ class DocumentRegistry:
         self._session_restore_suppressed_view_ids.clear()
         if not data:
             return 0
-        if not isinstance(data, dict) or set(data) != {"version", "documents"}:
+        if not isinstance(data, dict) or set(data) != {"documents"}:
             raise ValueError("document session state has an invalid envelope")
-        if data["version"] != self.SESSION_STATE_VERSION:
-            raise ValueError(
-                f"document session state requires version {self.SESSION_STATE_VERSION}"
-            )
         records = data["documents"]
         if not isinstance(records, list):
             raise TypeError("document session records must be an array")

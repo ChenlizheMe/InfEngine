@@ -285,14 +285,12 @@ def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
     first = scheduler.begin_frame()
     first_plan = first.phase_plan
     first_components = first.component_snapshots
-    first_types = first.type_revisions
     first.close()
 
     second = scheduler.begin_frame()
     try:
         assert second.phase_plan is first_plan
         assert second.component_snapshots is first_components
-        assert second.type_revisions is first_types
     finally:
         second.close()
 

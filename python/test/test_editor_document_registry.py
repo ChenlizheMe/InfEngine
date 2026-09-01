@@ -1328,7 +1328,7 @@ def test_interaction_context_captures_active_document_locator(tmp_path):
     context = core.capture_context()
 
     assert context.document is not None
-    assert context.document.key == document.key
+    assert context.document.key_hint == document.key
     assert context.document.resource_path == str(asset_path)
 
 
