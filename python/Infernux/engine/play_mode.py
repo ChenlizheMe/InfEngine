@@ -702,12 +702,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._total_play_time = 0.0
             self._delta_time = 0.0
             self._step_sequence = 0
-            try:
-                from Infernux.timing import Time
-                Time._reset()
-            except ImportError:
-                # Time module not yet importable during early bootstrap — benign.
-                pass
+            from Infernux.timing import Time
+            Time._reset()
             from Infernux.components.builtin_component import BuiltinComponent
             BuiltinComponent._clear_cache()
 
@@ -716,17 +712,10 @@ class PlayModeManager(PlayModeSerializationMixin):
             #    Awake → OnEnable and may produce user-visible logs).
             old_state = self._state
             self._state = PlayModeState.PLAYING
-            try:
-                from Infernux.core.material import Material
-                Material._suppress_auto_save = True
-            except ImportError:
-                # Material module not yet importable — benign during bootstrap.
-                pass
-            try:
-                from Infernux.renderstack.render_effect import RenderEffect
-                RenderEffect._suppress_auto_save = True
-            except ImportError:
-                pass
+            from Infernux.core.material import Material
+            from Infernux.renderstack.render_effect import RenderEffect
+            Material._suppress_auto_save = True
+            RenderEffect._suppress_auto_save = True
             notify_started = time.perf_counter()
             self._notify_state_change(old_state, self._state)
             notify_ms = (time.perf_counter() - notify_started) * 1000.0
@@ -734,26 +723,15 @@ class PlayModeManager(PlayModeSerializationMixin):
             # 3. Recreate the scripting domain while retaining the unchanged
             #    native graph. Stop Mode still restores the full snapshot.
             rebuild_started = time.perf_counter()
-            if not self._prepare_active_scene_for_play(self._scene_backup):
-                Debug.log_error("Failed to rebuild runtime scene for Play Mode")
+            try:
+                self._prepare_active_scene_for_play(self._scene_backup)
+            except Exception:
                 self._state = PlayModeState.EDIT
-                try:
-                    from Infernux.core.material import Material
-                    Material._suppress_auto_save = False
-                except ImportError:
-                    pass
-                try:
-                    from Infernux.renderstack.render_effect import RenderEffect
-                    RenderEffect._suppress_auto_save = False
-                except ImportError:
-                    pass
-                try:
-                    self._rebuild_active_scene(self._scene_backup, for_play=False, restore_scene_path=True)
-                except Exception as exc:
-                    Debug.log_error(f"Failed to restore scene after play-mode build failure: {exc}")
+                Material._suppress_auto_save = False
+                RenderEffect._suppress_auto_save = False
                 self._notify_state_change(PlayModeState.PLAYING, PlayModeState.EDIT)
                 self._invalidate_native_gpu_view_state()
-                return False
+                raise
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
 
             # 4. Drain retired edit-domain particle graphs, then enter C++
@@ -840,17 +818,10 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._state = PlayModeState.EDIT
 
         # Re-enable material auto-save now that play mode is over.
-        try:
-            from Infernux.core.material import Material
-            Material._suppress_auto_save = False
-        except ImportError:
-            # Material module not yet importable — benign during teardown.
-            pass
-        try:
-            from Infernux.renderstack.render_effect import RenderEffect
-            RenderEffect._suppress_auto_save = False
-        except ImportError:
-            pass
+        from Infernux.core.material import Material
+        from Infernux.renderstack.render_effect import RenderEffect
+        Material._suppress_auto_save = False
+        RenderEffect._suppress_auto_save = False
 
         # 3. Discard any pending runtime scene load queued by user scripts
         #    during the last play frame — we're about to restore the backup.
@@ -999,30 +970,24 @@ class PlayModeManager(PlayModeSerializationMixin):
     def _prepare_active_scene_for_play(self, snapshot: Optional[Any]) -> bool:
         """Refresh Python component instances while preserving native objects."""
         if not snapshot:
-            Debug.log_warning("Cannot prepare scene for Play Mode: empty snapshot")
-            return False
+            raise ValueError("Cannot prepare scene for Play Mode: empty snapshot")
         scene_manager = self._get_scene_manager()
         scene = scene_manager.get_active_scene() if scene_manager else None
         if scene is None:
-            Debug.log_warning("Cannot prepare scene for Play Mode: no active scene")
-            return False
+            raise RuntimeError("Cannot prepare scene for Play Mode: no active scene")
 
-        try:
-            from Infernux.engine.component_restore import replace_scene_python_components_for_play
-            from Infernux.renderstack.render_stack import RenderStack
+        from Infernux.engine.component_restore import replace_scene_python_components_for_play
+        from Infernux.renderstack.render_stack import RenderStack
 
-            replace_scene_python_components_for_play(
-                scene,
-                snapshot,
-                asset_database=self._asset_database,
-            )
-            self.clear_runtime_hidden_object_ids()
-            RenderStack._active_instance = None
-            scene.set_playing(True)
-            return True
-        except Exception as exc:
-            Debug.log_internal(f"Fast Play Mode preparation failed; rebuilding scene: {exc}")
-            return self._rebuild_active_scene(snapshot, for_play=True)
+        replace_scene_python_components_for_play(
+            scene,
+            snapshot,
+            asset_database=self._asset_database,
+        )
+        self.clear_runtime_hidden_object_ids()
+        RenderStack._active_instance = None
+        scene.set_playing(True)
+        return True
     
     # ========================================================================
     # Game Loop Integration
@@ -1065,23 +1030,15 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._last_frame_time = current_time
 
         # Sync time_scale from the static Time class (user may set Time.time_scale)
-        try:
-            Time = self._time_api
-            self._time_scale = Time.time_scale
-            Time._tick(raw_dt)
-            # Read back computed values so PlayModeManager stays in sync
-            self._delta_time = Time.delta_time
-            self._total_play_time = Time.time
-            # Read game-only frame cost from C++ (previous frame's measurement)
-            if self._native_engine is not None:
-                Time._game_delta_time = self._native_engine.get_game_only_frame_ms() / 1000.0
-        except ImportError:
-            self._delta_time = min(raw_dt * self._time_scale, 0.1)
-            self._total_play_time += self._delta_time
-        except Exception as exc:
-            Debug.log_warning(f"Time sync failed: {exc}")
-            self._delta_time = min(raw_dt * self._time_scale, 0.1)
-            self._total_play_time += self._delta_time
+        Time = self._time_api
+        self._time_scale = Time.time_scale
+        Time._tick(raw_dt)
+        # Read back computed values so PlayModeManager stays in sync
+        self._delta_time = Time.delta_time
+        self._total_play_time = Time.time
+        # Read game-only frame cost from C++ (previous frame's measurement)
+        if self._native_engine is not None:
+            Time._game_delta_time = self._native_engine.get_game_only_frame_ms() / 1000.0
         
         # NOTE: Lifecycle update is driven by C++ only.
 
@@ -1126,11 +1083,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             RenderStack.refresh_active_instance(scene)
             if for_play:
                 scene.set_playing(True)
-            try:
-                from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-                SpriteRenderer.init_all_in_scene()
-            except Exception as exc:
-                Debug.log_internal(f"SpriteRenderer init after rebuild: {exc}")
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene()
 
         from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
         transaction = SceneDocumentTransaction(

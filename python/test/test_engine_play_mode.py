@@ -626,6 +626,53 @@ class TestPlayModeManager:
         mgr.register_runtime_hidden_object(obj)
         assert calls == [{404}, set()]
 
+    def test_prepare_play_scene_propagates_primary_transaction_failure(self, monkeypatch):
+        class _Scene:
+            pass
+
+        class _SceneManager:
+            @staticmethod
+            def get_active_scene():
+                return _Scene()
+
+        mgr = PlayModeManager()
+        mgr._get_scene_manager = lambda: _SceneManager()
+        rebuilds = []
+        mgr._rebuild_active_scene = lambda *args, **kwargs: rebuilds.append(
+            (args, kwargs)
+        )
+
+        from Infernux.engine import component_restore
+
+        def reject(*_args, **_kwargs):
+            raise RuntimeError("component transaction rejected")
+
+        monkeypatch.setattr(
+            component_restore,
+            "replace_scene_python_components_for_play",
+            reject,
+        )
+
+        with pytest.raises(RuntimeError, match="component transaction rejected"):
+            mgr._prepare_active_scene_for_play({"objects": []})
+
+        assert rebuilds == []
+
+    def test_play_tick_propagates_time_contract_failure(self):
+        class _Time:
+            time_scale = 1.0
+
+            @staticmethod
+            def _tick(_delta_time):
+                raise RuntimeError("time contract rejected")
+
+        mgr = PlayModeManager()
+        mgr._state = PlayModeState.PLAYING
+        mgr._time_api = _Time
+
+        with pytest.raises(RuntimeError, match="time contract rejected"):
+            mgr.tick(1.0 / 60.0)
+
     def test_rebuild_scene_failure_preserves_runtime_hidden_ids(self):
         mgr = PlayModeManager()
         mgr._runtime_hidden_object_ids = {1, 2, 3}
