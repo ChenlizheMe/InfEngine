@@ -82,7 +82,6 @@ def test_runtime_catalog_ids_are_stable_and_output_is_deterministic():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/scene-b.scene",
             "bytes": 1,
-            "sha256": "1" * 64,
             "payload": b"{\"name\":\"B\"}",
             "asset_binding": {
                 "source_guid": "scene-b",
@@ -94,7 +93,6 @@ def test_runtime_catalog_ids_are_stable_and_output_is_deterministic():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/scene-a.scene",
             "bytes": 1,
-            "sha256": "2" * 64,
             "payload": b"{\"name\":\"A\"}",
             "asset_binding": {
                 "source_guid": "scene-a",
@@ -130,7 +128,6 @@ def test_runtime_catalog_records_compiled_library_source_binding():
                 "package": "Game_Data/Content.inxpkg",
                 "runtime_path": "Library/Artifacts/Texture/texture-guid.inxtex",
                 "bytes": 7,
-                "sha256": "b" * 64,
                 "payload": _texture_artifact("a" * 16),
                 "asset_binding": binding,
             }
@@ -162,7 +159,6 @@ def test_runtime_catalog_uses_mesh_as_deterministic_alias_for_mesh_and_skin():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": skin_path,
             "bytes": 7,
-            "sha256": "1" * 64,
             "asset_binding": {
                 "source_guid": source_guid,
                 "source_path": source_path,
@@ -173,7 +169,6 @@ def test_runtime_catalog_uses_mesh_as_deterministic_alias_for_mesh_and_skin():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": mesh_path,
             "bytes": 7,
-            "sha256": "2" * 64,
             "asset_binding": {
                 "source_guid": source_guid,
                 "source_path": source_path,
@@ -184,7 +179,6 @@ def test_runtime_catalog_uses_mesh_as_deterministic_alias_for_mesh_and_skin():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/main.scene",
             "bytes": len(scene_payload),
-            "sha256": "3" * 64,
             "payload": scene_payload,
             "asset_binding": {
                 "source_guid": "scene-guid",
@@ -220,7 +214,6 @@ def test_runtime_catalog_rejects_source_alias_shared_by_different_guids():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": "Library/Artifacts/Mesh/a.inxmesh",
             "bytes": 1,
-            "sha256": "1" * 64,
             "asset_binding": {
                 "source_guid": "guid-a",
                 "source_path": source_path,
@@ -231,7 +224,6 @@ def test_runtime_catalog_rejects_source_alias_shared_by_different_guids():
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": "Library/Artifacts/Mesh/b.inxmesh",
             "bytes": 1,
-            "sha256": "2" * 64,
             "asset_binding": {
                 "source_guid": "guid-b",
                 "source_path": source_path,
@@ -259,7 +251,6 @@ def test_runtime_catalog_resolves_asset_guid_before_stale_path_hint():
                 "package": "Game_Data/Content.inxpkg",
                 "runtime_path": "Library/Artifacts/Document/scene-guid.scene",
                 "bytes": 2,
-                "sha256": "1" * 64,
                 "payload": json.dumps(
                     {
                         "$type": "asset_ref",
@@ -277,7 +268,6 @@ def test_runtime_catalog_resolves_asset_guid_before_stale_path_hint():
                 "package": "Game_Data/Content.inxpkg",
                 "runtime_path": "Library/Artifacts/Document/material-guid.mat",
                 "bytes": 2,
-                "sha256": "2" * 64,
                 "payload": b"{}",
                 "asset_binding": {
                     "source_guid": "material-guid",
@@ -305,14 +295,12 @@ def test_runtime_catalog_rejects_ambiguous_runtime_paths_across_packages():
             "package": "Game_Data/Runtime.inxrt",
             "runtime_path": "Library/Shared.bin",
             "bytes": 1,
-            "sha256": "1" * 64,
             "payload": b"a",
         },
         {
             "package": "Game_Data/Content.inxpkg",
             "runtime_path": "library/shared.bin",
             "bytes": 1,
-            "sha256": "2" * 64,
             "payload": b"b",
         },
     ]
@@ -375,7 +363,6 @@ class _FakeNativeInxPack:
         for offset, (logical, source) in enumerate(sorted(sources)):
             logical = str(logical).replace("\\", "/")
             payload = Path(source).read_bytes()
-            digest = hashlib.sha256(payload).hexdigest()
             records.append(
                 {
                     "path": logical,
@@ -383,8 +370,6 @@ class _FakeNativeInxPack:
                     "stored_bytes": len(payload),
                     "raw_bytes": len(payload),
                     "codec": "store",
-                    "sha256": digest,
-                    "stored_sha256": digest,
                 }
             )
             cls.entries[(cls._key(destination), logical)] = payload
@@ -392,18 +377,17 @@ class _FakeNativeInxPack:
             stored_total += len(payload)
         manifest = {
             "format": "infernux-native-inxpack",
-            "revision": 65536,
             "codec": "zstd-or-store",
-            "compression_profile": profile,
             "file_count": len(records),
             "raw_bytes": raw_total,
             "stored_bytes": stored_total,
             "payload_bytes": stored_total,
-            "archive_bytes": 256 + len(records) * 128 + stored_total,
+            "archive_bytes": 0,
             "files": records,
         }
         encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
         Path(destination).write_bytes(b"FAKE-NATIVE-INXPKG\0" + encoded)
+        manifest["archive_bytes"] = Path(destination).stat().st_size
         manifest["archive_sha256"] = hashlib.sha256(Path(destination).read_bytes()).hexdigest()
         cls.manifests[cls._key(destination)] = manifest
         return manifest
@@ -605,7 +589,6 @@ def _write_catalog(root: Path) -> None:
                 "package": package_relative,
                 "runtime_path": entry["path"],
                 "bytes": entry["raw_bytes"],
-                "sha256": entry["sha256"],
                 "payload": read_entry(package_path, entry["path"]),
             }
             if str(entry["path"]).casefold().endswith(".wav"):
@@ -749,13 +732,12 @@ def test_audit_supports_unicode_product_paths(tmp_path: Path):
     assert manifest["audit"]["passed"] is True
 
 
-def test_audit_does_not_read_binary_entries_individually(tmp_path: Path, monkeypatch):
+def test_audit_does_not_read_unique_size_binary_entries(tmp_path: Path, monkeypatch):
     root = _valid_player(tmp_path)
-    data = root / "Balance_Data"
     binary_sources = []
     for index in range(128):
         source = tmp_path / f"content-binary-{index}.bin"
-        source.write_bytes(f"binary-{index}".encode("ascii"))
+        source.write_bytes(b"x" * (1000 + index))
         binary_sources.append((f"RuntimeAssets/binary/{index:03d}.bin", source))
     _append_package_entries(
         root,
