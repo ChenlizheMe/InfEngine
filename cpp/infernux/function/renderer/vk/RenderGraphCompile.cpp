@@ -1405,19 +1405,15 @@ bool RenderGraph::CreateVulkanRenderPasses()
             return false;
         }
 
-        pass.usesDynamicRendering = false;
-        if (pass.dynamicRenderingRequested && (!m_cmdBeginRendering || !m_cmdEndRendering)) {
-            INXLOG_WARN("RenderGraph pass '", pass.name,
-                        "' requested Dynamic Rendering, but the capability is unavailable; using the legacy "
-                        "render-pass path");
+        if (!m_cmdBeginRendering || !m_cmdEndRendering) {
+            INXLOG_ERROR("RenderGraph cannot compile graphics pass '", pass.name,
+                         "' without Vulkan Dynamic Rendering commands");
+            return false;
         }
-        if (pass.dynamicRenderingRequested && m_cmdBeginRendering && m_cmdEndRendering) {
-            pass.vulkanRenderPass = VK_NULL_HANDLE;
-            pass.renderTargetLayout = {};
-            pass.usesDynamicRendering = true;
-        }
-        if (pass.usesDynamicRendering)
-            continue;
+        pass.vulkanRenderPass = VK_NULL_HANDLE;
+        pass.renderTargetLayout = {};
+        pass.usesDynamicRendering = true;
+        continue;
 
         // Determine whether depth must be stored for later passes
         bool needStoreDepth = false;

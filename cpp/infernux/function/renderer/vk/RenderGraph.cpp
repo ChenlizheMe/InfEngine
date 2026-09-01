@@ -886,11 +886,10 @@ void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipeli
     }
     if (context && m_rhiDevice) {
         const rhi::DynamicRenderingCommands commands = rhi::ResolveDynamicRenderingCommands(context->GetDevice());
-        if (rhi::SelectDynamicRenderingPath(m_rhiDevice->GetCapabilityState().dynamicRendering.enabled,
-                                            commands.IsValid(), false)) {
-            m_cmdBeginRendering = commands.begin;
-            m_cmdEndRendering = commands.end;
-        }
+        if (!m_rhiDevice->GetCapabilityState().dynamicRendering.IsEnabled() || !commands.IsValid())
+            throw std::runtime_error("RenderGraph requires Vulkan Dynamic Rendering");
+        m_cmdBeginRendering = commands.begin;
+        m_cmdEndRendering = commands.end;
     }
 
     std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> topology{};

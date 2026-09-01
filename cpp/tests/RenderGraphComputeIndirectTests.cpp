@@ -1714,7 +1714,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
     if (!Require(resources.graph.GetPassUsesDynamicRendering("IndirectDraw") == dynamicGeometryTest,
-                 "RenderGraph did not honor the Dynamic Rendering capability fallback"))
+                 "RenderGraph did not publish the required Dynamic Rendering contract"))
         return false;
     const auto indirectContract = resources.graph.GetPassRenderingContract("IndirectDraw");
     if (!Require(indirectContract.found && !indirectContract.culled &&
