@@ -667,8 +667,6 @@ class RenderGraph
         uint64_t graphicsPassCount = 0;
         uint64_t computePassCount = 0;
         uint64_t barrierCallCount = 0;
-        uint64_t synchronization2BarrierBatchCount = 0;
-        uint64_t legacyBarrierBatchCount = 0;
         uint64_t rhiPipelineBinds = 0;
         uint64_t rhiPipelineBindSkips = 0;
         uint64_t rhiGroupBinds = 0;
@@ -1070,9 +1068,7 @@ class RenderGraph
     /// source work completes in this submission batch.
     void InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32_t batchIndex);
 
-    /// Emit the accumulated resource barriers through synchronization2 when
-    /// the production device enabled it, with the legacy barrier command as
-    /// the hardware fallback.
+    /// Emit the accumulated resource barriers through Synchronization2.
     void IssuePipelineBarriers(VkCommandBuffer commandBuffer, VkPipelineStageFlags sourceStages,
                                VkPipelineStageFlags destinationStages);
 

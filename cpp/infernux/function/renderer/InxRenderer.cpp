@@ -1699,14 +1699,6 @@ void InxRenderer::DrawFrame()
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.barrierCallCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0)
-                        << " sync2/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.synchronization2BarrierBatchCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
-                        << " legacy/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.legacyBarrierBatchCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
                         << " rhiPipeline/exec="
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.rhiPipelineBinds) /
                                                          static_cast<double>(rgProfile.executeCalls)

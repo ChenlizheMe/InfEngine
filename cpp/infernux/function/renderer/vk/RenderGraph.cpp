@@ -855,13 +855,17 @@ void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *delet
     m_cmdPipelineBarrier2 = nullptr;
     m_cmdBeginRendering = nullptr;
     m_cmdEndRendering = nullptr;
-    if (context && m_rhiDevice && m_rhiDevice->GetCapabilityState().synchronization2.enabled) {
+    if (context && m_rhiDevice) {
+        if (!m_rhiDevice->GetCapabilityState().synchronization2.IsEnabled())
+            throw std::runtime_error("RenderGraph requires Vulkan Synchronization2");
         m_cmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
             vkGetDeviceProcAddr(context->GetDevice(), "vkCmdPipelineBarrier2"));
         if (!m_cmdPipelineBarrier2) {
             m_cmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
                 vkGetDeviceProcAddr(context->GetDevice(), "vkCmdPipelineBarrier2KHR"));
         }
+        if (!m_cmdPipelineBarrier2)
+            throw std::runtime_error("RenderGraph could not resolve vkCmdPipelineBarrier2");
     }
     if (context && m_rhiDevice) {
         const rhi::DynamicRenderingCommands commands = rhi::ResolveDynamicRenderingCommands(context->GetDevice());

@@ -776,12 +776,16 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
         INXLOG_ERROR("The selected Vulkan device does not support the required Dynamic Rendering capability");
         return false;
     }
+    if (!capabilitySnapshot.supported.synchronization2.supported) {
+        INXLOG_ERROR("The selected Vulkan device does not support the required Synchronization2 capability");
+        return false;
+    }
     const bool forceBoundedDescriptors = ForceBoundedDescriptors();
     capabilityRequest.descriptorIndexing =
         capabilitySnapshot.supported.bindless.IsSupported() && !forceBoundedDescriptors;
     capabilityRequest.timelineSemaphore = capabilitySnapshot.supported.timelineSemaphore.supported;
     capabilityRequest.dynamicRendering = true;
-    capabilityRequest.synchronization2 = capabilitySnapshot.supported.synchronization2.supported;
+    capabilityRequest.synchronization2 = true;
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
     if (forceBoundedDescriptors)
         INXLOG_INFO("Descriptor indexing disabled by INFERNUX_FORCE_BOUNDED_DESCRIPTORS; validating bounded "
@@ -833,14 +837,6 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     createInfo.pEnabledFeatures = nullptr;
     createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-
-    // Validation layers (deprecated for devices, but included for older implementations)
-    if (m_validationEnabled) {
-        createInfo.enabledLayerCount = static_cast<uint32_t>(VALIDATION_LAYERS.size());
-        createInfo.ppEnabledLayerNames = VALIDATION_LAYERS.data();
-    } else {
-        createInfo.enabledLayerCount = 0;
-    }
 
     VkResult result = vkCreateDevice(m_physicalDevice, &createInfo, nullptr, &m_device);
     if (result != VK_SUCCESS) {

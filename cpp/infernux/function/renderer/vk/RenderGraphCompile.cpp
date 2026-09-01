@@ -152,16 +152,6 @@ void RenderGraph::IssuePipelineBarriers(VkCommandBuffer commandBuffer, VkPipelin
     if (m_barrierScratch.empty() && m_bufferBarrierScratch.empty())
         return;
 
-    if (!m_cmdPipelineBarrier2) {
-        vkCmdPipelineBarrier(commandBuffer, sourceStages, destinationStages, 0, 0, nullptr,
-                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
-                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
-#if INFERNUX_FRAME_PROFILE
-        ++s_executeProfile.legacyBarrierBatchCount;
-#endif
-        return;
-    }
-
     m_barrier2Scratch.clear();
     m_bufferBarrier2Scratch.clear();
     m_barrier2Scratch.reserve(m_barrierScratch.size());
@@ -208,9 +198,6 @@ void RenderGraph::IssuePipelineBarriers(VkCommandBuffer commandBuffer, VkPipelin
     dependency.imageMemoryBarrierCount = static_cast<uint32_t>(m_barrier2Scratch.size());
     dependency.pImageMemoryBarriers = m_barrier2Scratch.data();
     m_cmdPipelineBarrier2(commandBuffer, &dependency);
-#if INFERNUX_FRAME_PROFILE
-    ++s_executeProfile.synchronization2BarrierBatchCount;
-#endif
 }
 
 // ============================================================================
