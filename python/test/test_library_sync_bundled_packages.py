@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from Infernux.engine.library_sync import sync_resources
@@ -25,3 +26,8 @@ def test_library_sync_does_not_mirror_wheel_mandatory_packages(tmp_path, monkeyp
     assert (
         destination / "official_packages" / "catalog-artifact.inxpkg"
     ).read_bytes() == b"catalog"
+    manifest = json.loads(
+        (project / "Library" / ".InfernuxResources.json").read_text(encoding="utf-8")
+    )
+    assert set(manifest) == {"entries"}
+    assert manifest["entries"]["shader.bin"]["size"] == len(b"resource")
