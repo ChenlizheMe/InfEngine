@@ -174,7 +174,7 @@ class Coroutine:
     _next_id: int = 0
     __slots__ = (
         "_id", "_generator", "_owner_ref", "_current_yield", "_is_finished",
-        "_phase", "_creation_epoch", "_creation_epoch_id", "_is_legacy",
+        "_phase", "_creation_epoch", "_creation_epoch_id", "_is_stale_epoch",
     )
 
     def __init__(
@@ -197,7 +197,7 @@ class Coroutine:
         self._creation_epoch_id: int = int(
             getattr(self._creation_epoch, "epoch_id", 0)
         )
-        self._is_legacy: bool = False
+        self._is_stale_epoch: bool = False
 
     @property
     def is_finished(self) -> bool:
@@ -214,9 +214,9 @@ class Coroutine:
         return self._creation_epoch_id
 
     @property
-    def is_legacy(self) -> bool:
-        """Whether a newer runtime epoch has retired this coroutine's epoch."""
-        return self._is_legacy
+    def is_stale_epoch(self) -> bool:
+        """Whether this coroutine was created under a different runtime epoch."""
+        return self._is_stale_epoch
 
     def __repr__(self) -> str:
         status = "finished" if self._is_finished else "running"
@@ -236,7 +236,7 @@ class CoroutineScheduler:
     _live_schedulers: "weakref.WeakSet[CoroutineScheduler]" = weakref.WeakSet()
     __slots__ = (
         "_coroutines", "_on_active_changed", "_creation_epoch",
-        "_creation_epoch_id", "_observed_epoch_id", "_legacy_count", "__weakref__",
+        "_creation_epoch_id", "_observed_epoch_id", "_stale_epoch_count", "__weakref__",
     )
 
     def __init__(self, on_active_changed=None, *, creation_epoch: Any = None) -> None:
@@ -247,12 +247,12 @@ class CoroutineScheduler:
         )
         self._creation_epoch_id = int(getattr(self._creation_epoch, "epoch_id", 0))
         self._observed_epoch_id = self._creation_epoch_id
-        self._legacy_count = 0
+        self._stale_epoch_count = 0
         self._live_schedulers.add(self)
 
     @classmethod
     def _notify_runtime_epoch_published(cls, epoch: Any) -> None:
-        """Refresh legacy diagnostics at an owner safe point, not per frame."""
+        """Refresh epoch diagnostics at an owner safe point, not per frame."""
         for scheduler in tuple(cls._live_schedulers):
             scheduler._observe_epoch(epoch)
 
@@ -261,10 +261,10 @@ class CoroutineScheduler:
         if epoch_id == self._observed_epoch_id:
             return
         self._observed_epoch_id = epoch_id
-        self._legacy_count = 0
+        self._stale_epoch_count = 0
         for coroutine in self._coroutines:
-            coroutine._is_legacy = coroutine.creation_epoch_id != epoch_id
-            self._legacy_count += int(coroutine._is_legacy)
+            coroutine._is_stale_epoch = coroutine.creation_epoch_id != epoch_id
+            self._stale_epoch_count += int(coroutine._is_stale_epoch)
 
     def _notify_active_changed(self, was_active: bool) -> None:
         is_active = bool(self._coroutines)
@@ -286,11 +286,11 @@ class CoroutineScheduler:
         selected_epoch = _capture_runtime_epoch() if epoch is None else epoch
         self._observe_epoch(selected_epoch)
         co = Coroutine(generator, owner, creation_epoch=selected_epoch)
-        co._is_legacy = co.creation_epoch_id != self._observed_epoch_id
+        co._is_stale_epoch = co.creation_epoch_id != self._observed_epoch_id
         self._advance(co)                       # run until first yield
         if not co._is_finished:
             self._coroutines.append(co)
-            self._legacy_count += int(co._is_legacy)
+            self._stale_epoch_count += int(co._is_stale_epoch)
         self._notify_active_changed(was_active)
         return co
 
@@ -313,7 +313,7 @@ class CoroutineScheduler:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         else:
-            self._legacy_count -= int(coroutine._is_legacy)
+            self._stale_epoch_count -= int(coroutine._is_stale_epoch)
         self._notify_active_changed(was_active)
 
     def stop_all(self) -> None:
@@ -329,7 +329,7 @@ class CoroutineScheduler:
                     pass
                 co._generator = None
         self._coroutines.clear()
-        self._legacy_count = 0
+        self._stale_epoch_count = 0
         self._notify_active_changed(was_active)
 
     @property
@@ -346,14 +346,14 @@ class CoroutineScheduler:
         return self._creation_epoch_id
 
     @property
-    def legacy_coroutine_count(self) -> int:
-        return self._legacy_count
+    def stale_epoch_coroutine_count(self) -> int:
+        return self._stale_epoch_count
 
     def diagnostics(self) -> dict[str, int]:
         """Return cheap counters for runtime/editor diagnostics."""
         return {
             "active_count": len(self._coroutines),
-            "legacy_count": self._legacy_count,
+            "stale_epoch_count": self._stale_epoch_count,
             "creation_epoch_id": self._creation_epoch_id,
             "observed_epoch_id": self._observed_epoch_id,
         }
@@ -432,7 +432,7 @@ class CoroutineScheduler:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             else:
-                self._legacy_count -= int(co._is_legacy)
+                self._stale_epoch_count -= int(co._is_stale_epoch)
         self._notify_active_changed(was_active)
 
     def _advance(self, co: Coroutine) -> None:

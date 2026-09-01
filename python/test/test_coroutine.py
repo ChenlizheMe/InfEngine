@@ -390,8 +390,8 @@ class TestCoroutineScheduler:
 
         monkeypatch.setattr(runtime_dispatch, "_current_epoch", new_epoch)
         notify_runtime_epoch_published(new_epoch)
-        assert old.is_legacy is True
-        assert scheduler.legacy_coroutine_count == 1
+        assert old.is_stale_epoch is True
+        assert scheduler.stale_epoch_coroutine_count == 1
 
         def new_body():
             steps.append("new-start")
@@ -401,11 +401,11 @@ class TestCoroutineScheduler:
         new = scheduler.start(new_body())
         assert new.creation_epoch is new_epoch
         assert new.creation_epoch_id == 102
-        assert new.is_legacy is False
+        assert new.is_stale_epoch is False
 
         scheduler.tick_update(0.016, epoch=new_epoch)
         assert steps == ["old-start", "new-start", "old-resume", "new-resume"]
-        assert scheduler.legacy_coroutine_count == 0
+        assert scheduler.stale_epoch_coroutine_count == 0
 
     def test_epoch_diagnostic_and_stop_cleanup(self, monkeypatch):
         import Infernux.engine.runtime_dispatch as runtime_dispatch
@@ -423,12 +423,12 @@ class TestCoroutineScheduler:
         notify_runtime_epoch_published(new_epoch)
         assert scheduler.diagnostics() == {
             "active_count": 1,
-            "legacy_count": 1,
+            "stale_epoch_count": 1,
             "creation_epoch_id": 201,
             "observed_epoch_id": 202,
         }
         scheduler.stop(coroutine)
-        assert scheduler.legacy_coroutine_count == 0
+        assert scheduler.stale_epoch_coroutine_count == 0
         scheduler.stop_all()
         assert scheduler.diagnostics()["active_count"] == 0
 
@@ -450,15 +450,15 @@ class TestCoroutineScheduler:
         )
         monkeypatch.setattr(runtime_dispatch, "_current_epoch", candidate_epoch)
 
-        assert coroutine.is_legacy is False
+        assert coroutine.is_stale_epoch is False
         publication.rollback()
 
         assert runtime_dispatch.current_runtime_epoch() is old_epoch
-        assert coroutine.is_legacy is False
-        assert scheduler.legacy_coroutine_count == 0
+        assert coroutine.is_stale_epoch is False
+        assert scheduler.stale_epoch_coroutine_count == 0
         assert scheduler.diagnostics()["observed_epoch_id"] == 301
 
-    def test_coroutine_created_in_future_epoch_is_legacy_after_owner_rollback(
+    def test_coroutine_created_in_future_epoch_is_stale_after_owner_rollback(
         self,
         monkeypatch,
     ):
@@ -478,6 +478,6 @@ class TestCoroutineScheduler:
         monkeypatch.setattr(runtime_dispatch, "_current_epoch", stable_epoch)
         notify_runtime_epoch_published(stable_epoch)
 
-        assert coroutine.is_legacy is True
-        assert scheduler.legacy_coroutine_count == 1
+        assert coroutine.is_stale_epoch is True
+        assert scheduler.stale_epoch_coroutine_count == 1
         assert scheduler.diagnostics()["observed_epoch_id"] == 401
