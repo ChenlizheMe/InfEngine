@@ -218,7 +218,7 @@ def test_supervisor_handoff_persists_mode_transition_without_running_editor(tmp_
     supervisor = SupervisorSession(str(project), mode="developer_assist")
     monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
 
-    result = supervisor.handoff_mode(
+    result = supervisor.switch_mode(
         "global_validation",
         checkpoint="scripts-reviewed",
         reason="Begin real editor validation.",
@@ -288,7 +288,7 @@ def test_supervisor_handoff_requires_a_current_managed_checkpoint(tmp_path, monk
     monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
 
     with pytest.raises(RuntimeError, match="managed checkpoint"):
-        supervisor.handoff_mode(
+        supervisor.switch_mode(
             "global_validation",
             checkpoint="missing-baseline",
             restart_editor=False,
@@ -311,7 +311,7 @@ def test_supervisor_handoff_rejects_dirty_running_editor(tmp_path, monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="unsaved changes"):
-        supervisor.handoff_mode(
+        supervisor.switch_mode(
             "developer_assist",
             checkpoint="must-not-stop-dirty-editor",
             restart_editor=False,
@@ -474,7 +474,7 @@ def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(t
 
     monkeypatch.setattr(supervisor, "stop_editor", _normal_stop)
 
-    result = supervisor.handoff_mode(
+    result = supervisor.switch_mode(
         "developer_assist",
         checkpoint="clean-before-script-pass",
         restart_editor=False,
@@ -596,7 +596,7 @@ def test_supervisor_handoff_rejects_active_validation_attempt(tmp_path, monkeypa
     monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": True})
 
     with pytest.raises(RuntimeError, match="attempt"):
-        supervisor.handoff_mode(
+        supervisor.switch_mode(
             "developer_assist",
             checkpoint="attempt-must-stop-first",
             restart_editor=False,
