@@ -435,21 +435,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             source_line=line,
         )
 
-    def _update_dependency_graph(self, result: ScriptChangeResult):
-        graph = self._dependency_graph
-        if graph is None or not os.path.isfile(result.path):
-            return None
-        try:
-            mutation = graph.upsert(result.path, source=result.source)
-        except Exception as exc:
-            Debug.log_error(
-                f"Script dependency graph update failed for {result.path} "
-                f"(generation={result.generation}): {exc}"
-            )
-            return None
-        self._last_dependency_affected = tuple(mutation.affected)
-        return mutation
-
     @staticmethod
     def _script_source_matches_disk(result: ScriptChangeResult) -> bool:
         try:
@@ -458,42 +443,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         except OSError:
             return False
         return current == result.source
-
-    def _queue_dependency_changes(self, result: ScriptChangeResult, mutation) -> None:
-        """Force affected dependents through the same collector transaction.
-
-        Dependency results are deliberately tagged as such and are never fed
-        back into this method.  The graph is already committed before this is
-        called, so a rejected or stale source cannot create a false cascade.
-        """
-        if (
-            mutation is None
-            or result.change.change_kind in {"initial_scan", "dependency"}
-            or result.change.origin == "dependency"
-        ):
-            return
-        graph = self._dependency_graph
-        if graph is None:
-            return
-        source_key = result.change.identity_key
-        for module_id in mutation.affected:
-            if module_id.path_key == source_key:
-                continue
-            record = graph.module_for_path(module_id.path_key)
-            if record is None:
-                continue
-            dependent_path = record.source_path
-            lower = dependent_path.lower()
-            if not lower.endswith(".py") or _is_particle_script_path(dependent_path):
-                continue
-            self._check_script(
-                dependent_path,
-                catalog_event=None,
-                origin="dependency",
-                change_kind="dependency",
-                transaction_id=result.change.transaction_id,
-                force=True,
-            )
 
     def _transaction_for_result(self, result: ScriptChangeResult):
         transaction_id = result.change.transaction_id
