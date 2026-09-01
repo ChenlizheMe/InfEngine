@@ -1,11 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://infernux-engine.com/schemas/runtime-baseline-comparison-v1.schema.json",
+  "$id": "https://infernux-engine.com/schemas/runtime-baseline-comparison.schema.json",
   "title": "Infernux Runtime Baseline Comparison",
   "type": "object",
   "required": [
     "$schema",
-    "schema_version",
     "generated_utc",
     "threshold_percent",
     "comparable",
@@ -16,8 +15,7 @@
     "metrics"
   ],
   "properties": {
-    "$schema": {"const": "https://infernux-engine.com/schemas/runtime-baseline-comparison-v1.schema.json"},
-    "schema_version": {"const": 1},
+    "$schema": {"const": "https://infernux-engine.com/schemas/runtime-baseline-comparison.schema.json"},
     "generated_utc": {"type": "string"},
     "threshold_percent": {"type": "number", "minimum": 0},
     "comparable": {"type": "boolean"},

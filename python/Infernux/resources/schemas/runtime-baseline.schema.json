@@ -1,11 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://infernux-engine.com/schemas/runtime-baseline-v1.schema.json",
+  "$id": "https://infernux-engine.com/schemas/runtime-baseline.schema.json",
   "title": "Infernux Runtime Baseline",
   "type": "object",
   "required": [
     "$schema",
-    "schema_version",
     "capture",
     "contract",
     "coverage",
@@ -58,8 +57,7 @@
     }
   },
   "properties": {
-    "$schema": {"const": "https://infernux-engine.com/schemas/runtime-baseline-v1.schema.json"},
-    "schema_version": {"const": 1},
+    "$schema": {"const": "https://infernux-engine.com/schemas/runtime-baseline.schema.json"},
     "capture": {
       "type": "object",
       "required": ["capture_id", "suite_id", "project_id", "created_utc", "identity"],

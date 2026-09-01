@@ -505,7 +505,7 @@ def test_distributed_json_schemas_validate_generated_documents():
     jsonschema.validate(
         baseline,
         json.loads(
-            (schema_root / "runtime-baseline-v1.schema.json").read_text(
+            (schema_root / "runtime-baseline.schema.json").read_text(
                 encoding="utf-8"
             )
         ),
@@ -513,7 +513,7 @@ def test_distributed_json_schemas_validate_generated_documents():
     jsonschema.validate(
         comparison,
         json.loads(
-            (schema_root / "runtime-baseline-comparison-v1.schema.json").read_text(
+            (schema_root / "runtime-baseline-comparison.schema.json").read_text(
                 encoding="utf-8"
             )
         ),
