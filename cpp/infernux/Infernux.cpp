@@ -931,13 +931,7 @@ void Infernux::Run()
     }
 
     while (!m_exitRequested.load(std::memory_order_acquire) && m_renderer->GetUserEvent()) {
-        try {
-            m_renderer->DrawFrame();
-        } catch (const std::exception &ex) {
-            INXLOG_ERROR("Exception in DrawFrame: {}", ex.what());
-        } catch (...) {
-            INXLOG_ERROR("Unknown exception in DrawFrame!");
-        }
+        m_renderer->DrawFrame();
 
         // Periodically save layout when ImGui marks it dirty
         ImGuiIO &io = ImGui::GetIO();
