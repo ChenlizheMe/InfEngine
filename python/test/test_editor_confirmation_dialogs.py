@@ -776,23 +776,3 @@ def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(m
     assert deleted_path == str(script)
     assert isinstance(delete_kwargs["database"], _Database)
     assert delete_kwargs["guid_hint"] == "attached-guid"
-
-
-def test_project_script_rename_maps_snake_case_stem_to_pascal_class(tmp_path):
-    old_path = tmp_path / "regression_probe.py"
-    new_path = tmp_path / "regression_probe_renamed.py"
-    old_path.write_text(
-        "from Infernux.components import InxComponent\n"
-        "class RegressionProbe(InxComponent):\n"
-        "    report_after_seconds: float = 2.0\n",
-        encoding="utf-8",
-    )
-
-    project_file_ops._sync_python_script_class_name_on_rename(
-        str(old_path),
-        str(new_path),
-    )
-
-    content = old_path.read_text(encoding="utf-8")
-    assert "class RegressionProbeRenamed(InxComponent):" in content
-    assert "class RegressionProbe(InxComponent):" not in content

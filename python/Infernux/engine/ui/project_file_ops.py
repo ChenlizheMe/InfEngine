@@ -1377,26 +1377,3 @@ def _build_rename_content_patch(old_path: str, new_path: str) -> tuple[str, str]
     from Infernux.engine.interaction import AssetRenameContentRegistry
 
     return AssetRenameContentRegistry.instance().build_patch(old_path, new_path)
-
-
-def _renamed_python_script_text(content: str, old_path: str, new_path: str) -> str:
-    """Compatibility helper backed by the shared rename-content registry."""
-    from Infernux.engine.interaction.asset_content import _rename_single_component_class
-
-    return _rename_single_component_class(content, old_path, new_path)
-
-
-def _sync_python_script_class_name_on_rename(old_path: str, new_path: str) -> None:
-    """When renaming ``Foo.py`` → ``Bar.py``, also rename ``class Foo`` → ``class Bar``.
-
-    Only rewrites when the file's primary class name matches the old stem, so
-    hand-authored multi-class scripts are left untouched.
-    """
-    with open(old_path, "r", encoding="utf-8") as handle:
-        content = handle.read()
-    updated = _renamed_python_script_text(content, old_path, new_path)
-    if updated == content:
-        return
-
-    from Infernux.core.document_store import write_document_text
-    write_document_text(old_path, updated)
