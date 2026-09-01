@@ -4,16 +4,8 @@ import time
 import types
 import uuid
 
-try:
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
-    _HAS_WATCHDOG = True
-except ImportError:
-    # Standalone player builds exclude watchdog; ResourcesManager
-    # still importable but .start() becomes a no-op.
-    Observer = None
-    FileSystemEventHandler = object
-    _HAS_WATCHDOG = False
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from Infernux.lib import Infernux
 from Infernux.engine.path_utils import (
@@ -1601,22 +1593,11 @@ class ResourcesManager:
         if observer is None:
             return True
 
-        try:
-            observer.stop()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        observer.stop()
+        observer.unschedule_all()
+        observer.join(timeout=join_timeout)
 
-        try:
-            observer.unschedule_all()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-
-        try:
-            observer.join(timeout=join_timeout)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-
-        if getattr(observer, "is_alive", lambda: False)():
+        if observer.is_alive():
             Debug.log_warning("ResourcesManager observer did not stop cleanly before timeout")
             with self._observer_lock:
                 if self._observer is None:
@@ -1628,8 +1609,6 @@ class ResourcesManager:
         """
         Start to scan the project directory for resources in a sub-thread.
         """
-        if not _HAS_WATCHDOG:
-            return  # watchdog not available (standalone player build)
         if self._thread and self._thread.is_alive():
             Debug.log_warning("ResourcesManager is already running")
             return
@@ -1761,10 +1740,7 @@ class ResourcesManager:
         self._frontend_worker_running = True
         handler.set_frontend_worker_running(True)
         observer = Observer()
-        try:
-            observer.daemon = False
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        observer.daemon = False
 
         try:
             observer.schedule(handler, self._assets_path, recursive=True)
