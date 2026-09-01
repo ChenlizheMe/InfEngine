@@ -1,3 +1,6 @@
+import pytest
+
+from Infernux.core.assets import AssetManager
 from Infernux.ui import ui_texture_cache as texture_cache_module
 
 
@@ -27,6 +30,15 @@ def test_cached_ui_texture_refreshes_replaced_native_descriptor(monkeypatch, tmp
     texture.write_bytes(b"png")
     monkeypatch.setattr(project_context, "_project_root", str(tmp_path))
     monkeypatch.setattr(texture_cache_module, "texture_stamp", lambda *_args: 17)
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        type(
+            "_AssetDatabase",
+            (),
+            {"get_guid_from_path": lambda _self, _path: "button-texture-guid"},
+        )(),
+    )
 
     scheduled = iter(((101, 4, 4), (303, 4, 4)))
     monkeypatch.setattr(
@@ -49,3 +61,19 @@ def test_cached_ui_texture_refreshes_replaced_native_descriptor(monkeypatch, tmp
     native.live_texture_id = 0
     assert cache.get(engine, "Assets/UI/button.png") == 303
     assert cache.generation == first_generation + 2
+
+
+def test_ui_texture_requires_registered_asset_guid(monkeypatch):
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        type(
+            "_AssetDatabase",
+            (),
+            {"get_guid_from_path": lambda _self, _path: ""},
+        )(),
+    )
+
+    cache = texture_cache_module.UITextureCache()
+    with pytest.raises(KeyError, match="not registered in AssetDatabase"):
+        cache.get(_Engine(_NativeTexturePreview()), "Assets/UI/missing.png")
