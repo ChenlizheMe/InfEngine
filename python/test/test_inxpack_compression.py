@@ -9,14 +9,10 @@ from Infernux.engine.player_package_native import read_entry, write_pack_isolate
 
 
 def _native_inxpack():
-    for name in ("Infernux.lib._Infernux", "_Infernux"):
-        try:
-            module = importlib.import_module(name)
-        except ImportError:
-            continue
-        if hasattr(module, "_inxpack_write"):
-            return module
-    pytest.skip("the native InxPack binding is not installed")
+    module = importlib.import_module("Infernux.lib._Infernux")
+    if not hasattr(module, "_inxpack_write"):
+        pytest.skip("the native InxPack binding is not installed")
+    return module
 
 
 def test_inxpack_compression_profile_roundtrip_and_determinism(tmp_path):

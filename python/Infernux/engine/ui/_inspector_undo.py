@@ -18,7 +18,7 @@ def _is_python_component_entry(component) -> bool:
 
 def _record_property(target, prop_name: str, old_value, new_value,
                      description: str = ""):
-    """Submit a legacy call site through SerializedProperty Core."""
+    """Submit a property edit through SerializedProperty Core."""
     del old_value
     _component_service().set_field(
         target,

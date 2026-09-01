@@ -3,8 +3,8 @@
 The package format and all compression/checksum logic live in the C++
 filesystem module.  This file only converts Python arguments and deliberately
 raises when the native backend is unavailable.  Tests may install a fake
-backend with ``set_test_backend``; production code cannot fall back to ZIP,
-Deflate, LZMA or an older Python container.
+backend with ``set_test_backend``; production always uses the package-owned
+native module.
 """
 
 from __future__ import annotations
@@ -40,21 +40,20 @@ def using_test_backend() -> bool:
 def _backend() -> Any:
     if _test_backend is not None:
         return _test_backend
-    candidates = ("Infernux.lib._Infernux", "_Infernux")
-    for module_name in candidates:
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        if all(
-            hasattr(module, name)
-            for name in ("_inxpack_write", "_inxpack_read_manifest", "_inxpack_extract", "_inxpack_read_entry")
-        ):
-            return module
-    raise RuntimeError(
-        "Native InxPack backend is unavailable. This Player/package operation "
-        "requires the current native runtime; no Python or legacy-container fallback exists."
+    module = importlib.import_module("Infernux.lib._Infernux")
+    required = (
+        "_inxpack_write",
+        "_inxpack_read_manifest",
+        "_inxpack_extract",
+        "_inxpack_read_entry",
     )
+    missing = tuple(name for name in required if not hasattr(module, name))
+    if missing:
+        raise RuntimeError(
+            "The Infernux native module does not provide the current InxPack contract: "
+            + ", ".join(missing)
+        )
+    return module
 
 
 def write_pack(
