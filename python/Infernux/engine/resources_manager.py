@@ -785,22 +785,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 ordered.append(result)
         return tuple(ordered)
 
-    def _edit_script_has_live_targets(self, play_mode, result: ScriptChangeResult) -> bool:
-        """Preflight edit-mode targets before allowing a multi-file reload."""
-        scene_getter = getattr(play_mode, "_get_scene_manager", None)
-        if not callable(scene_getter):
-            return False
-        scene_manager = scene_getter()
-        scene = scene_manager.get_active_scene() if scene_manager else None
-        if scene is None:
-            return False
-        guid = self._asset_database.get_guid_from_path(result.path) or ""
-        for obj in scene.get_all_objects():
-            for component in getattr(obj, "get_py_components", lambda: ())() or ():
-                if str(getattr(component, "_script_guid", "") or "") == str(guid):
-                    return True
-        return False
-
     def _publish_script_transaction(
         self,
         state: _ScriptPublicationTransaction,

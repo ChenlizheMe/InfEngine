@@ -524,9 +524,6 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         # C++ engine handle for renderer-level play mode signalling
         self._native_engine = None
-        # Debug automation installs this gate only while a bounded frame task
-        # is active. Normal editor frames pay only the inactive None check.
-        self._debug_frame_pause_gate: Optional[dict] = None
     
     @classmethod
     def instance(cls) -> Optional['PlayModeManager']:
@@ -841,7 +838,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         #    - Toolbar shows "Play" right away
         #    - No deferred scene loads from user scripts are processed
         self._state = PlayModeState.EDIT
-        self._cancel_debug_frame_pause_gate()
 
         # Re-enable material auto-save now that play mode is over.
         try:
@@ -1000,70 +996,6 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._step_sequence += 1
             Debug.log_internal(f"[Step] Stepped one frame (dt={dt:.4f}s)")
 
-    def _arm_debug_frame_pause_gate(
-        self,
-        frame_count: int,
-        completion_event,
-        *,
-        pause_on_complete: bool,
-        hold_frame_count: int = 0,
-        hold_complete_event=None,
-        hold_complete_callback=None,
-    ) -> None:
-        frames = int(frame_count)
-        if frames < 1:
-            raise ValueError("frame_count must be positive")
-        hold_frames = int(hold_frame_count)
-        if hold_frames < 0 or hold_frames > frames:
-            raise ValueError("hold_frame_count must be between 0 and frame_count")
-        self._cancel_debug_frame_pause_gate()
-        self._debug_frame_pause_gate = {
-            "remaining": frames,
-            "target": frames,
-            "completion_event": completion_event,
-            "pause_on_complete": bool(pause_on_complete),
-            "hold_frame_count": hold_frames,
-            "hold_complete_event": hold_complete_event,
-            "hold_complete_callback": hold_complete_callback,
-            "hold_complete": False,
-        }
-
-    def _cancel_debug_frame_pause_gate(self) -> None:
-        gate = self._debug_frame_pause_gate
-        self._debug_frame_pause_gate = None
-        if gate is not None:
-            event = gate.get("completion_event")
-            if event is not None:
-                event.set()
-
-    def _advance_debug_frame_pause_gate(self) -> bool:
-        gate = self._debug_frame_pause_gate
-        if gate is None or self._state != PlayModeState.PLAYING:
-            return False
-        remaining = int(gate.get("remaining", 0))
-        if remaining > 0:
-            remaining -= 1
-            gate["remaining"] = remaining
-            completed = int(gate.get("target", 0)) - remaining
-            hold_frames = int(gate.get("hold_frame_count", 0))
-            if hold_frames and completed >= hold_frames and not bool(gate.get("hold_complete")):
-                gate["hold_complete"] = True
-                callback = gate.get("hold_complete_callback")
-                if callback is not None:
-                    callback()
-                event = gate.get("hold_complete_event")
-                if event is not None:
-                    event.set()
-            return False
-
-        self._debug_frame_pause_gate = None
-        if bool(gate.get("pause_on_complete")):
-            self.pause()
-        event = gate.get("completion_event")
-        if event is not None:
-            event.set()
-        return True
-
     def _prepare_active_scene_for_play(self, snapshot: Optional[Any]) -> bool:
         """Refresh Python component instances while preserving native objects."""
         if not snapshot:
@@ -1107,10 +1039,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         """
         if self._state == PlayModeState.EDIT:
             return
-
-        if self._debug_frame_pause_gate is not None:
-            if self._advance_debug_frame_pause_gate() and self._state == PlayModeState.PAUSED:
-                return
 
         # --- Process deferred scene loads (must run outside C++ iteration) ---
         # The common path has no pending request.  Avoid crossing into the
