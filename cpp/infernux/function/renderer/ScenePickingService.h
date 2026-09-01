@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <function/renderer/ScenePickingTypes.h>
 #include <function/renderer/rhi/RhiHandles.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <glm/glm.hpp>
 #include <memory>
 #include <mutex>
@@ -74,6 +75,8 @@ class ScenePickingService
     void PublishFailure(uint64_t requestId, const std::string &error);
 
     InxVkCoreModular *m_core = nullptr;
+    rhi::DynamicRenderingCommands m_dynamicRenderingCommands;
+    rhi::Synchronization2Commands m_synchronization2Commands;
     particle::ParticleGpuDrawRegistry *m_particleDrawRegistry = nullptr;
     std::shared_ptr<SharedState> m_state = std::make_shared<SharedState>();
     RequestData m_pending;
