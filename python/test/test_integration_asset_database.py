@@ -1274,30 +1274,35 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
         asset_db.refresh()
 
 
-def test_asset_database_rejects_stale_async_scan(engine, tmp_path: Path):
+def test_asset_database_restarts_async_scan_after_owner_mutation(engine):
     asset_db = engine.get_asset_database()
+    fixture = Path(asset_db.assets_root) / "owner-mutation-refresh"
+    fixture.mkdir(parents=True, exist_ok=True)
+    mutation = fixture / "mutation-during-scan.txt"
     asset_db.begin_refresh()
 
-    mutation = tmp_path / "mutation-during-scan.txt"
     mutation.write_text("newer owner state", encoding="utf-8")
     guid = asset_db.import_asset(str(mutation)).guid
     assert guid
 
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        try:
-            completed = asset_db.try_commit_refresh()
-        except RuntimeError as error:
-            assert "stale" in str(error)
-            break
-        if completed:
-            pytest.fail("stale scan artifact replaced a newer AssetDatabase generation")
-        time.sleep(0.001)
-    else:
-        pytest.fail("asynchronous AssetDatabase scan did not finish")
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if asset_db.try_commit_refresh():
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("replacement AssetDatabase scan did not finish")
 
-    assert asset_db.refresh_pending is False
-    assert asset_db.get_guid_from_path(str(mutation)) == guid
+        assert asset_db.refresh_pending is False
+        assert asset_db.get_guid_from_path(str(mutation)) == guid
+    finally:
+        if asset_db.contains_path(str(mutation)):
+            asset_db.delete_asset(str(mutation))
+        mutation.unlink(missing_ok=True)
+        Path(f"{mutation}.meta").unlink(missing_ok=True)
+        fixture.rmdir()
+        asset_db.refresh()
 
 
 def test_refresh_rejects_invalid_metadata_without_rewriting_it(engine):

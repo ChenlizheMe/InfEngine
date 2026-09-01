@@ -1117,6 +1117,10 @@ bool AssetDatabase::TryCommitRefresh()
         std::rethrow_exception(failure);
     if (!artifact)
         throw std::logic_error("AssetDatabase scan completed without an artifact");
+    if (state->expectedQueryGeneration != m_queryGeneration) {
+        BeginRefresh();
+        return false;
+    }
     return CommitScanArtifact(std::move(*artifact), state->expectedQueryGeneration);
 }
 

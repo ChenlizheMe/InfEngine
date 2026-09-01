@@ -799,9 +799,7 @@ def test_prepare_startup_finishes_refresh_before_the_watcher_loop(monkeypatch, t
     manager.cleanup()
 
 
-def test_stale_background_asset_refresh_restarts_from_current_generation(
-    monkeypatch, tmp_path
-):
+def test_background_asset_refresh_uses_native_transaction_result(tmp_path):
     class Database(_AssetDatabaseProbe):
         refresh_pending = True
 
@@ -813,35 +811,21 @@ def test_stale_background_asset_refresh_restarts_from_current_generation(
         def try_commit_refresh(self):
             self.commit_attempts += 1
             if self.commit_attempts == 1:
-                self.refresh_pending = False
-                raise RuntimeError(
-                    "AssetDatabase scan artifact is stale after a newer owner-thread mutation"
-                )
+                self.refresh_restarts += 1
+                return False
             self.refresh_pending = False
             return True
-
-        def begin_refresh(self):
-            assert self.refresh_pending is False
-            self.refresh_restarts += 1
-            self.refresh_pending = True
 
     database = Database()
     manager = ResourcesManager(str(tmp_path), _EngineProbe(database))
     manager._startup_prepared = True
-    errors = []
-    internal = []
-    monkeypatch.setattr(Debug, "log_error", errors.append)
-    monkeypatch.setattr(Debug, "log_internal", internal.append)
 
     assert manager.process_pending_reloads() == 0
     assert database.refresh_restarts == 1
     assert database.refresh_pending is True
-    assert errors == []
-    assert internal == ["Restarted stale background AssetDatabase refresh"]
 
     assert manager.process_pending_reloads() == 0
     assert database.refresh_pending is False
-    assert errors == []
     manager.cleanup()
 
 

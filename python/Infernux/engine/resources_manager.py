@@ -1817,26 +1817,7 @@ class ResourcesManager:
         if self._startup_prepared and bool(
             getattr(asset_database, "refresh_pending", False)
         ):
-            try:
-                asset_database.try_commit_refresh()
-            except Exception as exc:
-                # Owner-thread imports may legitimately advance the catalog
-                # while the background filesystem scan is still running.  The
-                # native database rejects that stale artifact to protect the
-                # newer state; immediately rescan from the new generation.
-                if "scan artifact is stale" in str(exc):
-                    try:
-                        asset_database.begin_refresh()
-                        Debug.log_internal(
-                            "Restarted stale background AssetDatabase refresh"
-                        )
-                    except Exception as restart_exc:
-                        Debug.log_error(
-                            "Background AssetDatabase refresh restart failed: "
-                            f"{restart_exc}"
-                        )
-                else:
-                    Debug.log_error(f"Background AssetDatabase refresh failed: {exc}")
+            asset_database.try_commit_refresh()
         if self._event_handler is None:
             return 0
         if force or not self._frontend_worker_running:
