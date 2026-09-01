@@ -216,6 +216,24 @@ class TestPlayModeManager:
         assert engine.tick_play_mode(1.0 / 60.0) == 1.0 / 60.0
         assert scheduler.prepare_calls == 0
 
+    def test_engine_tick_propagates_resource_transaction_failure(self):
+        from Infernux.engine.engine import Engine
+
+        class Resources:
+            @staticmethod
+            def process_pending_reloads():
+                raise RuntimeError("resource transaction rejected")
+
+        engine = Engine.__new__(Engine)
+        engine._last_frame_time = time.time()
+        engine._editor_frame_sync_callback = None
+        engine._resources_manager = Resources()
+        engine._next_reload_poll_time = 0.0
+        engine._reload_poll_interval = 0.1
+
+        with pytest.raises(RuntimeError, match="resource transaction rejected"):
+            engine.tick_play_mode(1.0 / 60.0)
+
     def test_scene_backup_none_initially(self):
         mgr = PlayModeManager()
         assert mgr._scene_backup is None

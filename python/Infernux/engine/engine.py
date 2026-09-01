@@ -657,11 +657,7 @@ class Engine():
         # Process pending script reloads on the main thread, but throttle polling.
         rm = self._resources_manager
         if rm and current_time >= self._next_reload_poll_time:
-            try:
-                rm.process_pending_reloads()
-            except Exception as exc:
-                from Infernux.debug import Debug
-                Debug.log_error(f"Script reload error: {exc}")
+            rm.process_pending_reloads()
             self._next_reload_poll_time = current_time + self._reload_poll_interval
         
         pmm = self._play_mode_manager
