@@ -63,13 +63,7 @@ class EditorAutomationHost:
         return manager
 
     def asset_database(self):
-        manager = self.plugin_manager()
-        engine = getattr(manager, "engine", None)
-        database = getattr(engine, "get_asset_database", lambda: None)()
-        if database is None:
-            database = getattr(
-                self.interaction_core().project_assets, "asset_database", None
-            )
+        database = self.interaction_core().project_assets.asset_database
         if database is None:
             raise OperationError("editor.unavailable", "AssetDatabase is unavailable.")
         return database
@@ -355,39 +349,9 @@ class EditorAutomationHost:
         extension: str,
         variant: str = "",
     ) -> str:
-        from Infernux.engine.ui import project_file_ops
-
-        core = self.interaction_core()
-        service = core.project_asset_interactions
-        if service.configured:
-            return str(service.create(kind, directory, name, extension, variant) or "")
-        unique_name = project_file_ops.get_unique_name(directory, name, extension)
-
-        def create_file():
-            creators = {
-                "folder": (project_file_ops.create_folder, (directory, unique_name)),
-                "script": (project_file_ops.create_script, (directory, unique_name, core.project_assets.asset_database)),
-                "shader": (project_file_ops.create_shader, (directory, unique_name, variant, core.project_assets.asset_database)),
-                "material": (project_file_ops.create_material, (directory, unique_name, core.project_assets.asset_database)),
-                "physic_material": (project_file_ops.create_physic_material, (directory, unique_name, core.project_assets.asset_database)),
-                "scene": (project_file_ops.create_scene, (directory, unique_name, core.project_assets.asset_database)),
-                "animation_clip": (project_file_ops.create_animclip, (directory, unique_name, core.project_assets.asset_database)),
-                "animation_clip3d": (project_file_ops.create_animclip3d, (directory, unique_name, core.project_assets.asset_database)),
-                "animation_fsm": (project_file_ops.create_animfsm, (directory, unique_name, core.project_assets.asset_database)),
-                "particle_graph": (project_file_ops.create_particlegraph, (directory, unique_name, core.project_assets.asset_database)),
-                "render_effect": (project_file_ops.create_render_effect, (directory, unique_name, variant, core.project_assets.asset_database)),
-                "render_effect_group": (project_file_ops.create_render_effect_group, (directory, unique_name, core.project_assets.asset_database)),
-                "animation_timeline": (project_file_ops.create_animtimeline, (directory, unique_name, core.project_assets.asset_database)),
-                "timeline_fsm": (project_file_ops.create_timelinefsm, (directory, unique_name, core.project_assets.asset_database)),
-            }
-            callback, arguments = creators[kind]
-            return callback(*arguments)
-
         return str(
-            core.project_assets.create_with_path(
-                directory,
-                create_file,
-                description=f"Create {kind.replace('_', ' ').title()}",
+            self.interaction_core().project_asset_interactions.create(
+                kind, directory, name, extension, variant
             )
             or ""
         )
