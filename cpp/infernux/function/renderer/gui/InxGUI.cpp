@@ -216,52 +216,15 @@ void InxGUI::Init(SDL_Window *window)
 
     VkDevice device = m_vkCore_ptr->GetDevice();
     const auto &deviceContext = m_vkCore_ptr->GetDeviceContext();
-    const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(device).IsValid();
-    const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
-        deviceContext.GetRhiDevice().GetCapabilityState().dynamicRendering.enabled, dynamicCommandsAvailable, false);
+    if (!deviceContext.GetRhiDevice().GetCapabilityState().dynamicRendering.IsEnabled() ||
+        !rhi::ResolveDynamicRenderingCommands(device).IsValid()) {
+        throw std::runtime_error("ImGui requires Vulkan Dynamic Rendering");
+    }
     m_descriptorPool_vk = m_vkCore_ptr->GetDeviceContext().GetRhiDevice().GetDescriptorManager().AcquireExternalPool(
         vk::DescriptorArena::ImGuiExternal);
     if (m_descriptorPool_vk == VK_NULL_HANDLE) {
         INXLOG_FATAL("Failed to create descriptor pool for ImGui.");
         return;
-    }
-
-    // Legacy fallback for devices without dynamic rendering.
-    if (!useDynamicRendering) {
-        VkAttachmentDescription colorAttachment{};
-        colorAttachment.format = m_vkCore_ptr->GetSwapchainFormat();
-        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; // Preserve previous content
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-        VkAttachmentReference colorRef{};
-        colorRef.attachment = 0;
-        colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorRef;
-
-        const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-        VkRenderPassCreateInfo rpInfo{};
-        rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rpInfo.attachmentCount = 1;
-        rpInfo.pAttachments = &colorAttachment;
-        rpInfo.subpassCount = 1;
-        rpInfo.pSubpasses = &subpass;
-        rpInfo.dependencyCount = 1;
-        rpInfo.pDependencies = &dependency;
-
-        if (vkCreateRenderPass(device, &rpInfo, nullptr, &m_imguiRenderPass) != VK_SUCCESS) {
-            INXLOG_FATAL("Failed to create ImGui render pass.");
-            return;
-        }
     }
 
     ImGui_ImplVulkan_InitInfo initInfo{};
@@ -281,15 +244,10 @@ void InxGUI::Init(SDL_Window *window)
     initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkFormat guiColorFormat = m_vkCore_ptr->GetSwapchainFormat();
-    if (useDynamicRendering) {
-        initInfo.UseDynamicRendering = true;
-        initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
-            VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-        initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-        initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &guiColorFormat;
-    } else {
-        initInfo.PipelineInfoMain.RenderPass = m_imguiRenderPass;
-    }
+    initInfo.UseDynamicRendering = true;
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &guiColorFormat;
 
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
         INXLOG_FATAL("Failed to initialize ImGui Vulkan implementation.");
@@ -942,11 +900,6 @@ void InxGUI::Shutdown()
     // The central descriptor manager owns the external pool. ImGui has
     // released its sets above; the pool survives until backend shutdown.
     m_descriptorPool_vk = VK_NULL_HANDLE;
-
-    if (m_imguiRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(m_vkCore_ptr->GetDevice(), m_imguiRenderPass, nullptr);
-        m_imguiRenderPass = VK_NULL_HANDLE;
-    }
 }
 
 void InxGUI::Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority)
