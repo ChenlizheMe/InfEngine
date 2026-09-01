@@ -204,62 +204,6 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
     std::filesystem::remove_all(root);
 }
 
-void TestLegacySidecarWithoutContentHashIsRebuilt()
-{
-    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-legacy-sidecar";
-    std::filesystem::remove_all(root);
-    const auto script = root / "Assets" / "Scripts" / "Legacy.py";
-    const auto sidecar = root / "Assets" / "Scripts" / "Legacy.py.meta";
-    WriteText(script, "class Legacy:\n    pass\n");
-    WriteText(sidecar, R"({
-  "metadata": {
-    "file_extension": {"type": "string", "value": ".py"},
-    "file_path": {"type": "string", "value": "Assets/Scripts/Legacy.py"},
-    "file_type": {"type": "string", "value": "script"},
-    "guid": {"type": "string", "value": "1234567890abcdef1234567890abcdef"},
-    "language": {"type": "string", "value": "python"},
-    "resource_type": {"type": "enum infernux::ResourceType", "value": "Script"}
-  }
-})");
-
-    infernux::JobSystem::Initialize(2);
-    try {
-        {
-            auto database = std::make_unique<infernux::AssetDatabase>();
-            database->Initialize(infernux::FromFsPath(root));
-            auto &registry = infernux::AssetRegistry::Instance();
-            registry.Initialize(std::move(database));
-            registry.RegisterLoader(infernux::ResourceType::Script,
-                                    std::make_unique<infernux::InxPythonScriptLoader>());
-            registry.PopulateAssetDatabaseLoaders();
-            auto *assetDatabase = registry.GetAssetDatabase();
-            assetDatabase->Refresh();
-
-            infernux::AssetIndex index;
-            const auto indexPath = root / "Library" / "AssetIndex.json";
-            Require(
-                index.Load(infernux::FromFsPath(indexPath), infernux::FilesystemPathKey(infernux::FromFsPath(root))),
-                "legacy sidecar refresh did not persist the asset index");
-            const auto *entry = index.Find(infernux::FilesystemPathKey(infernux::FromFsPath(script)));
-            Require(entry != nullptr, "legacy script is absent from the rebuilt asset index");
-            Require(entry->guid == "1234567890abcdef1234567890abcdef",
-                    "legacy sidecar rebuild did not preserve its GUID");
-            Require(entry->importSucceeded, "legacy script import failed during metadata rebuild");
-            Require(!entry->contentHash.empty(), "legacy script retained an empty content hash");
-            Require(entry->metadata.HasKey("content_hash"), "rebuilt metadata did not publish a content hash");
-            registry.Shutdown();
-        }
-        infernux::JobSystem::Shutdown();
-    } catch (...) {
-        if (infernux::AssetRegistry::Instance().IsInitialized())
-            infernux::AssetRegistry::Instance().Shutdown();
-        infernux::JobSystem::Shutdown();
-        std::filesystem::remove_all(root);
-        throw;
-    }
-    std::filesystem::remove_all(root);
-}
-
 void TestValidButStaleSidecarIsRebuiltFromCurrentSource()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-stale-sidecar";
@@ -388,14 +332,6 @@ void TestStartupCatalogSurvivesLiveIndexInvalidation()
         const auto startupIndex = root / "Library" / "AssetIndex.startup-cache.json";
         Require(std::filesystem::is_regular_file(liveIndex), "initial refresh did not publish the live index");
         Require(std::filesystem::is_regular_file(startupIndex), "initial refresh did not publish the startup index");
-        std::filesystem::remove(startupIndex);
-        {
-            infernux::AssetDatabase legacyRestore;
-            legacyRestore.Initialize(infernux::FromFsPath(root));
-            Require(legacyRestore.RestoreCachedCatalog(), "legacy live index did not restore");
-            Require(std::filesystem::is_regular_file(startupIndex),
-                    "legacy live index did not seed the startup fallback");
-        }
         std::filesystem::remove(liveIndex);
 
         {
@@ -562,7 +498,6 @@ int main()
         TestImporterExtensionsAreCaseInsensitive();
         TestPathOnlyDependencyIsRejectedOnInitialRefresh();
         TestScriptReimportRefreshesContentHashAndPreservesGuid();
-        TestLegacySidecarWithoutContentHashIsRebuilt();
         TestValidButStaleSidecarIsRebuiltFromCurrentSource();
         TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();

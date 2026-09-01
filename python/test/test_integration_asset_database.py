@@ -22,16 +22,16 @@ from Infernux.particle import (
 )
 
 
-def test_audio_import_rejects_noncurrent_metadata(engine, tmp_path: Path):
+def test_audio_import_requires_complete_metadata(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
-    source = tmp_path / "legacy_audio.wav"
+    source = tmp_path / "incomplete_audio.wav"
     source.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
     meta_path = Path(f"{source}.meta")
-    legacy_guid = "a" * 32
+    asset_guid = "a" * 32
     meta_path.write_text(
         json.dumps({
             "metadata": {
-                "guid": {"type": "string", "value": legacy_guid},
+                "guid": {"type": "string", "value": asset_guid},
                 "resource_type": {
                     "type": "enum infernux::ResourceType",
                     "value": "DefaultText",
@@ -42,7 +42,7 @@ def test_audio_import_rejects_noncurrent_metadata(engine, tmp_path: Path):
     )
 
     try:
-        with pytest.raises(RuntimeError, match="current importer schema|resource_type"):
+        with pytest.raises(ValueError, match="current content_hash"):
             asset_db.import_asset(str(source))
         assert not asset_db.contains_path(str(source))
     finally:
@@ -693,7 +693,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
     )
     mutations = AssetMutationService(DocumentRegistry(), selection)
     published = []
-    mutations.add_listener(published.append)
+    mutations.add_observer(published.append)
     generation_before = asset_db.query_generation
     moved_a = destination_dir / source_a.name
     moved_b = destination_dir / source_b.name
@@ -1053,9 +1053,21 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
     fragment_guid = asset_db.import_asset(str(fragment)).guid
     assert vertex_guid and fragment_guid
     material_document = json.loads(InxMaterial.create_default_lit().serialize())
+    vertex_shader_id = asset_db.get_meta_by_path(str(vertex)).get_string("shader_id")
+    fragment_shader_id = asset_db.get_meta_by_path(str(fragment)).get_string(
+        "shader_id"
+    )
     material_document["shaders"] = {
-        "vertex": {"guid": vertex_guid, "shader_id": "worker-vertex", "path_hint": str(vertex)},
-        "fragment": {"guid": fragment_guid, "shader_id": "worker-fragment", "path_hint": str(fragment)},
+        "vertex": {
+            "guid": vertex_guid,
+            "shader_id": vertex_shader_id,
+            "path_hint": str(vertex),
+        },
+        "fragment": {
+            "guid": fragment_guid,
+            "shader_id": fragment_shader_id,
+            "path_hint": str(fragment),
+        },
     }
     material.write_text(json.dumps(material_document), encoding="utf-8")
     model.write_text(
@@ -1288,7 +1300,7 @@ def test_asset_database_rejects_stale_async_scan(engine, tmp_path: Path):
     assert asset_db.get_guid_from_path(str(mutation)) == guid
 
 
-def test_refresh_regenerates_incompatible_metadata(engine):
+def test_refresh_rejects_invalid_metadata_without_rewriting_it(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "prepare-rollback-fixture"
     fixture.mkdir(parents=True, exist_ok=True)
@@ -1299,21 +1311,15 @@ def test_refresh_regenerates_incompatible_metadata(engine):
         asset_db.refresh()
         guid = asset_db.get_guid_from_path(str(source))
         meta_path = Path(f"{source}.meta")
-        meta_path.write_text("{ broken metadata", encoding="utf-8")
+        current_metadata = meta_path.read_text(encoding="utf-8")
+        invalid_metadata = "{ broken metadata"
+        meta_path.write_text(invalid_metadata, encoding="utf-8")
 
-        asset_db.refresh()
+        with pytest.raises(RuntimeError, match="parse error"):
+            asset_db.refresh()
         assert asset_db.get_guid_from_path(str(source)) == guid
-        regenerated = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert set(regenerated) == {"metadata"}
-        assert regenerated["metadata"]["guid"]["value"] == guid
-
-        regenerated["meta_version"] = 2
-        meta_path.write_text(json.dumps(regenerated), encoding="utf-8")
-        asset_db.refresh()
-        assert asset_db.get_guid_from_path(str(source)) == guid
-        regenerated = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert set(regenerated) == {"metadata"}
-        assert regenerated["metadata"]["guid"]["value"] == guid
+        assert meta_path.read_text(encoding="utf-8") == invalid_metadata
+        meta_path.write_text(current_metadata, encoding="utf-8")
     finally:
         if asset_db.refresh_pending:
             deadline = time.monotonic() + 10.0

@@ -2025,7 +2025,7 @@ class TestSceneSerialization:
         existing = scene.create_game_object("WorkerFailureExisting")
         original_document = scene.serialize_document()
         candidate = json.loads(json.dumps(original_document))
-        candidate["legacy"] = True
+        candidate["unexpected"] = True
         path = tmp_path / "invalid-worker.scene"
         path.write_text(json.dumps(candidate), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
@@ -2033,7 +2033,7 @@ class TestSceneSerialization:
         assert transaction.run_to_completion(raise_on_failure=False) is False
         assert transaction.ran_on_worker is True
         assert transaction.state is SceneDocumentTransactionState.FAILED
-        assert "unknown field 'legacy'" in transaction.error
+        assert "unknown field 'unexpected'" in transaction.error
         assert scene.serialize_document() == original_document
         assert scene.find("WorkerFailureExisting") is existing
 
@@ -2984,13 +2984,13 @@ class TestSceneSerialization:
         elif corruption == "invalid_main_camera":
             candidate["mainCameraComponentId"] = first_doc["components"][0]["component_id"]
         elif corruption == "unknown_scene_field":
-            candidate["legacy"] = True
+            candidate["unexpected"] = True
         elif corruption == "unknown_object_field":
-            first_doc["legacy"] = True
+            first_doc["unexpected"] = True
         elif corruption == "invalid_layer":
             first_doc["layer"] = 32
         elif corruption == "invalid_python_descriptor":
-            _python_records(first_doc)[0]["legacy"] = True
+            _python_records(first_doc)[0]["unexpected"] = True
         elif corruption == "empty_python_script_guid":
             descriptor = _python_records(first_doc)[0]
             descriptor["type_id"] = descriptor["type_id"].replace("python:", "python::", 1)
@@ -3502,7 +3502,7 @@ class TestSceneSerialization:
         elif corruption == "missing_name":
             candidate.pop("name")
         elif corruption == "unknown_field":
-            candidate["legacy"] = True
+            candidate["unexpected"] = True
         else:
             candidate["layer"] = -1
 
