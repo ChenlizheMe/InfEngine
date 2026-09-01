@@ -18,7 +18,7 @@ from private_python_runtime import (
     extract_runtime_archive,
     is_current_private_runtime_root,
     is_private_runtime_root,
-    remove_legacy_installer_artifacts,
+    prune_runtime_staging_cache,
     runtime_archive_for_machine,
     verify_runtime_archive,
 )
@@ -114,7 +114,7 @@ def test_stale_packaging_runtime_is_removed_from_current_installer(tmp_path: Pat
     runtime_python.parent.mkdir()
     runtime_python.write_bytes(b"runtime")
 
-    remove_legacy_installer_artifacts(tmp_path)
+    prune_runtime_staging_cache(tmp_path)
 
     assert not legacy_installer.exists()
     assert not legacy_archive.exists()

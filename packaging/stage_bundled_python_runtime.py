@@ -13,12 +13,12 @@ import zipfile
 from private_python_runtime import (
     extract_runtime_archive,
     is_current_private_runtime_root,
-    remove_legacy_installer_artifacts,
+    prune_runtime_staging_cache,
     runtime_archive_for_machine,
     verify_runtime_archive,
 )
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
-from runtime_requirements import RUNTIME_PROFILE_VERSION, runtime_modules, runtime_packages
+from runtime_requirements import runtime_modules, runtime_packages
 import logging
 
 _RUNTIME_PACKAGES = runtime_packages()
@@ -224,7 +224,6 @@ def _runtime_profile_path(dest_root: str) -> str:
 def _runtime_profile_payload() -> dict[str, object]:
     archive = runtime_archive_for_machine(runtime=_TARGET_RUNTIME)
     return {
-        "profile_version": RUNTIME_PROFILE_VERSION,
         "source": "runtime-cache",
         "python_archive": archive.name,
         "python_archive_sha256": archive.sha256,
@@ -508,7 +507,7 @@ def main() -> int:
 
     dest_root = os.path.abspath(args.dest_root)
     bundle_path = _runtime_bundle_path(dest_root)
-    remove_legacy_installer_artifacts(os.path.dirname(dest_root))
+    prune_runtime_staging_cache(os.path.dirname(dest_root))
 
     existing = _find_python_in_root(dest_root)
     if existing and _is_target_python(existing):

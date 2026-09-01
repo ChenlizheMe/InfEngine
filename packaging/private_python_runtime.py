@@ -227,17 +227,17 @@ def extract_runtime_archive(
         shutil.rmtree(extract_root, ignore_errors=True)
 
 
-def remove_legacy_installer_artifacts(
+def prune_runtime_staging_cache(
     runtime_cache_root: str | os.PathLike[str],
     *,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
 ) -> None:
-    """Prune obsolete bootstrap files and non-target packaging runtimes.
+    """Keep only the target ABI inputs in the packaging runtime cache.
 
     This function only operates on the explicitly supplied packaging cache,
     never on Hub's managed user-runtime directory. Keep only the pinned
-    runtime being staged so stale output from an older ABI cannot enter a
-    fresh Hub installer.
+    runtime being staged so unrelated ABI output cannot enter a fresh Hub
+    installer.
     """
     root = Path(runtime_cache_root)
     if not root.is_dir():
@@ -251,8 +251,7 @@ def remove_legacy_installer_artifacts(
             shutil.rmtree(stale_runtime)
 
     # Current Hub runtimes are staged from verified install-only archives.
-    # Remove every obsolete python.org installer without encoding historical
-    # Python minors into the current packaging path.
+    # Installers are not inputs to the current install-only archive workflow.
     for pattern in ("python-*.exe", "python-*.pkg", "python-*.msi"):
         for artifact in root.glob(pattern):
             if artifact.is_file():

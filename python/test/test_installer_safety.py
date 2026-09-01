@@ -42,24 +42,14 @@ def test_installer_safety_only_removes_marked_install_dirs(tmp_path, monkeypatch
     assert safety.can_remove_install_dir(str(install_dir))
 
 
-def test_installer_safety_recognizes_legacy_hub_install_dirs(tmp_path, monkeypatch):
+def test_installer_safety_does_not_infer_install_ownership_from_files(
+    tmp_path, monkeypatch
+):
     safety = _load_installer_safety(monkeypatch)
     install_dir = tmp_path / "Infernux Hub"
     data_dir = install_dir / "InfernuxHubData"
     data_dir.mkdir(parents=True)
     (install_dir / "Infernux Hub.exe").write_text("", encoding="utf-8")
 
-    assert safety.looks_like_legacy_hub_install_dir(str(install_dir))
-    assert safety.is_recognized_install_dir(str(install_dir))
-    assert safety.can_remove_install_dir(str(install_dir))
-
-
-def test_installer_safety_does_not_treat_mixed_tool_folders_as_legacy(tmp_path, monkeypatch):
-    safety = _load_installer_safety(monkeypatch)
-    install_dir = tmp_path / "Tools"
-    data_dir = install_dir / "InfernuxHubData"
-    data_dir.mkdir(parents=True)
-    (install_dir / "Infernux Hub.exe").write_text("", encoding="utf-8")
-
-    assert not safety.looks_like_legacy_hub_install_dir(str(install_dir))
+    assert not safety.is_recognized_install_dir(str(install_dir))
     assert not safety.can_remove_install_dir(str(install_dir))
