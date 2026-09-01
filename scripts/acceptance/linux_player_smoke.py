@@ -377,7 +377,7 @@ def main() -> int:
             tempfile.mkdtemp(prefix="infernux-linux-player-smoke-")
         ).resolve()
     payload: dict[str, Any] = {
-        "schema": 1,
+        "schema": "infernux.linux_player_smoke",
         "status": "failed",
         "artifact_root": str(artifact_root),
     }

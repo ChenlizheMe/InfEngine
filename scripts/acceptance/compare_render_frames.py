@@ -116,7 +116,7 @@ def main() -> int:
         if float(metrics[name]) > float(maximum)
     ]
     payload = {
-        "schema": 1,
+        "schema": "infernux.render_comparison",
         "status": "passed" if not failures else "failed",
         "reference": str(reference_path),
         "candidate": str(candidate_path),

@@ -242,10 +242,12 @@ def test_atomic_report_records_structured_payload(tmp_path: Path):
     module = _module()
     report = tmp_path / "evidence" / "android.json"
 
-    module._write_report(report, {"schema": 1, "status": "passed"})
+    module._write_report(
+        report, {"schema": "infernux.android_player_smoke", "status": "passed"}
+    )
 
     assert report.read_text(encoding="utf-8") == (
-        '{\n  "schema": 1,\n  "status": "passed"\n}\n'
+        '{\n  "schema": "infernux.android_player_smoke",\n  "status": "passed"\n}\n'
     )
 
 

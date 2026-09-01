@@ -50,7 +50,7 @@ def test_invalid_project_fails_closed_and_writes_atomic_evidence(tmp_path):
 
     assert status == 2
     payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["schema"] == 1
+    assert payload["schema"] == "infernux.build_evidence"
     assert payload["status"] == "invalid-project"
     assert payload["target"] == "web-wasm32"
     assert payload["diagnostics"][0]["code"] == "build.project.invalid"

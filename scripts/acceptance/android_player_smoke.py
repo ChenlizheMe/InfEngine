@@ -725,7 +725,7 @@ def main() -> int:
         result = run_smoke(arguments)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         payload = {
-            "schema": 1,
+            "schema": "infernux.android_player_smoke",
             "status": "failed",
             "apk": str(arguments.apk),
             "serial": arguments.serial or "",
@@ -740,7 +740,11 @@ def main() -> int:
                 arguments,
                 result.serial if result is not None else arguments.serial,
             )
-    payload = {"schema": 1, "status": "passed", **asdict(result)}
+    payload = {
+        "schema": "infernux.android_player_smoke",
+        "status": "passed",
+        **asdict(result),
+    }
     _write_report(arguments.report, payload)
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0

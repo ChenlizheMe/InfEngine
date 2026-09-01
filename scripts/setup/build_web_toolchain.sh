@@ -158,7 +158,7 @@ files = {
     "tint": tint_path,
 }
 payload = {
-    "schema": 1,
+    "schema": "infernux.web_toolchain",
     "kind": "infernux-web-toolchain",
     "emscripten": {"version": "6.0.8", "revision": "e5bd3d0874e302a18f13c5b41f5bacf9a40c8e59"},
     "cpython": {

@@ -255,14 +255,18 @@ def main() -> int:
         artifact_root = Path(tempfile.mkdtemp(prefix="infernux-windows-player-smoke-"))
     try:
         result = _run(args, artifact_root)
-        payload = {"schema": 1, "status": "passed", **asdict(result)}
+        payload = {
+            "schema": "infernux.windows_player_smoke",
+            "status": "passed",
+            **asdict(result),
+        }
         if report is not None:
             _write_json_atomic(report, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     except BaseException as exception:
         payload = {
-            "schema": 1,
+            "schema": "infernux.windows_player_smoke",
             "status": "failed",
             "error": f"{type(exception).__name__}: {exception}",
         }

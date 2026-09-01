@@ -176,7 +176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if not (project / "Assets").is_dir() or not (project / "ProjectSettings").is_dir():
         payload = {
-            "schema": 1,
+            "schema": "infernux.build_evidence",
             "status": "invalid-project",
             "project": str(project),
             "target": arguments.target,
@@ -259,7 +259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = service.execute(request, plan)
     except BuildUnavailableError as error:
         payload = {
-            "schema": 1,
+            "schema": "infernux.build_evidence",
             "status": "doctor-failed",
             "project": str(project),
             "target": arguments.target,
@@ -274,7 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     payload = {
-        "schema": 1,
+        "schema": "infernux.build_evidence",
         "status": "passed" if result.success else "failed",
         "project": str(project),
         "target": str(result.target),

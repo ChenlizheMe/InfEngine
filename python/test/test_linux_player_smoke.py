@@ -64,10 +64,12 @@ def test_linux_smoke_report_is_atomic(tmp_path: Path):
     module = _module()
     report = tmp_path / "evidence" / "linux.json"
 
-    module._write_json_atomic(report, {"schema": 1, "status": "passed"})
+    module._write_json_atomic(
+        report, {"schema": "infernux.linux_player_smoke", "status": "passed"}
+    )
 
     assert json.loads(report.read_text(encoding="utf-8")) == {
-        "schema": 1,
+        "schema": "infernux.linux_player_smoke",
         "status": "passed",
     }
     assert not list(report.parent.glob("*.tmp"))
