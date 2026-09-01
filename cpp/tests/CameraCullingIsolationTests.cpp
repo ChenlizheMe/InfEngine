@@ -48,6 +48,8 @@ int main()
     bridge.PrepareFrame(false);
     CameraDrawCallResult leftResult = bridge.CullAndBuildForCamera(leftCamera, false);
     CameraDrawCallResult rightResult = bridge.CullAndBuildForCamera(rightCamera, false);
+    assert(leftResult.visibleListRevision != 0);
+    assert(rightResult.visibleListRevision != 0);
     assert(leftResult.visibleDrawCallsRef && leftResult.visibleDrawCallsRef->size() == 2);
     assert(rightResult.visibleDrawCallsRef && rightResult.visibleDrawCallsRef->size() == 1);
     assert(std::any_of(leftResult.visibleDrawCallsRef->begin(), leftResult.visibleDrawCallsRef->end(),
