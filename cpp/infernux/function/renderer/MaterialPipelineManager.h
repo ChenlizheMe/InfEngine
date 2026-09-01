@@ -96,14 +96,15 @@ class MaterialPipelineManager
      * @brief Initialize the manager
      * @param device Vulkan device
      * @param physicalDevice For memory allocation
-     * @param colorFormat Color attachment format for pipeline-compatible render pass
-     * @param depthFormat Depth attachment format for pipeline-compatible render pass
-     * @param sampleCount MSAA sample count
+     * @param colorFormat Default color attachment format
+     * @param depthFormat Default depth attachment format
+
+     * * @param sampleCount MSAA sample count
      * @param shaderProgramCache Externally owned ShaderProgramCache instance
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice, VkFormat colorFormat,
                     VkFormat depthFormat, VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
-                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled, bool dynamicRenderingEnabled,
+                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled,
                     vk::VkDescriptorManager *descriptorManager, uint64_t shaderDeviceContractKey);
 
     /**
@@ -303,15 +304,10 @@ class MaterialPipelineManager
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
-    VkRenderPass m_internalRenderPass = VK_NULL_HANDLE; // Internally created compatible render pass
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
-    bool m_dynamicRenderingEnabled = false;
     uint64_t m_publicationGeneration = 1;
-
-    std::unordered_map<MaterialPassPipelineDescriptor, VkRenderPass, MaterialPassPipelineDescriptorHash>
-        m_passRenderPassCache;
 
     // Injected dependency — owned externally by InxVkCoreModular
     ShaderProgramCache *m_shaderProgramCache = nullptr;
@@ -362,11 +358,6 @@ class MaterialPipelineManager
     VkPipeline CreatePipelineWithProgram(const ShaderProgram *program, const RenderState &renderState);
     VkPipeline CreatePipelineWithProgram(const ShaderProgram *program, const RenderState &renderState,
                                          const MaterialPassPipelineDescriptor &pipeline);
-    VkPipeline CreatePipelineWithProgram(const ShaderProgram *program, const RenderState &renderState,
-                                         const MaterialPassPipelineDescriptor &pipeline,
-                                         VkRenderPass compatibleRenderPass);
-
-    [[nodiscard]] VkRenderPass GetCompatibleRenderPass(const MaterialPassPipelineDescriptor &pipeline);
     [[nodiscard]] MaterialPassPipelineDescriptor GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBits sampleCount,
                                                                                      ShaderCompileTarget target) const;
     [[nodiscard]] static bool IsMaterialDescriptorSetCompatible(const ShaderProgram &forward,
@@ -377,18 +368,6 @@ class MaterialPipelineManager
     void RemoveAllPassRenderData();
     void RetirePipelineIfUnreferenced(VkPipeline pipeline);
     void RefreshPublishedDescriptorHandle(const std::string &materialName);
-
-    /**
-     * @brief Create internal compatible render pass from stored formats
-     */
-    void CreateInternalRenderPass();
-
-    /**
-     * @brief Build a Vulkan render pass with N color + optional depth attachment.
-     * Shared by the default and semantic pass pipeline caches.
-     */
-    VkRenderPass BuildCompatibleRenderPass(uint32_t colorAttachmentCount, const VkFormat *colorFormats);
-    VkRenderPass BuildCompatibleRenderPass(const MaterialPassPipelineDescriptor &pipeline);
 
     /**
      * @brief Write forward-pass Vulkan handles to a material and clear its dirty flag.

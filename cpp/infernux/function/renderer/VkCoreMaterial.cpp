@@ -570,9 +570,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
         m_materialPipelineManager.Initialize(
             m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
             m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
-            m_backend.Device().IsDescriptorIndexingEnabled(),
-            m_backend.Device().GetRhiDevice().GetCapabilityState().dynamicRendering.IsEnabled(),
-            &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
+            m_backend.Device().IsDescriptorIndexingEnabled(), &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
             rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState()));
         m_materialPipelineManagerInitialized = true;
 
@@ -809,8 +807,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     return false;
 }
 
-MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material,
-                                                                         bool useDynamicRendering)
+MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material)
 {
     if (!material)
         return nullptr;
@@ -821,8 +818,6 @@ MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::sh
         return nullptr;
 
     auto descriptor = pipelineManager.GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
-    if (useDynamicRendering)
-        descriptor.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     return pipelineManager.GetOrCreatePassRenderData(std::move(material), forward->shaderProgram, descriptor);
 }
 
@@ -1294,8 +1289,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
 
 VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
                                                                const std::string &vertShaderName,
-                                                               const std::string &fragShaderName,
-                                                               VkRenderPass compatibleRenderPass, VkFormat depthFormat)
+                                                               const std::string &fragShaderName, VkFormat depthFormat)
 {
     // Shared shadow resources must be ready
     if (m_shadowPipelineLayout == VK_NULL_HANDLE || depthFormat == VK_FORMAT_UNDEFINED)
@@ -1360,7 +1354,6 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     shadowShaderKey += linkedArtifact ? std::to_string(linkedArtifact->key.revision) + ":Shadow" : "legacy-shadow";
     shadowShaderKey += "|cull" + std::to_string(matCullMode);
     shadowShaderKey += "|depth" + std::to_string(static_cast<uint32_t>(depthFormat));
-    shadowShaderKey += "|renderPass" + std::to_string(VulkanHandleBits(compatibleRenderPass));
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
@@ -1452,19 +1445,17 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     pipelineInfo.layout = m_shadowPipelineLayout;
     std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
     VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
-    if (compatibleRenderPass == VK_NULL_HANDLE) {
-        rhi::GraphicsRenderingSignature signature;
-        signature.depthFormat = rhi::FromVkFormat(depthFormat);
-        signature.stencilFormat =
-            rhi::IsStencilFormat(signature.depthFormat) ? signature.depthFormat : rhi::PixelFormat::Undefined;
-        signature.samples = rhi::SampleCount::One;
-        if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
-            INXLOG_WARN("Failed to build Dynamic Rendering signature for shadow pipeline");
-            return VK_NULL_HANDLE;
-        }
-        pipelineInfo.pNext = &dynamicRenderingInfo;
+    rhi::GraphicsRenderingSignature signature;
+    signature.depthFormat = rhi::FromVkFormat(depthFormat);
+    signature.stencilFormat =
+        rhi::IsStencilFormat(signature.depthFormat) ? signature.depthFormat : rhi::PixelFormat::Undefined;
+    signature.samples = rhi::SampleCount::One;
+    if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
+        INXLOG_WARN("Failed to build Dynamic Rendering signature for shadow pipeline");
+        return VK_NULL_HANDLE;
     }
-    pipelineInfo.renderPass = compatibleRenderPass;
+    pipelineInfo.pNext = &dynamicRenderingInfo;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
     pipelineInfo.subpass = 0;
 
     VkPipeline shadowPipeline = VK_NULL_HANDLE;

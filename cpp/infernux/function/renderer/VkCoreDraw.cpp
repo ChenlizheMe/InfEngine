@@ -1672,8 +1672,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
 void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
                                          int queueMax, ShadowCameraResourceId resourceId,
-                                         const lighting::ShadowFrame &shadowFrame, int lightIndex,
-                                         VkRenderPass compatibleRenderPass, VkFormat depthFormat,
+                                         const lighting::ShadowFrame &shadowFrame, int lightIndex, VkFormat depthFormat,
                                          const ShadowViewDrawCallback &additionalDraws)
 {
 #if INFERNUX_FRAME_PROFILE
@@ -1691,7 +1690,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     (void)lightIndex;
 
     // Skip if shadow pipeline infrastructure not ready (lazy init)
-    if (!EnsureShadowPipeline(compatibleRenderPass, depthFormat) || !EnsureShadowCameraResources(resourceId))
+    if (!EnsureShadowPipeline(depthFormat) || !EnsureShadowCameraResources(resourceId))
         return;
     auto resourcesIt = m_shadowCameraResources.find(resourceId);
     if (resourcesIt == m_shadowCameraResources.end())
@@ -1731,8 +1730,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     const bool reusedShadowScratch =
         m_shadowScratchValid && m_shadowScratchDrawListActivation == m_drawListActivation &&
         m_shadowScratchMaterialPublicationGeneration == shadowMaterialPublicationGeneration &&
-        m_shadowScratchRenderPass == compatibleRenderPass && m_shadowScratchDepthFormat == depthFormat &&
-        m_shadowScratchQueueMin == queueMin && m_shadowScratchQueueMax == queueMax;
+        m_shadowScratchDepthFormat == depthFormat && m_shadowScratchQueueMin == queueMin &&
+        m_shadowScratchQueueMax == queueMax;
 #if INFERNUX_FRAME_PROFILE
     auto stageNow = Clock::now();
 #endif
@@ -1789,8 +1788,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 auto resolved = m_resolvedShadowMaterialsScratch.find(dc.material.get());
                 if (resolved == m_resolvedShadowMaterialsScratch.end()) {
                     const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(
-                        dc.material, dc.material->GetVertShaderName(), dc.material->GetFragShaderName(),
-                        compatibleRenderPass, depthFormat);
+                        dc.material, dc.material->GetVertShaderName(), dc.material->GetFragShaderName(), depthFormat);
                     resources.pipeline = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
                     resources.descriptorSet = descriptorSet;
                     resolved = m_resolvedShadowMaterialsScratch.emplace(dc.material.get(), resources).first;
@@ -1904,7 +1902,6 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         }
         m_shadowScratchDrawListActivation = m_drawListActivation;
         m_shadowScratchMaterialPublicationGeneration = shadowMaterialPublicationGeneration;
-        m_shadowScratchRenderPass = compatibleRenderPass;
         m_shadowScratchDepthFormat = depthFormat;
         m_shadowScratchQueueMin = queueMin;
         m_shadowScratchQueueMax = queueMax;
@@ -2585,7 +2582,7 @@ bool InxVkCoreModular::EnsureShadowCameraStreamCapacity(ShadowCameraResources &r
     return true;
 }
 
-bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass compatibleRenderPass, VkFormat depthFormat)
+bool InxVkCoreModular::EnsureShadowPipeline(VkFormat depthFormat)
 {
     if (m_shadowPipelineReady)
         return true;
@@ -2593,14 +2590,6 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass compatibleRenderPass, V
     VkDevice device = GetDevice();
     if (device == VK_NULL_HANDLE || depthFormat == VK_FORMAT_UNDEFINED)
         return false;
-    if (compatibleRenderPass == VK_NULL_HANDLE) {
-        const auto &capability = m_backend.Device().GetRhiDevice().GetCapabilityState().dynamicRendering;
-        if (!rhi::SelectDynamicRenderingPath(capability.enabled, rhi::ResolveDynamicRenderingCommands(device).IsValid(),
-                                             false)) {
-            INXLOG_ERROR("Shadow rendering requires Dynamic Rendering when no compatible render pass is supplied");
-            return false;
-        }
-    }
 
     // --- Create descriptor set layout (binding 0 = UBO) ---
     if (m_shadowDescSetLayout == VK_NULL_HANDLE) {

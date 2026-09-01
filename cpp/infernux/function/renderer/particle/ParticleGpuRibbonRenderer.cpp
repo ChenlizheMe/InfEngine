@@ -525,7 +525,6 @@ rhi::BindGroupHandle ParticleGpuRibbonRenderer::ResolveGeometryGroup(rhi::Buffer
 }
 
 bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                           rhi::RenderTargetLayoutHandle renderTargetLayout,
                                            const MaterialPassPipelineDescriptor &pass,
                                            rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                            rhi::BufferHandle renderIndices, rhi::TextureViewHandle sceneDepth,
@@ -542,8 +541,7 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
         pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus;
     if (usesPerViewBindings && !perView.IsValid())
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass,
-                                              usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
+    const auto pipeline = GetOrCreatePipeline(pass, usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
     const bool usesBindlessTextures = m_surface.UsesBindlessTextures();
@@ -581,7 +579,6 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
 }
 
 bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                                  rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                   const MaterialPassPipelineDescriptor &pass,
                                                   rhi::BufferHandle indirectArguments,
                                                   const GpuParticleViewConstants &view, uint64_t ownerObjectId,
@@ -589,7 +586,7 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
 {
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || ownerObjectId == 0)
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
+    const auto pipeline = GetOrCreatePipeline(pass);
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup();
     if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
@@ -619,12 +616,10 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
     return true;
 }
 
-rhi::GraphicsPipelineHandle
-ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                               const MaterialPassPipelineDescriptor &pass,
-                                               rhi::BindingLayoutHandle perViewLayout)
+rhi::GraphicsPipelineHandle ParticleGpuRibbonRenderer::GetOrCreatePipeline(const MaterialPassPipelineDescriptor &pass,
+                                                                           rhi::BindingLayoutHandle perViewLayout)
 {
-    if ((!pass.UsesDynamicRendering() && !renderTargetLayout.IsValid()) || !pass.IsValid() ||
+    if (!pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
          pass.target != ShaderCompileTarget::Picking && pass.target != ShaderCompileTarget::Motion))
         return {};
@@ -641,8 +636,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
                                 : m_surface.ResolveMaterialState();
     const uint8_t signature = PipelineStateSignature(state);
     const auto found = std::find_if(m_pipelines.begin(), m_pipelines.end(), [&](const auto &entry) {
-        return entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
-               entry.perViewLayout == perViewLayout && entry.materialStateSignature == signature;
+        return entry.pass == pass && entry.perViewLayout == perViewLayout && entry.materialStateSignature == signature;
     });
     if (found != m_pipelines.end())
         return found->pipeline;
@@ -652,7 +646,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     desc.fragmentShader = picking  ? m_pickingFragmentShader
                           : motion ? m_motionFragmentShader
                                    : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
-    pass.ApplyRenderingContract(desc, renderTargetLayout);
+    pass.ApplyRenderingContract(desc);
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.depth.writeEnabled =
@@ -674,7 +668,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     desc.pushConstantBytes = sizeof(GpuParticleViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, perViewLayout, signature, pipeline});
+        m_pipelines.push_back({pass, perViewLayout, signature, pipeline});
     return pipeline;
 }
 

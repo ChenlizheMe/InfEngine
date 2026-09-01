@@ -1672,14 +1672,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [&, managedRenderer](RenderContext &context) {
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
             auto &encoder = context.GetGraphicsCommandEncoder();
-            billboardRecorded = billboardRenderer.RecordDraw(encoder, billboardTargetLayout, billboardPass,
+            billboardRecorded = billboardRenderer.RecordDraw(encoder, billboardPass,
                                                              context.GetBufferHandle(particleOutputs.indirectArguments),
                                                              billboardView, {}, {}, true, particlePerView);
-            billboardRecorded =
-                managedRenderer->RecordDraw(encoder, billboardTargetLayout, billboardPass,
-                                            context.GetBufferHandle(managedIndirectArguments), billboardView,
-                                            managedViewSorter.SortedIndices(), {}, true, particlePerView) &&
-                billboardRecorded;
+            billboardRecorded = managedRenderer->RecordDraw(
+                                    encoder, billboardPass, context.GetBufferHandle(managedIndirectArguments),
+                                    billboardView, managedViewSorter.SortedIndices(), {}, true, particlePerView) &&
+                                billboardRecorded;
             encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
@@ -1969,7 +1968,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                             texture, sampler, std::move(slot), std::move(publication)};
     };
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
-    billboardPass.renderingMode = infernux::MaterialPassRenderingMode::DynamicRendering;
     billboardView.viewProjection[0] = 1.0f;
     billboardView.viewProjection[5] = 1.0f;
     billboardView.viewProjection[10] = 1.0f;

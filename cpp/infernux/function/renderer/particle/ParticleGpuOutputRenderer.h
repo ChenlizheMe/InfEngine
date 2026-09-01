@@ -67,14 +67,12 @@ class ParticleGpuOutputRenderer
     }
 
     [[nodiscard]] virtual bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                           const MaterialPassPipelineDescriptor &pass,
                                           rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                           rhi::BufferHandle renderIndices = {}, rhi::TextureViewHandle sceneDepth = {},
                                           bool sceneDepthIsDepth = true,
                                           const GpuParticlePerViewBindings &perView = {}) = 0;
     [[nodiscard]] virtual bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                                 rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                  const MaterialPassPipelineDescriptor &pass,
                                                  rhi::BufferHandle indirectArguments,
                                                  const GpuParticleViewConstants &view, uint64_t ownerObjectId,

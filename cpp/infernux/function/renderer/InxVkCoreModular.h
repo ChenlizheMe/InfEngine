@@ -327,8 +327,7 @@ class InxVkCoreModular
 
     void DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
                            ShadowCameraResourceId resourceId, const lighting::ShadowFrame &shadowFrame,
-                           int lightIndex = 0, VkRenderPass compatibleRenderPass = VK_NULL_HANDLE,
-                           VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+                           int lightIndex = 0, VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
                            const ShadowViewDrawCallback &additionalDraws = {});
 
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
@@ -851,8 +850,7 @@ class InxVkCoreModular
     /// Resolve the immutable material pass used by an offscreen preview. The
     /// preview owns its attachment contract, so this must not borrow the
     /// scene's legacy Forward pipeline when Dynamic Rendering is active.
-    MaterialPassRenderData *GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material,
-                                                           bool useDynamicRendering);
+    MaterialPassRenderData *GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material);
 
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
     BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending = nullptr);
@@ -884,7 +882,7 @@ class InxVkCoreModular
     /// @return The material descriptor set used at set 2, or VK_NULL_HANDLE on failure.
     VkDescriptorSet EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
                                                  const std::string &vertShaderName, const std::string &fragShaderName,
-                                                 VkRenderPass compatibleRenderPass, VkFormat depthFormat);
+                                                 VkFormat depthFormat);
 
     /// Shadow pipeline layout always includes set 2; bind this when a material
     /// has no per-material shadow descriptors (e.g. alpha clip off, no vtx UBO).
@@ -1596,7 +1594,6 @@ class InxVkCoreModular
     std::vector<ShadowCullGroup> m_shadowCullGroups;
     uint64_t m_shadowScratchDrawListActivation = 0;
     uint64_t m_shadowScratchMaterialPublicationGeneration = 0;
-    VkRenderPass m_shadowScratchRenderPass = VK_NULL_HANDLE;
     VkFormat m_shadowScratchDepthFormat = VK_FORMAT_UNDEFINED;
     int m_shadowScratchQueueMin = 0;
     int m_shadowScratchQueueMax = 0;
@@ -1728,7 +1725,7 @@ class InxVkCoreModular
     uint64_t m_shadowMaterialBindingRetirements = 0;
 
     /// @brief Lazily create/recreate shadow pipeline resources.
-    bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass, VkFormat depthFormat);
+    bool EnsureShadowPipeline(VkFormat depthFormat);
     bool EnsureShadowCameraResources(ShadowCameraResourceId resourceId);
     bool EnsureShadowCameraStreamCapacity(ShadowCameraResources &resources, uint32_t frameIndex, size_t instanceCount,
                                           size_t skinPaletteCount);

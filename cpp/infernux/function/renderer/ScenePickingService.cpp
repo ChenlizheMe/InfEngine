@@ -279,7 +279,6 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
-    pickingPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewMatrix, 0, 5000,
                               "front_to_back", {}, {}, &pickingPass);
     if (particleEntries && !particleEntries->empty()) {
@@ -300,7 +299,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
                 if (!entry.renderer || entry.ownerObjectId == 0)
                     continue;
                 [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
-                    encoder, {}, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, entry.renderIndices);
+                    encoder, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, entry.renderIndices);
             }
         }
     }

@@ -43,99 +43,6 @@ size_t MaterialPassRenderDataKeyHash::operator()(const MaterialPassRenderDataKey
     return hash;
 }
 
-// ============================================================================
-// Shared helpers
-// ============================================================================
-
-VkRenderPass MaterialPipelineManager::BuildCompatibleRenderPass(uint32_t colorAttachmentCount,
-                                                                const VkFormat *colorFormats)
-{
-    MaterialPassPipelineDescriptor pipeline;
-    pipeline.target = ShaderCompileTarget::Forward;
-    pipeline.colorFormats.reserve(colorAttachmentCount);
-    for (uint32_t i = 0; i < colorAttachmentCount; ++i)
-        pipeline.colorFormats.push_back(rhi::FromVkFormat(colorFormats ? colorFormats[i] : m_colorFormat));
-    pipeline.depthFormat =
-        m_depthFormat == VK_FORMAT_UNDEFINED ? rhi::PixelFormat::Undefined : rhi::FromVkFormat(m_depthFormat);
-    pipeline.samples = ToRhiSampleCount(static_cast<int>(m_sampleCount));
-    return BuildCompatibleRenderPass(pipeline);
-}
-
-VkRenderPass MaterialPipelineManager::BuildCompatibleRenderPass(const MaterialPassPipelineDescriptor &pipeline)
-{
-    if (pipeline.UsesDynamicRendering()) {
-        INXLOG_ERROR("Dynamic Rendering material pipelines do not use compatible VkRenderPass objects");
-        return VK_NULL_HANDLE;
-    }
-    std::vector<VkAttachmentDescription> attachments;
-    std::vector<VkAttachmentReference> colorRefs;
-    VkAttachmentReference depthRef{};
-    const bool hasDepth = pipeline.depthFormat != rhi::PixelFormat::Undefined;
-    const VkSampleCountFlagBits samples = rhi::ToVkSampleCount(pipeline.samples);
-
-    for (const rhi::PixelFormat format : pipeline.colorFormats) {
-        VkAttachmentDescription colorAttachment{};
-        colorAttachment.format = rhi::ToVkFormat(format);
-        colorAttachment.samples = samples;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        attachments.push_back(colorAttachment);
-
-        VkAttachmentReference ref{};
-        ref.attachment = static_cast<uint32_t>(attachments.size() - 1);
-        ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorRefs.push_back(ref);
-    }
-
-    if (hasDepth) {
-        VkAttachmentDescription depthAttachment{};
-        depthAttachment.format = rhi::ToVkFormat(pipeline.depthFormat);
-        depthAttachment.samples = samples;
-        depthAttachment.loadOp = pipeline.depthReadOnly ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout =
-            pipeline.depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = pipeline.depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                                                             : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        attachments.push_back(depthAttachment);
-
-        depthRef.attachment = static_cast<uint32_t>(attachments.size() - 1);
-        depthRef.layout = pipeline.depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                                                 : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
-    subpass.pColorAttachments = colorRefs.data();
-    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
-    subpass.pResolveAttachments = nullptr;
-
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    rpInfo.pAttachments = attachments.data();
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    VkRenderPass rp = VK_NULL_HANDLE;
-    if (vkCreateRenderPass(m_device, &rpInfo, nullptr, &rp) != VK_SUCCESS) {
-        INXLOG_ERROR("MaterialPipelineManager: Failed to create render pass (", pipeline.colorFormats.size(),
-                     " color attachments)");
-    }
-    return rp;
-}
-
 void MaterialPipelineManager::SyncMaterialForwardPass(InxMaterial *material, VkPipeline pipeline,
                                                       VkPipelineLayout layout, VkDescriptorSet descSet,
                                                       ShaderProgramPublication program)
@@ -199,8 +106,8 @@ MaterialPipelineManager::~MaterialPipelineManager()
 void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                                          VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount,
                                          ShaderProgramCache &shaderProgramCache, GpuRetirementQueue *deletionQueue,
-                                         bool descriptorIndexingEnabled, bool dynamicRenderingEnabled,
-                                         vk::VkDescriptorManager *descriptorManager, uint64_t shaderDeviceContractKey)
+                                         bool descriptorIndexingEnabled, vk::VkDescriptorManager *descriptorManager,
+                                         uint64_t shaderDeviceContractKey)
 {
     ++m_publicationGeneration;
     m_device = device;
@@ -209,13 +116,9 @@ void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
     m_sampleCount = sampleCount;
-    m_dynamicRenderingEnabled = dynamicRenderingEnabled;
     m_shaderProgramCache = &shaderProgramCache;
     m_shaderDeviceContractKey = shaderDeviceContractKey;
     m_deletionQueue = deletionQueue;
-
-    // Create internal compatible render pass for pipeline creation
-    CreateInternalRenderPass();
 
     // Initialize shader program cache
     m_shaderProgramCache->Initialize(device);
@@ -298,19 +201,6 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
         m_vkPipelineCache = VK_NULL_HANDLE;
     }
 
-    // Destroy internal render pass
-    if (m_internalRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(m_device, m_internalRenderPass, nullptr);
-        m_internalRenderPass = VK_NULL_HANDLE;
-    }
-
-    // Destroy non-default pass-compatible render passes.
-    for (auto &[key, rp] : m_passRenderPassCache) {
-        if (rp != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(m_device, rp, nullptr);
-        }
-    }
-    m_passRenderPassCache.clear();
     m_passRenderDataMap.clear();
 
     m_defaultRenderData = nullptr;
@@ -318,7 +208,6 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
     m_allocator = VK_NULL_HANDLE;
     m_physicalDevice = VK_NULL_HANDLE;
     m_deletionQueue = nullptr;
-    m_dynamicRenderingEnabled = false;
 }
 
 bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampleCount)
@@ -330,9 +219,6 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
 
     struct PreparedGeneration
     {
-        VkRenderPass internalRenderPass = VK_NULL_HANDLE;
-        std::unordered_map<MaterialPassPipelineDescriptor, VkRenderPass, MaterialPassPipelineDescriptorHash>
-            passRenderPasses;
         std::unordered_map<size_t, VkPipeline> pipelines;
         std::unordered_map<std::string, std::pair<VkPipeline, size_t>> forward;
         std::unordered_map<MaterialPassRenderDataKey, std::unique_ptr<MaterialPassRenderData>,
@@ -347,47 +233,16 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
                 vkDestroyPipeline(m_device, pipeline, nullptr);
         }
         prepared.pipelines.clear();
-        for (const auto &[descriptor, renderPass] : prepared.passRenderPasses) {
-            (void)descriptor;
-            if (renderPass != VK_NULL_HANDLE)
-                vkDestroyRenderPass(m_device, renderPass, nullptr);
-        }
-        prepared.passRenderPasses.clear();
-        if (prepared.internalRenderPass != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(m_device, prepared.internalRenderPass, nullptr);
-            prepared.internalRenderPass = VK_NULL_HANDLE;
-        }
     };
 
     const MaterialPassPipelineDescriptor newDefault =
         GetDefaultPassPipelineDescriptorFor(sampleCount, ShaderCompileTarget::Forward);
-    prepared.internalRenderPass = BuildCompatibleRenderPass(newDefault);
-    if (prepared.internalRenderPass == VK_NULL_HANDLE)
-        return false;
-
-    auto resolvePreparedRenderPass = [&](const MaterialPassPipelineDescriptor &pipeline) -> VkRenderPass {
-        if (pipeline.UsesDynamicRendering())
-            return VK_NULL_HANDLE;
-        if (pipeline == newDefault)
-            return prepared.internalRenderPass;
-        auto existing = prepared.passRenderPasses.find(pipeline);
-        if (existing != prepared.passRenderPasses.end())
-            return existing->second;
-        VkRenderPass renderPass = BuildCompatibleRenderPass(pipeline);
-        if (renderPass != VK_NULL_HANDLE)
-            prepared.passRenderPasses.emplace(pipeline, renderPass);
-        return renderPass;
-    };
-
     auto createOrReusePipeline = [&](size_t hash, const ShaderProgram *program, const RenderState &state,
                                      const MaterialPassPipelineDescriptor &pipeline) -> VkPipeline {
         auto cached = prepared.pipelines.find(hash);
         if (cached != prepared.pipelines.end())
             return cached->second;
-        const VkRenderPass renderPass = resolvePreparedRenderPass(pipeline);
-        if (!pipeline.UsesDynamicRendering() && renderPass == VK_NULL_HANDLE)
-            return VK_NULL_HANDLE;
-        VkPipeline created = CreatePipelineWithProgram(program, state, pipeline, renderPass);
+        VkPipeline created = CreatePipelineWithProgram(program, state, pipeline);
         if (created != VK_NULL_HANDLE)
             prepared.pipelines.emplace(hash, created);
         return created;
@@ -453,11 +308,6 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
             retiredPipelines.insert(data->pipeline);
     }
 
-    const VkRenderPass retiredInternalRenderPass = m_internalRenderPass;
-    auto retiredPassRenderPasses = std::move(m_passRenderPassCache);
-    m_internalRenderPass = prepared.internalRenderPass;
-    prepared.internalRenderPass = VK_NULL_HANDLE;
-    m_passRenderPassCache = std::move(prepared.passRenderPasses);
     m_sampleCount = sampleCount;
 
     for (auto &[name, replacement] : prepared.forward) {
@@ -478,17 +328,6 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
 
     for (VkPipeline pipeline : retiredPipelines)
         RetirePipelineIfUnreferenced(pipeline);
-
-    const VkDevice device = m_device;
-    m_deletionQueue->Retire([device, retiredInternalRenderPass, retired = std::move(retiredPassRenderPasses)] {
-        for (const auto &[descriptor, renderPass] : retired) {
-            (void)descriptor;
-            if (renderPass != VK_NULL_HANDLE)
-                vkDestroyRenderPass(device, renderPass, nullptr);
-        }
-        if (retiredInternalRenderPass != VK_NULL_HANDLE)
-            vkDestroyRenderPass(device, retiredInternalRenderPass, nullptr);
-    });
 
     ++m_publicationGeneration;
 
@@ -855,24 +694,8 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
                                                               const RenderState &renderState,
                                                               const MaterialPassPipelineDescriptor &pipelineDesc)
 {
-    return CreatePipelineWithProgram(program, renderState, pipelineDesc,
-                                     pipelineDesc.UsesDynamicRendering() ? VK_NULL_HANDLE
-                                                                         : GetCompatibleRenderPass(pipelineDesc));
-}
-
-VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgram *program,
-                                                              const RenderState &renderState,
-                                                              const MaterialPassPipelineDescriptor &pipelineDesc,
-                                                              VkRenderPass compatibleRenderPass)
-{
-    if (pipelineDesc.UsesDynamicRendering() && !m_dynamicRenderingEnabled) {
-        INXLOG_ERROR("Dynamic Rendering material pipeline requested for ", ShaderCompileTargetName(pipelineDesc.target),
-                     ", but the RHI capability is unavailable; SceneRenderGraph must select the legacy contract");
-        return VK_NULL_HANDLE;
-    }
     if (!program || !program->IsValid() || !pipelineDesc.IsValid() ||
-        program->GetCompileTarget() != pipelineDesc.target ||
-        (!pipelineDesc.UsesDynamicRendering() && compatibleRenderPass == VK_NULL_HANDLE)) {
+        program->GetCompileTarget() != pipelineDesc.target) {
         INXLOG_ERROR("Invalid shader program for pipeline creation");
         return VK_NULL_HANDLE;
     }
@@ -1008,15 +831,14 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     pipelineInfo.layout = program->GetPipelineLayout(); // Use program's layout!
     std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
     VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
-    if (pipelineDesc.UsesDynamicRendering() &&
-        !rhi::BuildVkPipelineRenderingInfo(pipelineDesc.RenderingSignature(), dynamicColorFormats,
+    if (!rhi::BuildVkPipelineRenderingInfo(pipelineDesc.RenderingSignature(), dynamicColorFormats,
                                            dynamicRenderingInfo)) {
         INXLOG_ERROR("Invalid Dynamic Rendering signature for ", ShaderCompileTargetName(pipelineDesc.target),
                      " material pipeline");
         return VK_NULL_HANDLE;
     }
-    pipelineInfo.pNext = pipelineDesc.UsesDynamicRendering() ? &dynamicRenderingInfo : nullptr;
-    pipelineInfo.renderPass = pipelineDesc.UsesDynamicRendering() ? VK_NULL_HANDLE : compatibleRenderPass;
+    pipelineInfo.pNext = &dynamicRenderingInfo;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
@@ -1078,34 +900,6 @@ void MaterialPipelineManager::SetDefaultNormalTexture(VkImageView imageView, VkS
                                                       std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_descriptorManager.SetDefaultNormalTexture(imageView, sampler, std::move(gpuView));
-}
-
-VkRenderPass MaterialPipelineManager::GetCompatibleRenderPass(const MaterialPassPipelineDescriptor &pipeline)
-{
-    if (pipeline.UsesDynamicRendering())
-        return VK_NULL_HANDLE;
-    if (pipeline == GetDefaultPassPipelineDescriptor())
-        return m_internalRenderPass;
-
-    auto it = m_passRenderPassCache.find(pipeline);
-    if (it != m_passRenderPassCache.end())
-        return it->second;
-
-    VkRenderPass rp = BuildCompatibleRenderPass(pipeline);
-    if (rp == VK_NULL_HANDLE) {
-        return VK_NULL_HANDLE;
-    }
-
-    m_passRenderPassCache.emplace(pipeline, rp);
-    INXLOG_INFO("MaterialPipelineManager: Created compatible ", ShaderCompileTargetName(pipeline.target),
-                " render pass with ", pipeline.colorFormats.size(), " color attachments");
-    return rp;
-}
-
-void MaterialPipelineManager::CreateInternalRenderPass()
-{
-    VkFormat fmt = m_colorFormat;
-    m_internalRenderPass = BuildCompatibleRenderPass(1, &fmt);
 }
 
 void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &shaderId)

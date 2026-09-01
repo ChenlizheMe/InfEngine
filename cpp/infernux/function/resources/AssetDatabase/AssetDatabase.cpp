@@ -703,7 +703,8 @@ bool AssetDatabase::RestoreCachedCatalog()
     InstallQuerySnapshot(std::move(query));
     reportPhase("publish");
     m_assetIndexDirty = false;
-    INXLOG_INFO("AssetDatabase: restored ", cached.Size(), " cached editor asset identities from ", restoredPath);
+    INXLOG_INFO("AssetDatabase: restored ", cached.Size(), " cached editor asset identities from ",
+                m_assetStartupCachePath);
     return true;
 }
 

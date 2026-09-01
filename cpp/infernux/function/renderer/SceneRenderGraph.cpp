@@ -1392,7 +1392,6 @@ MaterialPassPipelineDescriptor SceneRenderGraph::GetEditorOverlayMaterialPass() 
     descriptor.depthFormat = rhi::FromVkFormat(m_sceneTarget->GetDepthFormat());
     descriptor.samples = rhi::FromVkSampleCount(m_sceneTarget->GetMsaaSampleCount());
     descriptor.depthReadOnly = descriptor.depthFormat != rhi::PixelFormat::Undefined;
-    descriptor.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     return descriptor;
 }
 
@@ -1545,7 +1544,6 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             materialPass.samples = ToRhiSampleCount(static_cast<int>(passSamples));
             materialPass.depthReadOnly =
                 passDesc.writeDepth.empty() && materialPass.depthFormat != rhi::PixelFormat::Undefined;
-            materialPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
             m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
 
@@ -4292,8 +4290,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         localVkCore->DrawShadowCasters(
                             ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
                             m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(), shadowLightIndex,
-                            VK_NULL_HANDLE, shadowDepthFormat,
-                            [&](uint32_t, const lighting::ShadowView &activeShadowView) {
+                            shadowDepthFormat, [&](uint32_t, const lighting::ShadowView &activeShadowView) {
                                 particle::GpuParticleViewConstants shadowView;
                                 std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
                                             sizeof(activeShadowView.viewProjection));
@@ -4316,9 +4313,8 @@ void SceneRenderGraph::BuildRenderGraph()
                                 };
                                 for (const auto &packet : particlePackets) {
                                     [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
-                                        encoder, rhi::RenderTargetLayoutHandle{}, particlePass,
-                                        ctx.GetBufferHandle(packet.indirectArguments), shadowView,
-                                        packet.drawRenderIndices);
+                                        encoder, particlePass, ctx.GetBufferHandle(packet.indirectArguments),
+                                        shadowView, packet.drawRenderIndices);
                                     ctx.RecordParticleDraw(true);
                                 }
                             });
@@ -4355,8 +4351,8 @@ void SceneRenderGraph::BuildRenderGraph()
                             std::memcpy(&packetView.lightingControl[3], &packet.ownerLayerMask,
                                         sizeof(packet.ownerLayerMask));
                             [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
-                                encoder, rhi::RenderTargetLayoutHandle{}, particlePass,
-                                ctx.GetBufferHandle(packet.indirectArguments), packetView, packet.drawRenderIndices,
+                                encoder, particlePass, ctx.GetBufferHandle(packet.indirectArguments), packetView,
+                                packet.drawRenderIndices,
                                 packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
                                 particleSceneDepthIsDepth, particlePerView);
                             ctx.RecordParticleDraw(true);

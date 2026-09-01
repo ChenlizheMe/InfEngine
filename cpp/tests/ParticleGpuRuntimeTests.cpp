@@ -1977,8 +1977,8 @@ int main()
     ribbonPass.samples = rhi::SampleCount::One;
     const rhi::RenderTargetLayoutHandle ribbonTarget{910, 1};
     const particle::GpuParticlePerViewBindings ribbonPerView{{911, 1}, {912, 1}};
-    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
-                                     ribbonTopology->DrawIndirectBuffer(), ribbonView, {}, {}, true, ribbonPerView));
+    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(),
+                                     ribbonView, {}, {}, true, ribbonPerView));
     assert(ribbonGraphicsTrace.groupSets == std::vector<uint32_t>({0, 1, 2}));
     assert(ribbonGraphicsTrace.indirectBuffers ==
            std::vector<rhi::BufferHandle>({ribbonTopology->DrawIndirectBuffer()}));
@@ -1986,19 +1986,18 @@ int main()
            ribbonGraphicsTrace.constants[0].alignmentReference[0] == 2.5f &&
            ribbonGraphicsTrace.constants[0].alignmentReference[1] == 1.0f &&
            ribbonGraphicsTrace.constants[0].alignmentReference[3] == -1.0f);
-    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
-                                     ribbonTopology->DrawIndirectBuffer(), ribbonView, ribbonViewIndices, {}, true,
-                                     ribbonPerView));
+    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(),
+                                     ribbonView, ribbonViewIndices, {}, true, ribbonPerView));
     assert(ribbonGraphicsTrace.groupSets == std::vector<uint32_t>({0, 1, 2, 0, 1, 2}));
     assert(ribbonGraphicsTrace.constants.back().alignmentReference[2] == 1.0f);
     ribbonPass.target = ShaderCompileTarget::Picking;
     ribbonPass.colorFormats = {rhi::PixelFormat::RG32UInt};
-    assert(ribbonRenderer.RecordPickingDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
-                                            ribbonTopology->DrawIndirectBuffer(), ribbonView, 0x123456789abcdef0ull));
+    assert(ribbonRenderer.RecordPickingDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(),
+                                            ribbonView, 0x123456789abcdef0ull));
     ribbonPass.target = ShaderCompileTarget::Motion;
     ribbonPass.colorFormats = {rhi::PixelFormat::RG16SFloat};
-    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
-                                     ribbonTopology->DrawIndirectBuffer(), ribbonView));
+    assert(
+        ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(), ribbonView));
     const auto floatBits = [](float value) {
         uint32_t bits = 0;
         std::memcpy(&bits, &value, sizeof(bits));
@@ -2113,10 +2112,8 @@ int main()
     view.cameraUp[1] = 1.0f;
     const rhi::RenderTargetLayoutHandle firstTarget{100, 1};
     const particle::GpuParticlePerViewBindings perView{{800, 1}, {801, 1}};
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineDescs.size() == 1);
     const auto &graphicsDesc = device.graphicsPipelineDescs.front();
     assert(graphicsDesc.pushConstantBytes == sizeof(view));
@@ -2135,25 +2132,21 @@ int main()
     billboardDesc.material->SetRenderQueue(3150);
     billboardDesc.material->SetColor("baseColor", glm::vec4(0.25f, 0.5f, 0.75f, 0.8f));
     assert(billboard.RenderQueue() == 3150);
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
     assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     assert(graphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
     assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     billboardDesc.material->SetTextureGuid("texSampler", "normal");
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == 3 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
            device.groupReleases == groupReleasesBeforeBillboard);
     assert(device.textureReleases == textureReleasesBeforeBillboard &&
            device.samplerReleases == samplerReleasesBeforeBillboard);
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == 4 && device.groupCreates == groupCreatesBeforeBillboard + 4u);
     normalTextureReady = true;
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == 5 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
            device.groupReleases == groupReleasesBeforeBillboard);
     (void)deletionQueue.Collect(1);
@@ -2167,8 +2160,7 @@ int main()
     std::weak_ptr<const rhi::TextureGpuView> normalRevisionTwo = normalRevisionTwoOwner;
     normalSlot->RequestRevision(3);
     normalTextureReady = false;
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == 6 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
            !normalRevisionTwo.expired());
     auto normalRevisionThree = AcquireTestTexture(device, textureSlots, "normal", 3, {403, 1}, {503, 1});
@@ -2176,8 +2168,7 @@ int main()
     normalRevisionTwoOwner.reset();
     assert(!normalRevisionTwo.expired());
     const uint32_t resolvesBeforeSlotPublication = textureResolveCount;
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == resolvesBeforeSlotPublication &&
            device.groupCreates == groupCreatesBeforeBillboard + 6u && !normalRevisionTwo.expired());
     (void)deletionQueue.Collect(1);
@@ -2190,8 +2181,7 @@ int main()
     liveMaterialState.blendEnable = false;
     liveMaterialState.depthWriteEnable = true;
     billboardDesc.material->SetRenderState(liveMaterialState);
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(device.graphicsPipelineCreates == 2 && device.graphicsPipelineReleases == 0);
     const auto &updatedGraphicsDesc = device.graphicsPipelineDescs.back();
     assert(!updatedGraphicsDesc.colorTargets[0].blendEnabled && updatedGraphicsDesc.depth.writeEnabled);
@@ -2200,15 +2190,14 @@ int main()
     liveMaterialState.srcColorBlendFactor = MaterialBlendFactor::One;
     liveMaterialState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
     billboardDesc.material->SetRenderState(liveMaterialState);
-    assert(
-        billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(device.graphicsPipelineCreates == 3 && device.graphicsPipelineReleases == 0);
     assert(device.graphicsPipelineDescs.back().colorTargets[0].premultipliedAlpha);
     assert(graphicsTrace.constants.back().renderingControl[1] == 1.0f);
 
     MaterialPassPipelineDescriptor unsupportedPass = forwardPass;
     unsupportedPass.target = ShaderCompileTarget::GBuffer;
-    assert(!billboard.RecordDraw(graphicsEncoder, firstTarget, unsupportedPass, indirectBuffer, view));
+    assert(!billboard.RecordDraw(graphicsEncoder, unsupportedPass, indirectBuffer, view));
     billboard.Destroy();
     assert(!billboard.IsValid() && device.graphicsPipelineReleases == 3);
 
@@ -2236,11 +2225,10 @@ int main()
         GraphicsTrace litTrace;
         const rhi::GraphicsCommandEncoder litEncoder(&litTrace, &graphicsDispatch);
         const rhi::TextureViewHandle litSceneDepth{902, 1};
-        assert(!litBillboard.RecordDraw(litEncoder, firstTarget, forwardPlusPass, indirectBuffer, view, {},
-                                        litSceneDepth));
+        assert(!litBillboard.RecordDraw(litEncoder, forwardPlusPass, indirectBuffer, view, {}, litSceneDepth));
         const particle::GpuParticlePerViewBindings lighting{{900, 1}, {901, 1}};
-        assert(litBillboard.RecordDraw(litEncoder, firstTarget, forwardPlusPass, indirectBuffer, view, {},
-                                       litSceneDepth, true, lighting));
+        assert(litBillboard.RecordDraw(litEncoder, forwardPlusPass, indirectBuffer, view, {}, litSceneDepth, true,
+                                       lighting));
         assert(litDevice.graphicsPipelineDescs.size() == 1);
         const auto &litPipeline = litDevice.graphicsPipelineDescs.front();
         assert(litPipeline.bindingLayoutCount == 3 && litPipeline.bindingLayouts[1] == lighting.layout);
@@ -2265,16 +2253,16 @@ int main()
     billboardDesc.material->SetRenderState(liveMaterialState);
     assert(softBillboard.RenderQueue() == EngineConfig::Get().transparentQueueMin);
     const rhi::TextureViewHandle sceneDepthView{990, 1};
-    assert(softBillboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, sceneDepthView,
-                                    false, perView));
+    assert(softBillboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, sceneDepthView, false,
+                                    perView));
     assert(!softDevice.bindGroups.back().textures[1].depthRead);
     auto singleSamplePass = forwardPass;
     singleSamplePass.samples = rhi::SampleCount::One;
-    assert(!softBillboard.RecordDraw(graphicsEncoder, firstTarget, singleSamplePass, indirectBuffer, view));
+    assert(!softBillboard.RecordDraw(graphicsEncoder, singleSamplePass, indirectBuffer, view));
     GraphicsTrace softTrace;
     const rhi::GraphicsCommandEncoder softEncoder(&softTrace, &graphicsDispatch);
-    assert(softBillboard.RecordDraw(softEncoder, firstTarget, singleSamplePass, indirectBuffer, view, {},
-                                    sceneDepthView, true, perView));
+    assert(softBillboard.RecordDraw(softEncoder, singleSamplePass, indirectBuffer, view, {}, sceneDepthView, true,
+                                    perView));
     assert(softDevice.bindGroups.size() == 5 && softDevice.bindGroups.back().textureCount == 2);
     assert(softDevice.graphicsPipelineDescs.back().colorTargets[0].blendEnabled);
     assert(!softDevice.graphicsPipelineDescs.back().depth.writeEnabled);
@@ -2376,36 +2364,32 @@ int main()
 
     GraphicsTrace linkedGraphicsTrace;
     const rhi::GraphicsCommandEncoder linkedGraphicsEncoder(&linkedGraphicsTrace, &graphicsDispatch);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                      true, perView));
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                      true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(linkedDevice.writes == 1 && linkedDevice.groupCreates == 3 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 2);
     assert(linkedGraphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
 
     const rhi::BufferHandle sceneViewIndices{901, 1};
     const rhi::BufferHandle gameViewIndices{902, 1};
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view,
-                                      sceneViewIndices, {}, true, perView));
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view,
-                                      sceneViewIndices, {}, true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, sceneViewIndices, {},
+                                      true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, sceneViewIndices, {},
+                                      true, perView));
     assert(linkedDevice.groupCreates == 4 && linkedDevice.bindGroups.back().buffers[1].buffer == sceneViewIndices);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view,
-                                      gameViewIndices, {}, true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, gameViewIndices, {},
+                                      true, perView));
     assert(linkedDevice.groupCreates == 5 && linkedDevice.bindGroups.back().buffers[1].buffer == gameViewIndices);
 
     linkedDesc.material->SetFloat("intensity", 8.0f);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                      true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(linkedDevice.writes == 2 && linkedDevice.groupCreates == 5 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 2);
     std::memcpy(&packedIntensity, linkedDevice.writtenBytes.back().data() + 16, sizeof(packedIntensity));
     assert(packedIntensity == 8.0f);
 
     linkedDesc.material->SetTextureGuid("albedo", "black");
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                      true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(linkedDevice.writes == 3 && linkedDevice.groupCreates == 6 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 3);
     (void)linkedDeletionQueue.Collect(1);
@@ -2415,16 +2399,14 @@ int main()
     linkedMaterialState.alphaClipEnabled = true;
     linkedMaterialState.alphaClipThreshold = 0.35f;
     linkedDesc.material->SetRenderState(linkedMaterialState);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                      true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes.back().data() + 20,
                 sizeof(packedAlphaClipThreshold));
     assert(packedAlphaClipThreshold == 0.35f);
 
     linkedMaterialState.alphaClipEnabled = false;
     linkedDesc.material->SetRenderState(linkedMaterialState);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                      true, perView));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes.back().data() + 20,
                 sizeof(packedAlphaClipThreshold));
     assert(packedAlphaClipThreshold == 0.0f);
@@ -2472,8 +2454,7 @@ int main()
 
         GraphicsTrace bindlessTrace;
         const rhi::GraphicsCommandEncoder bindlessEncoder(&bindlessTrace, &graphicsDispatch);
-        assert(bindlessBillboard.RecordDraw(bindlessEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                            true, perView));
+        assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
         assert(bindlessDevice.graphicsPipelineDescs.size() == 1 &&
                bindlessDevice.graphicsPipelineDescs[0].bindingLayoutCount == 4 &&
                bindlessDevice.graphicsPipelineDescs[0].bindingLayouts[3] ==
@@ -2483,24 +2464,20 @@ int main()
         assert(bindlessDevice.bindlessMarks == 1 &&
                bindlessDevice.markedBindlessResources == std::vector<rhi::ResourceIndex>({{1, 1}, {2, 1}}));
 
-        auto dynamicParticlePass = forwardPass;
-        dynamicParticlePass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-        assert(bindlessBillboard.RecordDraw(bindlessEncoder, {}, dynamicParticlePass, indirectBuffer, view, {}, {},
-                                            true, perView));
-        assert(bindlessDevice.graphicsPipelineDescs.size() == 2);
-        const auto &dynamicParticlePipeline = bindlessDevice.graphicsPipelineDescs.back();
-        assert(dynamicParticlePipeline.useDynamicRendering && !dynamicParticlePipeline.renderTargetLayout.IsValid());
-        assert(dynamicParticlePipeline.renderingSignature.colorFormatCount == 1 &&
-               dynamicParticlePipeline.renderingSignature.colorFormats[0] == rhi::PixelFormat::RGBA16SFloat &&
-               dynamicParticlePipeline.renderingSignature.depthFormat == rhi::PixelFormat::D32SFloat &&
-               dynamicParticlePipeline.renderingSignature.samples == rhi::SampleCount::Four);
-        assert(dynamicParticlePipeline.HasValidRenderingContract());
+        assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+        assert(bindlessDevice.graphicsPipelineDescs.size() == 1);
+        const auto &particlePipeline = bindlessDevice.graphicsPipelineDescs.front();
+        assert(particlePipeline.useDynamicRendering && !particlePipeline.renderTargetLayout.IsValid());
+        assert(particlePipeline.renderingSignature.colorFormatCount == 1 &&
+               particlePipeline.renderingSignature.colorFormats[0] == rhi::PixelFormat::RGBA16SFloat &&
+               particlePipeline.renderingSignature.depthFormat == rhi::PixelFormat::D32SFloat &&
+               particlePipeline.renderingSignature.samples == rhi::SampleCount::Four);
+        assert(particlePipeline.HasValidRenderingContract());
         assert(bindlessDevice.bindlessMarks == 2);
 
         const uint32_t groupsBeforeTextureChange = bindlessDevice.groupCreates;
         bindlessDesc.material->SetTextureGuid("albedo", "black");
-        assert(bindlessBillboard.RecordDraw(bindlessEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {},
-                                            true, perView));
+        assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
         assert(bindlessDevice.bindlessPublishes == 3 && bindlessDevice.groupCreates == groupsBeforeTextureChange &&
                bindlessDevice.bindlessMarks == 3 &&
                bindlessDevice.markedBindlessResources == std::vector<rhi::ResourceIndex>({{3, 1}, {2, 1}}));
@@ -2527,8 +2504,8 @@ int main()
     auto linkedForwardPlusPass = forwardPass;
     linkedForwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
     const particle::GpuParticlePerViewBindings linkedLighting{{930, 1}, {931, 1}};
-    assert(linkedForwardPlusBillboard.RecordDraw(linkedForwardPlusEncoder, firstTarget, linkedForwardPlusPass,
-                                                 indirectBuffer, view, {}, {}, true, linkedLighting));
+    assert(linkedForwardPlusBillboard.RecordDraw(linkedForwardPlusEncoder, linkedForwardPlusPass, indirectBuffer, view,
+                                                 {}, {}, true, linkedLighting));
     assert(linkedForwardPlusDevice.graphicsPipelineDescs.size() == 1 &&
            linkedForwardPlusDevice.graphicsPipelineDescs[0].bindingLayoutCount == 3 &&
            linkedForwardPlusTrace.groupSets == std::vector<uint32_t>({0, 1, 2}));
@@ -2603,8 +2580,7 @@ int main()
             &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants,
             &GraphicsTrace::Draw, &GraphicsTrace::DrawIndirect};
         const rhi::GraphicsCommandEncoder meshEncoder(&meshTrace, &meshGraphicsDispatch);
-        assert(meshRenderer.RecordDraw(meshEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true,
-                                       perView));
+        assert(meshRenderer.RecordDraw(meshEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
         assert(meshTrace.indirectBuffers == std::vector<rhi::BufferHandle>({indirectBuffer}));
         assert(meshDevice.graphicsPipelineDescs.size() == 1 &&
                meshDevice.graphicsPipelineDescs[0].raster.cullMode == rhi::CullMode::Back &&
@@ -2614,8 +2590,8 @@ int main()
 
         const auto sortedRenderIndexBuffer =
             meshDevice.CreateBuffer({runtime.Capacity() * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-        assert(meshRenderer.RecordDraw(meshEncoder, firstTarget, forwardPass, indirectBuffer, view,
-                                       sortedRenderIndexBuffer, {}, true, perView));
+        assert(meshRenderer.RecordDraw(meshEncoder, forwardPass, indirectBuffer, view, sortedRenderIndexBuffer, {},
+                                       true, perView));
         assert(meshDevice.groupBufferCounts == std::vector<uint32_t>({0, 0, 4, 4}) &&
                meshDevice.bindGroups.back().buffers[1].buffer == sortedRenderIndexBuffer);
         assert(meshTrace.groups.size() == 6 && meshTrace.groups[0] != meshTrace.groups[3]);
@@ -2624,8 +2600,7 @@ int main()
         pickingPass.target = ShaderCompileTarget::Picking;
         pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
         pickingPass.samples = rhi::SampleCount::One;
-        assert(meshRenderer.RecordPickingDraw(meshEncoder, {101, 1}, pickingPass, indirectBuffer, view,
-                                              0x123456789abcdef0ull));
+        assert(meshRenderer.RecordPickingDraw(meshEncoder, pickingPass, indirectBuffer, view, 0x123456789abcdef0ull));
         assert(meshDevice.graphicsPipelineCreates == 2 && meshTrace.indirectBuffers.size() == 3);
         std::array<uint32_t, 4> encodedObjectId{};
         std::memcpy(encodedObjectId.data(), meshTrace.constants.back().materialTint.data(), sizeof(encodedObjectId));
@@ -2655,10 +2630,10 @@ int main()
             forwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
             GraphicsTrace litMeshTrace;
             const rhi::GraphicsCommandEncoder litMeshEncoder(&litMeshTrace, &meshGraphicsDispatch);
-            assert(!litMeshRenderer.RecordDraw(litMeshEncoder, firstTarget, forwardPlusPass, indirectBuffer, view));
+            assert(!litMeshRenderer.RecordDraw(litMeshEncoder, forwardPlusPass, indirectBuffer, view));
             const particle::GpuParticlePerViewBindings lighting{{910, 1}, {911, 1}};
-            assert(litMeshRenderer.RecordDraw(litMeshEncoder, firstTarget, forwardPlusPass, indirectBuffer, view, {},
-                                              {}, true, lighting));
+            assert(litMeshRenderer.RecordDraw(litMeshEncoder, forwardPlusPass, indirectBuffer, view, {}, {}, true,
+                                              lighting));
             assert(litMeshDevice.graphicsPipelineDescs.size() == 1);
             const auto &litMeshPipeline = litMeshDevice.graphicsPipelineDescs.front();
             assert(litMeshPipeline.bindingLayoutCount == 3 && litMeshPipeline.bindingLayouts[1] == lighting.layout);

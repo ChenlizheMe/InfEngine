@@ -259,13 +259,13 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
             return false;
         }
 
-        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material, true);
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
             if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, passMat->GetVertShaderName(),
                                                           passMat->GetFragShaderName(), false)) {
                 return false;
             }
-            rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material, true);
+            rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material);
         }
 
         if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {
