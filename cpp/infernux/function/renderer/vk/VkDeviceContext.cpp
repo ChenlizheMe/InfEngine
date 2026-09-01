@@ -772,11 +772,15 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     const auto capabilitySnapshot = VulkanCapabilitySnapshot::FromProbe(capabilityProbe);
     VulkanDeviceFeatureChain featureChain(capabilitySnapshot);
     rhi::DeviceCapabilityRequest capabilityRequest{};
+    if (!capabilitySnapshot.supported.dynamicRendering.supported) {
+        INXLOG_ERROR("The selected Vulkan device does not support the required Dynamic Rendering capability");
+        return false;
+    }
     const bool forceBoundedDescriptors = ForceBoundedDescriptors();
     capabilityRequest.descriptorIndexing =
         capabilitySnapshot.supported.bindless.IsSupported() && !forceBoundedDescriptors;
     capabilityRequest.timelineSemaphore = capabilitySnapshot.supported.timelineSemaphore.supported;
-    capabilityRequest.dynamicRendering = capabilitySnapshot.supported.dynamicRendering.supported;
+    capabilityRequest.dynamicRendering = true;
     capabilityRequest.synchronization2 = capabilitySnapshot.supported.synchronization2.supported;
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
     if (forceBoundedDescriptors)
