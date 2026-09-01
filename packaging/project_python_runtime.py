@@ -27,7 +27,6 @@ def write_project_python_version(
     path = project_runtime_settings_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schemaVersion": 1,
         "pythonVersion": runtime_id.series,
     }
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -45,11 +44,9 @@ def _read_explicit_binding(project_dir: str | os.PathLike[str]) -> str:
         return ""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("schemaVersion") != 1:
-            raise RuntimeError(
-                f"Unsupported project Python runtime settings schema: {path}"
-            )
-        return PythonRuntimeId.parse(payload.get("pythonVersion", "")).series
+        if type(payload) is not dict or set(payload) != {"pythonVersion"}:
+            raise RuntimeError(f"Invalid project Python runtime settings: {path}")
+        return PythonRuntimeId.parse(payload["pythonVersion"]).series
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError(f"Invalid project Python runtime settings: {path}") from exc
 

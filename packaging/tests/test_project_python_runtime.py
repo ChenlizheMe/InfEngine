@@ -26,11 +26,11 @@ def test_project_python_binding_round_trips(tmp_path: Path) -> None:
             encoding="utf-8"
         )
     )
-    assert settings == {"pythonVersion": "3.13", "schemaVersion": 1}
+    assert settings == {"pythonVersion": "3.13"}
     assert read_project_python_version(tmp_path) == "3.13"
 
 
-def test_legacy_python312_project_is_detected_without_rewriting_it(
+def test_private_python312_runtime_is_detected_without_rewriting_it(
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".runtime" / "python312").mkdir(parents=True)
