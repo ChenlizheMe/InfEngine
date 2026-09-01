@@ -709,13 +709,11 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     desc.hasVertexFunc = entryPoints.vertex;
     desc.hasShadingFunc = entryPoints.shading;
 
-    // Record the GLSL version and reject old annotation statements without
-    // interpreting them. Comments containing an at-sign remain ordinary GLSL.
+    // Record the GLSL version directive. All remaining source is owned by the
+    // current GLSL compiler path.
     std::istringstream stream(shaderCode);
     std::string line;
-    uint32_t lineNumber = 0;
     while (std::getline(stream, line)) {
-        ++lineNumber;
         // Check #version
         size_t start = line.find_first_not_of(" \t");
         std::string trimmedLine = (start != std::string::npos) ? line.substr(start) : "";
@@ -723,10 +721,6 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
             desc.versionDirective = line;
             continue;
         }
-
-        if (!trimmedLine.empty() && trimmedLine.front() == '@')
-            desc.errors.push_back(filePath + ":" + std::to_string(lineNumber) +
-                                  ":1: legacy @ shader syntax was removed; use ShaderInfo fields");
     }
 
     // A shading model is deliberately pipeline-agnostic. It exposes one fixed
@@ -735,8 +729,7 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     if (desc.isShadingModel) {
         if (!desc.entries.empty())
             desc.errors.push_back(filePath +
-                                  ": ShadingModelInfo Entry declarations were removed; define the fixed shading() "
-                                  "function once");
+                                  ": ShadingModelInfo has one fixed shading() entry and does not accept Entry");
         if (!desc.hasShadingFunc)
             desc.errors.push_back(filePath + ": a shading model must define void shading(...)");
         if (desc.hasShadingFunc)
