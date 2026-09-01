@@ -54,7 +54,7 @@ class HubNotificationQueue:
             document = json.loads(self._source_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
-        if document.get("schema") != 1 or not isinstance(document.get("notifications"), list):
+        if not isinstance(document.get("notifications"), list):
             return []
 
         language = current_language()

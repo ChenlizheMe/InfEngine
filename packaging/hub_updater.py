@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from hub_utils import get_app_dir, is_frozen
+from incremental_update import MANIFEST_SCHEMA, PRODUCT_NAME
 
 
 GITHUB_LATEST_RELEASE = "https://api.github.com/repos/ChenlizheMe/Infernux/releases/latest"
@@ -176,7 +177,11 @@ def stage_update(
         raise ValueError("Hub update manifest failed SHA-256 verification")
     manifest_path.write_bytes(manifest_bytes)
     target_manifest = json.loads(manifest_bytes.decode("utf-8"))
-    if target_manifest.get("product") != "InfernuxHub" or target_manifest.get("version") != update.target_version:
+    if (
+        target_manifest.get("$schema") != MANIFEST_SCHEMA
+        or target_manifest.get("product") != PRODUCT_NAME
+        or target_manifest.get("version") != update.target_version
+    ):
         raise ValueError("Hub update manifest does not match the target release")
 
     with zipfile.ZipFile(patch_path) as archive:
@@ -185,6 +190,8 @@ def stage_update(
             if "hub-update.json" not in names:
                 raise ValueError("Update package is missing hub-update.json")
             metadata = json.loads(archive.read("hub-update.json").decode("utf-8"))
+            if metadata.get("$schema") != MANIFEST_SCHEMA or metadata.get("product") != PRODUCT_NAME:
+                raise ValueError("Update package does not match the current Hub update contract")
             if metadata.get("base_version") != update.current_version:
                 raise ValueError("Update package does not match the installed Hub version")
             if metadata.get("target_version") != update.target_version:
@@ -199,8 +206,8 @@ def stage_update(
                 pass
             target_paths = {entry["path"] for entry in target_manifest.get("files", [])}
             metadata = {
-                "schema": 1,
-                "product": "InfernuxHub",
+                "$schema": MANIFEST_SCHEMA,
+                "product": PRODUCT_NAME,
                 "base_version": update.current_version,
                 "target_version": update.target_version,
                 "files": target_manifest.get("files", []),

@@ -18,7 +18,6 @@ def _write_notifications(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "schema": 1,
                 "notifications": [
                     {
                         "id": "runtime-repair",
@@ -78,6 +77,6 @@ def test_notification_queue_ignores_missing_or_invalid_documents(tmp_path: Path)
     assert missing.pending("0.2.9") == []
 
     invalid_path = tmp_path / "invalid.json"
-    invalid_path.write_text('{"schema": 99}', encoding="utf-8")
+    invalid_path.write_text('{"notifications": {}}', encoding="utf-8")
     assert HubNotificationQueue(database, invalid_path).pending("0.2.9") == []
     database.close()

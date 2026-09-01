@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-SCHEMA_VERSION = 1
+MANIFEST_SCHEMA = "infernux.hub_update"
 PRODUCT_NAME = "InfernuxHub"
 
 
@@ -45,7 +45,7 @@ def create_manifest(root: str | Path, version: str) -> dict:
             "sha256": _sha256(path),
         })
     return {
-        "schema": SCHEMA_VERSION,
+        "$schema": MANIFEST_SCHEMA,
         "product": PRODUCT_NAME,
         "version": version,
         "platform": "windows-x64",
@@ -62,7 +62,7 @@ def write_manifest(manifest: dict, destination: str | Path) -> Path:
 
 def load_manifest(source: str | Path) -> dict:
     data = json.loads(Path(source).read_text(encoding="utf-8"))
-    if data.get("schema") != SCHEMA_VERSION or data.get("product") != PRODUCT_NAME:
+    if data.get("$schema") != MANIFEST_SCHEMA or data.get("product") != PRODUCT_NAME:
         raise ValueError("Unsupported Infernux Hub update manifest")
     for entry in data.get("files", []):
         _safe_relative_path(entry["path"])
@@ -98,7 +98,7 @@ def create_patch(
     ]
     deleted = sorted(set(base_files) - set(target_files))
     metadata = {
-        "schema": SCHEMA_VERSION,
+        "$schema": MANIFEST_SCHEMA,
         "product": PRODUCT_NAME,
         "base_version": base_manifest["version"],
         "target_version": target_manifest["version"],
@@ -140,7 +140,7 @@ def apply_patch(install_dir: str | Path, patch_file: str | Path, current_version
             if "hub-update.json" not in names:
                 raise ValueError("Patch does not contain hub-update.json")
             metadata = json.loads(archive.read("hub-update.json").decode("utf-8"))
-            if metadata.get("schema") != SCHEMA_VERSION or metadata.get("product") != PRODUCT_NAME:
+            if metadata.get("$schema") != MANIFEST_SCHEMA or metadata.get("product") != PRODUCT_NAME:
                 raise ValueError("Unsupported Infernux Hub patch")
             if metadata.get("base_version") != current_version:
                 raise ValueError(

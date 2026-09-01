@@ -1,5 +1,4 @@
 {
-  "schema": 1,
   "notifications": [
     {
       "id": "python-3.13-default-runtime",

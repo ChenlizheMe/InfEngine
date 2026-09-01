@@ -75,7 +75,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     (packaging_dir / "resources").mkdir(parents=True)
     (packaging_dir / "resources" / "icon.png").write_bytes(b"icon")
     (packaging_dir / "resources" / "hub_notifications.json").write_text(
-        '{"schema": 1, "notifications": []}\n', encoding="utf-8"
+        '{"notifications": []}\n', encoding="utf-8"
     )
     (packaging_dir / "launcher.py").write_text("pass\n", encoding="utf-8")
 
