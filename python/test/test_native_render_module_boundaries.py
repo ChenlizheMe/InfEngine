@@ -339,8 +339,8 @@ def test_fullscreen_passes_use_render_graph_dynamic_rendering_contract() -> None
     assert "desc.renderingSignature.colorFormats[0] = key.colorFormat;" in fullscreen
     assert "device->CreateGraphicsPipeline(desc)" in fullscreen
     assert "VkRenderPass" not in fullscreen
-    assert "const bool useDynamicFullscreen = m_renderGraph->SupportsDynamicRendering();" in scene_graph
-    assert "key.useDynamicRendering = useDynamicFullscreen;" in scene_graph
+    assert "key.useDynamicRendering = true;" in scene_graph
+    assert "GetPassRenderTargetLayout" not in scene_graph
     assert "perViewShadowTextureName" in scene_graph
     assert "builder.ReadSampledDepth(fullscreenShadowInput);" in scene_graph
     assert "fullscreenShadowDependencyDeclared = true;" in scene_graph
@@ -470,7 +470,7 @@ def test_scene_and_game_resize_publish_target_generations_without_device_drain()
         assert "WaitIdle" not in body and "vkDeviceWaitIdle" not in body
         assert "std::make_unique<SceneRenderTarget>" in body
         assert "GetLastReservedCompletionEpoch" in body
-        assert "RetireFramebuffersBeforeTargetReplacement" in body
+        assert "InvalidateBeforeTargetReplacement" in body
         assert "ReplaceSceneTarget" in body
         assert "RetireResourcesAfter" in body
 
@@ -593,13 +593,13 @@ def test_completed_async_uploads_retain_timeline_dependency_until_publication() 
 
 def test_runtime_screen_ui_uses_dynamic_rendering_with_msaa_resolve() -> None:
     screen_ui = (RENDERER / "gui" / "InxScreenUIRenderer.cpp").read_text(encoding="utf-8")
-    scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
     graph_compile = (RENDERER / "vk" / "RenderGraphCompile.cpp").read_text(encoding="utf-8")
 
     assert "VkPipelineRenderingCreateInfo renderingInfo" in screen_ui
     assert "pipeInfo.renderPass = VK_NULL_HANDLE" in screen_ui
-    assert "const bool usesScreenUI" in scene_graph
-    assert "builder.UseDynamicRendering();" in scene_graph
+    assert "INFERNUX_SCREEN_UI_READY" in screen_ui
+    assert "bool RenderGraph::CompileGraphicsAttachments()" in graph_compile
+    assert "CreateVulkanRenderPasses" not in graph_compile
     assert "attachment.resolveImageView" in graph_compile
     assert "VK_RESOLVE_MODE_AVERAGE_BIT" in graph_compile
 
@@ -761,12 +761,6 @@ def test_dynamic_msaa_retires_every_old_resource_at_one_cutover_epoch() -> None:
     assert apply_msaa.count("GetLastReservedCompletionEpoch()") == 1
 
     required_publications = {
-        "Scene framebuffer": (
-            "m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-        ),
-        "Game framebuffer": (
-            "graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-        ),
         "Outline": "retirementQueue.RetireAfter(cutoverEpoch",
         "Scene target": (
             "retiredSceneTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch)"
@@ -799,57 +793,42 @@ def test_dynamic_msaa_retires_every_old_resource_at_one_cutover_epoch() -> None:
     assert screen_ui_retirement, "Screen UI must retire at the shared cutover epoch."
     assert apply_msaa.count("retirementQueue.RetireAfter(cutoverEpoch") == 2
 
-    scene_framebuffer_retirement = (
-        "m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-    )
-    game_framebuffer_retirement = (
-        "graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-    )
-    assert apply_msaa.index(scene_framebuffer_retirement) < apply_msaa.index(
+    scene_graph_invalidation = "m_sceneRenderGraph->InvalidateBeforeTargetReplacement()"
+    game_graph_invalidation = "graph->InvalidateBeforeTargetReplacement()"
+    assert apply_msaa.index(scene_graph_invalidation) < apply_msaa.index(
         "m_sceneRenderGraph->ReplaceSceneTarget"
     )
-    assert apply_msaa.index(game_framebuffer_retirement) < apply_msaa.index(
+    assert apply_msaa.index(game_graph_invalidation) < apply_msaa.index(
         "graph->ReplaceSceneTarget"
     )
     assert apply_msaa.index("CommitMaterialPipelineGeneration") < apply_msaa.index(
         "m_sceneRenderGraph->ReplaceSceneTarget"
     )
-    assert apply_msaa.index(scene_framebuffer_retirement) < apply_msaa.index(
+    assert apply_msaa.index(scene_graph_invalidation) < apply_msaa.index(
         "retiredSceneTarget->RetireResourcesAfter"
     )
-    assert apply_msaa.index(game_framebuffer_retirement) < apply_msaa.index(
+    assert apply_msaa.index(game_graph_invalidation) < apply_msaa.index(
         "retiredGameTarget->RetireResourcesAfter"
     )
 
 
 def test_msaa_retirement_helpers_defer_destruction_without_idle_waits() -> None:
     target_source = (RENDERER / "SceneRenderTarget.cpp").read_text(encoding="utf-8")
-    graph_source = (VULKAN_BACKEND / "RenderGraph.cpp").read_text(encoding="utf-8")
     outline_source = (RENDERER / "OutlineRenderer.cpp").read_text(encoding="utf-8")
 
     retire_target = _function_body(
         target_source, "void SceneRenderTarget::RetireResourcesAfter"
     )
-    retire_framebuffers = _function_body(
-        graph_source, "void RenderGraph::RetireFramebufferCacheAfter"
-    )
     cleanup_outline = _function_body(
         outline_source, "void OutlineRenderer::Cleanup(bool waitForIdle)"
     )
 
-    for name, body in (
-        ("SceneRenderTarget", retire_target),
-        ("RenderGraph framebuffer cache", retire_framebuffers),
-    ):
-        assert "WaitIdle" not in body, f"{name} retirement must not wait for the GPU."
-        assert "RetireAfter" in body, f"{name} destruction must be completion-gated."
-        assert "retirementSerial" in body
+    assert "WaitIdle" not in retire_target
+    assert "RetireAfter" in retire_target
+    assert "retirementSerial" in retire_target
 
     assert retire_target.index("RetireAfter(retirementSerial") < retire_target.index(
         "m_imguiDescriptorSet = VK_NULL_HANDLE"
-    )
-    assert retire_framebuffers.index("m_framebufferCache.clear()") < (
-        retire_framebuffers.index("RetireAfter(retirementSerial")
     )
     assert "if (waitForIdle && !m_core->IsShuttingDown())" in cleanup_outline
     assert "WaitIdle" in cleanup_outline
@@ -1034,13 +1013,13 @@ def test_dynamic_rendering_migration_covers_outline_gizmos_and_previews() -> Non
     assert "GetEditorOverlayMaterialPass() const" in graph_header
     assert "const auto editorOverlayPass = GetEditorOverlayMaterialPass();" in graph
     assert graph.count("&editorOverlayPass") >= 3
-    assert graph.count("builder.UseDynamicRendering();") >= 3
+    assert "builder.UseDynamicRendering" not in graph
 
     assert "GraphicsRenderingSignature &maskSignature" in outline_header
     assert "BuildVkPipelineRenderingInfo(m_outlineMaskRenderingSignature" in outline
     assert "BuildVkPipelineRenderingInfo(m_outlineCompositeRenderingSignature" in outline
-    assert "m_outlineMaskUsesDynamicRendering" in outline
-    assert "m_outlineCompositeUsesDynamicRendering" in outline
+    assert "m_outlineMaskRenderPass" not in outline
+    assert "m_outlineCompositeRenderPass" not in outline
 
     assert "GetOrCreatePreviewMaterialPass" in core_header
     assert "GetOrCreatePreviewMaterialPass" in core

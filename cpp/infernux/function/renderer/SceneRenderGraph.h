@@ -150,16 +150,8 @@ class SceneRenderGraph
 
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
 
-    /**
-     * @brief Retire framebuffer objects that reference the current scene target.
-     *
-     * Call this with
-     * the last submission epoch that can reference the current
-     * target before ReplaceSceneTarget(). The graph
-     * becomes non-executable
-     * immediately while Vulkan framebuffer destruction remains deferred.
-     */
-    void RetireFramebuffersBeforeTargetReplacement(rhi::SubmissionSerial retirementSerial);
+    /// Invalidate the compiled graph before replacing its imported target views.
+    void InvalidateBeforeTargetReplacement();
 
     [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
     {

@@ -5,8 +5,7 @@
  * Extracted from InxVkCoreModular during editor/renderer separation.
  * This class owns the pipelines and descriptor resources used by the
  * screen-space selection outline. RenderGraph
- * owns both render passes,
- * framebuffers, image layouts and ordering.
+ * owns attachment contracts, image layouts and ordering.
  */
 
 #pragma once
@@ -150,9 +149,7 @@ class OutlineRenderer
     // ========================================================================
 
     /// @brief Build pipelines against the graph's compiled attachment contracts.
-    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass,
-                              VkSampleCountFlagBits compositeSamples,
-                              const rhi::GraphicsRenderingSignature &maskSignature,
+    bool EnsureGraphPipelines(const rhi::GraphicsRenderingSignature &maskSignature,
                               const rhi::GraphicsRenderingSignature &compositeSignature);
 
     /// @brief Record selected-object draws inside the active graph mask pass.
@@ -203,13 +200,6 @@ class OutlineRenderer
     // Vulkan Resources (owned)
     // ========================================================================
 
-    // Non-owning graph render-pass compatibility handles. They are null when
-    // the graph compiled the pass with Dynamic Rendering.
-    VkRenderPass m_outlineMaskRenderPass = VK_NULL_HANDLE;
-    VkRenderPass m_outlineCompositeRenderPass = VK_NULL_HANDLE;
-    VkSampleCountFlagBits m_outlineCompositeSamples = VK_SAMPLE_COUNT_1_BIT;
-    bool m_outlineMaskUsesDynamicRendering = false;
-    bool m_outlineCompositeUsesDynamicRendering = false;
     rhi::GraphicsRenderingSignature m_outlineMaskRenderingSignature;
     rhi::GraphicsRenderingSignature m_outlineCompositeRenderingSignature;
 

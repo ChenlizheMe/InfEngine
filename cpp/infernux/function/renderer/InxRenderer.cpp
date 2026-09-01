@@ -1695,14 +1695,6 @@ void InxRenderer::DrawFrame()
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.graphicsPassCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0)
-                        << " dynamic/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.dynamicRenderingPassCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
-                        << " renderPass/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.legacyRenderPassCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
                         << " barrierCalls/exec="
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.barrierCallCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
@@ -3421,7 +3413,7 @@ void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)
         const rhi::SubmissionSerial cutoverEpoch =
             m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
         if (m_sceneRenderGraph)
-            m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+            m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
 
         std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_sceneRenderTarget);
         std::unique_ptr<OutlineRenderer> retiredOutline = std::move(m_outlineRenderer);
@@ -4231,7 +4223,7 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
             m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
         for (auto &[cameraId, graph] : m_gameRenderGraphs) {
             (void)cameraId;
-            graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+            graph->InvalidateBeforeTargetReplacement();
         }
 
         std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_gameRenderTarget);
@@ -4516,14 +4508,13 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
     std::unique_ptr<InxScreenUIRenderer> retiredScreenUI;
     std::unique_ptr<OutlineRenderer> retiredOutline;
 
-    // Framebuffers own references to target image views. Detach them before
-    // publishing the replacement target and before queuing target retirement.
+    // Invalidate graphs before publishing replacement target views.
     if (replacementSceneTarget && m_sceneRenderGraph)
-        m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+        m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
     if (replacementGameTarget) {
         for (auto &[cameraId, graph] : m_gameRenderGraphs) {
             (void)cameraId;
-            graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+            graph->InvalidateBeforeTargetReplacement();
         }
     }
 

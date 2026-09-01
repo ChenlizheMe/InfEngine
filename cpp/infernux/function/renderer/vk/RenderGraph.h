@@ -70,7 +70,6 @@ namespace vk
 
 // Forward declarations
 class VkDeviceContext;
-class VkPipelineManager;
 class VulkanQueueManager;
 class RenderGraph;
 class RenderPass;
@@ -193,14 +192,11 @@ struct PassCompileInfo
     rhi::RenderViewId view = rhi::InvalidRenderViewId;
 };
 
-/// Attachment contract produced by RenderGraph compilation. This reports the
-/// path that will actually execute, rather than the path requested by the
-/// caller, so pipeline owners can fail closed after capability fallback.
+/// Attachment contract produced by RenderGraph compilation.
 struct PassRenderingContract
 {
     bool found = false;
     bool culled = true;
-    bool usesDynamicRendering = false;
     bool depthReadOnly = false;
     ResourceHandle depthAttachment;
     rhi::GraphicsRenderingSignature attachments;
@@ -510,11 +506,6 @@ class PassBuilder
     /// @brief Set the pass render area
     void SetRenderArea(uint32_t width, uint32_t height);
 
-    /// Request Vulkan dynamic rendering for this graphics pass. The graph
-    /// transparently falls back to a compatible render pass when the device
-    /// did not enable the required capability.
-    void UseDynamicRendering(bool enabled = true);
-
     /// Override the native queue role for commands whose Vulkan capability
     /// requirements are stricter than their logical pass type. For example,
     /// vkCmdResolveImage is transfer-like work but requires a Graphics-capable
@@ -576,17 +567,10 @@ struct RenderPassData
     bool clearColorEnabled = false;
     bool clearDepthEnabled = false;
     bool hasResolveAttachment = false; // True when MSAA resolve is used
-    bool dynamicRenderingRequested = false;
-    bool usesDynamicRendering = false;
     rhi::GraphicsRenderingSignature renderingSignature;
     bool hasSideEffect = false;
     bool skipCallbackWhenRendererListsEmpty = false;
     std::vector<ResourceHandle> rendererListInputs;
-
-    // Vulkan objects (resolved during compile)
-    VkRenderPass vulkanRenderPass = VK_NULL_HANDLE;
-    rhi::RenderTargetLayoutHandle renderTargetLayout;
-    VkFramebuffer framebuffer = VK_NULL_HANDLE;
 
     // Execute callback
     std::function<void(RenderContext &)> executeCallback;
@@ -600,9 +584,6 @@ struct RenderPassData
     // Pre-computed execution data (populated at end of Compile, used in Execute).
     // Eliminates per-frame struct construction for beginInfo, clear values,
     // viewport, and scissor.
-    VkRenderPassBeginInfo cachedBeginInfo{};
-    VkClearValue cachedClearValues[10]{};
-    uint32_t cachedClearValueCount = 0;
     std::array<VkRenderingAttachmentInfo, 10> cachedRenderingColorAttachments{};
     VkRenderingAttachmentInfo cachedRenderingDepthAttachment{};
     VkRenderingInfo cachedRenderingInfo{};
@@ -685,8 +666,6 @@ class RenderGraph
         uint64_t passCount = 0;
         uint64_t graphicsPassCount = 0;
         uint64_t computePassCount = 0;
-        uint64_t dynamicRenderingPassCount = 0;
-        uint64_t legacyRenderPassCount = 0;
         uint64_t barrierCallCount = 0;
         uint64_t synchronization2BarrierBatchCount = 0;
         uint64_t legacyBarrierBatchCount = 0;
@@ -737,8 +716,8 @@ class RenderGraph
      * @param context Device context for Vulkan access
      * @param pipelineManager Pipeline manager for render pass creation
      */
-    void Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
-                    GpuRetirementQueue *deletionQueue = nullptr, const VulkanQueueManager *queueManager = nullptr);
+    void Initialize(VkDeviceContext *context, GpuRetirementQueue *deletionQueue = nullptr,
+                    const VulkanQueueManager *queueManager = nullptr);
 
     /// Native queue identity is copied into the graph and remains stable for a
     /// compiled generation. Backends may replace it before Compile after a
@@ -761,21 +740,6 @@ class RenderGraph
      * Clears all passes and transient resources.
      */
     void Reset();
-
-    /**
-     * @brief Detach every cached framebuffer and retire it after a caller-owned
-     *        submission
-     * epoch.
-     *
-     * Target replacement must call this before destroying any imported image
-     * view
-     * referenced by the current framebuffer generation. Pass framebuffer
-     * handles and the cache are cleared
-     * immediately; native destruction is
-     * deferred through the GPU retirement queue without waiting for the
-     * device.
-     */
-    void RetireFramebufferCacheAfter(rhi::SubmissionSerial retirementSerial);
 
     /**
      * @brief Cleanup all resources
@@ -1022,35 +986,9 @@ class RenderGraph
         return handle.IsValid() && handle.scope == m_identity.Current();
     }
 
-    /**
-     * @brief Get the Vulkan render pass for a specific pass
-     * @param passName Name of the pass
-     * @return VkRenderPass or VK_NULL_HANDLE if not found
-     */
-    [[nodiscard]] VkRenderPass GetPassRenderPass(const std::string &passName) const;
-
-    [[nodiscard]] VkRenderPass GetPassRenderPass(PassHandle pass) const;
-
-    [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(const std::string &passName) const;
-
-    [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(PassHandle pass) const;
-
-    [[nodiscard]] bool SupportsDynamicRendering() const noexcept
-    {
-        return m_cmdBeginRendering != nullptr && m_cmdEndRendering != nullptr;
-    }
-
-    [[nodiscard]] bool GetPassUsesDynamicRendering(const std::string &passName) const noexcept;
-
     [[nodiscard]] rhi::GraphicsRenderingSignature GetPassRenderingSignature(const std::string &passName) const noexcept;
 
     [[nodiscard]] PassRenderingContract GetPassRenderingContract(const std::string &passName) const noexcept;
-
-    /**
-     * @brief Get the first graphics pass render pass
-     * @return VkRenderPass suitable for pipeline creation, or VK_NULL_HANDLE
-     */
-    [[nodiscard]] VkRenderPass GetCompatibleRenderPass() const;
 
     // ========================================================================
     // Resource Resolution (for RenderContext)
@@ -1112,14 +1050,10 @@ class RenderGraph
     /// @brief Allocate transient resources
     bool AllocateResources();
 
-    /// @brief Create Vulkan render passes
-    bool CreateVulkanRenderPasses();
+    /// Compile graphics attachment signatures and validate their contracts.
+    bool CompileGraphicsAttachments();
 
-    /// @brief Create framebuffers
-    bool CreateFramebuffers();
-
-    /// @brief Pre-compute per-pass VkRenderPassBeginInfo, clear values,
-    ///        viewport and scissor so Execute() can skip per-frame construction.
+    /// Pre-compute per-pass Dynamic Rendering attachments, viewport and scissor.
     void PrecomputeExecuteData();
 
     /// Compile the topological pass order into device/queue/view batches.
@@ -1180,31 +1114,12 @@ class RenderGraph
     /// @brief Determine if a resource is used after a given pass index
     bool IsResourceUsedAfter(uint32_t resourceId, uint32_t passIndex) const;
 
-    // ========================================================================
-    // RenderPass / framebuffer caching
-    // ========================================================================
-
-    /// @brief Compute hash for RenderPassConfig (for cache lookup)
-    static size_t HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, VkSampleCountFlagBits samples,
-                                       bool clearColor, bool clearDepth, bool storeColor, bool storeDepth,
-                                       VkImageLayout colorFinalLayout, bool hasResolve = false,
-                                       VkFormat resolveFormat = VK_FORMAT_UNDEFINED, bool hasColorAttachments = true,
-                                       bool readOnlyDepth = false);
-
-    /// @brief Compute hash for Framebuffer (for cache lookup)
-    static size_t HashFramebuffer(VkRenderPass renderPass, const std::vector<VkImageView> &attachments, uint32_t width,
-                                  uint32_t height);
-
-    /// @brief Flush unused cache entries (GC)
-    void FlushUnusedCaches();
-
   private:
     RenderGraphIdentitySource m_identity;
     VkDeviceContext *m_context = nullptr;
     rhi::DeviceId m_deviceId = rhi::InvalidDeviceId;
     rhi::RenderViewId m_renderViewId = rhi::InvalidRenderViewId;
     VulkanRhiDevice *m_rhiDevice = nullptr;
-    VkPipelineManager *m_pipelineManager = nullptr;
     GpuRetirementQueue *m_deletionQueue = nullptr;
     std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> m_queueTopology{};
 
@@ -1279,26 +1194,9 @@ class RenderGraph
     std::vector<VkBufferMemoryBarrier> m_bufferBarrierScratch;
     std::vector<VkImageMemoryBarrier2> m_barrier2Scratch;
     std::vector<VkBufferMemoryBarrier2> m_bufferBarrier2Scratch;
-    std::vector<VkClearValue> m_clearValueScratch;
     PFN_vkCmdPipelineBarrier2 m_cmdPipelineBarrier2 = nullptr;
     PFN_vkCmdBeginRendering m_cmdBeginRendering = nullptr;
     PFN_vkCmdEndRendering m_cmdEndRendering = nullptr;
-
-    // RenderPass cache (long-lived across frames)
-    std::unordered_map<size_t, VkRenderPass> m_renderPassCache;
-    std::unordered_map<size_t, rhi::RenderTargetLayoutHandle> m_renderTargetLayoutCache;
-
-    // Framebuffer cache (long-lived across frames)
-    struct FramebufferCacheEntry
-    {
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
-        uint32_t unusedFrames = 0; ///< Frames since last use (for GC)
-    };
-    std::unordered_map<size_t, FramebufferCacheEntry> m_framebufferCache;
-
-    // Track which cache entries were used this frame
-    std::vector<size_t> m_usedRenderPassKeys;
-    std::vector<size_t> m_usedFramebufferKeys;
 
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not.

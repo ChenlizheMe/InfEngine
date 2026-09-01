@@ -364,7 +364,7 @@ bool InxVkCoreModular::PrepareSurface()
     m_pipelineManager.Initialize(m_backend.Device().GetDevice());
 
     // Initialize render graph
-    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    m_renderGraph.Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
 #if INFERNUX_FRAME_PROFILE
     if (!m_gpuTimestampQueries.Initialize(m_backend.Device(), m_maxFramesInFlight)) {
         INXLOG_WARN("GPU timestamp queries are unavailable on this device");
@@ -455,7 +455,7 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
         return false;
     }
 
-    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    m_renderGraph.Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
     const VkExtent2D extent = m_backend.Presentation().GetExtent();
     m_presentationView.width = extent.width;
     m_presentationView.height = extent.height;
@@ -786,7 +786,7 @@ void InxVkCoreModular::RecreateSwapchain()
     }
 
     // Presentation first builds a complete unpublished generation. Only at
-    // its commit point do we release framebuffers and aliases that reference
+    // its commit point do we release aliases that reference
     // the old image views; creation failure therefore leaves the active GUI
     // and swapchain generation untouched.
     const bool recreated =
@@ -802,7 +802,7 @@ void InxVkCoreModular::RecreateSwapchain()
         return;
     }
 
-    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    m_renderGraph.Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
     const VkExtent2D extent = m_backend.Presentation().GetExtent();
     m_presentationView.width = extent.width;
     m_presentationView.height = extent.height;
@@ -846,7 +846,7 @@ vk::RenderGraph &InxVkCoreModular::GetGuiRenderGraph(uint32_t imageIndex)
     auto &graph = m_additionalGuiRenderGraphs[additionalIndex];
     if (!graph) {
         graph = std::make_unique<vk::RenderGraph>();
-        graph->Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+        graph->Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
         graph->SetRenderView(m_presentationView);
     }
     return *graph;
@@ -876,8 +876,6 @@ bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
         backbuffer = builder.WriteColor(backbuffer, 0);
         builder.SetRenderArea(extent.width, extent.height);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        builder.UseDynamicRendering();
-
         return [this, extent](vk::RenderContext &ctx) {
             VkViewport viewport{};
             viewport.width = static_cast<float>(extent.width);
@@ -992,9 +990,9 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
 
     // ========================================================================
     // Swapchain GUI Pass via RenderGraph. Each swapchain image owns one
-    // persistent compiled graph because its VkImageView/framebuffer is stable
+    // persistent compiled graph because its VkImageView is stable
     // until swapchain recreation. Rebuilding this one-pass graph every frame
-    // used to repeat RHI registration, graph compilation and framebuffer
+    // used to repeat RHI registration and graph compilation
     // lookup on the hottest render path.
     // ========================================================================
     vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);

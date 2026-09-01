@@ -10,7 +10,6 @@
 #include "RenderGraph.h"
 #include "RhiVulkanTypes.h"
 #include "VkDeviceContext.h"
-#include "VkPipelineManager.h"
 #include "VulkanQueueManager.h"
 #include <core/error/InxError.h>
 #include <function/renderer/ProfileConfig.h>
@@ -714,11 +713,6 @@ void PassBuilder::SetRenderArea(uint32_t width, uint32_t height)
     m_graph->m_passes[m_passId].renderArea = {width, height};
 }
 
-void PassBuilder::UseDynamicRendering(bool enabled)
-{
-    m_graph->m_passes[m_passId].dynamicRenderingRequested = enabled;
-}
-
 void PassBuilder::SetQueueRole(rhi::QueueRole queue)
 {
     if (!m_graph || m_passId >= m_graph->m_passes.size() || queue == rhi::QueueRole::Count)
@@ -785,7 +779,6 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_deviceId(std::exchange(other.m_deviceId, rhi::InvalidDeviceId)),
       m_renderViewId(std::exchange(other.m_renderViewId, rhi::InvalidRenderViewId)),
       m_rhiDevice(std::exchange(other.m_rhiDevice, nullptr)),
-      m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)),
       m_deletionQueue(std::exchange(other.m_deletionQueue, nullptr)), m_queueTopology(other.m_queueTopology),
       m_passes(std::move(other.m_passes)), m_resources(std::move(other.m_resources)),
       m_resourceVersions(std::move(other.m_resourceVersions)), m_executionOrder(std::move(other.m_executionOrder)),
@@ -802,15 +795,9 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_bufferBarrierScratch(std::move(other.m_bufferBarrierScratch)),
       m_barrier2Scratch(std::move(other.m_barrier2Scratch)),
       m_bufferBarrier2Scratch(std::move(other.m_bufferBarrier2Scratch)),
-      m_clearValueScratch(std::move(other.m_clearValueScratch)),
       m_cmdPipelineBarrier2(std::exchange(other.m_cmdPipelineBarrier2, nullptr)),
       m_cmdBeginRendering(std::exchange(other.m_cmdBeginRendering, nullptr)),
-      m_cmdEndRendering(std::exchange(other.m_cmdEndRendering, nullptr)),
-      m_renderPassCache(std::move(other.m_renderPassCache)),
-      m_renderTargetLayoutCache(std::move(other.m_renderTargetLayoutCache)),
-      m_framebufferCache(std::move(other.m_framebufferCache)),
-      m_usedRenderPassKeys(std::move(other.m_usedRenderPassKeys)),
-      m_usedFramebufferKeys(std::move(other.m_usedFramebufferKeys))
+      m_cmdEndRendering(std::exchange(other.m_cmdEndRendering, nullptr))
 {
     other.m_backbuffer = {};
     other.m_output = {};
@@ -826,7 +813,6 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_deviceId = std::exchange(other.m_deviceId, rhi::InvalidDeviceId);
         m_renderViewId = std::exchange(other.m_renderViewId, rhi::InvalidRenderViewId);
         m_rhiDevice = std::exchange(other.m_rhiDevice, nullptr);
-        m_pipelineManager = std::exchange(other.m_pipelineManager, nullptr);
         m_deletionQueue = std::exchange(other.m_deletionQueue, nullptr);
         m_queueTopology = other.m_queueTopology;
         m_passes = std::move(other.m_passes);
@@ -846,15 +832,9 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_bufferBarrierScratch = std::move(other.m_bufferBarrierScratch);
         m_barrier2Scratch = std::move(other.m_barrier2Scratch);
         m_bufferBarrier2Scratch = std::move(other.m_bufferBarrier2Scratch);
-        m_clearValueScratch = std::move(other.m_clearValueScratch);
         m_cmdPipelineBarrier2 = std::exchange(other.m_cmdPipelineBarrier2, nullptr);
         m_cmdBeginRendering = std::exchange(other.m_cmdBeginRendering, nullptr);
         m_cmdEndRendering = std::exchange(other.m_cmdEndRendering, nullptr);
-        m_renderPassCache = std::move(other.m_renderPassCache);
-        m_renderTargetLayoutCache = std::move(other.m_renderTargetLayoutCache);
-        m_framebufferCache = std::move(other.m_framebufferCache);
-        m_usedRenderPassKeys = std::move(other.m_usedRenderPassKeys);
-        m_usedFramebufferKeys = std::move(other.m_usedFramebufferKeys);
         m_structuralCompileCache = std::move(other.m_structuralCompileCache);
         m_structuralCacheHits = other.m_structuralCacheHits;
         m_structuralCacheMisses = other.m_structuralCacheMisses;
@@ -865,13 +845,12 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
     return *this;
 }
 
-void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
-                             GpuRetirementQueue *deletionQueue, const VulkanQueueManager *queueManager)
+void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *deletionQueue,
+                             const VulkanQueueManager *queueManager)
 {
     m_context = context;
     m_deviceId = context ? context->GetDeviceId() : rhi::InvalidDeviceId;
     m_rhiDevice = context ? &context->GetRhiDevice() : nullptr;
-    m_pipelineManager = pipelineManager;
     m_deletionQueue = deletionQueue;
     m_cmdPipelineBarrier2 = nullptr;
     m_cmdBeginRendering = nullptr;
@@ -950,8 +929,6 @@ void RenderGraph::SetRenderView(const rhi::RenderViewContext &view)
 
 void RenderGraph::Reset()
 {
-    // Render-pass objects remain reusable across graph rebuilds. Framebuffers
-    // that reference transient views retire together with those views.
     FreeResources();
     m_passes.clear();
     m_explicitPassDependencies.clear();
@@ -964,91 +941,16 @@ void RenderGraph::Reset()
     m_batchOutgoingOwnershipTransfers.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
-    m_usedRenderPassKeys.clear();
-    m_usedFramebufferKeys.clear();
     m_backbuffer = {};
     m_output = {};
     m_compiled = false;
     m_identity.AdvanceEpoch();
-
-    // GC: flush unused cache entries periodically
-    FlushUnusedCaches();
-}
-
-void RenderGraph::RetireFramebufferCacheAfter(rhi::SubmissionSerial retirementSerial)
-{
-    for (auto &pass : m_passes)
-        pass.framebuffer = VK_NULL_HANDLE;
-    m_usedFramebufferKeys.clear();
-    m_compiled = false;
-
-    if (m_framebufferCache.empty())
-        return;
-
-    if (!m_context || !m_deletionQueue) {
-        INXLOG_ERROR("RenderGraph::RetireFramebufferCacheAfter requires an initialized GPU retirement queue");
-        return;
-    }
-
-    std::vector<VkFramebuffer> framebuffers;
-    framebuffers.reserve(m_framebufferCache.size());
-    for (const auto &[key, entry] : m_framebufferCache) {
-        (void)key;
-        if (entry.framebuffer != VK_NULL_HANDLE)
-            framebuffers.push_back(entry.framebuffer);
-    }
-    m_framebufferCache.clear();
-
-    if (framebuffers.empty())
-        return;
-
-    const VkDevice device = m_context->GetDevice();
-    m_deletionQueue->RetireAfter(retirementSerial, [device, framebuffers = std::move(framebuffers)]() {
-        for (VkFramebuffer framebuffer : framebuffers)
-            vkDestroyFramebuffer(device, framebuffer, nullptr);
-    });
 }
 
 void RenderGraph::Destroy()
 {
     FreeResources();
 
-    // Retire cached framebuffers before their compatible render passes.
-    if (m_context) {
-        const VkDevice device = m_context->GetDevice();
-        std::vector<VkFramebuffer> framebuffers;
-        std::vector<VkRenderPass> renderPasses;
-        for (auto &[key, rp] : m_renderPassCache) {
-            if (m_rhiDevice) {
-                const auto layoutIt = m_renderTargetLayoutCache.find(key);
-                if (layoutIt != m_renderTargetLayoutCache.end())
-                    m_rhiDevice->Release(layoutIt->second);
-            }
-            if (rp != VK_NULL_HANDLE)
-                renderPasses.push_back(rp);
-        }
-        for (auto &[key, entry] : m_framebufferCache) {
-            if (entry.framebuffer != VK_NULL_HANDLE)
-                framebuffers.push_back(entry.framebuffer);
-        }
-        const bool hasBackendObjects = !framebuffers.empty() || !renderPasses.empty();
-        auto destroyCaches = [device, framebuffers = std::move(framebuffers),
-                              renderPasses = std::move(renderPasses)]() {
-            for (VkFramebuffer framebuffer : framebuffers)
-                vkDestroyFramebuffer(device, framebuffer, nullptr);
-            for (VkRenderPass renderPass : renderPasses)
-                vkDestroyRenderPass(device, renderPass, nullptr);
-        };
-        if (hasBackendObjects) {
-            if (m_deletionQueue && !m_context->IsShuttingDown())
-                m_deletionQueue->Retire(std::move(destroyCaches));
-            else
-                destroyCaches();
-        }
-    }
-    m_renderPassCache.clear();
-    m_renderTargetLayoutCache.clear();
-    m_framebufferCache.clear();
     m_structuralCompileCache.clear();
     m_structuralCacheHits = 0;
     m_structuralCacheMisses = 0;
@@ -1068,7 +970,6 @@ void RenderGraph::Destroy()
     m_deviceId = rhi::InvalidDeviceId;
     m_renderViewId = rhi::InvalidRenderViewId;
     m_rhiDevice = nullptr;
-    m_pipelineManager = nullptr;
     m_deletionQueue = nullptr;
     m_identity.AdvanceEpoch();
 }
@@ -1438,20 +1339,11 @@ bool RenderGraph::UpdatePassClearColor(const std::string &passName, float r, flo
     for (auto &pass : m_passes) {
         if (pass.name == passName) {
             pass.clearColor = {{r, g, b, a}};
-            // Refresh both execution paths. Dynamic Rendering owns its clear
-            // values on VkRenderingAttachmentInfo, while legacy render passes
-            // read them from VkRenderPassBeginInfo::pClearValues.
-            if (pass.usesDynamicRendering) {
-                const uint32_t colorCount =
-                    std::min<uint32_t>(static_cast<uint32_t>(pass.colorOutputs.size()),
-                                       static_cast<uint32_t>(pass.cachedRenderingColorAttachments.size()));
-                for (uint32_t i = 0; i < colorCount; ++i) {
-                    pass.cachedRenderingColorAttachments[i].clearValue.color = pass.clearColor;
-                }
-            }
-            for (uint32_t i = 0; i < static_cast<uint32_t>(pass.colorOutputs.size()) && i < pass.cachedClearValueCount;
-                 ++i) {
-                pass.cachedClearValues[i].color = pass.clearColor;
+            const uint32_t colorCount =
+                std::min<uint32_t>(static_cast<uint32_t>(pass.colorOutputs.size()),
+                                   static_cast<uint32_t>(pass.cachedRenderingColorAttachments.size()));
+            for (uint32_t i = 0; i < colorCount; ++i) {
+                pass.cachedRenderingColorAttachments[i].clearValue.color = pass.clearColor;
             }
             return true;
         }
@@ -1464,13 +1356,8 @@ bool RenderGraph::UpdatePassClearDepth(const std::string &passName, float depth,
     for (auto &pass : m_passes) {
         if (pass.name == passName) {
             pass.clearDepth = {depth, stencil};
-            if (pass.usesDynamicRendering && pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE) {
+            if (pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE) {
                 pass.cachedRenderingDepthAttachment.clearValue.depthStencil = pass.clearDepth;
-            }
-            // Refresh cached depth clear value (slot right after color outputs)
-            uint32_t depthSlot = static_cast<uint32_t>(pass.colorOutputs.size());
-            if (depthSlot < pass.cachedClearValueCount) {
-                pass.cachedClearValues[depthSlot].depthStencil = {depth, stencil};
             }
             return true;
         }
@@ -1573,20 +1460,15 @@ bool RenderGraph::Compile()
         return false;
     }
 
-    // Step 6: Create Vulkan render passes
-    if (!CreateVulkanRenderPasses()) {
+    // Step 6: Compile Dynamic Rendering attachment contracts.
+    if (!CompileGraphicsAttachments()) {
         return false;
     }
 
-    // Step 7: Create framebuffers
-    if (!CreateFramebuffers()) {
-        return false;
-    }
-
-    // Step 8: Pre-compute per-pass Execute() data (beginInfo, viewport, etc.)
+    // Step 7: Pre-compute per-pass Execute() data.
     PrecomputeExecuteData();
 
-    // Step 9: Compile the release/acquire pairs required when an exclusive
+    // Step 8: Compile the release/acquire pairs required when an exclusive
     // resource crosses native Vulkan queue families.
     if (!CompileQueueOwnershipTransfers())
         return false;
@@ -1740,18 +1622,11 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         }
 #endif
 
-        const bool isDynamicGraphicsPass = pass.type == PassType::Graphics && pass.usesDynamicRendering &&
-                                           m_cmdBeginRendering != nullptr && m_cmdEndRendering != nullptr;
-        const bool isLegacyGraphicsPass = pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE;
-        const bool isGraphicsPass = isDynamicGraphicsPass || isLegacyGraphicsPass;
+        const bool isGraphicsPass = pass.type == PassType::Graphics && pass.renderingSignature.IsValid();
 #if INFERNUX_FRAME_PROFILE
         if (isGraphicsPass) {
             ++s_executeProfile.graphicsPassCount;
         }
-        if (isDynamicGraphicsPass)
-            ++s_executeProfile.dynamicRenderingPassCount;
-        if (isLegacyGraphicsPass)
-            ++s_executeProfile.legacyRenderPassCount;
         if (pass.type == PassType::Compute) {
             ++s_executeProfile.computePassCount;
         }
@@ -1801,10 +1676,7 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
-            if (isDynamicGraphicsPass)
-                m_cmdBeginRendering(commandBuffer, &pass.cachedRenderingInfo);
-            else
-                vkCmdBeginRenderPass(commandBuffer, &pass.cachedBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+            m_cmdBeginRendering(commandBuffer, &pass.cachedRenderingInfo);
             context.SetViewport(pass.cachedViewport);
             context.SetScissor(pass.cachedScissor);
 #if INFERNUX_FRAME_PROFILE
@@ -1853,10 +1725,7 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
-            if (isDynamicGraphicsPass)
-                m_cmdEndRendering(commandBuffer);
-            else
-                vkCmdEndRenderPass(commandBuffer);
+            m_cmdEndRendering(commandBuffer);
 #if INFERNUX_FRAME_PROFILE
             stageNow = Clock::now();
             s_executeProfile.endPassMs += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
@@ -2016,47 +1885,6 @@ const RendererList *RenderGraph::ResolveRendererList(ResourceHandle handle) cons
     return resource.type == ResourceType::RendererList ? resource.externalRendererList : nullptr;
 }
 
-VkRenderPass RenderGraph::GetPassRenderPass(const std::string &passName) const
-{
-    for (const auto &pass : m_passes) {
-        if (pass.name == passName && pass.vulkanRenderPass != VK_NULL_HANDLE) {
-            return pass.vulkanRenderPass;
-        }
-    }
-    return VK_NULL_HANDLE;
-}
-
-VkRenderPass RenderGraph::GetPassRenderPass(PassHandle pass) const
-{
-    if (!Owns(pass) || pass.id >= m_passes.size()) {
-        return VK_NULL_HANDLE;
-    }
-    return m_passes[pass.id].vulkanRenderPass;
-}
-
-rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(const std::string &passName) const
-{
-    for (const auto &pass : m_passes) {
-        if (pass.name == passName)
-            return pass.renderTargetLayout;
-    }
-    return {};
-}
-
-rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(PassHandle pass) const
-{
-    if (!Owns(pass) || pass.id >= m_passes.size())
-        return {};
-    return m_passes[pass.id].renderTargetLayout;
-}
-
-bool RenderGraph::GetPassUsesDynamicRendering(const std::string &passName) const noexcept
-{
-    const auto pass = std::find_if(m_passes.begin(), m_passes.end(),
-                                   [&](const RenderPassData &candidate) { return candidate.name == passName; });
-    return pass != m_passes.end() && pass->usesDynamicRendering;
-}
-
 rhi::GraphicsRenderingSignature RenderGraph::GetPassRenderingSignature(const std::string &passName) const noexcept
 {
     const auto pass = std::find_if(m_passes.begin(), m_passes.end(),
@@ -2074,24 +1902,10 @@ PassRenderingContract RenderGraph::GetPassRenderingContract(const std::string &p
     PassRenderingContract contract;
     contract.found = true;
     contract.culled = pass->culled;
-    contract.usesDynamicRendering = pass->usesDynamicRendering;
     contract.depthReadOnly = pass->depthInput.IsValid() && !pass->depthOutput.IsValid();
     contract.depthAttachment = GetEffectiveDepth(*pass);
     contract.attachments = pass->renderingSignature;
     return contract;
-}
-
-VkRenderPass RenderGraph::GetCompatibleRenderPass() const
-{
-    // Return the first non-culled graphics pass render pass
-    // This is suitable for pipeline creation since all scene passes
-    // share the same attachment format
-    for (const auto &pass : m_passes) {
-        if (!pass.culled && pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE) {
-            return pass.vulkanRenderPass;
-        }
-    }
-    return VK_NULL_HANDLE;
 }
 
 } // namespace vk

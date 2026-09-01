@@ -1,7 +1,7 @@
 /**
  * @file RenderGraphCompile.cpp
  * @brief RenderGraph compilation pipeline — pass culling, topological sort, resource allocation,
- *        Vulkan render-pass / framebuffer creation, barrier insertion, and cache management.
+ *        Dynamic Rendering attachment compilation and barrier insertion.
  *
  * Part of the RenderGraph implementation (see also RenderGraph.cpp for the public API surface).
  */
@@ -9,7 +9,6 @@
 #include "RenderGraph.h"
 #include "RhiVulkanTypes.h"
 #include "VkDeviceContext.h"
-#include "VkPipelineManager.h"
 #include <SDL3/SDL.h>
 #include <core/error/InxError.h>
 
@@ -641,11 +640,6 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
         state.queueFamily = targetBinding.family;
         state.nativeQueueLane = targetBinding.lane;
 
-        if (isWrite && pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE &&
-            (access.usage & ResourceUsage::DepthOutput) != ResourceUsage::None &&
-            IsResourceUsedAfter(access.handle.id, pass.id)) {
-            state.layout = rhi::TextureLayout::DepthStencilReadOnly;
-        }
         return true;
     };
 
@@ -924,89 +918,6 @@ bool RenderGraph::IsResourceUsedAfter(uint32_t resourceId, uint32_t passIndex) c
             return true;
     }
     return false;
-}
-
-// ============================================================================
-// RenderPass / Framebuffer Caching
-// ============================================================================
-
-size_t RenderGraph::HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, VkSampleCountFlagBits samples,
-                                         bool clearColor, bool clearDepth, bool storeColor, bool storeDepth,
-                                         VkImageLayout colorFinalLayout, bool hasResolve, VkFormat resolveFormat,
-                                         bool hasColorAttachments, bool readOnlyDepth)
-{
-    size_t h = 0;
-    auto hashCombine = [&h](size_t val) { h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2); };
-    hashCombine(std::hash<bool>{}(hasColorAttachments));
-    hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(colorFmt)));
-    hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(depthFmt)));
-    hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(samples)));
-    hashCombine(std::hash<bool>{}(clearColor));
-    hashCombine(std::hash<bool>{}(clearDepth));
-    hashCombine(std::hash<bool>{}(storeColor));
-    hashCombine(std::hash<bool>{}(storeDepth));
-    hashCombine(std::hash<bool>{}(readOnlyDepth));
-    hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(colorFinalLayout)));
-    hashCombine(std::hash<bool>{}(hasResolve));
-    if (hasResolve) {
-        hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(resolveFormat)));
-    }
-    return h;
-}
-
-size_t RenderGraph::HashFramebuffer(VkRenderPass renderPass, const std::vector<VkImageView> &attachments,
-                                    uint32_t width, uint32_t height)
-{
-    size_t h = 0;
-    auto hashCombine = [&h](size_t val) { h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2); };
-    hashCombine(std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(renderPass)));
-    for (auto view : attachments) {
-        hashCombine(std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(view)));
-    }
-    hashCombine(std::hash<uint32_t>{}(width));
-    hashCombine(std::hash<uint32_t>{}(height));
-    return h;
-}
-
-void RenderGraph::FlushUnusedCaches()
-{
-    if (!m_context || !m_deletionQueue)
-        return;
-
-    const VkDevice device = m_context->GetDevice();
-
-    // Increment unused counter for framebuffers not used this frame
-    for (auto &[key, entry] : m_framebufferCache) {
-        entry.unusedFrames++;
-    }
-
-    // Reset counter for used entries
-    for (size_t key : m_usedFramebufferKeys) {
-        auto it = m_framebufferCache.find(key);
-        if (it != m_framebufferCache.end()) {
-            it->second.unusedFrames = 0;
-        }
-    }
-
-    // Remove entries unused for more than 60 frames
-    constexpr uint32_t GC_THRESHOLD = 60;
-    std::vector<VkFramebuffer> retiredFramebuffers;
-    for (auto it = m_framebufferCache.begin(); it != m_framebufferCache.end();) {
-        if (it->second.unusedFrames > GC_THRESHOLD) {
-            if (it->second.framebuffer != VK_NULL_HANDLE)
-                retiredFramebuffers.push_back(it->second.framebuffer);
-            it = m_framebufferCache.erase(it);
-        } else {
-            ++it;
-        }
-    }
-
-    if (!retiredFramebuffers.empty()) {
-        m_deletionQueue->Retire([device, framebuffers = std::move(retiredFramebuffers)]() {
-            for (VkFramebuffer framebuffer : framebuffers)
-                vkDestroyFramebuffer(device, framebuffer, nullptr);
-        });
-    }
 }
 
 // ============================================================================
@@ -1301,15 +1212,11 @@ bool RenderGraph::AllocateResources()
 }
 
 // ============================================================================
-// Vulkan RenderPass & Framebuffer Creation
+// Dynamic Rendering Attachment Compilation
 // ============================================================================
 
-bool RenderGraph::CreateVulkanRenderPasses()
+bool RenderGraph::CompileGraphicsAttachments()
 {
-    if (!m_pipelineManager) {
-        return false;
-    }
-
     for (auto &pass : m_passes) {
         if (pass.culled || pass.type != PassType::Graphics) {
             continue;
@@ -1323,23 +1230,15 @@ bool RenderGraph::CreateVulkanRenderPasses()
             continue;
         }
 
-        // Determine whether this pass has color outputs
-        bool hasColorOutputs = !pass.colorOutputs.empty();
-
-        // Determine color format and sample count
-        VkFormat colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
+        const bool hasColorOutputs = !pass.colorOutputs.empty();
         VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
         if (hasColorOutputs && pass.colorOutputs[0].IsValid()) {
             const auto &resource = m_resources[pass.colorOutputs[0].id];
-            colorFormat = resource.textureDesc.format;
             sampleCount = resource.textureDesc.samples;
         }
 
-        // Determine depth format from effective depth
-        VkFormat depthFormat = VK_FORMAT_UNDEFINED;
         if (effectiveDepth.IsValid()) {
             const auto &resource = m_resources[effectiveDepth.id];
-            depthFormat = resource.textureDesc.format;
             if (!hasColorOutputs)
                 sampleCount = resource.textureDesc.samples;
         }
@@ -1366,9 +1265,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
             pass.hasResolveAttachment = true;
         }
 
-        // Publish the actual attachment contract for both execution paths.
-        // Pipeline owners must be able to compare the compiled legacy fallback
-        // with the Dynamic Rendering contract they originally requested.
+        // Publish the attachment contract used by Dynamic Rendering pipelines.
         pass.renderingSignature = {};
         auto &signature = pass.renderingSignature;
         signature.samples = rhi::FromVkSampleCount(sampleCount);
@@ -1410,175 +1307,6 @@ bool RenderGraph::CreateVulkanRenderPasses()
                          "' without Vulkan Dynamic Rendering commands");
             return false;
         }
-        pass.vulkanRenderPass = VK_NULL_HANDLE;
-        pass.renderTargetLayout = {};
-        pass.usesDynamicRendering = true;
-        continue;
-
-        // Determine whether depth must be stored for later passes
-        bool needStoreDepth = false;
-        if (effectiveDepth.IsValid()) {
-            needStoreDepth = IsResourceUsedAfter(effectiveDepth.id, pass.id);
-        }
-
-        RenderPassConfig config;
-        config.colorFormat = colorFormat;
-        config.hasColor = hasColorOutputs;
-        config.depthFormat = depthFormat;
-        config.hasDepth = effectiveDepth.IsValid();
-        config.clearColor = pass.clearColorEnabled;
-        config.clearDepth = pass.clearDepthEnabled;
-        config.storeColor = !hasColorOutputs || IsResourceUsedAfter(pass.colorOutputs[0].id, pass.id);
-        config.storeDepth = needStoreDepth;
-        // Read-only depth: the pass reads depth (depthInput) but never writes it (no depthOutput).
-        // This requires DEPTH_STENCIL_READ_ONLY_OPTIMAL layouts throughout.
-        config.readOnlyDepth = pass.depthInput.IsValid() && !pass.depthOutput.IsValid();
-        config.samples = sampleCount;
-
-        // MRT: Collect per-attachment formats from ALL color outputs.
-        // When a pass writes to multiple color targets (GBuffer, etc.),
-        // each attachment may have a different format.
-        if (pass.colorOutputs.size() > 1) {
-            for (const auto &co : pass.colorOutputs) {
-                if (co.IsValid()) {
-                    config.colorFormats.push_back(m_resources[co.id].textureDesc.format);
-                } else {
-                    config.colorFormats.push_back(colorFormat);
-                }
-            }
-        }
-
-        // MSAA resolve support
-        if (pass.hasResolveAttachment) {
-            const auto &resolveResource = m_resources[pass.resolveOutput.id];
-            config.hasResolve = true;
-            config.resolveFormat = resolveResource.textureDesc.format;
-            config.resolveFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            pass.hasResolveAttachment = true;
-        }
-
-        // Graphics passes leave their color attachment writable. A typed Present
-        // pass owns the final swapchain transition explicitly.
-        config.colorFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        // Use RenderPass cache
-        // Include MRT attachment count + formats in cache key
-        size_t cacheKey =
-            HashRenderPassConfig(colorFormat, depthFormat, sampleCount, config.clearColor, config.clearDepth,
-                                 config.storeColor, config.storeDepth, config.colorFinalLayout, config.hasResolve,
-                                 config.resolveFormat, hasColorOutputs, config.readOnlyDepth);
-        // Fold MRT info into cache key
-        {
-            auto hashCombine = [&cacheKey](size_t val) {
-                cacheKey ^= val + 0x9e3779b9 + (cacheKey << 6) + (cacheKey >> 2);
-            };
-            hashCombine(config.colorFormats.size());
-            for (VkFormat f : config.colorFormats) {
-                hashCombine(static_cast<uint32_t>(f));
-            }
-        }
-
-        auto cacheIt = m_renderPassCache.find(cacheKey);
-        if (cacheIt != m_renderPassCache.end()) {
-            pass.vulkanRenderPass = cacheIt->second;
-            const auto layoutIt = m_renderTargetLayoutCache.find(cacheKey);
-            if (layoutIt != m_renderTargetLayoutCache.end())
-                pass.renderTargetLayout = layoutIt->second;
-        } else {
-            pass.vulkanRenderPass = m_pipelineManager->CreateRenderPass(config);
-            if (pass.vulkanRenderPass == VK_NULL_HANDLE) {
-                INXLOG_ERROR("Failed to create render pass for: ", pass.name);
-                return false;
-            }
-            if (!m_pipelineManager->DetachRenderPass(pass.vulkanRenderPass)) {
-                INXLOG_ERROR("Failed to transfer render pass ownership for: ", pass.name);
-                m_pipelineManager->DestroyRenderPass(pass.vulkanRenderPass);
-                pass.vulkanRenderPass = VK_NULL_HANDLE;
-                return false;
-            }
-            m_renderPassCache[cacheKey] = pass.vulkanRenderPass;
-            pass.renderTargetLayout = m_rhiDevice ? m_rhiDevice->RegisterRenderTargetLayout(pass.vulkanRenderPass)
-                                                  : rhi::RenderTargetLayoutHandle{};
-            m_renderTargetLayoutCache[cacheKey] = pass.renderTargetLayout;
-        }
-        m_usedRenderPassKeys.push_back(cacheKey);
-    }
-
-    return true;
-}
-
-bool RenderGraph::CreateFramebuffers()
-{
-    if (!m_context) {
-        return false;
-    }
-
-    VkDevice device = m_context->GetDevice();
-
-    for (auto &pass : m_passes) {
-        if (pass.culled || pass.type != PassType::Graphics || pass.vulkanRenderPass == VK_NULL_HANDLE) {
-            continue;
-        }
-
-        std::vector<VkImageView> attachments;
-
-        // Add color attachments
-        for (const auto &colorOutput : pass.colorOutputs) {
-            if (colorOutput.IsValid()) {
-                VkImageView view = ResolveTextureView(colorOutput);
-                if (view != VK_NULL_HANDLE) {
-                    attachments.push_back(view);
-                }
-            }
-        }
-
-        // Add depth attachment (write or read-only)
-        ResourceHandle effectiveDepth = GetEffectiveDepth(pass);
-        if (effectiveDepth.IsValid()) {
-            VkImageView view = ResolveTextureView(effectiveDepth);
-            if (view != VK_NULL_HANDLE) {
-                attachments.push_back(view);
-            }
-        }
-
-        // Add resolve attachment (must be after depth to match render pass attachment order)
-        if (pass.hasResolveAttachment && pass.resolveOutput.IsValid()) {
-            VkImageView view = ResolveTextureView(pass.resolveOutput);
-            if (view != VK_NULL_HANDLE) {
-                attachments.push_back(view);
-            }
-        }
-
-        if (attachments.empty()) {
-            continue;
-        }
-
-        // Use framebuffer cache
-        size_t fbKey =
-            HashFramebuffer(pass.vulkanRenderPass, attachments, pass.renderArea.width, pass.renderArea.height);
-        auto cacheIt = m_framebufferCache.find(fbKey);
-        if (cacheIt != m_framebufferCache.end() && cacheIt->second.framebuffer != VK_NULL_HANDLE) {
-            pass.framebuffer = cacheIt->second.framebuffer;
-            cacheIt->second.unusedFrames = 0;
-        } else {
-            VkFramebufferCreateInfo framebufferInfo{};
-            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebufferInfo.renderPass = pass.vulkanRenderPass;
-            framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-            framebufferInfo.pAttachments = attachments.data();
-            framebufferInfo.width = pass.renderArea.width;
-            framebufferInfo.height = pass.renderArea.height;
-            framebufferInfo.layers = 1;
-
-            VkFramebuffer fb = VK_NULL_HANDLE;
-            if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &fb) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to create framebuffer for pass: ", pass.name);
-                return false;
-            }
-            pass.framebuffer = fb;
-            m_framebufferCache[fbKey] = {fb, 0};
-        }
-        m_usedFramebufferKeys.push_back(fbKey);
     }
 
     return true;
@@ -1594,13 +1322,9 @@ void RenderGraph::PrecomputeExecuteData()
         if (pass.culled)
             continue;
 
-        const bool isDynamicGfx = pass.type == PassType::Graphics && pass.usesDynamicRendering;
-        const bool isGfx = isDynamicGfx || (pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE);
-        if (!isGfx)
+        if (pass.type != PassType::Graphics || !pass.renderingSignature.IsValid())
             continue;
 
-        // Common dynamic state for both legacy render passes and dynamic
-        // rendering. Keep this before either path-specific early exit.
         pass.cachedViewport.x = 0.0f;
         pass.cachedViewport.y = 0.0f;
         pass.cachedViewport.width = static_cast<float>(pass.renderArea.width);
@@ -1610,92 +1334,61 @@ void RenderGraph::PrecomputeExecuteData()
         pass.cachedScissor.offset = {0, 0};
         pass.cachedScissor.extent = pass.renderArea;
 
-        if (isDynamicGfx) {
-            uint32_t colorCount = 0;
-            for (const ResourceHandle output : pass.colorOutputs) {
-                if (!output.IsValid() || output.id >= m_resources.size() ||
-                    colorCount >= pass.cachedRenderingColorAttachments.size())
-                    continue;
-                const auto &resource = m_resources[output.id];
-                VkRenderingAttachmentInfo &attachment = pass.cachedRenderingColorAttachments[colorCount++];
-                attachment = {};
-                attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
-                attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                attachment.loadOp = pass.clearColorEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-                attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                attachment.clearValue.color = pass.clearColor;
-                if (colorCount == 1 && pass.hasResolveAttachment && pass.resolveOutput.IsValid() &&
-                    pass.resolveOutput.id < m_resources.size()) {
-                    const auto &resolve = m_resources[pass.resolveOutput.id];
-                    attachment.resolveMode = rhi::IsIntegerFormat(rhi::FromVkFormat(resource.textureDesc.format))
-                                                 ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
-                                                 : VK_RESOLVE_MODE_AVERAGE_BIT;
-                    attachment.resolveImageView = resolve.isExternal ? resolve.externalView : resolve.allocatedView;
-                    attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                }
+        uint32_t colorCount = 0;
+        for (const ResourceHandle output : pass.colorOutputs) {
+            if (!output.IsValid() || output.id >= m_resources.size() ||
+                colorCount >= pass.cachedRenderingColorAttachments.size())
+                continue;
+            const auto &resource = m_resources[output.id];
+            VkRenderingAttachmentInfo &attachment = pass.cachedRenderingColorAttachments[colorCount++];
+            attachment = {};
+            attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+            attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            attachment.loadOp = pass.clearColorEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.clearValue.color = pass.clearColor;
+            if (colorCount == 1 && pass.hasResolveAttachment && pass.resolveOutput.IsValid() &&
+                pass.resolveOutput.id < m_resources.size()) {
+                const auto &resolve = m_resources[pass.resolveOutput.id];
+                attachment.resolveMode = rhi::IsIntegerFormat(rhi::FromVkFormat(resource.textureDesc.format))
+                                             ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
+                                             : VK_RESOLVE_MODE_AVERAGE_BIT;
+                attachment.resolveImageView = resolve.isExternal ? resolve.externalView : resolve.allocatedView;
+                attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
-
-            pass.cachedRenderingDepthAttachment = {};
-            const ResourceHandle depth = GetEffectiveDepth(pass);
-            if (depth.IsValid() && depth.id < m_resources.size()) {
-                const auto &resource = m_resources[depth.id];
-                auto &attachment = pass.cachedRenderingDepthAttachment;
-                attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
-                const bool writableDepth = pass.depthOutput.IsValid();
-                attachment.imageLayout = writableDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                                       : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-                attachment.loadOp =
-                    writableDepth && pass.clearDepthEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-                attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                attachment.clearValue.depthStencil = pass.clearDepth;
-            }
-
-            auto &rendering = pass.cachedRenderingInfo;
-            rendering = {};
-            rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            rendering.renderArea = {{0, 0}, pass.renderArea};
-            rendering.layerCount = 1;
-            rendering.colorAttachmentCount = colorCount;
-            rendering.pColorAttachments = colorCount > 0 ? pass.cachedRenderingColorAttachments.data() : nullptr;
-            rendering.pDepthAttachment = pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE
-                                             ? &pass.cachedRenderingDepthAttachment
-                                             : nullptr;
-            rendering.pStencilAttachment =
-                rendering.pDepthAttachment && rhi::IsStencilFormat(pass.renderingSignature.stencilFormat)
-                    ? &pass.cachedRenderingDepthAttachment
-                    : nullptr;
-            continue;
         }
 
-        // VkRenderPassBeginInfo
-        auto &bi = pass.cachedBeginInfo;
-        bi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        bi.pNext = nullptr;
-        bi.renderPass = pass.vulkanRenderPass;
-        bi.framebuffer = pass.framebuffer;
-        bi.renderArea.offset = {0, 0};
-        bi.renderArea.extent = pass.renderArea;
+        pass.cachedRenderingDepthAttachment = {};
+        const ResourceHandle depth = GetEffectiveDepth(pass);
+        if (depth.IsValid() && depth.id < m_resources.size()) {
+            const auto &resource = m_resources[depth.id];
+            auto &attachment = pass.cachedRenderingDepthAttachment;
+            attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+            const bool writableDepth = pass.depthOutput.IsValid();
+            attachment.imageLayout = writableDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                                   : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            attachment.loadOp =
+                writableDepth && pass.clearDepthEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.clearValue.depthStencil = pass.clearDepth;
+        }
 
-        // Clear values: [color × N] [depth?] [resolve?]
-        uint32_t idx = 0;
-        for (size_t ci = 0; ci < pass.colorOutputs.size() && idx < 10; ++ci) {
-            pass.cachedClearValues[idx].color = pass.clearColor;
-            ++idx;
-        }
-        ResourceHandle effectiveDepth = GetEffectiveDepth(pass);
-        if (effectiveDepth.IsValid() && idx < 10) {
-            pass.cachedClearValues[idx].depthStencil = pass.clearDepth;
-            ++idx;
-        }
-        if (pass.hasResolveAttachment && idx < 10) {
-            pass.cachedClearValues[idx].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-            ++idx;
-        }
-        pass.cachedClearValueCount = idx;
-        bi.clearValueCount = idx;
-        bi.pClearValues = pass.cachedClearValues;
+        auto &rendering = pass.cachedRenderingInfo;
+        rendering = {};
+        rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rendering.renderArea = {{0, 0}, pass.renderArea};
+        rendering.layerCount = 1;
+        rendering.colorAttachmentCount = colorCount;
+        rendering.pColorAttachments = colorCount > 0 ? pass.cachedRenderingColorAttachments.data() : nullptr;
+        rendering.pDepthAttachment = pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE
+                                         ? &pass.cachedRenderingDepthAttachment
+                                         : nullptr;
+        rendering.pStencilAttachment =
+            rendering.pDepthAttachment && rhi::IsStencilFormat(pass.renderingSignature.stencilFormat)
+                ? &pass.cachedRenderingDepthAttachment
+                : nullptr;
     }
 }
 
@@ -1918,32 +1611,11 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     // a resource leaves it in the write layout).
     for (const auto &write : pass.writes) {
         if (write.handle.id < m_resources.size()) {
-            rhi::TextureLayout postPassLayout = write.layout;
-
-            // For graphics passes, vkCmdEndRenderPass performs an implicit
-            // layout transition from the subpass layout to the attachment's
-            // finalLayout.  The tracked state must reflect this ACTUAL
-            // post-pass layout, not the subpass layout.
-            if (pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE) {
-                bool isDepthWrite = (static_cast<int>(write.usage & ResourceUsage::DepthOutput) != 0);
-                if (isDepthWrite) {
-                    // Mirror CreateVulkanRenderPasses / CreateRenderPass logic:
-                    // storeDepth=true  → finalLayout = DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                    // storeDepth=false → finalLayout = DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                    bool usedLater = IsResourceUsedAfter(write.handle.id, pass.id);
-                    if (usedLater) {
-                        postPassLayout = rhi::TextureLayout::DepthStencilReadOnly;
-                    }
-                }
-            }
-
-            updateState(write, postPassLayout);
+            updateState(write, write.layout);
         }
     }
 
-    // For read-only depth (depthInput without depthOutput), the render pass
-    // uses DEPTH_STENCIL_READ_ONLY_OPTIMAL throughout (initial & final layout
-    // are both READ_ONLY_OPTIMAL when readOnlyDepth=true in CreateRenderPass).
+    // Read-only depth remains in its declared sampled attachment layout.
     if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid()) {
         auto &state = m_resourceStates[pass.depthInput.id];
         state.layout = rhi::TextureLayout::DepthStencilReadOnly;
@@ -2063,11 +1735,6 @@ void RenderGraph::FreeResources()
         }
     }
 
-    // ========================================================================
-    // Fix 6: Early-out when there are no transient resources to free.
-    // The GUI RenderGraph contains only the external backbuffer; calling
-    // vkDeviceWaitIdle every frame just to clear empty vectors is wasteful.
-    // ========================================================================
     bool hasTransientResources = false;
     for (const auto &resource : m_resources) {
         if (resource.isExternal)
@@ -2079,24 +1746,9 @@ void RenderGraph::FreeResources()
         }
     }
 
-    if (!hasTransientResources && m_framebufferCache.empty()) {
-        // No GPU resources to destroy — just clear pass framebuffer references
-        for (auto &pass : m_passes) {
-            pass.framebuffer = VK_NULL_HANDLE;
-        }
+    if (!hasTransientResources) {
         return;
     }
-
-    std::vector<VkFramebuffer> framebuffers;
-    framebuffers.reserve(m_framebufferCache.size());
-    for (auto &[key, entry] : m_framebufferCache) {
-        if (entry.framebuffer != VK_NULL_HANDLE)
-            framebuffers.push_back(entry.framebuffer);
-    }
-    m_framebufferCache.clear();
-
-    for (auto &pass : m_passes)
-        pass.framebuffer = VK_NULL_HANDLE;
 
     std::vector<VkImageView> imageViews;
     std::vector<VkImage> images;
@@ -2126,11 +1778,8 @@ void RenderGraph::FreeResources()
 
     std::vector<VmaAllocation> allocations(allocationSet.begin(), allocationSet.end());
     const VmaAllocator allocator = m_context->GetVmaAllocator();
-    auto destroyRetired = [device, allocator, framebuffers = std::move(framebuffers),
-                           imageViews = std::move(imageViews), images = std::move(images), buffers = std::move(buffers),
-                           allocations = std::move(allocations)]() mutable {
-        for (VkFramebuffer framebuffer : framebuffers)
-            vkDestroyFramebuffer(device, framebuffer, nullptr);
+    auto destroyRetired = [device, allocator, imageViews = std::move(imageViews), images = std::move(images),
+                           buffers = std::move(buffers), allocations = std::move(allocations)]() mutable {
         for (VkImageView view : imageViews)
             vkDestroyImageView(device, view, nullptr);
         for (VkImage image : images)

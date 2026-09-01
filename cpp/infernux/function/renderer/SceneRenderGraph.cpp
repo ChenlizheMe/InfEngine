@@ -713,8 +713,7 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     m_renderView.samples = rhi::FromVkSampleCount(sceneTarget->GetMsaaSampleCount());
     m_renderView.revision = 1;
 
-    // Initialize the underlying RenderGraph with device context and pipeline manager
-    m_renderGraph->Initialize(&vkCore->GetDeviceContext(), &vkCore->GetPipelineManager(), &vkCore->GetRetirementQueue(),
+    m_renderGraph->Initialize(&vkCore->GetDeviceContext(), &vkCore->GetRetirementQueue(),
                               &vkCore->GetBackendContext().Queues());
     m_renderGraph->SetRenderView(m_renderView);
 
@@ -832,10 +831,8 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     return true;
 }
 
-void SceneRenderGraph::RetireFramebuffersBeforeTargetReplacement(rhi::SubmissionSerial retirementSerial)
+void SceneRenderGraph::InvalidateBeforeTargetReplacement()
 {
-    if (m_renderGraph)
-        m_renderGraph->RetireFramebufferCacheAfter(retirementSerial);
     m_graphBuilt = false;
     m_needsCompile = true;
 }
@@ -1388,7 +1385,7 @@ MaterialPassPipelineDescriptor SceneRenderGraph::GetEditorOverlayMaterialPass() 
 {
     auto descriptor =
         m_vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
-    if (!m_renderGraph || !m_renderGraph->SupportsDynamicRendering() || !m_sceneTarget)
+    if (!m_renderGraph || !m_sceneTarget)
         return descriptor;
 
     descriptor.colorFormats = {rhi::FromVkFormat(m_sceneTarget->GetColorFormat())};
@@ -1471,8 +1468,6 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     const uint32_t graphFrameSamples = normalizedDesc.msaaSamples > 0
                                            ? static_cast<uint32_t>(normalizedDesc.msaaSamples)
                                            : static_cast<uint32_t>(callbackSamples);
-    const bool dynamicGeometryAvailable = m_renderGraph && m_renderGraph->SupportsDynamicRendering();
-
     for (const auto &passDesc : normalizedDesc.passes) {
         const GraphCommandDesc *command = PrimaryCommand(passDesc);
         if (!command) {
@@ -1550,19 +1545,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             materialPass.samples = ToRhiSampleCount(static_cast<int>(passSamples));
             materialPass.depthReadOnly =
                 passDesc.writeDepth.empty() && materialPass.depthFormat != rhi::PixelFormat::Undefined;
-            const bool dynamicGeometryTarget = command->shaderTarget == ShaderCompileTarget::Forward ||
-                                               command->shaderTarget == ShaderCompileTarget::ForwardPlus ||
-                                               command->shaderTarget == ShaderCompileTarget::GBuffer ||
-                                               command->shaderTarget == ShaderCompileTarget::Motion ||
-                                               command->shaderTarget == ShaderCompileTarget::Normal ||
-                                               command->shaderTarget == ShaderCompileTarget::BaseColor ||
-                                               command->shaderTarget == ShaderCompileTarget::Picking ||
-                                               command->shaderTarget == ShaderCompileTarget::Shadow;
-            if (dynamicGeometryAvailable && dynamicGeometryTarget &&
-                (commandType == GraphCommandType::DrawRenderers ||
-                 commandType == GraphCommandType::DrawShadowCasters)) {
-                materialPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-            }
+            materialPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
             m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
 
@@ -1817,9 +1800,6 @@ void SceneRenderGraph::EnsureGraphBuilt()
         const auto maskContract = m_renderGraph->GetPassRenderingContract("__EditorOutlineMask");
         const auto compositeContract = m_renderGraph->GetPassRenderingContract("__EditorOutlineComposite");
         const bool outlineReady = m_outlineRenderer && m_outlineRenderer->EnsureGraphPipelines(
-                                                           m_renderGraph->GetPassRenderPass("__EditorOutlineMask"),
-                                                           m_renderGraph->GetPassRenderPass("__EditorOutlineComposite"),
-                                                           m_sceneTarget->GetMsaaSampleCount(),
                                                            maskContract.attachments, compositeContract.attachments);
         if (outlineReady) {
             m_outlinePipelineFailureReported = false;
@@ -2563,9 +2543,6 @@ vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk:
             builder.SkipCallbackWhenRendererListsEmpty();
         }
         builder.SetRenderArea(width, height);
-        if (m_renderGraph->SupportsDynamicRendering())
-            builder.UseDynamicRendering();
-
         return [callback, width, height, rendererListHandle, vkCore](vk::RenderContext &ctx) {
             if (rendererListHandle.IsValid()) {
                 const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
@@ -2606,9 +2583,6 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
         builder.ReadRendererList(rendererList);
         builder.SetDepthTest(false);
         builder.SetRenderArea(width, height);
-        if (m_renderGraph->SupportsDynamicRendering())
-            builder.UseDynamicRendering();
-
         return [this, rendererList](vk::RenderContext &context) {
             if (!m_outlineRenderer)
                 return;
@@ -2629,8 +2603,6 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
                                composited = builder.WriteColor(displayTarget, 0);
                                builder.SetDepthTest(false);
                                builder.SetRenderArea(width, height);
-                               if (m_renderGraph->SupportsDynamicRendering())
-                                   builder.UseDynamicRendering();
                                return [this](vk::RenderContext &context) {
                                    if (m_outlineRenderer)
                                        m_outlineRenderer->RecordCompositeDraw(context.GetCommandBuffer());
@@ -3778,7 +3750,6 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 // Capture references for the execute lambda
                 FullscreenRenderer *fsRenderer = &m_fullscreenRenderer;
-                vk::RenderGraph *renderGraphPtr = m_renderGraph.get();
                 std::string shaderName = command->shaderName;
                 std::string parameterBlock = command->parameterBlock;
                 FullscreenPushConstants packedPushConstants{};
@@ -3911,7 +3882,6 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
-                const bool useDynamicFullscreen = m_renderGraph->SupportsDynamicRendering();
                 vk::ResourceHandle fullscreenShadowInput;
                 if (!fullscreenShadowDependencyDeclared && !perViewShadowTextureName.empty()) {
                     const auto shadow = customRTHandles.find(perViewShadowTextureName);
@@ -3945,16 +3915,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     // post-processing pass.
                     builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
-                    if (useDynamicFullscreen)
-                        builder.UseDynamicRendering();
-
-                    return [=, cachedRenderTarget = rhi::RenderTargetLayoutHandle{}](vk::RenderContext &ctx) mutable {
-                        if (!useDynamicFullscreen && !cachedRenderTarget.IsValid()) {
-                            cachedRenderTarget = renderGraphPtr->GetPassRenderTargetLayout(passDesc.name);
-                        }
-                        if (!useDynamicFullscreen && !cachedRenderTarget.IsValid())
-                            return;
-
+                    return [=](vk::RenderContext &ctx) {
                         // Resolve input texture views using a stack path for the common case.
                         FullscreenTextureInput inputsStack[8] = {};
                         std::vector<FullscreenTextureInput> inputsHeap;
@@ -3978,7 +3939,6 @@ void SceneRenderGraph::BuildRenderGraph()
                         // Build pipeline key and ensure pipeline exists
                         FullscreenPipelineKey key;
                         key.shaderName = shaderName;
-                        key.renderTargetLayout = cachedRenderTarget;
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
                         key.inputTextureCount = inputCount;
@@ -3986,7 +3946,7 @@ void SceneRenderGraph::BuildRenderGraph()
                             if (inputs[i].depthRead)
                                 key.depthInputMask |= 1u << i;
                         }
-                        key.useDynamicRendering = useDynamicFullscreen;
+                        key.useDynamicRendering = true;
 
                         const auto &entry = fsRenderer->EnsurePipeline(key);
                         if (!entry.pipeline.IsValid())
@@ -4049,13 +4009,6 @@ void SceneRenderGraph::BuildRenderGraph()
             const bool usesShadowRendererList = command && command->type == GraphCommandType::DrawShadowCasters;
             const bool usesVisibleRendererList = command && (command->type == GraphCommandType::DrawRenderers ||
                                                              command->type == GraphCommandType::DrawSkybox);
-            const bool usesScreenUI = command && command->type == GraphCommandType::DrawScreenUI && m_screenUIRenderer;
-            const auto geometryPassIt = m_pythonMaterialPasses.find(passDesc.name);
-            const bool usesDynamicGeometry =
-                geometryPassIt != m_pythonMaterialPasses.end() && geometryPassIt->second.UsesDynamicRendering();
-            const bool usesDynamicShadow = usesShadowRendererList && m_renderGraph->SupportsDynamicRendering() &&
-                                           geometryPassIt != m_pythonMaterialPasses.end() &&
-                                           geometryPassIt->second.UsesDynamicRendering();
             VkFormat shadowDepthFormat = VK_FORMAT_D32_SFLOAT;
             if (usesShadowRendererList && !passDesc.writeDepth.empty()) {
                 const auto shadowDepthIt = texDescMap.find(passDesc.writeDepth);
@@ -4294,9 +4247,6 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 // ----- Render area -----
                 builder.SetRenderArea(passWidth, passHeight);
-                if (usesScreenUI || usesDynamicGeometry || usesDynamicShadow)
-                    builder.UseDynamicRendering();
-
                 // ----- Clear values -----
                 if (clearColor) {
                     builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
@@ -4313,9 +4263,9 @@ void SceneRenderGraph::BuildRenderGraph()
                 }
 
                 return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
-                        usesShadowRendererList, usesDynamicShadow, shadowDepthFormat, localVkCore, particlePackets,
-                        particlePass, particleSceneDepth, particleSceneDepthIsDepth, shadowQueueMin, shadowQueueMax,
-                        shadowLightIndex, passName = passDesc.name](vk::RenderContext &ctx) {
+                        usesShadowRendererList, shadowDepthFormat, localVkCore, particlePackets, particlePass,
+                        particleSceneDepth, particleSceneDepthIsDepth, shadowQueueMin, shadowQueueMax,
+                        shadowLightIndex](vk::RenderContext &ctx) {
                     if (rendererListHandle.IsValid()) {
                         const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
                         if (usesShadowRendererList) {
@@ -4338,14 +4288,11 @@ void SceneRenderGraph::BuildRenderGraph()
                         clearRect.baseArrayLayer = 0;
                         clearRect.layerCount = 1;
                         vkCmdClearAttachments(ctx.GetCommandBuffer(), 1, &clearAttachment, 1, &clearRect);
-                        const VkRenderPass compatibleRenderPass =
-                            usesDynamicShadow ? VK_NULL_HANDLE : m_renderGraph->GetPassRenderPass(passName);
-                        const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         localVkCore->DrawShadowCasters(
                             ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
                             m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(), shadowLightIndex,
-                            compatibleRenderPass, shadowDepthFormat,
+                            VK_NULL_HANDLE, shadowDepthFormat,
                             [&](uint32_t, const lighting::ShadowView &activeShadowView) {
                                 particle::GpuParticleViewConstants shadowView;
                                 std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
@@ -4368,10 +4315,10 @@ void SceneRenderGraph::BuildRenderGraph()
                                     0.0f,
                                 };
                                 for (const auto &packet : particlePackets) {
-                                    [[maybe_unused]] const bool recorded =
-                                        packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,
-                                                                    ctx.GetBufferHandle(packet.indirectArguments),
-                                                                    shadowView, packet.drawRenderIndices);
+                                    [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
+                                        encoder, rhi::RenderTargetLayoutHandle{}, particlePass,
+                                        ctx.GetBufferHandle(packet.indirectArguments), shadowView,
+                                        packet.drawRenderIndices);
                                     ctx.RecordParticleDraw(true);
                                 }
                             });
@@ -4393,7 +4340,6 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
                         view.depthReconstruct = {m_cachedProj[2][2], m_cachedProj[3][2], m_cachedProj[2][3],
                                                  m_cachedProj[3][3]};
-                        const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         const auto sceneDepth = particleSceneDepth.IsValid() ? ctx.GetTextureView(particleSceneDepth)
                                                                              : rhi::TextureViewHandle{};
@@ -4409,7 +4355,7 @@ void SceneRenderGraph::BuildRenderGraph()
                             std::memcpy(&packetView.lightingControl[3], &packet.ownerLayerMask,
                                         sizeof(packet.ownerLayerMask));
                             [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
-                                encoder, renderTargetLayout, particlePass,
+                                encoder, rhi::RenderTargetLayoutHandle{}, particlePass,
                                 ctx.GetBufferHandle(packet.indirectArguments), packetView, packet.drawRenderIndices,
                                 packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
                                 particleSceneDepthIsDepth, particlePerView);

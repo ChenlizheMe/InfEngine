@@ -1621,7 +1621,7 @@ struct ParticleGpuSystemManager::Impl
         auto state = std::make_shared<GraphState>();
         state->generation = nextGraphGeneration++;
         state->graph = std::make_unique<vk::RenderGraph>();
-        state->graph->Initialize(context, pipelines, deletionQueue);
+        state->graph->Initialize(context, deletionQueue);
         auto *graph = state->graph.get();
         std::map<uint64_t, std::vector<std::shared_ptr<Emitter>>> emittersByGraph;
         for (const auto &[id, emitter] : candidateEmitters) {
