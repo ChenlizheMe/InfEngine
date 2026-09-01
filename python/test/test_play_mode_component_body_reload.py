@@ -1424,7 +1424,7 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
     )
     path.write_bytes(candidate_source)
 
-    batch = manager.prepare_edit_script_reload_batch((
+    batch = manager.prepare_script_reload_batch((
         ScriptReloadBatchInput(str(path), guid, candidate_source),
     ))
     assert first_object.get_py_components()[0] is first
@@ -1440,8 +1440,9 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
 
     monkeypatch.setattr(script_loader, "_apply_component_body_patch_plans", apply_then_fail)
 
-    with pytest.raises(RuntimeError, match="simulated Edit body publication failure"):
-        manager.commit_edit_script_reload_batch(batch)
+    failed = manager.commit_script_reload_batch(batch)
+    assert failed.success is False
+    assert "simulated Edit body publication failure" in failed.error
     assert batch.rolled_back is True
     assert first_object.get_py_components()[0] is first
     assert second_object.get_py_components()[0] is second
@@ -1452,10 +1453,13 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
     # The failed LKG transaction must be retryable after the external failure
     # is removed; no half-published registry or module is allowed to remain.
     monkeypatch.setattr(script_loader, "_apply_component_body_patch_plans", real_apply)
-    retry = manager.prepare_edit_script_reload_batch((
+    retry = manager.prepare_script_reload_batch((
         ScriptReloadBatchInput(str(path), guid, candidate_source),
     ))
-    assert manager.commit_edit_script_reload_batch(retry) == 2
+    outcome = manager.commit_script_reload_batch(retry)
+    assert outcome.success is True
+    assert outcome.reloaded_count == 1
+    manager.finalize_script_reload_batch(retry)
     assert retry.transaction.finalized is True
     assert first_object.get_py_components()[0] is first
     assert second_object.get_py_components()[0] is second
@@ -1526,7 +1530,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
         b"        import runtime_r13_helper\n"
         b"        return runtime_r13_helper.VALUE\n"
     )
-    batch = manager.prepare_edit_script_reload_batch(
+    batch = manager.prepare_script_reload_batch(
         (
             ScriptReloadBatchInput(
                 str(helper_path), "runtime-r13-helper-guid", helper_source
@@ -1539,7 +1543,10 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     assert sys.modules["runtime_r13_helper"].VALUE == 1
     assert scene_object.get_py_components()[0] is component
     assert component.marker() == 1
-    assert manager.commit_edit_script_reload_batch(batch) == 1
+    outcome = manager.commit_script_reload_batch(batch)
+    assert outcome.success is True
+    assert outcome.reloaded_count == 1
+    manager.finalize_script_reload_batch(batch)
     assert batch.transaction.finalized is True
     assert scene_object.get_py_components()[0] is component
     assert type(component) is probe_type
@@ -1549,7 +1556,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     # replaced, and the already-published component remains the LKG instance.
     broken_helper = b"def broken(:\n"
     with pytest.raises(Exception):
-        manager.prepare_edit_script_reload_batch(
+        manager.prepare_script_reload_batch(
             (
                 ScriptReloadBatchInput(
                     str(helper_path), "runtime-r13-helper-guid", broken_helper

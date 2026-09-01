@@ -126,13 +126,11 @@ class _ScriptPublicationRollback:
         self,
         *,
         play_batch=None,
-        edit_batch=None,
         registry_snapshot=None,
         graph_transaction=None,
         graph_committed=False,
     ):
         self.play_batch = play_batch
-        self.edit_batch = edit_batch
         self.registry_snapshot = registry_snapshot
         self.graph_transaction = graph_transaction
         self.graph_committed = bool(graph_committed)
@@ -749,17 +747,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def _rollback_script_publication(self, token: _ScriptPublicationRollback) -> None:
         rollback_errors: list[str] = []
-        if token.play_batch is not None or token.edit_batch is not None:
+        if token.play_batch is not None:
             play_mode = __import__(
                 "Infernux.engine.play_mode",
                 fromlist=("PlayModeManager",),
             ).PlayModeManager.instance()
             if play_mode is not None:
                 try:
-                    if token.edit_batch is not None:
-                        play_mode.rollback_edit_script_reload_batch(token.edit_batch)
-                    elif token.play_batch is not None:
-                        play_mode.rollback_script_reload_batch(token.play_batch)
+                    play_mode.rollback_script_reload_batch(token.play_batch)
                 except Exception as exc:
                     rollback_errors.append(f"live script rollback failed: {exc}")
         if token.registry_snapshot is not None:
@@ -916,11 +911,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         registry_snapshot = snapshot_component_registry_state()
         mark("registry_snapshot")
         play_mode = PlayModeManager.instance()
-        prepare_stable_batch = (
-            getattr(play_mode, "prepare_script_reload_batch", None)
-            if play_mode is not None
-            else None
-        )
         play_batch = None
         token = _ScriptPublicationRollback(
             registry_snapshot=registry_snapshot,
@@ -934,7 +924,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 if state.expected_paths
                 else ""
             )
-            if callable(prepare_stable_batch):
+            if play_mode is not None:
                 revisions = tuple(
                     ScriptReloadBatchInput(
                         file_path=result.path,
@@ -955,7 +945,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     )
                     for result in ordered
                 )
-                play_batch = prepare_stable_batch(revisions)
+                play_batch = play_mode.prepare_script_reload_batch(revisions)
                 mark("prepare_live_batch")
                 token.play_batch = play_batch
                 outcome = play_mode.commit_script_reload_batch(play_batch)
@@ -968,61 +958,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     self._publish_script_registry_member(result)
                 mark("publish_registry")
             else:
-                prepare_edit_batch = getattr(
-                    play_mode,
-                    "prepare_edit_script_reload_batch",
-                    None,
-                )
-                if play_mode is None or not callable(prepare_edit_batch):
-                    # Tooling can construct a resource handler without an
-                    # active editor owner. A legacy single-script test/tool
-                    # owner may also expose only the old reload entry point.
-                    # Never emulate a multi-file live transaction through it.
-                    if play_mode is not None and len(ordered) > 1:
+                for result in ordered:
+                    if not self._publish_valid_script(
+                        result.path,
+                        source=result.source,
+                        code=(
+                            result.artifact.code
+                            if result.artifact is not None
+                            else None
+                        ),
+                        catalog_event=result.change.effective_catalog_event,
+                        _defer_post_commit=True,
+                    ):
                         raise RuntimeError(
-                            "edit-mode multi-script reload requires the Edit batch owner API"
+                            f"headless script publication rejected for {result.path}"
                         )
-                    for result in ordered:
-                        if not self._publish_valid_script(
-                            result.path,
-                            source=result.source,
-                            code=(
-                                result.artifact.code
-                                if result.artifact is not None
-                                else None
-                            ),
-                            catalog_event=result.change.effective_catalog_event,
-                            _defer_post_commit=True,
-                        ):
-                            raise RuntimeError(
-                                f"headless script publication rejected for {result.path}"
-                            )
-                else:
-                    revisions = tuple(
-                        ScriptReloadBatchInput(
-                            file_path=result.path,
-                            script_guid=(
-                                self._asset_database.get_guid_from_path(result.path) or ""
-                            ),
-                            source=result.source,
-                            code=(
-                                result.artifact.code
-                                if result.artifact is not None
-                                else None
-                            ),
-                            retire_script_paths=(
-                                state.retire_paths
-                                if path_key(result.path) == move_owner_key
-                                else ()
-                            ),
-                        )
-                        for result in ordered
-                    )
-                    edit_batch = prepare_edit_batch(revisions)
-                    token.edit_batch = edit_batch
-                    play_mode.commit_edit_script_reload_batch(edit_batch)
-                    if not edit_batch.committed:
-                        return False
 
             if ready_stage is not None:
                 mutation = graph.commit_transaction(ready_stage)

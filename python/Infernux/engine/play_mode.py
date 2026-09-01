@@ -1368,40 +1368,6 @@ class PlayModeManager(PlayModeSerializationMixin):
             else execution_order
         )
 
-    def prepare_edit_script_reload_batch(
-        self,
-        revisions: Iterable[ScriptReloadBatchInput],
-    ) -> ScriptReloadBatch:
-        """Route Edit authoring through the stable-class reload transaction."""
-        if self._state != PlayModeState.EDIT:
-            raise RuntimeError("Edit component reload requires Edit mode")
-        if not self._asset_database:
-            raise RuntimeError("Edit component reload requires an asset database")
-        return self.prepare_script_reload_batch(revisions)
-
-    def commit_edit_script_reload_batch(self, batch: ScriptReloadBatch) -> int:
-        if not isinstance(batch, ScriptReloadBatch):
-            raise TypeError("batch must be a ScriptReloadBatch")
-        outcome = self.commit_script_reload_batch(batch)
-        if not outcome.success:
-            raise RuntimeError(outcome.error or "Edit script reload was rejected")
-        # This direct Edit API has no outer dependency/LKG transaction.  Its
-        # successful return is therefore the durable edge and must close the
-        # provisional native schema transaction itself.  ResourcesManager uses
-        # the lower-level commit/finalize pair so it can finalize after LKG.
-        try:
-            self.finalize_script_reload_batch(batch)
-        except Exception:
-            if not bool(getattr(batch.transaction, "finalized", False)):
-                self.rollback_script_reload_batch(batch)
-            raise
-        return sum(member.target_count for member in batch.members)
-
-    def rollback_edit_script_reload_batch(self, batch: ScriptReloadBatch) -> None:
-        if not isinstance(batch, ScriptReloadBatch):
-            raise TypeError("batch must be a ScriptReloadBatch")
-        self.rollback_script_reload_batch(batch)
-
     def prepare_script_delete_batch(
         self,
         script_guid: str,

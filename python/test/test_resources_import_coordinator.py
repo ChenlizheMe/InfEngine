@@ -1492,11 +1492,22 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     )
 
     class _PlayModeProbe:
-        def reload_components_from_script_result(self, _path, *, source, code=None):
+        def prepare_script_reload_batch(self, revisions):
+            return SimpleNamespace(revisions=tuple(revisions))
+
+        def commit_script_reload_batch(self, batch):
             outcome = next(publish_results)
             if outcome.success:
-                live_body["value"] = source.decode("utf-8").split("'")[1]
+                live_body["value"] = (
+                    batch.revisions[0].source.decode("utf-8").split("'")[1]
+                )
             return outcome
+
+        def rollback_script_reload_batch(self, _batch):
+            return None
+
+        def finalize_script_reload_batch(self, _batch):
+            return None
 
     monkeypatch.setattr(
         PlayModeManager,
@@ -1715,7 +1726,6 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
             self.prepared = []
             self.rolled_back = []
             self.finalized = []
-            self.legacy_prepare_count = 0
 
         def prepare_script_reload_batch(self, revisions):
             self.prepared.append(tuple(revisions))
@@ -1730,10 +1740,6 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
 
         def finalize_script_reload_batch(self, batch):
             self.finalized.append(batch)
-
-        def prepare_edit_script_reload_batch(self, _revisions):
-            self.legacy_prepare_count += 1
-            raise AssertionError("legacy Edit replacement path must not be selected")
 
     owner = _EditOwner()
     monkeypatch.setattr(
@@ -1754,7 +1760,6 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
     )
     assert owner.rolled_back == []
     assert len(owner.finalized) == 1
-    assert owner.legacy_prepare_count == 0
     assert handler._script_change_collector.last_known_good(str(first)) is not None
     assert handler._script_change_collector.last_known_good(str(second)) is not None
 
@@ -1786,13 +1791,13 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
             self.batch = _Batch()
             self.rollback_count = 0
 
-        def prepare_edit_script_reload_batch(self, _revisions):
+        def prepare_script_reload_batch(self, _revisions):
             return self.batch
 
-        def commit_edit_script_reload_batch(self, _batch):
-            raise RuntimeError("second Edit member rejected")
+        def commit_script_reload_batch(self, _batch):
+            return SimpleNamespace(success=False, error="second Edit member rejected")
 
-        def rollback_edit_script_reload_batch(self, batch):
+        def rollback_script_reload_batch(self, batch):
             assert batch is self.batch
             self.rollback_count += 1
 
