@@ -21,7 +21,6 @@ def _runtime_contract(tmp_path):
     features = RuntimeFeatureSet()
     document = {
         "$schema": "infernux.player_runtime_manifest",
-        "manifest_version": 1,
         "product": {"flavor": flavor.value},
         "features": features.to_manifest(),
         "runtime_policy": runtime_policy_for(flavor).to_manifest(),
@@ -134,16 +133,15 @@ def test_player_runtime_session_does_not_construct_editor_managers(tmp_path):
     assert getattr(bootstrap, "scene_file_manager", None) is None
 
 
-def test_player_bootstrap_uses_boot_validated_archive_summary(monkeypatch):
+def test_player_bootstrap_uses_boot_validated_archive_size(monkeypatch):
     from Infernux.engine.player_bootstrap import PlayerBootstrap
 
-    digest = "a" * 64
-    monkeypatch.setenv("_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256", digest)
     monkeypatch.setenv("_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES", "4096")
 
-    assert PlayerBootstrap._validated_archive_summary(
-        "Game_Data/Content.inxpkg"
-    ) == (digest, 4096)
+    assert (
+        PlayerBootstrap._boot_validated_archive_bytes("Game_Data/Content.inxpkg")
+        == 4096
+    )
 
 
 def test_player_run_loads_scene_without_starting_play():
@@ -204,7 +202,6 @@ def test_player_bootstrap_accepts_platform_native_package_without_runtime_archiv
     from Infernux.engine.player_bootstrap import PlayerBootstrap
     from Infernux.engine.player_service_graph import (
         PLAYER_MANIFEST_SCHEMA,
-        PLAYER_MANIFEST_VERSION,
         RuntimeFeatureSet,
         RuntimeFlavor,
         player_runtime_contract_sections,
@@ -214,7 +211,6 @@ def test_player_bootstrap_accepts_platform_native_package_without_runtime_archiv
     contract = player_runtime_contract_sections(flavor, RuntimeFeatureSet())
     document = {
         "$schema": PLAYER_MANIFEST_SCHEMA,
-        "manifest_version": PLAYER_MANIFEST_VERSION,
         "product": {
             "layout": "platform_native_packages",
             **contract["product"],
@@ -323,6 +319,79 @@ def test_run_player_reveals_window_without_startup_sleep():
     assert "_INFERNUX_PLAYER_WINDOW_TITLE" in body
     assert body.index("_INFERNUX_PLAYER_FULLSCREEN") < body.index("bootstrap.run()")
     assert "_signal_engine_loaded" in body
+    assert body.index("_set_process_owned_exit()") < body.index("bootstrap.engine.run()")
+
+
+def test_player_build_manifest_is_required_and_strict(tmp_path):
+    import json
+
+    from Infernux.engine import _load_player_build_manifest
+
+    with pytest.raises(FileNotFoundError, match="has no BuildManifest.json"):
+        _load_player_build_manifest(str(tmp_path))
+
+    manifest_path = tmp_path / "BuildManifest.json"
+    manifest_path.write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError, match="is unreadable"):
+        _load_player_build_manifest(str(tmp_path))
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "game_name": "StrictPlayer",
+                "icon_path": "",
+                "window_width": 1280,
+                "window_height": 720,
+                "window_resizable": True,
+                "splash_items": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="display_mode must be a string"):
+        _load_player_build_manifest(str(tmp_path))
+
+
+def test_player_build_manifest_accepts_the_build_owned_contract(tmp_path):
+    import json
+
+    from Infernux.engine import _load_player_build_manifest
+
+    manifest = {
+        "game_name": "StrictPlayer",
+        "icon_path": "Branding/icon.png",
+        "display_mode": "windowed",
+        "window_width": 1280,
+        "window_height": 720,
+        "window_resizable": False,
+        "splash_items": [{"type": "image", "path": "Splash/intro.png"}],
+    }
+    (tmp_path / "BuildManifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    assert _load_player_build_manifest(str(tmp_path)) == manifest
+
+
+def test_player_build_manifest_rejects_absolute_or_parent_icon_paths(tmp_path):
+    import json
+
+    from Infernux.engine import _load_player_build_manifest
+
+    base = {
+        "game_name": "StrictPlayer",
+        "display_mode": "windowed",
+        "window_width": 1280,
+        "window_height": 720,
+        "window_resizable": True,
+        "splash_items": [],
+    }
+    for icon_path in ("../icon.png", "/tmp/icon.png", "Branding//icon.png"):
+        (tmp_path / "BuildManifest.json").write_text(
+            json.dumps({**base, "icon_path": icon_path}), encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="icon_path must be relative"):
+            _load_player_build_manifest(str(tmp_path))
 
 
 def test_player_init_engine_publishes_window_chrome_before_native_renderer():

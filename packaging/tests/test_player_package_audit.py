@@ -30,7 +30,6 @@ if "Infernux.engine" not in sys.modules:
 from Infernux.engine.player_package_audit import (
     BOOTSTRAP_NATIVE_ROOT_ALLOWLIST,
     RUNTIME_CONDITIONAL_NATIVE_FILES,
-    RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES,
     RUNTIME_REQUIRED_NATIVE_FILES,
     audit_player_package,
 )
@@ -105,7 +104,7 @@ def test_runtime_catalog_ids_are_stable_and_output_is_deterministic():
         },
     ]
     kwargs = {
-        "player_host": {"executable": "Game.exe", "sha256": "3" * 64},
+        "player_host": {"executable": "Game.exe"},
         "package_records": [],
     }
     first = build_catalog(entries, **kwargs)
@@ -136,7 +135,7 @@ def test_runtime_catalog_records_compiled_library_source_binding():
                 "asset_binding": binding,
             }
         ],
-        player_host={"executable": "Game.exe", "sha256": "c" * 64},
+        player_host={"executable": "Game.exe"},
         package_records=[],
     )
     artifact = catalog["artifacts"][0]
@@ -195,7 +194,7 @@ def test_runtime_catalog_uses_mesh_as_deterministic_alias_for_mesh_and_skin():
         },
     ]
     kwargs = {
-        "player_host": {"executable": "Game.exe", "sha256": "4" * 64},
+        "player_host": {"executable": "Game.exe"},
         "package_records": [],
     }
 
@@ -244,7 +243,7 @@ def test_runtime_catalog_rejects_source_alias_shared_by_different_guids():
     with pytest.raises(RuntimeArtifactError, match="runtime source alias is ambiguous"):
         build_catalog(
             entries,
-            player_host={"executable": "Game.exe", "sha256": "3" * 64},
+            player_host={"executable": "Game.exe"},
             package_records=[],
         )
 
@@ -287,7 +286,7 @@ def test_runtime_catalog_resolves_asset_guid_before_stale_path_hint():
                 },
             },
         ],
-        player_host={"executable": "Game.exe", "sha256": "3" * 64},
+        player_host={"executable": "Game.exe"},
         package_records=[],
     )
 
@@ -321,7 +320,7 @@ def test_runtime_catalog_rejects_ambiguous_runtime_paths_across_packages():
     with pytest.raises(RuntimeArtifactError, match="runtime artifact path is ambiguous"):
         build_catalog(
             entries,
-            player_host={"executable": "Game.exe", "sha256": "3" * 64},
+            player_host={"executable": "Game.exe"},
             package_records=[],
         )
 
@@ -547,7 +546,6 @@ def _valid_player(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "$schema": "infernux.runtime_asset_records",
-                "records_version": 2,
                 "entries": [],
             }
         ),
@@ -566,7 +564,7 @@ def _valid_player(tmp_path: Path) -> Path:
         ),
         data / "Content.inxpkg",
     )
-    package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX_V1"]
+    package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX"]
     for kind, package_name in (
         ("runtime", "Runtime.inxrt"),
         ("content", "Content.inxpkg"),
@@ -595,7 +593,6 @@ def _write_catalog(root: Path) -> None:
         package_records.append(
             {
                 "path": package_relative,
-                "archive_sha256": package_manifest["archive_sha256"],
                 "archive_bytes": package_manifest["archive_bytes"],
                 "file_count": package_manifest["file_count"],
                 "raw_bytes": package_manifest["raw_bytes"],
@@ -629,7 +626,6 @@ def _write_catalog(root: Path) -> None:
         package_entries,
         player_host={
             "executable": "Balance.exe",
-            "sha256": hashlib.sha256((root / "Balance.exe").read_bytes()).hexdigest(),
             "identity": "nuitka-player-host",
         },
         package_records=package_records,
@@ -821,10 +817,6 @@ def test_audit_accepts_minimal_bootstrap_native_closure(tmp_path: Path):
     assert manifest["audit"]["bootstrap_payload_gaps"] == []
     assert manifest["runtime_native_surface"]["gaps"] == []
     assert "Infernux/lib/zlib.dll" not in manifest["runtime_native_surface"]["required"]
-    assert not (
-        RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES
-        & set(manifest["runtime_native_surface"]["required"])
-    )
     assert manifest["audit"]["duplicate_payload_groups"] == []
     catalog = json.loads(
         (
@@ -888,28 +880,28 @@ def test_audit_tracks_zlib_only_when_present_in_runtime_closure(tmp_path: Path):
     assert manifest["runtime_native_surface"]["gaps"] == []
 
 
-def test_audit_rejects_legacy_dynamic_shader_compiler_libraries(tmp_path: Path):
+def test_audit_rejects_incomplete_current_native_closure(tmp_path: Path):
     root = _valid_player(tmp_path)
     data = root / "Balance_Data"
+    runtime_archive = data / "Runtime.inxrt"
+    removed = sorted(RUNTIME_REQUIRED_NATIVE_FILES)[0]
     runtime_sources = []
-    for index, relative in enumerate(sorted(RUNTIME_REQUIRED_NATIVE_FILES)):
-        native_source = tmp_path / f"required-static-shader-case-{index}.bin"
-        native_source.write_bytes(relative.encode("ascii"))
-        runtime_sources.append((relative, native_source))
-    for index, relative in enumerate(sorted(RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES)):
-        legacy_source = tmp_path / f"legacy-shader-dll-{index}.bin"
-        legacy_source.write_bytes(relative.encode("ascii"))
-        runtime_sources.append((relative, legacy_source))
-    write_pack(runtime_sources, data / "Runtime.inxrt")
+    for index, entry in enumerate(read_manifest(runtime_archive)["files"]):
+        if entry["path"] == removed:
+            continue
+        source = tmp_path / f"current-runtime-{index}.bin"
+        source.write_bytes(read_entry(runtime_archive, entry["path"]))
+        runtime_sources.append((entry["path"], source))
+    write_pack(runtime_sources, runtime_archive)
     _write_catalog(root)
 
-    with pytest.raises(RuntimeError, match="legacy shader compiler DLL"):
+    with pytest.raises(RuntimeError, match="missing required runtime native file"):
         audit_player_package(root, write_manifest=False)
 
 
 def test_audit_rejects_full_engine_bridge_at_player_root(tmp_path: Path):
     root = _valid_player(tmp_path)
-    (root / "_Infernux.pyd").write_bytes(b"legacy full bridge")
+    (root / "_Infernux.pyd").write_bytes(b"misplaced full bridge")
 
     with pytest.raises(RuntimeError, match="bootstrap_surface_gaps"):
         audit_player_package(root, write_manifest=False)
@@ -959,22 +951,22 @@ def test_audit_rejects_missing_runtime_catalog(tmp_path: Path):
         audit_player_package(root, write_manifest=False)
 
 
-def test_audit_rejects_tampered_runtime_catalog(tmp_path: Path):
+def test_audit_rejects_unknown_runtime_catalog_artifact_field(tmp_path: Path):
     root = _valid_player(tmp_path)
     catalog_path = root / "Balance_Data" / "Library" / "RuntimeAssetCatalog.json"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog["artifacts"][0]["content_sha256"] = "0" * 64
+    catalog["artifacts"][0]["unexpected"] = True
     catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="library_artifact_gap"):
         audit_player_package(root, write_manifest=False)
 
 
-def test_audit_rejects_tampered_runtime_catalog_package_summary(tmp_path: Path):
+def test_audit_rejects_unknown_runtime_catalog_package_field(tmp_path: Path):
     root = _valid_player(tmp_path)
     catalog_path = root / "Balance_Data" / "Library" / "RuntimeAssetCatalog.json"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog["packages"][0]["archive_sha256"] = "0" * 64
+    catalog["packages"][0]["unexpected"] = True
     catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="library_artifact_gap"):
@@ -1012,28 +1004,12 @@ def test_audit_rejects_duplicate_native_payload(tmp_path: Path):
         audit_player_package(root, write_manifest=False)
 
 
-def test_audit_rejects_legacy_zip(tmp_path: Path):
-    root = _valid_player(tmp_path)
-    (root / "Balance_Data" / "legacy.zip").write_bytes(b"PK\x03\x04legacy")
-
-    with pytest.raises(RuntimeError, match="legacy_zip_files"):
-        audit_player_package(root, write_manifest=False)
-
-
-def test_audit_rejects_legacy_inxpack(tmp_path: Path):
-    root = _valid_player(tmp_path)
-    (root / "Balance_Data" / "legacy.inxpack").write_bytes(b"old")
-
-    with pytest.raises(RuntimeError, match="legacy_inxpack_files"):
-        audit_player_package(root, write_manifest=False)
-
-
-def test_audit_rejects_legacy_data_directory(tmp_path: Path):
+def test_audit_rejects_noncanonical_data_directory(tmp_path: Path):
     root = _valid_player(tmp_path)
     (root / "Data").mkdir()
     (root / "Balance_Data").rename(root / "Data" / "nested")
 
-    with pytest.raises(RuntimeError, match="legacy Data"):
+    with pytest.raises(RuntimeError, match="expected exactly one"):
         audit_player_package(root, write_manifest=False)
 
 
@@ -1115,9 +1091,9 @@ def test_audit_rejects_uncontrolled_runtime_shader_path(tmp_path: Path):
 
 def test_audit_rejects_multiple_player_entry_points(tmp_path: Path):
     root = _valid_player(tmp_path)
-    (root / "LegacyPlayer.exe").write_bytes(b"legacy entry")
+    (root / "SecondPlayer.exe").write_bytes(b"second entry")
 
-    with pytest.raises(RuntimeError, match="legacy_dual_entry_point"):
+    with pytest.raises(RuntimeError, match="forbidden_files"):
         audit_player_package(root, write_manifest=False)
 
 

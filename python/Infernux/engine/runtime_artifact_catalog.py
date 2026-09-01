@@ -21,7 +21,6 @@ from .path_utils import relative_path, resolved_path
 
 
 CATALOG_SCHEMA = "infernux.runtime_asset_catalog"
-CATALOG_VERSION = 1
 # Windows FILETIME is measured in 100 ns ticks since 1601-01-01 UTC.
 WINDOWS_FILETIME_EPOCH_OFFSET_TICKS = 116444736000000000
 
@@ -53,13 +52,14 @@ RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
 _AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
 _DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
 _DIRECT_MODEL_SUFFIXES = {".fbx", ".obj", ".gltf", ".glb", ".dae"}
-_ARTIFACT_SUFFIXES = {
-    ".inxtex",
-    ".inxmesh",
-    ".inxskin",
-    ".inxparticle",
-    ".inxeffect",
+_BINARY_ARTIFACT_MAGIC = {
+    ".inxtex": b"INXTEXTURE",
+    ".inxmesh": b"INXMESHART",
+    ".inxskin": b"INXSKINAR",
 }
+_ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_MAGIC) | frozenset(
+    {".inxparticle", ".inxeffect"}
+)
 
 # These reasons describe the Library artifact that a source type must produce.
 # They remain part of the build diagnostics, but no longer authorize a direct
@@ -296,14 +296,22 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
         raw = artifact.read_bytes()
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeArtifactError(f"Library artifact is unreadable: {artifact}") from exc
-    if suffix not in _ARTIFACT_SUFFIXES or len(raw) < 18:
+    magic = _BINARY_ARTIFACT_MAGIC.get(suffix)
+    if magic is None or len(raw) < len(magic) + 8:
         raise RuntimeArtifactError(f"unsupported or truncated Library artifact: {artifact}")
-    if raw[10:14] != b"\x04\x03\x02\x01":
+    if not raw.startswith(magic):
+        raise RuntimeArtifactError(f"Library artifact has an invalid header: {artifact}")
+    marker_offset = len(magic)
+    if raw[marker_offset : marker_offset + 4] != b"\x04\x03\x02\x01":
         raise RuntimeArtifactError(f"Library artifact has an invalid endian marker: {artifact}")
-    hash_size = int.from_bytes(raw[14:18], "little", signed=False)
-    if hash_size <= 0 or 18 + hash_size > len(raw):
+    hash_size_offset = marker_offset + 4
+    hash_offset = hash_size_offset + 4
+    hash_size = int.from_bytes(
+        raw[hash_size_offset:hash_offset], "little", signed=False
+    )
+    if hash_size <= 0 or hash_offset + hash_size > len(raw):
         raise RuntimeArtifactError(f"Library artifact has an invalid source hash: {artifact}")
-    value = raw[18 : 18 + hash_size].decode("ascii", errors="ignore")
+    value = raw[hash_offset : hash_offset + hash_size].decode("ascii", errors="ignore")
     if len(value) != hash_size or any(character not in "0123456789abcdefABCDEF" for character in value):
         raise RuntimeArtifactError(f"Library artifact has no current source hash: {artifact}")
     return value
@@ -628,9 +636,10 @@ def build_catalog(
 ) -> dict[str, Any]:
     """Build a deterministic catalog from native package TOC entries.
 
-    Each item must contain ``package``, ``runtime_path``, ``sha256`` and
-    ``bytes``.  ``payload`` is optional and is used only to derive dependency
-    IDs; it is never copied into the catalog.
+    Each item must contain ``package``, ``runtime_path`` and ``bytes``.
+    ``payload`` is optional and is used only to derive dependency IDs; it is
+    never copied into the catalog. Package and entry hashes remain owned by the
+    native package format and are deliberately not duplicated here.
     """
 
     prepared: list[dict[str, Any]] = []
@@ -655,7 +664,6 @@ def build_catalog(
             "payload_kind": payload_kind_for(logical_type),
             "package": package,
             "runtime_path": runtime_path,
-            "content_sha256": str(item["sha256"]).lower(),
             "content_bytes": int(item["bytes"]),
             "dependencies": [],
             "unresolved_dependencies": [],
@@ -783,7 +791,6 @@ def build_catalog(
     artifacts = sorted(prepared, key=lambda value: value["runtime_artifact_id"])
     return {
         "$schema": CATALOG_SCHEMA,
-        "catalog_version": CATALOG_VERSION,
         "player_host": player_host,
         "packages": sorted(package_records, key=lambda value: value["path"]),
         "artifacts": artifacts,
@@ -792,7 +799,6 @@ def build_catalog(
 
 __all__ = [
     "CATALOG_SCHEMA",
-    "CATALOG_VERSION",
     "build_catalog",
     "artifact_fingerprint",
     "artifact_source_hash",

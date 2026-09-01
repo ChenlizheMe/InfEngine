@@ -16,7 +16,6 @@ No undo, no selection, no hierarchy, no inspector, no docking layout.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -143,10 +142,7 @@ class PlayerBootstrap:
             "Player.inxmanifest",
         )
         if not os.path.isfile(manifest_path):
-            raise RuntimeError(
-                "Player.inxmanifest is missing; legacy Player runtime manifests "
-                "are not supported"
-            )
+            raise RuntimeError("Player.inxmanifest is required")
         try:
             with open(manifest_path, "r", encoding="utf-8") as stream:
                 manifest = json.load(stream)
@@ -180,7 +176,6 @@ class PlayerBootstrap:
         from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
         from Infernux.engine.runtime_artifact_catalog import (
             CATALOG_SCHEMA,
-            CATALOG_VERSION,
             runtime_artifact_id,
         )
 
@@ -195,10 +190,12 @@ class PlayerBootstrap:
                 catalog = json.load(stream)
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Runtime asset catalog is unreadable: {catalog_path}") from exc
-        if catalog.get("$schema") != CATALOG_SCHEMA:
+        if (
+            not isinstance(catalog, dict)
+            or catalog.get("$schema") != CATALOG_SCHEMA
+            or set(catalog) != {"$schema", "player_host", "packages", "artifacts"}
+        ):
             raise RuntimeError("Unsupported runtime asset catalog schema")
-        if catalog.get("catalog_version") != CATALOG_VERSION:
-            raise RuntimeError("Unsupported runtime asset catalog version")
 
         packages = catalog.get("packages")
         artifacts = catalog.get("artifacts")
@@ -207,20 +204,23 @@ class PlayerBootstrap:
         for package in packages:
             if not isinstance(package, dict):
                 raise RuntimeError("Runtime asset catalog contains an invalid package entry")
+            if set(package) != {
+                "path", "archive_bytes", "file_count", "raw_bytes", "stored_bytes", "codec"
+            }:
+                raise RuntimeError("Runtime asset catalog package uses an unsupported schema")
             package_path = self._catalog_path(required_root, package.get("path"))
             if not package_path or not os.path.isfile(package_path):
                 raise RuntimeError("Runtime asset catalog references a missing package")
-            validated = self._validated_archive_summary(str(package.get("path", "")))
-            if validated is None:
+            validated_bytes = self._boot_validated_archive_bytes(
+                str(package.get("path", ""))
+            )
+            if validated_bytes is None:
                 raise RuntimeError(
                     "Runtime asset catalog package has no boot-validated native manifest: "
                     + str(package.get("path", ""))
                 )
-            validated_hash, validated_bytes = validated
             if int(package.get("archive_bytes", -1)) != validated_bytes:
                 raise RuntimeError("Runtime asset catalog package size disagrees with native manifest")
-            if str(package.get("archive_sha256", "")).casefold() != validated_hash:
-                raise RuntimeError("Runtime asset catalog package checksum disagrees with native manifest")
             if validated_bytes != os.path.getsize(package_path):
                 raise RuntimeError("Runtime asset catalog package size mismatch")
 
@@ -228,6 +228,16 @@ class PlayerBootstrap:
         for artifact in artifacts:
             if not isinstance(artifact, dict):
                 raise RuntimeError("Runtime asset catalog contains an invalid artifact entry")
+            allowed_artifact_fields = {
+                "runtime_artifact_id", "logical_type", "payload_kind", "package",
+                "runtime_path", "content_bytes", "dependencies",
+                "unresolved_dependencies",
+            }
+            if frozenset(artifact) not in {
+                frozenset(allowed_artifact_fields),
+                frozenset(allowed_artifact_fields | {"source_asset", "asset_guid"}),
+            }:
+                raise RuntimeError("Runtime asset catalog artifact uses an unsupported schema")
             artifact_id = artifact.get("runtime_artifact_id")
             package = artifact.get("package")
             runtime_path = artifact.get("runtime_path")
@@ -242,9 +252,6 @@ class PlayerBootstrap:
             if asset_guid is not None:
                 if not isinstance(asset_guid, str) or not asset_guid:
                     raise RuntimeError("Runtime asset catalog contains an invalid asset GUID")
-            digest = str(artifact.get("content_sha256", ""))
-            if len(digest) != 64 or any(char not in "0123456789abcdefABCDEF" for char in digest):
-                raise RuntimeError("Runtime asset catalog contains an invalid artifact checksum")
         for artifact in artifacts:
             for dependency in artifact.get("dependencies", []):
                 if dependency not in artifact_ids:
@@ -261,7 +268,7 @@ class PlayerBootstrap:
         if (
             not isinstance(asset_records, dict)
             or asset_records.get("$schema") != "infernux.runtime_asset_records"
-            or asset_records.get("records_version") != 2
+            or set(asset_records) != {"$schema", "entries"}
             or not isinstance(asset_records.get("entries"), list)
         ):
             raise RuntimeError("Player runtime asset records use an unsupported schema")
@@ -333,31 +340,20 @@ class PlayerBootstrap:
         )
 
     @staticmethod
-    def _sha256_file(path: str) -> str:
-        digest = hashlib.sha256()
-        with open(path, "rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
-    @staticmethod
-    def _validated_archive_summary(package_path: str) -> Optional[tuple[str, int]]:
-        """Read the summary produced by the boot-time native manifest pass."""
+    def _boot_validated_archive_bytes(package_path: str) -> Optional[int]:
+        """Read the package size produced by the boot-time native manifest pass."""
 
         from Infernux.engine.runtime_artifact_catalog import package_kind
 
         kind = package_kind(package_path).upper()
-        digest = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_SHA256", "").casefold()
         raw_bytes = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_BYTES", "")
         try:
             archive_bytes = int(raw_bytes)
         except (TypeError, ValueError):
             return None
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            return None
         if archive_bytes < 0:
             return None
-        return digest, archive_bytes
+        return archive_bytes
 
     @staticmethod
     def _catalog_path(data_root: str, value: object) -> Optional[str]:

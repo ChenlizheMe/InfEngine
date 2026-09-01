@@ -1,9 +1,9 @@
 """Strict audit and manifest generation for exported Player products.
 
 The audit is deliberately the last gate of the packaging pipeline.  It only
-recognises the current native InxPack reader and the final single-entry layout;
-ZIP, LZMA, the former ``.inxpack`` files, source files and metadata are not
-compatibility cases and are rejected.
+recognises the current native InxPack reader and the final single-entry layout.
+Unrecognised containers, source files and metadata are rejected as unsupported
+payloads; the audit does not classify or migrate historical formats.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from .path_utils import resolved_path
 from .player_package_native import extract_pack, read_entry, read_manifest
 from .player_service_graph import (
     PLAYER_MANIFEST_SCHEMA,
-    PLAYER_MANIFEST_VERSION,
     RuntimeFeatureSet,
     RuntimeFlavor,
     RuntimeProductManifest,
@@ -34,7 +33,6 @@ from .player_service_graph import (
 )
 from .runtime_artifact_catalog import (
     CATALOG_SCHEMA,
-    CATALOG_VERSION,
     RUNTIME_ARTIFACT_REASONS,
     RUNTIME_AUTHORING_DOCUMENT_SUFFIXES,
     RUNTIME_DOCUMENT_PAYLOAD_KINDS,
@@ -51,6 +49,7 @@ from .python_abi import (
     PYTHON_VERSION,
     WINDOWS_PYTHON_DLL,
     is_windows_libffi_dll,
+    player_native_library_filenames,
 )
 
 
@@ -68,22 +67,7 @@ BOOTSTRAP_NATIVE_ROOT_ALLOWLIST: dict[str, dict[str, str]] = {}
 if sys.platform == "win32":
     RUNTIME_REQUIRED_NATIVE_FILES = frozenset({
         "Infernux/lib/_Infernux.pyd",
-        "Infernux/lib/InfernuxFoundation.dll",
-        "Infernux/lib/InfernuxParticleRuntime.dll",
-        "Infernux/lib/InfernuxRenderCore.dll",
-        "Infernux/lib/InfernuxRendererRuntime.dll",
-        "Infernux/lib/InfernuxShaderCompiler.dll",
-        "Infernux/lib/InfernuxVulkanBackend.dll",
-        "Infernux/lib/assimp-vc143-mt.dll",
-        "Infernux/lib/Jolt.dll",
-        "Infernux/lib/SDL3.dll",
-    })
-    RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset({
-        "Infernux/lib/InfernuxRuntime.dll",
-        "Infernux/lib/SPIRV.dll",
-        "Infernux/lib/SPVRemapper.dll",
-        "Infernux/lib/glslang-default-resource-limits.dll",
-        "Infernux/lib/glslang.dll",
+        *(f"Infernux/lib/{name}" for name in player_native_library_filenames()),
     })
     RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/zlib.dll"})
     BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
@@ -99,27 +83,12 @@ if sys.platform == "win32":
 else:
     RUNTIME_REQUIRED_NATIVE_FILES = frozenset({
         "Infernux/lib/_Infernux.so",
-        "Infernux/lib/libInfernuxFoundation.so",
-        "Infernux/lib/libInfernuxParticleRuntime.so",
-        "Infernux/lib/libInfernuxRenderCore.so",
-        "Infernux/lib/libInfernuxRendererRuntime.so",
-        "Infernux/lib/libInfernuxShaderCompiler.so",
-        "Infernux/lib/libInfernuxVulkanBackend.so",
-        "Infernux/lib/libassimp.so",
-        "Infernux/lib/libJolt.so",
-        "Infernux/lib/libSDL3.so",
-    })
-    RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset({
-        "Infernux/lib/libInfernuxRuntime.so",
-        "Infernux/lib/libSPIRV.so",
-        "Infernux/lib/libSPVRemapper.so",
-        "Infernux/lib/libglslang-default-resource-limits.so",
-        "Infernux/lib/libglslang.so",
+        *(f"Infernux/lib/{name}" for name in player_native_library_filenames()),
     })
     RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/libz.so"})
     BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
         BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
-        "Infernux/lib/libInfernuxFoundation.so",
+        "libInfernuxFoundation.so",
         "stdlib/encodings/__init__.pyc",
         "stdlib/encodings/aliases.pyc",
         "stdlib/encodings/utf_8.pyc",
@@ -240,11 +209,6 @@ def _data_root(package_root: Path, executable_stem: str | None = None) -> Path:
         path for path in package_root.glob("*_Data") if path.is_dir()
     )
     if len(candidates) != 1:
-        legacy = package_root / "Data"
-        if legacy.is_dir():
-            raise RuntimeError(
-                "Player layout is incomplete: expected <Game>_Data, found legacy Data"
-            )
         raise RuntimeError(
             "Player layout is incomplete: expected exactly one <Game>_Data directory"
         )
@@ -370,7 +334,9 @@ def _archive_entry_records(
     archive_path: Path,
     relative_archive: str,
     *,
-    hashes: defaultdict[str, list[str]],
+    payload_candidates: defaultdict[
+        int, list[tuple[str, Path | None, str | None]]
+    ],
     archive_entries: list[dict[str, object]],
     forbidden: list[str],
     author_sources: list[str],
@@ -457,7 +423,7 @@ def _archive_entry_records(
         archive_entries.append(
             {"path": entry_relative, "bytes": entry_bytes, "sha256": entry_hash}
         )
-        hashes[entry_hash].append(entry_relative)
+        payload_candidates[entry_bytes].append((entry_relative, None, entry_hash))
         entry_suffix = Path(entry_name).suffix.casefold()
 
         payload = None
@@ -640,6 +606,9 @@ def audit_player_package(
 
     files: list[dict[str, object]] = []
     hashes: defaultdict[str, list[str]] = defaultdict(list)
+    payload_candidates: defaultdict[
+        int, list[tuple[str, Path | None, str | None]]
+    ] = defaultdict(list)
     forbidden: list[str] = []
     author_sources: list[str] = []
     meta_files: list[str] = []
@@ -652,8 +621,6 @@ def audit_player_package(
     editor_i18n_files: list[str] = []
     data_surface_gaps: list[str] = []
     archive_entries: list[dict[str, object]] = []
-    legacy_zips: list[str] = []
-    legacy_inxpack: list[str] = []
     archive_manifests: dict[str, dict[str, object]] = {}
     allowed_data_files = expected | optional
 
@@ -668,11 +635,10 @@ def audit_player_package(
         if relative.casefold().startswith(EDITOR_I18N_PREFIX.casefold()):
             editor_i18n_files.append(relative)
             forbidden.append(f"{relative}: Editor i18n data is not a Player payload")
-        digest = _sha256(path)
         size = path.stat().st_size
         suffix = path.suffix.casefold()
-        hashes[digest].append(relative)
-        files.append({"path": relative, "bytes": size, "sha256": digest})
+        payload_candidates[size].append((relative, path, None))
+        files.append({"path": relative, "bytes": size})
         if suffix in NATIVE_SUFFIXES:
             native_files.append(relative)
         if suffix == ".meta":
@@ -693,11 +659,6 @@ def audit_player_package(
             project_setting = relative[len(f"{data_relative}/") :]
             if project_setting not in PLAYER_RUNTIME_PROJECT_SETTINGS:
                 unknown_author_documents.append(relative)
-        if suffix == ".zip":
-            legacy_zips.append(relative)
-        if suffix == ".inxpack":
-            legacy_inxpack.append(relative)
-
         expected_here = relative in expected or relative in optional
         if suffix in NATIVE_ARCHIVE_SUFFIXES:
             if not expected_here:
@@ -706,7 +667,7 @@ def audit_player_package(
                 archive_manifest = _archive_entry_records(
                     path,
                     relative,
-                    hashes=hashes,
+                    payload_candidates=payload_candidates,
                     archive_entries=archive_entries,
                     forbidden=forbidden,
                     author_sources=author_sources,
@@ -720,11 +681,26 @@ def audit_player_package(
                 )
                 if archive_manifest is not None:
                     archive_manifests[relative] = archive_manifest
-        elif suffix in {".zip", ".inxpack"}:
-            forbidden.append(f"{relative}: legacy container is not supported")
         elif suffix in TEXT_SUFFIXES:
             if _contains_absolute_author_path(_read_text(path)):
                 absolute_paths.append(relative)
+
+    # Duplicate detection needs content hashes only when at least two payloads
+    # have the same byte count. Unique-sized files cannot be byte-identical, so
+    # hashing every Player file would add a complete second package scan without
+    # strengthening the audit.
+    for candidates in payload_candidates.values():
+        if len(candidates) < 2:
+            continue
+        for relative, payload_path, known_digest in candidates:
+            digest = known_digest
+            if digest is None:
+                if payload_path is None:
+                    raise RuntimeError(
+                        f"Player audit has no payload for duplicate candidate: {relative}"
+                    )
+                digest = _sha256(payload_path)
+            hashes[digest].append(relative)
 
     for archive_entry in archive_entries:
         archive_path, entry_path = str(archive_entry["path"]).split("::", 1)
@@ -761,7 +737,7 @@ def audit_player_package(
     expected_foundation_archive_paths = {
         (
             f"{data_relative}/Bootstrap.inxrt::"
-            f"Infernux/lib/{foundation_name}"
+            f"{foundation_name if sys.platform.startswith('linux') else f'Infernux/lib/{foundation_name}'}"
         ).casefold(),
         (
             f"{data_relative}/Runtime.inxrt::"
@@ -937,13 +913,6 @@ def audit_player_package(
             "Parallel.inxmod presence disagrees with RuntimeManifest features"
         )
     runtime_payload_gap.extend(runtime_contract_gaps)
-    runtime_payload_gap.extend(
-        f"legacy shader compiler DLL must not be packaged after static linking: "
-        f"{runtime_entries_by_casefold[legacy.casefold()]}"
-        for legacy in sorted(RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES)
-        if legacy.casefold() in runtime_entries_by_casefold
-    )
-
     bootstrap_prefix = f"{data_relative}/Bootstrap.inxrt::"
     bootstrap_entry_paths = {
         str(entry["path"])[len(bootstrap_prefix) :]
@@ -1044,7 +1013,6 @@ def audit_player_package(
     library_artifact_gap: list[str] = []
     catalog_path = data_root / "Library" / "RuntimeAssetCatalog.json"
     catalog: dict[str, object] = {}
-    catalog_sha256 = ""
     catalog_artifacts: list[dict[str, object]] = []
     catalog_packages: list[dict[str, object]] = []
     if not catalog_path.is_file():
@@ -1052,16 +1020,14 @@ def audit_player_package(
     else:
         try:
             catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-            catalog_sha256 = _sha256(catalog_path)
         except (OSError, json.JSONDecodeError):
             catalog = {}
-        if catalog.get("$schema") != CATALOG_SCHEMA:
+        if (
+            catalog.get("$schema") != CATALOG_SCHEMA
+            or set(catalog) != {"$schema", "player_host", "packages", "artifacts"}
+        ):
             library_artifact_gap.append(
                 "Library/RuntimeAssetCatalog.json has no current catalog schema"
-            )
-        if catalog.get("catalog_version") != CATALOG_VERSION:
-            library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no current catalog version"
             )
         raw_packages = catalog.get("packages", [])
         if not isinstance(raw_packages, list):
@@ -1106,7 +1072,6 @@ def audit_player_package(
             "payload_kind": payload_kind_for(logical_type_for_path(entry_name)),
             "package": archive_name,
             "runtime_path": entry_name,
-            "content_sha256": str(archive_entry["sha256"]).lower(),
             "content_bytes": int(archive_entry["bytes"]),
         }
     actual_direct_assets = sorted(
@@ -1124,7 +1089,6 @@ def audit_player_package(
     actual_packages = {
         path: {
             "path": path,
-            "archive_sha256": str(manifest.get("archive_sha256", "")).lower(),
             "archive_bytes": manifest.get("archive_bytes"),
             "file_count": manifest.get("file_count"),
             "raw_bytes": manifest.get("raw_bytes"),
@@ -1152,8 +1116,13 @@ def audit_player_package(
         actual_package = catalog_packages_by_path.get(package_path)
         if actual_package is None:
             continue
+        if set(actual_package) != {
+            "path", "archive_bytes", "file_count", "raw_bytes", "stored_bytes", "codec"
+        }:
+            library_artifact_gap.append(
+                f"catalog package does not match the current schema: {package_path}"
+            )
         for field in (
-            "archive_sha256",
             "archive_bytes",
             "file_count",
             "raw_bytes",
@@ -1181,11 +1150,22 @@ def audit_player_package(
         if artifact_id in catalog_by_id:
             library_artifact_gap.append(f"duplicate catalog artifact id: {artifact_id}")
         catalog_by_id[artifact_id] = artifact
+        allowed_artifact_fields = {
+            "runtime_artifact_id", "logical_type", "payload_kind", "package",
+            "runtime_path", "content_bytes", "dependencies", "unresolved_dependencies",
+        }
+        if frozenset(artifact) not in {
+            frozenset(allowed_artifact_fields),
+            frozenset(allowed_artifact_fields | {"source_asset", "asset_guid"}),
+        }:
+            library_artifact_gap.append(
+                f"catalog artifact does not match the current schema: {artifact_id}"
+            )
         expected = actual_artifacts.get(artifact_id)
         if expected is None:
             library_artifact_gap.append(f"catalog artifact is not present in package TOC: {artifact_id}")
             continue
-        for field in ("logical_type", "payload_kind", "package", "runtime_path", "content_sha256", "content_bytes"):
+        for field in ("logical_type", "payload_kind", "package", "runtime_path", "content_bytes"):
             if artifact.get(field) != expected[field]:
                 library_artifact_gap.append(
                     f"catalog artifact field mismatch for {artifact_id}: {field}"
@@ -1235,7 +1215,7 @@ def audit_player_package(
     raw_asset_records = runtime_asset_records.get("entries", [])
     if (
         runtime_asset_records.get("$schema") != "infernux.runtime_asset_records"
-        or runtime_asset_records.get("records_version") != 2
+        or set(runtime_asset_records) != {"$schema", "entries"}
         or not isinstance(raw_asset_records, list)
     ):
         library_artifact_gap.append("runtime asset records use an unsupported schema")
@@ -1421,8 +1401,6 @@ def audit_player_package(
         or meta_files
         or absolute_paths
         or duplicate_payloads
-        or legacy_zips
-        or legacy_inxpack
         or hidden_executables
         or authoring_tree_files
         or unknown_author_documents
@@ -1441,7 +1419,6 @@ def audit_player_package(
 
     result = {
         "$schema": MANIFEST_SCHEMA,
-        "manifest_version": PLAYER_MANIFEST_VERSION,
         "product": {
             "layout": layout,
             **runtime_contract["product"],
@@ -1463,7 +1440,6 @@ def audit_player_package(
             "reason": "Loaded package-qualified only after Runtime.inxrt extraction and search-path activation",
             "required": sorted(runtime_required_native_files),
             "conditional": sorted(RUNTIME_CONDITIONAL_NATIVE_FILES),
-            "forbidden_legacy": sorted(RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES),
             "gaps": sorted(set(runtime_payload_gap)),
         },
         "services": runtime_contract["services"],
@@ -1491,9 +1467,6 @@ def audit_player_package(
             "duplicate_native_payloads": duplicate_native,
             "duplicate_payload_groups": duplicate_payloads,
             "duplicate_asset_payload_groups": duplicate_asset_payloads,
-            "legacy_zip_files": sorted(set(legacy_zips)),
-            "legacy_inxpack_files": sorted(set(legacy_inxpack)),
-            "legacy_dual_entry_point": len(executables) != 1,
             "hidden_executables": sorted(set(hidden_executables)),
             "authoring_tree_files": sorted(set(authoring_tree_files)),
             "unknown_author_documents": sorted(set(unknown_author_documents)),
@@ -1508,7 +1481,6 @@ def audit_player_package(
             "player_host_gap": sorted(set(player_host_gap)),
             "library_artifact_gap": sorted(set(library_artifact_gap)),
             "layout_gaps": sorted(set(reachability_gaps)),
-            "runtime_asset_catalog_sha256": catalog_sha256,
             "residual_direct_assets": residual_direct_assets,
         },
         "files": {

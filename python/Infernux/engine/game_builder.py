@@ -81,7 +81,6 @@ from Infernux.engine.runtime_artifact_catalog import (
 )
 from Infernux.engine.player_service_graph import (
     PLAYER_MANIFEST_SCHEMA,
-    PLAYER_MANIFEST_VERSION,
     RuntimeFeatureSet,
     RuntimeFlavor,
     player_runtime_contract_sections,
@@ -96,7 +95,6 @@ from Infernux.engine.python_abi import (
 )
 from Infernux.engine.runtime_type_registry import (
     RUNTIME_TYPE_REGISTRY_SCHEMA,
-    RUNTIME_TYPE_REGISTRY_VERSION,
 )
 
 
@@ -1311,7 +1309,7 @@ def _load_player_package_index():
     try:
         with open(_index_path, "r", encoding="ascii") as _stream:
             _header = _stream.readline().strip()
-            if _header != "INFERNUX_PLAYER_PACKAGE_INDEX_V1":
+            if _header != "INFERNUX_PLAYER_PACKAGE_INDEX":
                 return _records
             for _line in _stream:
                 _parts = _line.rstrip("\\r\\n").split("\\t")
@@ -1457,11 +1455,14 @@ _CONTENT_ARCHIVE = os.path.join(_DATA_ROOT, "Content.inxpkg")
 _DATA_DIR = _extract_cached_archive(_CONTENT_ARCHIVE, "content")
 _mark_boot_phase("content_ready")
 _BUILD_MANIFEST_PATH = os.path.join(_DATA_ROOT, "BuildManifest.json")
-if os.path.isfile(_BUILD_MANIFEST_PATH):
-    _copy_player_file_atomic(
-        _BUILD_MANIFEST_PATH,
-        os.path.join(_DATA_DIR, "BuildManifest.json"),
+if not os.path.isfile(_BUILD_MANIFEST_PATH):
+    raise RuntimeError(
+        "Player package has no BuildManifest.json: " + _BUILD_MANIFEST_PATH
     )
+_copy_player_file_atomic(
+    _BUILD_MANIFEST_PATH,
+    os.path.join(_DATA_DIR, "BuildManifest.json"),
+)
 
 _PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")
 _RUNTIME_MODULE_DIR = ""
@@ -1714,10 +1715,7 @@ finally:
             host_name,
         )
         if not os.path.isfile(candidate):
-            raise RuntimeError(
-                f"{host_name} is missing; refusing to package a legacy "
-                "Nuitka executable Player"
-            )
+            raise RuntimeError(f"{host_name} is required for Player packaging")
         return candidate
 
     # ------------------------------------------------------------------
@@ -1807,12 +1805,6 @@ finally:
             raise RuntimeError(
                 "Player layout organization requires the current Data staging directory"
             )
-        if os.path.isdir(os.path.join(final_dir, "RuntimeModules")):
-            raise RuntimeError(
-                "Legacy RuntimeModules layout detected; native module staging must "
-                "produce Parallel.inxmod at the final package root"
-            )
-
         data_name = f"{self.project_name}_Data"
         data_root = os.path.join(final_dir, data_name)
         if os.path.exists(data_root):
@@ -2020,7 +2012,7 @@ finally:
         self._stage_library_runtime_artifacts(data_dir)
         self._stage_library_runtime_documents(data_dir)
 
-        self._copy_reachable_particle_artifacts(data_dir)
+        self._write_particle_runtime_index(data_dir)
         self._copy_particle_data_interface_artifacts(data_dir)
 
         self._filter_shipped_requirements(data_dir)
@@ -2086,11 +2078,12 @@ finally:
 
         runtime_registry = {
             "$schema": document.get("$schema", "infernux.plugin_registry"),
-            "registry_version": document.get("registry_version", 2),
             # Discovery/install sources are Editor concerns. A Player only
             # needs the lifecycle records selected above.
             "packages": [],
             "installed": runtime_records,
+            "python_installs": [],
+            "python_dependencies": [],
         }
         _write_json_atomic(
             os.path.join(data_dir, "ProjectSettings", "InxPlugins.json"),
@@ -2484,11 +2477,31 @@ finally:
                 document = json.load(stream)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Particle RuntimeIndex is unreadable: {index_path}") from exc
-        result = {}
-        for item in document.get("entries", []):
-            if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ("guid", "path_hint", "stable_id")):
+        if (
+            type(document) is not dict
+            or set(document) != {"$schema", "entries"}
+            or document.get("$schema") != "infernux.particle_runtime_index"
+            or type(document.get("entries")) is not list
+        ):
+            raise RuntimeError("Particle RuntimeIndex does not use the current schema")
+        result: dict[str, dict] = {}
+        for item in document["entries"]:
+            if (
+                type(item) is not dict
+                or set(item) != {"guid", "path_hint", "stable_id"}
+                or any(type(item.get(key)) is not str for key in item)
+            ):
                 raise RuntimeError("Particle RuntimeIndex contains an invalid entry")
-            result[item["guid"] or item["path_hint"].replace("\\", "/").casefold()] = item
+            guid = item["guid"].strip()
+            if not guid:
+                raise RuntimeError(
+                    "Particle RuntimeIndex entries must declare a non-empty GUID"
+                )
+            if guid in result:
+                raise RuntimeError(
+                    f"Particle RuntimeIndex contains duplicate GUID: {guid}"
+                )
+            result[guid] = item
         return result
 
     def _stage_library_runtime_artifacts(self, data_dir: str) -> None:
@@ -2515,27 +2528,11 @@ finally:
             elif asset_type == "particlegraph":
                 particle = particle_index.get(guid)
                 if particle is None:
-                    source_relative = relative_path(source_path, self.project_path).replace("\\", "/").casefold()
-                    particle = next(
-                        (
-                            item
-                            for item in particle_index.values()
-                            if str(item.get("path_hint", "")).replace("\\", "/").casefold()
-                            in {source_relative, f"assets/{source_relative}"}
-                            or source_relative.endswith(
-                                str(item.get("path_hint", "")).replace("\\", "/").casefold()
-                            )
-                        ),
-                        None,
+                    raise RuntimeError(
+                        "Particle RuntimeIndex has no entry for imported asset GUID: "
+                        f"{guid}"
                     )
-                stable_id = (
-                    particle["stable_id"]
-                    if particle is not None
-                    else self._particle_source_stable_id(source_path)
-                )
-                artifact_paths.append(
-                    self._particle_artifact_relative(guid, stable_id)
-                )
+                artifact_paths.append(self._particle_artifact_relative(guid))
             if not artifact_paths:
                 if asset_type in {"texture", "mesh", "particlegraph"}:
                     raise RuntimeError(
@@ -2663,14 +2660,8 @@ finally:
             self._runtime_artifact_bindings[runtime_path] = binding
             self._runtime_artifact_source_paths.add(source_relative.casefold())
 
-    def _copy_reachable_particle_artifacts(self, data_dir: str) -> None:
-        """Publish the runtime index for every imported ParticleGraph.
-
-        The historical method name is retained for internal compatibility,
-        but selection follows the same complete-Assets policy as the rest of
-        the Player cook.  A graph selected dynamically by a script must not
-        disappear merely because no serialized scene referenced it.
-        """
+    def _write_particle_runtime_index(self, data_dir: str) -> None:
+        """Publish GUID lookup records for every cooked ParticleGraph."""
         references = self._collect_reachable_particle_artifacts()
         if not references:
             return
@@ -2684,7 +2675,7 @@ finally:
         # This method only preserves the runtime lookup index; it must never
         # copy a stale file around that validation path.
         for item in references:
-            relative = self._particle_artifact_relative(item["guid"], item["stable_id"])
+            relative = self._particle_artifact_relative(item["guid"])
             destination = os.path.join(destination_root, os.path.basename(relative))
             if not os.path.isfile(destination):
                 raise RuntimeError(
@@ -2701,12 +2692,6 @@ finally:
                 "entries": references,
             }
             _write_json_atomic(index_path, payload)
-
-    def _collect_reachable_particle_stable_ids(self) -> set[str]:
-        return {
-            item["stable_id"]
-            for item in self._collect_reachable_particle_artifacts()
-        }
 
     def _collect_reachable_particle_artifacts(self) -> list[dict[str, str]]:
         settings_path = os.path.join(
@@ -2762,43 +2747,31 @@ finally:
             )
 
         entries: list[dict[str, str]] = []
-        guid_index: Optional[dict[str, str]] = None
-        for guid, path_hint in sorted(references):
-            source_path = self._resolve_particle_source_path(path_hint)
-            if source_path is None and guid:
-                if guid_index is None:
-                    guid_index = self._build_asset_guid_index()
-                source_path = guid_index.get(guid)
+        guid_index = self._build_asset_guid_index() if references else {}
+        for guid in sorted({reference_guid for reference_guid, _ in references}):
+            source_path = guid_index.get(guid)
             if source_path is None:
                 raise RuntimeError(
-                    "Build scene references a ParticleGraph that cannot be resolved: "
-                    f"guid={guid!r}, path_hint={path_hint!r}"
+                    "Build scene references a ParticleGraph GUID that is absent from "
+                    f"the current Library/AssetIndex.json: {guid!r}"
                 )
+            path_hint = relative_path(source_path, self.project_path).replace("\\", "/")
             entries.append(
                 {
                     "guid": guid,
-                    "path_hint": path_hint.replace("\\", "/"),
+                    "path_hint": path_hint,
                     "stable_id": self._particle_source_stable_id(source_path),
                 }
             )
         return entries
 
-    def _particle_artifact_relative(self, guid: str, stable_id: str = "") -> str:
+    def _particle_artifact_relative(self, guid: str) -> str:
         from Infernux.particle.artifact import particle_artifact_filename
 
-        candidates = []
-        if guid:
-            candidates.append(
-                f"Library/Artifacts/Particle/{particle_artifact_filename(guid)}"
-            )
-        if stable_id:
-            legacy = f"Library/Artifacts/Particle/{particle_artifact_filename(stable_id)}"
-            if legacy not in candidates:
-                candidates.append(legacy)
-        for relative in candidates:
-            if os.path.isfile(os.path.join(self.project_path, relative)):
-                return relative
-        return candidates[0] if candidates else ""
+        identity = str(guid or "").strip()
+        if not identity:
+            raise RuntimeError("Particle artifact lookup requires a non-empty GUID")
+        return f"Library/Artifacts/Particle/{particle_artifact_filename(identity)}"
 
     @classmethod
     def _collect_particle_asset_references(
@@ -2815,25 +2788,17 @@ finally:
                 path_hint = value.get("path_hint", "")
                 if type(guid) is not str or type(path_hint) is not str:
                     raise RuntimeError("ParticleGraph asset references must use string identity")
-                if guid or path_hint:
-                    references.add((guid, path_hint))
+                guid = guid.strip()
+                if not guid:
+                    raise RuntimeError(
+                        "ParticleGraph asset references must declare a non-empty GUID"
+                    )
+                references.add((guid, path_hint))
             for nested in value.values():
                 cls._collect_particle_asset_references(nested, references)
         elif type(value) is list:
             for nested in value:
                 cls._collect_particle_asset_references(nested, references)
-
-    def _resolve_particle_source_path(self, path_hint: str) -> Optional[str]:
-        if not path_hint:
-            return None
-        candidate = resolved_path(os.path.join(self.project_path, path_hint))
-        try:
-            relative_path(candidate, self.project_path)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"ParticleGraph path escapes the project: {path_hint}"
-            ) from exc
-        return candidate if os.path.isfile(candidate) else None
 
     def _build_asset_guid_index(self) -> dict[str, str]:
         try:
@@ -3099,9 +3064,6 @@ finally:
                     "qualname": node.name,
                     "runtime_path": runtime_path,
                     "lifecycle": lifecycle,
-                    "schema_sha256": hashlib.sha256(
-                        ast.dump(node, include_attributes=False).encode("utf-8")
-                    ).hexdigest(),
                 }
             )
         return records
@@ -3237,7 +3199,6 @@ finally:
             os.path.join(library_dir, self._RUNTIME_TYPE_REGISTRY_FILENAME),
             {
                 "$schema": RUNTIME_TYPE_REGISTRY_SCHEMA,
-                "registry_version": RUNTIME_TYPE_REGISTRY_VERSION,
                 "types": self._runtime_type_records,
             },
         )
@@ -3434,7 +3395,6 @@ finally:
             destination,
             {
                 "$schema": "infernux.runtime_asset_records",
-                "records_version": 2,
                 "entries": records,
             },
         )
@@ -3709,10 +3669,6 @@ finally:
             source_path = os.path.join(final_dir, filename)
             if not os.path.isfile(source_path):
                 continue
-            if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
-                deferred_sources.append(source_path)
-                deferred_source_set.add(source_path)
-                continue
             if not is_native_shared_file(filename):
                 continue
             if source_path in deferred_source_set:
@@ -3752,16 +3708,31 @@ finally:
                     # executable inside Runtime.inxrt.
                     if filename.casefold().endswith(".exe"):
                         continue
-                    if filename.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
-                        continue
                     if is_numpy_package and not self._include_numpy_runtime_file(filename):
                         continue
                     source_path = os.path.join(root, filename)
                     portable_source = relative_path(source_path, final_dir)
+                    if portable_source.startswith(
+                        "Infernux/resources/player_runtime/"
+                    ):
+                        # The platform host is the package's one visible entry
+                        # point.  The wheel keeps a build-time copy here for
+                        # exporters, but Runtime.inxrt must never embed it as a
+                        # second executable (Linux hosts have no .exe suffix).
+                        continue
                     if (
                         portable_source.startswith("Infernux/resources/icons/")
                         and filename.casefold() not in self._PLAYER_RUNTIME_ICON_FILES
                     ):
+                        continue
+                    if (
+                        portable_source.startswith("Infernux/resources/icons/")
+                        and filename.casefold() == "icon.png"
+                        and self.icon_path
+                    ):
+                        # A configured project icon is staged once in Content.inxpkg
+                        # and referenced by BuildManifest. Shipping the generic
+                        # runtime icon as well creates a second window-icon owner.
                         continue
                     files.append((portable_source, source_path))
                     source_bytes += os.path.getsize(source_path)
@@ -3885,7 +3856,11 @@ finally:
                 ctypes_module.name: str(ctypes_module),
                 bootstrap_module.name: str(bootstrap_module),
                 player_module.name: str(player_module),
-                "Infernux/lib/libInfernuxFoundation.so": str(foundation),
+                # _InfernuxBootstrap is linked with RUNPATH=$ORIGIN.  Keep its
+                # bootstrap-only Foundation dependency beside the module in
+                # the extracted warm cache; Runtime.inxrt independently owns
+                # the canonical Infernux/lib copy used after bootstrap.
+                "libInfernuxFoundation.so": str(foundation),
             })
             required.update(
                 {path.name: str(path) for path in (*python_libraries, *ffi_libraries)}
@@ -3897,8 +3872,7 @@ finally:
         for name, source in required.items():
             if not os.path.isfile(source):
                 raise RuntimeError(
-                    f"Bootstrap.inxrt is incomplete: missing {name}; refusing "
-                    "to package a legacy executable Player"
+                    f"Bootstrap.inxrt is incomplete: missing {name}"
                 )
 
         sources = [(name, source) for name, source in sorted(required.items())]
@@ -3929,8 +3903,8 @@ finally:
             on_progress=on_progress,
             cancel_event=cancel_event,
         )
-        for name, source in required.items():
-            if "/" not in name:
+        for source in required.values():
+            if same_path(os.path.dirname(source), final_dir):
                 os.remove(source)
         os.remove(os.path.join(final_dir, BOOTSTRAP_NATIVE_MANIFEST_FILENAME))
         shutil.rmtree(bootstrap_stdlib)
@@ -3948,19 +3922,6 @@ finally:
 
     def _pack_parallel_runtime_archive(self, final_dir: str) -> None:
         """Move the optional native parallel module into the final layout."""
-
-        legacy_paths: list[str] = []
-        for root, directories, filenames in os.walk(final_dir):
-            if "RuntimeModules" in directories:
-                legacy_paths.append(os.path.join(root, "RuntimeModules"))
-            for filename in filenames:
-                if filename.casefold().endswith((".zip", ".inxpack", "-module.json")):
-                    legacy_paths.append(os.path.join(root, filename))
-        if any(os.path.exists(path) for path in legacy_paths):
-            raise RuntimeError(
-                "Legacy runtime module payload detected; rebuild the optional "
-                "module with the native Parallel.inxmod path"
-            )
 
         source = os.path.join(final_dir, self._PARALLEL_ARCHIVE_FILENAME)
         if not os.path.isfile(source):
@@ -4335,6 +4296,7 @@ finally:
             package_paths.append(parallel_path)
 
         packages: list[dict[str, object]] = []
+        catalog_packages: list[dict[str, object]] = []
         package_entries: list[dict[str, object]] = []
         for package_path in package_paths:
             if not os.path.isfile(package_path):
@@ -4354,6 +4316,13 @@ finally:
                     "stored_bytes": package_manifest["stored_bytes"],
                     "codec": package_manifest["codec"],
                 }
+                catalog_packages.append(
+                    {
+                        key: value
+                        for key, value in package_record.items()
+                        if key != "archive_sha256"
+                    }
+                )
                 for entry in package_manifest.get("files", []):
                     entry_path = str(entry["path"]).replace("\\", "/")
                     logical_type = logical_type_for_path(entry_path)
@@ -4412,7 +4381,6 @@ finally:
                 raise RuntimeError(f"Player executable is missing: {executable}")
             player_host = {
                 "executable": relative_path(executable, final_dir),
-                "sha256": self._sha256_file(executable),
                 "identity": "nuitka-player-host",
             }
             product_layout = "single_executable_native_packages"
@@ -4438,7 +4406,7 @@ finally:
         catalog = build_catalog(
             package_entries,
             player_host=player_host,
-            package_records=packages,
+            package_records=catalog_packages,
         )
         catalog_path = os.path.join(library_root, "RuntimeAssetCatalog.json")
         _write_json_atomic(catalog_path, catalog)
@@ -4451,7 +4419,7 @@ finally:
             os.path.basename(str(record["path"])).casefold(): record
             for record in packages
         }
-        package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX_V1"]
+        package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX"]
         for kind, filename in (
             ("runtime", self._RUNTIME_ARCHIVE_FILENAME),
             ("content", self._CONTENT_ARCHIVE_FILENAME),
@@ -4502,7 +4470,6 @@ finally:
         runtime_contract = player_runtime_contract_sections(flavor, features)
         player_manifest = {
             "$schema": PLAYER_MANIFEST_SCHEMA,
-            "manifest_version": PLAYER_MANIFEST_VERSION,
             "product": {
                 "layout": product_layout,
                 **runtime_contract["product"],
@@ -4681,6 +4648,7 @@ finally:
             splash_runtime.append({
                 "type": item.get("type", "image"),
                 "path": built,
+                "layout": item["_layout"],
                 "duration": item.get("duration", 3.0),
                 "fade_in": item.get("fade_in", 0.5),
                 "fade_out": item.get("fade_out", 0.5),
