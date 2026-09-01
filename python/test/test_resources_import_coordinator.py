@@ -94,6 +94,12 @@ def _event(path, *, destination=""):
     return SimpleNamespace(**values)
 
 
+def _run_script_publication_owner(handler: ResourceChangeHandler) -> int:
+    if not handler._frontend_worker_running:
+        handler.process_script_worker()
+    return handler._drain_script_results()
+
+
 def _patch_asset_manager(monkeypatch, calls):
     AssetManager._watcher_echo_suppression.clear()
     AssetManager._meta_write_suppression.clear()
@@ -718,7 +724,7 @@ def test_worker_code_is_forwarded_to_owner_script_publish(monkeypatch, tmp_path)
     handler._publish_valid_script = lambda *args, **kwargs: published.append(kwargs) or True
 
     handler._check_script(str(path), origin="editor")
-    assert handler._publish_script_revisions() == 0
+    assert _run_script_publication_owner(handler) == 0
 
     assert len(published) == 1
     assert published[0]["source"] == path.read_bytes()
@@ -1060,11 +1066,6 @@ def test_script_revision_is_published_only_by_resources_safe_point(monkeypatch, 
 
     path = tmp_path / "controller.py"
     path.write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
 
     registry_calls = []
     monkeypatch.setattr(
@@ -1081,7 +1082,7 @@ def test_script_revision_is_published_only_by_resources_safe_point(monkeypatch, 
     assert registry_calls == []
     assert manager.process_pending_reloads(force=True) == 1
     assert registry_calls == [str(path)]
-    assert handler._script_revision_journal.last_known_good(str(path)) is not None
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is not None
 
 
 def test_frontend_worker_does_not_publish_or_update_graph(monkeypatch, tmp_path):
@@ -1185,7 +1186,7 @@ def test_internal_script_ingress_and_watcher_echo_publish_once(monkeypatch, tmp_
         lambda *_args, **_kwargs: True,
     )
     assert manager.process_pending_reloads(force=True) == 1
-    latest = handler._script_revision_journal.last_known_good(path)
+    latest = handler._script_change_collector.journal.last_known_good(path)
     assert latest is not None
     assert latest.generation == 1
 
@@ -1304,7 +1305,7 @@ def test_failed_source_does_not_advance_published_dependency_graph(
 
     after = handler.dependency_graph.module_for_path(str(helper)).source_hash
     assert after == before
-    assert handler._script_revision_journal.last_known_good(str(helper)) is None
+    assert handler._script_change_collector.journal.last_known_good(str(helper)) is None
 
 
 def test_resource_script_validation_failure_does_not_publish_candidate(
@@ -1340,8 +1341,8 @@ def test_resource_script_validation_failure_does_not_publish_candidate(
     handler.on_modified(_event(path))
 
     assert manager.process_pending_reloads(force=True) == 1
-    assert handler._script_revision_journal.last_known_good(str(path)) is None
-    assert handler._script_revision_journal.diagnostic(str(path)).messages == (
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is None
+    assert handler._script_change_collector.journal.diagnostic(str(path)).messages == (
         "invalid syntax",
     )
 
@@ -1355,12 +1356,6 @@ def test_script_failure_keeps_already_published_registry_entry(monkeypatch, tmp_
     path = tmp_path / "controller.py"
     path.write_text("value = 1\n", encoding="utf-8")
 
-    compiler_errors = []
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: list(compiler_errors),
-    )
     registered = []
     unregistered = []
     monkeypatch.setattr(
@@ -1386,25 +1381,13 @@ def test_script_failure_keeps_already_published_registry_entry(monkeypatch, tmp_
     assert registered == [str(path)]
     assert unregistered == []
 
-    compiler_errors.append(
-        type(
-            "CompilerError",
-            (),
-            {
-                "file_path": str(path),
-                "line_number": 1,
-                "message": "invalid syntax",
-                "__str__": lambda self: "controller.py:1:0: invalid syntax",
-            },
-        )()
-    )
     path.write_text("def broken(:\n", encoding="utf-8")
     handler.on_modified(_event(path))
     manager.process_pending_reloads(force=True)
 
     assert registered == [str(path)]
     assert unregistered == []
-    assert handler._script_revision_journal.last_known_good(str(path)).generation == 1
+    assert handler._script_change_collector.journal.last_known_good(str(path)).generation == 1
 
 
 def test_disk_change_after_check_drops_candidate_before_publish(monkeypatch, tmp_path):
@@ -1415,11 +1398,6 @@ def test_disk_change_after_check_drops_candidate_before_publish(monkeypatch, tmp
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 'A'\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
     published = []
     handler._publish_valid_script = lambda *args, **kwargs: published.append(
         kwargs["source"]
@@ -1427,10 +1405,10 @@ def test_disk_change_after_check_drops_candidate_before_publish(monkeypatch, tmp
 
     handler._check_script(str(path))
     path.write_text("value = 'B'\n", encoding="utf-8")
-    handler._publish_script_revisions()
+    _run_script_publication_owner(handler)
 
     assert published == []
-    assert handler._script_revision_journal.last_known_good(str(path)) is None
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is None
 
 
 def test_publish_exception_does_not_advance_lkg(monkeypatch, tmp_path):
@@ -1441,20 +1419,15 @@ def test_publish_exception_does_not_advance_lkg(monkeypatch, tmp_path):
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
 
     def fail_publish(*_args, **_kwargs):
         raise RuntimeError("publish callback failed")
 
     handler._publish_valid_script = fail_publish
     handler._check_script(str(path))
-    handler._publish_script_revisions()
+    _run_script_publication_owner(handler)
 
-    assert handler._script_revision_journal.last_known_good(str(path)) is None
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is None
 
 
 def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
@@ -1469,11 +1442,6 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 'A'\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
     monkeypatch.setattr(
         "Infernux.components.registry.register_component_script",
         lambda _path, **_kwargs: None,
@@ -1516,17 +1484,17 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     )
 
     handler._check_script(str(path))
-    handler._publish_script_revisions()
-    first_lkg = handler._script_revision_journal.last_known_good(str(path))
+    _run_script_publication_owner(handler)
+    first_lkg = handler._script_change_collector.journal.last_known_good(str(path))
     assert first_lkg is not None
     assert first_lkg.generation == 1
     assert live_body["value"] == "A"
 
     path.write_text("value = 'B'\n", encoding="utf-8")
     handler._check_script(str(path))
-    handler._publish_script_revisions()
+    _run_script_publication_owner(handler)
 
-    current_lkg = handler._script_revision_journal.last_known_good(str(path))
+    current_lkg = handler._script_change_collector.journal.last_known_good(str(path))
     assert current_lkg == first_lkg
     assert live_body["value"] == "A"
 

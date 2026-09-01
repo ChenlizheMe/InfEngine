@@ -1,4 +1,3 @@
-import hashlib
 import os
 import threading
 import time
@@ -28,7 +27,6 @@ from Infernux.engine.script_change_collector import (
     ScriptChangeResult,
 )
 from Infernux.engine.script_dependency_graph import ScriptDependencyGraph
-from Infernux.engine.script_compiler import get_script_compiler
 from Infernux.engine.import_coordinator import (
     AssetFsEvent,
     AssetFsEventKind,
@@ -150,9 +148,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         frontend_wake=None,
     ):
         self._engine = engine
-        # Kept as a compatibility inspection point for existing integrations;
-        # _check_script never invokes it on the owner thread anymore.
-        self._script_compiler = get_script_compiler()
         self._script_change_collector = ScriptChangeCollector()
         self._frontend_wake = frontend_wake
         self._frontend_worker_running = False
@@ -176,11 +171,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._asset_database = engine.get_asset_database()
         if self._asset_database is None:
             raise RuntimeError("ResourceChangeHandler requires an initialized AssetDatabase")
-
-    @property
-    def _script_revision_journal(self):
-        """Read-only compatibility alias for the collector journal."""
-        return self._script_change_collector.journal
 
     @property
     def dependency_graph(self):
@@ -475,10 +465,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 current = source_file.read()
         except OSError:
             return False
-        return (
-            current == result.source
-            and hashlib.sha256(current).hexdigest() == result.content_hash
-        )
+        return current == result.source
 
     def _queue_dependency_changes(self, result: ScriptChangeResult, mutation) -> None:
         """Force affected dependents through the same collector transaction.
@@ -1512,12 +1499,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if state is not None:
                 self._remove_script_transaction(state)
         return change
-
-    def _publish_script_revisions(self) -> int:
-        """Compatibility safe point for callers that do not own a watcher."""
-        if not self._frontend_worker_running:
-            self.process_script_worker()
-        return self._drain_script_results()
 
     def _publish_valid_script(
         self,
