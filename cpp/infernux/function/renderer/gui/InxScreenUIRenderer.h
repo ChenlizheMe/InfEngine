@@ -63,8 +63,7 @@ class InxScreenUIRenderer
      * @param msaaSamples Scene MSAA sample count (e.g. 4x)
      * @return true if successful
      */
-    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples,
-                    bool useDynamicRendering);
+    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples);
 
     void SetRetirementQueue(GpuRetirementQueue *queue)
     {
@@ -148,11 +147,6 @@ class InxScreenUIRenderer
         return m_enabled;
     }
 
-    [[nodiscard]] bool UsesDynamicRendering() const noexcept
-    {
-        return m_useDynamicRendering;
-    }
-
     // ========================================================================
     // Rendering (called from RenderGraph pass callback)
     // ========================================================================
@@ -170,24 +164,11 @@ class InxScreenUIRenderer
      */
     void Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height);
 
-    /**
-     * @brief Get the compatible render pass (for pipeline creation verification)
-     */
-    VkRenderPass GetCompatibleRenderPass() const
-    {
-        return m_renderPass;
-    }
-
   private:
     /**
      * @brief Create Vulkan pipeline objects (shader modules, layouts, pipeline)
      */
     bool CreatePipeline();
-
-    /**
-     * @brief Create a compatible render pass for pipeline creation
-     */
-    bool CreateCompatibleRenderPass();
 
     // Per-list vertex / index buffers (Camera and Overlay each need their
     // own GPU buffers because both Render() calls are recorded into the same
@@ -240,7 +221,6 @@ class InxScreenUIRenderer
     // Formats
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_msaaSamples = VK_SAMPLE_COUNT_1_BIT;
-    bool m_useDynamicRendering = false;
 
     // Pipeline objects
     VkShaderModule m_vertShader = VK_NULL_HANDLE;
@@ -248,7 +228,6 @@ class InxScreenUIRenderer
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
-    VkRenderPass m_renderPass = VK_NULL_HANDLE;
 
     // Font atlas descriptor (points to ImGui's font atlas)
     VkDescriptorSet m_fontDescriptorSet = VK_NULL_HANDLE;

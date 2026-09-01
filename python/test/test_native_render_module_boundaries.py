@@ -598,7 +598,7 @@ def test_runtime_screen_ui_uses_dynamic_rendering_with_msaa_resolve() -> None:
 
     assert "VkPipelineRenderingCreateInfo renderingInfo" in screen_ui
     assert "pipeInfo.renderPass = VK_NULL_HANDLE" in screen_ui
-    assert "m_screenUIRenderer->UsesDynamicRendering()" in scene_graph
+    assert "const bool usesScreenUI" in scene_graph
     assert "builder.UseDynamicRendering();" in scene_graph
     assert "attachment.resolveImageView" in graph_compile
     assert "VK_RESOLVE_MODE_AVERAGE_BIT" in graph_compile

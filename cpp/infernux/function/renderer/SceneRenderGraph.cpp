@@ -4049,9 +4049,7 @@ void SceneRenderGraph::BuildRenderGraph()
             const bool usesShadowRendererList = command && command->type == GraphCommandType::DrawShadowCasters;
             const bool usesVisibleRendererList = command && (command->type == GraphCommandType::DrawRenderers ||
                                                              command->type == GraphCommandType::DrawSkybox);
-            const bool usesDynamicScreenUI = command && command->type == GraphCommandType::DrawScreenUI &&
-                                             m_screenUIRenderer && m_screenUIRenderer->UsesDynamicRendering() &&
-                                             m_renderGraph->SupportsDynamicRendering();
+            const bool usesScreenUI = command && command->type == GraphCommandType::DrawScreenUI && m_screenUIRenderer;
             const auto geometryPassIt = m_pythonMaterialPasses.find(passDesc.name);
             const bool usesDynamicGeometry =
                 geometryPassIt != m_pythonMaterialPasses.end() && geometryPassIt->second.UsesDynamicRendering();
@@ -4296,7 +4294,7 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 // ----- Render area -----
                 builder.SetRenderArea(passWidth, passHeight);
-                if (usesDynamicScreenUI || usesDynamicGeometry || usesDynamicShadow)
+                if (usesScreenUI || usesDynamicGeometry || usesDynamicShadow)
                     builder.UseDynamicRendering();
 
                 // ----- Clear values -----

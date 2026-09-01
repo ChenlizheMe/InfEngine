@@ -4203,13 +4203,9 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         // Create the screen UI renderer for GPU-based 2D UI in the game render graph
         if (!m_screenUIRenderer) {
             m_screenUIRenderer = std::make_unique<InxScreenUIRenderer>();
-            const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice()).IsValid();
-            const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
-                m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled,
-                dynamicCommandsAvailable, false);
             m_screenUIRenderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                            m_gameRenderTarget->GetColorFormat(),
-                                           m_gameRenderTarget->GetMsaaSampleCount(), useDynamicRendering);
+                                           m_gameRenderTarget->GetMsaaSampleCount());
             m_screenUIRenderer->SetRetirementQueue(&m_vkCore->GetRetirementQueue());
             m_screenUIRenderer->SetTextureUsageValidator(
                 [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
@@ -4479,12 +4475,8 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
 
     if (m_gameRenderTarget && (!gameAligned || !materialsAligned)) {
         replacementScreenUI = std::make_unique<InxScreenUIRenderer>();
-        const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice()).IsValid();
-        const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
-            m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled,
-            dynamicCommandsAvailable, false);
         if (!replacementScreenUI->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                             m_gameRenderTarget->GetColorFormat(), vkSamples, useDynamicRendering)) {
+                                             m_gameRenderTarget->GetColorFormat(), vkSamples)) {
             INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
                          "x MSAA; keeping all current resources.");
             return false;

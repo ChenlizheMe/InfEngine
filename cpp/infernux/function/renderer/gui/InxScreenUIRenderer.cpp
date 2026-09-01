@@ -494,7 +494,7 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 // ============================================================================
 
 bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat,
-                                     VkSampleCountFlagBits msaaSamples, bool useDynamicRendering)
+                                     VkSampleCountFlagBits msaaSamples)
 {
     if (m_initialized)
         return true;
@@ -503,13 +503,6 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
     m_allocator = allocator;
     m_colorFormat = colorFormat;
     m_msaaSamples = msaaSamples;
-    m_useDynamicRendering = useDynamicRendering;
-
-    if (!m_useDynamicRendering && !CreateCompatibleRenderPass()) {
-        INXLOG_ERROR("InxScreenUIRenderer: Failed to create compatible render pass");
-        return false;
-    }
-
     if (!CreatePipeline()) {
         INXLOG_ERROR("InxScreenUIRenderer: Failed to create pipeline");
         return false;
@@ -552,8 +545,6 @@ void InxScreenUIRenderer::Destroy()
             vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
         if (m_descriptorSetLayout)
             vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
-        if (m_renderPass)
-            vkDestroyRenderPass(m_device, m_renderPass, nullptr);
         if (m_vertShader)
             vkDestroyShaderModule(m_device, m_vertShader, nullptr);
         if (m_fragShader)
@@ -566,10 +557,8 @@ void InxScreenUIRenderer::Destroy()
     m_pipelineLayout = VK_NULL_HANDLE;
     m_descriptorSetLayout = VK_NULL_HANDLE;
     m_fontDescriptorSet = VK_NULL_HANDLE;
-    m_renderPass = VK_NULL_HANDLE;
     m_vertShader = VK_NULL_HANDLE;
     m_fragShader = VK_NULL_HANDLE;
-    m_useDynamicRendering = false;
     m_device = VK_NULL_HANDLE;
     m_allocator = VK_NULL_HANDLE;
     m_initialized = false;
@@ -873,33 +862,6 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 // Pipeline Creation
 // ============================================================================
 
-bool InxScreenUIRenderer::CreateCompatibleRenderPass()
-{
-    // Create a render pass compatible with the scene MSAA backbuffer.
-    // This is only used for pipeline creation — the actual render pass
-    // is created by the RenderGraph and must be compatible.
-    const VkAttachmentDescription colorAttachment =
-        MakeColorAttachmentDescription(m_colorFormat, m_msaaSamples, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    const VkAttachmentReference colorRef = MakeColorAttachmentReference();
-    const VkSubpassDescription subpass = MakeSingleColorSubpass(colorRef);
-
-    // Subpass dependency must match VkPipelineManager::CreateRenderPass so that
-    // pipelines compiled against this render pass are compatible with the render
-    // graph's actual render passes.
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 1;
-    rpInfo.pAttachments = &colorAttachment;
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    return vkCreateRenderPass(m_device, &rpInfo, nullptr, &m_renderPass) == VK_SUCCESS;
-}
-
 bool InxScreenUIRenderer::CreatePipeline()
 {
     // ---- Shader modules ----
@@ -965,15 +927,11 @@ bool InxScreenUIRenderer::CreatePipeline()
     pipeInfo.pDynamicState = &dynInfo;
     pipeInfo.layout = m_pipelineLayout;
     VkPipelineRenderingCreateInfo renderingInfo{};
-    if (m_useDynamicRendering) {
-        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachmentFormats = &m_colorFormat;
-        pipeInfo.pNext = &renderingInfo;
-        pipeInfo.renderPass = VK_NULL_HANDLE;
-    } else {
-        pipeInfo.renderPass = m_renderPass;
-    }
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachmentFormats = &m_colorFormat;
+    pipeInfo.pNext = &renderingInfo;
+    pipeInfo.renderPass = VK_NULL_HANDLE;
     pipeInfo.subpass = 0;
 
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &m_pipeline) == VK_SUCCESS;
