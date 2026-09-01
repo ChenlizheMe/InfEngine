@@ -947,13 +947,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      residentParticleTelemetry.scheduledSystemCount == 0,
                  "GPU particle resident telemetry is incorrect before scheduling"))
         return false;
-    const auto initialManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(initialManagedEntries.size() == 1 && initialManagedEntries[0].ownerLayerMask == 1u << 4u &&
+    const auto initialManagedEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(initialManagedEntries->size() == 1 && (*initialManagedEntries)[0].ownerLayerMask == 1u << 4u &&
                      !particleSystems.ActiveStateWasPreserved(managedProgram.id),
                  "Initial GPU particle publication reported a preserved state"))
         return false;
-    const auto initialManagedInstances = initialManagedEntries[0].instances;
-    const auto initialManagedIndirect = initialManagedEntries[0].indirectArguments;
+    const auto initialManagedInstances = (*initialManagedEntries)[0].instances;
+    const auto initialManagedIndirect = (*initialManagedEntries)[0].indirectArguments;
     const auto primarySemantics = particleSystems.ActiveOutputSemantics(managedProgram.id, primaryOutput.id);
     if (!Require(primarySemantics && !primarySemantics->receiveSceneLighting && !primarySemantics->receiveShadows &&
                      primarySemantics->sortMode == infernux::particle::ParticleSortMode::FrontToBack,
@@ -1064,12 +1064,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleDeletionQueue.PendingCount() == 1,
                  "Valid GPU particle hot replacement was not published with deferred retirement"))
         return false;
-    const auto preservedManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(preservedManagedEntries.size() == 2 &&
-                     preservedManagedEntries[0].instances == initialManagedInstances &&
-                     preservedManagedEntries[1].instances == initialManagedInstances &&
-                     preservedManagedEntries[0].indirectArguments == initialManagedIndirect &&
-                     preservedManagedEntries[1].indirectArguments == initialManagedIndirect,
+    const auto preservedManagedEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(preservedManagedEntries->size() == 2 &&
+                     (*preservedManagedEntries)[0].instances == initialManagedInstances &&
+                     (*preservedManagedEntries)[1].instances == initialManagedInstances &&
+                     (*preservedManagedEntries)[0].indirectArguments == initialManagedIndirect &&
+                     (*preservedManagedEntries)[1].indirectArguments == initialManagedIndirect,
                  "Compatible GPU particle reload replaced resident simulation buffers"))
         return false;
 
@@ -1170,27 +1170,30 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {managedBatchItem}),
                  "GPU particle reset did not cancel and replace a pending frame request"))
         return false;
-    const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(managedEntries.size() == 2 && managedEntries[0].renderer->RenderQueue() == 3050 &&
-                     managedEntries[1].renderer->RenderQueue() == 3075 &&
-                     managedEntries[0].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
-                     managedEntries[1].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
-                     managedEntries[0].cullProgram && managedEntries[0].cullProgram == managedEntries[1].cullProgram &&
-                     managedEntries[0].sortProgram && managedEntries[0].sortProgram == managedEntries[1].sortProgram &&
-                     managedEntries[0].instances == managedEntries[1].instances &&
-                     managedEntries[0].renderIndices == managedEntries[1].renderIndices &&
-                     managedEntries[0].indirectArguments == managedEntries[1].indirectArguments &&
-                     managedEntries[0].bounds.IsValid() && managedEntries[0].bounds == managedEntries[1].bounds,
+    const auto managedEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(managedEntries->size() == 2 && (*managedEntries)[0].renderer->RenderQueue() == 3050 &&
+                     (*managedEntries)[1].renderer->RenderQueue() == 3075 &&
+                     (*managedEntries)[0].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
+                     (*managedEntries)[1].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
+                     (*managedEntries)[0].cullProgram &&
+                     (*managedEntries)[0].cullProgram == (*managedEntries)[1].cullProgram &&
+                     (*managedEntries)[0].sortProgram &&
+                     (*managedEntries)[0].sortProgram == (*managedEntries)[1].sortProgram &&
+                     (*managedEntries)[0].instances == (*managedEntries)[1].instances &&
+                     (*managedEntries)[0].renderIndices == (*managedEntries)[1].renderIndices &&
+                     (*managedEntries)[0].indirectArguments == (*managedEntries)[1].indirectArguments &&
+                     (*managedEntries)[0].bounds.IsValid() &&
+                     (*managedEntries)[0].bounds == (*managedEntries)[1].bounds,
                  "GPU particle outputs did not share one simulated stream across ordered draw queues"))
         return false;
     primaryOutput.material->SetRenderQueue(3080);
-    const auto liveMaterialEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    const auto liveMaterialEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
     if (!Require(particleSystems.ActiveOutputRenderQueue(managedProgram.id, primaryOutput.id) == 3080 &&
-                     liveMaterialEntries.size() == 2 && liveMaterialEntries[0].id == secondaryOutput.id &&
-                     liveMaterialEntries[1].id == primaryOutput.id,
+                     liveMaterialEntries->size() == 2 && (*liveMaterialEntries)[0].id == secondaryOutput.id &&
+                     (*liveMaterialEntries)[1].id == primaryOutput.id,
                  "GPU particle queue routing did not observe the shared material's live state"))
         return false;
-    const auto managedEntry = managedEntries.front();
+    const auto managedEntry = managedEntries->front();
 
     ShaderReflection computeReflection;
     if (!Require(computeReflection.Reflect(computeCode, VK_SHADER_STAGE_COMPUTE_BIT),
@@ -2151,8 +2154,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return Require(managerSubmit == VK_SUCCESS && managerWait == VK_SUCCESS, failureMessage);
     };
 
-    const auto preMigrationEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    const auto preMigrationInstances = preMigrationEntries.front().instances;
+    const auto preMigrationEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    const auto preMigrationInstances = preMigrationEntries->front().instances;
     managedProgram.artifactRevision = 4;
     managedProgram.capacity = 64;
     infernux::particle::GpuParticleEmitterProgram::StateMigration managerMigration;
@@ -2166,9 +2169,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                 particleSystems.ActiveStateWasPreserved(managedProgram.id) && particleDeletionQueue.PendingCount() == 4,
             "GPU particle manager rejected a layout-migratable revision"))
         return false;
-    const auto migratingEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(migratingEntries.size() == 2 && migratingEntries.front().capacity == 64 &&
-                     migratingEntries.front().instances != preMigrationInstances,
+    const auto migratingEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(migratingEntries->size() == 2 && migratingEntries->front().capacity == 64 &&
+                     migratingEntries->front().instances != preMigrationInstances,
                  "GPU particle manager reused incompatible resident buffers during layout migration"))
         return false;
 

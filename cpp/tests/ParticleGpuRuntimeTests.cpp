@@ -2704,10 +2704,10 @@ int main()
         const auto cachedVisibleEntriesAgain = registry.SnapshotShared(3000, 3200);
         assert(cachedVisibleEntries && cachedVisibleEntriesAgain && cachedVisibleEntries == cachedVisibleEntriesAgain &&
                cachedVisibleEntries->size() == 1);
-        const auto visibleEntries = registry.Snapshot(3000, 3200);
-        assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77 &&
-               visibleEntries[0].ownerLayerMask == 1u << 6u);
-        assert(registry.Snapshot(0, 2999).empty());
+        const auto visibleEntries = registry.SnapshotShared(3000, 3200);
+        assert(visibleEntries->size() == 1 && (*visibleEntries)[0].id == 77 &&
+               (*visibleEntries)[0].ownerLayerMask == 1u << 6u);
+        assert(registry.SnapshotShared(0, 2999)->empty());
 
         // The material queue is intentionally mutable without a registry
         // publication. The cache must observe that live routing state while

@@ -200,9 +200,10 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     }
     std::memset(mapped, 0, static_cast<size_t>(kPickingPixelBytes));
 
-    const auto particleEntries = m_particleDrawRegistry ? m_particleDrawRegistry->Snapshot(0, 5000)
-                                                        : std::vector<particle::GpuParticleDrawEntry>{};
-    if (!particleEntries.empty()) {
+    particle::ParticleGpuDrawRegistry::SnapshotHandle particleEntries;
+    if (m_particleDrawRegistry)
+        particleEntries = m_particleDrawRegistry->SnapshotShared(0, 5000);
+    if (particleEntries && !particleEntries->empty()) {
         VkMemoryBarrier particleBarrier{};
         particleBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         particleBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -281,7 +282,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewMatrix, 0, 5000,
                               "front_to_back", {}, {}, &pickingPass);
-    if (!particleEntries.empty()) {
+    if (particleEntries && !particleEntries->empty()) {
         Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
         if (camera) {
             particle::GpuParticleViewConstants view;
@@ -295,7 +296,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
             vk::VulkanGraphicsCommandContext graphicsContext;
             auto encoder =
                 m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(graphicsContext, commandBuffer);
-            for (const auto &entry : particleEntries) {
+            for (const auto &entry : *particleEntries) {
                 if (!entry.renderer || entry.ownerObjectId == 0)
                     continue;
                 [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(

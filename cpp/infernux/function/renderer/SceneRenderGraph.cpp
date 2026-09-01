@@ -1060,8 +1060,8 @@ void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuff
     auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
     vk::VulkanTransferCommandContext transferContext;
     const auto transfer = device.MakeTransferCommandEncoder(transferContext, commandBuffer);
-    const auto entries =
-        m_particleDrawRegistry->Snapshot(std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max());
+    const auto entries = m_particleDrawRegistry->SnapshotShared(std::numeric_limits<int32_t>::min(),
+                                                                std::numeric_limits<int32_t>::max());
 
     VkMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1080,7 +1080,7 @@ void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuff
         };
 
         std::vector<OutputCapture> captures;
-        for (const auto &entry : entries) {
+        for (const auto &entry : *entries) {
             if (entry.graphInstanceId != request.graphInstanceId)
                 continue;
             const auto culler = m_particleCullers.find(entry.id);
@@ -1863,8 +1863,8 @@ void SceneRenderGraph::RefreshForwardPlusParticleRequirement()
                 command.shaderTarget != ShaderCompileTarget::ForwardPlus) {
                 continue;
             }
-            const auto entries = m_particleDrawRegistry->Snapshot(command.queueMin, command.queueMax);
-            if (std::any_of(entries.begin(), entries.end(),
+            const auto entries = m_particleDrawRegistry->SnapshotShared(command.queueMin, command.queueMax);
+            if (std::any_of(entries->begin(), entries->end(),
                             [](const auto &entry) { return entry.semantics.receiveSceneLighting; })) {
                 m_forwardPlusParticlesRequired = true;
                 return;
@@ -2765,13 +2765,16 @@ void SceneRenderGraph::BuildRenderGraph()
         if (sorter)
             m_vkCore->GetRetirementQueue().Retire([sorter = std::move(sorter)]() mutable { sorter.reset(); });
     };
-    const auto particleSnapshot =
-        m_particleDrawRegistry
-            ? m_particleDrawRegistry->Snapshot(std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max())
-            : std::vector<particle::GpuParticleDrawEntry>{};
+    particle::ParticleGpuDrawRegistry::SnapshotHandle particleSnapshot;
+    if (m_particleDrawRegistry) {
+        particleSnapshot = m_particleDrawRegistry->SnapshotShared(std::numeric_limits<int32_t>::min(),
+                                                                  std::numeric_limits<int32_t>::max());
+    }
+    const particle::ParticleGpuDrawRegistry::SnapshotEntries emptyParticleEntries;
+    const auto &particleEntries = particleSnapshot ? *particleSnapshot : emptyParticleEntries;
     std::unordered_set<uint64_t> activeCullers;
-    activeCullers.reserve(particleSnapshot.size());
-    for (const auto &entry : particleSnapshot) {
+    activeCullers.reserve(particleEntries.size());
+    for (const auto &entry : particleEntries) {
         if (!entry.cullProgram || !entry.cullProgram->IsValid())
             continue;
         activeCullers.insert(entry.id);
@@ -2821,8 +2824,8 @@ void SceneRenderGraph::BuildRenderGraph()
     }
 
     std::unordered_set<uint64_t> activeSorters;
-    activeSorters.reserve(particleSnapshot.size());
-    for (const auto &entry : particleSnapshot) {
+    activeSorters.reserve(particleEntries.size());
+    for (const auto &entry : particleEntries) {
         if (entry.semantics.sortMode == particle::ParticleSortMode::None)
             continue;
         const auto cullerIt = m_particleCullers.find(entry.id);
@@ -2941,7 +2944,7 @@ void SceneRenderGraph::BuildRenderGraph()
         };
         std::unordered_map<uint64_t, ParticleGraphResources> particleGraphResources;
         particleGraphResources.reserve(m_particleCullers.size());
-        for (const auto &entry : particleSnapshot) {
+        for (const auto &entry : particleEntries) {
             const auto cullerIt = m_particleCullers.find(entry.id);
             if (cullerIt == m_particleCullers.end() || !cullerIt->second || !cullerIt->second->IsValid())
                 continue;
@@ -3054,7 +3057,7 @@ void SceneRenderGraph::BuildRenderGraph()
             }
         }
 
-        for (const auto &entry : particleSnapshot) {
+        for (const auto &entry : particleEntries) {
             if (entry.semantics.sortMode == particle::ParticleSortMode::None)
                 continue;
             auto resourcesIt = particleGraphResources.find(entry.id);
@@ -3359,21 +3362,19 @@ void SceneRenderGraph::BuildRenderGraph()
             const bool particleShadowPass = command && command->type == GraphCommandType::DrawShadowCasters &&
                                             command->shaderTarget == ShaderCompileTarget::Shadow;
             if (m_particleDrawRegistry && (particleSurfacePass || particleShadowPass)) {
-                particleEntries = m_particleDrawRegistry->Snapshot(command->queueMin, command->queueMax);
                 const auto particlePassIt = m_pythonMaterialPasses.find(passDesc.name);
-                if (particlePassIt != m_pythonMaterialPasses.end())
+                if (particlePassIt != m_pythonMaterialPasses.end()) {
                     particlePass = particlePassIt->second;
-                else
-                    particleEntries.clear();
-                particleEntries.erase(
-                    std::remove_if(particleEntries.begin(), particleEntries.end(),
-                                   [&](const auto &entry) {
-                                       if (particleShadowPass)
-                                           return !entry.semantics.castShadows || !entry.renderer->CanCastShadows();
-                                       return entry.semantics.sortMode != particle::ParticleSortMode::None &&
-                                              particleGraphResources.find(entry.id) == particleGraphResources.end();
-                                   }),
-                    particleEntries.end());
+                    const auto snapshot = m_particleDrawRegistry->SnapshotShared(command->queueMin, command->queueMax);
+                    particleEntries.reserve(snapshot->size());
+                    std::copy_if(snapshot->begin(), snapshot->end(), std::back_inserter(particleEntries),
+                                 [&](const auto &entry) {
+                                     if (particleShadowPass)
+                                         return entry.semantics.castShadows && entry.renderer->CanCastShadows();
+                                     return entry.semantics.sortMode == particle::ParticleSortMode::None ||
+                                            particleGraphResources.find(entry.id) != particleGraphResources.end();
+                                 });
+                }
             }
 
             auto resolveTextureHandle = [&](const std::string &name) -> vk::ResourceHandle {
