@@ -528,7 +528,10 @@ class PlayerBootstrap:
             if self._resolve_runtime_scene(requested_scene) is not None:
                 first_scene = requested_scene
             else:
-                Debug.log_warning("Ignored invalid Supervisor Player start-scene override")
+                raise RuntimeError(
+                    "Supervisor Player start scene is not present in the runtime "
+                    f"asset catalog: {requested_scene}"
+                )
         # Resolve relative paths against project root (packaged builds
         # store scene paths relative to the game folder)
         catalog_scene = self._resolve_runtime_scene(first_scene)
@@ -562,22 +565,4 @@ class PlayerBootstrap:
         if self.runtime_session is None:
             Debug.log_error("No PlayerRuntimeSession available")
             return
-        activated = self.runtime_session.activate()
-        scene_service = getattr(self.runtime_session, "scene_service", None)
-        active_scene = str(getattr(scene_service, "active_scene_path", "") or "")
-        scheduler = getattr(self.runtime_session, "execution_scheduler", None)
-        if scheduler is not None:
-            try:
-                snapshot = scheduler.phase_plan_snapshot()
-                plans = {
-                    phase: len(snapshot.get(phase, ()))
-                    for phase in ("fixed_update", "update", "late_update")
-                }
-                _plog(
-                    "[Startup] Play activation: "
-                    f"active={bool(activated)}, scene={active_scene!r}, "
-                    f"lifecycle_plans={plans}"
-                )
-            except Exception as exc:
-                _plog(f"[Startup] lifecycle plan diagnostics failed: {exc}")
-        return activated
+        return self.runtime_session.activate()

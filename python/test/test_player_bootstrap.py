@@ -295,6 +295,31 @@ def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
     assert loaded == [str(cooked)]
 
 
+def test_player_supervisor_scene_override_requires_catalog_entry(
+    monkeypatch, tmp_path
+):
+    from Infernux.engine.player_bootstrap import PlayerBootstrap
+
+    class Manifest:
+        @staticmethod
+        def require_service(service):
+            assert service == "player_scene_service"
+
+    bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
+    bootstrap.project_path = str(tmp_path)
+    bootstrap.scenes = ["Assets/Scenes/Start.scene"]
+    bootstrap._runtime_manifest = Manifest()
+    bootstrap.runtime_session = object()
+    bootstrap._resolve_runtime_scene = lambda _reference: None
+    monkeypatch.setenv(
+        "_INFERNUX_PLAYER_START_SCENE",
+        "Assets/Scenes/Missing.scene",
+    )
+
+    with pytest.raises(RuntimeError, match="not present in the runtime asset catalog"):
+        bootstrap._load_initial_scene()
+
+
 def test_run_player_reveals_window_without_startup_sleep():
     from pathlib import Path
 
