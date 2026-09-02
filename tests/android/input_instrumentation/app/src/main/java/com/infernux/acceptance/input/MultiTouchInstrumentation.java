@@ -148,4 +148,3 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         }
     }
 }
-

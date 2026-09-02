@@ -1,7 +1,6 @@
 plugins {
     id "com.android.application"
 }
-
 android {
     namespace "com.infernux.acceptance.input"
     compileSdk 36
@@ -16,4 +15,3 @@ android {
             providers.gradleProperty("infernuxTargetPackage").getOrElse("org.infernux.player")
     }
 }
-

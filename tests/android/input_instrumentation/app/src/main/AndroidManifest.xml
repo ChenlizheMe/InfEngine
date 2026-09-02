@@ -7,4 +7,3 @@
         android:functionalTest="true"
         android:handleProfiling="false" />
 </manifest>
-
