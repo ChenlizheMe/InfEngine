@@ -46,6 +46,18 @@ def test_linux_setup_installs_required_shader_reflection_dependency():
     assert "SPIRV-Cross libraries are required" in native_targets
 
 
+def test_windows_native_build_can_load_the_vulkan_linked_module():
+    text = _text()
+    build_step = text.index("- name: Build Windows Player runtime")
+    next_step = text.index(
+        "- name: Provide Vulkan loader to the current native closure",
+        build_step,
+    )
+    build_body = text[build_step:next_step]
+
+    assert '$env:PATH = "$env:VULKAN_SDK\\Bin;$env:PATH"' in build_body
+
+
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
     text = _text().casefold()
 

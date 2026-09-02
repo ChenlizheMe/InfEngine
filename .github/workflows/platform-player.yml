@@ -96,6 +96,7 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $env:PATH = "$env:VULKAN_SDK\Bin;$env:PATH"
           cmake --preset windows-msvc-release
           cmake --build --preset windows-msvc-release
 
