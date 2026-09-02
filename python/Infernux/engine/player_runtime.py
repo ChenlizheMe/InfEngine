@@ -196,7 +196,6 @@ class PlayerRuntimeSession:
             self._scene_service_installed = False
             raise
         self._state = "playing"
-        Debug.log_internal("Player runtime session activated")
         return True
 
     def tick(self, external_delta_time: Optional[float] = None) -> float:

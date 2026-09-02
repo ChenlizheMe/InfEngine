@@ -997,7 +997,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Sync all prefab instances to the latest on-disk prefab data
         self.sync_all_prefab_instances(scene)
 
-        Debug.log_internal(f"Scene loaded: {os.path.basename(path)}")
         if self._on_scene_changed:
             self._on_scene_changed()
         if not runtime_load and record_navigation:
@@ -1314,7 +1313,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         from Infernux.gizmos.collector import notify_scene_changed
         notify_scene_changed()
 
-        Debug.log_internal("New scene created")
         if self._on_scene_changed:
             self._on_scene_changed()
         self._publish_scene_navigation("New Scene")

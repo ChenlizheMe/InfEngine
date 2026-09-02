@@ -306,7 +306,6 @@ class SceneSaveMixin:
             title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
             content_token=current_token,
         )
-        Debug.log_internal(f"Prefab saved: {self.prefab_mode_path}")
         return True
 
     def save_scene_as(self):
@@ -528,7 +527,6 @@ class SceneSaveMixin:
         self._save_camera_state(self._current_scene_path)
 
         self._remember_last_scene(self._current_scene_path)
-        Debug.log_internal(f"Scene saved: {path}")
         return True
 
     def _default_scene_save_path(self) -> Optional[str]:

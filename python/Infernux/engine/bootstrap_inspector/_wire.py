@@ -1284,7 +1284,6 @@ def _wire_add_remove_and_drop(ctx):
             return False
         _invalidate()
         _bump()
-        Debug.log_internal(f"Added component: {type_name}")
         return True
 
     def _add_component(

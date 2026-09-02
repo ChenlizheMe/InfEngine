@@ -214,7 +214,6 @@ class SpriteRenderer(BuiltinComponent):
             for mutation in iter_asset_mutations(change):
                 file_path = mutation.path
                 if same_path(file_path, asset_path) or same_path(file_path, asset_path + ".meta"):
-                    Debug.log_internal("SpriteRenderer: asset changed, refreshing texture")
                     self._load_sprite_data()
                     self._apply_uv_rect()
                     self._apply_color()
@@ -256,7 +255,6 @@ class SpriteRenderer(BuiltinComponent):
                 except Exception:
                     pass
             if count > 0:
-                Debug.log_internal(f"SpriteRenderer: initialized {count} instance(s)")
         except Exception as e:
             Debug.log_warning(f"SpriteRenderer.init_all_in_scene failed: {e}")
 
