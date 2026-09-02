@@ -5910,6 +5910,21 @@ class TestGameBuilderDependencyCollection:
 
         assert deps == ["llvmlite", "numba", "numpy"]
 
+    def test_collect_user_dependencies_rejects_invalid_project_script(self, tmp_path):
+        project_root = _make_project(tmp_path)
+        _write_asset_script(project_root, "broken.py", "def broken(:\n")
+        script_path = project_root / "Assets" / "broken.py"
+        builder = GameBuilder(
+            str(project_root),
+            str(tmp_path / "build_output"),
+            game_name="TestGame",
+        )
+
+        with pytest.raises(SyntaxError) as exc_info:
+            builder._collect_user_dependencies()
+
+        assert exc_info.value.filename == str(script_path)
+
 
 class TestGameBuilderAutoParallelExport:
     def test_compile_user_scripts_propagates_bytecode_failure(self, tmp_path, monkeypatch):

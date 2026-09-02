@@ -159,12 +159,8 @@ class BuildDependencyMixin:
                         continue
                     fpath = os.path.join(root, fname)
                     _ast_file_count += 1
-                    try:
-                        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                            tree = ast.parse(f.read(), filename=fpath)
-                    except SyntaxError as _exc:
-                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                        continue
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                        tree = ast.parse(f.read(), filename=fpath)
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Import):
                             for alias in node.names:
