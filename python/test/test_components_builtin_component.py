@@ -22,6 +22,8 @@ class DemoCpp:
     """Minimal stand-in for a C++ component (needed for CppProperty __set_name__)."""
     def __init__(self):
         self.component_id = 42
+        self.execution_order = 0
+        self.enabled = True
         self.mode = 2
         self.raw = 11
         self.locked = 5
