@@ -11,8 +11,6 @@ import shutil
 import sys
 import threading
 import time
-import ctypes
-from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
@@ -2503,47 +2501,6 @@ def test_current_player_layout_uses_one_renamed_executable(tmp_path, monkeypatch
     assert (final_dir / GameBuilder.OUTPUT_MARKER_FILENAME).is_file()
     assert (data_root / "BuildManifest.json").is_file()
     assert not (data_root / "Runtime").exists()
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows PE resource contract")
-def test_windows_player_host_icon_is_replaced_with_project_icon(tmp_path):
-    host = (
-        Path(__file__).parents[1]
-        / "Infernux"
-        / "resources"
-        / "player_runtime"
-        / "InfernuxPlayerHost.exe"
-    )
-    if not host.is_file():
-        pytest.skip("InfernuxPlayerHost.exe is not built")
-    project_icon = (
-        Path(__file__).parents[1]
-        / "Infernux"
-        / "resources"
-        / "icons"
-        / "icon.png"
-    )
-    executable = tmp_path / "BrandedGame.exe"
-    shutil.copy2(host, executable)
-
-    GameBuilder._apply_windows_executable_icon(str(executable), str(project_icon))
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
-    kernel32.LoadLibraryExW.restype = wintypes.HMODULE
-    kernel32.FindResourceW.argtypes = [wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p]
-    kernel32.FindResourceW.restype = wintypes.HRSRC
-    kernel32.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HRSRC]
-    kernel32.SizeofResource.restype = wintypes.DWORD
-    module = kernel32.LoadLibraryExW(str(executable), None, 0x00000002)
-    assert module
-    try:
-        group = kernel32.FindResourceW(module, ctypes.c_void_p(101), ctypes.c_void_p(14))
-        assert group
-        assert kernel32.SizeofResource(module, group) >= 6 + 14 * 6
-    finally:
-        kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
-        kernel32.FreeLibrary(module)
 
 
 def test_build_branding_assets_are_manifested_and_packed(tmp_path):

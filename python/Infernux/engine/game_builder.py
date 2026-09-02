@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import ast
 import copy
-import ctypes
-import io
 import importlib.machinery
 import json
 import hashlib
@@ -32,7 +30,6 @@ import os
 import py_compile
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
@@ -1801,139 +1798,6 @@ finally:
                 f"{expected_executable}; found {executable_names}"
             )
 
-    @staticmethod
-    def _windows_icon_resource(icon_path: str) -> bytes:
-        """Convert a supported source image to a multi-resolution ICO payload."""
-        if os.path.splitext(icon_path)[1].lower() == ".ico":
-            with open(icon_path, "rb") as source:
-                return source.read()
-
-        try:
-            from PIL import Image, ImageOps
-        except ImportError as exc:
-            raise RuntimeError(
-                "Pillow is required to convert the configured Windows build icon"
-            ) from exc
-
-        with Image.open(icon_path) as source:
-            image = source.convert("RGBA")
-            image = ImageOps.contain(image, (256, 256), Image.Resampling.LANCZOS)
-            canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
-            canvas.alpha_composite(
-                image,
-                ((256 - image.width) // 2, (256 - image.height) // 2),
-            )
-            output = io.BytesIO()
-            canvas.save(
-                output,
-                format="ICO",
-                sizes=((256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)),
-            )
-            return output.getvalue()
-
-    @classmethod
-    def _apply_windows_executable_icon(cls, executable: str, icon_path: str) -> None:
-        """Replace the copied PlayerHost icon without rebuilding the runtime."""
-        if sys.platform != "win32":
-            return
-
-        import ctypes
-        from ctypes import wintypes
-
-        payload = cls._windows_icon_resource(icon_path)
-        if len(payload) < 6:
-            raise RuntimeError(f"Build icon is not a valid ICO payload: {icon_path}")
-        reserved, icon_type, count = struct.unpack_from("<HHH", payload, 0)
-        if reserved != 0 or icon_type != 1 or count == 0 or len(payload) < 6 + count * 16:
-            raise RuntimeError(f"Build icon is not a valid ICO payload: {icon_path}")
-
-        images: list[tuple[int, bytes]] = []
-        group_entries = bytearray(struct.pack("<HHH", 0, 1, count))
-        for index in range(count):
-            entry = struct.unpack_from("<BBBBHHII", payload, 6 + index * 16)
-            width, height, colors, entry_reserved, planes, bits, byte_count, offset = entry
-            end = offset + byte_count
-            if offset < 6 + count * 16 or end > len(payload):
-                raise RuntimeError(f"Build icon contains an invalid image entry: {icon_path}")
-            resource_id = index + 1
-            images.append((resource_id, payload[offset:end]))
-            group_entries.extend(
-                struct.pack(
-                    "<BBBBHHIH",
-                    width,
-                    height,
-                    colors,
-                    entry_reserved,
-                    planes,
-                    bits,
-                    byte_count,
-                    resource_id,
-                )
-            )
-
-        kernel32 = ctypes.windll.kernel32
-        kernel32.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
-        kernel32.BeginUpdateResourceW.restype = wintypes.HANDLE
-        kernel32.UpdateResourceW.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            wintypes.WORD,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-        ]
-        kernel32.UpdateResourceW.restype = wintypes.BOOL
-        kernel32.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
-        kernel32.EndUpdateResourceW.restype = wintypes.BOOL
-
-        update = kernel32.BeginUpdateResourceW(executable, False)
-        if not update:
-            raise RuntimeError(
-                f"Unable to open Player launcher icon resources (Windows error {ctypes.get_last_error()})"
-            )
-
-        buffers = []
-        committed = False
-        try:
-            # The bundled launcher uses group 101. Update both neutral and
-            # English resources so Explorer cannot select the stale group.
-            for language in (0, 0x0409):
-                for resource_id, image_bytes in images:
-                    image_buffer = ctypes.create_string_buffer(image_bytes)
-                    buffers.append(image_buffer)
-                    if not kernel32.UpdateResourceW(
-                        update,
-                        ctypes.c_void_p(3),
-                        ctypes.c_void_p(resource_id),
-                        language,
-                        image_buffer,
-                        len(image_bytes),
-                    ):
-                        raise RuntimeError(
-                            f"Unable to write Player icon image (Windows error {ctypes.get_last_error()})"
-                        )
-                group_buffer = ctypes.create_string_buffer(bytes(group_entries))
-                buffers.append(group_buffer)
-                if not kernel32.UpdateResourceW(
-                    update,
-                    ctypes.c_void_p(14),
-                    ctypes.c_void_p(101),
-                    language,
-                    group_buffer,
-                    len(group_entries),
-                ):
-                    raise RuntimeError(
-                        f"Unable to write Player icon group (Windows error {ctypes.get_last_error()})"
-                    )
-            if not kernel32.EndUpdateResourceW(update, False):
-                raise RuntimeError(
-                    f"Unable to commit Player icon resources (Windows error {ctypes.get_last_error()})"
-                )
-            committed = True
-        finally:
-            if not committed:
-                kernel32.EndUpdateResourceW(update, True)
-
     def _process_build_icon(self, final_dir: str) -> None:
         """Stage the project icon for the runtime window and taskbar."""
         self._built_icon_path = ""
@@ -2392,29 +2256,6 @@ finally:
                 if dependency not in selected:
                     pending.append(str(dependency))
         return selected
-
-    def _add_asset_reference_roots(
-        self,
-        roots: set[str],
-        source_path: str,
-        *,
-        by_guid: dict[str, dict],
-        by_path: dict[str, dict],
-        known_guids: frozenset[str],
-    ) -> None:
-        for guid, path_hint in self._load_json_asset_references(
-            source_path,
-            known_guids=known_guids,
-        ):
-            if guid and guid in by_guid:
-                roots.add(guid)
-            elif path_hint:
-                candidate = path_hint.replace("\\", "/").casefold()
-                roots.update(
-                    str(item["guid"])
-                    for key, item in by_path.items()
-                    if key.endswith(candidate)
-                )
 
     def _ensure_selected_particle_artifacts(self, selected: dict[str, dict]) -> None:
         """Compile any selected ParticleGraph whose Library product is missing."""

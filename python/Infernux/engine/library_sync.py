@@ -22,11 +22,6 @@ _SKIP = {
 _SYNC_MANIFEST = ".InfernuxResources.json"
 
 
-def _ignored_resource_entries(_directory: str, entries: list[str]) -> list[str]:
-    """Keep package/build metadata out of the project Library cache."""
-    return [entry for entry in entries if entry in _SKIP or entry.endswith(".meta")]
-
-
 def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
     snapshot: dict[str, dict[str, int]] = {}
     for directory, folders, files in os.walk(root):
