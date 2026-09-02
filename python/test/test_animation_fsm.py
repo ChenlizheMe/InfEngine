@@ -863,7 +863,18 @@ class TestAnimationClipSpriteFrameReferences:
     FRAME_B = "2" * 32
     TEXTURE_GUID = "a" * 32
 
-    def test_valid_sprite_frame_references_resolve_project_relative_path(self, tmp_path):
+    def test_sprite_frames_require_texture_guid(self):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+
+        clip = AnimationClip(
+            authoring_texture_path="Assets/Sprites/sheet.png",
+            frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
+        )
+
+        with pytest.raises(ValueError, match="texture GUID"):
+            clip.validate_sprite_frame_references()
+
+    def test_valid_sprite_frame_references_resolve_guid_mapping(self, tmp_path):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame
         from Infernux.core.asset_types import TextureType
 
@@ -876,11 +887,15 @@ class TestAnimationClipSpriteFrameReferences:
             sprite_frame_ids=(self.FRAME_A, self.FRAME_B),
         )
         clip = AnimationClip(
+            authoring_texture_guid=self.TEXTURE_GUID,
             authoring_texture_path="Assets/Sprites/sheet.png",
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
         )
 
-        resolved = clip.validate_sprite_frame_references(project_root=str(project))
+        resolved = clip.validate_sprite_frame_references(
+            project_root=str(project),
+            guid_paths={self.TEXTURE_GUID: "Assets/Sprites/sheet.png"},
+        )
 
         assert resolved == str(texture)
 
@@ -896,12 +911,15 @@ class TestAnimationClipSpriteFrameReferences:
             sprite_frame_ids=(self.FRAME_A,),
         )
         clip = AnimationClip(
+            authoring_texture_guid=self.TEXTURE_GUID,
             authoring_texture_path=str(texture),
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
         )
 
         with pytest.raises(ValueError, match=self.FRAME_B):
-            clip.validate_sprite_frame_references()
+            clip.validate_sprite_frame_references(
+                guid_paths={self.TEXTURE_GUID: str(texture)}
+            )
 
     def test_non_sprite_texture_is_rejected_before_frame_lookup(self, tmp_path):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame
@@ -914,18 +932,22 @@ class TestAnimationClipSpriteFrameReferences:
             texture_type=TextureType.DEFAULT,
         )
         clip = AnimationClip(
+            authoring_texture_guid=self.TEXTURE_GUID,
             authoring_texture_path=str(texture),
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
         )
 
         with pytest.raises(ValueError, match="not imported as Sprite"):
-            clip.validate_sprite_frame_references()
+            clip.validate_sprite_frame_references(
+                guid_paths={self.TEXTURE_GUID: str(texture)}
+            )
 
-    def test_path_and_guid_survive_file_round_trip_and_guid_resolves_moved_texture(
-        self, tmp_path
+    def test_guid_survives_file_round_trip_and_resolves_moved_texture(
+        self, tmp_path, monkeypatch
     ):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame
         from Infernux.core.asset_types import TextureType
+        from Infernux.core.assets import AssetManager
 
         project = tmp_path / "project"
         texture = project / "Assets" / "Sprites" / "sheet.png"
@@ -943,6 +965,16 @@ class TestAnimationClipSpriteFrameReferences:
             authoring_texture_path="Assets/Sprites/sheet.png",
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
         )
+        database = type(
+            "Database",
+            (),
+            {
+                "get_path_from_guid": staticmethod(
+                    lambda guid: str(texture) if guid == self.TEXTURE_GUID else ""
+                )
+            },
+        )()
+        monkeypatch.setattr(AssetManager, "_asset_database", database)
         assert clip.save(str(clip_path)) is True
 
         loaded = AnimationClip.load(str(clip_path))

@@ -922,6 +922,18 @@ class TestGameBuilderAnimationClipPreflight:
             texture_path="Assets/Sprites/sheet.png",
             sprite_frame_id=missing_id,
         )
+        _write_asset_index(
+            project,
+            [
+                _asset_index_entry(
+                    project,
+                    texture,
+                    self.TEXTURE_GUID,
+                    "",
+                    "Texture",
+                )
+            ],
+        )
         builder = GameBuilder(
             str(project), str(tmp_path / "build_output"), game_name="TestGame"
         )
@@ -946,6 +958,18 @@ class TestGameBuilderAnimationClipPreflight:
             texture_guid=self.TEXTURE_GUID,
             texture_path="Assets/Textures/albedo.png",
             sprite_frame_id=self.FRAME_ID,
+        )
+        _write_asset_index(
+            project,
+            [
+                _asset_index_entry(
+                    project,
+                    texture,
+                    self.TEXTURE_GUID,
+                    "",
+                    "Texture",
+                )
+            ],
         )
         builder = GameBuilder(
             str(project), str(tmp_path / "build_output"), game_name="TestGame"
