@@ -27,7 +27,6 @@ from typing import Any, Optional, Tuple
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
 from Infernux.components.fields import FieldType
 from Infernux.components._gizmo_ids import ICON_KIND_CAMERA
-from Infernux.debug import Debug
 
 
 def _vec4_to_list(v):
@@ -272,22 +271,18 @@ class Camera(BuiltinComponent):
         if self._get_bound_native_component() is None:
             return
         transform = self.transform
-        if transform is None:
-            return
 
-        # Read transform basis vectors
-        try:
-            pos = transform.position
-            position = (pos.x, pos.y, pos.z)
-            fwd = transform.forward
-            forward = (fwd.x, fwd.y, fwd.z)
-            u = transform.up
-            up = (u.x, u.y, u.z)
-            r = transform.right
-            right = (r.x, r.y, r.z)
-        except RuntimeError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return
+        # Transform data is required to draw a valid camera frustum.  A stale
+        # native binding is an engine lifecycle error and must reach the gizmo
+        # invocation boundary instead of becoming a per-frame log message.
+        pos = transform.position
+        position = (pos.x, pos.y, pos.z)
+        fwd = transform.forward
+        forward = (fwd.x, fwd.y, fwd.z)
+        u = transform.up
+        up = (u.x, u.y, u.z)
+        r = transform.right
+        right = (r.x, r.y, r.z)
 
         fov = self.field_of_view
         aspect = self.aspect_ratio

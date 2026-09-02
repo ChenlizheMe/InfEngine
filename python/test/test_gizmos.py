@@ -7,6 +7,7 @@ import pytest
 
 from Infernux.gizmos.gizmos import Gizmos
 from Infernux.gizmos.collector import GizmosCollector
+from Infernux.components.builtin import Camera
 from Infernux.components.particle_system import ParticleBoundsMode, ParticleSystem
 from Infernux.lib import Vector3
 from Infernux.particle import EmitterShape, EmitterShapeKind
@@ -207,6 +208,21 @@ class TestParticleEmitterShapes:
         )
         assert Gizmos.matrix == original_matrix
         assert Gizmos.color == original_color
+
+
+class TestCameraGizmos:
+    def test_invalid_transform_is_not_suppressed(self):
+        class InvalidTransform:
+            @property
+            def position(self):
+                raise RuntimeError("stale transform")
+
+        component = Camera()
+        component._get_bound_native_component = lambda: object()
+        component._try_get_transform = lambda: InvalidTransform()
+
+        with pytest.raises(RuntimeError, match="stale transform"):
+            component.on_draw_gizmos_selected()
 
 
 class TestGizmosCollectorSelectionCache:
