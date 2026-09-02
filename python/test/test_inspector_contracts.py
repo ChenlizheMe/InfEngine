@@ -943,6 +943,20 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch):
     import Infernux.engine.ui._inspector_references as module
     from Infernux.components.fields import FieldType
     from Infernux.core.asset_ref import PhysicMaterialRef
+    from Infernux.core.assets import AssetManager
+
+    material_path = "C:/project/Assets/Bouncy.physicMaterial"
+
+    class _AssetDatabase:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "bouncy-guid" if path.replace("\\", "/") == material_path else ""
+
+        @staticmethod
+        def get_path_from_guid(guid):
+            return material_path if guid == "bouncy-guid" else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", _AssetDatabase())
 
     captured = {}
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
@@ -969,11 +983,10 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch):
             builtin_attr="physic_material",
         )
         transaction = captured["transaction"]
-        assert transaction.commit(
-            "C:/project/Assets/Bouncy.physicMaterial"
-        ).value == "applied"
+        assert transaction.commit(material_path).value == "applied"
 
         assert isinstance(component.physic_material, PhysicMaterialRef)
+        assert component.physic_material.guid == "bouncy-guid"
         assert component.physic_material.path_hint.endswith("Bouncy.physicMaterial")
         assert len(manager.action_journal.applied_entries()) == 1
     finally:

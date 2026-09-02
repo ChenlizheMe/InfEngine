@@ -75,22 +75,16 @@ def _is_project_asset_path(file_path: str) -> bool:
 
 
 def _asset_guid_from_path(file_path: str) -> str:
-    from Infernux.debug import Debug
-    from Infernux.core.asset_types import read_meta_guid
     from Infernux.core.assets import AssetManager
 
     file_path = _resolve_project_asset_path(file_path)
-    guid = ""
     adb = getattr(AssetManager, '_asset_database', None)
-    if adb:
-        try:
-            guid = adb.get_guid_from_path(file_path) or ""
-        except RuntimeError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-    # AssetDatabase paths may be project-relative or canonical absolute paths,
-    # depending on the caller. The adjacent current-format meta remains the
-    # source of truth when a path lookup has not produced an identity.
-    return guid or read_meta_guid(file_path)
+    if adb is None:
+        raise RuntimeError("asset reference resolution requires an AssetDatabase")
+    guid = str(adb.get_guid_from_path(file_path) or "").strip()
+    if not guid:
+        raise LookupError(f"asset path is not registered: {file_path}")
+    return guid
 
 
 def _resolve_guid_and_path(payload):
@@ -99,37 +93,36 @@ def _resolve_guid_and_path(payload):
     Every asset assignment entry point uses this function so a canonical
     clipboard dictionary behaves exactly like a picker path or drag GUID.
     """
-    from Infernux.debug import Debug
     import os
+    from Infernux.core.assets import AssetManager
+
     if isinstance(payload, dict):
         guid = str(payload.get("guid") or "").strip()
         path_hint = str(payload.get("path_hint") or payload.get("path") or "").strip()
     else:
         guid = ""
         path_hint = str(payload or "").strip()
-    try:
-        from Infernux.core.assets import AssetManager
+    if not guid and not path_hint:
+        return "", ""
 
-        adb = getattr(AssetManager, '_asset_database', None)
-        if guid and not path_hint and adb:
-            path_hint = str(adb.get_path_from_guid(guid) or "").strip()
-        if path_hint:
-            resolved = _resolve_project_asset_path(path_hint) or path_hint
-            if os.path.isfile(resolved) or os.path.splitext(resolved)[1]:
-                path_hint = _portable_asset_path_hint(resolved)
-                guid = guid or _asset_guid_from_path(resolved)
-            elif not guid and adb:
-                reverse_path = str(adb.get_path_from_guid(path_hint) or "").strip()
-                if reverse_path:
-                    guid = path_hint
-                    path_hint = _portable_asset_path_hint(reverse_path)
-        if not guid and path_hint and adb:
-            guid = str(adb.get_guid_from_path(path_hint) or "").strip()
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-    if not guid and path_hint and not os.path.splitext(path_hint)[1]:
-        guid, path_hint = path_hint, ""
-    return guid, path_hint
+    adb = getattr(AssetManager, '_asset_database', None)
+    if adb is None:
+        raise RuntimeError("asset reference resolution requires an AssetDatabase")
+
+    if guid:
+        registered_path = str(adb.get_path_from_guid(guid) or "").strip()
+        if not registered_path:
+            raise LookupError(f"asset GUID is not registered: {guid}")
+        return guid, _portable_asset_path_hint(registered_path)
+
+    resolved = _resolve_project_asset_path(path_hint) or path_hint
+    if os.path.isfile(resolved) or os.path.splitext(resolved)[1]:
+        return _asset_guid_from_path(resolved), _portable_asset_path_hint(resolved)
+
+    registered_path = str(adb.get_path_from_guid(path_hint) or "").strip()
+    if not registered_path:
+        raise LookupError(f"asset reference is not registered: {path_hint}")
+    return path_hint, _portable_asset_path_hint(registered_path)
 
 
 # ── Reference value creation ──
