@@ -14,7 +14,19 @@ from Infernux.host import (
     OperationKind,
     OperationRegistry,
     OperationSchema,
+    capability_granted,
 )
+
+
+def test_capability_grants_accept_exact_names_and_fnmatch_patterns():
+    assert capability_granted("scene.write", ("scene.write",))
+    assert capability_granted("scene.write", ("*",))
+    assert capability_granted("scene.write", ("scene.*",))
+    assert capability_granted("scene.write", ("*.write",))
+    assert not capability_granted("scene.write", ("*.read", "material.write"))
+    assert not capability_granted("scene.write", ())
+    # Non-pattern grants never match other capabilities partially.
+    assert not capability_granted("scene.write", ("scene",))
 
 
 def _schema(
@@ -24,7 +36,6 @@ def _schema(
 ) -> OperationSchema:
     return OperationSchema(
         id=operation_id,
-        version=0,
         kind=kind,
         summary="Add two values.",
         input_schema={
