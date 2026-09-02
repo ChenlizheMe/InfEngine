@@ -148,7 +148,25 @@ def test_scene_replacement_retirement_cannot_remove_same_id_new_component():
 
 
 def test_scene_membership_refresh_recovers_missed_incremental_notification(monkeypatch):
-    scheduler = RuntimeExecutionScheduler(name="scene-publication")
+    class _NativeManager:
+        def __init__(self) -> None:
+            self.available = False
+            self.plans = []
+
+        def set_runtime_lifecycle_work_available(self, available):
+            self.available = bool(available)
+
+        def set_runtime_lifecycle_plan(self, revision, fixed_count, update_count, late_count):
+            self.plans.append(
+                (int(revision), int(fixed_count), int(update_count), int(late_count))
+            )
+
+    manager = _NativeManager()
+    scheduler = RuntimeExecutionScheduler(
+        name="scene-publication",
+        native_bridge=True,
+    )
+    scheduler.bind_native_bridge(manager)
     component = _ScheduledProbe(31)
 
     from Infernux.components.component import InxComponent
@@ -161,6 +179,8 @@ def test_scene_membership_refresh_recovers_missed_incremental_notification(monke
     scheduler.refresh_scene_membership()
 
     assert scheduler.phase_plan("update") == (component,)
+    assert manager.available is True
+    assert manager.plans[-1][1:] == (1, 1, 1)
 
 
 def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monkeypatch):

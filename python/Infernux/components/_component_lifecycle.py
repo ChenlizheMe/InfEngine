@@ -148,7 +148,7 @@ class RuntimeExecutionScheduler:
         native lifecycle fast path disabled for the entire scene.
         """
         self._registry_scan_pending = True
-        self._sync_active_registry_once()
+        self.prepare_frame()
         self._sync_native_work_availability()
 
     @classmethod
