@@ -4476,65 +4476,6 @@ finally:
 
         return sorted(set(residual))
 
-    def _project_asset_reachability_evidence(self) -> tuple[set[str], set[str]]:
-        """Return indexed and reachable project paths when the scene closure is provable."""
-
-        settings_path = os.path.join(
-            self.project_path, "ProjectSettings", "BuildSettings.json"
-        )
-        try:
-            with open(settings_path, "r", encoding="utf-8") as stream:
-                configured_scenes = json.load(stream).get("scenes", [])
-            if not isinstance(configured_scenes, list) or not configured_scenes:
-                return set(), set()
-            entries = self._asset_index_entries()
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            AttributeError,
-            RuntimeArtifactError,
-        ):
-            return set(), set()
-
-        indexed: set[str] = set()
-        entry_paths: dict[str, str] = {}
-        for entry in entries:
-            try:
-                source_path = self._library_source_entry_path(entry)
-                source_relative = relative_path(source_path, self.project_path)
-            except (OSError, ValueError):
-                return set(), set()
-            normalized = source_relative.replace("\\", "/").casefold()
-            indexed.add(normalized)
-            entry_paths[str(entry.get("guid", ""))] = normalized
-
-        scene_paths: set[str] = set()
-        for configured in configured_scenes:
-            if not isinstance(configured, str) or not configured.strip():
-                return set(), set()
-            try:
-                scene_relative = relative_path(
-                    self._resolve_build_scene_path(configured), self.project_path
-                )
-            except (OSError, ValueError):
-                return set(), set()
-            scene_paths.add(scene_relative.replace("\\", "/").casefold())
-        if not scene_paths.issubset(indexed):
-            return set(), set()
-
-        try:
-            selected = self._collect_library_asset_entries(entries)
-        except (OSError, ValueError, RuntimeArtifactError):
-            return set(), set()
-        reachable = set(scene_paths)
-        reachable.update(
-            entry_paths[guid]
-            for guid in selected
-            if guid in entry_paths
-        )
-        return indexed, reachable
-
     def _is_explicit_build_only_content_path(self, runtime_path: str) -> bool:
         path_key = runtime_path.replace("\\", "/").casefold()
         excluded = {

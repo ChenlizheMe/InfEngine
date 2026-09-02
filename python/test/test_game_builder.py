@@ -3958,68 +3958,6 @@ def test_payload_manifest_rejects_reachable_direct_scene_material_and_audio(tmp_
         builder._write_payload_manifest(str(final_dir))
 
 
-def test_all_imported_assets_enter_the_player_product_closure(tmp_path):
-    builder = _make_builder(tmp_path, tmp_path / "build_output")
-    project = Path(builder.project_path)
-    scene = project / "Assets" / "Main.scene"
-    material = project / "Assets" / "Materials" / "Bird.mat"
-    audio = project / "Assets" / "Audio" / "Wing.wav"
-    unused = project / "Assets" / "Unused.mat"
-    material.parent.mkdir(parents=True, exist_ok=True)
-    audio.parent.mkdir(parents=True, exist_ok=True)
-    scene.write_text(
-        json.dumps(
-            {
-                "objects": [
-                    {
-                        "components": [
-                            {"data": {"materials": ["material-guid"]}}
-                        ]
-                    }
-                ],
-                "document_id": "not-an-indexed-resource",
-            }
-        ),
-        encoding="utf-8",
-    )
-    material.write_text(
-        json.dumps({"preview_audio_guid": "audio-guid"}),
-        encoding="utf-8",
-    )
-    audio.write_bytes(b"reachable audio")
-    unused.write_text("{}", encoding="utf-8")
-    _write_asset_index(
-        project,
-        [
-            _asset_index_entry(project, scene, "scene-guid", "", "Scene"),
-            _asset_index_entry(
-                project, material, "material-guid", "", "Material"
-            ),
-            _asset_index_entry(project, audio, "audio-guid", "", "Audio"),
-            _asset_index_entry(project, unused, "unused-guid", "", "Material"),
-        ],
-    )
-    (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
-        encoding="utf-8",
-    )
-
-    indexed, reachable = builder._project_asset_reachability_evidence()
-
-    assert indexed == {
-        "assets/main.scene",
-        "assets/materials/bird.mat",
-        "assets/audio/wing.wav",
-        "assets/unused.mat",
-    }
-    assert reachable == {
-        "assets/main.scene",
-        "assets/materials/bird.mat",
-        "assets/audio/wing.wav",
-        "assets/unused.mat",
-    }
-
-
 def test_project_render_scripts_make_declared_shader_ids_reachable(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
