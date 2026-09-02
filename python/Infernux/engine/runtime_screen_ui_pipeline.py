@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from Infernux.debug import Debug
 from Infernux.lib import RenderPipelineCallback
 
 
@@ -15,13 +14,8 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
         self._delegate = delegate
 
     def render(self, context, camera) -> None:
-        try:
-            self._submission.submit()
-        except Exception as exc:
-            Debug.log_suppressed("RenderPipeline.ScreenUI", exc)
+        self._submission.submit()
         self._delegate.render(context, camera)
 
     def dispose(self) -> None:
-        dispose = getattr(self._delegate, "dispose", None)
-        if callable(dispose):
-            dispose()
+        self._delegate.dispose()

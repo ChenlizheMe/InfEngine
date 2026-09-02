@@ -705,6 +705,9 @@ const std::vector<InxScreenUIRenderer::HDRColorRange> &InxScreenUIRenderer::GetH
 
 void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height)
 {
+    const int listIndex = (list == ScreenUIList::Camera) ? 0 : 1;
+    m_lastSubmittedDrawCounts[listIndex] = 0;
+    m_lastSubmittedIndexCounts[listIndex] = 0;
     if (!m_initialized || !m_pipeline || width == 0 || height == 0 || !m_enabled)
         return;
 
@@ -804,6 +807,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     const float frameWidth = static_cast<float>(width);
     const float frameHeight = static_cast<float>(height);
 
+    uint32_t submittedDraws = 0;
+    uint64_t submittedIndices = 0;
     for (int cmdI = 0; cmdI < dl->CmdBuffer.Size; cmdI++) {
         const ImDrawCmd &cmd = dl->CmdBuffer[cmdI];
 
@@ -855,7 +860,18 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
         vkCmdDrawIndexed(cmdBuf, cmd.ElemCount, 1, cmd.IdxOffset, static_cast<int32_t>(cmd.VtxOffset), 0);
+        ++submittedDraws;
+        submittedIndices += cmd.ElemCount;
     }
+
+    if (!m_reportedFirstDraw && submittedDraws > 0) {
+        m_reportedFirstDraw = true;
+        INXLOG_INFO("INFERNUX_SCREEN_UI_READY list=", list == ScreenUIList::Camera ? "camera" : "overlay",
+                    " width=", width, " height=", height, " vertices=", dl->VtxBuffer.Size,
+                    " indices=", submittedIndices, " draws=", submittedDraws);
+    }
+    m_lastSubmittedDrawCounts[listIndex] = submittedDraws;
+    m_lastSubmittedIndexCounts[listIndex] = submittedIndices;
 }
 
 // ============================================================================

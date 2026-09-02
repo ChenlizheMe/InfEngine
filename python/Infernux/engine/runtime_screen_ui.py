@@ -32,6 +32,8 @@ class RuntimeScreenUISubmission:
         self._scene = None
         self._scene_structure_version = -1
         self._last_submission_frame = -1
+        self._reported_ready = False
+        self._reported_draw_ready = False
 
     @property
     def target_size(self) -> tuple[int, int]:
@@ -63,6 +65,23 @@ class RuntimeScreenUISubmission:
         renderer = engine.get_screen_ui_renderer()
         if renderer is None:
             return False
+
+        if not self._reported_draw_ready:
+            draw_count = getattr(renderer, "last_submitted_draw_count", None)
+            index_count = getattr(renderer, "last_submitted_index_count", None)
+            if callable(draw_count) and callable(index_count):
+                camera_draws = int(draw_count(ScreenUIList.Camera))
+                overlay_draws = int(draw_count(ScreenUIList.Overlay))
+                if camera_draws or overlay_draws:
+                    from Infernux.debug import Debug
+
+                    self._reported_draw_ready = True
+                    Debug.log(
+                        "INFERNUX_SCREEN_UI_DRAW_READY "
+                        f"camera_draws={camera_draws} overlay_draws={overlay_draws} "
+                        f"camera_indices={int(index_count(ScreenUIList.Camera))} "
+                        f"overlay_indices={int(index_count(ScreenUIList.Overlay))}"
+                    )
 
         width, height = self.target_size
         scene_manager = SceneManager.instance()
@@ -119,6 +138,23 @@ class RuntimeScreenUISubmission:
                 ScreenUIList,
                 RenderMode,
             )
+        if not self._reported_ready:
+            has_commands = getattr(renderer, "has_commands", None)
+            camera_commands = bool(
+                callable(has_commands) and has_commands(ScreenUIList.Camera)
+            )
+            overlay_commands = bool(
+                callable(has_commands) and has_commands(ScreenUIList.Overlay)
+            )
+            if camera_commands or overlay_commands:
+                from Infernux.debug import Debug
+
+                self._reported_ready = True
+                Debug.log(
+                    "INFERNUX_SCREEN_UI_SUBMISSION_READY "
+                    f"canvases={len(canvases)} width={width} height={height} "
+                    f"camera={int(camera_commands)} overlay={int(overlay_commands)}"
+                )
         self._last_submission_frame = frame_token
         return True
 

@@ -263,6 +263,45 @@ def test_render_pipeline_submits_ui_before_delegating_camera_render(monkeypatch)
     ]
 
 
+def test_render_pipeline_does_not_render_a_frame_after_screen_ui_failure():
+    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+
+    calls = []
+
+    def fail_submission():
+        calls.append("screen_ui")
+        raise RuntimeError("screen UI contract failed")
+
+    pipeline = RuntimeScreenUIRenderPipeline(
+        SimpleNamespace(submit=fail_submission),
+        SimpleNamespace(
+            render=lambda *_args: calls.append("render"),
+            dispose=lambda: calls.append("dispose"),
+        ),
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="screen UI contract failed"):
+        pipeline.render("context", "camera")
+
+    assert calls == ["screen_ui"]
+
+
+def test_render_pipeline_requires_delegate_dispose_contract():
+    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+
+    pipeline = RuntimeScreenUIRenderPipeline(
+        SimpleNamespace(submit=lambda: None),
+        SimpleNamespace(render=lambda *_args: None),
+    )
+
+    import pytest
+
+    with pytest.raises(AttributeError, match="dispose"):
+        pipeline.dispose()
+
+
 def test_engine_wraps_custom_python_pipelines_with_runtime_ui_submission():
     from Infernux.engine.engine import Engine
     from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline

@@ -273,20 +273,7 @@ class UIEventProcessor:
         """Resolve and invoke one pointer hook without retrying user code."""
         try:
             callback = resolve_runtime_method(target, method_name, epoch=epoch)
-            if callback is None and epoch.descriptor_for(type(target)) is None:
-                # A lightweight UI test/runtime object may not have entered
-                # the active component scheduler yet.  Use the same cached
-                # descriptor construction as the lifecycle compatibility path
-                # only for that never-published type; a published type with a
-                # removed method must remain a real no-op.
-                from Infernux.engine.runtime_dispatch import (
-                    ensure_runtime_compatibility_mirror,
-                )
-
-                callback = ensure_runtime_compatibility_mirror(type(target)).resolve_method(
-                    target,
-                    method_name,
-                )
+            epoch.require_descriptor(type(target))
             if callback is None:
                 return
             callback(event)

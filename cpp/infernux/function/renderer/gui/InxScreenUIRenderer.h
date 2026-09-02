@@ -132,6 +132,22 @@ class InxScreenUIRenderer
     bool HasCommands(ScreenUIList list) const;
 
     /**
+     * @brief Number of draw calls submitted by the most recent Render() for a list
+     */
+    uint32_t GetLastSubmittedDrawCount(ScreenUIList list) const
+    {
+        return m_lastSubmittedDrawCounts[list == ScreenUIList::Camera ? 0 : 1];
+    }
+
+    /**
+     * @brief Number of indices submitted by the most recent Render() for a list
+     */
+    uint64_t GetLastSubmittedIndexCount(ScreenUIList list) const
+    {
+        return m_lastSubmittedIndexCounts[list == ScreenUIList::Camera ? 0 : 1];
+    }
+
+    /**
      * @brief Enable or disable rendering (commands still accumulate)
      *
      * When disabled, Render() becomes a no-op. Useful for suppressing
@@ -243,6 +259,9 @@ class InxScreenUIRenderer
     bool m_initialized = false;
     bool m_enabled = true;
     bool m_commandCacheValid = false;
+    bool m_reportedFirstDraw = false;
+    uint32_t m_lastSubmittedDrawCounts[2]{};
+    uint64_t m_lastSubmittedIndexCounts[2]{};
     uint32_t m_cachedWidth = 0;
     uint32_t m_cachedHeight = 0;
     uint64_t m_cachedContentRevision = 0;

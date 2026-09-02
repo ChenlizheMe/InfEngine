@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <core/log/InxLog.h>
 #include <cstdlib>
 #include <cstring>
@@ -258,23 +259,32 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     });
     TouchState *touch = nullptr;
     if (existing == m_touches.end()) {
+        const bool hasPrimaryContact = std::any_of(m_touches.begin(), m_touches.end(), [](const TouchState &candidate) {
+            return candidate.isPrimary && candidate.phase != TouchPhase::Ended &&
+                   candidate.phase != TouchPhase::Canceled;
+        });
         m_touches.emplace_back();
         touch = &m_touches.back();
         touch->touchId = touchId;
         touch->fingerId = fingerId;
+        touch->isPrimary = isPrimary || !hasPrimaryContact;
     } else {
         touch = &*existing;
     }
+    const uint64_t previousTimestampNs = touch->timestampNs;
     touch->timestampNs = timestampNs;
     touch->windowId = windowId;
     touch->x = x;
     touch->y = y;
     touch->deltaX = deltaX;
     touch->deltaY = deltaY;
+    touch->deltaTime = previousTimestampNs != 0 && timestampNs >= previousTimestampNs
+                           ? static_cast<float>(timestampNs - previousTimestampNs) * 1.0e-9f
+                           : 0.0f;
     touch->pressure = pressure;
     touch->contactWidth = contactWidth;
     touch->contactHeight = contactHeight;
-    touch->isPrimary = isPrimary;
+    touch->isPrimary = touch->isPrimary || isPrimary;
     touch->cancelReason = phase == TouchPhase::Canceled ? cancelReason : std::string{};
     touch->phase = phase;
 }
@@ -305,12 +315,14 @@ void InputManager::ProcessScreenMetrics(int logicalWidth, int logicalHeight, int
                                         int safeAreaWidth, int safeAreaHeight, bool keyboardInsetKnown,
                                         int keyboardInset)
 {
+    if (!std::isfinite(pixelRatio) || pixelRatio <= 0.0f)
+        throw std::invalid_argument("screen pixel ratio must be finite and positive");
     ScreenState next = m_screenState;
     next.logicalWidth = std::max(1, logicalWidth);
     next.logicalHeight = std::max(1, logicalHeight);
     next.framebufferWidth = std::max(1, framebufferWidth);
     next.framebufferHeight = std::max(1, framebufferHeight);
-    next.pixelRatio = std::max(0.01f, pixelRatio);
+    next.pixelRatio = pixelRatio;
     next.safeAreaX = std::clamp(safeAreaX, 0, next.logicalWidth);
     next.safeAreaY = std::clamp(safeAreaY, 0, next.logicalHeight);
     next.safeAreaWidth = std::clamp(safeAreaWidth, 0, next.logicalWidth - next.safeAreaX);
@@ -815,9 +827,10 @@ void InputManager::RefreshScreenState()
         }
     }
 #endif
-    ProcessScreenMetrics(logicalWidth, logicalHeight, framebufferWidth, framebufferHeight,
-                         displayScale > 0.0f ? displayScale : 1.0f, safeArea.x, safeArea.y, safeArea.w, safeArea.h,
-                         keyboardInsetKnown, keyboardInset);
+    if (!std::isfinite(displayScale) || displayScale <= 0.0f)
+        throw std::runtime_error("SDL reported an invalid screen display scale");
+    ProcessScreenMetrics(logicalWidth, logicalHeight, framebufferWidth, framebufferHeight, displayScale, safeArea.x,
+                         safeArea.y, safeArea.w, safeArea.h, keyboardInsetKnown, keyboardInset);
 #endif
 }
 

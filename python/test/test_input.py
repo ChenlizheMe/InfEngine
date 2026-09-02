@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
+import Infernux.input as input_module
 from Infernux.input import Input, KeyCode, Touch, TouchPhase
 from Infernux.lib import InputManager
 from Infernux.runtime_services import install_runtime_service, remove_runtime_service
@@ -233,8 +235,12 @@ class TestInputMetaclassProperties:
             finger_id=2,
             timestamp_ns=3,
             window_id=4,
-            position=(0.25, 0.75),
-            delta_position=(0.1, -0.1),
+            position=(480.0, 270.0),
+            raw_position=(480.0, 270.0),
+            delta_position=(12.0, -8.0),
+            normalized_position=(0.25, 0.25),
+            normalized_delta_position=(0.01, -0.01),
+            delta_time=1.0 / 60.0,
             pressure=0.5,
             contact_size=(0.02, 0.03),
             is_primary=True,
@@ -242,9 +248,48 @@ class TestInputMetaclassProperties:
             phase=TouchPhase.MOVED,
         )
         assert touch.phase is TouchPhase.MOVED
-        assert touch.position == (0.25, 0.75)
+        assert touch.position == (480.0, 270.0)
+        assert touch.normalized_position == (0.25, 0.25)
         assert touch.contact_size == (0.02, 0.03)
         assert touch.is_primary
+
+    def test_native_touch_is_published_in_unity_screen_pixels(self, monkeypatch):
+        native_touch = SimpleNamespace(
+            touch_id=7,
+            finger_id=11,
+            timestamp_ns=2_000_000_000,
+            window_id=3,
+            x=0.25,
+            y=0.75,
+            delta_x=0.1,
+            delta_y=-0.2,
+            delta_time=0.016,
+            pressure=0.6,
+            contact_width=0.02,
+            contact_height=0.03,
+            is_primary=True,
+            cancel_reason="",
+            phase="moved",
+        )
+        manager = SimpleNamespace(
+            screen_state=SimpleNamespace(logical_width=1920, logical_height=1080)
+        )
+        monkeypatch.setattr(
+            input_module,
+            "_NativeInputManager",
+            SimpleNamespace(instance=lambda: manager),
+        )
+
+        touch = Input._from_native_touch(native_touch)
+
+        assert touch.position == pytest.approx((480.0, 270.0))
+        assert touch.raw_position == touch.position
+        assert touch.delta_position == pytest.approx((192.0, 216.0))
+        assert touch.normalized_position == pytest.approx((0.25, 0.25))
+        assert touch.normalized_delta_position == pytest.approx((0.1, 0.2))
+        assert touch.contact_size == pytest.approx((38.4, 32.4))
+        assert touch.delta_time == pytest.approx(0.016)
+        assert touch.phase is TouchPhase.MOVED
 
     def test_platform_text_input_runtime_service(self):
         class _TextInputService:
