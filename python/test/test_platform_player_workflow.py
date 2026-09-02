@@ -48,14 +48,11 @@ def test_linux_setup_installs_required_shader_reflection_dependency():
 
 def test_windows_native_build_can_load_the_vulkan_linked_module():
     text = _text()
+    loader_step = text.index("- name: Provide Vulkan loader to the build and Player closure")
     build_step = text.index("- name: Build Windows Player runtime")
-    next_step = text.index(
-        "- name: Provide Vulkan loader to the current native closure",
-        build_step,
-    )
-    build_body = text[build_step:next_step]
 
-    assert '$env:PATH = "$env:VULKAN_SDK\\Bin;$env:PATH"' in build_body
+    assert loader_step < build_step
+    assert 'Copy-Item -LiteralPath $loader -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
 
 
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
@@ -96,6 +93,7 @@ def test_desktop_player_jobs_use_real_input_physics_and_line_renderer_smoke():
     assert "linux-player:" in text
     assert '--object "Render Probe"' in text
     assert text.count("minimum-axis-delta 0.5") == 2
+    assert text.count("minimum-final-y 0.0") == 2
     assert text.count('"component_type":"LineRenderer"') == 2
     assert "lvp_icd.x86_64.json" in text
     assert "--validation" in text
@@ -115,7 +113,10 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     )
     emulator_step = text.index("ReactiveCircus/android-emulator-runner@")
     emulator_script = text.index("script: |", emulator_step)
-    assert '. "$CONDA/etc/profile.d/conda.sh"' in text[emulator_script:]
+    emulator_body = text[emulator_script:]
+    assert 'python_executable="$CONDA/envs/infernux/bin/python"' in emulator_body
+    assert 'test -x "$python_executable"' in emulator_body
+    assert '"$python_executable" scripts/acceptance/build_player.py' in emulator_body
     assert '"--keep-running"' in smoke
     assert '"--require-log"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke

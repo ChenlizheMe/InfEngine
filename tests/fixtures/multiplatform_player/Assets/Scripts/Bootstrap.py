@@ -37,6 +37,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         ground = inx.GameObject.find("Shadow Receiver")
         if self._probe is None or ground is None:
             raise RuntimeError("Multiplatform fixture scene objects are incomplete")
+        ground.transform.local_scale = inx.Vector3(8.0, 0.4, 64.0)
         self._probe.add_component("BoxCollider")
         self._body = self._probe.add_component("Rigidbody")
         ground.add_component("BoxCollider")

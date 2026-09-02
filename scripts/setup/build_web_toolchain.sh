@@ -68,6 +68,11 @@ fi
 export EMSDK_QUIET=1
 # shellcheck disable=SC1091
 source "$emsdk_root/emsdk_env.sh"
+export EM_CONFIG="$emsdk_root/.emscripten"
+if [[ ! -f "$EM_CONFIG" ]]; then
+    echo "The active Emscripten configuration is missing: $EM_CONFIG" >&2
+    exit 1
+fi
 
 cpython_archive="$downloads/Python-${CPYTHON_VERSION}.tar.xz"
 fetch_and_verify "$CPYTHON_URL" "$CPYTHON_SHA256" "$cpython_archive"

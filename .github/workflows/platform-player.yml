@@ -91,16 +91,7 @@ jobs:
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Build Windows Player runtime
-        shell: pwsh
-        run: |
-          conda activate infernux
-          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          $env:PATH = "$env:VULKAN_SDK\Bin;$env:PATH"
-          cmake --preset windows-msvc-release
-          cmake --build --preset windows-msvc-release
-
-      - name: Provide Vulkan loader to the current native closure
+      - name: Provide Vulkan loader to the build and Player closure
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
@@ -113,13 +104,15 @@ jobs:
           if (-not (Test-Path -LiteralPath $loader)) {
             throw "Vulkan runtime archive does not contain the expected x64 loader."
           }
-          $destinations = @("python\Infernux\lib\vulkan-1.dll")
-          Get-ChildItem "out\build\windows-msvc-release" -Recurse -Filter "InfernuxRuntime.dll" |
-            ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
-          foreach ($destination in ($destinations | Select-Object -Unique)) {
-            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-            Copy-Item -LiteralPath $loader -Destination $destination -Force
-          }
+          Copy-Item -LiteralPath $loader -Destination "python\Infernux\lib\vulkan-1.dll" -Force
+
+      - name: Build Windows Player runtime
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          cmake --preset windows-msvc-release
+          cmake --build --preset windows-msvc-release
 
       - name: Build Windows Player fixture
         shell: pwsh
@@ -144,6 +137,7 @@ jobs:
             --object "Render Probe" `
             --axis z `
             --minimum-axis-delta 0.5 `
+            --minimum-final-y 0.0 `
             --component-probe $probe
 
       - name: Upload Windows Player evidence
@@ -224,6 +218,7 @@ jobs:
             --object "Render Probe" \
             --axis z \
             --minimum-axis-delta 0.5 \
+            --minimum-final-y 0.0 \
             --component-probe '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}'
 
       - name: Upload Linux Player evidence
@@ -424,12 +419,12 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
           script: |
-            . "$CONDA/etc/profile.d/conda.sh"
-            conda activate infernux
+            python_executable="$CONDA/envs/infernux/bin/python"
+            test -x "$python_executable"
             rm -rf out/ci-projects/android out/acceptance/android
             mkdir -p out/ci-projects/android out/test-results
             cp -a tests/fixtures/multiplatform_player/. out/ci-projects/android/
-            python scripts/acceptance/build_player.py \
+            "$python_executable" scripts/acceptance/build_player.py \
               out/ci-projects/android android-x64-emulator out/acceptance/android \
               --report out/test-results/android-player-build.json \
               --option 'android_artifact="apk"' \
@@ -440,14 +435,14 @@ jobs:
               --console=plain \
               -PinfernuxTargetPackage=com.infernux.bootstrap \
               :app:assembleDebug
-            python scripts/acceptance/android_player_smoke.py \
+            "$python_executable" scripts/acceptance/android_player_smoke.py \
               out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \
               --serial emulator-5554 \
               --no-back \
               --expect-landscape \
               --resume-cycles 2 \
               --report out/test-results/android-player-smoke.json
-            python scripts/acceptance/android_multitouch_smoke.py \
+            "$python_executable" scripts/acceptance/android_multitouch_smoke.py \
               tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
               --serial emulator-5554 \
               --wait-milliseconds 20000 \

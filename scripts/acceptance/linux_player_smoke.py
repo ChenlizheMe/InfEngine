@@ -101,6 +101,15 @@ def _axis_delta(
     ]
 
 
+def _require_minimum_final_y(
+    final: tuple[float, float, float], minimum: float | None
+) -> None:
+    if minimum is not None and final[1] < minimum:
+        raise RuntimeError(
+            f"Player object fell to y={final[1]:.6f}; minimum is {minimum:.6f}"
+        )
+
+
 def _gameplay_control_ready(
     observation: dict[str, Any], *, allow_paused: bool = False
 ) -> bool:
@@ -386,6 +395,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--press-duration", type=float, default=1.0)
     parser.add_argument("--axis", choices=("x", "y", "z"), default="z")
     parser.add_argument("--minimum-axis-delta", type=float, default=0.1)
+    parser.add_argument("--minimum-final-y", type=float)
     parser.add_argument(
         "--component-probe",
         action="append",
@@ -524,6 +534,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 f"Player input produced only {delta:.6f} movement on {args.axis}; "
                 f"minimum is {args.minimum_axis_delta:.6f}"
             )
+        _require_minimum_final_y(final, args.minimum_final_y)
 
         feature_deadline = time.monotonic() + args.startup_timeout
         assertion_results: list[dict[str, Any]] = []

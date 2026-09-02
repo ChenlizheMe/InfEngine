@@ -69,6 +69,14 @@ def test_linux_smoke_position_and_axis_delta():
     assert module._axis_delta(initial, (1.0, 2.5, 4.0), "z") == 7.0
 
 
+def test_player_smoke_rejects_a_body_that_falls_through_the_floor():
+    module = _module()
+
+    module._require_minimum_final_y((0.0, 0.5, 2.0), 0.0)
+    with pytest.raises(RuntimeError, match="fell to y=-0.250000"):
+        module._require_minimum_final_y((0.0, -0.25, 2.0), 0.0)
+
+
 def test_linux_smoke_rejects_missing_public_position():
     module = _module()
 
@@ -100,6 +108,7 @@ def test_linux_smoke_parser_defaults_to_managed_cleanup():
     assert arguments.object == "PlayerBall"
     assert arguments.press_scancode == 26
     assert arguments.axis == "z"
+    assert arguments.minimum_final_y is None
     assert not arguments.validation
     assert arguments.component_probe == []
 

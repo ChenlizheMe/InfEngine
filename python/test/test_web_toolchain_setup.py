@@ -26,6 +26,8 @@ def test_web_toolchain_setup_builds_webgpu_tools_without_gl_fallbacks():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "Tools/wasm/wasm_build.py emscripten-browser" in source
+    assert 'export EM_CONFIG="$emsdk_root/.emscripten"' in source
+    assert '[[ ! -f "$EM_CONFIG" ]]' in source
     assert "--target tint" in source
     assert "-DDAWN_ENABLE_DESKTOP_GL=OFF" in source
     assert "-DDAWN_ENABLE_OPENGLES=OFF" in source
