@@ -993,6 +993,15 @@ def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch)
         animator_module._resolve_clip_path_from("c" * 32, "stale.animclip3d")
 
 
+def test_skeletal_animator_does_not_derive_model_identity_from_path():
+    from Infernux.components import skeletal_animator as animator_module
+    from Infernux.core.animation_clip3d import AnimationClip3D
+
+    clip = AnimationClip3D(source_model_path="Assets/Models/stale.fbx")
+
+    assert animator_module._animation_source_guid(clip) == ""
+
+
 class TestSpiritAnimatorAssetReload:
     @staticmethod
     def _clip(frame_count: int, fps: float):
