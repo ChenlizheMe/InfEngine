@@ -34,6 +34,18 @@ def test_android_runtime_builder_creates_build_python_before_cross_build():
     assert script.index(build_python) < script.index(cross_python)
 
 
+def test_linux_setup_installs_required_shader_reflection_dependency():
+    script = (
+        ROOT / "scripts" / "setup" / "install_linux_dependencies.sh"
+    ).read_text(encoding="utf-8")
+    native_targets = (ROOT / "cmake" / "InfernuxNativeTargets.cmake").read_text(
+        encoding="utf-8"
+    )
+
+    assert "spirv-cross-dev" in script
+    assert "SPIRV-Cross libraries are required" in native_targets
+
+
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
     text = _text().casefold()
 

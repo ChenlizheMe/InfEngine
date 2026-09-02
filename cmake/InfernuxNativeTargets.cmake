@@ -204,9 +204,9 @@ else()
         endif()
     endforeach()
     if(NOT _spirv_cross_found)
-        message(WARNING
-            "VULKAN_SDK not set and SPIRV-Cross libraries not found in system paths. "
-            "Shader reflection will not be available.")
+        message(FATAL_ERROR
+            "SPIRV-Cross libraries are required by InfernuxShaderCompiler. "
+            "Install spirv-cross-dev or set VULKAN_SDK to a complete SDK.")
     endif()
 endif()
 
