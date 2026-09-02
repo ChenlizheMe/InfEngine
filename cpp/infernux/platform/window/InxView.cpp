@@ -727,6 +727,7 @@ void InxView::Quit()
         SDL_RemoveEventWatch(&InxView::WatchApplicationEvents, this);
         m_eventWatchInstalled = false;
     }
+    InputManager::Instance().ShutdownMotionSensors();
     if (m_window) {
         SDL_DestroyWindow(m_window);
         m_window = nullptr;
@@ -877,11 +878,12 @@ void InxView::SDLInit()
     // duplicate gameplay/UI actions on Android and mobile Web.
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_SENSOR)) {
         const std::string error = SDL_GetError();
         INXLOG_ERROR("SDL_Init failed: ", error);
         throw std::runtime_error("SDL initialization failed: " + error);
     }
+    InputManager::Instance().InitializeMotionSensors();
     INXLOG_DEBUG("SDL_Init succeeded.");
     if (!SDL_AddEventWatch(&InxView::WatchApplicationEvents, this)) {
         INXLOG_WARN("Could not install SDL application lifecycle watch: ", SDL_GetError());

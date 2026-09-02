@@ -3791,6 +3791,19 @@ class InputManager:
     def touch_count(self) -> int: ...
     def get_touch(self, index: int) -> TouchState: ...
     def get_touches(self) -> List[TouchState]: ...
+
+    # Motion sensors
+    @property
+    def accelerometer_supported(self) -> bool: ...
+    @property
+    def gyroscope_supported(self) -> bool: ...
+    @property
+    def acceleration(self) -> Tuple[float, float, float]: ...
+    @property
+    def gyroscope_rotation_rate(self) -> Tuple[float, float, float]: ...
+    @property
+    def acceleration_events(self) -> List[AccelerationEvent]: ...
+
     @property
     def screen_state(self) -> ScreenState: ...
 
@@ -3829,6 +3842,10 @@ class TouchState:
     is_primary: bool
     cancel_reason: str
     phase: str
+
+class AccelerationEvent:
+    acceleration: Tuple[float, float, float]
+    delta_time: float
 
 class ScreenState:
     revision: int

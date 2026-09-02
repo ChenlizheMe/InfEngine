@@ -171,6 +171,7 @@ void InputManager::BeginFrame()
     m_scrollX = 0.f;
     m_scrollY = 0.f;
     m_inputString.clear();
+    m_accelerationEvents.clear();
     m_touches.erase(std::remove_if(m_touches.begin(), m_touches.end(),
                                    [](const TouchState &touch) {
                                        return touch.phase == TouchPhase::Ended || touch.phase == TouchPhase::Canceled;
@@ -247,6 +248,74 @@ void InputManager::ProcessScrollEvent(float deltaX, float deltaY)
 void InputManager::ProcessTextInputEvent(const std::string &text)
 {
     m_inputString += text;
+}
+
+void InputManager::ProcessMotionSensorEvent(MotionSensorType type, uint64_t timestampNs, float x, float y, float z)
+{
+    if (type == MotionSensorType::Accelerometer) {
+        const float inverseGravity = 1.0f / SDL_STANDARD_GRAVITY;
+        m_acceleration = {x * inverseGravity, y * inverseGravity, z * inverseGravity};
+        const float deltaTime = m_lastAccelerationTimestampNs != 0 && timestampNs >= m_lastAccelerationTimestampNs
+                                    ? static_cast<float>(timestampNs - m_lastAccelerationTimestampNs) * 1.0e-9f
+                                    : 0.0f;
+        m_lastAccelerationTimestampNs = timestampNs;
+        m_accelerationEvents.push_back({m_acceleration, deltaTime});
+        m_accelerometerAvailable = true;
+        return;
+    }
+
+    m_gyroscopeRotationRate = {x, y, z};
+    m_gyroscopeAvailable = true;
+}
+
+void InputManager::InitializeMotionSensors()
+{
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    ShutdownMotionSensors();
+    int sensorCount = 0;
+    SDL_SensorID *sensorIds = SDL_GetSensors(&sensorCount);
+    if (sensorIds == nullptr)
+        return;
+
+    for (int index = 0; index < sensorCount; ++index) {
+        const SDL_SensorID sensorId = sensorIds[index];
+        const SDL_SensorType sensorType = SDL_GetSensorTypeForID(sensorId);
+        if (sensorType == SDL_SENSOR_ACCEL && m_accelerometer == nullptr) {
+            m_accelerometer = SDL_OpenSensor(sensorId);
+            if (m_accelerometer != nullptr) {
+                m_accelerometerId = sensorId;
+                m_accelerometerAvailable = true;
+            }
+        } else if (sensorType == SDL_SENSOR_GYRO && m_gyroscope == nullptr) {
+            m_gyroscope = SDL_OpenSensor(sensorId);
+            if (m_gyroscope != nullptr) {
+                m_gyroscopeId = sensorId;
+                m_gyroscopeAvailable = true;
+            }
+        }
+    }
+    SDL_free(sensorIds);
+#endif
+}
+
+void InputManager::ShutdownMotionSensors()
+{
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    if (m_accelerometer != nullptr)
+        SDL_CloseSensor(m_accelerometer);
+    if (m_gyroscope != nullptr)
+        SDL_CloseSensor(m_gyroscope);
+#endif
+    m_accelerometer = nullptr;
+    m_gyroscope = nullptr;
+    m_accelerometerId = 0;
+    m_gyroscopeId = 0;
+    m_lastAccelerationTimestampNs = 0;
+    m_accelerometerAvailable = false;
+    m_gyroscopeAvailable = false;
+    m_acceleration = {};
+    m_gyroscopeRotationRate = {};
+    m_accelerationEvents.clear();
 }
 
 void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId,
@@ -437,6 +506,17 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     // ---- Text input ----
     case SDL_EVENT_TEXT_INPUT:
         ProcessTextInputEvent(event.text.text);
+        break;
+
+    // ---- Motion sensors ----
+    case SDL_EVENT_SENSOR_UPDATE:
+        if (event.sensor.which == m_accelerometerId) {
+            ProcessMotionSensorEvent(MotionSensorType::Accelerometer, event.sensor.sensor_timestamp,
+                                     event.sensor.data[0], event.sensor.data[1], event.sensor.data[2]);
+        } else if (event.sensor.which == m_gyroscopeId) {
+            ProcessMotionSensorEvent(MotionSensorType::Gyroscope, event.sensor.sensor_timestamp, event.sensor.data[0],
+                                     event.sensor.data[1], event.sensor.data[2]);
+        }
         break;
 
     // ---- Touch ----
@@ -688,6 +768,7 @@ void InputManager::ResetAll()
     m_syntheticHeldCount = 0;
     m_inputString.clear();
     m_touches.clear();
+    m_accelerationEvents.clear();
     m_droppedFiles.clear();
 }
 

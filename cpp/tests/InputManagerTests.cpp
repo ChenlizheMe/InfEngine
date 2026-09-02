@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 using infernux::InputManager;
+using infernux::MotionSensorType;
 using infernux::TouchPhase;
 
 namespace
@@ -211,6 +212,30 @@ int main()
     assert(input.GetKeyUp(SDL_SCANCODE_A));
     assert(input.GetMouseButtonUp(1));
     assert(input.GetTouch(0).phase == TouchPhase::Ended);
+
+    // Mobile motion sensors share the frame snapshot contract. SDL reports
+    // acceleration in m/s²; the public engine API exposes Unity-compatible g.
+    input.BeginFrame();
+    input.ProcessMotionSensorEvent(MotionSensorType::Accelerometer, 1'000'000'000, SDL_STANDARD_GRAVITY, 0.0f,
+                                   -SDL_STANDARD_GRAVITY);
+    input.ProcessMotionSensorEvent(MotionSensorType::Accelerometer, 1'020'000'000, 0.0f, SDL_STANDARD_GRAVITY, 0.0f);
+    assert(input.HasAccelerometer());
+    assert(input.GetAccelerationEvents().size() == 2);
+    assert(input.GetAccelerationEvents()[0].acceleration[0] == 1.0f);
+    assert(input.GetAccelerationEvents()[0].acceleration[2] == -1.0f);
+    assert(input.GetAccelerationEvents()[1].deltaTime > 0.019f);
+    assert(input.GetAccelerationEvents()[1].deltaTime < 0.021f);
+    assert(input.GetAcceleration()[1] == 1.0f);
+
+    input.ProcessMotionSensorEvent(MotionSensorType::Gyroscope, 1'020'000'000, 0.25f, -0.5f, 1.0f);
+    assert(input.HasGyroscope());
+    assert(input.GetGyroscopeRotationRate()[0] == 0.25f);
+    assert(input.GetGyroscopeRotationRate()[1] == -0.5f);
+    assert(input.GetGyroscopeRotationRate()[2] == 1.0f);
+
+    input.BeginFrame();
+    assert(input.GetAccelerationEvents().empty());
+    assert(input.GetAcceleration()[1] == 1.0f);
 
     input.ResetAll();
     return 0;

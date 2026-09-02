@@ -28,6 +28,11 @@ class Touch:
     phase: TouchPhase
 
 
+class AccelerationEvent:
+    acceleration: Tuple[float, float, float]
+    delta_time: float
+
+
 class KeyCode:
     """Key code constants for keyboard input."""
 
@@ -129,6 +134,18 @@ class Input:
     """Number of touch contacts in the current frame snapshot."""
     touches: Tuple[Touch, ...]
     """All touch contacts in stable first-contact order."""
+    accelerometer_supported: bool
+    """Whether the current device exposes an accelerometer."""
+    gyroscope_supported: bool
+    """Whether the current device exposes a gyroscope."""
+    acceleration: Tuple[float, float, float]
+    """Latest linear acceleration in g-force units."""
+    gyroscope_rotation_rate: Tuple[float, float, float]
+    """Latest angular velocity in radians per second."""
+    acceleration_event_count: int
+    """Number of accelerometer samples captured during this input frame."""
+    acceleration_events: Tuple[AccelerationEvent, ...]
+    """Accelerometer samples captured during this input frame."""
     mouse_sensitivity: float
     """Mouse sensitivity multiplier (default 0.1)."""
 
@@ -222,6 +239,7 @@ class Input:
 
 
 __all__ = [
+    "AccelerationEvent",
     "Input",
     "InputAction",
     "InputActionMap",

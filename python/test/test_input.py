@@ -6,7 +6,7 @@ import pytest
 from types import SimpleNamespace
 
 import Infernux.input as input_module
-from Infernux.input import Input, KeyCode, Touch, TouchPhase
+from Infernux.input import AccelerationEvent, Input, KeyCode, Touch, TouchPhase
 from Infernux.lib import InputManager
 from Infernux.runtime_services import install_runtime_service, remove_runtime_service
 
@@ -252,6 +252,33 @@ class TestInputMetaclassProperties:
         assert touch.normalized_position == (0.25, 0.25)
         assert touch.contact_size == (0.02, 0.03)
         assert touch.is_primary
+
+    def test_motion_sensor_properties_publish_native_samples(self, monkeypatch):
+        manager = SimpleNamespace(
+            accelerometer_supported=True,
+            gyroscope_supported=True,
+            acceleration=(0.25, -0.5, 1.0),
+            gyroscope_rotation_rate=(0.1, 0.2, -0.3),
+            acceleration_events=(
+                SimpleNamespace(acceleration=(0.0, 1.0, 0.0), delta_time=0.0),
+                SimpleNamespace(acceleration=(0.1, 0.9, 0.0), delta_time=0.02),
+            ),
+        )
+        monkeypatch.setattr(
+            input_module,
+            "_NativeInputManager",
+            SimpleNamespace(instance=lambda: manager),
+        )
+
+        assert Input.accelerometer_supported
+        assert Input.gyroscope_supported
+        assert Input.acceleration == pytest.approx((0.25, -0.5, 1.0))
+        assert Input.gyroscope_rotation_rate == pytest.approx((0.1, 0.2, -0.3))
+        assert Input.acceleration_event_count == 2
+        assert Input.acceleration_events == (
+            AccelerationEvent((0.0, 1.0, 0.0), 0.0),
+            AccelerationEvent((0.1, 0.9, 0.0), 0.02),
+        )
 
     def test_native_touch_is_published_in_unity_screen_pixels(self, monkeypatch):
         native_touch = SimpleNamespace(

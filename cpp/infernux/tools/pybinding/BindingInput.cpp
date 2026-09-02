@@ -51,6 +51,10 @@ void RegisterInputBindings(py::module_ &m)
             return "canceled";
         });
 
+    py::class_<AccelerationEvent>(m, "AccelerationEvent", "One accelerometer sample captured during the input frame")
+        .def_readonly("acceleration", &AccelerationEvent::acceleration, "Acceleration in g-force units")
+        .def_readonly("delta_time", &AccelerationEvent::deltaTime, "Seconds since the preceding sample");
+
     py::class_<ScreenState>(m, "ScreenState", "Current logical, framebuffer, safe-area, and focus snapshot")
         .def_readonly("revision", &ScreenState::revision)
         .def_readonly("logical_width", &ScreenState::logicalWidth)
@@ -120,6 +124,17 @@ void RegisterInputBindings(py::module_ &m)
              "Return one touch from the current frame snapshot")
         .def("get_touches", &InputManager::GetTouches, py::return_value_policy::copy,
              "Return all touches in stable first-contact order")
+
+        // ---- Motion sensors ----
+        .def_property_readonly("accelerometer_supported", &InputManager::HasAccelerometer)
+        .def_property_readonly("gyroscope_supported", &InputManager::HasGyroscope)
+        .def_property_readonly("acceleration", &InputManager::GetAcceleration, py::return_value_policy::copy,
+                               "Latest accelerometer sample in g-force units")
+        .def_property_readonly("gyroscope_rotation_rate", &InputManager::GetGyroscopeRotationRate,
+                               py::return_value_policy::copy, "Latest gyroscope sample in radians per second")
+        .def_property_readonly("acceleration_events", &InputManager::GetAccelerationEvents,
+                               py::return_value_policy::copy,
+                               "Accelerometer samples captured during the current input frame")
 
         // ---- Screen / safe area ----
         .def_property_readonly("screen_state", &InputManager::GetScreenState, py::return_value_policy::copy,

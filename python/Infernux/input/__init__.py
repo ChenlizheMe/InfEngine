@@ -65,6 +65,14 @@ class Touch:
     phase: TouchPhase
 
 
+@dataclass(frozen=True, slots=True)
+class AccelerationEvent:
+    """One accelerometer sample captured during the current input frame."""
+
+    acceleration: Tuple[float, float, float]
+    delta_time: float
+
+
 # =============================================================================
 # _InputMeta — metaclass for class-level properties (Input.mouse_position etc.)
 # =============================================================================
@@ -138,6 +146,48 @@ class _InputMeta(type):
         if not cls._accepts_game_input():
             return ()
         return tuple(cls._from_native_touch(touch) for touch in _NativeInputManager.instance().get_touches())
+
+    @property
+    def accelerometer_supported(cls) -> bool:
+        """Whether the current device exposes an accelerometer."""
+        return bool(_NativeInputManager.instance().accelerometer_supported)
+
+    @property
+    def gyroscope_supported(cls) -> bool:
+        """Whether the current device exposes a gyroscope."""
+        return bool(_NativeInputManager.instance().gyroscope_supported)
+
+    @property
+    def acceleration(cls) -> Tuple[float, float, float]:
+        """Latest linear acceleration in g-force units, matching Unity axes."""
+        values = _NativeInputManager.instance().acceleration
+        return (float(values[0]), float(values[1]), float(values[2]))
+
+    @property
+    def gyroscope_rotation_rate(cls) -> Tuple[float, float, float]:
+        """Latest angular velocity in radians per second."""
+        values = _NativeInputManager.instance().gyroscope_rotation_rate
+        return (float(values[0]), float(values[1]), float(values[2]))
+
+    @property
+    def acceleration_event_count(cls) -> int:
+        """Number of accelerometer samples captured during this input frame."""
+        return len(_NativeInputManager.instance().acceleration_events)
+
+    @property
+    def acceleration_events(cls) -> Tuple[AccelerationEvent, ...]:
+        """Accelerometer samples captured during this input frame."""
+        return tuple(
+            AccelerationEvent(
+                acceleration=(
+                    float(event.acceleration[0]),
+                    float(event.acceleration[1]),
+                    float(event.acceleration[2]),
+                ),
+                delta_time=float(event.delta_time),
+            )
+            for event in _NativeInputManager.instance().acceleration_events
+        )
 
 
 # =============================================================================
@@ -582,6 +632,7 @@ class Input(metaclass=_InputMeta):
 from .actions import InputAction, InputActionMap, InputActionPhase, InputActionType
 
 __all__ = [
+    "AccelerationEvent",
     "Input",
     "InputAction",
     "InputActionMap",

@@ -30,6 +30,7 @@
 
 union SDL_Event;
 struct SDL_Window;
+struct SDL_Sensor;
 
 namespace infernux
 {
@@ -47,6 +48,18 @@ enum class TouchPhase : uint8_t
     Stationary,
     Ended,
     Canceled,
+};
+
+enum class MotionSensorType : uint8_t
+{
+    Accelerometer,
+    Gyroscope,
+};
+
+struct AccelerationEvent
+{
+    std::array<float, 3> acceleration{};
+    float deltaTime = 0.0f;
 };
 
 struct TouchState
@@ -123,6 +136,9 @@ class InputManager
     void ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY);
     void ProcessScrollEvent(float deltaX, float deltaY);
     void ProcessTextInputEvent(const std::string &text);
+    /// Feed one motion-sensor sample. Accelerometer values use SI m/s²;
+    /// gyroscope values use radians per second.
+    void ProcessMotionSensorEvent(MotionSensorType type, uint64_t timestampNs, float x, float y, float z);
     void ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId, float x,
                            float y, float deltaX, float deltaY, float pressure, TouchPhase phase,
                            float contactWidth = 0.0f, float contactHeight = 0.0f, bool isPrimary = false,
@@ -131,6 +147,11 @@ class InputManager
     void ProcessScreenMetrics(int logicalWidth, int logicalHeight, int framebufferWidth, int framebufferHeight,
                               float pixelRatio, int safeAreaX, int safeAreaY, int safeAreaWidth, int safeAreaHeight,
                               bool keyboardInsetKnown = false, int keyboardInset = 0);
+
+    /// Open the first platform accelerometer and gyroscope exposed by SDL.
+    /// Missing hardware is a supported capability state, not an initialization error.
+    void InitializeMotionSensors();
+    void ShutdownMotionSensors();
 
     /// @brief Mark a trusted synthetic pointer position for the current GUI frame.
     ///
@@ -281,6 +302,31 @@ class InputManager
         return m_touches;
     }
 
+    [[nodiscard]] bool HasAccelerometer() const noexcept
+    {
+        return m_accelerometerAvailable;
+    }
+
+    [[nodiscard]] bool HasGyroscope() const noexcept
+    {
+        return m_gyroscopeAvailable;
+    }
+
+    [[nodiscard]] const std::array<float, 3> &GetAcceleration() const noexcept
+    {
+        return m_acceleration;
+    }
+
+    [[nodiscard]] const std::array<float, 3> &GetGyroscopeRotationRate() const noexcept
+    {
+        return m_gyroscopeRotationRate;
+    }
+
+    [[nodiscard]] const std::vector<AccelerationEvent> &GetAccelerationEvents() const noexcept
+    {
+        return m_accelerationEvents;
+    }
+
     /// @brief Current logical/framebuffer/safe-area snapshot for the game window.
     [[nodiscard]] const ScreenState &GetScreenState() const
     {
@@ -379,7 +425,18 @@ class InputManager
 
     std::string m_inputString;
     std::vector<TouchState> m_touches;
+    std::vector<AccelerationEvent> m_accelerationEvents;
     std::vector<std::string> m_droppedFiles;
+
+    std::array<float, 3> m_acceleration{};
+    std::array<float, 3> m_gyroscopeRotationRate{};
+    SDL_Sensor *m_accelerometer = nullptr;
+    SDL_Sensor *m_gyroscope = nullptr;
+    uint32_t m_accelerometerId = 0;
+    uint32_t m_gyroscopeId = 0;
+    uint64_t m_lastAccelerationTimestampNs = 0;
+    bool m_accelerometerAvailable = false;
+    bool m_gyroscopeAvailable = false;
 
     SDL_Window *m_window = nullptr;
     bool m_cursorLocked = false;
