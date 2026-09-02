@@ -1039,6 +1039,18 @@ def _public_motion_capture(capture: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _scene_python_lifecycle_ready(scene: Any) -> bool:
+    if scene is None:
+        return False
+    for obj in scene.get_all_objects():
+        if not obj.is_active_in_hierarchy():
+            continue
+        for component in obj.get_py_components():
+            if bool(component.enabled) and not bool(component._has_started):
+                return False
+    return True
+
+
 def _observe_player(
     engine,
     object_names: list[str],
@@ -1057,9 +1069,13 @@ def _observe_player(
     native_scene_manager = SceneManager.instance()
     scene = native_scene_manager.get_active_scene()
     play_manager = engine.get_play_mode_manager()
+    player_runtime = engine.get_player_runtime()
     scene_playing = bool(scene is not None and scene.is_playing())
     manager_playing = bool(native_scene_manager.is_playing())
     manager_paused = bool(native_scene_manager.is_paused())
+    player_runtime_playing = bool(
+        player_runtime is None or player_runtime.is_playing
+    )
     runtime_frame_count = int(native_scene_manager.runtime_frame_count)
     if manager_paused:
         state = "paused"
@@ -1108,6 +1124,7 @@ def _observe_player(
     from Infernux.application import _renderer_state_from_native
 
     renderer_state = _renderer_state_from_native(native)
+    python_lifecycle_ready = _scene_python_lifecycle_ready(scene)
     result = {
         "scene_name": str(getattr(scene, "name", "") or ""),
         "scene_playing": scene_playing,
@@ -1115,7 +1132,11 @@ def _observe_player(
         "scene_manager_paused": manager_paused,
         "runtime_frame_count": runtime_frame_count,
         "gameplay_ready": bool(
-            scene_playing and manager_playing and runtime_frame_count > 0
+            scene_playing
+            and manager_playing
+            and player_runtime_playing
+            and runtime_frame_count > 0
+            and python_lifecycle_ready
         ),
         "play_state": str(state).lower(),
         "objects": objects,

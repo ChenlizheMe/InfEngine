@@ -636,6 +636,27 @@ def test_player_control_capture_rejects_late_arm_in_target_scene(tmp_path, monke
     assert "must be armed before the target scene" in payload["error"]
 
 
+def test_scene_python_lifecycle_ready_waits_for_enabled_components():
+    class Component:
+        enabled = True
+        _has_started = False
+
+    component = Component()
+    obj = type(
+        "_Object",
+        (),
+        {
+            "is_active_in_hierarchy": lambda self: True,
+            "get_py_components": lambda self: [component],
+        },
+    )()
+    scene = type("_Scene", (), {"get_all_objects": lambda self: [obj]})()
+
+    assert not player_control._scene_python_lifecycle_ready(scene)
+    component._has_started = True
+    assert player_control._scene_python_lifecycle_ready(scene)
+
+
 def test_player_observation_reports_component_diagnostics(monkeypatch):
     class RaceHUDController:
         enabled = True
@@ -659,9 +680,18 @@ def test_player_observation_reports_component_diagnostics(monkeypatch):
         "id": 7,
         "active": True,
         "transform": _Transform(),
+        "is_active_in_hierarchy": lambda self: True,
         "get_py_components": lambda self: [RaceHUDController()],
     })()
-    scene = type("_Scene", (), {"name": "MainMenu", "is_playing": lambda self: True})()
+    scene = type(
+        "_Scene",
+        (),
+        {
+            "name": "MainMenu",
+            "is_playing": lambda self: True,
+            "get_all_objects": lambda self: [obj],
+        },
+    )()
     scene_manager = type("_SceneManager", (), {
         "get_active_scene": lambda self: scene,
         "is_playing": lambda self: True,
@@ -687,6 +717,7 @@ def test_player_observation_reports_component_diagnostics(monkeypatch):
     engine = type("_ObserveEngine", (), {
         "get_native_engine": lambda self: native,
         "get_play_mode_manager": lambda self: None,
+        "get_player_runtime": lambda self: None,
     })()
 
     monkeypatch.setattr("Infernux.lib.SceneManager.instance", lambda: scene_manager)
@@ -731,6 +762,15 @@ def test_player_observation_reports_component_diagnostics(monkeypatch):
         "game_target_aligned": True,
         "material_pipelines_aligned": True,
     }
+
+    engine.get_player_runtime = lambda: type(
+        "_PlayerRuntime", (), {"is_playing": False}
+    )()
+    assert player_control._observe_player(engine, ["Prompt"])["gameplay_ready"] is False
+    engine.get_player_runtime = lambda: type(
+        "_PlayerRuntime", (), {"is_playing": True}
+    )()
+    assert player_control._observe_player(engine, ["Prompt"])["gameplay_ready"] is True
 
     scene_manager.is_paused = lambda: True
     engine.get_play_mode_manager = lambda: type("_PlayManager", (), {
@@ -784,15 +824,18 @@ def test_player_control_capture_timeout_releases_command_channel(tmp_path, monke
 def test_player_observation_discovers_bounded_objects_by_public_component_type(monkeypatch):
     class SceneNavigationController:
         enabled = True
+        _has_started = True
 
     class DecorativeComponent:
         enabled = True
+        _has_started = True
 
     def make_object(object_id, name, component):
         return type("_Object", (), {
             "id": object_id,
             "name": name,
             "active": True,
+            "is_active_in_hierarchy": lambda self: True,
             "get_components": lambda self: [],
             "get_py_components": lambda self: [component],
         })()
@@ -818,6 +861,7 @@ def test_player_observation_discovers_bounded_objects_by_public_component_type(m
     engine = type("_ObserveEngine", (), {
         "get_native_engine": lambda self: native,
         "get_play_mode_manager": lambda self: None,
+        "get_player_runtime": lambda self: None,
     })()
 
     monkeypatch.setattr("Infernux.lib.SceneManager.instance", lambda: scene_manager)
