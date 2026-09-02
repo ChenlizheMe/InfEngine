@@ -5925,6 +5925,26 @@ class TestGameBuilderDependencyCollection:
 
         assert exc_info.value.filename == str(script_path)
 
+    def test_collect_user_dependencies_rejects_missing_packages(self, tmp_path, monkeypatch):
+        project_root = _make_project(tmp_path)
+        _write_asset_script(
+            project_root,
+            "missing_dependency.py",
+            "import absent_first\nimport absent_second\n",
+        )
+        builder = GameBuilder(
+            str(project_root),
+            str(tmp_path / "build_output"),
+            game_name="TestGame",
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+
+        with pytest.raises(
+            RuntimeError,
+            match="Player build dependencies are not installed: absent_first, absent_second",
+        ):
+            builder._collect_user_dependencies()
+
 
 class TestGameBuilderAutoParallelExport:
     def test_compile_user_scripts_propagates_bytecode_failure(self, tmp_path, monkeypatch):

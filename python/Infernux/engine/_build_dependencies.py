@@ -37,11 +37,9 @@ import struct
 import subprocess
 import sys
 import threading
-import time
 from typing import Callable, Dict, List, Optional
 
 import Infernux._jit_kernels as _jit_kernels
-from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
 
@@ -88,18 +86,6 @@ class BuildDependencyMixin:
         filtered_path = os.path.join(temp_dir, "requirements.game.txt")
         with open(filtered_path, "w", encoding="utf-8", newline="\n") as f:
             f.writelines(filtered)
-        removed = sorted(
-            {
-                self._normalized_requirement_name(line)
-                for line in lines
-                if self._is_game_build_excluded_requirement(line)
-                and self._normalized_requirement_name(line)
-            }
-        )
-        Debug.log_internal(
-            "Filtered non-runtime requirements from requirements.txt: "
-            + ", ".join(removed)
-        )
         return filtered_path
 
     def _project_requirement_files(self) -> List[str]:
@@ -118,9 +104,8 @@ class BuildDependencyMixin:
         2. AST-based import scanning of all ``.py`` files under ``Assets/``.
            Only top-level package names are collected (``import a.b`` → ``a``).
 
-        The results are de-duplicated, stdlib/engine names are filtered out,
-        and only packages actually installed in the current environment are
-        returned (to avoid Nuitka errors on typos or conditional imports).
+        The results are de-duplicated and stdlib/engine names are filtered out.
+        Every remaining package must be installed in the build environment.
         """
         import ast
         import importlib.util
@@ -129,12 +114,10 @@ class BuildDependencyMixin:
         found: set[str] = set()
         uses_infernux_jit = False
         direct_parallel_runtime_imports: set[str] = set()
-        _t0 = time.perf_counter()
 
         # --- Source 1: project requirements.txt -------------------------
         req_path = os.path.join(self.project_path, "requirements.txt")
         if os.path.isfile(req_path):
-            Debug.log_internal(f"Found project requirements.txt: {req_path}")
             with open(req_path, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
@@ -144,13 +127,8 @@ class BuildDependencyMixin:
                     pkg = re.split(r"[><=!;\[]", line, maxsplit=1)[0].strip()
                     if pkg:
                         found.add(pkg)
-        Debug.log_internal(
-            f"  requirements.txt parsed in {time.perf_counter() - _t0:.3f}s"
-        )
 
         # --- Source 2: AST import scanning ------------------------------
-        _ast_t0 = time.perf_counter()
-        _ast_file_count = 0
         assets_dir = os.path.join(self.project_path, "Assets")
         if os.path.isdir(assets_dir):
             for root, _, files in os.walk(assets_dir):
@@ -158,7 +136,6 @@ class BuildDependencyMixin:
                     if not fname.endswith(".py"):
                         continue
                     fpath = os.path.join(root, fname)
-                    _ast_file_count += 1
                     with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                         tree = ast.parse(f.read(), filename=fpath)
                     for node in ast.walk(tree):
@@ -185,11 +162,6 @@ class BuildDependencyMixin:
                                         "JIT_AVAILABLE",
                                     }:
                                         uses_infernux_jit = True
-        Debug.log_internal(
-            f"  AST scanned {_ast_file_count} .py files in "
-            f"{time.perf_counter() - _ast_t0:.3f}s"
-        )
-
         # --- Filter: remove stdlib / engine / excluded ------------------
         found -= self._BUILTIN_MODULES
         found -= self._collect_internal_asset_module_names()
@@ -198,11 +170,6 @@ class BuildDependencyMixin:
             pkg for pkg in found
             if pkg.lower().replace("_", "-") in excluded_imports
         }
-        if skipped:
-            Debug.log_internal(
-                "Skipping game-build-excluded dependencies: "
-                + ", ".join(sorted(skipped))
-            )
         found -= skipped
 
         enable_jit = bool(getattr(self, "enable_jit", False))
@@ -227,26 +194,18 @@ class BuildDependencyMixin:
             found.discard("numba")
             found.discard("llvmlite")
 
-        # Only keep packages that are actually importable in the current
-        # environment so Nuitka doesn't error on stale or optional imports.
-        _verify_t0 = time.perf_counter()
-        verified: list[str] = []
-        for pkg in sorted(found):
-            if importlib.util.find_spec(pkg) is not None:
-                verified.append(pkg)
-            else:
-                Debug.log_warning(
-                    f"User script dependency '{pkg}' not installed — skipping"
-                )
-        Debug.log_internal(
-            f"  import verification in {time.perf_counter() - _verify_t0:.3f}s"
-        )
-
-        if verified:
-            Debug.log_internal(
-                f"User dependencies to bundle: {', '.join(verified)}"
+        dependencies = sorted(found)
+        missing = [
+            package
+            for package in dependencies
+            if importlib.util.find_spec(package) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "Player build dependencies are not installed: "
+                + ", ".join(missing)
             )
-        return verified
+        return dependencies
 
     def _collect_internal_asset_module_names(self) -> set[str]:
         """Return top-level module names that belong to the project's Assets tree."""
