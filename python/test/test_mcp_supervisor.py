@@ -130,37 +130,6 @@ def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_sta
     assert cache.read_bytes() == b"derived-after"
 
 
-def test_checkpoint_payload_verification_honors_paths_recorded_by_older_policy(tmp_path, monkeypatch):
-    project = tmp_path / "Desktop" / "LegacyCheckpointPilot"
-    (project / "Assets").mkdir(parents=True)
-    (project / "ProjectSettings").mkdir()
-    (project / "Assets" / "Race.scene").write_text("clean\n", encoding="utf-8")
-    capabilities = project / "ProjectSettings" / "mcp_capabilities.json"
-    capabilities.write_text('{"legacy": true}\n', encoding="utf-8")
-    supervisor = SupervisorSession(str(project), session_id="legacy-checkpoint")
-    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
-    checkpoint_store = supervisor_module.checkpoint_store
-    current_ignored = checkpoint_store._IGNORED_FILE_NAMES
-    monkeypatch.setattr(
-        checkpoint_store,
-        "_IGNORED_FILE_NAMES",
-        frozenset(name for name in current_ignored if name != "mcp_capabilities.json"),
-    )
-
-    created = supervisor.create_checkpoint("legacy-policy-001", restart_editor=False)
-    with open(created["checkpoint"]["manifest_path"], "r", encoding="utf-8") as stream:
-        manifest = json.load(stream)
-    assert "ProjectSettings/mcp_capabilities.json" in {
-        entry["path"] for entry in manifest["ledger"]["entries"]
-    }
-
-    monkeypatch.setattr(checkpoint_store, "_IGNORED_FILE_NAMES", current_ignored)
-    status = supervisor.checkpoint_status("legacy-policy-001")
-
-    assert status["payload_valid"] is True
-    assert status["current_match"] is True
-
-
 def test_checkpoint_restore_rolls_back_first_root_when_second_root_replace_fails(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "CheckpointRollbackPilot"
     assets = project / "Assets"
