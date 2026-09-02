@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from Infernux.engine.path_utils import portable_path, resolved_path
-from Infernux.plugins.cache import PackageBlobCache
+from Infernux.plugins.cache import SharedPackageCache
 from Infernux.plugins.manager import PluginManager
 from Infernux.plugins.registry import PluginRegistry
 
@@ -33,7 +33,7 @@ def _cached_source_exists(source: Mapping[str, object]) -> bool:
     if str(source.get("cache_scope", "")).casefold() != "hub":
         return False
     path = resolved_path(
-        os.path.join(PackageBlobCache().root, *location.split("/"))
+        os.path.join(SharedPackageCache().root, *location.split("/"))
     )
     return os.path.isfile(path)
 
