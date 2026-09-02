@@ -127,7 +127,6 @@ class Engine():
             return
         try:
             self.set_present_mode(mode)
-            Debug.log_internal(f"Startup present mode override applied: {mode}")
         except Exception as exc:
             Debug.log_warning(f"Failed to apply startup present mode override '{raw}': {exc}")
 
@@ -145,7 +144,6 @@ class Engine():
             return
         try:
             self._engine.set_play_fps_cap(fps)
-            Debug.log_internal(f"Startup player FPS cap applied: {fps:g}")
         except Exception as exc:
             Debug.log_warning(f"Failed to apply startup player FPS cap '{raw}': {exc}")
 
@@ -186,7 +184,6 @@ class Engine():
         # Initialize AssetManager singleton (GUID ↔ path resolution for refs)
         from Infernux.core.assets import AssetManager
         AssetManager.initialize(self)
-        Debug.log_internal("AssetManager initialized")
 
         if _PLAYER_MODE:
             from Infernux.engine.player_runtime import PlayerRuntimeSession
@@ -196,7 +193,6 @@ class Engine():
                 native_engine=self._engine,
                 scheduler=self._runtime_scheduler,
             )
-            Debug.log_internal("PlayerRuntimeSession initialized")
         else:
             from Infernux.engine.play_mode import PlayModeManager
 
@@ -204,14 +200,11 @@ class Engine():
             self._play_mode_manager.set_asset_database(self.get_asset_database())
             self._play_mode_manager._native_engine = self._engine
         self._install_pre_scene_time_callback()
-        if self._play_mode_manager is not None:
-            Debug.log_internal("PlayModeManager initialized")
 
         # Auto-activate Python SRP rendering path
         # All rendering passes (opaque, skybox, transparent) are driven by Python
         from Infernux.renderstack import RenderStackPipeline
         self.set_render_pipeline(RenderStackPipeline())
-        Debug.log_internal("RenderStackPipeline activated (Python SRP path)")
 
     def init_headless(self, project_path):
         if self._mode != RuntimeMode.Headless:
@@ -235,7 +228,6 @@ class Engine():
         self._play_mode_manager._native_engine = self._engine
         self._initialize_headless_authoring(project_path)
         self._install_pre_scene_time_callback()
-        Debug.log_internal("Headless engine initialized")
 
     def _initialize_headless_authoring(self, project_path) -> None:
         """Create the non-visual editor services required for authoring.
@@ -415,8 +407,6 @@ class Engine():
             search_dirs.append(library_mat_dir)
 
         default_loaded = False
-        extra_count = 0
-
         for mat_dir in search_dirs:
             for fname in os.listdir(mat_dir):
                 if not fname.endswith(".mat"):
@@ -426,20 +416,12 @@ class Engine():
                 # Load the default material via AssetRegistry (replaces builtin DefaultLit)
                 if fname == "default_lit.mat" and not default_loaded:
                     if registry.load_builtin_material_from_file("DefaultLit", mat_path):
-                        Debug.log_internal(f"Loaded default material from: {mat_path}")
                         default_loaded = True
                     else:
                         Debug.log_warning(f"Failed to load default material from: {mat_path}")
                 else:
                     # Load via AssetRegistry (unified cache)
-                    native = registry.load_material(mat_path)
-                    if native:
-                        extra_count += 1
-
-        if not default_loaded:
-            Debug.log_internal("No project default material found, using engine default")
-        if extra_count:
-            Debug.log_internal(f"Loaded {extra_count} additional project material(s)")
+                    registry.load_material(mat_path)
 
     def run(self):
         if self._mode == RuntimeMode.Headless:
@@ -558,9 +540,7 @@ class Engine():
             elif now >= _gc_deadlines[0]:
                 generation = 0
             if generation is not None:
-                gc_started = time.perf_counter()
-                collected = gc.collect(generation)
-                gc_elapsed_ms = (time.perf_counter() - gc_started) * 1000.0
+                gc.collect(generation)
                 if generation == 2:
                     _gc_deadlines[2] = now + 180.0
                     _gc_deadlines[1] = now + 15.0
@@ -570,17 +550,11 @@ class Engine():
                     _gc_deadlines[0] = now + 1.0
                 else:
                     _gc_deadlines[0] = now + 1.0
-                if gc_elapsed_ms >= 10.0:
-                    Debug.log_internal(
-                        f"[PythonGCProfile] generation={generation} "
-                        f"elapsed={gc_elapsed_ms:.2f}ms collected={collected}"
-                    )
         self._engine.set_post_draw_callback(_post_draw_tick)
 
         # Disable automatic GC to eliminate unpredictable pauses during
         # rendering.  Manual collection runs in _post_draw_tick above.
         gc.disable()
-        Debug.log_internal("Engine started (automatic GC disabled, manual collection active)")
         self._engine.run()
         gc.enable()  # Restore automatic GC for shutdown cleanup
         # C++ Run() returned (main loop ended, but Cleanup not yet called).
@@ -974,8 +948,6 @@ class Engine():
         pmm = self._play_mode_manager
         if not pmm or pmm.state == PlayModeState.EDIT:
             return
-
-        Debug.log_internal("Shutting down Play Mode for engine exit…")
 
         # 1. Stop the C++ simulation loop (no more Update/FixedUpdate calls)
         try:
