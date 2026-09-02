@@ -17,6 +17,7 @@ def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points()
     assert "scripts/acceptance/build_player.py" in text
     assert "scripts/acceptance/web_mobile_input_smoke.cjs" in text
     assert "scripts/acceptance/android_player_smoke.py" in text
+    assert "scripts/acceptance/android_multitouch_smoke.py" in text
     assert "scripts/setup/build_web_toolchain.sh" in text
     assert "scripts/setup/build_android_python_runtime.sh" in text
 
@@ -41,6 +42,7 @@ def test_platform_workflow_is_bounded_and_collects_evidence():
     assert text.count("if: always()") == 2
     assert "android-player-build.json" in text
     assert "android-player-smoke.json" in text
+    assert "android-multitouch-smoke.json" in text
     assert "web-player-build.json" in text
     assert "web-player-smoke.json" in text
     assert "trap cleanup EXIT" in text
@@ -60,6 +62,9 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     assert '"--keep-running"' in smoke
     assert '"--require-log"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke
+    assert "tests/android/input_instrumentation" in text
+    assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in text
+    assert "--wait-milliseconds 20000" in text
 
 
 def test_web_smoke_can_attach_to_a_physical_mobile_browser():

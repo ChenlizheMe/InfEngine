@@ -3,12 +3,19 @@ package com.infernux.acceptance.input;
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.app.UiAutomation;
+import android.content.ComponentName;
 import android.content.Intent;
+import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.MotionEvent;
-import android.view.View;
+import android.view.WindowManager;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /** Injects two simultaneous contacts through Android's system input test boundary. */
 public final class MultiTouchInstrumentation extends Instrumentation {
@@ -36,22 +43,30 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             if (launch == null) {
                 throw new IllegalStateException("No launcher activity for " + targetPackage);
             }
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            final Activity activity = startActivitySync(launch);
+            final ComponentName component = launch.getComponent();
+            if (component == null) {
+                throw new IllegalStateException("Launcher intent has no component for " + targetPackage);
+            }
+            final UiAutomation automation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
+            launchFromShell(automation, component);
             final long waitMilliseconds = readPositiveLong("waitMilliseconds", 7000L);
             SystemClock.sleep(waitMilliseconds);
 
-            final View decor = activity.getWindow().getDecorView();
-            final int width = decor.getWidth();
-            final int height = decor.getHeight();
+            final WindowManager windowManager = getTargetContext().getSystemService(WindowManager.class);
+            if (windowManager == null) {
+                throw new IllegalStateException("Target context has no WindowManager");
+            }
+            final Rect bounds = windowManager.getCurrentWindowMetrics().getBounds();
+            final int width = bounds.width();
+            final int height = bounds.height();
             if (width <= 0 || height <= 0) {
                 throw new IllegalStateException("Target activity has no drawable extent");
             }
 
-            final UiAutomation automation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
             injectCompletedGesture(automation, width, height);
             SystemClock.sleep(350L);
             injectCanceledGesture(automation, width, height);
+            SystemClock.sleep(350L);
 
             result.putString("INFERNUX_MULTITOUCH_INJECTION", "passed");
             result.putInt("width", width);
@@ -61,6 +76,18 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             result.putString("INFERNUX_MULTITOUCH_INJECTION", "failed");
             result.putString("error", error.toString());
             finish(Activity.RESULT_CANCELED, result);
+        }
+    }
+
+    private static void launchFromShell(UiAutomation automation, ComponentName component)
+            throws IOException {
+        final String command = "am start -W -n " + component.flattenToShortString();
+        try (ParcelFileDescriptor descriptor = automation.executeShellCommand(command);
+                FileInputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
+            final String output = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            if (!output.contains("Status: ok")) {
+                throw new IllegalStateException("Android failed to launch target activity: " + output.trim());
+            }
         }
     }
 

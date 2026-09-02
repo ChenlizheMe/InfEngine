@@ -238,6 +238,15 @@ def test_smoke_parser_allows_manual_session_to_remain_running():
     assert arguments.keep_running
 
 
+def test_device_is_unlocked_before_usb_install_approval_is_requested():
+    source = SCRIPT.read_text(encoding="utf-8")
+    run_smoke = source.split("def run_smoke(", 1)[1].split(
+        "def _parser()", 1
+    )[0]
+
+    assert run_smoke.index("unlock_device(adb)") < run_smoke.index("install_apk(")
+
+
 def test_atomic_report_records_structured_payload(tmp_path: Path):
     module = _module()
     report = tmp_path / "evidence" / "android.json"

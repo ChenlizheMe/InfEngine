@@ -15,6 +15,9 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._trail = None
         self._trail_points = []
         self._actions = inx.input.InputActionMap.standard_gameplay()
+        self._multitouch_reported = False
+        self._unity_touch_reported = False
+        self._touch_cancel_reported = False
 
     def start(self):
         scene = inx.SceneManager.get_active_scene()
@@ -71,7 +74,49 @@ class PlatformFixtureBootstrap(inx.InxComponent):
 
     def update(self, delta_time: float):
         del delta_time
+        self._validate_touch_input()
         self._record_trail_position()
+
+    def _validate_touch_input(self):
+        touches = inx.input.Input.touches
+        if inx.input.Input.touch_count != len(touches):
+            raise RuntimeError("Input.touch_count disagrees with Input.touches")
+
+        for index, touch in enumerate(touches):
+            indexed = inx.input.Input.get_touch(index)
+            if (
+                indexed.touch_id != touch.touch_id
+                or indexed.finger_id != touch.finger_id
+                or indexed.phase is not touch.phase
+            ):
+                raise RuntimeError("Input.get_touch(index) disagrees with Input.touches")
+            if (
+                not self._unity_touch_reported
+                and touch.phase is inx.input.TouchPhase.MOVED
+                and touch.delta_time > 0.0
+            ):
+                self._unity_touch_reported = True
+                inx.Debug.log(
+                    "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY "
+                    f"count={inx.input.Input.touch_count} finger={touch.finger_id} "
+                    f"delta_time={touch.delta_time:.6f} pressure={touch.pressure:.3f}"
+                )
+            if (
+                not self._touch_cancel_reported
+                and touch.phase is inx.input.TouchPhase.CANCELED
+            ):
+                self._touch_cancel_reported = True
+                inx.Debug.log(
+                    "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED "
+                    f"finger={touch.finger_id}"
+                )
+
+        if len(touches) >= 2 and not self._multitouch_reported:
+            self._multitouch_reported = True
+            inx.Debug.log(
+                "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY "
+                f"count={inx.input.Input.touch_count}"
+            )
 
     def _record_trail_position(self, *, force: bool = False):
         if self._probe is None or self._trail is None:

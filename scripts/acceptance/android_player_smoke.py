@@ -419,6 +419,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             f"APK ABIs {sorted(packaged_abis)} do not include device ABI {abi}"
         )
 
+    unlock_device(adb)
     reinstalled_after_signature_mismatch = False
     automated_install_approval = False
     if not arguments.no_install:
@@ -440,7 +441,6 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             reinstalled_after_signature_mismatch = True
     adb.run("logcat", "-c")
     adb.run("shell", "am", "force-stop", arguments.package)
-    unlock_device(adb)
     adb.run("shell", "am", "start", "-n", arguments.activity)
     _wait_for_foreground(adb, arguments.package)
     pid, log = _wait_for_player(
