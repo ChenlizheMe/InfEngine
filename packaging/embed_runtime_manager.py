@@ -138,74 +138,6 @@ def _is_embedded_root(root: str) -> bool:
     return bool(_pth_files(root))
 
 
-def _enable_site_for_embedded_runtime(
-    root: str, runtime: str | PythonRuntimeId
-) -> None:
-    runtime_id = PythonRuntimeId.parse(runtime)
-    required_lines = [
-        f"{runtime_id.windows_library_stem}.zip",
-        ".",
-        "Lib",
-        "Lib/site-packages",
-    ]
-    for pth_path in _pth_files(root):
-        with open(pth_path, "r", encoding="utf-8") as f:
-            raw_lines = [line.rstrip("\r\n") for line in f]
-
-        output: list[str] = []
-        seen: set[str] = set()
-        for line in raw_lines:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                output.append(line)
-                continue
-            if stripped == "import site":
-                continue
-            if stripped not in seen:
-                output.append(stripped)
-                seen.add(stripped)
-
-        for item in required_lines:
-            if item not in seen:
-                output.append(item)
-                seen.add(item)
-        output.append("import site")
-
-        normalized_raw = [line.rstrip("\r\n") for line in raw_lines]
-        if output == normalized_raw:
-            continue
-
-        with open(pth_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(output).rstrip() + "\n")
-
-
-def _embedded_runtime_has_site_enabled(
-    root: str, runtime: str | PythonRuntimeId
-) -> bool:
-    runtime_id = PythonRuntimeId.parse(runtime)
-    required_lines = {
-        f"{runtime_id.windows_library_stem}.zip",
-        ".",
-        "Lib",
-        "Lib/site-packages",
-        "import site",
-    }
-    pth_paths = _pth_files(root)
-    if not pth_paths:
-        return True
-
-    for pth_path in pth_paths:
-        try:
-            with open(pth_path, "r", encoding="utf-8") as f:
-                lines = {line.strip() for line in f if line.strip() and not line.strip().startswith("#")}
-        except OSError as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            return False
-        if not required_lines.issubset(lines):
-            return False
-    return True
-
-
 def _is_python_version(
     python_exe: str, runtime: str | PythonRuntimeId
 ) -> bool:
@@ -351,19 +283,6 @@ def _copy_runtime_payload(src_root: str, dest_root: str, *, overwrite: bool) -> 
         else:
             if not overwrite and os.path.exists(target_path):
                 continue
-            shutil.copy2(source_path, target_path)
-
-
-def _copy_directory_contents(src_root: str, dest_root: str) -> None:
-    os.makedirs(dest_root, exist_ok=True)
-    for name in os.listdir(src_root):
-        source_path = os.path.join(src_root, name)
-        target_path = os.path.join(dest_root, name)
-        if os.path.isdir(source_path):
-            _remove_tree(target_path)
-            if not _copy_tree_fast(source_path, target_path):
-                shutil.copytree(source_path, target_path)
-        else:
             shutil.copy2(source_path, target_path)
 
 

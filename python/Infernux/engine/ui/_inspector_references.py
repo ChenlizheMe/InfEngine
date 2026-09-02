@@ -74,18 +74,6 @@ def _is_project_asset_path(file_path: str) -> bool:
     )
 
 
-def _is_project_path(file_path: str) -> bool:
-    """Return whether *file_path* belongs to the active project worktree."""
-    from Infernux.engine.path_utils import is_path_within
-    from Infernux.engine.project_context import get_project_root
-
-    project_root = get_project_root()
-    return bool(
-        project_root
-        and is_path_within(_resolve_project_asset_path(file_path), project_root)
-    )
-
-
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
     from Infernux.core.asset_types import read_meta_guid

@@ -78,17 +78,6 @@ def _write_registry(install_dir: str) -> None:
         pass
 
 
-def _remove_registry() -> None:
-    """Remove Infernux Hub from Windows Add/Remove Programs."""
-    if sys.platform != "win32":
-        return
-    try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, _UNINSTALL_REG_KEY)
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-        pass
-
-
 def _create_start_menu_shortcut(install_dir: str) -> None:
     """Create a Start Menu shortcut (Windows) or Applications symlink (macOS)."""
     if sys.platform == "darwin":
@@ -142,34 +131,6 @@ def _create_start_menu_shortcut(install_dir: str) -> None:
             creationflags=0x08000000,
             env=merge_child_env_utf8(),
         )
-    except Exception as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-        pass
-
-
-def _remove_start_menu_shortcut() -> None:
-    """Remove Start Menu shortcut (Windows) or Applications symlink (macOS)."""
-    if sys.platform == "darwin":
-        try:
-            link_path = os.path.expanduser("~/Applications/Infernux Hub")
-            if os.path.lexists(link_path):
-                os.remove(link_path)
-        except Exception as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            pass
-        return
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes.wintypes
-        CSIDL_PROGRAMS = 0x0002
-        buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-        ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PROGRAMS, None, 0, buf)
-        programs_dir = buf.value
-        if not programs_dir:
-            return
-        shortcut_dir = os.path.join(programs_dir, "Infernux Hub")
-        shutil.rmtree(shortcut_dir, ignore_errors=True)
     except Exception as _exc:
         logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass

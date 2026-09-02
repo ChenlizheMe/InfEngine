@@ -638,20 +638,6 @@ def _restore_transaction_instance_schemas(
                 values.pop(name, None)
 
 
-def _capture_module_before_image(
-    before: dict[str, object],
-    after: dict[str, object],
-    image: dict[str, object],
-) -> None:
-    """Record only module keys whose table entry changed during one candidate."""
-    for name in set(before) | set(after):
-        previous = before.get(name, _MODULE_ABSENT)
-        current = after.get(name, _MODULE_ABSENT)
-        if previous is current:
-            continue
-        image.setdefault(name, previous)
-
-
 def _restore_sys_modules(before_image: dict[str, object]) -> None:
     """Restore only module entries captured as touched by this transaction."""
     for name, previous in before_image.items():

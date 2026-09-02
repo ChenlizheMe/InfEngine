@@ -204,12 +204,6 @@ def _apply_size_with_undo(comp, width, height, canvas, resize_fn):
     )
 
 
-def _apply_size_preserve_visual_position(comp, width, height, canvas):
-    """Update width/height while keeping the current visual top-left fixed."""
-    _apply_size_with_undo(comp, width, height, canvas,
-                          lambda c, w, h, cw, ch: c.set_size_preserve_visual_position(w, h, cw, ch))
-
-
 def _apply_size_preserve_top_left(comp, width, height, canvas):
     """Update width/height while keeping the rotated top-left corner fixed."""
     _apply_size_with_undo(comp, width, height, canvas,

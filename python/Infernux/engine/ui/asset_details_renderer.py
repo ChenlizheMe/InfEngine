@@ -1704,58 +1704,6 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
     ctx.image(tex_id, pw, ph, uv0_x, uv0_y, uv1_x, uv1_y)
 
 
-def _render_animclip_quickfill(ctx: InxGUIContext, clip, state: _State):
-    """Render quick-fill buttons: generate sequential frame range from sprite sheet."""
-    from .inspector_utils import render_info_text
-
-    sprite_frames = _get_sprite_frames(
-        clip.authoring_texture_guid, clip.authoring_texture_path)
-    sprite_frame_count = len(sprite_frames)
-
-    ctx.dummy(0, 2)
-    if sprite_frame_count > 0:
-        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label(t("asset.animclip_sprite_frames_available").format(count=sprite_frame_count))
-        ctx.pop_style_color(1)
-
-        def _fill_sequential():
-            from Infernux.core.animation_clip import AnimationFrame
-
-            document = clip.serialize_document()
-            document["frames"] = [
-                AnimationFrame(sprite_frame_id=frame.stable_id).to_dict()
-                for frame in sprite_frames
-            ]
-            _apply_editable_resource_document(
-                state,
-                document,
-                edit_key="frames",
-                description="Fill Animation Clip Frames",
-            )
-
-        def _fill_pingpong():
-            from Infernux.core.animation_clip import AnimationFrame
-
-            ordered = sprite_frames + list(reversed(sprite_frames[1:-1]))
-            document = clip.serialize_document()
-            document["frames"] = [
-                AnimationFrame(sprite_frame_id=frame.stable_id).to_dict()
-                for frame in ordered
-            ]
-            _apply_editable_resource_document(
-                state,
-                document,
-                edit_key="frames",
-                description="Fill Animation Clip Ping-Pong Frames",
-            )
-
-        ctx.button(t("asset.animclip_fill_sequential"), _fill_sequential)
-        ctx.same_line()
-        ctx.button(t("asset.animclip_fill_pingpong"), _fill_pingpong)
-    else:
-        render_info_text(ctx, t("asset.animclip_no_texture_hint"))
-
-
 def _get_sprite_frames(texture_guid: str, texture_path: str = "") -> list[SpriteFrame]:
     path = ""
     if texture_guid:
@@ -2797,43 +2745,6 @@ def _collect_dividers(settings: TextureImportSettings,
     return sorted(v_set), sorted(h_set)
 
 
-def _rebuild_frames_from_dividers(settings: TextureImportSettings,
-                                  v_divs: list[int], h_divs: list[int],
-                                  tex_w: int, tex_h: int):
-    """Regenerate sprite_frames from the current divider positions."""
-    xs = [0] + v_divs + [tex_w]
-    ys = [0] + h_divs + [tex_h]
-    existing = {
-        (frame.x, frame.y, frame.w, frame.h): frame
-        for frame in settings.sprite_frames
-    }
-    frames = []
-    idx = 0
-    for ri in range(len(ys) - 1):
-        for ci in range(len(xs) - 1):
-            rect = (
-                xs[ci],
-                ys[ri],
-                xs[ci + 1] - xs[ci],
-                ys[ri + 1] - ys[ri],
-            )
-            previous = existing.get(rect)
-            frames.append(
-                SpriteFrame(
-                    stable_id=(previous.stable_id if previous else uuid.uuid4().hex),
-                    name=(previous.name if previous else f"frame_{idx}"),
-                    x=rect[0],
-                    y=rect[1],
-                    w=rect[2],
-                    h=rect[3],
-                    pivot_x=(previous.pivot_x if previous else 0.5),
-                    pivot_y=(previous.pivot_y if previous else 0.5),
-                )
-            )
-            idx += 1
-    settings.sprite_frames = frames
-
-
 def _fit_sprite_zoom(tex_w: int, tex_h: int, canvas_w: float, canvas_h: float) -> float:
     if tex_w <= 0 or tex_h <= 0 or canvas_w <= 0.0 or canvas_h <= 0.0:
         return 1.0
@@ -2887,29 +2798,6 @@ def _hit_test_sprite_frame_edge(frame: SpriteFrame, tex_x: float, tex_y: float,
 def _frame_contains_point(frame: SpriteFrame, tex_x: float, tex_y: float) -> bool:
     return (frame.x <= tex_x <= frame.x + frame.w
             and frame.y <= tex_y <= frame.y + frame.h)
-
-
-def _apply_frame_edge_drag(frame: SpriteFrame, edge: str, tex_x: float, tex_y: float,
-                           tex_w: int, tex_h: int) -> None:
-    min_size = 1
-    left = int(frame.x)
-    right = int(frame.x + frame.w)
-    top = int(frame.y)
-    bottom = int(frame.y + frame.h)
-
-    if edge == "left":
-        left = max(0, min(int(round(tex_x)), right - min_size))
-    elif edge == "right":
-        right = min(tex_w, max(int(round(tex_x)), left + min_size))
-    elif edge == "top":
-        top = max(0, min(int(round(tex_y)), bottom - min_size))
-    elif edge == "bottom":
-        bottom = min(tex_h, max(int(round(tex_y)), top + min_size))
-
-    frame.x = left
-    frame.y = top
-    frame.w = max(min_size, right - left)
-    frame.h = max(min_size, bottom - top)
 
 
 def _begin_frame_edge_drag(ss: _SpriteEditorState,
