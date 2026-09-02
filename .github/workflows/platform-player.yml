@@ -424,6 +424,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
           script: |
+            . "$CONDA/etc/profile.d/conda.sh"
             conda activate infernux
             rm -rf out/ci-projects/android out/acceptance/android
             mkdir -p out/ci-projects/android out/test-results

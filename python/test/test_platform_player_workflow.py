@@ -113,6 +113,9 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
         "ReactiveCircus/android-emulator-runner@"
         "a421e43855164a8197daf9d8d40fe71c6996bb0d" in text
     )
+    emulator_step = text.index("ReactiveCircus/android-emulator-runner@")
+    emulator_script = text.index("script: |", emulator_step)
+    assert '. "$CONDA/etc/profile.d/conda.sh"' in text[emulator_script:]
     assert '"--keep-running"' in smoke
     assert '"--require-log"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke
