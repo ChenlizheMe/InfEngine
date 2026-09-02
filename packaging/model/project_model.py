@@ -5,6 +5,7 @@ import json
 import subprocess
 import shutil
 import glob
+import re
 import zipfile
 import sysconfig
 import uuid
@@ -18,7 +19,6 @@ from project_python_runtime import (
 )
 from python_runtime_catalog import PythonRuntimeId
 from python_runtime import PythonRuntimeError, PythonRuntimeManager
-import logging
 
 # Suppress console windows for all child processes on Windows
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
@@ -389,20 +389,20 @@ _NATIVE_IMPORT_SMOKE_TEST = (
 
 
 def _python_cp_tag(python_exe: str = "") -> str:
-    if python_exe:
-        try:
-            completed = subprocess.run(
-                [python_exe, "-c", "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')"],
-                timeout=30,
-                **_popen_kwargs(capture_output=True),
-            )
-            if completed.returncode == 0:
-                tag = (completed.stdout or "").strip()
-                if tag.startswith("cp"):
-                    return tag
-        except (OSError, subprocess.SubprocessError) as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-    return f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if not python_exe:
+        return f"cp{sys.version_info.major}{sys.version_info.minor}"
+    completed = subprocess.run(
+        [python_exe, "-c", "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')"],
+        timeout=30,
+        **_popen_kwargs(capture_output=True),
+    )
+    tag = (completed.stdout or "").strip()
+    if completed.returncode != 0 or not re.fullmatch(r"cp\d+", tag):
+        details = _summarize_output(completed.stderr or completed.stdout)
+        raise RuntimeError(
+            f"Unable to determine the Python ABI tag for {python_exe}.\n{details}"
+        )
+    return tag
 
 
 def _engine_root() -> str:
@@ -420,17 +420,14 @@ def _iter_cmake_python_cache_entries() -> list[str]:
         "PYBIND11_PYTHON_EXECUTABLE_LAST",
     )
     out: list[str] = []
-    try:
-        with open(cache_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if "=" not in line:
-                    continue
-                key_part, value = line.rstrip("\n").split("=", 1)
-                key = key_part.split(":", 1)[0]
-                if key in keys and value:
-                    out.append(os.path.normpath(value.strip()))
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+    with open(cache_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if "=" not in line:
+                continue
+            key_part, value = line.rstrip("\n").split("=", 1)
+            key = key_part.split(":", 1)[0]
+            if key in keys and value:
+                out.append(os.path.normpath(value.strip()))
     return out
 
 
@@ -564,15 +561,11 @@ def _installed_distribution_version(python_exe: str, distribution_name: str) -> 
         "except metadata.PackageNotFoundError:\n"
         "    raise SystemExit(1)\n"
     )
-    try:
-        completed = subprocess.run(
-            [python_exe, "-c", script, distribution_name],
-            timeout=30,
-            **_popen_kwargs(capture_output=True),
-        )
-    except (OSError, subprocess.SubprocessError) as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-        return ""
+    completed = subprocess.run(
+        [python_exe, "-c", script, distribution_name],
+        timeout=30,
+        **_popen_kwargs(capture_output=True),
+    )
     if completed.returncode != 0:
         return ""
     return (completed.stdout or "").strip()
@@ -583,11 +576,7 @@ def _distribution_files_present(site_packages: str, distribution_name: str) -> b
         return False
     normalized = distribution_name.replace("-", "_").lower()
     dist_info_prefix = distribution_name.replace("_", "-").lower() + "-"
-    try:
-        names = os.listdir(site_packages)
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-        return False
+    names = os.listdir(site_packages)
     for name in names:
         lower_name = name.lower()
         if lower_name == normalized:
@@ -636,11 +625,7 @@ def _wheel_target_relative_path(member_name: str) -> str:
 def _remove_installed_distribution(site_packages: str, distribution_name: str) -> None:
     normalized_package = distribution_name.replace("-", "_").lower()
     dist_info_prefix = distribution_name.replace("_", "-").lower() + "-"
-    try:
-        names = os.listdir(site_packages)
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-        return
+    names = os.listdir(site_packages)
 
     for name in names:
         lower_name = name.lower()
@@ -651,10 +636,7 @@ def _remove_installed_distribution(site_packages: str, distribution_name: str) -
             if os.path.isdir(path) and not os.path.islink(path):
                 _remove_tree(path)
             else:
-                try:
-                    os.remove(path)
-                except OSError as _exc:
-                    logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+                os.remove(path)
 
 
 def _install_wheel_direct(wheel_path: str, site_packages: str, distribution_name: str) -> None:
@@ -1007,7 +989,7 @@ class ProjectModel:
         try:
             with open(marker_path, "r", encoding="utf-8") as marker:
                 installed_fingerprint = marker.read()
-        except OSError:
+        except FileNotFoundError:
             pass
         wheel_is_current = bool(
             expected_fingerprint and installed_fingerprint == expected_fingerprint
@@ -1018,10 +1000,8 @@ class ProjectModel:
             try:
                 ProjectModel.validate_python_runtime(project_python)
                 return
-            except RuntimeError as _exc:
-                logging.getLogger(__name__).debug(
-                    "[Suppressed] %s: %s", type(_exc).__name__, _exc
-                )
+            except RuntimeError:
+                pass
 
         installed_version = ""
         if distribution_present:
@@ -1033,8 +1013,8 @@ class ProjectModel:
             try:
                 ProjectModel.validate_python_runtime(project_python)
                 return
-            except RuntimeError as _exc:
-                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+            except RuntimeError:
+                pass
 
         if is_frozen():
             if on_status:
