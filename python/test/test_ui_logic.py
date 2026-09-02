@@ -14,6 +14,44 @@ import pytest
 from Infernux.engine.ui.theme import Theme, srgb_to_linear, srgb3, hex_to_linear
 
 
+class _WindowManagerPanelInteractions:
+    """Explicit interaction boundary for WindowManager-only tests."""
+
+    def bind_view(self, _view_id, _type_id, _instance):
+        pass
+
+    def unbind_view(self, _view_id):
+        return True
+
+    def records_focus_history(self, **_identity):
+        return True
+
+    def is_document_backed(self, **_identity):
+        return False
+
+
+def _window_manager(engine, panel_interactions=None):
+    from Infernux.engine.ui.window_manager import WindowManager
+
+    registrar = getattr(engine, "register_gui", None)
+    if registrar is None:
+        registrar = lambda _window_id, _instance: None
+    return WindowManager(
+        engine,
+        panel_interactions or _WindowManagerPanelInteractions(),
+        registrar,
+    )
+
+
+def test_window_manager_requires_explicit_interaction_and_gui_boundaries():
+    from Infernux.engine.ui.window_manager import WindowManager
+
+    with pytest.raises(ValueError, match="PanelInteractionRegistry"):
+        WindowManager(object(), None, lambda _window_id, _instance: None)
+    with pytest.raises(TypeError, match="panel GUI registrar"):
+        WindowManager(object(), _WindowManagerPanelInteractions(), None)
+
+
 # ── theme color utilities ────────────────────────────────────────────────
 
 def test_default_editor_and_game_ui_font_size_is_18px():
@@ -89,8 +127,7 @@ def test_existing_window_registration_is_atomic_when_native_registration_fails()
     previous_manager = WindowManager._instance
     core = EditorInteractionCore()
     try:
-        manager = WindowManager(Engine())
-        manager.set_panel_interaction_registry(core.panels)
+        manager = _window_manager(Engine(), core.panels)
         core.panels.register_type("native", PanelInteractionDescriptor())
 
         with pytest.raises(RuntimeError, match="native registration failed"):
@@ -291,8 +328,7 @@ class TestWindowManager:
 
         core = EditorInteractionCore()
         engine = Engine()
-        manager = WindowManager(engine)
-        manager.set_panel_interaction_registry(core.panels)
+        manager = _window_manager(engine, core.panels)
         for type_id in ("scene_view", "graph"):
             core.panels.register_type(type_id, PanelInteractionDescriptor())
 
@@ -346,8 +382,7 @@ class TestWindowManager:
         core = None
         try:
             core = EditorInteractionCore()
-            manager = WindowManager(Engine())
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(Engine(), core.panels)
             core.panels.register_type(
                 "native",
                 PanelInteractionDescriptor(),
@@ -509,13 +544,12 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
             panels = PanelInteractionRegistry()
             panels.register_type(
                 "particle_graph_editor",
                 PanelInteractionDescriptor(document_backed=True),
             )
-            manager.set_panel_interaction_registry(panels)
+            manager = _window_manager(object(), panels)
             manager.load_state(
                 {
                     "open_windows": {"graph-instance": False},
@@ -546,13 +580,12 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
             panels = PanelInteractionRegistry()
             panels.register_type(
                 "particle_graph_editor",
                 PanelInteractionDescriptor(document_backed=True),
             )
-            manager.set_panel_interaction_registry(panels)
+            manager = _window_manager(object(), panels)
             manager._window_states["particle_graph_editor"] = WindowState.OPEN
             manager._window_type_ids["particle_graph_editor"] = (
                 "particle_graph_editor"
@@ -605,13 +638,12 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(Engine())
             panels = PanelInteractionRegistry()
             panels.register_type(
                 "particle_graph_editor",
                 PanelInteractionDescriptor(document_backed=True),
             )
-            manager.set_panel_interaction_registry(panels)
+            manager = _window_manager(Engine(), panels)
             manager.register_window_type(
                 "particle_graph_editor",
                 ClosablePanel,
@@ -674,13 +706,12 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
             panels = PanelInteractionRegistry()
             panels.register_type(
                 "particle_graph_editor",
                 PanelInteractionDescriptor(document_backed=True),
             )
-            manager.set_panel_interaction_registry(panels)
+            manager = _window_manager(object(), panels)
             manager.register_window_type(
                 "particle_graph_editor",
                 Panel,
@@ -737,13 +768,12 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
             panels = PanelInteractionRegistry()
             panels.register_type(
                 "particle_graph_editor",
                 PanelInteractionDescriptor(document_backed=True),
             )
-            manager.set_panel_interaction_registry(panels)
+            manager = _window_manager(object(), panels)
             manager.load_state(
                 {
                     "open_windows": {"particle_graph_editor": False},
@@ -800,13 +830,12 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
             panels = PanelInteractionRegistry()
             panels.register_type(
                 "particle_graph_editor",
                 PanelInteractionDescriptor(document_backed=True),
             )
-            manager.set_panel_interaction_registry(panels)
+            manager = _window_manager(object(), panels)
             manager.register_window_type(
                 "particle_graph_editor",
                 Panel,
@@ -862,7 +891,7 @@ class TestWindowManager:
         try:
             FocusService()
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_window_type(
                 "utility",
                 Panel,
@@ -931,7 +960,7 @@ class TestWindowManager:
         previous = WindowManager._instance
         try:
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager._window_states["particle_graph_editor"] = WindowState.OPEN
 
             manager.restore_close_confirmation_source("particle_graph_editor")
@@ -953,7 +982,7 @@ class TestWindowManager:
         previous = WindowManager._instance
         try:
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager._window_states["particle_graph_editor"] = WindowState.OPEN
 
             with pytest.raises(TypeError):
@@ -990,7 +1019,7 @@ class TestWindowManager:
         previous_focus = FocusService._instance
         try:
             focus = FocusService()
-            manager = WindowManager(Engine())
+            manager = _window_manager(Engine())
             manager.register_window_type(
                 "graph",
                 EditorPanel,
@@ -1052,8 +1081,7 @@ class TestWindowManager:
         previous_manager = WindowManager._instance
         core = EditorInteractionCore()
         try:
-            manager = WindowManager(Engine())
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(Engine(), core.panels)
             core.panels.register_type("graph", PanelInteractionDescriptor())
             manager.register_window_type(
                 "graph",
@@ -1093,7 +1121,7 @@ class TestWindowManager:
             )
             changes.clear()
 
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("project", Panel())
             callback = manager.native_panel_focus_callback("project")
             callback(True, True)
@@ -1124,8 +1152,7 @@ class TestWindowManager:
         changes = []
         core.focus.add_change_listener(changes.append)
         try:
-            manager = WindowManager(Engine())
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(Engine(), core.panels)
             core.panels.register_type("graph", PanelInteractionDescriptor())
             manager.register_window_type(
                 "graph",
@@ -1171,8 +1198,7 @@ class TestWindowManager:
         core = EditorInteractionCore()
         try:
             engine = Engine()
-            manager = WindowManager(engine)
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(engine, core.panels)
             core.panels.register_type("graph", PanelInteractionDescriptor())
             manager.register_window_type(
                 "graph",
@@ -1225,8 +1251,7 @@ class TestWindowManager:
         core.focus.add_change_listener(changes.append)
         try:
             engine = Engine()
-            manager = WindowManager(engine)
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(engine, core.panels)
             core.panels.register_type("graph", PanelInteractionDescriptor())
             manager.register_window_type(
                 "graph",
@@ -1282,8 +1307,7 @@ class TestWindowManager:
         core.focus.add_change_listener(changes.append)
         try:
             engine = Engine()
-            manager = WindowManager(engine)
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(engine, core.panels)
             core.panels.register_type("graph", PanelInteractionDescriptor())
             manager.register_window_type(
                 "graph",
@@ -1341,7 +1365,7 @@ class TestWindowManager:
             )
             changes.clear()
 
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("inspector", Panel())
             manager.native_panel_focus_callback("inspector")(True, True)
 
@@ -1383,7 +1407,7 @@ class TestWindowManager:
             )
             changes.clear()
 
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("inspector", Panel())
             manager.native_panel_focus_callback("inspector")(True, True)
 
@@ -1418,7 +1442,7 @@ class TestWindowManager:
             changes = []
             focus.add_change_listener(changes.append)
 
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("scene_view", Panel())
             manager.register_existing_window("particle_graph_editor", Panel())
             monkeypatch.setattr(
@@ -1467,7 +1491,7 @@ class TestWindowManager:
             changes = []
             focus.add_change_listener(changes.append)
 
-            manager = WindowManager(Engine())
+            manager = _window_manager(Engine())
             manager.register_window_type(
                 "particle_graph_editor",
                 Panel,
@@ -1527,7 +1551,7 @@ class TestWindowManager:
             )
             changes.clear()
 
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("scene_view", Panel())
             manager.native_panel_focus_callback("scene_view")(True, True)
 
@@ -1578,7 +1602,7 @@ class TestWindowManager:
             )
             changes.clear()
 
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("hierarchy", StaleRegisteredPanel())
             source = RenderingSourcePanel()
             callback = manager.native_panel_focus_callback(
@@ -1609,7 +1633,7 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             panel = Panel()
             manager.register_existing_window("particle_graph_editor", panel)
 
@@ -1639,7 +1663,7 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             calls = []
             listener = lambda: calls.append(tuple(manager.get_registered_types()))
             manager.add_type_change_listener(listener)
@@ -1687,7 +1711,7 @@ class TestWindowManager:
         try:
             focus = FocusService()
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_window_type("dynamic", Panel, "Dynamic", factory=Panel)
             panel = manager.open_window("dynamic")
             assert manager.get_window_state("dynamic") is WindowState.OPENING
@@ -1737,7 +1761,7 @@ class TestWindowManager:
         previous = WindowManager._instance
         try:
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             panel = Panel()
             manager.register_window_type("game_view", Panel, "Game", factory=Panel)
             manager.register_existing_window("game_view", panel, "game_view")
@@ -1785,7 +1809,7 @@ class TestWindowManager:
                 record_history=False,
             )
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_window_type("console", Panel, "Console", factory=Panel)
             manager.register_existing_window("console", Panel(), "console")
 
@@ -1822,7 +1846,7 @@ class TestWindowManager:
                 view_id="particle_graph_editor",
                 record_history=False,
             )
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("particle_graph_editor", Panel())
             manager.register_existing_window("project", Panel())
 
@@ -1857,7 +1881,7 @@ class TestWindowManager:
         try:
             focus = FocusService()
             registry = DocumentRegistry()
-            manager = WindowManager(object())
+            manager = _window_manager(object())
             manager.register_existing_window("inspector", Panel())
 
             child_id = "inspector/##asset_inspector"
@@ -1920,7 +1944,7 @@ class TestWindowManager:
             focus_changes = []
             focus.add_change_listener(focus_changes.append)
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_window_type("graph", Panel, "Graph", factory=Panel)
             manager.open_window("graph", instance_id="graph/asset-a")
             manager.process_pending_actions()
@@ -1982,7 +2006,7 @@ class TestWindowManager:
                 record_history=False,
             )
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_existing_window("inspector", Panel())
 
             locator = manager.locate_window("inspector")
@@ -2022,7 +2046,7 @@ class TestWindowManager:
         try:
             FocusService()
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_existing_window("console", Panel())
             locator = manager.locate_window("console")
 
@@ -2061,7 +2085,7 @@ class TestWindowManager:
             focus = FocusService()
             engine = Engine()
             panel = Panel()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_existing_window("scene_view", panel)
             locator = manager.locate_window("scene_view")
 
@@ -2112,7 +2136,7 @@ class TestWindowManager:
             focus = FocusService()
             engine = Engine()
             panel = Panel()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_existing_window("hierarchy", panel)
             locator = manager.locate_window("hierarchy")
 
@@ -2164,7 +2188,7 @@ class TestWindowManager:
         try:
             registry = DocumentRegistry()
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             panel = Panel()
             engine.registered["builtin"] = panel
             manager.register_window_type("builtin", Panel, "Builtin", factory=Panel)
@@ -2205,7 +2229,7 @@ class TestWindowManager:
         previous_registry = DocumentRegistry._instance
         try:
             registry = DocumentRegistry()
-            manager = WindowManager(Engine())
+            manager = _window_manager(Engine())
             manager.register_window_type(
                 "graph", ClosablePanel, "Graph", factory=lambda: ClosablePanel("Graph", "graph")
             )
@@ -2241,7 +2265,7 @@ class TestWindowManager:
         previous_registry = DocumentRegistry._instance
         try:
             registry = DocumentRegistry()
-            manager = WindowManager(Engine())
+            manager = _window_manager(Engine())
             manager.register_window_type(
                 "graph",
                 ClosablePanel,
@@ -2303,7 +2327,7 @@ class TestWindowManager:
         previous = WindowManager._instance
         try:
             engine = Engine()
-            manager = WindowManager(engine)
+            manager = _window_manager(engine)
             manager.register_window_type("graph", Panel, "Graph", factory=Panel)
             panel = manager.open_window("graph")
             manager.process_pending_actions()
@@ -2366,8 +2390,7 @@ class TestWindowManager:
                 staticmethod(lambda _window_id: "project"),
             )
             engine = Engine()
-            manager = WindowManager(engine)
-            manager.set_panel_interaction_registry(core.panels)
+            manager = _window_manager(engine, core.panels)
             core.panels.register_type("graph", PanelInteractionDescriptor())
             manager.register_window_type(
                 "graph",
@@ -2425,7 +2448,7 @@ class TestWindowManager:
 
         previous = WindowManager._instance
         try:
-            manager = WindowManager(Engine())
+            manager = _window_manager(Engine())
             panel = Panel()
             manager._window_states["dirty"] = WindowState.OPEN
             manager._window_instances["dirty"] = panel
@@ -3410,6 +3433,34 @@ class TestPanelFocusEvents:
 
 
 class TestSceneViewPicking:
+    def test_particle_query_does_not_hide_scene_lifetime_failure(self, monkeypatch):
+        import Infernux.lib as infernux_lib
+        from Infernux.engine.ui import _scene_view_picking as picking
+
+        class SceneManager:
+            @staticmethod
+            def instance():
+                raise RuntimeError("scene lifetime failure")
+
+        monkeypatch.setattr(infernux_lib, "SceneManager", SceneManager)
+
+        with pytest.raises(RuntimeError, match="scene lifetime failure"):
+            picking._owns_particle_system(42)
+
+    def test_pick_ray_rebuild_failure_is_not_reordered_as_a_valid_hit(self):
+        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+
+        class Engine:
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                raise RuntimeError("camera ray unavailable")
+
+        probe = SceneViewPickingMixin()
+        probe._engine = Engine()
+
+        with pytest.raises(RuntimeError, match="camera ray unavailable"):
+            probe._insert_ids_by_depth([7], [9], 10.0, 12.0, 100.0, 80.0)
+
     def test_skinned_renderer_counts_as_mesh_pick_geometry(self, monkeypatch):
         import Infernux.lib as infernux_lib
         from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
