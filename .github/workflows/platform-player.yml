@@ -106,6 +106,8 @@ jobs:
           }
           $runtimeBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           Copy-Item -LiteralPath $loader -Destination "python\Infernux\lib\vulkan-1.dll" -Force
+          New-Item -ItemType Directory -Path "out\build\windows-msvc-release\Release" -Force | Out-Null
+          Copy-Item -LiteralPath $loader -Destination "out\build\windows-msvc-release\Release\vulkan-1.dll" -Force
 
       - name: Build Windows Player runtime
         shell: pwsh
@@ -420,33 +422,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
           script: |
-            test -x "$CONDA/envs/infernux/bin/python"
-            rm -rf out/ci-projects/android out/acceptance/android
-            mkdir -p out/ci-projects/android out/test-results
-            cp -a tests/fixtures/multiplatform_player/. out/ci-projects/android/
-            "$CONDA/envs/infernux/bin/python" scripts/acceptance/build_player.py \
-              out/ci-projects/android android-x64-emulator out/acceptance/android \
-              --report out/test-results/android-player-build.json \
-              --option 'android_artifact="apk"' \
-              --option "android_python_prefix=\"$INFERNUX_ANDROID_RUNTIME\"" \
-              --option "build_cache_root=\"$INFERNUX_ANDROID_BUILD_CACHE\""
-            gradle -p tests/android/input_instrumentation \
-              --no-daemon \
-              --console=plain \
-              -PinfernuxTargetPackage=com.infernux.bootstrap \
-              :app:assembleDebug
-            "$CONDA/envs/infernux/bin/python" scripts/acceptance/android_player_smoke.py \
-              out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \
-              --serial emulator-5554 \
-              --no-back \
-              --expect-landscape \
-              --resume-cycles 2 \
-              --report out/test-results/android-player-smoke.json
-            "$CONDA/envs/infernux/bin/python" scripts/acceptance/android_multitouch_smoke.py \
-              tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
-              --serial emulator-5554 \
-              --wait-milliseconds 20000 \
-              --report out/test-results/android-multitouch-smoke.json
+            bash scripts/acceptance/android_emulator_ci.sh "$CONDA/envs/infernux/bin/python"
 
       - name: Upload Android Player evidence
         if: always()

@@ -5,14 +5,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "platform-player.yml"
+ANDROID_DRIVER = ROOT / "scripts" / "acceptance" / "android_emulator_ci.sh"
 
 
 def _text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
+def _android_driver_text() -> str:
+    return ANDROID_DRIVER.read_text(encoding="utf-8")
+
+
 def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points():
-    text = _text()
+    text = _text() + "\n" + _android_driver_text()
 
     assert "scripts/acceptance/build_player.py" in text
     assert "scripts\\acceptance\\windows_player_smoke.py" in text
@@ -54,10 +59,15 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
     assert loader_step < build_step
     assert '$runtimeBin | Out-File -FilePath $env:GITHUB_PATH' in text[loader_step:build_step]
     assert 'Copy-Item -LiteralPath $loader -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
+    assert (
+        'Copy-Item -LiteralPath $loader -Destination '
+        '"out\\build\\windows-msvc-release\\Release\\vulkan-1.dll"'
+        in text[loader_step:build_step]
+    )
 
 
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
-    text = _text().casefold()
+    text = (_text() + "\n" + _android_driver_text()).casefold()
 
     assert "web-wasm32" in text
     assert "android-x64-emulator" in text
@@ -71,6 +81,7 @@ def test_platform_workflow_keeps_product_graphics_contracts_explicit():
 
 def test_platform_workflow_is_bounded_and_collects_evidence():
     text = _text()
+    product_commands = text + "\n" + _android_driver_text()
 
     assert text.count("timeout-minutes: 120") == 4
     assert text.count("if: always()") == 4
@@ -78,9 +89,9 @@ def test_platform_workflow_is_bounded_and_collects_evidence():
     assert "windows-player-smoke.json" in text
     assert "linux-player-build.json" in text
     assert "linux-player-smoke.json" in text
-    assert "android-player-build.json" in text
-    assert "android-player-smoke.json" in text
-    assert "android-multitouch-smoke.json" in text
+    assert "android-player-build.json" in product_commands
+    assert "android-player-smoke.json" in product_commands
+    assert "android-multitouch-smoke.json" in product_commands
     assert "web-player-build.json" in text
     assert "web-player-smoke.json" in text
     assert "trap cleanup EXIT" in text
@@ -104,6 +115,7 @@ def test_desktop_player_jobs_use_real_input_physics_and_line_renderer_smoke():
 
 def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     text = _text()
+    driver = _android_driver_text()
     smoke = (ROOT / "scripts" / "acceptance" / "android_player_smoke.py").read_text(
         encoding="utf-8"
     )
@@ -114,16 +126,27 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     )
     emulator_step = text.index("ReactiveCircus/android-emulator-runner@")
     emulator_script = text.index("script: |", emulator_step)
-    emulator_body = text[emulator_script:]
-    assert 'python_executable=' not in emulator_body
-    assert 'test -x "$CONDA/envs/infernux/bin/python"' in emulator_body
-    assert '"$CONDA/envs/infernux/bin/python" scripts/acceptance/build_player.py' in emulator_body
+    emulator_body = text[emulator_script : text.index("- name: Upload Android Player evidence", emulator_script)]
+    assert emulator_body.count("bash scripts/acceptance/android_emulator_ci.sh") == 1
+    assert '"$CONDA/envs/infernux/bin/python"' in emulator_body
+    assert "build_player.py" not in emulator_body
     assert '"--keep-running"' in smoke
     assert '"--require-log"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke
-    assert "tests/android/input_instrumentation" in text
-    assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in text
-    assert "--wait-milliseconds 20000" in text
+    assert "tests/android/input_instrumentation" in driver
+
+
+def test_android_emulator_driver_owns_the_full_single_shell_workflow():
+    driver = _android_driver_text()
+
+    assert "set -euo pipefail" in driver
+    assert '"$python_executable" scripts/acceptance/build_player.py' in driver
+    assert "android-x64-emulator" in driver
+    assert "gradle -p tests/android/input_instrumentation" in driver
+    assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
+    assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
+    assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
+    assert "--wait-milliseconds 20000" in driver
 
 
 def test_web_smoke_can_attach_to_a_physical_mobile_browser():
