@@ -16,8 +16,6 @@ from . import imgui_keys as _keys
 import Infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants
-from Infernux.debug import Debug
-
 _SCENE_VIEWPORT_SEMANTIC_ID = "scene_view.viewport"
 from Infernux.lib._Infernux import (
     GIZMO_X_AXIS_ID,
@@ -502,8 +500,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         """Compute bounding-sphere center and radius for *game_object*.
 
         Merges world-space AABBs of all MeshRenderers on the object and its
-        children.  Falls back to the transform position with a default radius
-        if no renderers exist.
+        children. Objects without renderers use their transform position.
         """
         bmin = [float('inf')] * 3
         bmax = [float('-inf')] * 3
@@ -513,18 +510,15 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             nonlocal found
             mr = obj.get_cpp_component("MeshRenderer")
             if mr is not None:
-                try:
-                    bounds = mr.get_world_bounds()
-                    if bounds and len(bounds) == 6:
-                        for i in range(3):
-                            if bounds[i] < bmin[i]:
-                                bmin[i] = bounds[i]
-                            if bounds[i + 3] > bmax[i]:
-                                bmax[i] = bounds[i + 3]
-                        found = True
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    pass
+                bounds = mr.get_world_bounds()
+                if len(bounds) != 6:
+                    raise ValueError("MeshRenderer world bounds must contain 6 values")
+                for i in range(3):
+                    if bounds[i] < bmin[i]:
+                        bmin[i] = bounds[i]
+                    if bounds[i + 3] > bmax[i]:
+                        bmax[i] = bounds[i + 3]
+                found = True
             for child in obj.get_children():
                 _collect(child)
 
@@ -540,7 +534,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             radius = math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5
             return (cx, cy, cz), max(radius, 0.1)
 
-        # Fallback: use transform position with a default radius
+        # Transform-only objects still have a concrete point to frame.
         pos = game_object.transform.position
         return (pos.x, pos.y, pos.z), 1.0
 
@@ -559,12 +553,8 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     @classmethod
     def _planar_visible_side(cls, obj, mr):
         """Return a preferred world-space viewing side for flat one-sided meshes."""
-        try:
-            positions = mr.get_positions()
-            indices = mr.get_indices()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return None
+        positions = mr.get_positions()
+        indices = mr.get_indices()
 
         if not positions or len(indices) < 3:
             return None
@@ -611,11 +601,8 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         if coherence < 0.98:
             return None
 
-        try:
-            material = mr.get_effective_material(0)
-            render_state = material.get_render_state() if material is not None else None
-        except Exception:
-            render_state = None
+        material = mr.get_effective_material(0)
+        render_state = material.get_render_state() if material is not None else None
 
         if render_state is None:
             return None
@@ -624,10 +611,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         if cull_mode == 0:
             return None
 
-        try:
-            front_face = int(getattr(render_state, 'front_face', 1))
-        except (TypeError, ValueError):
-            front_face = 1
+        front_face = int(render_state.front_face)
         front_sign = -1.0 if front_face == 1 else 1.0
         visible_sign = front_sign if cull_mode == 2 else -front_sign
         local_side = (
@@ -636,13 +620,9 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             normal[2] * visible_sign,
         )
 
-        try:
-            from Infernux.math import Vector3
-            world_side_vec = obj.transform.transform_direction(Vector3(*local_side))
-            world_side = cls._vector3_to_tuple(world_side_vec)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return None
+        from Infernux.math import Vector3
+        world_side_vec = obj.transform.transform_direction(Vector3(*local_side))
+        world_side = cls._vector3_to_tuple(world_side_vec)
 
         return cls._normalize3(world_side)
 
