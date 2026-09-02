@@ -20,21 +20,24 @@ def build_settings_path(project_path: Optional[str] = None) -> Optional[str]:
 
 
 def load_build_settings(project_path: Optional[str] = None) -> dict:
-    """Load build settings without importing any editor UI modules."""
+    """Load the current BuildSettings document without editor UI imports."""
     path = build_settings_path(project_path)
-    if not path or not os.path.isfile(path):
-        return {"scenes": []}
+    if not path:
+        raise ValueError("Build settings require an explicit project root")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Build settings are missing: {path}")
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+        with open(path, "r", encoding="utf-8") as stream:
             data = json.load(stream)
-    except (json.JSONDecodeError, OSError, ValueError):
-        data = {"scenes": []}
+    except (json.JSONDecodeError, UnicodeError, OSError) as error:
+        raise ValueError(f"Build settings are unreadable: {path}: {error}") from error
     if not isinstance(data, dict):
-        data = {"scenes": []}
+        raise TypeError("Build settings must be a JSON object")
     scenes = data.get("scenes")
-    if not isinstance(scenes, list):
-        data["scenes"] = []
-    data.pop("additional_cook_roots", None)
+    if not isinstance(scenes, list) or not all(
+        isinstance(scene, str) and scene for scene in scenes
+    ):
+        raise TypeError("Build settings scenes must contain non-empty strings")
     return data
 
 
@@ -50,17 +53,7 @@ def load_build_settings_for_build(project_path: Optional[str] = None) -> dict:
     path = build_settings_path(project_path)
     if not path:
         raise ValueError("Player build requires an explicit project root")
-    if not os.path.isfile(path):
-        raise FileNotFoundError(
-            f"Player build settings are missing: {path}"
-        )
-    try:
-        with open(path, "r", encoding="utf-8") as stream:
-            data = json.load(stream)
-    except (json.JSONDecodeError, UnicodeError, OSError) as error:
-        raise ValueError(
-            f"Player build settings are unreadable: {path}: {error}"
-        ) from error
+    data = load_build_settings(project_path)
 
     from Infernux.engine.interaction.project_settings import (
         normalize_build_settings,

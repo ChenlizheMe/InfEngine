@@ -231,7 +231,7 @@ class SceneManager:
         """
         from Infernux.engine.build_settings import load_build_settings
         data = load_build_settings()
-        scenes = list(data.get("scenes", []))
+        scenes = list(data["scenes"])
 
         from Infernux.engine.project_context import get_project_root
         root = get_project_root()

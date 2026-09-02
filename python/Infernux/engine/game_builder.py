@@ -2347,7 +2347,7 @@ finally:
             path_key(self._library_source_entry_path(entry))
             for entry in entries
         }
-        for configured_scene in load_build_settings(self.project_path).get("scenes", []):
+        for configured_scene in load_build_settings(self.project_path)["scenes"]:
             scene_path = self._resolve_build_scene_path(configured_scene)
             if path_key(scene_path) not in indexed_source_paths:
                 raise RuntimeError(

@@ -5,6 +5,8 @@ import sys
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.engine.build import BuildTarget, PlatformCapabilities
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
 
@@ -233,6 +235,27 @@ def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
 
     assert panel._splash_items[0]["asset_guid"] == "missing-splash-guid"
     assert saves == []
+
+
+def test_build_settings_loader_does_not_invent_a_missing_document(tmp_path):
+    from Infernux.engine.build_settings import load_build_settings
+
+    project = tmp_path / "Project"
+    (project / "ProjectSettings").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError, match="Build settings are missing"):
+        load_build_settings(str(project))
+
+
+def test_build_settings_loader_propagates_malformed_current_json(tmp_path):
+    from Infernux.engine.build_settings import load_build_settings
+
+    settings = tmp_path / "Project" / "ProjectSettings" / "BuildSettings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Build settings are unreadable"):
+        load_build_settings(str(tmp_path / "Project"))
 
 
 def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):

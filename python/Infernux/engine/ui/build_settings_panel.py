@@ -287,24 +287,20 @@ class BuildSettingsPanel(EditorPanel):
         self._apply_build_settings(document["build"])
 
     def _apply_build_settings(self, data: dict) -> None:
-        self._build_target = data.get("build_target", "")
-        self._android_artifact = data.get("android_artifact", "apk")
-        self._game_name = data.get("game_name", "")
-        self._scenes = list(data.get("scenes", []))
-        self._output_dir = data.get("output_dir", "")
-        self._icon_guid = data.get("icon_guid", "")
-        mode_key = data.get("display_mode", "fullscreen_borderless")
-        self._display_mode_idx = (
-            _DISPLAY_MODE_KEYS.index(mode_key)
-            if mode_key in _DISPLAY_MODE_KEYS else 0
-        )
-        self._window_width = data.get("window_width", 1280)
-        self._window_height = data.get("window_height", 720)
-        self._window_resizable = data.get("window_resizable", True)
-        self._debug_mode = data.get("debug_mode", False)
-        self._lto = data.get("lto", True)
-        self._enable_jit = data.get("enable_jit", False)
-        self._splash_items = list(data.get("splash_items", []))
+        self._build_target = data["build_target"]
+        self._android_artifact = data["android_artifact"]
+        self._game_name = data["game_name"]
+        self._scenes = list(data["scenes"])
+        self._output_dir = data["output_dir"]
+        self._icon_guid = data["icon_guid"]
+        self._display_mode_idx = _DISPLAY_MODE_KEYS.index(data["display_mode"])
+        self._window_width = data["window_width"]
+        self._window_height = data["window_height"]
+        self._window_resizable = data["window_resizable"]
+        self._debug_mode = data["debug_mode"]
+        self._lto = data["lto"]
+        self._enable_jit = data["enable_jit"]
+        self._splash_items = list(data["splash_items"])
 
     def _capture_build_settings(self) -> dict:
         return normalize_build_settings({
