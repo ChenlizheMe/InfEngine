@@ -148,6 +148,12 @@ class AssetDatabase
     /// @return false while either worker phase is incomplete.
     bool TryCommitRefresh();
 
+    /// @brief Complete the currently pending refresh on the mutation thread.
+    ///
+    /// Waits on each native worker phase and advances the same commit state
+    /// machine used by TryCommitRefresh. A pending refresh is required.
+    void CompletePendingRefresh();
+
     [[nodiscard]] bool IsRefreshPending() const;
     [[nodiscard]] bool IsOwnerThread() const;
 

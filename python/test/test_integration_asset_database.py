@@ -1196,19 +1196,15 @@ def test_asset_database_async_refresh_commits_worker_artifact(engine):
     with pytest.raises(RuntimeError, match="already pending"):
         asset_db.begin_refresh()
 
-    deadline = time.monotonic() + 10.0
-    committed = False
-    while time.monotonic() < deadline:
-        if asset_db.try_commit_refresh():
-            committed = True
-            break
-        time.sleep(0.001)
+    asset_db.complete_pending_refresh()
 
-    assert committed is True
     assert asset_db.refresh_pending is False
     assert asset_db.last_refresh_scan_on_worker is True
     if asset_db.last_refresh_imported_count:
         assert asset_db.last_refresh_query_build_on_worker is True
+
+    with pytest.raises(RuntimeError, match="no pending refresh"):
+        asset_db.complete_pending_refresh()
 
 
 def test_async_refresh_hides_prepared_state_until_worker_import_finalize(

@@ -82,6 +82,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Schedule filesystem scan and fingerprint collection on the engine JobSystem")
         .def("try_commit_refresh", &AssetDatabase::TryCommitRefresh,
              "Advance asynchronous scan/import and finalize a completed artifact on the owner thread")
+        .def("complete_pending_refresh", &AssetDatabase::CompletePendingRefresh,
+             "Wait for and commit the currently pending asynchronous refresh")
         .def_property_readonly("refresh_pending", &AssetDatabase::IsRefreshPending)
         .def("flush_derived_index", &AssetDatabase::FlushDerivedIndex, py::arg("wait_for_pending_scan") = true,
              "Persist a dirty derived AssetIndex")

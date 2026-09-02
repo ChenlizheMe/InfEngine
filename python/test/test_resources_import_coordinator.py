@@ -35,10 +35,17 @@ def _mutation(operation, path, guid=""):
 
 
 class _AssetDatabaseProbe:
+    refresh_pending = False
+
     def __init__(self):
         self.guid_by_path = {}
         self.queries = []
         self.mutations = []
+
+    def complete_pending_refresh(self):
+        if not self.refresh_pending:
+            raise AssertionError("completion requires pending refresh work")
+        self.refresh_pending = False
 
     def get_guid_from_path(self, path):
         self.queries.append((path, threading.get_ident()))

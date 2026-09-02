@@ -1679,13 +1679,16 @@ class ResourcesManager:
         )
 
     def drain_pending_events(self) -> int:
-        """Force all bounded retries to finish after the observer has stopped."""
-        processed = 0
-        for _ in range(16):
-            processed += self.process_pending_reloads(force=True)
-            if self._event_handler is None or self._event_handler.pending_count == 0:
-                return processed
-        raise RuntimeError("asset event queue did not drain after observer shutdown")
+        """Commit native refresh work, then drain the stopped observer once."""
+        asset_database = self._engine.get_asset_database()
+        if bool(asset_database.refresh_pending):
+            asset_database.complete_pending_refresh()
+        processed = self.process_pending_reloads(force=True)
+        if self._event_handler is not None and self._event_handler.pending_count:
+            raise RuntimeError(
+                "asset event queue retained work after the shutdown drain"
+            )
+        return processed
 
     def register_script_reload_callback(self, file_path: str, callback) -> None:
         """Subscribe *callback(file_path)* to be called when *file_path* is saved.

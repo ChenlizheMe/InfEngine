@@ -1166,6 +1166,14 @@ void AssetDatabase::Refresh()
 {
     AssertMutationThread("Refresh");
     BeginRefresh();
+    CompletePendingRefresh();
+}
+
+void AssetDatabase::CompletePendingRefresh()
+{
+    AssertMutationThread("CompletePendingRefresh");
+    if (!IsRefreshPending())
+        throw std::logic_error("AssetDatabase has no pending refresh");
     while (!TryCommitRefresh())
         WaitForPendingWork();
 }
