@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from Infernux.engine.ui import _dialogs
 
 
@@ -77,3 +79,36 @@ def test_linux_save_file_uses_initial_filename_and_adds_extension(
             },
         )
     ]
+
+
+def test_sdl_native_dialog_preserves_cancel_but_raises_platform_error(monkeypatch):
+    class _Native:
+        @staticmethod
+        def _show_native_file_dialog(*_args):
+            return {"accepted": False, "cancelled": True, "path": "", "error": ""}
+
+    monkeypatch.setattr("Infernux.lib._Infernux", _Native)
+    assert _dialogs._run_sdl_file_dialog("open_file", title="Open") is None
+
+    def fail(*_args):
+        return {
+            "accepted": False,
+            "cancelled": False,
+            "path": "",
+            "error": "portal unavailable",
+        }
+
+    monkeypatch.setattr(_Native, "_show_native_file_dialog", fail)
+    with pytest.raises(RuntimeError, match="portal unavailable"):
+        _dialogs._run_sdl_file_dialog("open_file", title="Open")
+
+
+def test_sdl_native_dialog_rejects_ambiguous_result(monkeypatch):
+    class _Native:
+        @staticmethod
+        def _show_native_file_dialog(*_args):
+            return {"accepted": False, "cancelled": False, "path": "", "error": ""}
+
+    monkeypatch.setattr("Infernux.lib._Infernux", _Native)
+    with pytest.raises(RuntimeError, match="invalid result"):
+        _dialogs._run_sdl_file_dialog("save_file", title="Save")

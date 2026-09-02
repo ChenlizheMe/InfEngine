@@ -190,12 +190,9 @@ def _run_sdl_file_dialog(
 ) -> Optional[str]:
     """Use the Editor's native SDL window as the parent for a system dialog."""
 
-    try:
-        from Infernux.lib import _Infernux as _native
-        _show_native_file_dialog = _native._show_native_file_dialog
-    except (AttributeError, ImportError) as exc:
-        Debug.log_warning(f"Native file dialog bridge is unavailable: {exc}")
-        return None
+    from Infernux.lib import _Infernux as _native
+
+    _show_native_file_dialog = _native._show_native_file_dialog
 
     result = _show_native_file_dialog(
         kind,
@@ -205,10 +202,13 @@ def _run_sdl_file_dialog(
     )
     error = str(result.get("error", ""))
     if error:
-        Debug.log_warning(f"System file dialog failed: {error}")
+        raise RuntimeError(f"System file dialog failed: {error}")
+    if bool(result.get("cancelled")):
         return None
     path = str(result.get("path", ""))
-    return path or None
+    if not bool(result.get("accepted")) or not path:
+        raise RuntimeError(f"System file dialog returned an invalid result: {result!r}")
+    return path
 
 
 def pick_folder_dialog(title: str) -> Optional[str]:
