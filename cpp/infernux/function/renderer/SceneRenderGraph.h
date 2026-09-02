@@ -867,7 +867,7 @@ class SceneRenderGraph
         VkImageView imageView = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        bool fallback = true;
+        bool usesDefaultTexture = true;
     };
 
     struct PerViewFrameState

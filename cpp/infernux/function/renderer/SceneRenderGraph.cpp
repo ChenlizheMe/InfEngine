@@ -2155,41 +2155,29 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
         return;
     }
 
-    if (!m_shadowMapInputHandle.IsValid() || !m_renderGraph) {
-        static int s_missingShadowInputWarnCount = 0;
-        if (s_missingShadowInputWarnCount++ < 8) {
-            INXLOG_WARN("SceneRenderGraph: no valid shadowMap input handle for per-view descriptor; binding fallback "
-                        "white texture");
-        }
-        if (!viewFrame.shadowBinding.fallback) {
+    if (!m_hasShadowCasterPass) {
+        if (!viewFrame.shadowBinding.usesDefaultTexture) {
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
             viewFrame.shadowBinding = {};
         }
         return;
+    }
+    if (!m_renderGraph || !m_shadowMapInputHandle.IsValid()) {
+        throw std::logic_error("Shadow-caster graph did not publish its shadowMap input");
     }
 
     VkImageView view = m_renderGraph->ResolveTextureView(m_shadowMapInputHandle);
     VkSampler shadowSampler = m_vkCore->GetShadowDepthSampler();
     if (view == VK_NULL_HANDLE || shadowSampler == VK_NULL_HANDLE) {
-        static int s_nullShadowViewWarnCount = 0;
-        if (s_nullShadowViewWarnCount++ < 8) {
-            INXLOG_WARN(
-                "SceneRenderGraph: shadow map view/sampler unavailable (view=", view == VK_NULL_HANDLE ? "null" : "ok",
-                ", sampler=", shadowSampler == VK_NULL_HANDLE ? "null" : "ok", "); binding fallback white texture");
-        }
-        if (!viewFrame.shadowBinding.fallback) {
-            m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
-            m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
-            viewFrame.shadowBinding = {};
-        }
-        return;
+        throw std::runtime_error("Shadow-caster graph could not resolve its shadow image view and sampler");
     }
 
     const VkImageLayout imageLayout = m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                                               : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     const auto &bound = viewFrame.shadowBinding;
-    if (!bound.fallback && bound.imageView == view && bound.sampler == shadowSampler && bound.layout == imageLayout)
+    if (!bound.usesDefaultTexture && bound.imageView == view && bound.sampler == shadowSampler &&
+        bound.layout == imageLayout)
         return;
     // The renderer has already waited for this frame slot. Geometry and
     // particles publish the camera-local shadow binding together so neither
