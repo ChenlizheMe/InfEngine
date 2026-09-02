@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 
 from .theme import Theme
-from Infernux.debug import Debug
 
 
 def _sample_rgba_bilinear(raw: bytes, src_w: int, src_h: int,
@@ -223,17 +222,16 @@ def ensure_material_file_path(material) -> str:
         return material.file_path
     guid = getattr(material, 'guid', '') or ''
     if guid:
-        try:
-            from Infernux.lib import AssetRegistry
-            adb = AssetRegistry.instance().get_asset_database()
-            if adb:
-                resolved = adb.get_path_from_guid(guid)
-                if resolved:
-                    material.file_path = resolved
-                    return resolved
-        except (ImportError, RuntimeError, AttributeError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        from Infernux.lib import AssetRegistry
+
+        adb = AssetRegistry.instance().get_asset_database()
+        if adb is None:
+            raise RuntimeError("material GUID resolution requires an AssetDatabase")
+        resolved = adb.get_path_from_guid(guid)
+        if not resolved:
+            raise LookupError(f"material GUID is not registered: {guid}")
+        material.file_path = resolved
+        return resolved
     from Infernux.engine.project_context import get_project_root
     project_root = get_project_root()
     if not project_root:

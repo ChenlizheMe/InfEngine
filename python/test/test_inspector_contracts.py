@@ -9,6 +9,7 @@ import pytest
 from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
 from Infernux.engine.ui import asset_details_renderer as details
 from Infernux.engine.ui import inspector_material
+from Infernux.engine.ui import inspector_support
 from Infernux.engine.ui import inspector_utils
 
 
@@ -18,6 +19,53 @@ class _FakeSemanticContext:
 
     def record_semantic_item(self, kind, label, enabled, semantic_id):
         self.semantic_items.append((kind, label, enabled, semantic_id))
+
+
+def test_material_guid_resolution_requires_asset_database(monkeypatch):
+    import Infernux.lib as lib
+
+    class _Registry:
+        @staticmethod
+        def get_asset_database():
+            return None
+
+    class _AssetRegistry:
+        @staticmethod
+        def instance():
+            return _Registry()
+
+    monkeypatch.setattr(lib, "AssetRegistry", _AssetRegistry)
+
+    with pytest.raises(RuntimeError, match="requires an AssetDatabase"):
+        inspector_support.ensure_material_file_path(
+            SimpleNamespace(file_path="", guid="material-guid")
+        )
+
+
+def test_material_guid_resolution_rejects_unregistered_guid(monkeypatch):
+    import Infernux.lib as lib
+
+    class _AssetDatabase:
+        @staticmethod
+        def get_path_from_guid(_guid):
+            return ""
+
+    class _Registry:
+        @staticmethod
+        def get_asset_database():
+            return _AssetDatabase()
+
+    class _AssetRegistry:
+        @staticmethod
+        def instance():
+            return _Registry()
+
+    monkeypatch.setattr(lib, "AssetRegistry", _AssetRegistry)
+
+    with pytest.raises(LookupError, match="material-guid"):
+        inspector_support.ensure_material_file_path(
+            SimpleNamespace(file_path="", guid="material-guid")
+        )
 
 
 class _FakeTextContext(_FakeSemanticContext):

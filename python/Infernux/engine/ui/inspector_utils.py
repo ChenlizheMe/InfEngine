@@ -27,7 +27,6 @@ from typing import Any
 from Infernux.lib import InxGUIContext
 from .dpi import editor_dpi_scale
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
-from Infernux.debug import Debug
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -304,8 +303,7 @@ def find_enum_index(members, current_value) -> int:
             try:
                 if int(get_enum_member_value(member)) == current_int:
                     return idx
-            except (ValueError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except (ValueError, TypeError):
                 continue
     return 0
 

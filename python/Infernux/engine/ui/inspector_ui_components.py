@@ -26,7 +26,6 @@ from .inspector_utils import (
     record_inspector_component_item,
 )
 from .theme import Theme
-from Infernux.debug import Debug
 
 
 def _igui():
@@ -102,20 +101,13 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
 
 
 def _get_serializable_raw_field(obj, field_name: str, default=None):
-    try:
-        data = object.__getattribute__(obj, "__dict__")
-    except Exception:
-        return default
+    data = object.__getattribute__(obj, "__dict__")
     if field_name in data:
         return data[field_name]
-    try:
-        cls = object.__getattribute__(obj, "__class__")
-        meta = getattr(cls, "_serialized_fields_", {}).get(field_name)
-        if meta is not None:
-            return meta.default
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    cls = object.__getattribute__(obj, "__class__")
+    meta = getattr(cls, "_serialized_fields_", {}).get(field_name)
+    if meta is not None:
+        return meta.default
     return default
 
 
