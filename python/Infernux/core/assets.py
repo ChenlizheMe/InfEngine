@@ -1045,55 +1045,14 @@ class AssetManager:
         """Return the CAS identity without using modified time as ordering."""
         if state is None:
             return None
-        if isinstance(state, dict):
-            exists = state.get("exists")
-            size = state.get("size", 0)
-            content_hash = state.get("content_hash", state.get("contentHash", 0))
-        elif isinstance(state, (tuple, list)) and len(state) >= 3:
-            exists, size, content_hash = state[0], state[1], state[2]
-        else:
-            exists = getattr(state, "exists", None)
-            size = getattr(state, "size", 0)
-            content_hash = getattr(state, "content_hash", 0)
-        if exists is None:
-            return None
-        try:
-            return bool(exists), int(size or 0), int(content_hash or 0)
-        except (TypeError, ValueError):
-            return None
+        return bool(state.exists), int(state.size), int(state.content_hash)
 
     @classmethod
     def _capture_file_fingerprint(cls, file_path: str):
         """Capture the same content identity used by native DocumentStore."""
-        try:
-            from Infernux.core.document_store import capture_document_file_state
+        from Infernux.core.document_store import capture_document_file_state
 
-            signature = cls._file_state_signature(
-                capture_document_file_state(file_path)
-            )
-            if signature is not None:
-                return signature
-        except (ImportError, OSError, RuntimeError, AttributeError, TypeError, ValueError):
-            pass
-
-        target = str(file_path or "")
-        if not os.path.isfile(target):
-            return False, 0, 0
-        digest = 1469598103934665603
-        size = 0
-        try:
-            with open(target, "rb") as stream:
-                while True:
-                    chunk = stream.read(64 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    for value in chunk:
-                        digest ^= value
-                        digest = (digest * 1099511628211) & ((1 << 64) - 1)
-        except OSError:
-            return None
-        return True, size, digest
+        return cls._file_state_signature(capture_document_file_state(file_path))
 
     @classmethod
     def _file_state_matches(cls, file_path: str, expected_state: Any) -> bool:

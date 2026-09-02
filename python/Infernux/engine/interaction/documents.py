@@ -36,20 +36,7 @@ def _durable_file_identity(state: Any):
     """
     if state is None:
         return None
-    if isinstance(state, dict):
-        exists = state.get("exists")
-        size = state.get("size", 0)
-        content_hash = state.get("content_hash", state.get("contentHash", 0))
-    else:
-        exists = getattr(state, "exists", None)
-        size = getattr(state, "size", 0)
-        content_hash = getattr(state, "content_hash", 0)
-    if exists is None:
-        return None
-    try:
-        return bool(exists), int(size or 0), int(content_hash or 0)
-    except (TypeError, ValueError):
-        return None
+    return bool(state.exists), int(state.size), int(state.content_hash)
 
 
 def document_content_token(value: Any) -> str:
