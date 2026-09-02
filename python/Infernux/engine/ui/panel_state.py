@@ -5,7 +5,6 @@ inside the project's layout directory (Documents/Infernux/{project}/).
 import json
 import os
 import threading
-from Infernux.debug import Debug
 
 _state_path: str = ""
 _state: dict = {}
@@ -17,11 +16,11 @@ def init(layout_dir: str) -> None:
     global _state_path, _state
     _state_path = os.path.join(layout_dir, "panel_state.json")
     if os.path.isfile(_state_path):
-        try:
-            with open(_state_path, "r", encoding="utf-8") as f:
-                _state = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            _state = {}
+        with open(_state_path, "r", encoding="utf-8") as f:
+            loaded_state = json.load(f)
+        if not isinstance(loaded_state, dict):
+            raise ValueError("panel_state.json must contain a JSON object")
+        _state = loaded_state
     else:
         _state = {}
 
@@ -93,10 +92,9 @@ def save() -> None:
         return
     with _lock:
         snapshot = dict(_state)
-    try:
-        os.makedirs(os.path.dirname(_state_path), exist_ok=True)
-        from Infernux.core.document_store import write_document_text
-        write_document_text(_state_path, json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n")
-    except (OSError, RuntimeError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    os.makedirs(os.path.dirname(_state_path), exist_ok=True)
+    from Infernux.core.document_store import write_document_text
+    write_document_text(
+        _state_path,
+        json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n",
+    )
