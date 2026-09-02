@@ -50,14 +50,23 @@ class TouchPhase(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class Touch:
-    """Platform-independent normalized touch snapshot."""
+    """Unity-aligned touch snapshot for one input frame.
+
+    ``position`` and ``delta_position`` use screen pixels with a bottom-left
+    origin, matching Unity's public ``Touch`` contract.  The explicit
+    normalized fields are intended for resolution-independent controls.
+    """
 
     touch_id: int
     finger_id: int
     timestamp_ns: int
     window_id: int
     position: Tuple[float, float]
+    raw_position: Tuple[float, float]
     delta_position: Tuple[float, float]
+    normalized_position: Tuple[float, float]
+    normalized_delta_position: Tuple[float, float]
+    delta_time: float
     pressure: float
     contact_size: Tuple[float, float]
     is_primary: bool
@@ -541,17 +550,35 @@ class Input(metaclass=_InputMeta):
 
     @staticmethod
     def _from_native_touch(native_touch) -> Touch:
+        screen = _NativeInputManager.instance().screen_state
+        screen_width = max(1.0, float(screen.logical_width))
+        screen_height = max(1.0, float(screen.logical_height))
+        normalized_x = float(native_touch.x)
+        normalized_y = 1.0 - float(native_touch.y)
+        normalized_delta_x = float(native_touch.delta_x)
+        normalized_delta_y = -float(native_touch.delta_y)
+        position = (
+            normalized_x * screen_width,
+            normalized_y * screen_height,
+        )
         return Touch(
             touch_id=int(native_touch.touch_id),
             finger_id=int(native_touch.finger_id),
             timestamp_ns=int(native_touch.timestamp_ns),
             window_id=int(native_touch.window_id),
-            position=(float(native_touch.x), float(native_touch.y)),
-            delta_position=(float(native_touch.delta_x), float(native_touch.delta_y)),
+            position=position,
+            raw_position=position,
+            delta_position=(
+                normalized_delta_x * screen_width,
+                normalized_delta_y * screen_height,
+            ),
+            normalized_position=(normalized_x, normalized_y),
+            normalized_delta_position=(normalized_delta_x, normalized_delta_y),
+            delta_time=float(native_touch.delta_time),
             pressure=float(native_touch.pressure),
             contact_size=(
-                float(native_touch.contact_width),
-                float(native_touch.contact_height),
+                float(native_touch.contact_width) * screen_width,
+                float(native_touch.contact_height) * screen_height,
             ),
             is_primary=bool(native_touch.is_primary),
             cancel_reason=str(native_touch.cancel_reason),
@@ -599,7 +626,7 @@ class Input(metaclass=_InputMeta):
 
     @staticmethod
     def get_touch(index: int) -> Touch:
-        """Return one touch from the current frame snapshot."""
+        """Return one stable-indexed touch from the current frame snapshot."""
         if not Input._accepts_game_input():
             raise IndexError("Touch input is unavailable while gameplay input is unfocused")
         return Input._from_native_touch(_NativeInputManager.instance().get_touch(index))

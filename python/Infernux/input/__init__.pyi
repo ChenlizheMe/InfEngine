@@ -20,7 +20,11 @@ class Touch:
     timestamp_ns: int
     window_id: int
     position: Tuple[float, float]
+    raw_position: Tuple[float, float]
     delta_position: Tuple[float, float]
+    normalized_position: Tuple[float, float]
+    normalized_delta_position: Tuple[float, float]
+    delta_time: float
     pressure: float
     contact_size: Tuple[float, float]
     is_primary: bool

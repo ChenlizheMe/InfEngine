@@ -27,13 +27,13 @@ SDL_Event MouseButtonEvent(SDL_EventType type, Uint8 button)
 }
 
 SDL_Event TouchEvent(SDL_EventType type, Uint64 touchId, Uint64 fingerId, float x, float y, float dx = 0.0f,
-                     float dy = 0.0f, float pressure = 1.0f)
+                     float dy = 0.0f, float pressure = 1.0f, Uint64 timestamp = 123456789)
 {
     SDL_Event event{};
     event.type = type;
     event.tfinger.touchID = touchId;
     event.tfinger.fingerID = fingerId;
-    event.tfinger.timestamp = 123456789;
+    event.tfinger.timestamp = timestamp;
     event.tfinger.windowID = 7;
     event.tfinger.x = x;
     event.tfinger.y = y;
@@ -127,14 +127,18 @@ int main()
     assert(input.GetTouch(0).fingerId == 101);
     assert(input.GetTouch(0).phase == TouchPhase::Began);
     assert(input.GetTouch(0).pressure == 0.6f);
+    assert(input.GetTouch(0).isPrimary);
     assert(input.GetTouch(1).fingerId == 202);
+    assert(!input.GetTouch(1).isPrimary);
 
     input.BeginFrame();
     assert(input.GetTouchCount() == 2);
     assert(input.GetTouch(0).phase == TouchPhase::Stationary);
-    input.ProcessSDLEvent(TouchEvent(SDL_EVENT_FINGER_MOTION, 3, 101, 0.30f, 0.70f, 0.05f, -0.05f, 0.7f));
+    input.ProcessSDLEvent(TouchEvent(SDL_EVENT_FINGER_MOTION, 3, 101, 0.30f, 0.70f, 0.05f, -0.05f, 0.7f, 139456789));
     assert(input.GetTouch(0).phase == TouchPhase::Moved);
     assert(input.GetTouch(0).deltaX == 0.05f);
+    assert(input.GetTouch(0).deltaTime > 0.015f);
+    assert(input.GetTouch(0).deltaTime < 0.017f);
     input.ProcessSDLEvent(TouchEvent(SDL_EVENT_FINGER_UP, 3, 202, 0.80f, 0.20f));
     assert(input.GetTouch(1).phase == TouchPhase::Ended);
 
