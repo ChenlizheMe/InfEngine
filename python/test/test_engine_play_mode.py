@@ -303,7 +303,7 @@ class TestPlayModeManager:
         assert scene_changed == [True]
         assert remembered_paths == []
 
-    def test_exit_play_mode_restores_document_state_without_legacy_dirty_backup(
+    def test_exit_play_mode_restores_document_state_from_current_snapshot(
         self, monkeypatch
     ):
         from Infernux.engine.deferred_task import DeferredTaskRunner
@@ -455,6 +455,67 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         mgr.set_asset_database("fake_db")
         assert mgr._asset_database == "fake_db"
+
+    def test_scene_snapshot_requires_scene_manager(self):
+        manager = PlayModeManager()
+        manager._get_scene_manager = lambda: None
+
+        with pytest.raises(RuntimeError, match="without SceneManager"):
+            manager._save_scene_state()
+
+    def test_scene_snapshot_requires_native_capture_contract(self):
+        scene = SimpleNamespace(serialize_document=lambda: {"objects": []})
+        manager = PlayModeManager()
+        manager._get_scene_manager = lambda: SimpleNamespace(
+            get_active_scene=lambda: scene
+        )
+
+        with pytest.raises(AttributeError, match="_capture_play_mode_snapshot"):
+            manager._save_scene_state()
+
+    def test_script_reload_requires_asset_database(self, tmp_path):
+        script = tmp_path / "ReloadContract.py"
+        script.write_text("VALUE = 1\n", encoding="utf-8")
+        manager = PlayModeManager()
+
+        with pytest.raises(RuntimeError, match="requires AssetDatabase"):
+            manager.reload_components_from_script_result(str(script))
+
+    def test_script_reload_requires_registered_source(self, tmp_path):
+        script = tmp_path / "ReloadContract.py"
+        script.write_text("VALUE = 1\n", encoding="utf-8")
+        manager = PlayModeManager()
+        manager.set_asset_database(
+            SimpleNamespace(get_guid_from_path=lambda _path: "")
+        )
+
+        with pytest.raises(RuntimeError, match="not registered"):
+            manager.reload_components_from_script_result(str(script))
+
+    def test_script_delete_requires_native_replacement(self):
+        class DeleteContract(InxComponent):
+            _uses_component_data_store = False
+
+        bind_asset_script_guid(DeleteContract, "delete-contract-guid")
+        component = DeleteContract()
+        component._script_guid = "delete-contract-guid"
+        game_object = SimpleNamespace(
+            id=88,
+            get_py_components=lambda: (component,),
+            remove_py_component=lambda _component: None,
+            add_py_component=lambda _component: None,
+        )
+        scene = SimpleNamespace(get_all_objects=lambda: (game_object,))
+        manager = PlayModeManager()
+        manager._get_scene_manager = lambda: SimpleNamespace(
+            get_active_scene=lambda: scene
+        )
+
+        with pytest.raises(RuntimeError, match="transactionally replace"):
+            manager.prepare_script_delete_batch(
+                "delete-contract-guid",
+                "Assets/DeleteContract.py",
+            )
 
     def test_deleted_script_becomes_missing_and_recovers_with_identity(self, tmp_path, monkeypatch):
         script_guid = "1" * 32

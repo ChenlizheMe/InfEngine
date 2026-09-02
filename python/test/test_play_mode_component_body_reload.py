@@ -47,11 +47,10 @@ class _ScriptObject:
     def get_py_components(self):
         return tuple(self._components)
 
-    def remove_py_component(self, component):
-        self._components.remove(component)
-
-    def add_py_component(self, component):
-        self._components.append(component)
+    def replace_py_component(self, old_component, new_component):
+        index = self._components.index(old_component)
+        self._components[index] = new_component
+        return new_component
 
 
 class _AtomicScriptObject(_ScriptObject):
