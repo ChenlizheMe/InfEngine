@@ -2813,7 +2813,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._fsm.file_path = snapshot.target_path
         self._file_path = snapshot.target_path
         self._persist_panel_state()
-        Debug.log(f"Saved animfsm: {snapshot.target_path}")
         publication_error = ""
         try:
             from Infernux.core.assets import AssetManager
