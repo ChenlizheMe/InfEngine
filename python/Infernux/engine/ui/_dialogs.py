@@ -1,8 +1,4 @@
-"""Cross-platform file / folder / error dialog helpers.
-
-Consolidates Win32 COM + tkinter fallback dialog code that was previously
-duplicated in ``build_settings_panel.py`` and ``scene_manager.py``.
-"""
+"""Cross-platform file, folder, and error dialog helpers."""
 
 from __future__ import annotations
 
@@ -11,7 +7,6 @@ import re
 import sys
 from typing import Optional
 
-from Infernux.debug import Debug
 from Infernux.engine.path_utils import lexical_path
 
 
@@ -213,11 +208,7 @@ def _run_sdl_file_dialog(
 
 def pick_folder_dialog(title: str) -> Optional[str]:
     if sys.platform == "win32":
-        try:
-            return _win32_pick_folder(title)
-        except Exception as exc:
-            Debug.log_warning(f"Win32 folder dialog failed: {exc}")
-            return None
+        return _win32_pick_folder(title)
 
     if sys.platform.startswith("linux"):
         return _run_sdl_file_dialog(
@@ -238,12 +229,11 @@ def pick_folder_dialog(title: str) -> Optional[str]:
 
 def pick_file_dialog(title: str, win32_filter: str = "",
                      tk_filetypes: list | None = None) -> Optional[str]:
-    if sys.platform == "win32" and win32_filter:
-        try:
-            return _win32_pick_file(title, win32_filter)
-        except Exception as exc:
-            Debug.log_warning(f"Win32 open-file dialog failed: {exc}")
-            return None
+    if sys.platform == "win32":
+        return _win32_pick_file(
+            title,
+            win32_filter or "All files (*.*)\0*.*\0\0",
+        )
 
     if sys.platform.startswith("linux"):
         return _run_sdl_file_dialog(
@@ -403,12 +393,13 @@ def save_file_dialog(
     editor.  Platform back-ends can be swapped here without touching callers.
     """
     if sys.platform == "win32":
-        try:
-            return _win32_save_file(title, win32_filter,
-                                    initial_dir, default_filename, default_ext)
-        except Exception as exc:
-            Debug.log_warning(f"Win32 save dialog failed: {exc}")
-            return None
+        return _win32_save_file(
+            title,
+            win32_filter,
+            initial_dir,
+            default_filename,
+            default_ext,
+        )
 
     if sys.platform.startswith("linux"):
         selected = _run_sdl_file_dialog(

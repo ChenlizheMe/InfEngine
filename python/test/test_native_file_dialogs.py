@@ -112,3 +112,52 @@ def test_sdl_native_dialog_rejects_ambiguous_result(monkeypatch):
     monkeypatch.setattr("Infernux.lib._Infernux", _Native)
     with pytest.raises(RuntimeError, match="invalid result"):
         _dialogs._run_sdl_file_dialog("save_file", title="Save")
+
+
+def test_windows_open_file_always_uses_native_dialog(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_dialogs.sys, "platform", "win32")
+    monkeypatch.setattr(
+        _dialogs,
+        "_win32_pick_file",
+        lambda title, file_filter: calls.append((title, file_filter)) or "selected.txt",
+    )
+
+    assert _dialogs.pick_file_dialog("Open") == "selected.txt"
+    assert calls == [("Open", "All files (*.*)\0*.*\0\0")]
+
+
+@pytest.mark.parametrize(
+    ("entry_point", "native_name", "arguments"),
+    [
+        ("pick_folder_dialog", "_win32_pick_folder", ("Folder",)),
+        ("pick_file_dialog", "_win32_pick_file", ("Open", "Text\0*.txt\0\0")),
+        (
+            "save_file_dialog",
+            "_win32_save_file",
+            ("Save", "Text\0*.txt\0\0", "C:/project", "file", "txt"),
+        ),
+    ],
+)
+def test_windows_native_dialog_errors_propagate(
+    monkeypatch, entry_point: str, native_name: str, arguments: tuple[str, ...]
+):
+    def fail(*_args):
+        raise OSError("native dialog unavailable")
+
+    monkeypatch.setattr(_dialogs.sys, "platform", "win32")
+    monkeypatch.setattr(_dialogs, native_name, fail)
+
+    with pytest.raises(OSError, match="native dialog unavailable"):
+        if entry_point == "pick_folder_dialog":
+            _dialogs.pick_folder_dialog(arguments[0])
+        elif entry_point == "pick_file_dialog":
+            _dialogs.pick_file_dialog(arguments[0], win32_filter=arguments[1])
+        else:
+            _dialogs.save_file_dialog(
+                title=arguments[0],
+                win32_filter=arguments[1],
+                initial_dir=arguments[2],
+                default_filename=arguments[3],
+                default_ext=arguments[4],
+            )
