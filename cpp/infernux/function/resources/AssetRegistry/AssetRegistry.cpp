@@ -442,54 +442,6 @@ void AssetRegistry::DrainPendingLoads() noexcept
     m_pendingTextureStagingLoads.clear();
 }
 
-void AssetRegistry::UpdateLoadedAssetPath(const std::string &oldPath, const std::string &newPath)
-{
-    if (!m_assetDb)
-        return;
-
-    // AssetDatabase should have updated the GUID↔path mapping before we get here.
-    // Because our cache is keyed by GUID, no cache surgery is needed.
-    // However, some asset types store an internal path (InxMaterial::m_filePath)
-    // that must be patched so SaveToFile() writes to the correct location.
-    std::string guid = m_assetDb->GetGuidFromPath(newPath);
-    if (guid.empty()) {
-        // Fallback: try oldPath in case AssetDatabase hasn't updated yet
-        guid = m_assetDb->GetGuidFromPath(oldPath);
-    }
-    if (guid.empty())
-        return;
-    ++m_assetMutationGenerations[guid];
-
-    auto it = m_loadedAssets.find(guid);
-    if (it == m_loadedAssets.end())
-        return;
-
-    auto newName = FromFsPath(ToFsPath(newPath).stem());
-
-    if (it->second.type == ResourceType::Material) {
-        auto mat = it->second.payload.Get<InxMaterial>();
-        if (mat) {
-            mat->SetFilePath(newPath);
-            mat->SetName(newName);
-        }
-    }
-    if (it->second.type == ResourceType::Texture) {
-        auto tex = it->second.payload.Get<InxTexture>();
-        if (tex) {
-            tex->SetFilePath(newPath);
-            tex->SetName(newName);
-        }
-    }
-    if (it->second.type == ResourceType::PhysicMaterial) {
-        auto material = it->second.payload.Get<PhysicMaterial>();
-        if (material) {
-            material->SetFilePath(newPath);
-            material->SetName(newName);
-        }
-    }
-    // Future: add per-type path patching for Audio, Scene, etc.
-}
-
 // =============================================================================
 // Built-in materials (named, no GUID)
 // =============================================================================
