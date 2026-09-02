@@ -490,6 +490,36 @@ void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
             "runtime identity retained a missing authoring path");
     std::filesystem::remove_all(root);
 }
+
+void TestMoveRequiresRegisteredGuidIdentity()
+{
+    const auto root = std::filesystem::current_path() / "infernux-asset-move-guid-contract";
+    std::filesystem::remove_all(root);
+    const auto source = root / "Assets" / "Source.txt";
+    const auto destination = root / "Assets" / "Destination.txt";
+    WriteText(source, "identity\n");
+
+    infernux::InxResourceMeta metadata;
+    metadata.Init("identity\n", 9, infernux::FromFsPath(source), infernux::ResourceType::DefaultText);
+    const auto sourceMetadata = infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(source));
+    Require(metadata.SaveToFile(sourceMetadata), "failed to write relocation metadata fixture");
+    std::filesystem::rename(source, destination);
+
+    infernux::AssetDatabase database;
+    database.Initialize(infernux::FromFsPath(root));
+    const infernux::AssetMutationResult result =
+        database.MoveAsset(infernux::FromFsPath(source), infernux::FromFsPath(destination));
+
+    Require(!result, "unregistered asset relocation recovered identity from a sidecar");
+    Require(result.errorCode == infernux::AssetMutationErrorCode::NotFound,
+            "unregistered asset relocation returned the wrong error");
+    Require(std::filesystem::is_regular_file(sourceMetadata), "failed relocation moved the source metadata sidecar");
+    Require(!std::filesystem::exists(infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(destination))),
+            "failed relocation created destination metadata");
+    Require(database.GetGuidFromPath(infernux::FromFsPath(destination)).empty(),
+            "failed relocation imported a replacement GUID");
+    std::filesystem::remove_all(root);
+}
 } // namespace
 
 int main()
@@ -504,6 +534,7 @@ int main()
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
+        TestMoveRequiresRegisteredGuidIdentity();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Asset database refresh test failed: " << error.what() << '\n';

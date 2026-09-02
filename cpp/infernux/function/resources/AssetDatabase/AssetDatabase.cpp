@@ -2201,42 +2201,27 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     const std::string normalizedOldPath = FilesystemPathKey(oldPath);
     std::string guid = GetGuidFromPath(oldPath);
     if (guid.empty()) {
-        // Try to recover guid from old .meta file
-        const std::string metaPath = InxResourceMeta::GetMetaFilePath(oldPath);
-        if (std::filesystem::exists(ToFsPath(metaPath))) {
-            InxResourceMeta meta;
-            if (meta.LoadFromFile(metaPath)) {
-                guid = meta.GetGuid();
-            }
-        }
+        result.errorCode = AssetMutationErrorCode::NotFound;
+        result.error = "asset relocation source has no registered GUID";
+        return result;
     }
     MoveMetadata(oldPath, newPath);
 
-    if (!guid.empty()) {
-        UpdateMapping(guid, newPath);
-        RemoveMappingByPath(oldPath);
-        m_fileStates.erase(normalizedOldPath);
-        UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
-        m_assetIndexDirty = true;
-        PublishQuerySnapshotForPaths({oldPath, newPath});
-        // Notify dependents — GUID unchanged, but path changed
-        ResourceType type = GetResourceTypeForPath(newPath);
-        AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Moved);
-        result.succeeded = true;
-        result.databaseCommitted = true;
-        result.changed = true;
-        result.guid = std::move(guid);
-        result.resourceType = type;
-        result.queryGeneration = GetQueryGeneration();
-        return result;
-    }
-
-    // If GUID not found, attempt to re-import
-    result = ImportAsset(newPath);
-    result.operation = "move";
-    result.previousPath = oldPath;
-    if (!result)
-        result.error = "move could not recover metadata and reimport failed: " + result.error;
+    UpdateMapping(guid, newPath);
+    RemoveMappingByPath(oldPath);
+    m_fileStates.erase(normalizedOldPath);
+    UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
+    m_assetIndexDirty = true;
+    PublishQuerySnapshotForPaths({oldPath, newPath});
+    // Notify dependents — GUID unchanged, but path changed
+    ResourceType type = GetResourceTypeForPath(newPath);
+    AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Moved);
+    result.succeeded = true;
+    result.databaseCommitted = true;
+    result.changed = true;
+    result.guid = std::move(guid);
+    result.resourceType = type;
+    result.queryGeneration = GetQueryGeneration();
     return result;
 }
 
