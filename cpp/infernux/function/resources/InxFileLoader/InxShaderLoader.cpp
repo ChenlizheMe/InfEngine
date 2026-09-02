@@ -568,9 +568,6 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     metaData.AddMetadata("shader_surface_type", desc.surfaceOptions.surfaceType);
     metaData.AddMetadata("shader_receive_shadows", desc.surfaceOptions.receiveShadows);
     metaData.AddMetadata("shader_cast_shadows", desc.surfaceOptions.castShadows);
-
-    INXLOG_DEBUG("Shader metadata created - type: ", type, ", shader_id: ", desc.shaderId,
-                 ", lighting_type: ", desc.shadingModel, ", properties: ", propertiesJson, " for file: ", filePath);
 }
 
 // ============================================================================
@@ -833,8 +830,6 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
 
     // Cache the result
     s_shadingModelCache[modelName] = desc;
-
-    INXLOG_DEBUG("Loaded shading model '", modelName, "' from ", filePath, " with ", desc.targets.size(), " targets");
 
     return desc;
 }
@@ -1767,7 +1762,6 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
 
     std::string filePath = metaData.GetDataAs<std::string>("file_path");
     std::string type = metaData.GetDataAs<std::string>("type");
-    INXLOG_DEBUG("InxShaderLoader::Compile - Compiling shader: ", filePath);
     s_compiledVariantCache.erase(filePath);
 
     EShLanguage shaderType = GetShaderType(type);
@@ -2110,8 +2104,6 @@ void InxShaderLoader::CompileVariant(const char *content, const std::string &fil
                                      const std::string &variantName, EShLanguage shaderType)
 {
     std::string variantSource = PreprocessShaderSource(std::string(content), filePath, target);
-
-    INXLOG_DEBUG("Compiling ", variantName, " variant for: ", filePath, "\n", variantSource);
 
     std::vector<char> spirv;
     if (!CompileGLSL(variantSource, shaderType, filePath, spirv)) {

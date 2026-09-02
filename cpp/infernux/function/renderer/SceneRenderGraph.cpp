@@ -1356,9 +1356,6 @@ vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &n
     m_transientResources[name] = handle;
     m_needsRebuild = true;
 
-    INXLOG_DEBUG("SceneRenderGraph: Created transient texture '", name, "' id=", handle.id, " (", width, "x", height,
-                 ", format ", static_cast<int>(format), ")");
-
     return handle;
 }
 
@@ -1741,8 +1738,6 @@ void SceneRenderGraph::EnsureGraphBuilt()
         auto currentMsaa = static_cast<int>(m_sceneTarget->GetMsaaSampleCount());
         const int effectiveMsaa = m_effectiveMsaaSamples > 0 ? m_effectiveMsaaSamples : m_pythonGraphDesc.msaaSamples;
         if (effectiveMsaa != currentMsaa) {
-            INXLOG_DEBUG("SceneRenderGraph: MSAA mismatch (validated request is ", effectiveMsaa,
-                         "x, scene target has ", currentMsaa, "x) — skipping frame, waiting for resize");
             m_needsRebuild = true;
             // Prevent Execute() from running the stale compiled graph
             // whose render passes reference images with the old sample
@@ -2836,7 +2831,6 @@ void SceneRenderGraph::BuildRenderGraph()
     }
 
     if (!m_hasPythonGraph) {
-        INXLOG_DEBUG("SceneRenderGraph::BuildRenderGraph - No Python graph configured");
         return;
     }
 
@@ -4390,13 +4384,6 @@ void SceneRenderGraph::BuildRenderGraph()
 
     // Set output for proper resource tracking and dead-pass culling.
     FinalizeGraphOutput(customRTHandles);
-
-    // Debug: Log the passes added to the render graph
-    INXLOG_DEBUG("SceneRenderGraph::BuildRenderGraph - Built ", m_renderGraph->GetPassCount(), " passes from ",
-                 m_pythonGraphDesc.passes.size(),
-                 " Python passes + editor auto-appended passes. "
-                 "Output: ",
-                 m_pythonGraphDesc.outputTexture.empty() ? "(backbuffer)" : m_pythonGraphDesc.outputTexture);
 
     ++m_graphBuildRevision;
     m_particleDrawRegistryRevision = m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;

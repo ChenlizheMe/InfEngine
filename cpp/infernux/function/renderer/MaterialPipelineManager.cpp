@@ -634,7 +634,6 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     if (cachedPipeline != VK_NULL_HANDLE) {
         renderData->pipeline = cachedPipeline;
         renderData->isValid = true;
-        INXLOG_DEBUG("Using cached pipeline for material: ", name);
     } else {
         // Create new pipeline using shader program
         renderData->pipeline = CreatePipelineWithProgram(program.get(), material->GetRenderState());
@@ -720,23 +719,6 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     }
     if (!rhi::IsStencilFormat(pipelineDesc.depthFormat))
         effectiveState.stencilTestEnable = false;
-
-    // Debug log the cull mode being used
-    const char *cullModeStr = "UNKNOWN";
-    if (effectiveState.cullMode == MaterialCullMode::None)
-        cullModeStr = "NONE";
-    else if (effectiveState.cullMode == MaterialCullMode::Front)
-        cullModeStr = "FRONT";
-    else if (effectiveState.cullMode == MaterialCullMode::Back)
-        cullModeStr = "BACK";
-    else if (effectiveState.cullMode == MaterialCullMode::FrontAndBack)
-        cullModeStr = "FRONT_AND_BACK";
-    INXLOG_DEBUG("CreatePipelineWithProgram: shader=", program->GetShaderId(), ", cullMode=", cullModeStr,
-                 ", target=", ShaderCompileTargetName(pipelineDesc.target),
-                 ", blendEnable=", effectiveState.blendEnable ? "true" : "false",
-                 ", depthWrite=", effectiveState.depthWriteEnable ? "true" : "false",
-                 ", depthTest=", effectiveState.depthTestEnable ? "true" : "false",
-                 ", renderQueue=", effectiveState.renderQueue);
 
     // Shader stages
     auto shaderStages = vkrender::MakeVertFragStages(program->GetVertexModule(), program->GetFragmentModule());
@@ -928,7 +910,6 @@ void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &
                        (extractShaderName(fragName) == shaderId);
 
         if (matches) {
-            INXLOG_DEBUG("Material '", name, "' uses shader '", shaderId, "', marking for invalidation");
             materialsToRemove.push_back(name);
         }
     }
@@ -1124,7 +1105,6 @@ void MaterialPipelineManager::RemoveRenderData(const std::string &materialName)
 
     m_renderDataMap.erase(it);
     ++m_publicationGeneration;
-    INXLOG_DEBUG("Removed render data for material: ", materialName);
 }
 
 void MaterialPipelineManager::RetireMaterialUBO(InxMaterial::DetachedUBO resource)

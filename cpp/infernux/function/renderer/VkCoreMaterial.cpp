@@ -622,9 +622,6 @@ void InxVkCoreModular::InitializeMaterialSystem()
             // project shader catalog exists.  This is not a failed material:
             // the normal material publication path reflects DefaultLit as
             // soon as Standard|Lit enters the shader cache.
-            INXLOG_DEBUG("InitializeMaterialSystem: default material shader SPIR-V not yet in cache "
-                         "(vert='",
-                         vertId, "', frag='", fragId, "'), deferring reflection until first use");
         }
     }
 
@@ -828,7 +825,6 @@ MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::sh
 void InxVkCoreModular::SetAmbientColor(const glm::vec3 &color, float intensity)
 {
     m_lightCollector.SetAmbientColor(color, intensity);
-    INXLOG_DEBUG("SetAmbientColor: (", color.r, ", ", color.g, ", ", color.b, ") intensity=", intensity);
 }
 
 void InxVkCoreModular::UpdateLightingState()
@@ -1441,7 +1437,6 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     material->SetPassPipeline(ShaderCompileTarget::Shadow, shadowPipeline);
     material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
     material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowPublication);
-    INXLOG_DEBUG("Created shared shadow pipeline for '", material->GetName(), "'");
     return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram,
                                        linkedArtifact->key.revision);
 }

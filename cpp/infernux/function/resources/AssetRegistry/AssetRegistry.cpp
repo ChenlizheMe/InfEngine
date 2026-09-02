@@ -210,7 +210,6 @@ void AssetRegistry::InvalidateAsset(const std::string &guid)
     auto it = m_loadedAssets.find(guid);
     if (it != m_loadedAssets.end()) {
         RemoveEntry(it);
-        INXLOG_DEBUG("AssetRegistry: invalidated cache for GUID ", guid);
     }
 }
 

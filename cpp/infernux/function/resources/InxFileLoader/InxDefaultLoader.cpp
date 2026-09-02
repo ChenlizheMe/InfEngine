@@ -23,7 +23,6 @@ InxDefaultTextLoader::InxDefaultTextLoader(ResourceType resourceType) : m_resour
 void InxDefaultTextLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                                       InxResourceMeta &metaData) const
 {
-    INXLOG_DEBUG("Creating metadata for text file: ", filePath);
     metaData.Init(content, contentSize, filePath, m_resourceType);
 
     std::filesystem::path path = ToFsPath(filePath);
@@ -48,8 +47,6 @@ void InxDefaultTextLoader::CreateMeta(const char *content, size_t contentSize, c
     metaData.AddMetadata("encoding", hasNonAscii ? std::string("utf-8") : std::string("ascii"));
 
     metaData.AddMetadata("file_size", contentSize);
-
-    INXLOG_DEBUG("Text file metadata created for ", filePath, " lines: ", lineCount, " chars: ", contentStr.length());
 }
 
 // ================== InxDefaultBinaryLoader Implementation ==================
@@ -87,8 +84,6 @@ void InxDefaultBinaryLoader::CreateMeta(const char *content, size_t contentSize,
         sizeCategory = "large";
     }
     metaData.AddMetadata("size_category", sizeCategory);
-
-    INXLOG_DEBUG("Binary file metadata created for ", filePath, ", type: ", binaryType);
 }
 
 std::string InxDefaultBinaryLoader::GetBinaryTypeFromExtension(const std::string &extension) const
