@@ -719,15 +719,13 @@ class ParticleEmitterKernelIR:
     supports_fused_update_rendering: bool = False
 
     def update_render_fusion_capability(self) -> dict[str, Any]:
-        """Describe the conservative phase-1 Update+Rendering capability."""
+        """Describe the current Update+Rendering fusion capability."""
 
         def result(eligible: bool, reason_code: str) -> dict[str, Any]:
             return {
                 "schema": "infernux.particle_update_render_fusion",
-                "version": 1,
                 "eligible": eligible,
                 "reason_code": reason_code,
-                "fallback_stages": ["update", "rendering"],
                 "fused_stage": "",
             }
 
@@ -1071,21 +1069,10 @@ class ParticleEmitterKernelIR:
             "flows",
             "suspensions",
         }
-        optional = {"supports_fused_update_rendering", "update_render_fusion"}
-        allowed_keys = (
-            expected,
-            expected | optional,
-            expected | {"supports_fused_update_rendering"},
-            expected | {"update_render_fusion"},
-        )
-        if type(value) is not dict or not any(
-            set(value) == candidate for candidate in allowed_keys
-        ):
+        expected |= {"supports_fused_update_rendering", "update_render_fusion"}
+        if type(value) is not dict or set(value) != expected:
             raise KernelCompileError("kernel emitter keys do not match the schema")
-        if (
-            "supports_fused_update_rendering" in value
-            and type(value["supports_fused_update_rendering"]) is not bool
-        ):
+        if type(value["supports_fused_update_rendering"]) is not bool:
             raise KernelCompileError(
                 "kernel emitter fused update/rendering support must be a boolean"
             )
@@ -1125,14 +1112,14 @@ class ParticleEmitterKernelIR:
                 KernelSuspensionPoint.from_dict(item)
                 for item in value["suspensions"]
             ),
-            value.get("supports_fused_update_rendering", False),
+            value["supports_fused_update_rendering"],
         )
         expected_support = emitter.update_render_fusion_capability()["eligible"]
         if emitter.supports_fused_update_rendering and not expected_support:
             raise KernelCompileError(
                 "kernel emitter fused update/rendering support is not eligible"
             )
-        if "update_render_fusion" in value and value["update_render_fusion"] != emitter.update_render_fusion_capability():
+        if value["update_render_fusion"] != emitter.update_render_fusion_capability():
             raise KernelCompileError("kernel emitter update/render fusion metadata is stale")
         return emitter
 
