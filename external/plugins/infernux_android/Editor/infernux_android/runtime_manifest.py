@@ -1,64 +1,15 @@
-"""Provenance and integrity contract for Android CPython prefixes."""
+"""Current runtime contract for Android CPython prefixes."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 
 MANIFEST_NAME = "infernux-android-python.json"
-MANIFEST_SCHEMA = 1
+MANIFEST_SCHEMA = "infernux.android_python_runtime"
 RUNTIME_KIND = "infernux-android-cpython"
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def hash_runtime_payload(prefix: Path) -> dict[str, int | str]:
-    """Hash every regular file in a prefix except the manifest itself."""
-
-    root = prefix.resolve()
-    if not root.is_dir():
-        raise ValueError(f"Android Python prefix does not exist: {root}")
-    entries = tuple(root.rglob("*"))
-    for path in entries:
-        if path.is_symlink():
-            raise ValueError(
-                "Android Python prefixes must not contain symbolic links: "
-                f"{path.relative_to(root).as_posix()}"
-            )
-    manifest_path = root / MANIFEST_NAME
-    files = sorted(
-        (path for path in entries if path != manifest_path and path.is_file()),
-        key=lambda path: path.relative_to(root).as_posix(),
-    )
-    digest = hashlib.sha256()
-    byte_count = 0
-    for path in files:
-        relative = path.relative_to(root).as_posix()
-        size = path.stat().st_size
-        byte_count += size
-        digest.update(b"file\0")
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(size).encode("ascii"))
-        digest.update(b"\0")
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return {
-        "algorithm": "sha256-tree-v1",
-        "sha256": digest.hexdigest(),
-        "files": len(files),
-        "bytes": byte_count,
-    }
 
 
 def create_runtime_manifest(
@@ -70,12 +21,10 @@ def create_runtime_manifest(
     minimum_android_api: int,
     ndk_version: str,
     source_url: str,
-    source_sha256: str,
 ) -> dict[str, Any]:
-    """Create and persist a deterministic manifest for one prepared prefix."""
+    """Create and persist the current manifest for one prepared prefix."""
 
     root = prefix.resolve()
-    source_digest = source_sha256.strip().casefold()
     if abi not in {"arm64-v8a", "x86_64"}:
         raise ValueError(f"Unsupported Android ABI: {abi}")
     if not python_version.startswith("3.13."):
@@ -90,22 +39,16 @@ def create_runtime_manifest(
         raise ValueError("Android NDK version is required")
     if not source_url.startswith("https://"):
         raise ValueError("CPython source URL must use HTTPS")
-    if len(source_digest) != 64 or any(
-        character not in "0123456789abcdef" for character in source_digest
-    ):
-        raise ValueError("CPython source SHA-256 must contain 64 hexadecimal digits")
-
     wheels = []
     for wheel in sorted((root / "wheels").glob("*.whl"), key=lambda path: path.name):
         wheels.append(
             {
                 "file": wheel.name,
-                "sha256": _sha256_file(wheel),
                 "bytes": wheel.stat().st_size,
             }
         )
     manifest: dict[str, Any] = {
-        "schema": MANIFEST_SCHEMA,
+        "$schema": MANIFEST_SCHEMA,
         "kind": RUNTIME_KIND,
         "target": {
             "abi": abi,
@@ -116,12 +59,10 @@ def create_runtime_manifest(
             "android_api": cpython_android_api,
             "source": {
                 "url": source_url,
-                "sha256": source_digest,
             },
         },
         "toolchain": {"ndk_version": ndk_version.strip()},
         "wheels": wheels,
-        "payload": hash_runtime_payload(root),
     }
     (root / MANIFEST_NAME).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -138,7 +79,7 @@ def validate_runtime_manifest(
     expected_python_series: str,
     application_minimum_android_api: int,
 ) -> dict[str, Any]:
-    """Validate provenance, compatibility, wheel records, and payload bytes."""
+    """Validate the current runtime compatibility contract and required files."""
 
     root = prefix.resolve()
     manifest_path = root / MANIFEST_NAME
@@ -153,14 +94,24 @@ def validate_runtime_manifest(
         raise ValueError(
             f"Android Python runtime manifest is unreadable: {manifest_path}"
         ) from error
+    if type(manifest) is not dict or set(manifest) != {
+        "$schema",
+        "kind",
+        "target",
+        "cpython",
+        "toolchain",
+        "wheels",
+    }:
+        raise ValueError(
+            f"Android Python runtime manifest does not match the current contract: {manifest_path}"
+        )
     try:
-        schema = manifest["schema"]
+        schema = manifest["$schema"]
         kind = manifest["kind"]
         target = manifest["target"]
         cpython = manifest["cpython"]
         toolchain = manifest["toolchain"]
         wheels = manifest["wheels"]
-        payload = manifest["payload"]
         abi = target["abi"]
         minimum_api = target["minimum_android_api"]
         python_version = cpython["version"]
@@ -174,6 +125,19 @@ def validate_runtime_manifest(
     if schema != MANIFEST_SCHEMA or kind != RUNTIME_KIND:
         raise ValueError(
             f"Unsupported Android Python runtime manifest schema or kind: {manifest_path}"
+        )
+    if (
+        type(target) is not dict
+        or set(target) != {"abi", "minimum_android_api"}
+        or type(cpython) is not dict
+        or set(cpython) != {"version", "android_api", "source"}
+        or type(source) is not dict
+        or set(source) != {"url"}
+        or type(toolchain) is not dict
+        or set(toolchain) != {"ndk_version"}
+    ):
+        raise ValueError(
+            f"Android Python runtime manifest does not match the current contract: {manifest_path}"
         )
     if abi != expected_abi:
         raise ValueError(
@@ -201,20 +165,17 @@ def validate_runtime_manifest(
         )
     if not isinstance(ndk_version, str) or not ndk_version.strip():
         raise ValueError(f"Android Python runtime NDK provenance is missing: {manifest_path}")
-    source_digest = str(source.get("sha256", "")) if isinstance(source, dict) else ""
-    if (
-        not isinstance(source, dict)
-        or not str(source.get("url", "")).startswith("https://")
-        or len(source_digest) != 64
-        or any(character not in "0123456789abcdef" for character in source_digest)
-    ):
+    if not str(source["url"]).startswith("https://"):
         raise ValueError(f"Android Python runtime source provenance is invalid: {manifest_path}")
     if not isinstance(wheels, list):
         raise ValueError(f"Android Python runtime wheel records are invalid: {manifest_path}")
     for record in wheels:
+        if type(record) is not dict or set(record) != {"file", "bytes"}:
+            raise ValueError(
+                f"Android Python runtime wheel record does not match the current contract: {manifest_path}"
+            )
         try:
             wheel_name = record["file"]
-            expected_hash = record["sha256"]
             expected_bytes = record["bytes"]
         except (KeyError, TypeError) as error:
             raise ValueError(
@@ -224,21 +185,17 @@ def validate_runtime_manifest(
             not isinstance(wheel_name, str)
             or Path(wheel_name).name != wheel_name
             or not wheel_name.endswith(".whl")
+            or type(expected_bytes) is not int
+            or expected_bytes < 0
         ):
             raise ValueError(
                 f"Android Python runtime wheel name is unsafe: {wheel_name}"
             )
         wheel = root / "wheels" / wheel_name
-        if (
-            not wheel.is_file()
-            or wheel.stat().st_size != expected_bytes
-            or _sha256_file(wheel) != expected_hash
-        ):
+        if not wheel.is_file() or wheel.stat().st_size != expected_bytes:
             raise ValueError(f"Android Python runtime wheel does not match its manifest: {wheel}")
-
-    actual_payload = hash_runtime_payload(root)
-    if payload != actual_payload:
-        raise ValueError(
-            f"Android Python prefix payload does not match {MANIFEST_NAME}: {root}"
-        )
+    include_dir = root / f"include/python{expected_python_series}"
+    stdlib_dir = root / f"lib/python{expected_python_series}"
+    if not include_dir.is_dir() or not stdlib_dir.is_dir():
+        raise ValueError(f"Android Python prefix is incomplete: {root}")
     return manifest

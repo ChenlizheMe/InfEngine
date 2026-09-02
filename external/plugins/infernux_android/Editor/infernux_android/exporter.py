@@ -12,6 +12,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
@@ -67,7 +68,12 @@ _ANDROID_MINIMUM_API = 26
 # Bump when the packaged runtime layout or Android asset extraction contract changes.
 # The value is part of the on-device cache identity, so APK upgrades cannot silently
 # retain a runtime written by an older packaging policy.
-_ANDROID_PYTHON_RUNTIME_LAYOUT = 2
+_ANDROID_PYTHON_RUNTIME_LAYOUT = 3
+_NUMPY_RUNTIME_EXCLUDED_PREFIXES = ("numpy/random/_examples/",)
+_ANDROID_ARCHIVE_ABIS = frozenset({"arm64-v8a", "armeabi-v7a", "x86", "x86_64"})
+_ANDROID_FORBIDDEN_DISTRIBUTIONS = frozenset(
+    {"llvmlite", "numba", "torch", "torchaudio", "torchvision"}
+)
 
 
 class AndroidPlatformExporter(PlatformExporter):
@@ -283,7 +289,7 @@ class AndroidPlatformExporter(PlatformExporter):
             _stage_engine_python_package(request, staging, source_root)
             _finalize_python_runtime_identity(staging)
             game_name, sdl_orientations, android_orientation = (
-                _cook_player_content(request, staging, abi)
+                _cook_player_content(request, staging, source_root, abi)
             )
             resolution_scaling, target_dpi = _android_resolution_contract(request)
         except (OSError, RuntimeError, ValueError) as error:
@@ -311,6 +317,7 @@ class AndroidPlatformExporter(PlatformExporter):
             android_orientation=android_orientation,
             resolution_scaling=resolution_scaling,
             target_dpi=target_dpi,
+            game_name=game_name,
         )
         request.report("prepare", 1, 1, "Android SDL host project ready")
 
@@ -406,6 +413,27 @@ class AndroidPlatformExporter(PlatformExporter):
                 logs=logs,
                 elapsed_seconds=time.perf_counter() - started,
             )
+        try:
+            package_audit = _audit_android_archive(
+                source_artifact,
+                abi=abi,
+                artifact_kind=artifact_kind,
+            )
+        except (OSError, ValueError) as error:
+            return BuildResult(
+                request.target,
+                False,
+                diagnostics=(
+                    BuildDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        "android.package.audit-failed",
+                        str(error),
+                        source=self.exporter_id,
+                    ),
+                ),
+                logs=logs,
+                elapsed_seconds=time.perf_counter() - started,
+            )
         artifact_stem = "".join(
             character if character.isalnum() or character in {"-", "_"} else "_"
             for character in game_name
@@ -418,7 +446,6 @@ class AndroidPlatformExporter(PlatformExporter):
         temporary = artifact_path.with_suffix(f".{artifact_kind}.tmp")
         shutil.copy2(source_artifact, temporary)
         os.replace(temporary, artifact_path)
-        payload = artifact_path.read_bytes()
         request.report(
             "package",
             1,
@@ -432,14 +459,12 @@ class AndroidPlatformExporter(PlatformExporter):
                 BuildArtifact(
                     str(artifact_path),
                     artifact_kind,
-                    hashlib.sha256(payload).hexdigest(),
-                    len(payload),
+                    size=artifact_path.stat().st_size,
                 ),
             ),
             diagnostics=signing_diagnostics,
             manifest={
                 "exporter": self.exporter_id,
-                "contract_version": self.contract_version,
                 "abi": abi,
                 "graphics_api": "vulkan",
                 "scope": "cooked-player",
@@ -453,10 +478,99 @@ class AndroidPlatformExporter(PlatformExporter):
                 "signed": release_signed,
                 "resolution_scaling": resolution_scaling,
                 "target_dpi": target_dpi,
+                "package_audit": package_audit,
             },
             logs=logs,
             elapsed_seconds=time.perf_counter() - started,
         )
+
+
+def _audit_android_archive(
+    artifact: Path,
+    *,
+    abi: str,
+    artifact_kind: str,
+) -> dict[str, object]:
+    """Fail closed when an Android Player archive violates its runtime scope."""
+
+    if artifact_kind not in {"apk", "aab"}:
+        raise ValueError(f"Unsupported Android archive kind: {artifact_kind}")
+    archive_prefix = "base/" if artifact_kind == "aab" else ""
+    required_manifest = (
+        "base/manifest/AndroidManifest.xml"
+        if artifact_kind == "aab"
+        else "AndroidManifest.xml"
+    )
+    try:
+        with zipfile.ZipFile(artifact) as archive:
+            entries = tuple(
+                entry.filename.replace("\\", "/")
+                for entry in archive.infolist()
+                if not entry.is_dir()
+            )
+    except zipfile.BadZipFile as error:
+        raise ValueError(f"Android {artifact_kind.upper()} is unreadable: {artifact}") from error
+
+    if required_manifest not in entries:
+        raise ValueError(
+            f"Android {artifact_kind.upper()} is missing {required_manifest}: {artifact}"
+        )
+
+    native_prefix = f"{archive_prefix}lib/"
+    native_entries = tuple(
+        entry
+        for entry in entries
+        if entry.startswith(native_prefix) and entry.endswith(".so")
+    )
+    packaged_abis = {
+        entry[len(native_prefix) :].split("/", 1)[0]
+        for entry in native_entries
+        if "/" in entry[len(native_prefix) :]
+    }
+    unexpected_abis = sorted(
+        packaged_abi
+        for packaged_abi in packaged_abis
+        if packaged_abi in _ANDROID_ARCHIVE_ABIS and packaged_abi != abi
+    )
+    if unexpected_abis:
+        raise ValueError(
+            "Android archive contains native libraries for unexpected ABIs: "
+            + ", ".join(unexpected_abis)
+        )
+    expected_native_entries = tuple(
+        entry for entry in native_entries if entry.startswith(f"{native_prefix}{abi}/")
+    )
+    if not expected_native_entries:
+        raise ValueError(f"Android archive contains no native libraries for {abi}")
+
+    forbidden_entries: list[str] = []
+    for entry in entries:
+        parts = entry.casefold().split("/")
+        try:
+            package_index = parts.index("site-packages") + 1
+        except ValueError:
+            continue
+        if package_index >= len(parts):
+            continue
+        top_level = parts[package_index]
+        if any(
+            top_level == distribution
+            or top_level.startswith(f"{distribution}-")
+            or top_level.startswith(f"{distribution}.")
+            for distribution in _ANDROID_FORBIDDEN_DISTRIBUTIONS
+        ):
+            forbidden_entries.append(entry)
+    if forbidden_entries:
+        raise ValueError(
+            "Android Player contains host-only Python distributions: "
+            + ", ".join(sorted(forbidden_entries)[:8])
+        )
+
+    return {
+        "native_library_count": len(expected_native_entries),
+        "packaged_abis": [abi],
+        "forbidden_distribution_count": 0,
+    }
 
 
 def _android_artifact_plan(
@@ -580,6 +694,7 @@ def _configure_project(
     android_orientation: str = "sensorLandscape",
     resolution_scaling: str = "fixed_dpi",
     target_dpi: int = 320,
+    game_name: str = "Infernux Player",
 ) -> None:
     replacements = {
         "@INFERNUX_SOURCE_ROOT@": source_root.as_posix(),
@@ -592,6 +707,7 @@ def _configure_project(
         "@ANDROID_SCREEN_ORIENTATION@": android_orientation,
         "@ANDROID_RESOLUTION_SCALING@": resolution_scaling,
         "@ANDROID_TARGET_DPI@": str(target_dpi),
+        "@ANDROID_APP_NAME@": xml_escape(game_name, {'"': "&quot;", "'": "&apos;"}),
     }
     for path in project_root.rglob("*.in"):
         payload = path.read_text(encoding="utf-8")
@@ -689,6 +805,7 @@ def _stage_host_template(source: Path, staging: Path) -> None:
 def _cook_player_content(
     request: BuildRequest,
     staging: Path,
+    source_root: Path,
     abi: str,
 ) -> tuple[str, str, str]:
     """Run the shared GUID-based Player cook and stage its native package."""
@@ -696,6 +813,7 @@ def _cook_player_content(
     from Infernux.engine.platform_content_cook import (
         build_settings_for_request,
         cook_platform_content,
+        read_cooked_player_icon,
     )
 
     settings = build_settings_for_request(request)
@@ -721,9 +839,27 @@ def _cook_player_content(
         player_assets = staging / "app" / "src" / "main" / "assets" / "player"
         shutil.rmtree(player_assets, ignore_errors=True)
         player_assets.mkdir(parents=True)
-        shutil.copytree(cooked_data, player_assets / cooked_data.name)
+        staged_data = player_assets / cooked_data.name
+        shutil.copytree(cooked_data, staged_data)
+        (player_assets / "infernux-data-root.txt").write_text(
+            cooked_data.name + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        icon = read_cooked_player_icon(
+            staged_data,
+            default_icon=(
+                source_root
+                / "python"
+                / "Infernux"
+                / "resources"
+                / "icons"
+                / "icon.png"
+            ),
+        )
+        _stage_android_launcher_icons(staging, icon)
 
-        digest = hashlib.sha256(b"INFERNUX_ANDROID_PLAYER_ASSETS_V1\n")
+        digest = hashlib.sha256(b"INFERNUX_ANDROID_PLAYER_ASSETS\n")
         for path in sorted(
             (item for item in player_assets.rglob("*") if item.is_file()),
             key=lambda item: item.as_posix().casefold(),
@@ -743,6 +879,70 @@ def _cook_player_content(
     return cooked.game_name, sdl_orientations, android_orientation
 
 
+def _stage_android_launcher_icons(staging: Path, source_icon: bytes) -> None:
+    """Generate legacy and adaptive launcher icons from one cooked project icon."""
+
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as error:
+        raise ValueError(
+            "Pillow is required to generate Android launcher icons"
+        ) from error
+
+    try:
+        from io import BytesIO
+
+        with Image.open(BytesIO(source_icon)) as opened:
+            source = opened.convert("RGBA")
+    except (OSError, ValueError) as error:
+        raise ValueError("Cooked Android launcher icon is unreadable") from error
+
+    resources = staging / "app" / "src" / "main" / "res"
+    densities = {
+        "mdpi": 48,
+        "hdpi": 72,
+        "xhdpi": 96,
+        "xxhdpi": 144,
+        "xxxhdpi": 192,
+    }
+    for density, size in densities.items():
+        destination = resources / f"mipmap-{density}" / "infernux_launcher.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        contained = ImageOps.contain(
+            source,
+            (size, size),
+            method=Image.Resampling.LANCZOS,
+        )
+        canvas.alpha_composite(
+            contained,
+            ((size - contained.width) // 2, (size - contained.height) // 2),
+        )
+        canvas.save(destination, format="PNG", optimize=True)
+
+    # Android masks adaptive icons aggressively.  Keep the authored image
+    # inside the documented central safe zone while the platform owns shape.
+    foreground_size = 432
+    foreground = Image.new("RGBA", (foreground_size, foreground_size), (0, 0, 0, 0))
+    contained = ImageOps.contain(
+        source,
+        (264, 264),
+        method=Image.Resampling.LANCZOS,
+    )
+    foreground.alpha_composite(
+        contained,
+        (
+            (foreground_size - contained.width) // 2,
+            (foreground_size - contained.height) // 2,
+        ),
+    )
+    foreground_path = (
+        resources / "drawable-nodpi" / "infernux_launcher_foreground.png"
+    )
+    foreground_path.parent.mkdir(parents=True, exist_ok=True)
+    foreground.save(foreground_path, format="PNG", optimize=True)
+
+
 def _android_orientation_contract(
     request: BuildRequest,
     settings: dict[str, object],
@@ -753,8 +953,8 @@ def _android_orientation_contract(
         request.profile.options.get("android_orientation", "auto") or "auto"
     ).strip().casefold()
     if configured == "auto":
-        width = int(settings.get("window_width", 1280))
-        height = int(settings.get("window_height", 720))
+        width = int(settings["window_width"])
+        height = int(settings["window_height"])
         configured = "landscape" if width >= height else "portrait"
     policies = {
         "landscape": ("LandscapeLeft LandscapeRight", "sensorLandscape"),
@@ -852,11 +1052,11 @@ def _stage_python_runtime(
             f"{_ANDROID_PYTHON_SERIES}, but the configured prefix provides {version}: "
             f"{prefix}"
         )
-    manifest_version = str(manifest["cpython"]["version"])
-    if not manifest_version.startswith(version + "."):
+    runtime_version = str(manifest["cpython"]["version"])
+    if not runtime_version.startswith(version + "."):
         raise ValueError(
             f"Android Python prefix layout provides {version}, but its manifest "
-            f"declares {manifest_version}: {prefix}"
+            f"declares {runtime_version}: {prefix}"
         )
     include_root = prefix / "include" / f"python{version}"
     library_root = prefix / "lib" / f"python{version}"
@@ -912,7 +1112,11 @@ def _stage_python_runtime(
     request.report("python-runtime", 3, 4, "Staging Android NumPy runtime")
     numpy_wheel = _find_android_numpy_wheel(request, prefix, abi, version)
     site_packages = staged_python / "site-packages"
-    _extract_wheel(numpy_wheel, site_packages)
+    _extract_wheel(
+        numpy_wheel,
+        site_packages,
+        excluded_prefixes=_NUMPY_RUNTIME_EXCLUDED_PREFIXES,
+    )
 
     runtime_identity = _python_runtime_identity(
         prefix,
@@ -1004,7 +1208,12 @@ def _find_android_numpy_wheel(
     return max(compatible, key=lambda item: item[0])[1]
 
 
-def _extract_wheel(wheel: Path, destination: Path) -> None:
+def _extract_wheel(
+    wheel: Path,
+    destination: Path,
+    *,
+    excluded_prefixes: tuple[str, ...] = (),
+) -> None:
     """Extract one validated wheel without permitting links or path traversal."""
 
     shutil.rmtree(destination, ignore_errors=True)
@@ -1031,6 +1240,12 @@ def _extract_wheel(wheel: Path, destination: Path) -> None:
                     raise ValueError(
                         f"Android Python wheel escapes site-packages: {entry.filename}"
                     )
+                if any(
+                    normalized == prefix.rstrip("/")
+                    or normalized.startswith(prefix)
+                    for prefix in excluded_prefixes
+                ):
+                    continue
                 if entry.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
@@ -1257,7 +1472,7 @@ def _finalize_python_runtime_identity(staging: Path) -> str:
     if not identity_path.is_file():
         raise ValueError("Android Python runtime identity is missing before finalization")
 
-    digest = hashlib.sha256(b"INFERNUX_ANDROID_PYTHON_ASSETS_V1\n")
+    digest = hashlib.sha256(b"INFERNUX_ANDROID_PYTHON_ASSETS\n")
     digest.update(identity_path.read_bytes().strip() + b"\n")
     site_packages = staged_python / "site-packages"
     for package_name in ("Infernux", "packaging"):

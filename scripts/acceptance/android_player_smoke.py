@@ -261,12 +261,12 @@ def inject_touch_gesture(
 ) -> None:
     """Inject a real multi-frame touchscreen gesture through Android input."""
     points = (
-        # Stay inside the sample's left gameplay zone while avoiding OEM edge
-        # gestures and game/sidebar overlays that commonly reserve the outer
-        # quarter of a landscape display.
-        ("DOWN", max(1, width * 7 // 16), max(1, height * 3 // 5)),
-        ("MOVE", max(1, width // 2), max(1, height // 2)),
-        ("UP", max(1, width * 9 // 16), max(1, height * 2 // 5)),
+        # Exercise the visible lower-left virtual stick. Android coordinates
+        # use a top-left origin while the public Touch API uses Unity-style
+        # bottom-left screen pixels.
+        ("DOWN", max(1, width * 11 // 100), max(1, height * 82 // 100)),
+        ("MOVE", max(1, width * 18 // 100), max(1, height * 70 // 100)),
+        ("UP", max(1, width * 22 // 100), max(1, height * 66 // 100)),
     )
     for index, (phase, x, y) in enumerate(points):
         adb.run(
@@ -482,6 +482,10 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             touch_action = (
                 arguments.expect_touch_begin_log in log
                 and arguments.expect_touch_end_log in log
+                and arguments.expect_stick_begin_log in log
+                and arguments.expect_stick_end_log in log
+                and arguments.expect_touch_action_log in log
+                and arguments.expect_unity_touch_api_log in log
             )
             if touch_action:
                 break
@@ -496,7 +500,11 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             raise RuntimeError(
                 "Injected Android touchscreen gesture did not reach gameplay: "
                 f"expected {arguments.expect_touch_begin_log!r} and "
-                f"{arguments.expect_touch_end_log!r} after "
+                f"{arguments.expect_touch_end_log!r}, "
+                f"{arguments.expect_stick_begin_log!r}, "
+                f"{arguments.expect_stick_end_log!r}, and "
+                f"{arguments.expect_touch_action_log!r}, and "
+                f"{arguments.expect_unity_touch_api_log!r} after "
                 f"{arguments.touch_attempts} attempts"
             )
 
@@ -657,6 +665,19 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--expect-touch-end-log", default="BALANCE // TOUCH END"
+    )
+    parser.add_argument(
+        "--expect-stick-begin-log", default="BALANCE // STICK BEGIN"
+    )
+    parser.add_argument(
+        "--expect-stick-end-log", default="BALANCE // STICK END"
+    )
+    parser.add_argument(
+        "--expect-touch-action-log", default="INFERNUX_ACCEPTANCE_INPUT_READY"
+    )
+    parser.add_argument(
+        "--expect-unity-touch-api-log",
+        default="INFERNUX_ACCEPTANCE_UNITY_TOUCH_API_READY",
     )
     parser.add_argument(
         "--expect-landscape",

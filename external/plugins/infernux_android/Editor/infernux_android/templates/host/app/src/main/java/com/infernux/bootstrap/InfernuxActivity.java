@@ -34,6 +34,7 @@ public final class InfernuxActivity extends SDLActivity {
     private static final String PYTHON_RUNTIME_ID = "infernux-runtime.id";
     private static final String PLAYER_ASSET_ROOT = "player";
     private static final String PLAYER_CONTENT_ID = "infernux-content.id";
+    private static final String PLAYER_DATA_ROOT = "infernux-data-root.txt";
     private int lastPublishedKeyboardInset = Integer.MIN_VALUE;
 
     @Override
@@ -45,6 +46,7 @@ public final class InfernuxActivity extends SDLActivity {
             File playerAssets = prepareVersionedAssets(
                     PLAYER_ASSET_ROOT,
                     PLAYER_CONTENT_ID);
+            File playerData = resolvePlayerDataRoot(playerAssets);
             Os.setenv("INFERNUX_PYTHON_HOME", pythonHome.getAbsolutePath(), true);
             Os.setenv(
                     "INFERNUX_NATIVE_LIBRARY_DIR",
@@ -52,7 +54,7 @@ public final class InfernuxActivity extends SDLActivity {
                     true);
             Os.setenv(
                     "INFERNUX_PLAYER_ASSET_ROOT",
-                    playerAssets.getAbsolutePath(),
+                    playerData.getAbsolutePath(),
                     true);
             Os.setenv(
                     "INFERNUX_PLAYER_CACHE_ROOT",
@@ -79,6 +81,25 @@ public final class InfernuxActivity extends SDLActivity {
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                     this::dispatchInfernuxBack);
         }
+    }
+
+    private static File resolvePlayerDataRoot(File playerAssets) throws IOException {
+        File descriptor = new File(playerAssets, PLAYER_DATA_ROOT);
+        if (!descriptor.isFile()) {
+            throw new IOException("Android Player data-root descriptor is missing");
+        }
+        String directoryName = readUtf8(new FileInputStream(descriptor));
+        if (!directoryName.endsWith("_Data")
+                || directoryName.contains("/")
+                || directoryName.contains("\\")) {
+            throw new IOException("Android Player data-root descriptor is invalid");
+        }
+        File playerData = new File(playerAssets, directoryName);
+        if (!playerData.isDirectory()
+                || !new File(playerData, "Player.inxmanifest").isFile()) {
+            throw new IOException("Android Player cooked Data directory is incomplete");
+        }
+        return playerData;
     }
 
     private void configureResolutionScaling()

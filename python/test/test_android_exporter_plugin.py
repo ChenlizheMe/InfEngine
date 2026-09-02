@@ -32,6 +32,10 @@ def _write_android_numpy_wheel(prefix: Path, *, abi: str = "x86_64") -> Path:
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("numpy/__init__.py", "__version__ = '2.5.2'\n")
         archive.writestr(
+            "numpy/random/_examples/numba/extending.py",
+            "raise RuntimeError('runtime package must not ship NumPy examples')\n",
+        )
+        archive.writestr(
             "numpy-2.5.2.dist-info/WHEEL",
             "Wheel-Version: 1.0\n"
             "Root-Is-Purelib: false\n"
@@ -50,6 +54,12 @@ def _stamp_android_python_prefix(
     minimum_api: int = 26,
 ) -> Path:
     runtime_manifest = importlib.import_module("infernux_android.runtime_manifest")
+    (prefix / f"include/python{python_version.rsplit('.', 1)[0]}").mkdir(
+        parents=True, exist_ok=True
+    )
+    (prefix / f"lib/python{python_version.rsplit('.', 1)[0]}").mkdir(
+        parents=True, exist_ok=True
+    )
     runtime_manifest.create_runtime_manifest(
         prefix,
         abi=abi,
@@ -58,7 +68,6 @@ def _stamp_android_python_prefix(
         minimum_android_api=minimum_api,
         ndk_version="27.3.13750724",
         source_url="https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
-        source_sha256="a" * 64,
     )
     return prefix / runtime_manifest.MANIFEST_NAME
 
@@ -283,6 +292,12 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     style = (project / "app/src/main/res/values/styles.xml").read_text(
         encoding="utf-8"
     )
+    splash_style = (project / "app/src/main/res/values-v31/styles.xml").read_text(
+        encoding="utf-8"
+    )
+    strings = (project / "app/src/main/res/values/strings.xml").read_text(
+        encoding="utf-8"
+    )
     gradle = (project / "app/build.gradle").read_text(encoding="utf-8")
     root_gradle = (project / "build.gradle").read_text(encoding="utf-8")
     host_source = (project / "app/src/main/cpp/main.cpp").read_text(encoding="utf-8")
@@ -304,6 +319,8 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'android:value="320"' in manifest
     assert 'android:appCategory="game"' in manifest
     assert 'android:isGame="true"' in manifest
+    assert 'android:icon="@mipmap/infernux_launcher"' in manifest
+    assert 'android:roundIcon="@mipmap/infernux_launcher"' in manifest
     assert 'android:resizeableActivity="false"' in manifest
     assert "android.intent.category.GAME" in manifest
     assert "glEsVersion" not in manifest
@@ -312,6 +329,9 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "android:windowLayoutInDisplayCutoutMode" in style
     assert "android:windowLightStatusBar" in style
     assert "android:windowLightNavigationBar" in style
+    assert "android:windowSplashScreenAnimatedIcon" in splash_style
+    assert "android:windowSplashScreenBackground" in splash_style
+    assert "Infernux Player" in strings
     assert "if (mScreenKeyboardShown)" in activity
     assert "registerOnBackInvokedCallback" in activity
     assert "OnBackInvokedDispatcher.PRIORITY_DEFAULT" in activity
@@ -351,6 +371,9 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'SDL_setenv_unsafe("INFERNUX_NATIVE_MODULE_DIR"' in host_source
     assert "INFERNUX_PLAYER_ASSET_ROOT" in activity
     assert "infernux-content.id" in activity
+    assert "infernux-data-root.txt" in activity
+    assert "resolvePlayerDataRoot(playerAssets)" in activity
+    assert 'new File(playerData, "Player.inxmanifest")' in activity
     assert 'identityName + ".complete"' in activity
     assert 'assetRoot + ".installing"' in activity
     assert "stagedRoot.renameTo(installedRoot)" in activity
@@ -358,6 +381,35 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert not list(project.rglob("*.in"))
     assert "@INFERNUX_" not in cmake + gradle + root_gradle
     assert "@ANDROID_" not in cmake + gradle + root_gradle
+
+
+def test_android_launcher_icons_are_generated_from_the_cooked_project_icon(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    staging = tmp_path / "host"
+    source_icon = ROOT / "python/Infernux/resources/icons/icon.png"
+
+    exporter_module._stage_android_launcher_icons(staging, source_icon.read_bytes())
+
+    from PIL import Image
+
+    resources = staging / "app/src/main/res"
+    for density, size in {
+        "mdpi": 48,
+        "hdpi": 72,
+        "xhdpi": 96,
+        "xxhdpi": 144,
+        "xxxhdpi": 192,
+    }.items():
+        with Image.open(resources / f"mipmap-{density}/infernux_launcher.png") as icon:
+            assert icon.size == (size, size)
+            assert icon.mode == "RGBA"
+    with Image.open(
+        resources / "drawable-nodpi/infernux_launcher_foreground.png"
+    ) as foreground:
+        assert foreground.size == (432, 432)
 
 
 def test_android_host_template_excludes_asset_database_sidecars(
@@ -429,6 +481,20 @@ def test_android_orientation_contract_rejects_unknown_policy(monkeypatch, tmp_pa
     )
 
     with pytest.raises(ValueError, match="android_orientation"):
+        exporter_module._android_orientation_contract(request, {})
+
+
+def test_android_auto_orientation_requires_normalized_dimensions(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    request = BuildRequest(
+        str(tmp_path / "Project"),
+        "android-arm64",
+        str(tmp_path / "Build"),
+        BuildProfile(options={"android_orientation": "auto"}),
+    )
+
+    with pytest.raises(KeyError, match="window_width"):
         exporter_module._android_orientation_contract(request, {})
 
 
@@ -665,6 +731,7 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     assert (stale_native / "libssl_python.so").is_file()
     assert (stale_native / "libengine.so").is_file()
     assert (stale_assets / "site-packages/numpy/__init__.py").is_file()
+    assert not (stale_assets / "site-packages/numpy/random/_examples").exists()
     assert len(first_identity.strip()) == 64
 
     (stdlib / "encodings" / "__init__.py").write_text(
@@ -673,6 +740,63 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     _stamp_android_python_prefix(exporter_module, prefix)
     exporter_module._stage_python_runtime(request, staging, prefix, "x86_64")
     assert runtime_id.read_text(encoding="utf-8") != first_identity
+
+
+def test_android_package_audit_accepts_one_exact_abi(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    artifact = tmp_path / "player.aab"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr("base/manifest/AndroidManifest.xml", b"manifest")
+        archive.writestr("base/lib/arm64-v8a/libinfernux.so", b"native")
+        archive.writestr(
+            "base/assets/python/site-packages/numpy/__init__.py",
+            b"",
+        )
+
+    audit = exporter_module._audit_android_archive(
+        artifact,
+        abi="arm64-v8a",
+        artifact_kind="aab",
+    )
+
+    assert audit == {
+        "native_library_count": 1,
+        "packaged_abis": ["arm64-v8a"],
+        "forbidden_distribution_count": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        (
+            "base/assets/python/site-packages/torch/__init__.py",
+            "host-only Python distributions",
+        ),
+        ("base/lib/x86_64/libinfernux.so", "unexpected ABIs"),
+    ],
+)
+def test_android_package_audit_rejects_scope_violations(
+    monkeypatch,
+    tmp_path,
+    entry,
+    message,
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    artifact = tmp_path / "player.aab"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr("base/manifest/AndroidManifest.xml", b"manifest")
+        archive.writestr("base/lib/arm64-v8a/libinfernux.so", b"native")
+        archive.writestr(entry, b"scope violation")
+
+    with pytest.raises(ValueError, match=message):
+        exporter_module._audit_android_archive(
+            artifact,
+            abi="arm64-v8a",
+            artifact_kind="aab",
+        )
 
 
 def test_android_engine_staging_excludes_desktop_runtime_payloads(
@@ -917,7 +1041,7 @@ def test_android_python_runtime_rejects_unstamped_prefix(monkeypatch, tmp_path):
         )
 
 
-def test_android_python_runtime_manifest_rejects_payload_tampering(
+def test_android_python_runtime_manifest_rejects_incomplete_prefix(
     monkeypatch, tmp_path
 ):
     _android_module(monkeypatch)
@@ -935,9 +1059,9 @@ def test_android_python_runtime_manifest_rejects_payload_tampering(
         expected_python_series="3.13",
         application_minimum_android_api=26,
     )
-    payload.write_text("fixture = 2\n", encoding="utf-8")
+    shutil.rmtree(prefix / "include/python3.13")
 
-    with pytest.raises(ValueError, match="payload does not match"):
+    with pytest.raises(ValueError, match="prefix is incomplete"):
         runtime_manifest.validate_runtime_manifest(
             prefix,
             expected_abi="x86_64",

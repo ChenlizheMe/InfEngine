@@ -187,8 +187,8 @@ def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
             "touchscreen",
             "motionevent",
             "DOWN",
-            "1400",
-            "864",
+            "352",
+            "1180",
         ),
         (
             "shell",
@@ -196,8 +196,8 @@ def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
             "touchscreen",
             "motionevent",
             "MOVE",
-            "1600",
-            "720",
+            "576",
+            "1008",
         ),
         (
             "shell",
@@ -205,8 +205,8 @@ def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
             "touchscreen",
             "motionevent",
             "UP",
-            "1800",
-            "576",
+            "704",
+            "950",
         ),
     ]
     assert delays == [0.25, 0.25]
