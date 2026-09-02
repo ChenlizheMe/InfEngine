@@ -323,6 +323,22 @@ class TestCoroutineScheduler:
         assert co.is_finished is True
         assert sched.count == 0
 
+    def test_stop_propagates_generator_close_failure_after_detaching(self):
+        def gen():
+            try:
+                yield None
+            finally:
+                raise RuntimeError("close failed")
+
+        sched = CoroutineScheduler()
+        co = sched.start(gen())
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            sched.stop(co)
+
+        assert co.is_finished is True
+        assert sched.count == 0
+
     def test_stop_all(self):
         def gen():
             yield None
@@ -334,6 +350,42 @@ class TestCoroutineScheduler:
         sched.stop_all()
         assert c1.is_finished is True
         assert c2.is_finished is True
+        assert sched.count == 0
+
+    def test_stop_all_reports_close_failures_after_detaching_every_coroutine(self):
+        closed = []
+
+        def gen(index):
+            try:
+                yield None
+            finally:
+                closed.append(index)
+                if index == 1:
+                    raise RuntimeError("close failed")
+
+        sched = CoroutineScheduler()
+        c1 = sched.start(gen(1))
+        c2 = sched.start(gen(2))
+
+        with pytest.raises(ExceptionGroup, match="failed to close coroutines"):
+            sched.stop_all()
+
+        assert closed == [1, 2]
+        assert c1.is_finished is True
+        assert c2.is_finished is True
+        assert sched.count == 0
+
+    def test_unsupported_yield_is_rejected_and_detached(self):
+        def gen():
+            yield object()
+
+        sched = CoroutineScheduler()
+        co = sched.start(gen())
+
+        with pytest.raises(TypeError, match="unsupported coroutine yield value object"):
+            sched.tick_update(0.016)
+
+        assert co.is_finished is True
         assert sched.count == 0
 
     def test_count_property(self):
@@ -432,7 +484,7 @@ class TestCoroutineScheduler:
         scheduler.stop_all()
         assert scheduler.diagnostics()["active_count"] == 0
 
-    def test_rolled_back_epoch_does_not_leave_future_legacy_state(self, monkeypatch):
+    def test_rolled_back_epoch_does_not_leave_future_epoch_state(self, monkeypatch):
         import Infernux.engine.runtime_dispatch as runtime_dispatch
 
         old_epoch = RuntimeRevisionEpoch(301, {})

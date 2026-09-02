@@ -37,7 +37,6 @@ from __future__ import annotations
 import time as _time
 import weakref
 from typing import Any, Callable, Generator, Optional
-from Infernux.debug import Debug
 
 
 # ======================================================================
@@ -299,38 +298,40 @@ class CoroutineScheduler:
         was_active = bool(self._coroutines)
         if coroutine._is_finished:
             return
-        coroutine._is_finished = True
-        if coroutine._generator is not None:
-            try:
-                coroutine._generator.close()
-            except RuntimeError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
-            coroutine._generator = None
-        try:
+
+        if coroutine in self._coroutines:
             self._coroutines.remove(coroutine)
-        except ValueError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-        else:
             self._stale_epoch_count -= int(coroutine._is_stale_epoch)
+
+        coroutine._is_finished = True
+        generator = coroutine._generator
+        coroutine._generator = None
         self._notify_active_changed(was_active)
+        if generator is not None:
+            generator.close()
 
     def stop_all(self) -> None:
         """Stop every running coroutine."""
         was_active = bool(self._coroutines)
-        for co in self._coroutines:
+        coroutines = self._coroutines
+        self._coroutines = []
+        generators: list[Generator] = []
+        for co in coroutines:
             co._is_finished = True
             if co._generator is not None:
-                try:
-                    co._generator.close()
-                except RuntimeError as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    pass
+                generators.append(co._generator)
                 co._generator = None
-        self._coroutines.clear()
         self._stale_epoch_count = 0
         self._notify_active_changed(was_active)
+
+        errors: list[Exception] = []
+        for generator in generators:
+            try:
+                generator.close()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("failed to close coroutines", errors)
 
     @property
     def count(self) -> int:
@@ -417,8 +418,12 @@ class CoroutineScheduler:
                 # Nested/chained coroutine — wait for it to finish
                 should_advance = current._is_finished
             else:
-                # Unknown yield value → treat as ``yield None`` (wait one frame)
-                should_advance = True
+                self.stop(co)
+                raise TypeError(
+                    "unsupported coroutine yield value "
+                    f"{type(current).__name__}; yield None, a yield instruction, "
+                    "or a Coroutine handle"
+                )
 
             if should_advance:
                 self._advance(co)
@@ -426,12 +431,8 @@ class CoroutineScheduler:
                     to_remove.append(co)
 
         for co in to_remove:
-            try:
+            if co in self._coroutines:
                 self._coroutines.remove(co)
-            except ValueError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
-            else:
                 self._stale_epoch_count -= int(co._is_stale_epoch)
         self._notify_active_changed(was_active)
 
