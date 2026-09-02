@@ -4,6 +4,8 @@ import shutil
 import zipfile
 from pathlib import Path
 
+import pytest
+
 import hub_updater
 from hub_updater import HubUpdate, check_for_update, stage_update
 from incremental_update import create_manifest
@@ -11,6 +13,17 @@ from incremental_update import create_manifest
 
 def _asset(name: str, size: int = 1) -> dict:
     return {"name": name, "browser_download_url": f"https://example.invalid/{name}", "size": size}
+
+
+def test_packaged_hub_version_requires_the_current_document(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(hub_updater, "is_frozen", lambda: True)
+    monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(tmp_path))
+    (tmp_path / "hub-version.json").write_text(
+        '{"version": "0.4.0", "old_version": "0.3.7"}', encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="current schema"):
+        hub_updater.current_hub_version()
 
 
 def test_check_prefers_exact_incremental_asset(monkeypatch):

@@ -52,19 +52,25 @@ def _update_is_required(current_version: str, target_version: str) -> bool:
 
 
 def current_hub_version() -> str:
-    candidates = [Path(get_app_dir()) / "hub-version.json"]
-    if not is_frozen():
-        candidates.append(Path(__file__).resolve().parents[1] / "pyproject.toml")
-    for candidate in candidates:
-        try:
-            if candidate.suffix == ".json":
-                return str(json.loads(candidate.read_text(encoding="utf-8"))["version"])
-            for line in candidate.read_text(encoding="utf-8").splitlines():
-                if line.strip().startswith("version ="):
-                    return line.split("=", 1)[1].strip().strip('"')
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
-            continue
-    return "0.0.0"
+    if is_frozen():
+        candidate = Path(get_app_dir()) / "hub-version.json"
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or set(payload) != {"version"}:
+            raise ValueError("hub-version.json does not match the current schema")
+        version = str(payload["version"])
+    else:
+        candidate = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        version_lines = [
+            line.split("=", 1)[1].strip().strip('"')
+            for line in candidate.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("version =")
+        ]
+        if len(version_lines) != 1:
+            raise ValueError("pyproject.toml must declare exactly one Hub version")
+        version = version_lines[0]
+    if not _VERSION_PATTERN.fullmatch(version):
+        raise ValueError(f"Invalid Infernux Hub version: {version!r}")
+    return version
 
 
 def _request_bytes(url: str, timeout: int = 20) -> bytes:
