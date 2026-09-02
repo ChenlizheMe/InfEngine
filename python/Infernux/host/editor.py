@@ -984,7 +984,6 @@ class EditorAutomationHost:
             {
                 "path": item.path,
                 "kind": item.kind,
-                "sha256": item.sha256,
                 "size": item.size,
             }
             for item in result.artifacts
