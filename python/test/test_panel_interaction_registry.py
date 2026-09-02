@@ -521,12 +521,9 @@ def test_document_backed_policy_resolves_by_live_view_or_type():
 
 def test_panel_registry_rejects_missing_interaction_contract_before_registration():
     class WindowManagerStub:
-        def __init__(self) -> None:
-            self.registry = None
+        def __init__(self, registry) -> None:
+            self.panel_interactions = registry
             self.registered: list[str] = []
-
-        def set_panel_interaction_registry(self, registry) -> None:
-            self.registry = registry
 
         def register_window_type(self, **kwargs) -> None:
             self.registered.append(kwargs["type_id"])
@@ -545,10 +542,10 @@ def test_panel_registry_rejects_missing_interaction_contract_before_registration
                 True,
             )
         )
-        manager = WindowManagerStub()
+        manager = WindowManagerStub(core.panels)
 
         with pytest.raises(RuntimeError, match="missing_contract"):
-            PanelRegistry.apply_all(manager, core.panels)
+            PanelRegistry.apply_all(manager)
 
         assert manager.registered == []
     finally:
@@ -560,8 +557,8 @@ def test_panel_registry_rejects_missing_interaction_contract_before_registration
 
 def test_panel_registry_accepts_a_pre_registered_core_panel_contract():
     class WindowManagerStub:
-        def set_panel_interaction_registry(self, registry) -> None:
-            self.registry = registry
+        def __init__(self, registry) -> None:
+            self.panel_interactions = registry
 
         def register_window_type(self, **kwargs) -> None:
             self.registered = kwargs["type_id"]
@@ -581,9 +578,9 @@ def test_panel_registry_accepts_a_pre_registered_core_panel_contract():
             )
         )
         core.panels.register_type("core_panel", PanelInteractionDescriptor())
-        manager = WindowManagerStub()
+        manager = WindowManagerStub(core.panels)
 
-        assert PanelRegistry.apply_all(manager, core.panels) == 1
+        assert PanelRegistry.apply_all(manager) == 1
         assert manager.registered == "core_panel"
     finally:
         core.shutdown()
@@ -594,14 +591,11 @@ def test_panel_registry_accepts_a_pre_registered_core_panel_contract():
 
 def test_panel_registry_installs_all_descriptors_before_binding_live_views():
     class WindowManagerStub:
-        def __init__(self) -> None:
-            self.bound_after_contract = False
-
-        def set_panel_interaction_registry(self, registry) -> None:
-            self.bound_after_contract = registry.descriptor("ordered") is not None
+        def __init__(self, registry) -> None:
+            self.panel_interactions = registry
 
         def register_window_type(self, **_kwargs) -> None:
-            assert self.bound_after_contract
+            assert self.panel_interactions.descriptor("ordered") is not None
 
     original = PanelRegistry.get_registrations()
     PanelRegistry.clear()
@@ -618,10 +612,9 @@ def test_panel_registry_installs_all_descriptors_before_binding_live_views():
                 interaction=PanelInteractionDescriptor(),
             )
         )
-        manager = WindowManagerStub()
+        manager = WindowManagerStub(core.panels)
 
-        assert PanelRegistry.apply_all(manager, core.panels) == 1
-        assert manager.bound_after_contract
+        assert PanelRegistry.apply_all(manager) == 1
     finally:
         core.shutdown()
         PanelRegistry.clear()
@@ -631,8 +624,8 @@ def test_panel_registry_installs_all_descriptors_before_binding_live_views():
 
 def test_panel_registry_rejects_duplicate_type_ids_before_mutation():
     class WindowManagerStub:
-        def set_panel_interaction_registry(self, _registry) -> None:
-            raise AssertionError("duplicate manifest must fail before binding")
+        def __init__(self, registry) -> None:
+            self.panel_interactions = registry
 
         def register_window_type(self, **_kwargs) -> None:
             raise AssertionError("duplicate manifest must fail before registration")
@@ -655,7 +648,7 @@ def test_panel_registry_rejects_duplicate_type_ids_before_mutation():
             )
 
         with pytest.raises(RuntimeError, match="duplicate"):
-            PanelRegistry.apply_all(WindowManagerStub(), core.panels)
+            PanelRegistry.apply_all(WindowManagerStub(core.panels))
     finally:
         core.shutdown()
         PanelRegistry.clear()

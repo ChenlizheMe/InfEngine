@@ -78,8 +78,14 @@ class WindowManager:
     _RESET_REQUIRED_PANEL_IDS = {"inspector", "project"}
     _NATIVE_FOCUS_SYNC_INTERVAL_SECONDS = 1.0 / 60.0
     
-    def __init__(self, engine):
+    def __init__(self, engine, panel_interactions, register_panel_gui):
+        if panel_interactions is None:
+            raise ValueError("WindowManager requires a PanelInteractionRegistry")
+        if not callable(register_panel_gui):
+            raise TypeError("WindowManager requires a panel GUI registrar")
         self._engine = engine
+        self._panel_interactions = panel_interactions
+        self._register_panel_gui_callback = register_panel_gui
         self._registered_types: Dict[str, WindowInfo] = {}  # type_id -> WindowInfo
         self._window_states: Dict[str, WindowState] = {}
         self._window_instances: Dict[str, InxGUIRenderable] = {}  # window_id -> instance
@@ -101,7 +107,6 @@ class WindowManager:
             tuple[str, Optional[str]],
         ] = {}
         self._next_native_focus_sync_at = 0.0
-        self._panel_interactions = None
         WindowManager._instance = self
     
     @classmethod
@@ -112,17 +117,10 @@ class WindowManager:
     def set_on_state_changed(self, callback: Optional[Callable[[], None]]):
         self._on_state_changed = callback
 
-    def set_panel_interaction_registry(self, registry) -> None:
-        """Attach the registry that owns live panel-view bindings."""
-        self._panel_interactions = registry
-        if registry is None:
-            return
-        for window_id, instance in self._window_instances.items():
-            registry.bind_view(
-                window_id,
-                self._window_type_ids.get(window_id, window_id),
-                instance,
-            )
+    @property
+    def panel_interactions(self):
+        """Registry that owns every live panel-view binding."""
+        return self._panel_interactions
 
     def _bind_panel_interaction(
         self,
@@ -130,32 +128,14 @@ class WindowManager:
         type_id: str,
         instance: InxGUIRenderable,
     ) -> None:
-        if (
-            self._panel_interactions is None
-            and callable(getattr(self._engine, "_register_editor_panel_gui", None))
-        ):
-            raise RuntimeError(
-                "WindowManager cannot register an editor panel before the "
-                "PanelInteractionRegistry is attached"
-            )
-        if self._panel_interactions is not None:
-            self._panel_interactions.bind_view(window_id, type_id, instance)
+        self._panel_interactions.bind_view(window_id, type_id, instance)
 
     def _register_panel_gui(
         self,
         window_id: str,
         instance: InxGUIRenderable,
     ) -> None:
-        registrar = getattr(self._engine, "_register_editor_panel_gui", None)
-        if callable(registrar):
-            registrar(window_id, instance)
-            return
-        # Lightweight engine doubles used by unit tests implement only the
-        # public registration primitive. Production Engine always supplies
-        # the guarded panel-host entry point above.
-        fallback = getattr(self._engine, "register_gui", None)
-        if callable(fallback):
-            fallback(window_id, instance)
+        self._register_panel_gui_callback(window_id, instance)
 
     @staticmethod
     def _assign_panel_identity(
@@ -180,12 +160,9 @@ class WindowManager:
         )
 
     def _unbind_panel_interaction(self, window_id: str) -> None:
-        if self._panel_interactions is not None:
-            self._panel_interactions.unbind_view(window_id)
+        self._panel_interactions.unbind_view(window_id)
 
     def _records_focus_history(self, type_id: str, view_id: str) -> bool:
-        if self._panel_interactions is None:
-            return True
         return self._panel_interactions.records_focus_history(
             type_id=type_id,
             view_id=view_id,
@@ -193,8 +170,6 @@ class WindowManager:
 
     def is_document_backed_view(self, window_id: str, type_id: str = "") -> bool:
         """Return whether a panel must have a restorable document to reopen."""
-        if self._panel_interactions is None:
-            return False
         resolved_view = str(window_id or "").strip()
         resolved_type = str(
             type_id or self._window_type_ids.get(resolved_view, resolved_view)

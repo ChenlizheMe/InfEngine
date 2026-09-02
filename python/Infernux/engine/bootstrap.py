@@ -38,7 +38,6 @@ from Infernux.engine.ui import panel_state as _panel_state
 
 _log = logging.getLogger("Infernux.bootstrap")
 
-_LAYOUT_VERSION = 6
 _TOTAL_STEPS = 13
 
 
@@ -159,6 +158,11 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Refreshing project resources\u2026")
         if self.engine:
             self.engine.prepare_startup_refresh()
+            # Lifecycle scripts created without a .meta sidecar only enter the
+            # GUID catalog with this refresh commit; load them now instead of
+            # on the next editor restart.
+            if self.plugin_manager is not None:
+                self.plugin_manager.catch_up_preloads()
 
         self._finish_progress()
 
@@ -347,10 +351,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.particle.artifact import ParticleArtifactRegistry
         from Infernux.engine.ui import project_file_ops
 
-        self.interaction_core.asset_mutations.add_listener(
+        self.interaction_core.asset_mutations.add_observer(
             ParticleArtifactRegistry.on_asset_mutation
         )
-        self.interaction_core.asset_mutations.add_listener(
+        self.interaction_core.asset_mutations.add_observer(
             project_file_ops.on_asset_mutation
         )
         self.undo_manager = UndoManager(self.interaction_core.action_journal)
@@ -359,8 +363,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.scene_file_manager.set_asset_database(self.engine.get_asset_database())
         self.scene_file_manager.set_engine(self.engine.get_native_engine())
 
-        self.window_manager = WindowManager(self.engine)
-        self.interaction_core.asset_mutations.add_listener(
+        self.window_manager = WindowManager(
+            self.engine,
+            self.interaction_core.panels,
+            self.engine._register_editor_panel_gui,
+        )
+        self.interaction_core.asset_mutations.add_observer(
             self.window_manager.on_asset_mutation
         )
 
@@ -590,32 +598,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         os.makedirs(layout_dir, exist_ok=True)
         _panel_state.init(str(layout_dir))
 
-        layout_ver_path = str(layout_dir / ".layout_version")
         imgui_ini_path = str(layout_dir / "imgui.ini")
         self.window_manager.set_imgui_ini_path(imgui_ini_path)
-
-        # Clean up old project-local imgui.ini
-        old_ini = os.path.join(self.project_path, "imgui.ini")
-        if os.path.isfile(old_ini):
-            try:
-                os.remove(old_ini)
-            except OSError as _exc:
-                pass
-
-        need_reset = True
-        if os.path.isfile(layout_ver_path):
-            try:
-                with open(layout_ver_path, "r", encoding="utf-8") as f:
-                    if f.read().strip() == str(_LAYOUT_VERSION):
-                        need_reset = False
-            except OSError as _exc:
-                pass
-        if need_reset:
-            if os.path.isfile(imgui_ini_path):
-                os.remove(imgui_ini_path)
-            os.makedirs(os.path.dirname(layout_ver_path), exist_ok=True)
-            with open(layout_ver_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(str(_LAYOUT_VERSION))
 
     def _persist_editor_state(self, *, include_scene_draft: bool = False):
         if bool(getattr(self, "_suspend_persist_state", False)):

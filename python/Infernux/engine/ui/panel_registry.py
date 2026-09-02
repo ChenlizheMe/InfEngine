@@ -138,7 +138,6 @@ class PanelRegistry:
     def apply_all(
         cls,
         window_manager: WindowManager,
-        interaction_registry: Optional[PanelInteractionRegistry] = None,
         *,
         factory_overrides: Optional[Dict[str, Callable]] = None,
     ) -> int:
@@ -156,30 +155,27 @@ class PanelRegistry:
             names = ", ".join(sorted(duplicate_type_ids))
             raise RuntimeError(f"duplicate editor panel type registrations: {names}")
 
-        if interaction_registry is not None:
-            missing = tuple(
-                reg.type_id
-                for reg in registrations
-                if reg.interaction is None
-                and interaction_registry.descriptor(reg.type_id) is None
+        interaction_registry = window_manager.panel_interactions
+        missing = tuple(
+            reg.type_id
+            for reg in registrations
+            if reg.interaction is None
+            and interaction_registry.descriptor(reg.type_id) is None
+        )
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise RuntimeError(
+                "editor panels require a formal interaction descriptor "
+                f"before registration: {names}"
             )
-            if missing:
-                names = ", ".join(sorted(missing))
-                raise RuntimeError(
-                    "editor panels require a formal interaction descriptor "
-                    f"before registration: {names}"
+        # Establish every type contract before constructing presentation views.
+        for reg in registrations:
+            if reg.interaction is not None:
+                interaction_registry.register_type(
+                    reg.type_id,
+                    reg.interaction,
+                    replace=True,
                 )
-            # Establish every type contract before existing WindowManager
-            # instances are rebound. This keeps registration one-way: type
-            # authority first, live views second, presentation types last.
-            for reg in registrations:
-                if reg.interaction is not None:
-                    interaction_registry.register_type(
-                        reg.type_id,
-                        reg.interaction,
-                        replace=True,
-                    )
-            window_manager.set_panel_interaction_registry(interaction_registry)
 
         count = 0
         for reg in registrations:
@@ -196,12 +192,11 @@ class PanelRegistry:
     def bind_live(
         cls,
         window_manager: WindowManager,
-        interaction_registry: Optional[PanelInteractionRegistry] = None,
     ) -> None:
         """Bind registrations made after editor startup to the live UI."""
 
         cls._live_window_manager = window_manager
-        cls._live_interaction_registry = interaction_registry
+        cls._live_interaction_registry = window_manager.panel_interactions
 
     @classmethod
     def unbind_live(cls) -> None:
@@ -235,22 +230,21 @@ class PanelRegistry:
         cls,
         reg: _PanelRegistration,
         window_manager: WindowManager,
-        interaction_registry: Optional[PanelInteractionRegistry],
+        interaction_registry: PanelInteractionRegistry,
         *,
         factory: Optional[Callable] = None,
     ) -> None:
-        if interaction_registry is not None:
-            if reg.interaction is None and interaction_registry.descriptor(reg.type_id) is None:
-                raise RuntimeError(
-                    "editor panels require a formal interaction descriptor before "
-                    f"registration: {reg.type_id}"
-                )
-            if reg.interaction is not None:
-                interaction_registry.register_type(
-                    reg.type_id,
-                    reg.interaction,
-                    replace=True,
-                )
+        if reg.interaction is None and interaction_registry.descriptor(reg.type_id) is None:
+            raise RuntimeError(
+                "editor panels require a formal interaction descriptor before "
+                f"registration: {reg.type_id}"
+            )
+        if reg.interaction is not None:
+            interaction_registry.register_type(
+                reg.type_id,
+                reg.interaction,
+                replace=True,
+            )
         window_manager.register_window_type(
             type_id=reg.type_id,
             window_class=reg.panel_class,
