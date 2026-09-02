@@ -274,6 +274,33 @@ def test_native_pose_submission_failure_propagates(monkeypatch):
         animator._sync_native_runtime_playback()
 
 
+def test_blend_parameter_type_error_propagates() -> None:
+    animator = _make_animator()
+    state = AnimState(name="Locomotion", kind="blend")
+    animator._parameters["Locomotion/Lerp"] = "not-a-number"
+
+    with pytest.raises(ValueError):
+        animator._blend_state_lerp(state)
+
+
+def test_native_duration_query_failure_propagates(monkeypatch) -> None:
+    animator = _make_animator()
+
+    class Native:
+        @staticmethod
+        def get_animation_duration_seconds(_take_name, _source_guid):
+            raise RuntimeError("duration query rejected")
+
+    monkeypatch.setattr(
+        animator,
+        "_resolve_skinned_renderer",
+        lambda: _RendererBinding(Native()),
+    )
+
+    with pytest.raises(RuntimeError, match="duration query rejected"):
+        animator._clip_duration(_FakeClip("Walk", duration_hint=0.0))
+
+
 class TestTriggerConsumption:
     def test_exact_identifier_consumed(self):
         anim = _make_animator()

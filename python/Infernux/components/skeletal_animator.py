@@ -99,10 +99,7 @@ def _resolve_timeline_path(state: AnimState) -> Optional[str]:
 def _clip_duration_hint(clip: Optional[AnimationClip3D]) -> float:
     if clip is None:
         return 0.0
-    try:
-        return max(float(getattr(clip, "duration_hint", 0.0) or 0.0), 0.0)
-    except Exception:
-        return 0.0
+    return max(float(clip.duration_hint), 0.0)
 
 
 # When importer/meta leaves duration unknown (e.g. embedded FBX takes), use this for
@@ -420,13 +417,12 @@ class SkeletalAnimator(InxComponent):
         tl = None
         path = _resolve_timeline_path(state)
         if path:
-            try:
-                from Infernux.core.animation_timeline import AnimationTimeline
-                tl = AnimationTimeline.load(path)
-            except Exception as exc:
-                Debug.log_suppressed("SkeletalAnimator._resolve_timeline", exc)
+            from Infernux.core.animation_timeline import AnimationTimeline
+            tl = AnimationTimeline.load(path)
             if tl is None:
-                Debug.log_warning(f"[SkeletalAnimator] Failed to load timeline for state '{state.name}': {path}")
+                raise RuntimeError(
+                    f"SkeletalAnimator could not load timeline for state {state.name!r}: {path}"
+                )
         self._timeline_cache[key] = tl
         return tl
 
@@ -461,19 +457,15 @@ class SkeletalAnimator(InxComponent):
 
     def _capture_timeline_base(self):
         """Snapshot the owner's local transform as the additive base for a timeline."""
-        tr = getattr(self.game_object, "transform", None)
-        if tr is None:
-            self._timeline_base = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
-            return
-        try:
-            p, r, s = tr.local_position, tr.local_euler_angles, tr.local_scale
-            self._timeline_base = (
-                [float(p.x), float(p.y), float(p.z)],
-                [float(r.x), float(r.y), float(r.z)],
-                [float(s.x), float(s.y), float(s.z)],
-            )
-        except Exception:
-            self._timeline_base = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+        transform = self.game_object.transform
+        position = transform.local_position
+        rotation = transform.local_euler_angles
+        scale = transform.local_scale
+        self._timeline_base = (
+            [float(position.x), float(position.y), float(position.z)],
+            [float(rotation.x), float(rotation.y), float(rotation.z)],
+            [float(scale.x), float(scale.y), float(scale.z)],
+        )
 
     def _apply_timeline(self, tl, t: float):
         """Sample *tl* at time *t* and write the local transform of the owner."""
@@ -486,36 +478,19 @@ class SkeletalAnimator(InxComponent):
             pos = [bp[0] + pos[0], bp[1] + pos[1], bp[2] + pos[2]]
             rot = [br[0] + rot[0], br[1] + rot[1], br[2] + rot[2]]
             scl = [bs[0] * scl[0], bs[1] * scl[1], bs[2] * scl[2]]
-        tr = getattr(self.game_object, "transform", None)
-        if tr is None:
-            return
+        transform = self.game_object.transform
         pose = tuple(float(value) for value in (*pos, *rot, *scl))
         if pose == getattr(self, "_last_timeline_pose", None):
             return
-        try:
-            trs = getattr(tr, "set_local_trs", None)
-            if trs is not None:
-                # Single boundary crossing + one subtree invalidate (no Vector3 allocs).
-                trs(*pose)
-                self._last_timeline_pose = pose
-                return
-            from Infernux.lib import Vector3
-            tr.local_position = Vector3(*pose[0:3])
-            tr.local_euler_angles = Vector3(*pose[3:6])
-            tr.local_scale = Vector3(*pose[6:9])
-            self._last_timeline_pose = pose
-        except Exception as exc:
-            Debug.log_suppressed("SkeletalAnimator._apply_timeline", exc)
+        transform.set_local_trs(*pose)
+        self._last_timeline_pose = pose
 
     def _blend_state_lerp(self, state: AnimState) -> float:
         """Per-node Lerp (authored ``blend_value``), overridable via param ``<state>/Lerp``."""
         lerp = float(getattr(state, "blend_value", 0.5) or 0.0)
         pkey = f"{state.name}/Lerp"
         if pkey in self._parameters:
-            try:
-                lerp = float(self._parameters[pkey])
-            except (TypeError, ValueError):
-                pass
+            lerp = float(self._parameters[pkey])
         return max(0.0, min(1.0, lerp))
 
     def _submit_blend_state(self, native_renderers, state: AnimState) -> bool:
@@ -654,15 +629,9 @@ class SkeletalAnimator(InxComponent):
         cache_key = (source_guid, take_name)
         if cache_key in self._duration_cache:
             return self._duration_cache[cache_key]
-        try:
-            get_duration = getattr(cpp, "get_animation_duration_seconds", None)
-            if callable(get_duration):
-                duration = max(float(get_duration(take_name, source_guid) or 0.0), 0.0)
-                self._duration_cache[cache_key] = duration
-                return duration
-        except Exception:
-            return 0.0
-        return 0.0
+        duration = max(float(cpp.get_animation_duration_seconds(take_name, source_guid)), 0.0)
+        self._duration_cache[cache_key] = duration
+        return duration
 
     def _start_blend_if_needed(
         self,
