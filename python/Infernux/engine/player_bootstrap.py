@@ -7,7 +7,8 @@ Replaces :class:`EditorBootstrap` with a stripped-down path that:
   3. Creates the dedicated PlayerRuntimeSession
   4. Enables the game camera
   5. Registers the fullscreen PlayerGUI (with optional splash sequence)
-  6. Loads the first scene from BuildSettings.json (or a Supervisor-approved Debug validation scene)
+  6. Loads the first BuildManifest scene (or a Supervisor-approved Debug
+     validation scene)
   7. Leaves the scene loaded but not playing. The native window stays hidden
      during engine loading; Play starts after an optional project splash
 
@@ -47,6 +48,7 @@ class PlayerBootstrap:
         project_path: str,
         engine_log_level=LogLevel.Info,
         *,
+        scenes: List[str],
         display_mode: str = "fullscreen_borderless",
         window_width: int = 1920,
         window_height: int = 1080,
@@ -57,6 +59,7 @@ class PlayerBootstrap:
     ):
         self.project_path = project_path
         self.engine_log_level = engine_log_level
+        self.scenes = list(scenes)
         self.display_mode = display_mode
         self.window_width = window_width
         self.window_height = window_height
@@ -515,23 +518,7 @@ class PlayerBootstrap:
         if self._runtime_manifest is None:
             raise RuntimeError("Player runtime manifest is not loaded")
         self._runtime_manifest.require_service("player_scene_service")
-        import json as _json
-        bs_path = os.path.join(
-            self.project_path, "ProjectSettings", "BuildSettings.json"
-        )
-        data = {}
-        if os.path.isfile(bs_path):
-            try:
-                with open(bs_path, "r", encoding="utf-8", errors="replace") as _f:
-                    data = _json.load(_f)
-            except Exception as exc:
-                Debug.log_suppressed("player_bootstrap.load_build_manifest", exc)
-        scenes = data.get("scenes", [])
-        if not scenes:
-            Debug.log_warning("No scenes in BuildSettings.json — starting with empty scene")
-            return
-
-        first_scene = scenes[0]
+        first_scene = self.scenes[0]
         requested_scene = os.environ.get("_INFERNUX_PLAYER_START_SCENE", "").strip()
         if requested_scene:
             # A packaged Player contains cooked scene artifacts rather than the

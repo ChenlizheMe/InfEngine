@@ -186,9 +186,11 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
     _resources.activate_library(project_path)
 
     lock_path, lock_token = _acquire_project_lock(project_path, "editor")
+    process_exit_ready = False
     try:
         bootstrap = EditorBootstrap(project_path, engine_log_level)
         bootstrap.run()
+        bootstrap.engine._set_process_owned_exit()
 
         bootstrap.engine.set_window_icon(_resources.icon_path)
 
@@ -210,14 +212,18 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap.engine.show()
         bootstrap.engine.run()
+        process_exit_ready = True
     finally:
-        try:
+        # A normally-returning standalone Editor is about to terminate this
+        # entire process, so per-plugin unload hooks would only stall the UI.
+        # Initialization/run failures do unwind plugins because the caller may
+        # catch the exception and keep this interpreter alive.
+        if not process_exit_ready:
             from Infernux.plugins import PluginManager
+
             manager = PluginManager.instance()
             if manager is not None:
                 manager.shutdown()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         _remove_project_lock(lock_path, lock_token)
 
     # Force-terminate: this is a standalone engine child process.
@@ -226,16 +232,79 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
     os._exit(0)
 
 
+def _load_player_build_manifest(project_path: str) -> dict[str, object]:
+    """Load the build-owned Player presentation contract without defaults."""
+
+    manifest_path = os.path.join(project_path, "BuildManifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Player package has no BuildManifest.json: {manifest_path}"
+        ) from None
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Player BuildManifest.json is unreadable: {manifest_path}"
+        ) from error
+    if not isinstance(manifest, dict):
+        raise ValueError("Player BuildManifest.json must contain a JSON object")
+
+    string_fields = ("game_name", "icon_path", "display_mode")
+    for field in string_fields:
+        if field not in manifest or not isinstance(manifest[field], str):
+            raise TypeError(f"Player BuildManifest.json {field} must be a string")
+    if not str(manifest["game_name"]).strip():
+        raise ValueError("Player BuildManifest.json game_name must not be empty")
+    if manifest["display_mode"] not in {"fullscreen_borderless", "windowed"}:
+        raise ValueError("Player BuildManifest.json display_mode is invalid")
+
+    for field in ("window_width", "window_height"):
+        value = manifest.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"Player BuildManifest.json {field} must be an integer")
+        if value <= 0:
+            raise ValueError(f"Player BuildManifest.json {field} must be positive")
+    if not isinstance(manifest.get("window_resizable"), bool):
+        raise TypeError(
+            "Player BuildManifest.json window_resizable must be a boolean"
+        )
+    splash_items = manifest.get("splash_items")
+    if not isinstance(splash_items, list) or not all(
+        isinstance(item, dict) for item in splash_items
+    ):
+        raise TypeError("Player BuildManifest.json splash_items must contain objects")
+    scenes = manifest.get("scenes")
+    if not isinstance(scenes, list) or not all(
+        isinstance(scene, str) and bool(scene.strip()) for scene in scenes
+    ):
+        raise TypeError(
+            "Player BuildManifest.json scenes must contain non-empty strings"
+        )
+    if not scenes:
+        raise ValueError("Player BuildManifest.json scenes must not be empty")
+
+    icon_path = str(manifest["icon_path"])
+    if icon_path:
+        normalized_icon = icon_path.replace("\\", "/")
+        parts = normalized_icon.split("/")
+        if normalized_icon.startswith("/") or any(
+            part in {"", ".", ".."} for part in parts
+        ):
+            raise ValueError("Player BuildManifest.json icon_path must be relative")
+        manifest["icon_path"] = "/".join(parts)
+    return manifest
+
+
 def run_player(project_path: str, engine_log_level=LogLevel.Info):
     """Launch Infernux in standalone player mode (no editor chrome).
 
-    Opens the project's first scene from BuildSettings.json, applies the
-    display mode from BuildManifest.json (fullscreen borderless or windowed
-    with a custom resolution), and reveals the window after runtime startup.
+    Opens the first scene declared by BuildManifest.json, applies its display
+    mode (fullscreen borderless or windowed with a custom resolution), and
+    reveals the window after runtime startup.
     A project-configured splash remains optional and Play starts after it has
     finished; the engine does not impose a default loading window.
     """
-    import json
     from Infernux.application import Application
     from .player_bootstrap import PlayerBootstrap
 
@@ -256,25 +325,16 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         lock_path, lock_token = _acquire_project_lock(project_path, "player")
 
     try:
-        # Read optional BuildManifest for display & splash settings
-        manifest_path = os.path.join(project_path, "BuildManifest.json")
-        manifest = {}
-        if os.path.isfile(manifest_path):
-            try:
-                with open(manifest_path, "r", encoding="utf-8", errors="replace") as _f:
-                    manifest = json.load(_f)
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
-
-        display_mode = manifest.get("display_mode", "fullscreen_borderless")
-        window_width = manifest.get("window_width", 1920)
-        window_height = manifest.get("window_height", 1080)
-        window_resizable = manifest.get("window_resizable", True)
-        splash_items = manifest.get("splash_items", [])
-        build_icon_path = manifest.get("icon_path", "")
-        game_name = manifest.get("game_name", "")
-        title = game_name or os.path.basename(resolved_path(project_path))
+        manifest = _load_player_build_manifest(project_path)
+        display_mode = manifest["display_mode"]
+        window_width = manifest["window_width"]
+        window_height = manifest["window_height"]
+        window_resizable = manifest["window_resizable"]
+        splash_items = manifest["splash_items"]
+        scenes = manifest["scenes"]
+        build_icon_path = manifest["icon_path"]
+        game_name = manifest["game_name"]
+        title = game_name
         window_icon = (
             os.path.join(project_path, build_icon_path)
             if isinstance(build_icon_path, str) and build_icon_path
@@ -293,6 +353,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap = PlayerBootstrap(
             project_path, engine_log_level,
+            scenes=scenes,
             display_mode=display_mode,
             window_width=window_width,
             window_height=window_height,
@@ -302,6 +363,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             window_resizable=window_resizable,
         )
         bootstrap.run()
+        bootstrap.engine._set_process_owned_exit()
 
         bootstrap.engine.set_window_title(title)
         if display_mode == "fullscreen_borderless":

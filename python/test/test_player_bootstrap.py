@@ -252,23 +252,8 @@ def test_player_release_policy_rejects_debug_control_environment(monkeypatch, tm
 def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
     monkeypatch, tmp_path
 ):
-    import json
-
     from Infernux.engine.player_bootstrap import PlayerBootstrap
 
-    settings = tmp_path / "ProjectSettings"
-    settings.mkdir()
-    (settings / "BuildSettings.json").write_text(
-        json.dumps(
-            {
-                "scenes": [
-                    "Assets/Scenes/Start.scene",
-                    "Assets/Scenes/VoxelContinent.scene",
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
     cooked = tmp_path / "Library" / "Artifacts" / "voxel.inxscene"
     cooked.parent.mkdir(parents=True)
     cooked.write_text("{}", encoding="utf-8")
@@ -288,6 +273,10 @@ def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
 
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.project_path = str(tmp_path)
+    bootstrap.scenes = [
+        "Assets/Scenes/Start.scene",
+        "Assets/Scenes/VoxelContinent.scene",
+    ]
     bootstrap._runtime_manifest = Manifest()
     bootstrap.runtime_session = RuntimeSession()
     bootstrap._resolve_runtime_scene = lambda reference: (
@@ -343,6 +332,7 @@ def test_player_build_manifest_is_required_and_strict(tmp_path):
                 "window_width": 1280,
                 "window_height": 720,
                 "window_resizable": True,
+                "scenes": ["RuntimeAssets/Main.inxscene"],
                 "splash_items": [],
             }
         ),
@@ -364,6 +354,7 @@ def test_player_build_manifest_accepts_the_build_owned_contract(tmp_path):
         "window_width": 1280,
         "window_height": 720,
         "window_resizable": False,
+        "scenes": ["RuntimeAssets/Main.inxscene"],
         "splash_items": [{"type": "image", "path": "Splash/intro.png"}],
     }
     (tmp_path / "BuildManifest.json").write_text(
@@ -371,6 +362,40 @@ def test_player_build_manifest_accepts_the_build_owned_contract(tmp_path):
     )
 
     assert _load_player_build_manifest(str(tmp_path)) == manifest
+
+
+@pytest.mark.parametrize(
+    ("scenes", "error_type", "message"),
+    [
+        (None, TypeError, "scenes must contain non-empty strings"),
+        ([], ValueError, "scenes must not be empty"),
+        ([""], TypeError, "scenes must contain non-empty strings"),
+        ([7], TypeError, "scenes must contain non-empty strings"),
+    ],
+)
+def test_player_build_manifest_rejects_invalid_scene_contract(
+    tmp_path, scenes, error_type, message
+):
+    import json
+
+    from Infernux.engine import _load_player_build_manifest
+
+    manifest = {
+        "game_name": "StrictPlayer",
+        "icon_path": "",
+        "display_mode": "windowed",
+        "window_width": 1280,
+        "window_height": 720,
+        "window_resizable": True,
+        "scenes": scenes,
+        "splash_items": [],
+    }
+    (tmp_path / "BuildManifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    with pytest.raises(error_type, match=message):
+        _load_player_build_manifest(str(tmp_path))
 
 
 def test_player_build_manifest_rejects_absolute_or_parent_icon_paths(tmp_path):
@@ -384,6 +409,7 @@ def test_player_build_manifest_rejects_absolute_or_parent_icon_paths(tmp_path):
         "window_width": 1280,
         "window_height": 720,
         "window_resizable": True,
+        "scenes": ["RuntimeAssets/Main.inxscene"],
         "splash_items": [],
     }
     for icon_path in ("../icon.png", "/tmp/icon.png", "Branding//icon.png"):
