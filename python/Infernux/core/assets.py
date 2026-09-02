@@ -469,20 +469,11 @@ class AssetManager:
     @classmethod
     def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
         """Import one new asset and publish its editor-visible creation."""
-        profile_script = str(path or "").lower().endswith(".py")
-        profile_started = time.perf_counter()
-        profile_marks: list[tuple[str, float]] = []
-
-        def mark(label: str) -> None:
-            if profile_script:
-                profile_marks.append((label, time.perf_counter()))
-
         asset_database = cls._mutation_database(database)
         # Meta sidecars are written through DocumentStore atomic replace, which
         # briefly deletes the previous .meta and must not trigger rebuild work.
         cls._suppress_meta_watcher(path)
         result = asset_database.import_asset(path)
-        mark("database")
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
@@ -511,24 +502,9 @@ class AssetManager:
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._prime_material_preview(path)
-        mark("cache_invalidation")
         cls._publish_asset_content_change(path, "created", guid=result.guid)
-        mark("interaction_publish")
         if suppress_watcher_echo:
             cls._submit_internal_script_change(path, catalog_event="created")
-        mark("collector_submit")
-        if profile_script:
-            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
-            if elapsed_ms >= 10.0:
-                previous = profile_started
-                pieces = []
-                for label, current in profile_marks:
-                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                    previous = current
-                Debug.log_internal(
-                    f"[ScriptAssetProfile] import={elapsed_ms:.2f}ms "
-                    f"file={os.path.basename(path)} " + " ".join(pieces)
-                )
         return result
 
     @classmethod
@@ -880,14 +856,6 @@ class AssetManager:
         """
         from Infernux.core.asset_types import MATERIAL_EXTENSIONS
 
-        profile_script = str(path or "").lower().endswith(".py")
-        profile_started = time.perf_counter()
-        profile_marks: list[tuple[str, float]] = []
-
-        def mark(label: str) -> None:
-            if profile_script:
-                profile_marks.append((label, time.perf_counter()))
-
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(path) or str(guid_hint or "").strip()
         ext = os.path.splitext(path)[1].lower()
@@ -896,7 +864,6 @@ class AssetManager:
         # live payloads before it commits: a failed metadata/database delete
         # must leave the running editor exactly as it was.
         result = asset_database.delete_asset(path)
-        mark("database")
         if not result:
             return result
 
@@ -921,25 +888,11 @@ class AssetManager:
             play_mode = PlayModeManager.instance()
             if play_mode is not None:
                 play_mode.mark_components_missing_for_script(guid, path)
-        mark("runtime_detach")
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._publish_asset_content_change(path, "deleted", guid=guid)
-        mark("interaction_publish")
-        if profile_script:
-            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
-            if elapsed_ms >= 10.0:
-                previous = profile_started
-                pieces = []
-                for label, current in profile_marks:
-                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                    previous = current
-                Debug.log_internal(
-                    f"[ScriptAssetProfile] asset_delete={elapsed_ms:.2f}ms "
-                    f"file={os.path.basename(path)} " + " ".join(pieces)
-                )
         return result
 
     @classmethod
