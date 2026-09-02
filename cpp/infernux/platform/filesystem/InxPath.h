@@ -1,9 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cctype>
-#include <core/log/InxLog.h>
-#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -15,65 +12,6 @@ namespace infernux
 {
 inline std::string FromFsPath(const std::filesystem::path &p);
 }
-
-#ifdef INX_PLATFORM_WINDOWS
-namespace infernux
-{
-inline const char *GetExecutableDir()
-{
-    // Thread-safe via C++11 magic statics (initialized exactly once).
-    static const std::string path = []() -> std::string {
-        wchar_t buffer[MAX_PATH];
-        DWORD len = GetModuleFileNameW(NULL, buffer, MAX_PATH);
-        if (len == 0) {
-            INXLOG_ERROR("Failed to get executable path, using current directory as fallback.");
-            return ".";
-        }
-        return FromFsPath(std::filesystem::path(buffer).parent_path());
-    }();
-    return path.c_str();
-}
-
-} // namespace infernux
-#else
-#include <limits.h>
-#include <string.h>
-#include <unistd.h>
-
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#endif
-
-namespace infernux
-{
-inline const char *GetExecutableDir()
-{
-    // Thread-safe via C++11 magic statics (initialized exactly once).
-    static const std::string path = []() -> std::string {
-        char result[PATH_MAX];
-        ssize_t len = 0;
-
-#if defined(__linux__)
-        len = readlink("/proc/self/exe", result, PATH_MAX);
-#elif defined(__APPLE__)
-        uint32_t size = sizeof(result);
-        if (_NSGetExecutablePath(result, &size) != 0) {
-            INXLOG_ERROR("Buffer too small for executable path, using current directory as fallback.");
-            return ".";
-        }
-        len = strlen(result);
-#endif
-
-        if (len <= 0) {
-            INXLOG_ERROR("Failed to get executable path, using current directory as fallback.");
-            return ".";
-        }
-        return FromFsPath(std::filesystem::path(result, result + len).parent_path());
-    }();
-    return path.c_str();
-}
-} // namespace infernux
-#endif
 namespace infernux
 {
 
