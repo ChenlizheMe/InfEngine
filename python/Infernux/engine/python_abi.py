@@ -19,7 +19,38 @@ WINDOWS_PYTHON_DLL = f"{PYTHON_RUNTIME_DIRECTORY}.dll"
 WINDOWS_LIBFFI_DLL_PATTERNS = ("ffi.dll", "ffi-*.dll", "libffi*.dll")
 LINUX_PYTHON_SHARED_PREFIX = f"libpython{PYTHON_VERSION}.so"
 BOOTSTRAP_NATIVE_MANIFEST_FILENAME = "_infernux_bootstrap_native.json"
-BOOTSTRAP_NATIVE_MANIFEST_SCHEMA = "infernux.player-bootstrap-native.v1"
+BOOTSTRAP_NATIVE_MANIFEST_SCHEMA = "infernux.player-bootstrap-native"
+
+
+def player_native_library_filenames(platform_name: str | None = None) -> frozenset[str]:
+    """Return the complete engine-owned native Player library contract."""
+
+    target = sys.platform if platform_name is None else platform_name
+    if target == "win32":
+        return frozenset({
+            "InfernuxFoundation.dll",
+            "InfernuxParticleRuntime.dll",
+            "InfernuxRenderCore.dll",
+            "InfernuxRendererRuntime.dll",
+            "InfernuxShaderCompiler.dll",
+            "InfernuxVulkanBackend.dll",
+            "assimp-vc143-mt.dll",
+            "Jolt.dll",
+            "SDL3.dll",
+        })
+    if target.startswith("linux"):
+        return frozenset({
+            "libInfernuxFoundation.so",
+            "libInfernuxParticleRuntime.so",
+            "libInfernuxRenderCore.so",
+            "libInfernuxRendererRuntime.so",
+            "libInfernuxShaderCompiler.so",
+            "libInfernuxVulkanBackend.so",
+            "libassimp.so",
+            "libJolt.so",
+            "libSDL3.so",
+        })
+    raise RuntimeError(f"Desktop Player native libraries are unsupported on {target}")
 
 
 def current_interpreter_matches() -> bool:
@@ -71,5 +102,6 @@ __all__ = [
     "WINDOWS_PYTHON_DLL",
     "current_interpreter_matches",
     "is_windows_libffi_dll",
+    "player_native_library_filenames",
     "stdlib_extension_module_sources",
 ]
