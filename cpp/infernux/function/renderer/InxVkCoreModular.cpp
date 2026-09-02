@@ -333,31 +333,31 @@ bool InxVkCoreModular::PrepareSurface()
     // Initialize the async-transfer context. On GPUs without a dedicated
     // transfer queue this aliases to the graphics queue and behaves like
     // a pooled-fence fast path; on GPUs with one (most discrete cards) it
-    // unlocks truly parallel asset uploads. Failures are non-fatal — the
-    // engine simply keeps using the synchronous VkResourceManager path.
+    // unlocks truly parallel asset uploads. Both cases use this one upload
+    // service; failing to create it is a renderer initialization failure.
     const auto &queueIndices = m_backend.Device().GetQueueIndices();
     const uint32_t graphicsFamily = queueIndices.graphicsFamily.value_or(0);
     const uint32_t transferFamily = queueIndices.transferFamily.value_or(graphicsFamily);
     if (m_asyncTransferContext.Initialize(
-            m_backend.Device().GetDevice(), transferFamily, m_backend.Device().GetTransferQueue(),
-            m_backend.Device().HasDedicatedTransferQueue(), m_backend.Device().IsTimelineSemaphoreEnabled(),
-            &m_backend.Queues(),
+            m_backend.Device().GetDevice(), transferFamily, m_backend.Device().HasDedicatedTransferQueue(),
+            m_backend.Device().IsTimelineSemaphoreEnabled(), m_backend.Queues(),
             m_backend.Device().HasDedicatedTransferQueue() ? rhi::QueueRole::Transfer : rhi::QueueRole::Graphics)) {
         // Plug the async context into the resource manager so non-mipmap
         // texture uploads route through the dedicated DMA queue. Mipmap
-        // generation still falls back to the graphics queue because
+        // generation still uses the graphics queue because
         // vkCmdBlitImage is not legal on transfer-only queues.
         m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext, graphicsFamily);
     } else {
-        INXLOG_WARN("Async transfer context unavailable; uploads will use the graphics queue.");
+        INXLOG_ERROR("Required GPU upload context initialization failed");
+        return false;
     }
 
-    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily,
-                                          m_backend.Device().GetGraphicsQueue(), false, false, &m_backend.Queues(),
-                                          rhi::QueueRole::Graphics)) {
+    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily, false, false,
+                                          m_backend.Queues(), rhi::QueueRole::Graphics)) {
         m_resourceManager.SetAsyncReadbackContext(&m_asyncReadbackContext);
     } else {
-        INXLOG_WARN("Async graphics readback context unavailable.");
+        INXLOG_ERROR("Required GPU readback context initialization failed");
+        return false;
     }
 
     // Initialize pipeline manager

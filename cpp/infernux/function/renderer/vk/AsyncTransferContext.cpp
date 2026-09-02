@@ -20,7 +20,11 @@ constexpr uint64_t kPollTimeoutNs = 50'000'000; // 50 ms
 
 void WaitFence(VkDevice device, VkFence fence)
 {
-    while (true) {
+    // Transfers signal in milliseconds; a fence still unsignaled after this
+    // budget means the device is lost or the driver is wedged. Bounding the
+    // wait keeps Destroy() (engine shutdown) from hanging forever on it.
+    constexpr int kMaxPolls = 200; // 10 s total at 50 ms per poll
+    for (int poll = 0; poll < kMaxPolls; ++poll) {
         VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, kPollTimeoutNs);
         if (result == VK_SUCCESS) {
             return;
@@ -33,6 +37,7 @@ void WaitFence(VkDevice device, VkFence fence)
         // rarely takes anywhere near 50 ms; if it does, the OS already has
         // the main thread's loop pumping events on its own cadence.
     }
+    INXLOG_ERROR("AsyncTransferContext::WaitFence abandoned after 10 s (device lost or driver hang)");
 }
 
 } // namespace
@@ -42,20 +47,19 @@ AsyncTransferContext::~AsyncTransferContext()
     Destroy();
 }
 
-bool AsyncTransferContext::Initialize(VkDevice device, uint32_t transferQueueFamily, VkQueue transferQueue,
-                                      bool hasDedicatedTransferQueue, bool enableTimelineSemaphore,
-                                      VulkanQueueManager *queueManager, rhi::QueueRole submissionRole)
+bool AsyncTransferContext::Initialize(VkDevice device, uint32_t transferQueueFamily, bool hasDedicatedTransferQueue,
+                                      bool enableTimelineSemaphore, VulkanQueueManager &queueManager,
+                                      rhi::QueueRole submissionRole)
 {
-    if (device == VK_NULL_HANDLE || transferQueue == VK_NULL_HANDLE) {
-        INXLOG_ERROR("AsyncTransferContext::Initialize: null device or queue");
+    if (device == VK_NULL_HANDLE) {
+        INXLOG_ERROR("AsyncTransferContext::Initialize: null device");
         return false;
     }
 
     m_device = device;
-    m_queue = transferQueue;
     m_queueFamily = transferQueueFamily;
     m_hasDedicatedQueue = hasDedicatedTransferQueue;
-    m_queueManager = queueManager;
+    m_queueManager = &queueManager;
     m_submissionRole = submissionRole;
 
     // Pool flags:
@@ -107,8 +111,7 @@ void AsyncTransferContext::Destroy() noexcept
             if (up.fence != VK_NULL_HANDLE) {
                 WaitFence(m_device, up.fence);
             }
-            if (m_queueManager)
-                m_queueManager->MarkCompleted(up.ticket);
+            m_queueManager->MarkCompleted(up.ticket);
         }
         m_inFlight.clear();
 
@@ -136,7 +139,6 @@ void AsyncTransferContext::Destroy() noexcept
     }
 
     m_device = VK_NULL_HANDLE;
-    m_queue = VK_NULL_HANDLE;
     m_queueFamily = 0;
     m_hasDedicatedQueue = false;
     m_queueManager = nullptr;
@@ -248,9 +250,8 @@ void AsyncTransferContext::EndSync(VkCommandBuffer cmd)
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
 
-    const auto ticket = m_queueManager ? m_queueManager->Reserve(m_submissionRole) : rhi::SubmissionTicket{};
-    const VkResult submitResult = m_queueManager ? m_queueManager->SubmitReserved(ticket, submit, fence)
-                                                 : vkQueueSubmit(m_queue, 1, &submit, fence);
+    const auto ticket = m_queueManager->Reserve(m_submissionRole);
+    const VkResult submitResult = m_queueManager->SubmitReserved(ticket, submit, fence);
     if (submitResult != VK_SUCCESS) {
         INXLOG_ERROR("AsyncTransferContext::EndSync: vkQueueSubmit failed");
         std::lock_guard<std::mutex> guard(m_mutex);
@@ -259,8 +260,7 @@ void AsyncTransferContext::EndSync(VkCommandBuffer cmd)
         return;
     }
     WaitFence(m_device, fence);
-    if (m_queueManager)
-        m_queueManager->MarkCompleted(ticket);
+    m_queueManager->MarkCompleted(ticket);
 
     std::lock_guard<std::mutex> guard(m_mutex);
     m_freeFences.push_back(fence);
@@ -302,9 +302,8 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
         submit.pSignalSemaphores = &m_timelineSemaphore;
     }
 
-    const auto ticket = m_queueManager ? m_queueManager->Reserve(m_submissionRole) : rhi::SubmissionTicket{};
-    const VkResult submitResult = m_queueManager ? m_queueManager->SubmitReserved(ticket, submit, fence)
-                                                 : vkQueueSubmit(m_queue, 1, &submit, fence);
+    const auto ticket = m_queueManager->Reserve(m_submissionRole);
+    const VkResult submitResult = m_queueManager->SubmitReserved(ticket, submit, fence);
     if (submitResult != VK_SUCCESS) {
         static int s_asyncSubmitFailLogs = 0;
         if (s_asyncSubmitFailLogs < 3) {
@@ -331,8 +330,7 @@ void AsyncTransferContext::ReapCompletedLocked()
     for (auto it = m_inFlight.begin(); it != m_inFlight.end();) {
         VkResult result = vkGetFenceStatus(m_device, it->fence);
         if (result == VK_SUCCESS) {
-            if (m_queueManager)
-                m_queueManager->MarkCompleted(it->ticket);
+            m_queueManager->MarkCompleted(it->ticket);
             m_freeFences.push_back(it->fence);
             m_freeCmdBuffers.push_back(it->cmd);
             it = m_inFlight.erase(it);
@@ -367,8 +365,7 @@ bool AsyncTransferContext::IsComplete(AsyncSubmissionHandle handle)
         if (up.id == handle.id) {
             VkResult result = vkGetFenceStatus(m_device, up.fence);
             if (result == VK_SUCCESS) {
-                if (m_queueManager)
-                    m_queueManager->MarkCompleted(up.ticket);
+                m_queueManager->MarkCompleted(up.ticket);
                 VkFence fence = VK_NULL_HANDLE;
                 VkCommandBuffer cmd = VK_NULL_HANDLE;
                 RetireLocked(handle.id, fence, cmd);
@@ -416,8 +413,7 @@ void AsyncTransferContext::Wait(AsyncSubmissionHandle handle)
     VkFence retiredFence = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     RetireLocked(handle.id, retiredFence, cmd);
-    if (m_queueManager)
-        m_queueManager->MarkCompleted(ticket);
+    m_queueManager->MarkCompleted(ticket);
     if (retiredFence != VK_NULL_HANDLE) {
         m_freeFences.push_back(retiredFence);
     }
