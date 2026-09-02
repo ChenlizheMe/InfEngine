@@ -58,8 +58,7 @@ def resolve_prefab_instance_root(instance_obj):
     """Return the linked root for the prefab instance containing *instance_obj*.
 
     Every node in an instantiated prefab carries the same ``prefab_guid``.
-    ``prefab_root`` is authoritative, while the parent walk also tolerates
-    older scenes that did not persist that flag correctly.
+    ``prefab_root`` is authoritative.
     """
     if instance_obj is None:
         return None
@@ -68,18 +67,13 @@ def resolve_prefab_instance_root(instance_obj):
         return None
 
     current = instance_obj
-    candidate = instance_obj
     while current is not None:
         if (getattr(current, "prefab_guid", "") or "") != guid:
             break
-        candidate = current
         if bool(getattr(current, "prefab_root", False)):
             return current
-        try:
-            current = current.get_parent()
-        except Exception:
-            break
-    return candidate
+        current = current.get_parent()
+    raise LookupError(f"prefab instance has no marked root for GUID: {guid}")
 
 
 def compute_overrides(instance_obj, prefab_path: str,
@@ -90,12 +84,7 @@ def compute_overrides(instance_obj, prefab_path: str,
     """
     instance_obj = resolve_prefab_instance_root(instance_obj) or instance_obj
     prefab_data = _load_prefab_root(prefab_path)
-    if prefab_data is None:
-        return []
-
     instance_data = _serialize_obj(instance_obj)
-    if instance_data is None:
-        return []
 
     overrides: List[Override] = []
     _diff_node(instance_data, prefab_data, "", overrides, is_root=True)
@@ -558,27 +547,20 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
 
 def _load_prefab_root(prefab_path: str) -> Optional[dict]:
     """Load and return the root_object dict from a .prefab file."""
-    if not prefab_path or not os.path.isfile(prefab_path):
-        return None
-    try:
-        from Infernux.engine.prefab_manager import _read_prefab_document
-        return _read_prefab_document(prefab_path)["root_object"]
-    except (OSError, ValueError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+    if not prefab_path:
+        raise ValueError("prefab override comparison requires an asset path")
+    from Infernux.engine.prefab_manager import _read_prefab_document
+
+    return _read_prefab_document(prefab_path)["root_object"]
 
 
 def _serialize_obj(obj) -> Optional[dict]:
     """Serialize a live GameObject to a dict."""
-    try:
-        from Infernux.engine.component_restore import (
-            serialize_game_object_document_authoritatively,
-        )
+    from Infernux.engine.component_restore import (
+        serialize_game_object_document_authoritatively,
+    )
 
-        return serialize_game_object_document_authoritatively(obj)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+    return serialize_game_object_document_authoritatively(obj)
 
 
 def _diff_node(instance: dict, prefab: dict, path: str,

@@ -291,6 +291,19 @@ def test_prefab_child_overrides_resolve_instance_root(scene, tmp_path):
     assert compute_overrides(instance, str(path)) == []
 
 
+def test_prefab_instance_requires_an_explicit_root_marker():
+    class LinkedObject:
+        prefab_guid = "checkpoint-guid"
+        prefab_root = False
+
+        @staticmethod
+        def get_parent():
+            return None
+
+    with pytest.raises(LookupError, match="checkpoint-guid"):
+        resolve_prefab_instance_root(LinkedObject())
+
+
 def test_prefab_revert_command_restores_complete_subtree_on_undo(scene, tmp_path):
     _PREFAB_TEMPLATE_CACHE.clear()
     source = scene.create_game_object("CheckpointGate")
