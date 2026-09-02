@@ -50,7 +50,6 @@ void AssetRegistry::Initialize(std::unique_ptr<AssetDatabase> adb)
 
 void AssetRegistry::Shutdown()
 {
-    INXLOG_INFO("Shutting down AssetRegistry...");
     DrainPendingLoads();
     m_loadedAssets.clear();
     m_totalCpuBytes = 0;
@@ -514,8 +513,6 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
     material->SetFilePath(matFilePath);
     material->SetBuiltin(true);
     RegisterBuiltinMaterial(key, material);
-
-    INXLOG_INFO("AssetRegistry: loaded builtin material '", key, "' from: ", matFilePath);
     return true;
 }
 
@@ -525,8 +522,6 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
 
 void AssetRegistry::InitializeBuiltinMaterials()
 {
-    INXLOG_INFO("AssetRegistry: initializing built-in materials...");
-
     auto registerBuiltin = [this](const std::string &key, std::shared_ptr<InxMaterial> mat) {
         if (mat) {
             mat->SetBuiltin(true);

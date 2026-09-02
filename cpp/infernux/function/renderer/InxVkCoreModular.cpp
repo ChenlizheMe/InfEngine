@@ -230,8 +230,6 @@ InxVkCoreModular::~InxVkCoreModular()
 bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererMetaData, uint32_t vkWindowExtCount,
                             const char **vkWindowExts)
 {
-    INXLOG_INFO("Initializing InxVkCoreModular...");
-
     // Configure device (store for use in PrepareSurface)
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
@@ -409,7 +407,6 @@ bool InxVkCoreModular::PrepareSurface()
     // Create uniform buffers
     CreateUniformBuffers();
 
-    INXLOG_INFO("Surface prepared successfully");
     return true;
 }
 
@@ -470,7 +467,6 @@ void InxVkCoreModular::PreparePipeline()
 {
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
     m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
-    INXLOG_INFO("Created default flat normal texture: _default_normal");
 
     // Register the canonical per-view ABI before any ShaderProgram creates a
     // pipeline layout. Descriptor sets are allocated later, after the default
@@ -486,8 +482,6 @@ void InxVkCoreModular::PreparePipeline()
     if (m_shadowDepthSampler == VK_NULL_HANDLE) {
         CreateShadowDepthSampler();
     }
-
-    INXLOG_INFO("Pipeline prepared successfully");
 }
 
 // ============================================================================
@@ -558,7 +552,6 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
         }
     }
 
-    INXLOG_INFO("Published shader program artifact '", artifact.key.ToString(), "'");
     return true;
 }
 
@@ -597,8 +590,6 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
 {
     if (shaderId.empty())
         throw std::invalid_argument("Shader cache invalidation requires a non-empty shader identifier");
-    INXLOG_INFO("Invalidating shader cache for: ", shaderId);
-
     // Clear every CPU-visible raw ShaderProgram/pipeline handle before moving
     // the owning Vulkan objects into the frame-safe retirement queue.
     if (m_materialPipelineManagerInitialized) {
@@ -637,8 +628,6 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
     // Shader modules are only consumed during pipeline creation, so their
     // standalone cache entry can be destroyed immediately on the owner thread.
     m_shaderCache.UnloadShader(shaderId.c_str(), m_pipelineManager);
-
-    INXLOG_INFO("Shader cache invalidated for: ", shaderId);
 }
 
 void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
@@ -700,7 +689,6 @@ void InxVkCoreModular::RemoveMaterialPipeline(const std::string &materialName)
 {
     if (m_materialPipelineManagerInitialized) {
         m_materialPipelineManager.RemoveRenderData(materialName);
-        INXLOG_INFO("Removed material pipeline render data for: ", materialName);
     }
 }
 

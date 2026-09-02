@@ -161,7 +161,6 @@ void AudioEngine::Shutdown()
     m_activeListener = nullptr;
     m_globalPaused = false;
     m_initialized = false;
-    INXLOG_INFO("AudioEngine shut down");
 }
 
 float AudioEngine::ComputeAttenuation(float distance, float minDist, float maxDist)

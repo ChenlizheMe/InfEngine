@@ -413,8 +413,6 @@ void PhysicsWorld::Shutdown()
     if (!m_initialized)
         return;
 
-    INXLOG_INFO("PhysicsWorld: Shutting down...");
-
     // Step 1: drop contact pair tracking before any body dies, so callbacks
     // racing the teardown can't dereference freed Collider* pointers.
     if (m_contactListener)
