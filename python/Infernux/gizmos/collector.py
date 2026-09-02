@@ -8,17 +8,6 @@ Called once per frame (before ``SubmitCulling()``) to:
    components exist in the scene.
 3. [OPTIMISED] For built-in C++ components that define gizmo methods or icons,
    use a per-type cached GO list rebuilt lazily after scene changes.
-
-OLD behaviour (kept for reference):
-2. Walk all GameObjects in the active scene.
-3. For every Python component on each GO:
-   a. If the component's ``always_show`` is True → call ``on_draw_gizmos()``.
-   b. If the GO (or an ancestor) is the selected object → call both
-      ``on_draw_gizmos()`` (if not already called) and ``on_draw_gizmos_selected()``.
-4. For built-in C++ components that define ``on_draw_gizmos()`` in their
-   BuiltinComponent wrapper (Camera, etc.), create a temporary wrapper
-   and invoke the same gizmo lifecycle as Python components.
-5. Pack accumulated geometry and upload to C++ via ``engine.upload_component_gizmos()``.
 """
 
 from __future__ import annotations
@@ -27,6 +16,7 @@ from typing import Dict, List, TYPE_CHECKING
 
 from Infernux.gizmos.gizmos import Gizmos, ICON_KIND_DEFAULT
 from Infernux.components.fields import SerializedFieldDescriptor
+from Infernux.debug import Debug
 from Infernux.engine.editor_visibility import (
     component_owner_is_active_in_hierarchy,
     game_object_is_active_in_hierarchy,
@@ -56,13 +46,8 @@ def _log_gizmo_warning(msg: str) -> None:
     if _gizmo_warn_count >= _GIZMO_WARN_LIMIT:
         return
     _gizmo_warn_count += 1
-    try:
-        from Infernux.debug import Debug
-        suffix = "" if _gizmo_warn_count < _GIZMO_WARN_LIMIT else " (further warnings suppressed)"
-        Debug.log_warning(f"{msg}{suffix}")
-    except ImportError:
-        import sys
-        print(f"[GizmosCollector] WARNING: {msg}", file=sys.stderr)
+    suffix = "" if _gizmo_warn_count < _GIZMO_WARN_LIMIT else " (further warnings suppressed)"
+    Debug.log_warning(f"{msg}{suffix}")
 
 
 def notify_scene_changed() -> None:
@@ -132,7 +117,6 @@ class GizmosCollector:
         import Infernux.components.builtin  # noqa: F401
         from Infernux.components.builtin_component import BuiltinComponent
         from Infernux.components.component import InxComponent
-        from Infernux.debug import Debug
 
         native = engine.get_native_engine()
         if native is None:
@@ -166,14 +150,7 @@ class GizmosCollector:
         # Builtin wrapper registration is process-stable after the import above;
         # copying this dictionary for every scene frame was needless work.
         if self._builtin_registry is None:
-            builtin_registry = dict(BuiltinComponent._builtin_registry)
-            try:
-                from Infernux.components.builtin import Camera as _CameraBuiltin, Light as _LightBuiltin
-                builtin_registry.setdefault("Camera", _CameraBuiltin)
-                builtin_registry.setdefault("Light", _LightBuiltin)
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            self._builtin_registry = builtin_registry
+            self._builtin_registry = dict(BuiltinComponent._builtin_registry)
         builtin_registry = self._builtin_registry
 
         # Begin frame: clear Gizmos accumulation buffers
@@ -259,7 +236,7 @@ class GizmosCollector:
                 ]
                 matching = [go for go in matching if go is not None]
             else:
-                # Fallback: need full object list (always_show=True with gizmos)
+                # Always-visible gizmos require the complete object list.
                 matching = scene.get_all_objects()
 
             for go in matching:
@@ -320,11 +297,7 @@ class GizmosCollector:
                         wrapper._call_on_draw_gizmos_selected()
                 except Exception as exc:
                     _log_gizmo_warning(f"Gizmo callback failed for '{type_name}': {exc}")
-                    try:
-                        wrapper._invalidate_native_binding()
-                    except RuntimeError as _exc:
-                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                        pass  # invalidation is best-effort
+                    wrapper._invalidate_native_binding()
 
         # ---- Pack and upload line gizmo data ----
         packed = Gizmos._get_packed_data()
