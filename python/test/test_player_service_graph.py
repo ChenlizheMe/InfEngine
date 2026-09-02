@@ -8,14 +8,12 @@ import pytest
 def _manifest_document(flavor, features):
     from Infernux.engine.player_service_graph import (
         PLAYER_MANIFEST_SCHEMA,
-        PLAYER_MANIFEST_VERSION,
         player_manifest_service_section,
         runtime_policy_for,
     )
 
     return {
         "$schema": PLAYER_MANIFEST_SCHEMA,
-        "manifest_version": PLAYER_MANIFEST_VERSION,
         "product": {"flavor": flavor.value},
         "features": features.to_manifest(),
         "runtime_policy": runtime_policy_for(flavor).to_manifest(),

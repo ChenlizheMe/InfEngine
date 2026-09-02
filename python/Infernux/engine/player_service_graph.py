@@ -23,7 +23,6 @@ from .path_utils import (
 
 
 PLAYER_MANIFEST_SCHEMA = "infernux.player_runtime_manifest"
-PLAYER_MANIFEST_VERSION = 1
 _KNOWN_OPTIONAL_SUBSYSTEMS = frozenset({"splash"})
 
 
@@ -498,10 +497,17 @@ class RuntimeProductManifest:
     def from_document(cls, document: object) -> "RuntimeProductManifest":
         if not isinstance(document, Mapping):
             raise RuntimeError("Player runtime manifest must be an object")
-        if document.get("$schema") != PLAYER_MANIFEST_SCHEMA:
+        runtime_fields = {
+            "$schema", "product", "features", "runtime_policy", "services"
+        }
+        audit_fields = runtime_fields | {
+            "bootstrap_surface", "runtime_native_surface", "reachability", "audit",
+            "files",
+        }
+        if document.get("$schema") != PLAYER_MANIFEST_SCHEMA or frozenset(document) not in {
+            frozenset(runtime_fields), frozenset(audit_fields)
+        }:
             raise RuntimeError("Unsupported Player runtime manifest schema")
-        if document.get("manifest_version") != PLAYER_MANIFEST_VERSION:
-            raise RuntimeError("Unsupported Player runtime manifest version")
 
         product = document.get("product")
         if not isinstance(product, Mapping):
@@ -798,7 +804,6 @@ def forbidden_player_service_modules() -> frozenset[str]:
 __all__ = [
     "LoggingPolicy",
     "PLAYER_MANIFEST_SCHEMA",
-    "PLAYER_MANIFEST_VERSION",
     "PlayerRuntimeAssetCatalog",
     "ProfilingPolicy",
     "RuntimeFeatureSet",
