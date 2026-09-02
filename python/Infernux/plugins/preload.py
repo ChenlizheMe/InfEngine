@@ -933,16 +933,13 @@ def _package_module_names(
 
 
 def _lexically_below(path: str, root_key: str) -> bool:
-    candidate = lexical_path_key(path)
-    if not candidate or not root_key:
+    if not path or not root_key:
         return False
     try:
-        return (
-            os.path.commonpath((candidate, root_key)) == root_key
-            and candidate != root_key
-        )
+        relative_path(path, root_key, resolve=False, allow_root=False)
     except ValueError:
         return False
+    return True
 
 
 def _new_native_modules(modules_before: set[str]) -> tuple[str, ...]:

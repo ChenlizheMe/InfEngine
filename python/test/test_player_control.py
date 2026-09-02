@@ -6,6 +6,7 @@ import os
 import pytest
 
 from Infernux.engine import player_control
+from Infernux.engine import player_gui as player_gui_module
 from Infernux.engine.player_control import PlayerControlChannel
 from Infernux.engine.player_gui import PlayerGUI, _player_render_scale
 from Infernux.input import Input
@@ -126,6 +127,50 @@ def test_standalone_player_enables_input_before_game_texture_exists(monkeypatch)
     player._tick(None)
 
     assert focused == [True]
+
+
+def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypatch):
+    dispatched: list[tuple[int, int]] = []
+    viewport_origins: list[tuple[float, float]] = []
+
+    class _PlayerEngine:
+        def resize_game_render_target(self, width, height):
+            assert (width, height) == (1280, 720)
+
+        def get_game_texture_id(self):
+            return 17
+
+    class _Context:
+        def image(self, *args):
+            assert args == (17, 1280.0, 720.0, 0.0, 0.0, 1.0, 1.0)
+
+    monkeypatch.setattr(
+        player_gui_module,
+        "capture_viewport_info",
+        lambda _ctx: type(
+            "_Viewport", (), {"image_min_x": 8.0, "image_min_y": 12.0}
+        )(),
+    )
+    monkeypatch.setattr(
+        Input,
+        "set_game_viewport_origin",
+        lambda x, y: viewport_origins.append((x, y)),
+    )
+    monkeypatch.setattr(Input, "is_cursor_locked", lambda: False)
+
+    player = PlayerGUI.__new__(PlayerGUI)
+    player._engine = _PlayerEngine()
+    player._last_w = 0
+    player._last_h = 0
+    player._render_scale = 1.0
+    player._process_ui_events = lambda width, height: dispatched.append((width, height))
+
+    # A standalone Player owns its whole window. The context intentionally has
+    # no desktop hover API because native touchscreen input does not define it.
+    player._render_game(_Context(), 1280.0, 720.0)
+
+    assert viewport_origins == [(8.0, 12.0)]
+    assert dispatched == [(1280, 720)]
 
 
 def _player_gui_for_play_gate(session):

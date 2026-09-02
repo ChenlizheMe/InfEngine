@@ -22,12 +22,22 @@ class PointerButton(IntEnum):
     Middle = 2
 
 
+class PointerType(IntEnum):
+    """Physical source that owns one independent UI pointer."""
+
+    Mouse = 0
+    Touch = 1
+
+
 class PointerEventData:
     """Data container for a single pointer event.
 
     Attributes:
         position: Current pointer position in *canvas design* pixels.
         delta: Frame-to-frame delta in canvas design pixels.
+        pointer_id: Stable identity for the active mouse or touch contact.
+        pointer_type: Physical source of this pointer.
+        canceled: Whether the platform canceled this pointer transaction.
         button: Which mouse button triggered this event.
         press_position: Canvas-space position where the button was pressed.
         click_count: Number of rapid clicks (1 = single, 2 = double, …).
@@ -37,7 +47,7 @@ class PointerEventData:
     """
 
     __slots__ = (
-        "position", "delta", "button",
+        "position", "delta", "pointer_id", "pointer_type", "canceled", "button",
         "press_position", "click_count",
         "scroll_delta",
         "canvas", "target", "used",
@@ -46,6 +56,9 @@ class PointerEventData:
     def __init__(self):
         self.position: Tuple[float, float] = (0.0, 0.0)
         self.delta: Tuple[float, float] = (0.0, 0.0)
+        self.pointer_id: int = -1
+        self.pointer_type: PointerType = PointerType.Mouse
+        self.canceled: bool = False
         self.button: PointerButton = PointerButton.Left
         self.press_position: Tuple[float, float] = (0.0, 0.0)
         self.click_count: int = 0

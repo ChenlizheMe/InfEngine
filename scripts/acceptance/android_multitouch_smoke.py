@@ -23,12 +23,20 @@ from android_player_smoke import (
 
 
 _PASSED_RESULT = "INSTRUMENTATION_RESULT: INFERNUX_MULTITOUCH_INJECTION=passed"
+_PASSED_IME_RESULT = "INSTRUMENTATION_RESULT: INFERNUX_IME_INJECTION=passed"
 _PASSED_CODE = "INSTRUMENTATION_CODE: -1"
 _EXTENT_PATTERN = re.compile(r"INSTRUMENTATION_RESULT: (height|width)=(\d+)")
+_IME_INSET_PATTERN = re.compile(r"INSTRUMENTATION_RESULT: imeInset=(\d+)")
+_COMMITTED_TEXT_PATTERN = re.compile(r"INSTRUMENTATION_RESULT: committedText=(.+)")
+_EXPECTED_TEXT = "输入测试中文🙂"
 _DEFAULT_REQUIRED_LOGS = (
     "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
     "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
     "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",
+    "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY",
+    "INFERNUX_PLATFORM_FIXTURE_IME_VISIBLE",
+    f"INFERNUX_PLATFORM_FIXTURE_TEXT_COMMITTED value={_EXPECTED_TEXT}",
+    "INFERNUX_PLATFORM_FIXTURE_IME_HIDDEN",
 )
 
 
@@ -45,6 +53,8 @@ class MultiTouchResult:
     automated_install_approval: bool
     width: int
     height: int
+    ime_inset: int
+    committed_text: str
     required_logs: tuple[str, ...]
     fatal_count: int
     elapsed_seconds: float
@@ -59,10 +69,21 @@ def instrumentation_extent(output: str) -> tuple[int, int]:
     return values["width"], values["height"]
 
 
-def validate_instrumentation_output(output: str) -> tuple[int, int]:
-    if _PASSED_RESULT not in output or _PASSED_CODE not in output:
-        raise RuntimeError("Android system multi-touch instrumentation failed:\n" + output)
-    return instrumentation_extent(output)
+def validate_instrumentation_output(output: str) -> tuple[int, int, int, str]:
+    if (
+        _PASSED_RESULT not in output
+        or _PASSED_IME_RESULT not in output
+        or _PASSED_CODE not in output
+    ):
+        raise RuntimeError("Android system input instrumentation failed:\n" + output)
+    width, height = instrumentation_extent(output)
+    inset_match = _IME_INSET_PATTERN.search(output)
+    text_match = _COMMITTED_TEXT_PATTERN.search(output)
+    if inset_match is None or int(inset_match.group(1)) <= 0:
+        raise RuntimeError("Android instrumentation did not report a visible IME inset")
+    if text_match is None or text_match.group(1).strip() != _EXPECTED_TEXT:
+        raise RuntimeError("Android instrumentation did not commit the expected Unicode text")
+    return width, height, int(inset_match.group(1)), text_match.group(1).strip()
 
 
 def _write_report(destination: Path | None, payload: dict[str, object]) -> None:
@@ -112,7 +133,9 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             arguments.runner,
             timeout=arguments.wait_milliseconds / 1000.0 + 90.0,
         )
-        width, height = validate_instrumentation_output(output)
+        width, height, ime_inset, committed_text = validate_instrumentation_output(
+            output
+        )
         time.sleep(0.5)
         log = adb.run("logcat", "-d", "-v", "brief", check=False)
         required_logs = (
@@ -148,6 +171,8 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             automated_install_approval=automated_install_approval,
             width=width,
             height=height,
+            ime_inset=ime_inset,
+            committed_text=committed_text,
             required_logs=required_logs,
             fatal_count=0,
             elapsed_seconds=time.perf_counter() - started,

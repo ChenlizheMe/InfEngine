@@ -8,9 +8,9 @@ from .ui_text import UIText
 from .ui_image import UIImage
 from .ui_selectable import UISelectable
 from .ui_button import UIButton
-from .ui_event_data import PointerEventData, PointerButton
+from .ui_event_data import PointerEventData, PointerButton, PointerType
 from .ui_event import UIEvent, UIEvent1
-from .ui_event_system import UIEventProcessor
+from .ui_event_system import UIEventProcessor, UIPointerFrame
 from .ui_texture_cache import UITextureCache, get_shared_cache
 from .ui_render_dispatch import register_ui_renderer, dispatch as ui_dispatch
 
@@ -34,9 +34,11 @@ __all__ = [
     "UIButton",
     "PointerEventData",
     "PointerButton",
+    "PointerType",
     "UIEvent",
     "UIEvent1",
     "UIEventProcessor",
+    "UIPointerFrame",
     "UITextureCache",
     "get_shared_cache",
     "register_ui_renderer",

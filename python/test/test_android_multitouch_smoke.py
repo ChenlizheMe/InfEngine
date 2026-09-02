@@ -32,11 +32,14 @@ def test_instrumentation_result_requires_success_and_extent():
 
     assert module.validate_instrumentation_output(
         """INSTRUMENTATION_RESULT: INFERNUX_MULTITOUCH_INJECTION=passed
+INSTRUMENTATION_RESULT: INFERNUX_IME_INJECTION=passed
+INSTRUMENTATION_RESULT: committedText=输入测试中文🙂
 INSTRUMENTATION_RESULT: height=1440
+INSTRUMENTATION_RESULT: imeInset=612
 INSTRUMENTATION_RESULT: width=3200
 INSTRUMENTATION_CODE: -1
 """
-    ) == (3200, 1440)
+    ) == (3200, 1440, 612, "输入测试中文🙂")
 
 
 @pytest.mark.parametrize(
@@ -66,6 +69,10 @@ def test_parser_uses_current_android_fixture_contract():
         "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
         "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
         "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",
+        "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY",
+        "INFERNUX_PLATFORM_FIXTURE_IME_VISIBLE",
+        "INFERNUX_PLATFORM_FIXTURE_TEXT_COMMITTED value=输入测试中文🙂",
+        "INFERNUX_PLATFORM_FIXTURE_IME_HIDDEN",
     )
 
 
@@ -90,3 +97,7 @@ def test_probe_launches_the_target_through_uiautomation_shell():
     assert '"am start -W -n "' in source
     assert "startActivitySync" not in source
     assert "injectCanceledGesture(automation, width, height);" in source
+    assert "injectTap(automation, width, height, 0.5f, 0.07f);" in source
+    assert "focused.onCreateInputConnection(new EditorInfo())" in source
+    assert 'connection.commitText(text, 1)' in source
+    assert 'WindowInsets.Type.ime()' in source

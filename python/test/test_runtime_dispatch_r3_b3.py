@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from Infernux.components import InxComponent
 from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
-from Infernux.ui.ui_event_system import UIEventProcessor
+from Infernux.ui.ui_event_data import PointerType
+from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
 
 
 class _PhysicsProbe(InxComponent):
@@ -180,10 +183,8 @@ def test_ui_process_keeps_one_epoch_when_a_callback_publishes():
         initial.rollback()
 
 
-def test_ui_pointer_exception_isolated_without_retry():
+def test_ui_pointer_exception_propagates_without_retry():
     target = _make_pointer_target()
-    errors = []
-    target._report_lifecycle_exception = errors.append
     canvas = _Canvas(target)
     old_click = _PointerProbe.on_pointer_click
 
@@ -197,9 +198,88 @@ def test_ui_pointer_exception_isolated_without_retry():
     try:
         processor = UIEventProcessor()
         processor.process([canvas], [(0.0, 0.0)], True, False, True, (0.0, 0.0), 0.016)
-        processor.process([canvas], [(0.0, 0.0)], False, True, False, (0.0, 0.0), 0.016)
+        with pytest.raises(RuntimeError, match="expected pointer failure"):
+            processor.process([canvas], [(0.0, 0.0)], False, True, False, (0.0, 0.0), 0.016)
         assert target.events.count("click-failed") == 1
-        assert len(errors) == 1
     finally:
         publication.rollback()
         _PointerProbe.on_pointer_click = old_click
+
+
+def test_ui_process_keeps_simultaneous_touch_transactions_independent():
+    left = _make_pointer_target()
+    right = _make_pointer_target()
+
+    class SplitCanvas:
+        game_object = None
+        enabled = True
+
+        @staticmethod
+        def raycast(x, _y):
+            return left if x < 50.0 else right
+
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process_pointers(
+            [SplitCanvas()],
+            (
+                UIPointerFrame(10, PointerType.Touch, ((10.0, 0.0),), down=True, held=True),
+                UIPointerFrame(11, PointerType.Touch, ((90.0, 0.0),), down=True, held=True),
+            ),
+            0.016,
+        )
+        processor.process_pointers(
+            [SplitCanvas()],
+            (
+                UIPointerFrame(10, PointerType.Touch, ((10.0, 0.0),), up=True),
+                UIPointerFrame(11, PointerType.Touch, ((90.0, 0.0),), up=True),
+            ),
+            0.016,
+        )
+
+        assert left.events == ["enter", "down", "up", "click", "exit"]
+        assert right.events == ["enter", "down", "up", "click", "exit"]
+    finally:
+        publication.rollback()
+
+
+def test_ui_touch_cancel_releases_capture_without_click():
+    target = _make_pointer_target()
+    canceled = []
+    old_up = _PointerProbe.on_pointer_up
+
+    def capture_cancel(self, event) -> None:
+        self.events.append("up")
+        canceled.append((event.pointer_id, event.pointer_type, event.canceled))
+
+    _PointerProbe.on_pointer_up = capture_cancel
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process_pointers(
+            [_Canvas(target)],
+            (UIPointerFrame(27, PointerType.Touch, ((0.0, 0.0),), down=True, held=True),),
+            0.016,
+        )
+        processor.process_pointers(
+            [_Canvas(target)],
+            (
+                UIPointerFrame(
+                    27,
+                    PointerType.Touch,
+                    ((0.0, 0.0),),
+                    up=True,
+                    canceled=True,
+                ),
+            ),
+            0.016,
+        )
+
+        assert target.events == ["enter", "down", "up", "exit"]
+        assert canceled == [(27, PointerType.Touch, True)]
+    finally:
+        publication.rollback()
+        _PointerProbe.on_pointer_up = old_up

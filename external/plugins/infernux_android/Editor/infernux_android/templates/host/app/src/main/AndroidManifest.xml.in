@@ -34,7 +34,8 @@
             android:exported="true"
             android:launchMode="singleInstance"
             android:resizeableActivity="false"
-            android:screenOrientation="@ANDROID_SCREEN_ORIENTATION@">
+            android:screenOrientation="@ANDROID_SCREEN_ORIENTATION@"
+            android:windowSoftInputMode="adjustNothing">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.GAME" />

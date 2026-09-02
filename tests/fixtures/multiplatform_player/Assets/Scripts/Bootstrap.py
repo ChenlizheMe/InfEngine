@@ -8,6 +8,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
 
     MOVE_FORCE = 24.0
     TRAIL_MAX_POINTS = 96
+    TEXT_INPUT_VALUE = "输入测试中文🙂"
 
     def awake(self):
         self._probe = None
@@ -18,6 +19,12 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._multitouch_reported = False
         self._unity_touch_reported = False
         self._touch_cancel_reported = False
+        self._text_input_requested = False
+        self._keyboard_visible_reported = False
+        self._keyboard_hidden_reported = False
+        self._committed_text = ""
+        self._text_input_button = None
+        self._text_input_status = None
 
     def start(self):
         scene = inx.SceneManager.get_active_scene()
@@ -56,6 +63,28 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         marker.color = [0.15, 0.95, 0.72, 1.0]
         marker.raycast_target = False
 
+        text_button_owner = scene.create_game_object("Platform Fixture Text Input")
+        text_button_owner.set_parent(canvas_owner, world_position_stays=False)
+        self._text_input_button = text_button_owner.add_component(inx.ui.UIButton)
+        self._text_input_button.x = 512.0
+        self._text_input_button.y = 20.0
+        self._text_input_button.width = 256.0
+        self._text_input_button.height = 64.0
+        self._text_input_button.label = "Open keyboard"
+        self._text_input_button.background_color = [0.95, 0.28, 0.12, 1.0]
+        self._text_input_button.on_click.add_listener(self._begin_text_input)
+
+        status_owner = scene.create_game_object("Platform Fixture Text Status")
+        status_owner.set_parent(canvas_owner, world_position_stays=False)
+        self._text_input_status = status_owner.add_component(inx.ui.UIText)
+        self._text_input_status.x = 400.0
+        self._text_input_status.y = 96.0
+        self._text_input_status.width = 480.0
+        self._text_input_status.height = 56.0
+        self._text_input_status.text = "Text input idle"
+        self._text_input_status.font_size = 24.0
+        self._text_input_status.color = [0.92, 0.95, 1.0, 1.0]
+
         inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_GAMEPLAY_READY")
 
     def fixed_update(self, fixed_delta_time: float):
@@ -75,7 +104,60 @@ class PlatformFixtureBootstrap(inx.InxComponent):
     def update(self, delta_time: float):
         del delta_time
         self._validate_touch_input()
+        self._validate_text_input()
         self._record_trail_position()
+
+    def _begin_text_input(self):
+        if self._text_input_requested:
+            return
+        if not inx.input.Input.begin_text_input():
+            raise RuntimeError("Platform text input service rejected the request")
+        self._text_input_requested = True
+        self._text_input_button.label = "Keyboard active"
+        self._text_input_status.text = "Waiting for committed text"
+        inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY")
+
+    def _validate_text_input(self):
+        if not self._text_input_requested:
+            return
+
+        keyboard_inset = inx.Screen.keyboard_inset
+        if (
+            keyboard_inset is not None
+            and keyboard_inset > 0
+            and not self._keyboard_visible_reported
+        ):
+            self._keyboard_visible_reported = True
+            inx.Debug.log(
+                "INFERNUX_PLATFORM_FIXTURE_IME_VISIBLE "
+                f"inset={keyboard_inset}"
+            )
+
+        committed = inx.input.Input.input_string
+        if committed:
+            self._committed_text += committed
+            self._text_input_status.text = self._committed_text
+            if self._committed_text == self.TEXT_INPUT_VALUE:
+                if not self._keyboard_visible_reported:
+                    raise RuntimeError("Text committed before Android IME inset was visible")
+                inx.Debug.log(
+                    "INFERNUX_PLATFORM_FIXTURE_TEXT_COMMITTED "
+                    f"value={self._committed_text}"
+                )
+                inx.input.Input.end_text_input()
+            elif not self.TEXT_INPUT_VALUE.startswith(self._committed_text):
+                raise RuntimeError(
+                    f"Unexpected committed text: {self._committed_text!r}"
+                )
+
+        if (
+            self._committed_text == self.TEXT_INPUT_VALUE
+            and keyboard_inset == 0
+            and not self._keyboard_hidden_reported
+        ):
+            self._keyboard_hidden_reported = True
+            self._text_input_button.label = "Keyboard verified"
+            inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_IME_HIDDEN")
 
     def _validate_touch_input(self):
         touches = inx.input.Input.touches

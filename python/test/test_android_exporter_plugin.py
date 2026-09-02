@@ -322,6 +322,7 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'android:icon="@mipmap/infernux_launcher"' in manifest
     assert 'android:roundIcon="@mipmap/infernux_launcher"' in manifest
     assert 'android:resizeableActivity="false"' in manifest
+    assert 'android:windowSoftInputMode="adjustNothing"' in manifest
     assert "android.intent.category.GAME" in manifest
     assert "glEsVersion" not in manifest
     assert "android:windowFullscreen" in style
