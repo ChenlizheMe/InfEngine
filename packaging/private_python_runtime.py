@@ -23,6 +23,15 @@ _DEFAULT_RELEASE = runtime_release(DEFAULT_PYTHON_RUNTIME)
 PYTHON_VERSION = _DEFAULT_RELEASE.patch_version
 PYTHON_BUILD_RELEASE = _DEFAULT_RELEASE.build_release
 PRIVATE_RUNTIME_MARKER = ".infernux-private-python-runtime.json"
+_PRIVATE_RUNTIME_MARKER_KEYS = {
+    "owner",
+    "kind",
+    "python_version",
+    "python_series",
+    "source_archive",
+    "source_archive_sha256",
+    "written_at",
+}
 
 
 @dataclass(frozen=True)
@@ -122,7 +131,7 @@ def _remove_tree(path: Path) -> None:
 def write_private_runtime_marker(
     runtime_root: str | os.PathLike[str],
     archive_name: str,
-    archive_sha256: str = "",
+    archive_sha256: str,
     *,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
 ) -> None:
@@ -155,7 +164,9 @@ def is_private_runtime_root(runtime_root: str | os.PathLike[str]) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return (
-        payload.get("owner") == "Infernux Hub"
+        isinstance(payload, dict)
+        and set(payload) == _PRIVATE_RUNTIME_MARKER_KEYS
+        and payload.get("owner") == "Infernux Hub"
         and payload.get("kind") == "private-python-runtime"
     )
 
@@ -173,11 +184,12 @@ def is_current_private_runtime_root(
     except (OSError, json.JSONDecodeError, RuntimeError, ValueError):
         return False
     return (
-        payload.get("owner") == "Infernux Hub"
+        isinstance(payload, dict)
+        and set(payload) == _PRIVATE_RUNTIME_MARKER_KEYS
+        and payload.get("owner") == "Infernux Hub"
         and payload.get("kind") == "private-python-runtime"
         and payload.get("python_version") == release.patch_version
-        and payload.get("python_series", release.runtime_id.series)
-        == release.runtime_id.series
+        and payload.get("python_series") == release.runtime_id.series
         and payload.get("source_archive") == archive.name
         and payload.get("source_archive_sha256") == archive.sha256
     )
@@ -187,15 +199,14 @@ def extract_runtime_archive(
     archive_path: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
-    expected_sha256: str | None = None,
+    expected_sha256: str,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
 ) -> None:
     archive = Path(archive_path).resolve()
     target = Path(destination).resolve()
     if not archive.is_file():
         raise RuntimeError(f"Private Python runtime archive not found: {archive}")
-    if expected_sha256:
-        verify_runtime_archive(archive, expected_sha256)
+    verify_runtime_archive(archive, expected_sha256)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     extract_root = Path(
@@ -220,7 +231,7 @@ def extract_runtime_archive(
         write_private_runtime_marker(
             target,
             archive.name,
-            expected_sha256 or "",
+            expected_sha256,
             runtime=runtime,
         )
     finally:

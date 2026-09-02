@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import sys
 import tarfile
@@ -16,7 +17,6 @@ if str(PACKAGING_ROOT) not in sys.path:
 import embed_runtime_manager
 from private_python_runtime import (
     extract_runtime_archive,
-    is_current_private_runtime_root,
     is_private_runtime_root,
     prune_runtime_staging_cache,
     runtime_archive_for_machine,
@@ -30,6 +30,10 @@ def _write_runtime_archive(path: Path) -> None:
     info.size = len(payload)
     with tarfile.open(path, mode="w:gz") as archive:
         archive.addfile(info, io.BytesIO(payload))
+
+
+def _archive_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_windows_runtime_uses_pinned_relocatable_archive() -> None:
@@ -47,7 +51,7 @@ def test_windows_runtime_uses_pinned_relocatable_archive() -> None:
     assert artifact.sha256 == "82a792c25550a421b29f381eaeafa6dccd1ffcbd97a1b1507b202f5df877cecf"
 
 
-def test_legacy_python_312_runtime_remains_addressable() -> None:
+def test_python_312_runtime_remains_addressable() -> None:
     artifact = runtime_archive_for_machine(
         system="win32", machine="AMD64", runtime="3.12"
     )
@@ -61,7 +65,9 @@ def test_runtime_archive_is_extracted_into_an_owned_private_root(tmp_path: Path)
     destination = tmp_path / "hub-runtime" / "python313"
     _write_runtime_archive(archive)
 
-    extract_runtime_archive(archive, destination)
+    extract_runtime_archive(
+        archive, destination, expected_sha256=_archive_sha256(archive)
+    )
 
     assert (destination / "python.exe").read_bytes() == b"private python"
     assert is_private_runtime_root(destination)
@@ -75,15 +81,21 @@ def test_runtime_archive_checksum_is_verified(tmp_path: Path) -> None:
         verify_runtime_archive(archive, "0" * 64)
 
 
-def test_unpinned_marker_is_not_current(tmp_path: Path) -> None:
+def test_extracted_runtime_marker_records_the_source_archive(tmp_path: Path) -> None:
     archive = tmp_path / "runtime.tar.gz"
     destination = tmp_path / "python313"
     _write_runtime_archive(archive)
 
-    extract_runtime_archive(archive, destination)
+    archive_sha256 = _archive_sha256(archive)
+    extract_runtime_archive(
+        archive, destination, expected_sha256=archive_sha256
+    )
 
     assert is_private_runtime_root(destination)
-    assert not is_current_private_runtime_root(destination)
+    marker = (destination / ".infernux-private-python-runtime.json").read_text(
+        encoding="utf-8"
+    )
+    assert archive_sha256 in marker
 
 
 def test_runtime_archive_rejects_paths_outside_destination(tmp_path: Path) -> None:
@@ -95,7 +107,11 @@ def test_runtime_archive_rejects_paths_outside_destination(tmp_path: Path) -> No
         archive.addfile(info, io.BytesIO(payload))
 
     with pytest.raises(RuntimeError, match="Invalid private Python runtime archive"):
-        extract_runtime_archive(archive_path, tmp_path / "python313")
+        extract_runtime_archive(
+            archive_path,
+            tmp_path / "python313",
+            expected_sha256=_archive_sha256(archive_path),
+        )
 
     assert not (tmp_path / "outside.txt").exists()
 
@@ -202,8 +218,11 @@ def test_runtime_extraction_does_not_touch_external_python(
     monkeypatch.setattr(
         embed_runtime_manager,
         "extract_runtime_archive",
-        lambda source, destination, **_kwargs: extract_runtime_archive(
-            source, destination
+        lambda source, destination, **kwargs: extract_runtime_archive(
+            source,
+            destination,
+            expected_sha256=_archive_sha256(Path(source)),
+            runtime=kwargs["runtime"],
         ),
     )
     monkeypatch.setattr(
