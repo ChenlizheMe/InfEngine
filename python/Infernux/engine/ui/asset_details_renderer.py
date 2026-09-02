@@ -856,21 +856,14 @@ def _load_material(path: str):
     if mat is None:
         return None
     native = mat.native
-    try:
-        cached = native.serialize_document()
-    except (RuntimeError, ValueError, TypeError):
-        cached = {"name": mat.name, "properties": {}}
+    cached = native.serialize_document()
     old_prop_names = set(cached.get("properties", {}).keys())
     _sync_material_shader_metadata(cached)
     new_prop_names = set(cached.get("properties", {}).keys())
     if new_prop_names != old_prop_names:
         # Vertex/fragment shader sync added new properties — push them to the
         # native C++ material so the UBO picks up the correct default values.
-        try:
-            native.deserialize_document(cached)
-        except (RuntimeError, ValueError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        native.deserialize_document(cached)
     return mat, {
         "native_mat": native,
         "cached_data": cached,
@@ -893,16 +886,13 @@ def _load_render_effect(path: str):
         effect = AssetManager.load(path, asset_type=RenderEffect)
         return (effect, {"document_kind": "effect"}) if effect is not None else None
 
-    try:
-        from pathlib import Path
-        from Infernux.renderstack.render_effect_asset import (
-            RenderEffectGroupAsset,
-            parse_render_effect_document,
-        )
+    from pathlib import Path
+    from Infernux.renderstack.render_effect_asset import (
+        RenderEffectGroupAsset,
+        parse_render_effect_document,
+    )
 
-        document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return None
+    document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
     if not isinstance(document, RenderEffectGroupAsset):
         return None
     guid = str((read_meta_file(path) or {}).get("guid", "") or "")
@@ -979,7 +969,7 @@ def _render_physic_material_body(ctx: InxGUIContext, panel, state: _State):
 
 
 def _load_prefab(path: str):
-    """Load a .prefab file into a safe data-only representation.
+    """Load a .prefab file into its data-only inspector representation.
 
     The previous implementation instantiated a hidden preview scene and then
     routed the prefab through the full object inspector. That path re-used
@@ -987,16 +977,14 @@ def _load_prefab(path: str):
     allocated a new native scene for each selection, which is not safe with
     the current SceneManager API surface.
     """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("prefab document must contain a JSON object")
 
     root_json = data.get("root_object")
-    if root_json is None:
-        return None
+    if not isinstance(root_json, dict):
+        raise ValueError("prefab document must contain a root_object")
 
     root_copy = copy.deepcopy(root_json)
     return root_copy, {
@@ -1739,12 +1727,9 @@ def _load_animfsm(path: str):
 
 
 def _load_particlegraph(path: str):
-    from Infernux.particle.asset import ParticleGraphAsset, ParticleGraphSchemaError
+    from Infernux.particle.asset import ParticleGraphAsset
 
-    try:
-        graph = ParticleGraphAsset.load(path)
-    except (OSError, ParticleGraphSchemaError, ValueError, TypeError):
-        return None
+    graph = ParticleGraphAsset.load(path)
     return graph, {"particle_graph_path": path}
 
 
@@ -1772,24 +1757,21 @@ def _render_particlegraph_body(ctx: InxGUIContext, panel, state: _State):
     if callable(open_fn):
         open_fn(state.file_path)
         return
-    try:
-        from Infernux.engine.interaction import (
-            DocumentKind,
-            DocumentOpenStatus,
-            EditorInteractionCore,
-        )
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        DocumentOpenStatus,
+        EditorInteractionCore,
+    )
 
-        core = EditorInteractionCore.instance()
-        if core is None:
-            raise RuntimeError("document open requires EditorInteractionCore")
-        result = core.document_open.open_resource(
-            DocumentKind.PARTICLE_GRAPH,
-            state.file_path,
-        )
-        if result.status is DocumentOpenStatus.FAILED:
-            raise RuntimeError(result.message or "Particle Graph open failed")
-    except Exception as exc:
-        Debug.log_suppressed("asset_details_renderer.open_particlegraph", exc)
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("document open requires EditorInteractionCore")
+    result = core.document_open.open_resource(
+        DocumentKind.PARTICLE_GRAPH,
+        state.file_path,
+    )
+    if result.status is DocumentOpenStatus.FAILED:
+        raise RuntimeError(result.message or "Particle Graph open failed")
 
 
 def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
@@ -1856,25 +1838,19 @@ def _refresh_material(state: _State):
     native = state.extra.get("native_mat")
     if not native:
         return
-    try:
-        current_version = native.get_version()
-    except (AttributeError, RuntimeError):
-        current_version = -1
+    current_version = native.get_version()
     # Fast-path: when the only mutations since the last refresh came from
     # the Python-side property editor (sliders, combos, etc.), cached_data
     # is already in sync with the native material.  Skip the expensive
     # native document -> merge -> preview-cache encoding round-trip (~1-7 ms).
     applied_version = state.extra.get("_applied_version", -2)
-    if current_version != -1 and current_version == applied_version:
+    if current_version == applied_version:
         return
     state.extra["_applied_version"] = current_version
-    try:
-        document = native.serialize_document()
-        _sync_material_shader_metadata(document)
-        state.extra["cached_data"] = document
-        state.extra["cached_json"] = json.dumps(document)
-    except (RuntimeError, ValueError, TypeError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    document = native.serialize_document()
+    _sync_material_shader_metadata(document)
+    state.extra["cached_data"] = document
+    state.extra["cached_json"] = json.dumps(document)
 
 
 def _sync_material_shader_metadata(mat_data: dict):
