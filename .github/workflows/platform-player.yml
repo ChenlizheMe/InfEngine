@@ -1,4 +1,4 @@
-name: Android And Web Player Acceptance
+name: Platform Player Acceptance
 
 on:
   pull_request:
@@ -8,21 +8,25 @@ on:
       - "cmake/**"
       - "cpp/**"
       - "external/plugins/infernux_android/**"
+      - "external/plugins/infernux_linux/**"
       - "external/plugins/infernux_web/**"
+      - "external/plugins/infernux_windows/**"
       - "python/**"
       - "resources/**"
       - "scripts/acceptance/**"
       - "scripts/setup/**"
       - "tests/fixtures/multiplatform_player/**"
   push:
-    branches: [master, main]
+    branches: [master, main, "040/multiplatform_build"]
     paths:
       - ".github/workflows/platform-player.yml"
       - "CMakeLists.txt"
       - "cmake/**"
       - "cpp/**"
       - "external/plugins/infernux_android/**"
+      - "external/plugins/infernux_linux/**"
       - "external/plugins/infernux_web/**"
+      - "external/plugins/infernux_windows/**"
       - "python/**"
       - "resources/**"
       - "scripts/acceptance/**"
@@ -40,6 +44,195 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-player:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      VULKAN_SDK_VERSION: "1.3.296.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: infernux
+          python-version: "3.13"
+          auto-activate-base: false
+
+      - name: Cache Vulkan SDK
+        id: cache-windows-vulkan
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-windows
+
+      - name: Install Vulkan SDK
+        if: steps.cache-windows-vulkan.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanSDK-$env:VULKAN_SDK_VERSION-Installer.exe"
+          Invoke-WebRequest -Uri $url -OutFile vulkan_sdk.exe
+          Start-Process -Wait -FilePath .\vulkan_sdk.exe -ArgumentList `
+            "--accept-licenses","--default-answer","--confirm-command","install"
+
+      - name: Cache Windows native build
+        uses: actions/cache@v4
+        with:
+          path: out\build\windows-msvc-release
+          key: windows-player-native-${{ hashFiles('cmake/**', 'CMakeLists.txt', 'cpp/**') }}
+          restore-keys: |
+            windows-player-native-
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          conda activate infernux
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Build Windows Player runtime
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          cmake --preset windows-msvc-release
+          cmake --build --preset windows-msvc-release
+
+      - name: Provide Vulkan loader to the current native closure
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "vulkan-runtime"
+          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan-runtime-components.zip"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $runtimeRoot -Force
+          $runtimeBin = Join-Path $runtimeRoot "VulkanRT-$env:VULKAN_SDK_VERSION-Components\x64"
+          $loader = Join-Path $runtimeBin "vulkan-1.dll"
+          if (-not (Test-Path -LiteralPath $loader)) {
+            throw "Vulkan runtime archive does not contain the expected x64 loader."
+          }
+          $destinations = @("python\Infernux\lib\vulkan-1.dll")
+          Get-ChildItem "out\build\windows-msvc-release" -Recurse -Filter "InfernuxRuntime.dll" |
+            ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
+          foreach ($destination in ($destinations | Select-Object -Unique)) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+            Copy-Item -LiteralPath $loader -Destination $destination -Force
+          }
+
+      - name: Build Windows Player fixture
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          New-Item -ItemType Directory -Path out\ci-projects\windows,out\test-results -Force | Out-Null
+          Copy-Item tests\fixtures\multiplatform_player\* out\ci-projects\windows -Recurse -Force
+          python scripts\acceptance\build_player.py `
+            out\ci-projects\windows windows-x64 out\acceptance\windows `
+            --report out\test-results\windows-player-build.json
+
+      - name: Validate Windows Player input, physics, and LineRenderer
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $probe = '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}'
+          python scripts\acceptance\windows_player_smoke.py `
+            out\acceptance\windows\InfernuxPlatformFixture.exe `
+            --report out\test-results\windows-player-smoke.json `
+            --artifact-root out\test-results\windows-player-artifacts `
+            --object "Render Probe" `
+            --axis z `
+            --minimum-axis-delta 0.5 `
+            --component-probe $probe
+
+      - name: Upload Windows Player evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-player-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/windows-*
+          if-no-files-found: warn
+
+  linux-player:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      SDL_AUDIODRIVER: dummy
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: infernux
+          python-version: "3.13"
+          auto-activate-base: false
+
+      - name: Cache Linux native build
+        uses: actions/cache@v4
+        with:
+          path: out/build/linux-clang-release
+          key: linux-player-${{ runner.os }}-${{ hashFiles('cmake/**', 'CMakeLists.txt', 'cpp/**') }}
+          restore-keys: |
+            linux-player-${{ runner.os }}-
+
+      - name: Install Linux build and software Vulkan dependencies
+        run: |
+          scripts/setup/install_linux_dependencies.sh
+          sudo apt-get install --yes --no-install-recommends \
+            mesa-vulkan-drivers \
+            vulkan-validationlayers \
+            xvfb
+          test -f "$VK_ICD_FILENAMES"
+
+      - name: Install Python dependencies
+        run: |
+          conda activate infernux
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Build Linux Player runtime
+        run: |
+          conda activate infernux
+          cmake --preset linux-clang-release
+          cmake --build --preset linux-clang-release
+
+      - name: Build Linux Player fixture
+        run: |
+          conda activate infernux
+          mkdir -p out/ci-projects/linux out/test-results
+          cp -a tests/fixtures/multiplatform_player/. out/ci-projects/linux/
+          python scripts/acceptance/build_player.py \
+            out/ci-projects/linux linux-x64 out/acceptance/linux \
+            --report out/test-results/linux-player-build.json
+
+      - name: Validate Linux Player input, physics, and LineRenderer
+        run: |
+          conda activate infernux
+          python scripts/acceptance/linux_player_smoke.py \
+            out/acceptance/linux/InfernuxPlatformFixture \
+            --report out/test-results/linux-player-smoke.json \
+            --artifact-root out/test-results/linux-player-artifacts \
+            --xvfb always \
+            --vk-driver-files "$VK_ICD_FILENAMES" \
+            --validation \
+            --object "Render Probe" \
+            --axis z \
+            --minimum-axis-delta 0.5 \
+            --component-probe '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}'
+
+      - name: Upload Linux Player evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-player-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/linux-*
+          if-no-files-found: warn
+
   web-player:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -68,9 +261,9 @@ jobs:
             out/toolchains/web
             out/cache/web
             out/build/linux-clang-headless
-          key: web-player-v1-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'cmake/**', 'CMakeLists.txt') }}
+          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'cmake/**', 'CMakeLists.txt') }}
           restore-keys: |
-            web-player-v1-${{ runner.os }}-
+            web-player-${{ runner.os }}-
 
       - name: Install host dependencies
         run: scripts/setup/install_linux_dependencies.sh
@@ -133,6 +326,7 @@ jobs:
           node scripts/acceptance/web_mobile_input_smoke.cjs \
             http://127.0.0.1:8765/infernux-player.html \
             --startup-timeout-ms 360000 \
+            --verify-native-multitouch \
             | tee out/test-results/web-player-smoke.json
 
       - name: Upload Web Player evidence
@@ -194,9 +388,9 @@ jobs:
             out/cache/android-player
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: android-player-v1-${{ runner.os }}-${{ hashFiles('scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**') }}
+          key: android-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**') }}
           restore-keys: |
-            android-player-v1-${{ runner.os }}-
+            android-player-${{ runner.os }}-
 
       - name: Install Python dependencies
         run: |
