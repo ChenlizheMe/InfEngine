@@ -442,6 +442,40 @@ void AssetRegistry::DrainPendingLoads() noexcept
     m_pendingTextureStagingLoads.clear();
 }
 
+void AssetRegistry::UpdateLoadedAssetPath(const std::string &guid, const std::string &newPath)
+{
+    if (guid.empty() || newPath.empty())
+        throw std::invalid_argument("AssetRegistry::UpdateLoadedAssetPath requires GUID and destination path");
+
+    ++m_assetMutationGenerations[guid];
+    auto it = m_loadedAssets.find(guid);
+    if (it == m_loadedAssets.end())
+        return;
+
+    auto newName = FromFsPath(ToFsPath(newPath).stem());
+    if (it->second.type == ResourceType::Material) {
+        auto material = it->second.payload.Get<InxMaterial>();
+        if (material) {
+            material->SetFilePath(newPath);
+            material->SetName(newName);
+        }
+    }
+    if (it->second.type == ResourceType::Texture) {
+        auto texture = it->second.payload.Get<InxTexture>();
+        if (texture) {
+            texture->SetFilePath(newPath);
+            texture->SetName(newName);
+        }
+    }
+    if (it->second.type == ResourceType::PhysicMaterial) {
+        auto material = it->second.payload.Get<PhysicMaterial>();
+        if (material) {
+            material->SetFilePath(newPath);
+            material->SetName(newName);
+        }
+    }
+}
+
 // =============================================================================
 // Built-in materials (named, no GUID)
 // =============================================================================

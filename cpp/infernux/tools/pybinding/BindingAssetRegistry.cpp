@@ -321,8 +321,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def("remove_asset", &AssetRegistry::RemoveAsset, py::arg("guid"),
              "Fully remove an asset record (e.g. when file is deleted)")
 
-        .def("update_loaded_asset_path", &AssetRegistry::UpdateLoadedAssetPath, py::arg("old_path"),
-             py::arg("new_path"), "Patch path-bearing cached state after a GUID-stable move")
+        .def("update_loaded_asset_path", &AssetRegistry::UpdateLoadedAssetPath, py::arg("guid"), py::arg("new_path"),
+             "Update path-bearing cached state by GUID after a catalog move")
 
         // Queries
         .def("is_loaded", &AssetRegistry::IsLoaded, py::arg("guid"), "Check if an asset is currently cached")

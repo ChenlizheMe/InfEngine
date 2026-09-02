@@ -821,8 +821,8 @@ class AssetManager:
     ) -> None:
         """Apply loaded-runtime and editor-cache consequences of a catalog move."""
         registry = cls._get_registry()
-        if registry:
-            registry.update_loaded_asset_path(old_path, new_path)
+        if registry and guid:
+            registry.update_loaded_asset_path(guid, new_path)
         if guid:
             cls.invalidate(guid)
         if os.path.splitext(old_path)[1].lower() in IMAGE_EXTENSIONS:

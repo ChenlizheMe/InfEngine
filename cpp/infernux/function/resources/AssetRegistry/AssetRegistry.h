@@ -218,6 +218,9 @@ class AssetRegistry
     TryConsumeTextureUploadStaging(const std::shared_ptr<TextureUploadStagingTicket> &ticket);
     void DrainPendingLoads() noexcept;
 
+    /// Update path-bearing payload state after a GUID-stable catalog move.
+    void UpdateLoadedAssetPath(const std::string &guid, const std::string &newPath);
+
     // ── Built-in material helpers (named, no GUID) ───────────────────────────
 
     /// Create and register all engine built-in materials (DefaultLit, Error, Gizmo, etc.).
