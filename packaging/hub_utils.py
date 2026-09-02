@@ -1,7 +1,6 @@
 """Utility helpers shared across the Hub codebase."""
 
 import json
-import logging
 import os
 import sys
 from enum import Enum
@@ -77,34 +76,38 @@ def is_pid_running(pid: int) -> bool:
         return False
 
     if sys.platform == "win32":
-        try:
-            import ctypes
+        import ctypes
 
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                False,
-                pid,
-            )
-            if not handle:
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        ERROR_INVALID_PARAMETER = 87
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            False,
+            pid,
+        )
+        if not handle:
+            error_code = ctypes.windll.kernel32.GetLastError()
+            if error_code == ERROR_INVALID_PARAMETER:
                 return False
-            try:
-                exit_code = ctypes.c_ulong()
-                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                    return False
-                return exit_code.value == STILL_ACTIVE
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            return False
+            raise ctypes.WinError(error_code)
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(
+                handle,
+                ctypes.byref(exit_code),
+            ):
+                raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
 
     try:
         os.kill(pid, 0)
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
@@ -114,24 +117,22 @@ def read_project_lock(project_path: str) -> dict | None:
     if not os.path.isfile(lock_path):
         return None
 
-    try:
-        with open(lock_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        try:
-            os.remove(lock_path)
-        except OSError as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            pass
-        return None
-
-    pid = int(data.get("pid", 0) or 0)
+    with open(lock_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"project lock must contain a JSON object: {lock_path}")
+    pid = data.get("pid")
+    token = data.get("token")
+    if (
+        isinstance(pid, bool)
+        or not isinstance(pid, int)
+        or pid <= 0
+        or not isinstance(token, str)
+        or not token
+    ):
+        raise ValueError(f"project lock has invalid process identity: {lock_path}")
     if not is_pid_running(pid):
-        try:
-            os.remove(lock_path)
-        except OSError as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            pass
+        os.remove(lock_path)
         return None
 
     return data
@@ -178,16 +179,14 @@ def remove_project_lock(project_path: str, token: str | None = None) -> None:
         return
 
     if token is not None:
-        try:
-            with open(lock_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            data = None
-        if data and data.get("token") != token:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"project lock must contain a JSON object: {lock_path}")
+        current_token = data.get("token")
+        if not isinstance(current_token, str) or not current_token:
+            raise ValueError(f"project lock has invalid process identity: {lock_path}")
+        if current_token != token:
             return
 
-    try:
-        os.remove(lock_path)
-    except OSError as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-        pass
+    os.remove(lock_path)
