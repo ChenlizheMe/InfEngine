@@ -40,7 +40,6 @@ def _parser() -> argparse.ArgumentParser:
     stamp.add_argument("--minimum-api", required=True, type=int)
     stamp.add_argument("--ndk-version", required=True)
     stamp.add_argument("--source-url", required=True)
-    stamp.add_argument("--source-sha256", required=True)
 
     verify = subparsers.add_parser("verify", help="Verify an existing prefix")
     verify.add_argument("prefix", type=Path)
@@ -62,7 +61,6 @@ def main() -> int:
             minimum_android_api=arguments.minimum_api,
             ndk_version=arguments.ndk_version,
             source_url=arguments.source_url,
-            source_sha256=arguments.source_sha256,
         )
     else:
         manifest = module.validate_runtime_manifest(

@@ -24,6 +24,16 @@ def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points()
     assert "scripts/setup/build_android_python_runtime.sh" in text
 
 
+def test_android_runtime_builder_creates_build_python_before_cross_build():
+    script = (
+        ROOT / "scripts" / "setup" / "build_android_python_runtime.sh"
+    ).read_text(encoding="utf-8")
+
+    build_python = '\"$python_source/Android/android.py\" build build'
+    cross_python = '\"$python_source/Android/android.py\" build \"$host\"'
+    assert script.index(build_python) < script.index(cross_python)
+
+
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
     text = _text().casefold()
 

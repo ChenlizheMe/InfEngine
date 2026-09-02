@@ -97,13 +97,12 @@ cp "$script_dir/android_numpy_cross.ini" \
 
 export ANDROID_HOME
 python_prefix="$python_source/cross-build/$host/prefix"
-if [[ ! -f "$python_prefix/lib/libpython3.13.so" ]]; then
-    "$python_source/Android/android.py" build "$host"
-fi
 build_python="$python_source/cross-build/build/python"
 if [[ ! -x "$build_python" ]]; then
-    echo "CPython host build did not produce an executable build Python." >&2
-    exit 1
+    "$python_source/Android/android.py" build build
+fi
+if [[ ! -f "$python_prefix/lib/libpython3.13.so" ]]; then
+    "$python_source/Android/android.py" build "$host"
 fi
 
 cibw_environment="$work_root/cibuildwheel-${CIBUILDWHEEL_VERSION}"
@@ -158,8 +157,7 @@ find "$staging" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
     --cpython-api "$CPYTHON_ANDROID_API" \
     --minimum-api "$minimum_api" \
     --ndk-version "$CPYTHON_NDK_VERSION" \
-    --source-url "$PYTHON_URL" \
-    --source-sha256 "$PYTHON_SHA256" >/dev/null
+    --source-url "$PYTHON_URL" >/dev/null
 "$build_python" "$script_dir/android_python_runtime.py" verify "$staging" \
     --abi "$abi" \
     --application-minimum-api 26 >/dev/null
