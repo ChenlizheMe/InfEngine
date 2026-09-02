@@ -149,17 +149,13 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self._finish_progress()
 
-        if self.engine:
-            try:
-                self.engine.set_game_camera_enabled(True)
-            except Exception as _exc:
-                pass
-            try:
-                ne = self.engine.get_native_engine()
-                if ne:
-                    ne.request_full_speed_frame()
-            except Exception as _exc:
-                pass
+        if self.engine is None:
+            raise RuntimeError("Editor startup completed without an Engine")
+        self.engine.set_game_camera_enabled(True)
+        native = self.engine.get_native_engine()
+        if native is None:
+            raise RuntimeError("Editor startup completed without a native Engine")
+        native.request_full_speed_frame()
 
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""
@@ -235,23 +231,19 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         thread — a multi-second stall. Moving it here folds the cost into
         the splash screen, where the launcher already shows progress.
         """
-        if not self.engine:
-            return
+        if self.engine is None:
+            raise RuntimeError("Builtin pipeline prewarm requires an Engine")
         native = self.engine.get_native_engine()
         if native is None:
-            return
-        try:
-            from Infernux.lib import AssetRegistry
-        except Exception as exc:
-            Debug.log_suppressed("EditorBootstrap.builtin_pipeline_prewarm.import", exc)
-            return
+            raise RuntimeError("Builtin pipeline prewarm requires a native Engine")
+        from Infernux.lib import AssetRegistry
+
+        registry = AssetRegistry.instance()
         for name in ("DefaultLit", "SkyboxProcedural"):
-            try:
-                material = AssetRegistry.instance().get_builtin_material(name)
-                if material is not None:
-                    native.refresh_material_pipeline(material)
-            except Exception as exc:
-                Debug.log_suppressed(f"EditorBootstrap.builtin_pipeline_prewarm[{name}]", exc)
+            material = registry.get_builtin_material(name)
+            if material is None:
+                raise RuntimeError(f"Required builtin material is unavailable: {name}")
+            native.refresh_material_pipeline(material)
 
     def _create_managers(self):
         from Infernux.engine.interaction import EditorInteractionCore
