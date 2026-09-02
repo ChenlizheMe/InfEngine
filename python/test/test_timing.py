@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 import time as stdlib_time
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +103,26 @@ class TestTimeProperties:
             Time.time_scale = -5.0
         with pytest.raises(ValueError, match="finite"):
             Time.time_scale = float("nan")
+
+    def test_time_scale_setter_exposes_loaded_editor_sync_failure(
+        self,
+        monkeypatch,
+    ):
+        class BrokenPlayModeManager:
+            @staticmethod
+            def instance():
+                raise RuntimeError("editor state unavailable")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Infernux.engine.play_mode",
+            SimpleNamespace(PlayModeManager=BrokenPlayModeManager),
+        )
+
+        with pytest.raises(RuntimeError, match="editor state unavailable"):
+            Time.time_scale = 0.5
+
+        assert Time._time_scale == 1.0
 
     def test_fixed_delta_time_setter_is_native_and_strict(self):
         Time.fixed_delta_time = 0.01
