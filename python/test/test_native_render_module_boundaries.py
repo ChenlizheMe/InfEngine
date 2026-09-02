@@ -510,7 +510,7 @@ def test_scene_picking_pass_publishes_dynamic_viewport_before_any_draw() -> None
     picking = (RENDERER / "ScenePickingService.cpp").read_text(encoding="utf-8")
     record = _function_body(picking, "void ScenePickingService::Record")
 
-    begin = record.index("dynamicCommands.begin")
+    begin = record.index("m_dynamicRenderingCommands.begin")
     viewport = record.index("vkCmdSetViewport", begin)
     scissor = record.index("vkCmdSetScissor", viewport)
     geometry = record.index("DrawSceneFiltered", scissor)

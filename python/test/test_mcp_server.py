@@ -409,6 +409,7 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
 def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
     from Infernux.core.assets import AssetManager
     from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui import project_file_ops
     from Infernux.engine.undo import UndoManager
     from Infernux.host import MainThreadCommandQueue
     from Infernux.plugins import PluginManager
@@ -426,6 +427,19 @@ def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
     previous_undo = UndoManager._instance
     core = EditorInteractionCore()
     core.project_assets.configure(str(project_root), database)
+
+    def create_asset(kind, directory, asset_name, _variant):
+        assert kind == "material"
+        return project_file_ops.create_material(directory, asset_name, database)
+
+    core.project_asset_interactions.configure(
+        unique_name=project_file_ops.get_unique_name,
+        create=create_asset,
+        open_asset=lambda *_args: True,
+        reveal=lambda *_args: True,
+        read_external_clipboard=lambda: (),
+        request_delete=lambda paths, callback: callback(list(paths)),
+    )
     undo = UndoManager(core.action_journal)
     manager = PluginManager(str(project_root), engine=engine)
     PluginManager._instance = manager
