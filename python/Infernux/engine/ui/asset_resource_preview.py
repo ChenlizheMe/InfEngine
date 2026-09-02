@@ -13,7 +13,6 @@ import time
 import zlib
 from typing import Any, Optional
 
-from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import safe_mtime_ns
 from Infernux.core.asset_types import IMAGE_EXTENSIONS, MESH_EXTENSIONS
@@ -44,22 +43,10 @@ def _invalidate_mtime_cache(path: str) -> None:
 
 
 def _resolve_native_engine(panel: Any) -> Any:
-    try:
-        from Infernux.engine.ui.editor_services import EditorServices
+    from Infernux.engine.ui.editor_services import EditorServices
 
-        svc = EditorServices.instance()
-        native = svc.native_engine if svc else None
-        if native:
-            return native
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-
-    if panel is not None and hasattr(panel, "get_native_engine"):
-        try:
-            return panel.get_native_engine()
-        except Exception as exc:
-            Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return None
+    _ = panel
+    return EditorServices.instance().native_engine
 
 
 def _try_get_cpp_mesh_preview(native: Any, norm_path: str) -> int:
@@ -70,25 +57,17 @@ def _try_get_cpp_mesh_preview(native: Any, norm_path: str) -> int:
     # Prefab/model previews are dependency products.  The AssetManager stamp
     # advances when an in-memory material or imported dependency changes, so a
     # selected prefab refreshes without polling or ordering by wall-clock mtime.
-    try:
-        from Infernux.core.assets import AssetManager
+    from Infernux.core.assets import AssetManager
 
-        dependency_stamp = AssetManager.preview_dependency_signature(norm_path)
-    except (ImportError, RuntimeError, AttributeError, TypeError, ValueError):
-        dependency_stamp = 0
-    try:
-        if hasattr(native, "pump_preview_tasks"):
-            native.pump_preview_tasks()
-        return int(
-            native.query_or_schedule_mesh_preview(
-                cache_key,
-                norm_path,
-                int(dependency_stamp),
-            )
+    dependency_stamp = AssetManager.preview_dependency_signature(norm_path)
+    native.pump_preview_tasks()
+    return int(
+        native.query_or_schedule_mesh_preview(
+            cache_key,
+            norm_path,
+            int(dependency_stamp),
         )
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return 0
+    )
 
 
 def _try_get_cpp_texture_preview(native: Any, norm_path: str,
@@ -141,17 +120,13 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
     content_stamp = (image_mtime ^ ((meta_mtime * 2654435761) & 0xFFFFFFFFFFFFFFFF)) & 0xFFFFFFFFFFFFFFFF
     content_stamp ^= (int(settings_stamp) << 32) | int(settings_stamp)
 
-    try:
-        tex_id, w, h = native.query_or_schedule_texture_preview(
-            cache_key, norm_path, int(content_stamp), nearest=bool(nearest), srgb=bool(srgb),
-            max_size=max_size, texture_format=texture_format, texture_type=texture_type,
-            authoring=authoring, pump=True)
-        if authoring:
-            _AUTHORING_PREVIEW_KEYS.add(cache_key)
-        return (int(tex_id), int(w), int(h))
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return (0, 0, 0)
+    tex_id, w, h = native.query_or_schedule_texture_preview(
+        cache_key, norm_path, int(content_stamp), nearest=bool(nearest), srgb=bool(srgb),
+        max_size=max_size, texture_format=texture_format, texture_type=texture_type,
+        authoring=authoring, pump=True)
+    if authoring:
+        _AUTHORING_PREVIEW_KEYS.add(cache_key)
+    return (int(tex_id), int(w), int(h))
 
 
 def ensure_imported_texture_preview(file_path: str) -> bool:
@@ -160,25 +135,20 @@ def ensure_imported_texture_preview(file_path: str) -> bool:
     if native is None or not file_path:
         return False
     norm_path = resolved_path(file_path)
-    try:
-        if hasattr(native, "poll_gpu_completions"):
-            native.poll_gpu_completions()
-        texture_id, _, _ = native.query_or_schedule_texture_preview(
-            f"tex|{norm_path}",
-            norm_path,
-            0,
-            nearest=False,
-            srgb=False,
-            max_size=65536,
-            texture_format="auto",
-            texture_type="default",
-            authoring=True,
-            pump=True,
-        )
-        return int(texture_id or 0) != 0
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-        return False
+    native.poll_gpu_completions()
+    texture_id, _, _ = native.query_or_schedule_texture_preview(
+        f"tex|{norm_path}",
+        norm_path,
+        0,
+        nearest=False,
+        srgb=False,
+        max_size=65536,
+        texture_format="auto",
+        texture_type="default",
+        authoring=True,
+        pump=True,
+    )
+    return int(texture_id or 0) != 0
 
 
 def _try_get_cpp_material_preview_texture(native: Any, norm_path: str,
@@ -194,23 +164,15 @@ def _try_get_cpp_material_preview_texture(native: Any, norm_path: str,
 
     cache_key = f"mat|{norm_path}"
     authoring = bool(material_json)
-    try:
-        if hasattr(native, "pump_preview_tasks"):
-            native.pump_preview_tasks()
-        if hasattr(native, 'query_or_schedule_material_preview'):
-            tex_id = int(native.query_or_schedule_material_preview(
-                cache_key, norm_path, material_json, int(file_mtime_hint), authoring))
-            if authoring:
-                _AUTHORING_PREVIEW_KEYS.add(cache_key)
-            if tex_id == 0 and hasattr(native, "pump_preview_tasks") and hasattr(native, "get_material_preview_texture_id"):
-                native.pump_preview_tasks()
-                tex_id = int(native.get_material_preview_texture_id(cache_key) or 0)
-            return tex_id
-        # Fallback for older native builds without unified API
-        return int(native.get_material_preview_texture_id(cache_key) or 0)
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return 0
+    native.pump_preview_tasks()
+    tex_id = int(native.query_or_schedule_material_preview(
+        cache_key, norm_path, material_json, int(file_mtime_hint), authoring))
+    if authoring:
+        _AUTHORING_PREVIEW_KEYS.add(cache_key)
+    if tex_id == 0:
+        native.pump_preview_tasks()
+        tex_id = int(native.get_material_preview_texture_id(cache_key) or 0)
+    return tex_id
 
 
 def get_resource_preview_texture_id(panel: Any, file_path: str, preview_size: int = 128,
@@ -346,13 +308,10 @@ def invalidate_resource_preview(file_path: str) -> None:
         return
 
     ext = os.path.splitext(norm)[1].lower()
-    try:
-        if ext in _IMAGE_EXTS:
-            native.invalidate_texture_preview_task(f"tex|{norm}")
-        if ext in _MATERIAL_EXTS:
-            native.invalidate_material_preview_task(f"mat|{norm}")
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    if ext in _IMAGE_EXTS:
+        native.invalidate_texture_preview_task(f"tex|{norm}")
+    if ext in _MATERIAL_EXTS:
+        native.invalidate_material_preview_task(f"mat|{norm}")
 
 
 def invalidate_live_texture_preview(file_path: str) -> None:
@@ -364,12 +323,9 @@ def invalidate_live_texture_preview(file_path: str) -> None:
     native = _resolve_native_engine(None)
     if native is None or not file_path:
         return
-    try:
-        key = f"tex|{resolved_path(file_path)}"
-        native.release_preview_authoring(key)
-        _AUTHORING_PREVIEW_KEYS.discard(key)
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    key = f"tex|{resolved_path(file_path)}"
+    native.release_preview_authoring(key)
+    _AUTHORING_PREVIEW_KEYS.discard(key)
 
 
 def invalidate_live_material_preview(file_path: str) -> None:
@@ -381,12 +337,9 @@ def invalidate_live_material_preview(file_path: str) -> None:
     native = _resolve_native_engine(None)
     if native is None or not file_path:
         return
-    try:
-        key = f"mat|{resolved_path(file_path)}"
-        native.release_preview_authoring(key)
-        _AUTHORING_PREVIEW_KEYS.discard(key)
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    key = f"mat|{resolved_path(file_path)}"
+    native.release_preview_authoring(key)
+    _AUTHORING_PREVIEW_KEYS.discard(key)
 
 
 def release_all_preview_authoring() -> None:
@@ -395,31 +348,20 @@ def release_all_preview_authoring() -> None:
     if not keys:
         return
     native = _resolve_native_engine(None)
-    try:
-        if native is None:
-            return
-        for key in keys:
-            try:
-                native.release_preview_authoring(key)
-            except Exception as exc:
-                Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    finally:
-        # Ownership is a Python-side session fact as well as a native fact.
-        # Do not retain keys when the native bridge is unavailable (for
-        # example during teardown or an isolated authoring test), otherwise a
-        # later session can inherit stale Inspector ownership.
-        _AUTHORING_PREVIEW_KEYS.difference_update(keys)
+    if native is None:
+        _AUTHORING_PREVIEW_KEYS.clear()
+        return
+    for key in keys:
+        native.release_preview_authoring(key)
+        _AUTHORING_PREVIEW_KEYS.discard(key)
 
 
 def invalidate_all_resource_previews() -> None:
-    """Best-effort flush point for native previews.
+    """Flush queued native preview work.
 
     Native layer currently exposes per-resource invalidation only, so we just
     pump pending tasks to converge queued work.
     """
     native = _resolve_native_engine(None)
     if native is not None:
-        try:
-            native.pump_preview_tasks()
-        except Exception as exc:
-            Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+        native.pump_preview_tasks()

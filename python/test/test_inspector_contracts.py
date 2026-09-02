@@ -1246,6 +1246,44 @@ def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
     assert native.released == [f"tex|{os.path.normpath(path)}"]
 
 
+def test_texture_preview_query_failure_is_not_suppressed(tmp_path):
+    from Infernux.engine.ui import asset_resource_preview
+
+    path = tmp_path / "Broken.png"
+    path.write_bytes(b"preview-source")
+
+    class _Native:
+        @staticmethod
+        def query_or_schedule_texture_preview(*_args, **_kwargs):
+            raise RuntimeError("preview device failure")
+
+    with pytest.raises(RuntimeError, match="preview device failure"):
+        asset_resource_preview._try_get_cpp_texture_preview(
+            _Native(), str(path), TextureImportSettings()
+        )
+
+
+def test_preview_authoring_release_failure_preserves_owner(monkeypatch):
+    from Infernux.engine.ui import asset_resource_preview
+
+    class _Native:
+        @staticmethod
+        def release_preview_authoring(_key):
+            raise RuntimeError("preview release failure")
+
+    key = "mat|Assets/Broken.mat"
+    asset_resource_preview._AUTHORING_PREVIEW_KEYS.add(key)
+    monkeypatch.setattr(
+        asset_resource_preview, "_resolve_native_engine", lambda _panel: _Native()
+    )
+    try:
+        with pytest.raises(RuntimeError, match="preview release failure"):
+            asset_resource_preview.release_all_preview_authoring()
+        assert key in asset_resource_preview._AUTHORING_PREVIEW_KEYS
+    finally:
+        asset_resource_preview._AUTHORING_PREVIEW_KEYS.discard(key)
+
+
 def test_material_undo_snapshot_is_decoded_only_when_edit_occurs():
     import Infernux.engine.ui.inspector_material as module
 
