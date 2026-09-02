@@ -152,7 +152,11 @@ class AssetDatabase
     [[nodiscard]] bool IsOwnerThread() const;
 
     /// @brief Persist the current derived index if runtime CRUD made it dirty.
-    void FlushDerivedIndex();
+    /// @brief Persist a dirty derived AssetIndex. With waitForPendingScan set
+    /// to false (engine shutdown), a still-running background scan skips the
+    /// flush instead of blocking teardown; the next startup revalidates the
+    /// cache regardless.
+    void FlushDerivedIndex(bool waitForPendingScan = true);
 
     /// @brief Add an extra directory to scan during Refresh (e.g. Library/Resources).
     void AddScanRoot(const std::string &path);
