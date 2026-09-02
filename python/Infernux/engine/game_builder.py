@@ -130,23 +130,6 @@ def _load_bootstrap_native_sources(final_dir: str) -> dict[str, str]:
     return sources
 
 
-def _ensure_video_splash_packages() -> None:
-    try:
-        import imageio.v3  # noqa: F401
-        import av  # noqa: F401
-        return
-    except ImportError:
-        Debug.log_internal(
-            "Video splash dependencies missing — installing imageio and av automatically..."
-        )
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "imageio", "av", "--quiet"],
-        )
-
-    import imageio.v3  # noqa: F401
-    import av  # noqa: F401
-
-
 _BuildCancelled = BuildCancelled
 
 
@@ -605,7 +588,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 f"[Build {pct:.0%}] {msg}  (prev stage {elapsed:.2f}s, "
                 f"total {now - build_start:.1f}s)"
             )
-            Debug.log_internal(log_msg)
             _blog(log_msg)
 
         try:
@@ -807,9 +789,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         from Infernux.engine.player_package_audit import audit_player_package
 
         audit_player_package(final_dir, write_manifest=True)
-
-        # Log per-directory size breakdown so the user sees where size goes
-        self._report_build_size(final_dir, _blog)
 
         final_dir = self._commit_output_transaction(final_dir)
 
@@ -1682,8 +1661,6 @@ finally:
         final_dir = self.output_dir
         os.makedirs(final_dir, exist_ok=True)
 
-        _move_t0 = time.perf_counter()
-
         if sys.platform == "win32":
             # robocopy /MOVE /E is dramatically faster than per-item
             # shutil.move for large directory trees (native NTFS ops).
@@ -1697,18 +1674,7 @@ finally:
                 creationflags=0x08000000,
             )
             if rc >= 8:
-                Debug.log_warning(
-                    f"robocopy /MOVE failed (exit {rc}), falling back to Python move"
-                )
-                for item in os.listdir(dist_dir):
-                    src = os.path.join(dist_dir, item)
-                    dst = os.path.join(final_dir, item)
-                    if os.path.exists(dst):
-                        if os.path.isdir(dst):
-                            shutil.rmtree(dst)
-                        else:
-                            os.remove(dst)
-                    shutil.move(src, dst)
+                raise RuntimeError(f"robocopy /MOVE failed with exit code {rc}")
         else:
             for item in os.listdir(dist_dir):
                 src = os.path.join(dist_dir, item)
@@ -1728,10 +1694,6 @@ finally:
         shutil.copy2(host, game_executable)
         if sys.platform != "win32":
             os.chmod(game_executable, os.stat(game_executable).st_mode | 0o111)
-
-        Debug.log_internal(
-            f"  moved dist to output in {time.perf_counter() - _move_t0:.2f}s"
-        )
 
         # Remove the now-empty staging parent
         staging_parent = os.path.dirname(dist_dir)
@@ -2866,8 +2828,6 @@ finally:
         if not os.path.isdir(assets_dir):
             return
 
-        _compile_t0 = time.perf_counter()
-        _compile_count = 0
         data_dir = os.path.join(final_dir, "Data")
         guid_map: dict[str, str] = {}
         project_assets = os.path.join(self.project_path, "Assets")
@@ -2919,7 +2879,6 @@ finally:
             for fname in files:
                 if fname.endswith(".py"):
                     py_path = os.path.join(root, fname)
-                    _compile_count += 1
                     try:
                         with open(py_path, "r", encoding="utf-8") as sf:
                             source_text = sf.read()
@@ -2945,9 +2904,6 @@ finally:
                             if embedded_source is not None:
                                 with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
                                     compiled_source.write(embedded_source)
-                                Debug.log_internal(
-                                    f"  embedded Typed HIR kernels: {fname}"
-                                )
                     except ValueError as exc:
                         raise RuntimeError(
                             f"auto_parallel compilation rejected for {fname}: {exc}"
@@ -2960,11 +2916,6 @@ finally:
                         doraise=True,
                     )
                     os.remove(py_path)
-
-        Debug.log_internal(
-            f"  compiled {_compile_count} scripts in "
-            f"{time.perf_counter() - _compile_t0:.2f}s"
-        )
 
         # Write manifest
         if guid_map:
@@ -3249,11 +3200,10 @@ finally:
                 ["cmd", "/c", "rd", "/s", "/q", path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=True,
             )
-        if os.path.isdir(path):
-            shutil.rmtree(path, ignore_errors=True)
-        if os.path.exists(path):
-            Debug.log_internal(f"Failed to remove packed content tree: {path}")
+        else:
+            shutil.rmtree(path)
 
     @staticmethod
     def _park_player_paths(paths: list[str], park_root: str) -> list[tuple[str, str]]:
@@ -3397,7 +3347,6 @@ finally:
         files: list[tuple[str, str]] = []
         deferred_sources: list[str] = []
         deferred_source_set: set[str] = set()
-        source_bytes = 0
         bootstrap_root_names = {
             "_infernuxbootstrap.pyd",
             "_infernuxplayer.pyd",
@@ -3464,7 +3413,6 @@ finally:
             files.append((f"stdlib/{filename}", source_path))
             deferred_sources.append(source_path)
             deferred_source_set.add(source_path)
-            source_bytes += os.path.getsize(source_path)
         for payload_root in roots:
             if not os.path.isdir(payload_root):
                 continue
@@ -3508,10 +3456,9 @@ finally:
                         # runtime icon as well creates a second window-icon owner.
                         continue
                     files.append((portable_source, source_path))
-                    source_bytes += os.path.getsize(source_path)
         if not files:
             raise RuntimeError("Runtime.inxrt contains no native runtime payload")
-        native_manifest = self._write_finalize_pack(
+        self._write_finalize_pack(
             files,
             archive_path,
             message="Packing core runtime data",
@@ -3529,12 +3476,6 @@ finally:
         # The source-less Infernux package and native closure now live only
         # inside Runtime.inxrt. Do not leave an empty package directory behind.
         self._remove_empty_directory_tree(os.path.join(final_dir, "Infernux"))
-        ratio = native_manifest["archive_bytes"] / max(1, source_bytes)
-        Debug.log_internal(
-            f"Packed Runtime.inxrt: "
-            f"{native_manifest['archive_bytes'] / (1024 * 1024):.1f} MB "
-            f"({ratio:.1%} of {source_bytes / (1024 * 1024):.1f} MB)"
-        )
 
     def _pack_player_bootstrap_archive(
         self,
@@ -3668,7 +3609,7 @@ finally:
         sources.append(
             (BOOTSTRAP_NATIVE_MANIFEST_FILENAME, bootstrap_native_manifest)
         )
-        native_manifest = self._write_finalize_pack(
+        self._write_finalize_pack(
             sources,
             archive_path,
             message="Packing Player bootstrap",
@@ -3688,10 +3629,6 @@ finally:
             for root_foundation in Path(final_dir).glob("libInfernuxFoundation.so*"):
                 if root_foundation.is_file():
                     root_foundation.unlink()
-        Debug.log_internal(
-            "Packed Bootstrap.inxrt: "
-            f"{native_manifest['archive_bytes'] / (1024 * 1024):.1f} MB"
-        )
 
     def _pack_parallel_runtime_archive(self, final_dir: str) -> None:
         """Move the optional native parallel module into the final layout."""
@@ -3773,7 +3710,6 @@ finally:
         archive_path = os.path.join(data_root, self._CONTENT_ARCHIVE_FILENAME)
         files: list[tuple[str, str]] = []
         retained_paths: list[str] = []
-        source_bytes = 0
         forbidden_plaintext: list[str] = []
         forbidden_direct_payloads: list[str] = []
         catalog_payloads: set[str] = set()
@@ -3863,7 +3799,6 @@ finally:
                 if self._runtime_catalog_payload_required(portable_relative):
                     catalog_payloads.add(portable_relative)
                 files.append((relative, path))
-                source_bytes += os.path.getsize(path)
                 processed += 1
                 _yield_editor_thread()
                 now = time.perf_counter()
@@ -3897,7 +3832,7 @@ finally:
             "Compressing project content",
             0.9829,
         )
-        native_manifest = self._write_finalize_pack(
+        self._write_finalize_pack(
             files,
             archive_path,
             message="Compressing project content",
@@ -3920,13 +3855,6 @@ finally:
             retained_paths,
             on_progress=on_progress,
             cancel_event=cancel_event,
-        )
-
-        ratio = native_manifest["archive_bytes"] / max(1, source_bytes)
-        Debug.log_internal(
-            f"Packed {native_manifest['file_count']} content files into "
-            f"{native_manifest['archive_bytes'] / (1024 * 1024):.1f} MB "
-            f"({ratio:.1%} of {source_bytes / (1024 * 1024):.1f} MB)"
         )
 
     def _rewrite_player_document_paths(self, path: str, suffix: str) -> None:
@@ -4385,7 +4313,6 @@ finally:
 
     def _cleanup_dist(self, final_dir: str):
         """Remove editor-only and redundant files from the build output."""
-        removed_bytes = 0
         dirs_to_remove: set[str] = set()
         files_to_remove: set[str] = set()
 
@@ -4492,17 +4419,9 @@ finally:
         # ── Execute removals ─────────────────────────────────────────
         # 1. Remove individual files (fast, no subprocess)
         for f in sorted(files_to_remove):
-            removed_bytes += os.path.getsize(f)
             os.remove(f)
 
-        # 2. Count bytes in queued dirs, then batch-remove
-        for d in sorted(dirs_to_remove):
-            if not os.path.isdir(d):
-                continue
-            for r, _, fs in os.walk(d):
-                for fname in fs:
-                    removed_bytes += os.path.getsize(os.path.join(r, fname))
-
+        # 2. Batch-remove queued directories.
         for d in sorted(dirs_to_remove, reverse=True):
             if os.path.isdir(d):
                 shutil.rmtree(d)
@@ -4512,9 +4431,6 @@ finally:
         # runtime resources have been packed into Runtime.inxrt.
         self._remove_empty_directory_tree(os.path.join(final_dir, "Infernux"))
 
-        mb = removed_bytes / (1024 * 1024)
-        Debug.log_internal(f"Cleaned {mb:.1f} MB of redundant files from build")
-
     @staticmethod
     def _cleanup_temp(boot_script: str):
         """Synchronously remove the temporary boot script directory."""
@@ -4522,38 +4438,3 @@ finally:
         if not os.path.isdir(boot_dir):
             return
         shutil.rmtree(boot_dir)
-
-    # ------------------------------------------------------------------
-    # Build size report
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _report_build_size(final_dir: str, _blog: Callable[[str], None]) -> None:
-        """Log a per-directory size breakdown of the final build output."""
-        total = 0
-        entries: list[tuple[str, int]] = []
-
-        for item in os.scandir(final_dir):
-            if item.is_dir(follow_symlinks=False):
-                sz = 0
-                for root, _, files in os.walk(item.path):
-                    for f in files:
-                        sz += os.path.getsize(os.path.join(root, f))
-                entries.append((item.name + "/", sz))
-            elif item.is_file(follow_symlinks=False):
-                sz = item.stat().st_size
-                entries.append((item.name, sz))
-            else:
-                continue
-            total += sz
-
-        entries.sort(key=lambda x: x[1], reverse=True)
-        lines = [f"Build size report — total {total / (1024*1024):.1f} MB"]
-        for name, sz in entries:
-            mb = sz / (1024 * 1024)
-            pct = (sz / total * 100) if total else 0
-            if mb >= 0.1:
-                lines.append(f"  {mb:7.1f} MB  {pct:4.1f}%  {name}")
-        report = "\n".join(lines)
-        Debug.log_internal(report)
-        _blog(report)
