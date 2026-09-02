@@ -38,25 +38,20 @@ def _get_asset_database():
 
 
 def _resolve_clip_path(state: AnimState) -> Optional[str]:
-    """Resolve an AnimState's clip reference to an absolute file path."""
-    # Try GUID first
-    if state.clip_guid:
-        db = _get_asset_database()
-        path = db.get_path_from_guid(state.clip_guid)
-        return path if path and os.path.isfile(path) else None
-    if state.clip_path and os.path.isfile(state.clip_path):
-        return state.clip_path
+    """Resolve an AnimState's clip exclusively through its asset GUID."""
+    if not state.clip_guid:
+        return None
+    path = _get_asset_database().get_path_from_guid(state.clip_guid)
+    if path and os.path.isfile(path):
+        return path
     return None
 
 
 def _resolve_timeline_path(state: AnimState) -> Optional[str]:
     """Resolve a timeline state's ``.animtimeline`` asset to a disk path."""
-    guid = getattr(state, "timeline_guid", "") or ""
-    path = (getattr(state, "timeline_path", "") or "").strip()
-    if guid:
-        db = _get_asset_database()
-        return db.get_path_from_guid(guid) or None
-    return path or None
+    if not state.timeline_guid:
+        return None
+    return _get_asset_database().get_path_from_guid(state.timeline_guid) or None
 
 
 @require_component(SpriteRenderer)
@@ -321,18 +316,11 @@ class SpiritAnimator(InxComponent):
 
     @staticmethod
     def _state_clip_reference_path(state: AnimState) -> str:
-        if state.clip_guid:
-            database = _get_asset_database()
-            if database is not None:
-                try:
-                    path = str(
-                        database.get_path_from_guid(state.clip_guid) or ""
-                    ).strip()
-                    if path:
-                        return path
-                except (KeyError, RuntimeError, TypeError, ValueError):
-                    pass
-        return str(state.clip_path or "").strip()
+        if not state.clip_guid:
+            return ""
+        return str(
+            _get_asset_database().get_path_from_guid(state.clip_guid) or ""
+        ).strip()
 
     def _apply_current_clip_frame(self) -> None:
         clip = self._current_clip
@@ -534,13 +522,13 @@ class SpiritAnimator(InxComponent):
         tl = None
         path = _resolve_timeline_path(state)
         if path:
-            try:
-                from Infernux.core.animation_timeline import AnimationTimeline
-                tl = AnimationTimeline.load(path)
-            except Exception:
-                tl = None
+            from Infernux.core.animation_timeline import AnimationTimeline
+            tl = AnimationTimeline.load(path)
             if tl is None:
-                Debug.log_warning(f"[SpiritAnimator] Failed to load timeline for state '{state.name}': {path}")
+                raise RuntimeError(
+                    f"SpiritAnimator could not load timeline for state "
+                    f"{state.name!r}: {path}"
+                )
         self._timeline_cache[key] = tl
         return tl
 

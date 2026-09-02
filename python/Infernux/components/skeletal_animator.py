@@ -8,7 +8,6 @@ state and pushing playback time to native code for an upcoming skinning path.
 
 from __future__ import annotations
 
-import os
 from typing import Dict, Optional
 
 from Infernux.components.component import InxComponent
@@ -37,36 +36,26 @@ def _get_asset_database():
     return AssetManager.require_asset_database()
 
 
-def _resolve_clip_path_from(guid: str, path_hint: str) -> Optional[str]:
-    """Resolve a clip GUID / path-hint to a usable disk path (or embedded take id)."""
-    if guid:
-        db = _get_asset_database()
-        return resolve_disk_path_for_guid_string(db, guid) or None
-    raw = (path_hint or "").strip()
-    # Project panel: embedded FBX take as "<guid>::subanim:<index>" (not a file path).
-    if raw and "::subanim:" in raw:
-        return raw
-    if raw and os.path.isfile(raw):
-        return raw
-    return None
+def _resolve_clip_path_from(guid: str) -> Optional[str]:
+    """Resolve a clip exclusively through its asset GUID."""
+    if not guid:
+        return None
+    return resolve_disk_path_for_guid_string(_get_asset_database(), guid) or None
 
 
 def _resolve_clip_path(state: AnimState) -> Optional[str]:
-    return _resolve_clip_path_from(state.clip_guid, state.clip_path)
+    return _resolve_clip_path_from(state.clip_guid)
 
 
 def _resolve_clip_b_path(state: AnimState) -> Optional[str]:
-    return _resolve_clip_path_from(getattr(state, "clip_b_guid", ""), getattr(state, "clip_b_path", ""))
+    return _resolve_clip_path_from(state.clip_b_guid)
 
 
 def _resolve_timeline_path(state: AnimState) -> Optional[str]:
     """Resolve a timeline state's ``.animtimeline`` asset to a disk path."""
-    guid = getattr(state, "timeline_guid", "") or ""
-    path = (getattr(state, "timeline_path", "") or "").strip()
-    if guid:
-        db = _get_asset_database()
-        return db.get_path_from_guid(guid) or None
-    return path or None
+    if not state.timeline_guid:
+        return None
+    return _get_asset_database().get_path_from_guid(state.timeline_guid) or None
 
 
 def _clip_duration_hint(clip: Optional[AnimationClip3D]) -> float:

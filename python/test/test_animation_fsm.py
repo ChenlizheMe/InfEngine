@@ -990,7 +990,7 @@ def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch)
     monkeypatch.setattr(animator_module, "_get_asset_database", lambda: Database())
 
     with pytest.raises(RuntimeError, match="catalog unavailable"):
-        animator_module._resolve_clip_path_from("c" * 32, "stale.animclip3d")
+        animator_module._resolve_clip_path_from("c" * 32)
 
 
 def test_skeletal_animator_does_not_derive_model_identity_from_path():
@@ -1015,14 +1015,24 @@ class TestSpiritAnimatorAssetReload:
             fps=fps,
         )
 
-    def test_clip_hot_reload_preserves_state_progress_and_playback(self, tmp_path):
+    def test_clip_hot_reload_preserves_state_progress_and_playback(
+        self, tmp_path, monkeypatch
+    ):
         import json
+        from Infernux.components import spirit_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
+        clip_guid = "a" * 32
         old_clip = self._clip(4, 4.0)
         path.write_text(json.dumps(old_clip.to_dict()), encoding="utf-8")
+        database = type(
+            "Database",
+            (),
+            {"get_path_from_guid": staticmethod(lambda guid: str(path) if guid == clip_guid else "")},
+        )()
+        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
 
-        state = AnimState(name="Walk", clip_path=str(path))
+        state = AnimState(name="Walk", clip_guid=clip_guid, clip_path=str(path))
         animator = SpiritAnimator()
         animator._fsm = AnimStateMachine(
             states=[state],
@@ -1062,13 +1072,23 @@ class TestSpiritAnimatorAssetReload:
         assert renderer.frame_id == replacement.frames[4].sprite_frame_id
         assert renderer.sync_count == 1
 
-    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(self, tmp_path):
+    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(
+        self, tmp_path, monkeypatch
+    ):
         import json
+        from Infernux.components import spirit_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
+        clip_guid = "b" * 32
         clip = self._clip(2, 2.0)
         path.write_text(json.dumps(clip.to_dict()), encoding="utf-8")
-        state = AnimState(name="Walk", clip_path=str(path))
+        database = type(
+            "Database",
+            (),
+            {"get_path_from_guid": staticmethod(lambda guid: str(path) if guid == clip_guid else "")},
+        )()
+        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
+        state = AnimState(name="Walk", clip_guid=clip_guid, clip_path=str(path))
         animator = SpiritAnimator()
         animator._fsm = AnimStateMachine(states=[state], default_state="Walk")
         animator._clip_cache = {"Walk": clip}
@@ -1098,11 +1118,20 @@ class TestSpiritAnimatorAssetReload:
 
         controller_path = tmp_path / "controller.animfsm"
         timeline_path = tmp_path / "motion.animtimeline"
+        timeline_guid = "c" * 32
+        from Infernux.components import spirit_animator as animator_module
+        database = type(
+            "Database",
+            (),
+            {"get_path_from_guid": staticmethod(lambda guid: str(timeline_path) if guid == timeline_guid else "")},
+        )()
+        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
         timeline = AnimationTimeline(name="motion", duration=4.0)
         assert timeline.save(str(timeline_path)) is True
         state = AnimState(
             name="Timeline",
             kind="timeline",
+            timeline_guid=timeline_guid,
             timeline_path=str(timeline_path),
         )
         current_fsm = AnimStateMachine(
@@ -1133,6 +1162,7 @@ class TestSpiritAnimatorAssetReload:
                 AnimState(
                     name="Timeline",
                     kind="timeline",
+                    timeline_guid=timeline_guid,
                     timeline_path=str(timeline_path),
                 )
             ],
