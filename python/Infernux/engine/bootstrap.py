@@ -361,12 +361,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         # Pin editor UI icons early so Inspector/object fields never bind
         # descriptors from the unpinned texture-preview LRU cache.
-        try:
-            from Infernux.engine.ui.editor_icons import EditorIcons
+        from Infernux.engine.ui.editor_icons import EditorIcons
 
-            EditorIcons.preload(self.engine.get_native_engine())
-        except Exception as exc:
-            Debug.log_warning(f"EditorIcons preload skipped: {exc}")
+        EditorIcons.preload(self.engine.get_native_engine())
 
     def _load_plugins(self):
         from Infernux.plugins import PluginManager
