@@ -333,13 +333,10 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
 
     # -- Runtime hidden IDs --
     def _get_runtime_hidden_ids():
-        try:
-            mgr = PlayModeManager.instance()
-            if mgr is not None:
-                return mgr.get_runtime_hidden_object_ids()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return set()
+        mgr = PlayModeManager.instance()
+        if mgr is None:
+            raise RuntimeError("Hierarchy runtime visibility requires PlayModeManager")
+        return mgr.get_runtime_hidden_object_ids()
 
     hp.get_runtime_hidden_ids = _get_runtime_hidden_ids
 

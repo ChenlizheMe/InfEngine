@@ -51,19 +51,10 @@ def _collect_material_renderers(items, native_map, obj):
             continue
         wclass = BuiltinComponent._builtin_registry.get(item.type_name)
         if wclass is not None and not isinstance(renderer, BuiltinComponent):
-            try:
-                renderer = wclass._get_or_create_wrapper(renderer, obj)
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            renderer = wclass._get_or_create_wrapper(renderer, obj)
         mat_count = getattr(renderer, 'material_count', 0) or 1
-        try:
-            material_guids = tuple(renderer.get_material_guids() or [])
-        except Exception:
-            material_guids = ()
-        try:
-            slot_names = tuple(renderer.get_material_slot_names() or [])
-        except Exception:
-            slot_names = ()
+        material_guids = tuple(renderer.get_material_guids() or [])
+        slot_names = tuple(renderer.get_material_slot_names() or [])
         renderers.append((renderer, mat_count, material_guids, slot_names))
         signature_parts.append((
             getattr(renderer, 'component_id', id(renderer)),
@@ -78,10 +69,7 @@ def _rebuild_material_entries(renderers):
     for renderer, mat_count, material_guids, slot_names in renderers:
         renderer_type = getattr(renderer, "type_name", "") or ""
         for slot_idx in range(mat_count):
-            try:
-                mat = renderer.get_effective_material(slot_idx)
-            except Exception:
-                mat = None
+            mat = renderer.get_effective_material(slot_idx)
             if mat is None:
                 continue
             if slot_idx < len(slot_names) and slot_names[slot_idx]:
@@ -114,7 +102,6 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
     _material_render_error = {"fingerprint": ""}
 
     def _render_material_sections_live(ctx, obj_id):
-        from Infernux.components.builtin_component import BuiltinComponent
         from Infernux.engine.ui import inspector_material as mat_ui
         from Infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
         from Infernux.engine.ui.theme import Theme, ImGuiCol, ImGuiStyleVar
@@ -191,12 +178,10 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         finally:
             ctx.pop_style_var(2)
 
-        try:
-            native = engine.get_native_engine()
-            if native is not None and hasattr(native, "pump_preview_tasks"):
-                native.pump_preview_tasks()
-        except Exception:
-            pass
+        native = engine.get_native_engine()
+        if native is None:
+            raise RuntimeError("material preview rendering requires the native engine")
+        native.pump_preview_tasks()
 
     def _render_material_sections(ctx, obj_id):
         cached_height = _material_section_heights.get(obj_id, 0.0)
@@ -222,10 +207,7 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
                         f"Inspector remains available: {fingerprint}"
                     )
                     _material_render_error["fingerprint"] = fingerprint
-                try:
-                    ctx.text_wrapped("Material Inspector is temporarily unavailable.")
-                except Exception:
-                    pass
+                ctx.text_wrapped("Material Inspector is temporarily unavailable.")
         finally:
             measured_height = max(0.0, ctx.get_cursor_pos_y() - start_y)
             if measured_height > 0.0:
