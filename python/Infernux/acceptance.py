@@ -388,10 +388,6 @@ class RuntimeAcceptance:
             output = cls._resolve_result_path(manifest, result_path)
             cls._session = _RuntimeAcceptanceSession(manifest, output)
             cls._completion_consumed = False
-            Debug.log(
-                f"[RuntimeAcceptance] begin name={manifest.name!r} "
-                f"tests={len(manifest.tests)} cycles={manifest.cycles} result={output}"
-            )
             return cls._session.snapshot()
 
     @classmethod

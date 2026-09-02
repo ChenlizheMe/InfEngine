@@ -120,15 +120,13 @@ class Engine():
         return aliases.get(text)
 
     def _apply_startup_present_mode(self):
-        raw = (os.environ.get("INFERNUX_PRESENT_MODE")
-               or os.environ.get("_INFERNUX_PRESENT_MODE"))
+        raw = os.environ.get("INFERNUX_PRESENT_MODE")
+        if raw is None:
+            return
         mode = self._parse_present_mode(raw)
         if mode is None:
-            return
-        try:
-            self.set_present_mode(mode)
-        except Exception as exc:
-            Debug.log_warning(f"Failed to apply startup present mode override '{raw}': {exc}")
+            raise ValueError(f"Invalid INFERNUX_PRESENT_MODE value: {raw!r}")
+        self.set_present_mode(mode)
 
     def _apply_startup_play_fps_cap(self):
         raw = os.environ.get("INFERNUX_PLAYER_FPS_CAP")
@@ -136,16 +134,11 @@ class Engine():
             return
         try:
             fps = float(raw)
-        except (TypeError, ValueError):
-            Debug.log_warning(f"Ignoring invalid player FPS cap '{raw}'")
-            return
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid INFERNUX_PLAYER_FPS_CAP value: {raw!r}") from exc
         if not math.isfinite(fps) or fps < 0.0:
-            Debug.log_warning(f"Ignoring invalid player FPS cap '{raw}'")
-            return
-        try:
-            self._engine.set_play_fps_cap(fps)
-        except Exception as exc:
-            Debug.log_warning(f"Failed to apply startup player FPS cap '{raw}': {exc}")
+            raise ValueError(f"Invalid INFERNUX_PLAYER_FPS_CAP value: {raw!r}")
+        self._engine.set_play_fps_cap(fps)
 
     def init_renderer(self, width, height, project_path):
         if self._mode != RuntimeMode.Graphical:
@@ -710,12 +703,6 @@ class Engine():
         status = RuntimeAcceptance._consume_completion()
         if not status:
             return
-        summary = status.get("summary", {})
-        Debug.log(
-            "[RuntimeAcceptance] finished "
-            f"status={status.get('status')} passed={summary.get('passed', 0)}/"
-            f"{summary.get('total', 0)}"
-        )
         if Application.is_player():
             Application.quit(0 if status.get("status") == "passed" else 1)
 
