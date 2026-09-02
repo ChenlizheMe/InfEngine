@@ -183,7 +183,6 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         return nullptr;
     if (!m_vkCore->RefreshPreviewMaterialPipeline(basePreviewMaterial, basePreviewMaterial->GetVertShaderName(),
                                                   basePreviewMaterial->GetFragShaderName(), false)) {
-        INXLOG_DEBUG("GPUMaterialPreview: material domain has no sphere preview pipeline");
         return nullptr;
     }
     ownedPreviewMaterials.push_back(basePreviewMaterial);
@@ -229,7 +228,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                 previewPassMaterials.push_back(backFacePass);
                 previewPassMaterials.push_back(frontFacePass);
             } else {
-                INXLOG_DEBUG("GPUMaterialPreview: transparent two-pass preview unavailable, using original pipeline");
+                return nullptr;
             }
         } else {
             auto singlePass = buildPreviewPass(baseState.cullMode, false);
@@ -238,8 +237,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                 previewPassMaterials.clear();
                 previewPassMaterials.push_back(singlePass);
             } else {
-                INXLOG_DEBUG(
-                    "GPUMaterialPreview: transparent preview alpha override unavailable, using original pipeline");
+                return nullptr;
             }
         }
     }
