@@ -2017,6 +2017,24 @@ def test_native_guid_index_avoids_meta_walk_and_drives_preload_catalog(
     ]
 
 
+def test_native_guid_index_failure_does_not_probe_another_database(
+    tmp_path, monkeypatch
+):
+    project = _project(tmp_path / "project")
+
+    class Engine:
+        @staticmethod
+        def get_asset_database():
+            raise RuntimeError("native catalog unavailable")
+
+    monkeypatch.setattr(
+        "Infernux.plugins.project_index._scan_guid_paths",
+        lambda _root: pytest.fail("native GUID failure fell back to os.walk"),
+    )
+    with pytest.raises(RuntimeError, match="native catalog unavailable"):
+        project_guid_paths(str(project), engine=Engine())
+
+
 def test_static_preload_discovery_imports_only_lifecycle_candidates(tmp_path):
     project = _project(tmp_path / "project")
     marker = project / "ordinary-imported.txt"

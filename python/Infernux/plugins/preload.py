@@ -516,10 +516,6 @@ class PreloadManager:
                 continue
             guid = str(item.get("guid", "")).casefold()
             path = guid_paths.get(guid)
-            if not path and hint:
-                path = resolved_path(
-                    os.path.join(self.project_root, *hint.split("/"))
-                )
             if path and os.path.isfile(path):
                 result[path_key(path)] = path
         return tuple(sorted(result.values(), key=path_key))
@@ -557,18 +553,6 @@ class PreloadManager:
                     continue
                 guid = str(item.get("guid", "")).casefold()
                 path = guid_paths.get(guid)
-                if not path:
-                    destination = str(item.get("path_hint", ""))
-                    path = (
-                        resolved_path(
-                            os.path.join(
-                                self.project_root,
-                                *portable_path(destination).split("/"),
-                            )
-                        )
-                        if destination
-                        else ""
-                    )
                 if not path:
                     continue
                 result[path_key(path)] = package

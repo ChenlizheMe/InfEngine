@@ -54,25 +54,11 @@ def project_guid_paths(
 
 def _asset_database(engine: Any):
     if engine is not None:
-        try:
-            database = engine.get_asset_database()
-            if database is not None:
-                return database
-        except (AttributeError, RuntimeError):
-            pass
-    try:
-        from Infernux.core.assets import AssetManager
+        return engine.get_asset_database()
 
-        if AssetManager._asset_database is not None:
-            return AssetManager._asset_database
-    except Exception:
-        pass
-    try:
-        from Infernux.lib import AssetRegistry
+    from Infernux.core.assets import AssetManager
 
-        return AssetRegistry.instance().get_asset_database()
-    except Exception:
-        return None
+    return AssetManager._asset_database
 
 
 def _scan_guid_paths(project_root: str) -> dict[str, str]:
