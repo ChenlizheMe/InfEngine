@@ -1811,4 +1811,3 @@ class BuildSettingsPanel(EditorPanel):
                 return
         self._scenes.append(stored_path)
         self._save()
-        Debug.log_internal(f"Added scene to build list: {os.path.basename(path)}")

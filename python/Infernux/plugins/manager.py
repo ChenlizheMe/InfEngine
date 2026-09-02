@@ -875,17 +875,11 @@ class PluginManager:
                 f"{exc}"
             ) from exc
 
-        repaired = tuple(
+        return tuple(
             reference
             for reference, requirements in requirements_by_plugin.items()
             if any(requirement in missing for requirement in requirements)
         )
-        if repaired:
-            Debug.log(
-                "Restored Python requirements for installed plugins: "
-                + ", ".join(repaired)
-            )
-        return repaired
 
     def _install_pip_lines(
         self, lines: Iterable[str]

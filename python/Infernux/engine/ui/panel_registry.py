@@ -31,7 +31,6 @@ from contextvars import ContextVar
 from typing import Iterator
 from typing import Callable, Dict, List, Optional, Type, TYPE_CHECKING
 
-from Infernux.debug import Debug
 from Infernux.engine.interaction import (
     PanelInteractionDescriptor,
     PanelInteractionRegistry,
@@ -254,10 +253,6 @@ class PanelRegistry:
             title_key=reg.title_key,
             menu_path=reg.menu_path,
         )
-        Debug.log_internal(
-            f"[PanelRegistry] Registered: {reg.display_name} ({reg.type_id})"
-        )
-
     @classmethod
     def get_registrations(cls) -> List[_PanelRegistration]:
         """Return a copy of the registration list (for introspection)."""
