@@ -6,7 +6,6 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 """
 
 import math
-import os
 from Infernux.lib import InxGUIContext, TextureLoader, InputManager
 from Infernux.engine.i18n import t
 from .editor_panel import EditorPanel
@@ -578,11 +577,6 @@ class SceneViewGizmoMixin:
 
         scene = _SM.instance().get_active_scene()
         if not scene or not self._gizmo_drag_obj_id:
-            if os.environ.get("INFERNUX_UNDO_TRACE") == "1":
-                Debug.log(
-                    "[UndoTrace] gizmo record skipped: "
-                    f"scene={scene is not None} object={self._gizmo_drag_obj_id}"
-                )
             return False
 
         snapshots = getattr(self, "_gizmo_drag_items", {}) or {}
@@ -641,8 +635,6 @@ class SceneViewGizmoMixin:
             changes.append((transform, prop_name, old_value, new_value, desc))
 
         if not changes:
-            if os.environ.get("INFERNUX_UNDO_TRACE") == "1":
-                Debug.log("[UndoTrace] gizmo produced no transform command")
             return False
         # A gizmo gesture owns transforms, not selection. Freeze the selection
         # at pointer-down for both sides of the command so context polling or a

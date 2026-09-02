@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-import os
 import uuid
 from typing import Callable, Optional, Union
 
@@ -220,7 +219,6 @@ class UndoManager:
             cmd.execute()
         except Exception as exc:
             Debug.log_exception(exc)
-            self._debug_dump_stack("execute-failed")
             cmd.dispose()
             return False
         finally:
@@ -378,11 +376,9 @@ class UndoManager:
                     return self.process_pending_replay()
                 if status is ContextRestoreStatus.FAILED:
                     self._pending_replay = None
-                    self._debug_dump_stack(f"{pending.direction}-restore-failed")
                     return status
                 if not self._run_replay_action(pending, compensate=False):
                     self._pending_replay = None
-                    self._debug_dump_stack(f"{pending.direction}-failed")
                     return ContextRestoreStatus.FAILED
                 pending.stage = "finalize"
                 continue
@@ -414,7 +410,6 @@ class UndoManager:
                     self._journal.commit_redo(pending.entry)
                 self._pending_replay = None
                 self._fire_state_changed()
-                self._debug_dump_stack(pending.direction)
                 return ContextRestoreStatus.READY
 
             original_context = (
@@ -560,7 +555,6 @@ class UndoManager:
                 self._user_action_before_context = after_context or self._capture_context()
 
         self._fire_state_changed()
-        self._debug_dump_stack("push")
         return True
 
     def _finish_user_action(self) -> None:
@@ -623,21 +617,6 @@ class UndoManager:
 
         if entries:
             self._fire_state_changed()
-            self._debug_dump_stack("finish-user-action")
-
-    def _debug_dump_stack(self, action: str) -> None:
-        if os.environ.get("INFERNUX_UNDO_TRACE") != "1":
-            return
-        from Infernux.debug import Debug
-
-        parts = []
-        for index, entry in enumerate(self._journal.entries, 1):
-            marker = "" if index <= self._journal.cursor else "(redo) "
-            parts.append(f"{index}: {marker}{entry.action.description}")
-        Debug.log(
-            f"[UndoTrace] {action} pos={self._journal.cursor} "
-            f"total={len(self._journal.entries)} " + " | ".join(parts)
-        )
 
     @staticmethod
     def _active_scene_revision_target():
