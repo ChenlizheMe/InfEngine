@@ -32,20 +32,9 @@ from Infernux.graph.types import ValueType
 
 
 def _get_asset_database():
-    try:
-        from Infernux.core.assets import AssetManager
-        if AssetManager._asset_database is not None:
-            return AssetManager._asset_database
-    except ImportError:
-        pass
-    try:
-        from Infernux.engine.play_mode import PlayModeManager
-        pm = PlayModeManager.instance()
-        if pm and pm._asset_database is not None:
-            return pm._asset_database
-    except ImportError:
-        pass
-    return None
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
 def _resolve_clip_path(state: AnimState) -> Optional[str]:
@@ -53,14 +42,8 @@ def _resolve_clip_path(state: AnimState) -> Optional[str]:
     # Try GUID first
     if state.clip_guid:
         db = _get_asset_database()
-        if db:
-            try:
-                path = db.get_path_from_guid(state.clip_guid)
-                if path and os.path.isfile(path):
-                    return path
-            except Exception:
-                pass
-    # Fallback to stored path
+        path = db.get_path_from_guid(state.clip_guid)
+        return path if path and os.path.isfile(path) else None
     if state.clip_path and os.path.isfile(state.clip_path):
         return state.clip_path
     return None
@@ -72,13 +55,7 @@ def _resolve_timeline_path(state: AnimState) -> Optional[str]:
     path = (getattr(state, "timeline_path", "") or "").strip()
     if guid:
         db = _get_asset_database()
-        if db:
-            try:
-                p = db.get_path_from_guid(guid)
-                if p:
-                    return p
-            except Exception:
-                pass
+        return db.get_path_from_guid(guid) or None
     return path or None
 
 

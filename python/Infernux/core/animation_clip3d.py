@@ -54,13 +54,10 @@ def resolve_disk_path_for_guid_string(adb, guid: str) -> Optional[str]:
     """Resolve an asset file path, accepting compact 32-hex and dashed UUIDs."""
     if not adb or not (guid or "").strip():
         return None
-    try:
-        for g in _iter_guid_lookups(guid):
-            p = adb.get_path_from_guid(g)
-            if p and os.path.isfile(p):
-                return resolved_path(p)
-    except Exception:
-        pass
+    for g in _iter_guid_lookups(guid):
+        p = adb.get_path_from_guid(g)
+        if p and os.path.isfile(p):
+            return resolved_path(p)
     return None
 
 

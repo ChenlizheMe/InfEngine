@@ -39,12 +39,9 @@ def _try_guid_for_model_path(db, path: str) -> str:
             seen.add(p)
             cands.append(p)
     for p in cands:
-        try:
-            g = db.get_guid_from_path(p)
-            if g and str(g).strip():
-                return str(g).strip()
-        except Exception:
-            pass
+        g = db.get_guid_from_path(p)
+        if g and str(g).strip():
+            return str(g).strip()
     return ""
 
 
@@ -56,37 +53,22 @@ def _animation_source_guid(clip: Optional[AnimationClip3D]) -> str:
     if guid:
         return guid
     path = str(getattr(clip, "source_model_path", "") or "").strip()
+    if not path:
+        return ""
     return _try_guid_for_model_path(_get_asset_database(), path)
 
 
 def _get_asset_database():
-    try:
-        from Infernux.core.assets import AssetManager
-        if AssetManager._asset_database is not None:
-            return AssetManager._asset_database
-    except ImportError:
-        pass
-    try:
-        from Infernux.engine.play_mode import PlayModeManager
-        pm = PlayModeManager.instance()
-        if pm and pm._asset_database is not None:
-            return pm._asset_database
-    except ImportError:
-        pass
-    return None
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
 def _resolve_clip_path_from(guid: str, path_hint: str) -> Optional[str]:
     """Resolve a clip GUID / path-hint to a usable disk path (or embedded take id)."""
     if guid:
         db = _get_asset_database()
-        if db:
-            try:
-                p = resolve_disk_path_for_guid_string(db, guid)
-                if p:
-                    return p
-            except Exception:
-                pass
+        return resolve_disk_path_for_guid_string(db, guid) or None
     raw = (path_hint or "").strip()
     # Project panel: embedded FBX take as "<guid>::subanim:<index>" (not a file path).
     if raw and "::subanim:" in raw:
@@ -110,13 +92,7 @@ def _resolve_timeline_path(state: AnimState) -> Optional[str]:
     path = (getattr(state, "timeline_path", "") or "").strip()
     if guid:
         db = _get_asset_database()
-        if db:
-            try:
-                p = db.get_path_from_guid(guid)
-                if p:
-                    return p
-            except Exception:
-                pass
+        return db.get_path_from_guid(guid) or None
     return path or None
 
 

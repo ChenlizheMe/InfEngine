@@ -61,3 +61,15 @@ class SkinnedMeshRenderer(MeshRenderer):
     @property
     def has_animation_takes(self) -> bool:
         return self.animation_take_count > 0
+
+    @property
+    def runtime_animation_time(self) -> float:
+        """Animation time submitted to the native renderer for the current pose."""
+        return float(self._require_cpp_component().runtime_animation_time)
+
+    @property
+    def runtime_animation_normalized_time(self) -> float:
+        """Normalized time submitted to the native renderer for the current pose."""
+        return float(
+            self._require_cpp_component().runtime_animation_normalized_time
+        )

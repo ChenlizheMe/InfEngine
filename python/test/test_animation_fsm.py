@@ -8,6 +8,8 @@ Regression coverage for the animation-audit fixes:
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from Infernux.core.anim_state_machine import (
@@ -110,6 +112,22 @@ def test_skeletal_animator_has_no_same_object_renderer_requirement():
     assert SkinnedMeshRenderer not in tuple(
         getattr(SkeletalAnimator, "_require_components_", ()) or ()
     )
+
+
+def test_skinned_mesh_renderer_exposes_authoritative_runtime_pose_time(monkeypatch):
+    renderer = SkinnedMeshRenderer()
+    native = SimpleNamespace(
+        runtime_animation_time=1.25,
+        runtime_animation_normalized_time=0.625,
+    )
+    monkeypatch.setattr(renderer, "_get_bound_native_component", lambda: native)
+
+    assert renderer.runtime_animation_time == pytest.approx(1.25)
+    assert renderer.runtime_animation_normalized_time == pytest.approx(0.625)
+
+    monkeypatch.setattr(renderer, "_get_bound_native_component", lambda: None)
+    with pytest.raises(ReferenceError, match="not bound"):
+        _ = renderer.runtime_animation_time
 
 
 def test_skeletal_animator_uses_local_renderer_for_single_node_model(monkeypatch):
@@ -846,6 +864,42 @@ class TestAnimationClipSpriteFrameReferences:
             project_root=str(project),
             guid_paths={self.TEXTURE_GUID: str(texture)},
         ) == str(texture)
+
+
+def test_spirit_animator_guid_does_not_fall_back_to_stale_path(monkeypatch, tmp_path):
+    from Infernux.components import spirit_animator as animator_module
+    from Infernux.core.anim_state_machine import AnimState
+
+    stale_path = tmp_path / "stale.animclip2d"
+    stale_path.write_text("{}", encoding="utf-8")
+    database = type(
+        "Database",
+        (),
+        {"get_path_from_guid": staticmethod(lambda _guid: "")},
+    )()
+    monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
+
+    state = AnimState(
+        name="Walk",
+        clip_guid="missing-guid",
+        clip_path=str(stale_path),
+    )
+
+    assert animator_module._resolve_clip_path(state) is None
+
+
+def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch):
+    from Infernux.components import skeletal_animator as animator_module
+
+    class Database:
+        @staticmethod
+        def get_path_from_guid(_guid):
+            raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(animator_module, "_get_asset_database", lambda: Database())
+
+    with pytest.raises(RuntimeError, match="catalog unavailable"):
+        animator_module._resolve_clip_path_from("broken-guid", "stale.animclip3d")
 
 
 class TestSpiritAnimatorAssetReload:

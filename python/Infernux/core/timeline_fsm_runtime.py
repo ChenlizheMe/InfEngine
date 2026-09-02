@@ -23,22 +23,6 @@ from Infernux.graph.types import ValueType
 
 _DEFAULT_PERIOD = 1.0  # fallback loop period when a timeline has no duration
 
-# Lazily-resolved Vector3 class.  Importing inside the per-frame apply path cost a
-# sys.modules lookup every frame; resolve it once and reuse.
-_Vector3 = None
-
-
-def _resolve_vector3():
-    global _Vector3
-    if _Vector3 is None:
-        try:
-            from Infernux.lib import Vector3
-            _Vector3 = Vector3
-        except Exception:
-            return None
-    return _Vector3
-
-
 def _get_asset_database():
     try:
         from Infernux.core.assets import AssetManager
@@ -291,12 +275,11 @@ class TimelineFSMRuntime:
             return
         pos, rot, scl = sampled
 
-        # Resolve the combined setter once per native transform lifetime. Python
-        # stand-ins used by tests fall back to ordinary object identity.
+        # Resolve the authoritative combined setter once per transform lifetime.
         transform_identity = getattr(transform, "handle", None) or transform
         if self._trs_handle is None or transform_identity != self._trs_handle:
             self._trs_handle = transform_identity
-            self._trs_setter = getattr(transform, "set_local_trs", None)
+            self._trs_setter = transform.set_local_trs
         trs = self._trs_setter
 
         try:
@@ -310,25 +293,11 @@ class TimelineFSMRuntime:
                 rx, ry, rz = rot[0], rot[1], rot[2]
                 sx, sy, sz = scl[0], scl[1], scl[2]
 
-            if trs is not None:
-                # Single pybind crossing, no Vector3 objects, one subtree invalidate.
-                applied = (px, py, pz, rx, ry, rz, sx, sy, sz)
-                if applied == self._last_applied_trs:
-                    return
-                trs(*applied)
-                self._last_applied_trs = applied
-                return
-
-            # Fallback for older native builds without set_local_trs.
-            V = _Vector3 or _resolve_vector3()
-            if V is None:
-                return
+            # Single pybind crossing, no Vector3 objects, one subtree invalidate.
             applied = (px, py, pz, rx, ry, rz, sx, sy, sz)
             if applied == self._last_applied_trs:
                 return
-            transform.local_position = V(px, py, pz)
-            transform.local_euler_angles = V(rx, ry, rz)
-            transform.local_scale = V(sx, sy, sz)
+            trs(*applied)
             self._last_applied_trs = applied
         except Exception as exc:
             Debug.log_suppressed("TimelineFSMRuntime._apply_timeline", exc)
