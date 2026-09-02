@@ -308,19 +308,15 @@ class AssetManager:
             return []
 
         results = []
-        try:
-            guids = cls._asset_database.get_all_guids()
-            for guid in guids:
-                path = cls._asset_database.get_path_from_guid(guid)
-                if path and fnmatch.fnmatch(os.path.basename(path), pattern):
-                    if asset_type is not None:
-                        ext = os.path.splitext(path)[1].lower()
-                        if cls._type_from_extension(ext) != asset_type:
-                            continue
-                    results.append(path)
-        except Exception as e:
-            from Infernux.debug import Debug
-            Debug.log_warning(f"find_assets error: {e}")
+        guids = cls._asset_database.get_all_guids()
+        for guid in guids:
+            path = cls._asset_database.get_path_from_guid(guid)
+            if path and fnmatch.fnmatch(os.path.basename(path), pattern):
+                if asset_type is not None:
+                    ext = os.path.splitext(path)[1].lower()
+                    if cls._type_from_extension(ext) != asset_type:
+                        continue
+                results.append(path)
         return results
 
     @classmethod
@@ -1670,12 +1666,9 @@ class AssetManager:
     @classmethod
     def _resolve_registry(cls):
         """Resolve the C++ AssetRegistry singleton (lazy, cached)."""
-        try:
-            from Infernux.lib import AssetRegistry
-            return AssetRegistry.instance()
-        except (ImportError, RuntimeError, AttributeError) as exc:
-            Debug.log_suppressed("AssetManager._resolve_registry", exc)
-            return None
+        from Infernux.lib import AssetRegistry
+
+        return AssetRegistry.instance()
 
     @classmethod
     def _get_registry(cls):
@@ -1688,25 +1681,15 @@ class AssetManager:
     def _get_guid_from_path(cls, path: str) -> Optional[str]:
         if not cls._asset_database:
             return None
-        try:
-            guid = cls._asset_database.get_guid_from_path(path)
-            return guid if guid else None
-        except Exception as e:
-            from Infernux.debug import Debug
-            Debug.log_warning(f"_get_guid_from_path failed for '{path}': {e}")
-            return None
+        guid = cls._asset_database.get_guid_from_path(path)
+        return guid if guid else None
 
     @classmethod
     def _get_path_from_guid(cls, guid: str) -> Optional[str]:
         if not cls._asset_database:
             return None
-        try:
-            path = cls._asset_database.get_path_from_guid(guid)
-            return path if path else None
-        except Exception as e:
-            from Infernux.debug import Debug
-            Debug.log_warning(f"_get_path_from_guid failed for '{guid}': {e}")
-            return None
+        path = cls._asset_database.get_path_from_guid(guid)
+        return path if path else None
 
     @classmethod
     def _get_cached(cls, guid: str) -> Optional[Any]:

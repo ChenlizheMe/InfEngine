@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import Infernux.lib as native_lib
 from Infernux.core.assets import AssetManager
 import pytest
 
@@ -78,3 +79,40 @@ def test_release_engine_does_not_clear_a_newer_engine(monkeypatch):
 
     assert AssetManager._engine is current
     assert AssetManager._asset_database is database
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda: AssetManager.find_assets("*.mat"),
+        lambda: AssetManager._get_guid_from_path("Assets/Test.mat"),
+        lambda: AssetManager._get_path_from_guid("test-guid"),
+    ],
+)
+def test_asset_database_failures_are_not_suppressed(monkeypatch, operation):
+    class BrokenDatabase:
+        def get_all_guids(self):
+            raise RuntimeError("asset database failed")
+
+        def get_guid_from_path(self, _path):
+            raise RuntimeError("asset database failed")
+
+        def get_path_from_guid(self, _guid):
+            raise RuntimeError("asset database failed")
+
+    monkeypatch.setattr(AssetManager, "_asset_database", BrokenDatabase())
+
+    with pytest.raises(RuntimeError, match="asset database failed"):
+        operation()
+
+
+def test_registry_resolution_failure_is_not_suppressed(monkeypatch):
+    class BrokenRegistry:
+        @staticmethod
+        def instance():
+            raise RuntimeError("registry failed")
+
+    monkeypatch.setattr(native_lib, "AssetRegistry", BrokenRegistry)
+
+    with pytest.raises(RuntimeError, match="registry failed"):
+        AssetManager._resolve_registry()
