@@ -239,8 +239,7 @@ def _profile_matches(dest_root: str) -> bool:
     try:
         with open(profile_path, "r", encoding="utf-8") as f:
             profile = json.load(f)
-    except (OSError, json.JSONDecodeError) as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+    except (OSError, json.JSONDecodeError):
         return False
 
     return profile == _runtime_profile_payload()
@@ -277,10 +276,7 @@ def _prune_runtime_root(dest_root: str) -> None:
                 dirs.remove(dirname)
         for filename in files:
             if filename.lower().endswith(_RUNTIME_PRUNE_FILE_SUFFIXES):
-                try:
-                    os.remove(os.path.join(current_root, filename))
-                except OSError as _exc:
-                    logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+                os.remove(os.path.join(current_root, filename))
 
 
 def _ensure_pip(python_exe: str) -> None:
@@ -399,7 +395,7 @@ def _extract_full_runtime(dest_root: str, *, archive_cache_root: str | None = No
         )
 
 
-def _stage_clean_runtime_fallback(dest_root: str) -> None:
+def _stage_runtime_from_archive(dest_root: str) -> None:
     os.makedirs(_BOOTSTRAP_ROOT, exist_ok=True)
     bootstrap_dir = tempfile.mkdtemp(prefix="bundle-", dir=_BOOTSTRAP_ROOT)
     bootstrap_root = os.path.join(bootstrap_dir, _TARGET_DIRECTORY)
@@ -535,7 +531,7 @@ def main() -> int:
         _remove_tree(dest_root)
 
     print(f"Runtime cache missing; generating a new bundled Python {_TARGET_VERSION} package...")
-    _stage_clean_runtime_fallback(dest_root)
+    _stage_runtime_from_archive(dest_root)
     _write_runtime_profile(dest_root)
     _create_runtime_bundle(dest_root)
     staged = _find_python_in_root(dest_root)
