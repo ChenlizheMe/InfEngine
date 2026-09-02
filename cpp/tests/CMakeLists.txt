@@ -6,6 +6,16 @@ if(INFERNUX_BUILD_TESTS)
     enable_testing()
     find_package(Threads REQUIRED)
 
+    # Native test executables are standalone CPython hosts whenever they pull
+    # the full InfernuxRuntime graph.  Keep this linkage out of the extension
+    # module itself so Linux wheels do not gain a creator-prefix libpython
+    # dependency, while every executable gets the symbols LTO may expose.
+    add_library(infernux_runtime_test_support INTERFACE)
+    target_link_libraries(infernux_runtime_test_support INTERFACE
+        InfernuxRuntime
+        pybind11::embed
+    )
+
     add_executable(infernux_path_tests
         cpp/tests/PathTests.cpp
     )
@@ -426,7 +436,13 @@ if(INFERNUX_BUILD_TESTS)
     target_include_directories(infernux_scene_render_graph_validation_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
-    target_link_libraries(infernux_scene_render_graph_validation_tests PRIVATE InfernuxRuntime)
+    # SceneRenderGraph validation now reaches the full Scene/GameObject graph,
+    # which includes PyComponentProxy.  Standalone executables must provide the
+    # CPython host symbols explicitly on ELF; the extension-module build leaves
+    # those symbols to its already-running interpreter by design.
+    target_link_libraries(infernux_scene_render_graph_validation_tests PRIVATE
+        infernux_runtime_test_support
+    )
     if(MSVC)
         target_compile_options(infernux_scene_render_graph_validation_tests PRIVATE /utf-8)
     endif()
@@ -440,8 +456,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/external
     )
     target_link_libraries(infernux_py_component_proxy_tests PRIVATE
-        InfernuxRuntime
-        pybind11::embed
+        infernux_runtime_test_support
     )
     if(MSVC)
         target_compile_options(infernux_py_component_proxy_tests PRIVATE /utf-8)
@@ -458,7 +473,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_runtime_frame_barrier_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_runtime_frame_barrier_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_runtime_frame_barrier_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -473,7 +488,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_runtime_persistent_scene_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_runtime_persistent_scene_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_runtime_persistent_scene_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -488,7 +503,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_camera_culling_isolation_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_camera_culling_isolation_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_camera_culling_isolation_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -515,7 +530,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_particle_gpu_runtime_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_particle_gpu_runtime_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_particle_gpu_runtime_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -561,7 +576,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/external
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator/include
     )
-    target_link_libraries(infernux_render_graph_compute_indirect_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_render_graph_compute_indirect_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_render_graph_compute_indirect_tests PRIVATE /utf-8)
     endif()
@@ -635,7 +650,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_asset_database_refresh_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_asset_database_refresh_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_asset_database_refresh_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -663,7 +678,9 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_material_document_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_material_document_tests PRIVATE
+        infernux_runtime_test_support
+    )
     if(MSVC)
         target_compile_options(infernux_material_document_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -781,7 +798,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_vector_field_importer_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_vector_field_importer_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_vector_field_importer_tests PRIVATE /utf-8)
     endif()
@@ -794,7 +811,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_shader_asset_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_shader_asset_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_shader_asset_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -809,7 +826,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_shader_info_schema_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_shader_info_schema_tests PRIVATE infernux_runtime_test_support)
     target_compile_definitions(infernux_shader_info_schema_tests PRIVATE
         INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
     )
@@ -829,7 +846,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_shader_stage_linker_tests PRIVATE InfernuxRuntime)
+    target_link_libraries(infernux_shader_stage_linker_tests PRIVATE infernux_runtime_test_support)
     target_compile_definitions(infernux_shader_stage_linker_tests PRIVATE
         INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
     )
