@@ -42,7 +42,7 @@ def test_linux_setup_installs_required_shader_reflection_dependency():
         encoding="utf-8"
     )
 
-    assert "spirv-cross-dev" in script
+    assert "libspirv-cross-c-shared-dev" in script
     assert "SPIRV-Cross libraries are required" in native_targets
 
 

@@ -39,7 +39,7 @@ sudo apt-get install --yes --no-install-recommends \
     llvm \
     ninja-build \
     pkg-config \
-    spirv-cross-dev \
+    libspirv-cross-c-shared-dev \
     spirv-tools \
     vulkan-tools \
     zlib1g-dev
