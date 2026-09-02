@@ -726,6 +726,14 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert player_runtime.index("_install_runtime_lifecycle_bridge(") < player_runtime.index(
         "session.load_scene(scene_path)"
     )
+    lifecycle_bridge = bootstrap[
+        bootstrap.index("def _install_runtime_lifecycle_bridge(") : bootstrap.index(
+            "def _prepare_player_asset_contract()"
+        )
+    ]
+    assert lifecycle_bridge.index("scheduler.bind_native_bridge(scene_manager)") < lifecycle_bridge.index(
+        "scene_manager.set_runtime_lifecycle_callbacks("
+    )
     assert main.index("g_particleRuntime.Initialize(") < main.index(
         'PyObject_GetAttrString(mainModule, "infernux_web_ready")'
     )

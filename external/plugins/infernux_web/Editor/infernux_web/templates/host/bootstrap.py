@@ -409,6 +409,7 @@ def _install_runtime_lifecycle_bridge(scene_manager: Any, scheduler: Any) -> Non
     from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
     from Infernux.lib import NativeRuntimeFrameBarrier
 
+    scheduler.bind_native_bridge(scene_manager)
     scene_manager.set_runtime_lifecycle_callbacks(
         scheduler.begin_native_frame,
         lambda delta: scheduler.execute_native_phase("fixed_update", delta),
