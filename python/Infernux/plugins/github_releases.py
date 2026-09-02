@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import urllib.request
@@ -18,11 +17,8 @@ from packaging.version import InvalidVersion, Version
 from Infernux.version import ENGINE_VERSION
 
 from .package import InxPackage, PACKAGE_EXTENSION, validate_reference
-
-
 RELEASE_MANIFEST_NAME = "infernux-plugin-release.json"
 RELEASE_MANIFEST_SCHEMA = "infernux.plugin_release"
-RELEASE_MANIFEST_VERSION = 1
 _CHUNK_BYTES = 1024 * 1024
 _Progress = Callable[[str, float], None]
 
@@ -31,6 +27,15 @@ _Progress = Callable[[str, float], None]
 class GitHubReleasePackage:
     path: str
     source: dict[str, object]
+
+
+def release_manifest_name(reference: str = "") -> str:
+    """Return the dedicated-repository or multi-package release filename."""
+
+    value = str(reference).strip()
+    if not value:
+        return RELEASE_MANIFEST_NAME
+    return f"{validate_reference(value).replace('/', '.')}.release.json"
 
 
 def _request_bytes(url: str, *, accept: str) -> bytes:
@@ -73,11 +78,10 @@ def _release_manifest(asset: Mapping[str, object]) -> dict[str, object]:
         document = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("GitHub plugin release manifest is invalid JSON") from exc
-    if (
-        not isinstance(document, dict)
-        or document.get("$schema") != RELEASE_MANIFEST_SCHEMA
-        or document.get("manifest_version") != RELEASE_MANIFEST_VERSION
-    ):
+    required = {"$schema", "reference", "version", "engine", "artifact", "generator"}
+    if not isinstance(document, dict) or document.get("$schema") != RELEASE_MANIFEST_SCHEMA:
+        raise RuntimeError("Unsupported GitHub plugin release manifest")
+    if frozenset(document) not in {frozenset(required), frozenset(required | {"release_tag"})}:
         raise RuntimeError("Unsupported GitHub plugin release manifest")
     return document
 
@@ -100,9 +104,10 @@ def _validated_candidate(
     except InvalidVersion as exc:
         raise RuntimeError(f"Invalid GitHub plugin release version: {raw_version}") from exc
     tag = str(release.get("tag_name", "")).strip()
-    if tag != f"v{raw_version}":
+    expected_tag = str(manifest.get("release_tag", "")).strip() or f"v{raw_version}"
+    if tag != expected_tag:
         raise RuntimeError(
-            f"GitHub release tag {tag!r} does not match package version {raw_version!r}"
+            f"GitHub release tag {tag!r} does not match manifest tag {expected_tag!r}"
         )
     engine = str(manifest.get("engine", "")).strip()
     try:
@@ -113,12 +118,9 @@ def _validated_candidate(
     if not isinstance(artifact, Mapping):
         raise RuntimeError("GitHub plugin release manifest has no artifact")
     name = str(artifact.get("name", "")).strip()
-    digest = str(artifact.get("sha256", "")).strip().casefold()
     if (
         not name.casefold().endswith(PACKAGE_EXTENSION)
         or name not in assets
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
     ):
         raise RuntimeError("GitHub plugin release artifact metadata is invalid")
     normalized = {
@@ -127,7 +129,6 @@ def _validated_candidate(
         "engine": engine,
         "compatible": compatible,
         "artifact_name": name,
-        "artifact_sha256": digest,
     }
     return version, normalized, assets[name]
 
@@ -136,7 +137,6 @@ def _download_asset(
     asset: Mapping[str, object],
     destination: str,
     *,
-    expected_sha256: str,
     progress: _Progress | None,
 ) -> None:
     request = urllib.request.Request(
@@ -147,7 +147,6 @@ def _download_asset(
         },
     )
     partial = destination + f".{uuid.uuid4().hex}.part"
-    digest = hashlib.sha256()
     try:
         with urllib.request.urlopen(request) as response, open(partial, "wb") as stream:
             total = int(response.headers.get("Content-Length", "0") or 0)
@@ -157,13 +156,10 @@ def _download_asset(
                 if not chunk:
                     break
                 stream.write(chunk)
-                digest.update(chunk)
                 received += len(chunk)
                 fraction = min(1.0, received / total) if total else 0.0
                 if progress is not None:
                     progress("download_package", 0.08 + 0.22 * fraction)
-        if digest.hexdigest() != expected_sha256:
-            raise RuntimeError("GitHub plugin release artifact hash mismatch")
         os.replace(partial, destination)
     finally:
         try:
@@ -209,7 +205,13 @@ def resolve_github_release(
             for asset in release.get("assets", [])
             if isinstance(asset, Mapping) and str(asset.get("name", ""))
         }
-        manifest_asset = assets.get(RELEASE_MANIFEST_NAME)
+        scoped_manifest_name = release_manifest_name(expected_reference)
+        manifest_name = (
+            scoped_manifest_name
+            if scoped_manifest_name in assets
+            else RELEASE_MANIFEST_NAME
+        )
+        manifest_asset = assets.get(manifest_name)
         package_assets = [
             name for name in assets if name.casefold().endswith(PACKAGE_EXTENSION)
         ]
@@ -218,7 +220,8 @@ def resolve_github_release(
         protocol_seen = True
         if manifest_asset is None:
             errors.append(
-                f"{release.get('tag_name', '(untagged)')}: missing {RELEASE_MANIFEST_NAME}"
+                f"{release.get('tag_name', '(untagged)')}: missing {scoped_manifest_name} "
+                f"or {RELEASE_MANIFEST_NAME}"
             )
             continue
         try:
@@ -255,7 +258,6 @@ def resolve_github_release(
     _download_asset(
         asset,
         destination,
-        expected_sha256=str(selected["artifact_sha256"]),
         progress=progress,
     )
     preview = InxPackage.inspect(destination)
@@ -274,7 +276,6 @@ def resolve_github_release(
             "location": str(location),
             "release_tag": str(release.get("tag_name", "")),
             "release_url": str(release.get("html_url", "")),
-            "sha256": str(selected["artifact_sha256"]),
             "version": str(version),
         },
     )
@@ -284,6 +285,6 @@ __all__ = [
     "GitHubReleasePackage",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_MANIFEST_SCHEMA",
-    "RELEASE_MANIFEST_VERSION",
+    "release_manifest_name",
     "resolve_github_release",
 ]

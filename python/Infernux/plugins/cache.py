@@ -1,14 +1,16 @@
-"""Hub-owned, content-addressed storage for immutable InxPackage blobs."""
+"""Hub-owned shared storage for downloaded InxPackage versions."""
 
 from __future__ import annotations
 
-import hashlib
+import json
 import os
 import shutil
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Iterable, Mapping
+from urllib.parse import quote
 
-from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.path_utils import resolved_path, same_path
 
 from .package import PACKAGE_EXTENSION
 
@@ -25,63 +27,63 @@ def package_cache_root() -> str:
     return resolved_path(Path.home() / ".infernux" / "packages")
 
 
-def package_file_sha256(path: str | os.PathLike[str]) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _encoded_segment(value: str, label: str) -> str:
+    normalized = str(value).strip()
+    if not normalized or normalized in {".", ".."}:
+        raise ValueError(f"InxPackage cache {label} is invalid: {value!r}")
+    return quote(normalized, safe="-._~")
 
 
-class PackageBlobCache:
-    """Store each verified package payload once, keyed by SHA-256."""
+class SharedPackageCache:
+    """Store one package per reference/version without hashing the whole archive."""
 
     def __init__(self, root: str | os.PathLike[str] | None = None) -> None:
         self.root = resolved_path(root or package_cache_root())
-        self.blob_root = resolved_path(os.path.join(self.root, "blobs", "sha256"))
+        self.package_root = resolved_path(os.path.join(self.root, "packages"))
 
     @staticmethod
-    def validate_digest(digest: str) -> str:
-        value = str(digest or "").strip().casefold()
-        if len(value) != 64 or any(
-            character not in "0123456789abcdef" for character in value
+    def validate_location(location: str) -> str:
+        value = str(location).replace("\\", "/").strip("/")
+        path = PurePosixPath(value)
+        if (
+            not value
+            or path.is_absolute()
+            or not path.parts
+            or path.parts[0] != "packages"
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path.suffix.casefold() != PACKAGE_EXTENSION
         ):
-            raise ValueError("InxPackage cache digest must be a SHA-256 hex value")
-        return value
+            raise ValueError(f"InxPackage cache location is invalid: {location!r}")
+        return path.as_posix()
 
-    def relative_path(self, digest: str) -> str:
-        value = self.validate_digest(digest)
-        return f"blobs/sha256/{value}{PACKAGE_EXTENSION}"
-
-    def path(self, digest: str) -> str:
-        return resolved_path(
-            os.path.join(self.root, *self.relative_path(digest).split("/"))
+    def relative_path(self, reference: str, version: str) -> str:
+        reference_parts = str(reference).split("/")
+        if not reference_parts or any(not part.strip() for part in reference_parts):
+            raise ValueError(f"InxPackage cache reference is invalid: {reference!r}")
+        encoded_reference = "/".join(
+            _encoded_segment(part, "reference") for part in reference_parts
         )
+        encoded_version = _encoded_segment(version, "version")
+        return f"packages/{encoded_reference}/{encoded_version}{PACKAGE_EXTENSION}"
 
-    def resolve(self, digest: str) -> str:
-        destination = self.path(digest)
-        if not os.path.isfile(destination):
-            return ""
-        if package_file_sha256(destination) != self.validate_digest(digest):
-            return ""
-        return destination
+    def path(self, reference: str, version: str) -> str:
+        relative = self.relative_path(reference, version)
+        return resolved_path(os.path.join(self.root, *relative.split("/")))
 
-    def store(self, source: str, *, digest: str | None = None) -> str:
+    def resolve(self, reference: str, version: str) -> str:
+        destination = self.path(reference, version)
+        return destination if os.path.isfile(destination) else ""
+
+    def store(self, source: str, *, reference: str, version: str) -> str:
         source_path = resolved_path(source)
-        expected = self.validate_digest(digest or package_file_sha256(source_path))
-        if package_file_sha256(source_path) != expected:
-            raise RuntimeError("InxPackage source hash mismatch")
-        current = self.resolve(expected)
-        if current:
-            return current
+        destination = self.path(reference, version)
+        if same_path(source_path, destination):
+            return destination
 
-        destination = self.path(expected)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         temporary = destination + f".tmp.{uuid.uuid4().hex}"
         try:
             shutil.copy2(source_path, temporary)
-            if package_file_sha256(temporary) != expected:
-                raise RuntimeError("InxPackage cache copy hash mismatch")
             os.replace(temporary, destination)
         finally:
             try:
@@ -90,10 +92,80 @@ class PackageBlobCache:
                 pass
         return destination
 
+    @staticmethod
+    def _project_references(project_root: str | os.PathLike[str]) -> set[str]:
+        project = Path(resolved_path(project_root))
+        if not project.is_dir():
+            raise FileNotFoundError(
+                f"Cannot clean the package cache while a registered project is unavailable: {project}"
+            )
+        registry_path = project / "ProjectSettings" / "InxPlugins.json"
+        if not registry_path.is_file():
+            return set()
+        try:
+            document = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Cannot clean the package cache because a project registry is unreadable: {registry_path}"
+            ) from exc
+        if (
+            not isinstance(document, Mapping)
+            or document.get("$schema") != "infernux.plugin_registry"
+            or not isinstance(document.get("packages"), list)
+            or not isinstance(document.get("installed"), list)
+        ):
+            raise RuntimeError(
+                f"Cannot clean the package cache because a project registry is invalid: {registry_path}"
+            )
+        locations: set[str] = set()
+        for raw in [*document["packages"], *document["installed"]]:
+            if not isinstance(raw, Mapping):
+                raise RuntimeError(
+                    f"Cannot clean the package cache because a package record is invalid: {registry_path}"
+                )
+            source = raw.get("source")
+            if not isinstance(source, Mapping):
+                continue
+            if str(source.get("cache_scope", "")).casefold() != "hub":
+                continue
+            try:
+                locations.add(
+                    SharedPackageCache.validate_location(
+                        str(source.get("cache_location", ""))
+                    )
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Cannot clean the package cache because a project reference is invalid: {registry_path}"
+                ) from exc
+        return locations
+
+    def prune_unreferenced(
+        self,
+        project_roots: Iterable[str | os.PathLike[str]],
+        *,
+        dry_run: bool = False,
+    ) -> tuple[str, ...]:
+        """Remove package versions unused by every explicitly registered project."""
+
+        referenced: set[str] = set()
+        for project_root in tuple(project_roots):
+            referenced.update(self._project_references(project_root))
+
+        candidates: list[Path] = []
+        if os.path.isdir(self.package_root):
+            for path in sorted(Path(self.package_root).rglob(f"*{PACKAGE_EXTENSION}")):
+                relative = PurePosixPath(path.relative_to(self.root).as_posix()).as_posix()
+                if relative not in referenced:
+                    candidates.append(path)
+        if not dry_run:
+            for path in candidates:
+                path.unlink()
+        return tuple(str(path) for path in candidates)
+
 
 __all__ = [
     "PACKAGE_CACHE_ROOT_ENV",
-    "PackageBlobCache",
+    "SharedPackageCache",
     "package_cache_root",
-    "package_file_sha256",
 ]

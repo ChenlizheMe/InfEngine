@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import importlib.util
 import inspect
 import json
@@ -137,6 +136,36 @@ class PreloadManager:
             result.extend(
                 self._load_path(path, declarations_by_path.get(path_key(path), set()))
             )
+        return tuple(result)
+
+    def catch_up(self) -> tuple[PreloadState, ...]:
+        """Load lifecycle declarations that appeared after the initial preload.
+
+        Editor startup preloads plugins before the AssetDatabase refresh has
+        committed, so a brand-new script (no ``.meta`` yet) is not in the GUID
+        catalog at that point. Once the refresh has committed, this pass
+        re-reads the catalog and loads only the candidates that have no live
+        state yet — already-loaded lifecycles (e.g. a running MCP server) are
+        left untouched.
+        """
+        self._ownership_cache = None
+        self._refresh_declaration_catalog()
+        candidates = self._candidate_declarations(self._catalog_declarations())
+        loaded_paths = {path_key(state.source_path) for state in self.states.values()}
+        new_by_path: dict[str, set[str]] = {}
+        for declaration in candidates:
+            key = path_key(declaration.path)
+            if key in loaded_paths or key in self.failures:
+                continue
+            new_by_path.setdefault(key, set()).add(declaration.name)
+        if not new_by_path:
+            return ()
+        ordered = self._ordered_candidate_paths(
+            item for item in candidates if path_key(item.path) in new_by_path
+        )
+        result: list[PreloadState] = []
+        for path in ordered:
+            result.extend(self._load_path(path, new_by_path[path_key(path)]))
         return tuple(result)
 
     def reload_path(self, file_path: str) -> tuple[PreloadState, ...]:
@@ -383,7 +412,12 @@ class PreloadManager:
         simple: dict[str, set[str]] = {}
         for item in values:
             simple.setdefault(item.name, set()).add(item.key)
-        known = {"Infernux.lifecycle.InxPreload", "InxPreload"}
+        known = {
+            "Infernux.lifecycle.InxPreload",
+            "infernux.InxPreload",
+            "infernux.lifecycle.InxPreload",
+            "InxPreload",
+        }
         selected: set[str] = set()
         changed = True
         while changed:
@@ -795,8 +829,7 @@ def _module_name(path: str, project_root: str) -> str:
     parts = [part for part in stem.split("/") if part != "__init__"]
     if parts and all(part.isidentifier() for part in parts):
         return ".".join(parts)
-    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:16]
-    return f"infernux_project_script_{digest}"
+    return f"infernux_project_script_{_ensure_script_guid(path, project_root)}"
 
 
 def _resolve_import_module(current: str, target: str, level: int) -> str:
@@ -817,11 +850,15 @@ def _ensure_script_guid(path: str, project_root: str) -> str:
         try:
             with open(meta_path, "r", encoding="utf-8") as stream:
                 document = json.load(stream)
-            guid = str(document["metadata"]["guid"]["value"]).strip()
-            if len(guid) == 32:
-                return guid
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
-            pass
+            entry = document["metadata"]["guid"]
+            if entry.get("type") != "string":
+                raise ValueError("metadata.guid.type must be 'string'")
+            guid = str(entry["value"]).strip().casefold()
+            if len(guid) != 32 or any(char not in "0123456789abcdef" for char in guid):
+                raise ValueError("metadata.guid.value must be 32 hexadecimal characters")
+            return guid
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid script identity metadata '{meta_path}': {exc}") from exc
     relative = portable_path(relative_path(path, project_root))
     guid = uuid.uuid5(_SCRIPT_NAMESPACE, relative.casefold()).hex
     document = {"metadata": {"guid": {"type": "string", "value": guid}}}

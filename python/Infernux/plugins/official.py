@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from typing import Mapping
@@ -25,12 +24,11 @@ OFFICIAL_REGISTRY_FILENAME = "official-registry.json"
 DEFAULT_LIBRARIES_FILENAME = "default-libraries.json"
 OFFICIAL_REGISTRY_SCHEMA = "infernux.official_plugin_registry"
 DEFAULT_LIBRARIES_SCHEMA = "infernux.default_libraries"
-CATALOG_VERSION = 1
 _REMOTE_SOURCE_TYPES = {"git", "github", "url"}
 
 
 class OfficialCatalogError(RuntimeError):
-    """The optional engine-provided package catalog cannot be trusted."""
+    """The optional engine-provided compatibility catalog is not usable."""
 
 
 def _official_packages_root(resources_root: str | None = None) -> str:
@@ -49,7 +47,7 @@ def _package_resources_root(resources_root: str | None = None) -> str:
     return get_package_resources_path()
 
 
-def _read_document(path: str, schema: str) -> dict[str, object]:
+def _read_document(path: str, schema: str, collection: str) -> dict[str, object]:
     try:
         with open(path, "r", encoding="utf-8") as stream:
             document = json.load(stream)
@@ -60,7 +58,7 @@ def _read_document(path: str, schema: str) -> dict[str, object]:
     if (
         not isinstance(document, dict)
         or document.get("$schema") != schema
-        or document.get("catalog_version") != CATALOG_VERSION
+        or set(document) != {"$schema", collection}
     ):
         raise OfficialCatalogError(f"Unsupported official plugin catalog: {path}")
     return document
@@ -96,6 +94,7 @@ def sync_official_registry(
     document = _read_document(
         os.path.join(official_packages, OFFICIAL_REGISTRY_FILENAME),
         OFFICIAL_REGISTRY_SCHEMA,
+        "packages",
     )
     packages = document.get("packages")
     if not isinstance(packages, list):
@@ -118,36 +117,34 @@ def sync_official_registry(
         if not artifact or os.path.basename(artifact) != artifact:
             raise OfficialCatalogError("Official plugin registry entry is invalid")
         package_path = os.path.join(official_packages, artifact)
-        expected_sha256 = str(raw.get("artifact_sha256", "")).strip().casefold()
-        if not expected_sha256:
-            raise OfficialCatalogError(
-                f"Official plugin artifact hash is missing: {reference}"
-            )
         if os.path.isfile(package_path):
             try:
-                actual_sha256 = _file_sha256(package_path)
-            except OSError as exc:
+                preview = InxPackage.inspect(package_path)
+            except Exception as exc:
                 raise OfficialCatalogError(
-                    f"Official plugin artifact is unreadable: {package_path}"
+                    f"Official plugin artifact is invalid: {package_path}"
                 ) from exc
-            if actual_sha256 != expected_sha256:
+            metadata = preview.metadata
+            if (
+                str(metadata.get("reference", "")).casefold() != reference.casefold()
+                or str(metadata.get("version", "")) != str(raw.get("version", ""))
+                or str(metadata.get("engine", "")) != str(raw.get("engine", ""))
+            ):
                 raise OfficialCatalogError(
-                    f"Official plugin artifact hash mismatch: {reference}: {package_path}"
+                    f"Official plugin artifact metadata mismatch: {reference}: {package_path}"
                 )
             # Development catalogs and release assembly may keep the artifact
-            # beside the catalog. Prefer that exact verified blob when present.
+            # beside the catalog. Prefer that exact readable package when present.
             source = {
                 "type": "local",
                 "location": f"Library/Resources/official_packages/{artifact}",
                 "official": True,
-                "sha256": expected_sha256,
             }
         else:
             # Host wheels intentionally carry only their direct built-in
             # packages. Other official entries remain discoverable and are
             # acquired on demand from their catalog-owned source.
             source = _remote_source(raw.get("source"), reference=reference)
-            source["release_sha256"] = expected_sha256
             source["reference"] = reference
         repository = str(raw.get("repository", "")).strip()
         if repository:
@@ -196,10 +193,13 @@ def sync_official_registry(
         )
 
     # Do not alter the project registry until every official artifact and
-    # catalog entry has passed validation.
+    # catalog entry has passed validation. Merge everything in memory and
+    # write at most once: the previous strip-save plus per-package add_package
+    # pattern rewrote (and fsynced) InxPlugins.json once per official plugin
+    # on every editor startup, even when nothing changed.
     registry = PluginRegistry(project)
     current = registry.load()
-    current["packages"] = [
+    kept = [
         item
         for item in current["packages"]
         if not (
@@ -208,33 +208,38 @@ def sync_official_registry(
             and bool(item["source"].get("official", False))
         )
     ]
-    registry.save(current)
-    added: list[dict[str, object]] = []
-    for item in validated:
-        added.append(
-            registry.add_package(
-                str(item["reference"]),
-                name=str(item["name"]),
-                version=str(item["version"]),
-                engine=str(item["engine"]),
-                dependencies=item["dependencies"],
-                intro=str(item["intro"]),
-                intros=item["intros"],
+    added = [
+        PluginRegistry.build_package_entry(
+            str(item["reference"]),
+            name=str(item["name"]),
+            version=str(item["version"]),
+            engine=str(item["engine"]),
+            dependencies=item["dependencies"],
+            intro=str(item["intro"]),
+            intros=item["intros"],
             pages=item["pages"],
             category=str(item["category"]),
             targets=item["targets"],
             source=item["source"],
-            )
         )
+        for item in validated
+    ]
+    references = {str(entry["reference"]).casefold() for entry in added}
+    merged = sorted(
+        [
+            *(
+                entry
+                for entry in kept
+                if str(entry.get("reference", "")).casefold() not in references
+            ),
+            *added,
+        ],
+        key=lambda entry: str(entry.get("reference", "")).casefold(),
+    )
+    if merged != current["packages"]:
+        current["packages"] = merged
+        registry.save(current)
     return tuple(added)
-
-
-def _file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def install_bundled_packages(
@@ -269,13 +274,12 @@ def install_bundled_packages(
             f"Built-in package resources are unavailable: {root}"
         ) from exc
 
-    previews: list[tuple[str, InxPackagePreview, str]] = []
+    previews: list[tuple[str, InxPackagePreview]] = []
     references: dict[str, str] = {}
     for package_path in candidates:
         try:
             preview = InxPackage.inspect(package_path)
             reference = validate_reference(str(preview.metadata.get("reference", "")))
-            package_sha256 = _file_sha256(package_path)
         except Exception as exc:
             raise OfficialCatalogError(
                 f"Built-in InxPackage is invalid: {package_path}"
@@ -287,7 +291,7 @@ def install_bundled_packages(
                 f"{reference}: {references[key]}, {package_path}"
             )
         references[key] = package_path
-        previews.append((package_path, preview, package_sha256))
+        previews.append((package_path, preview))
 
     active = PluginManager.instance()
     if (
@@ -305,7 +309,7 @@ def install_bundled_packages(
     try:
         # Publish the complete local set before installation so one built-in
         # package can resolve another regardless of filename ordering.
-        for package_path, preview, package_sha256 in previews:
+        for package_path, preview in previews:
             metadata = preview.metadata
             manager.registry.add_package(
                 str(metadata["reference"]),
@@ -319,12 +323,11 @@ def install_bundled_packages(
                 source={
                     "type": "local",
                     "location": package_path,
-                    "sha256": package_sha256,
                     "builtin": True,
                 },
             )
         installed: list[PluginState] = []
-        for _package_path, preview, _package_sha256 in previews:
+        for _package_path, preview in previews:
             reference = str(preview.metadata["reference"])
             if manager.registry.installed_record(reference) is not None:
                 installed.append(manager.reload(reference))
@@ -351,6 +354,7 @@ def install_default_libraries(
             _official_packages_root(resources_root), DEFAULT_LIBRARIES_FILENAME
         ),
         DEFAULT_LIBRARIES_SCHEMA,
+        "libraries",
     )
     references = defaults.get("libraries")
     if not isinstance(references, list) or any(not isinstance(item, str) for item in references):

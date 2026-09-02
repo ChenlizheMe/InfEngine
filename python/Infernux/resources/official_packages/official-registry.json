@@ -1,21 +1,24 @@
 {
   "$schema": "infernux.official_plugin_registry",
-  "catalog_version": 1,
   "packages": [
     {
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "intro": "Let an MCP-compatible AI agent drive the Infernux Editor.",
       "intros": {
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "artifact_sha256": "b98b27098a1250e05e68f0adec4a1f10dcab2df29fe4543d34852eec242f4679",
-      "artifact_size": 549568,
       "engine": ">=0.4,<0.5",
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
+      "source": {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/infernux_mcp"
+      },
+      "category": "Agent",
+      "targets": [],
       "pages": [
         {
           "id": "intro",
@@ -65,6 +68,80 @@
       ]
     },
     {
+      "reference": "infernux/platform-windows",
+      "name": "Infernux Windows Platform",
+      "version": "0.1.0",
+      "intro": "Build Infernux games for Windows with Vulkan.",
+      "intros": {
+        "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Windows。"
+      },
+      "artifact": "infernux.platform-windows.inxpkg",
+      "engine": ">=0.4.0,<0.5",
+      "dependencies": [],
+      "repository": "https://github.com/ChenlizheMe/Infernux",
+      "source": {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/Infernux",
+        "subdirectory": "external/plugins/infernux_windows"
+      },
+      "category": "Platform",
+      "targets": [
+        "windows-x64"
+      ],
+      "pages": [
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.md",
+          "format": "markdown"
+        },
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        }
+      ]
+    },
+    {
+      "reference": "infernux/platform-linux",
+      "name": "Infernux Linux Platform",
+      "version": "0.1.0",
+      "intro": "Build Infernux games for Linux with Vulkan.",
+      "intros": {
+        "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Linux。"
+      },
+      "artifact": "infernux.platform-linux.inxpkg",
+      "engine": ">=0.4.0,<0.5",
+      "dependencies": [],
+      "repository": "https://github.com/ChenlizheMe/Infernux",
+      "source": {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/Infernux",
+        "subdirectory": "external/plugins/infernux_linux"
+      },
+      "category": "Platform",
+      "targets": [
+        "linux-x64"
+      ],
+      "pages": [
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.md",
+          "format": "markdown"
+        },
+        {
+          "id": "intro",
+          "title": "Description",
+          "path": "README.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        }
+      ]
+    },
+    {
       "reference": "infernux/platform-android",
       "name": "Infernux Android Platform",
       "version": "0.1.0",
@@ -73,11 +150,19 @@
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
       },
       "artifact": "infernux.platform-android.inxpkg",
-      "artifact_sha256": "fe005177a2f1b128402679588e8bd8c8d4ec7f2f3c6374d81f3ad69e96610c10",
-      "artifact_size": 36608,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
-      "repository": "",
+      "repository": "https://github.com/ChenlizheMe/Infernux",
+      "source": {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/Infernux",
+        "subdirectory": "external/plugins/infernux_android"
+      },
+      "category": "Platform",
+      "targets": [
+        "android-arm64",
+        "android-x64-emulator"
+      ],
       "pages": [
         {
           "id": "intro",
@@ -109,11 +194,18 @@
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
       },
       "artifact": "infernux.platform-web.inxpkg",
-      "artifact_sha256": "2be835b3d94a50265d8cc131b23089c54f7c53152c9b17827ae69551e8421ae4",
-      "artifact_size": 79936,
       "engine": ">=0.4.0,<0.5",
       "dependencies": [],
-      "repository": "",
+      "repository": "https://github.com/ChenlizheMe/Infernux",
+      "source": {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/Infernux",
+        "subdirectory": "external/plugins/infernux_web"
+      },
+      "category": "Platform",
+      "targets": [
+        "web-wasm32"
+      ],
       "pages": [
         {
           "id": "intro",

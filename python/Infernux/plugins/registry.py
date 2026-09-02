@@ -20,7 +20,6 @@ from .package import validate_reference
 REGISTRY_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPlugins.json")
 LOCK_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPackages.lock.json")
 REGISTRY_SCHEMA = "infernux.plugin_registry"
-REGISTRY_VERSION = 2
 
 
 class PluginRegistry:
@@ -42,18 +41,19 @@ class PluginRegistry:
         if (
             not isinstance(value, dict)
             or value.get("$schema") != REGISTRY_SCHEMA
-            or value.get("registry_version") != REGISTRY_VERSION
+            or set(value) != {
+                "$schema", "packages", "installed", "python_installs",
+                "python_dependencies",
+            }
         ):
             raise ValueError("Unsupported plugin registry schema")
         if (
             not isinstance(value.get("packages"), list)
             or not isinstance(value.get("installed"), list)
-            or not isinstance(value.get("python_installs", []), list)
-            or not isinstance(value.get("python_dependencies", []), list)
+            or not isinstance(value.get("python_installs"), list)
+            or not isinstance(value.get("python_dependencies"), list)
         ):
             raise ValueError("Plugin registry catalog, install, and Python fields must be lists")
-        value.setdefault("python_installs", [])
-        value.setdefault("python_dependencies", [])
         self._validate_installed(value["installed"])
         _validate_python_dependencies(value["python_dependencies"])
         return value
@@ -61,11 +61,11 @@ class PluginRegistry:
     def save(self, value: Mapping[str, object]) -> None:
         document = dict(value)
         document["$schema"] = REGISTRY_SCHEMA
-        document["registry_version"] = REGISTRY_VERSION
-        document.setdefault("packages", [])
-        document.setdefault("installed", [])
-        document.setdefault("python_installs", [])
-        document.setdefault("python_dependencies", [])
+        if set(document) != {
+            "$schema", "packages", "installed", "python_installs",
+            "python_dependencies",
+        }:
+            raise ValueError("Unsupported plugin registry schema")
         if (
             not isinstance(document["packages"], list)
             or not isinstance(document["installed"], list)
@@ -152,6 +152,43 @@ class PluginRegistry:
                     result.append((package, dict(item)))
         return tuple(result)
 
+    @staticmethod
+    def build_package_entry(
+        reference: str,
+        *,
+        intro: str = "",
+        intros: Mapping[str, object] | None = None,
+        source: Mapping[str, object],
+        version: str = "",
+        engine: str = "",
+        dependencies: Iterable[str] = (),
+        name: str = "",
+        pages: Iterable[Mapping[str, object] | str] = (),
+        category: str = "Other",
+        targets: Iterable[str] = (),
+    ) -> dict[str, object]:
+        """Normalize one catalog entry exactly as add_package() would store it."""
+
+        reference = validate_reference(reference)
+        source_value = dict(source)
+        if not str(source_value.get("type", "")).strip() or not str(
+            source_value.get("location", "")
+        ).strip():
+            raise ValueError("Registry package requires a typed source with a location")
+        return {
+            "reference": reference,
+            "name": str(name or reference),
+            "intro": str(intro),
+            "intros": _normalize_intros(intros or {}),
+            "version": str(version),
+            "engine": str(engine),
+            "dependencies": sorted({validate_reference(item) for item in dependencies}),
+            "source": source_value,
+            "pages": [normalize_page_descriptor(page) for page in pages],
+            "category": str(category or "Other"),
+            "targets": sorted({str(target) for target in targets if str(target)}),
+        }
+
     def add_package(
         self,
         reference: str,
@@ -167,26 +204,21 @@ class PluginRegistry:
         category: str = "Other",
         targets: Iterable[str] = (),
     ) -> dict[str, object]:
-        reference = validate_reference(reference)
-        source_value = dict(source)
-        if not str(source_value.get("type", "")).strip() or not str(
-            source_value.get("location", "")
-        ).strip():
-            raise ValueError("Registry package requires a typed source with a location")
+        item = self.build_package_entry(
+            reference,
+            intro=intro,
+            intros=intros,
+            source=source,
+            version=version,
+            engine=engine,
+            dependencies=dependencies,
+            name=name,
+            pages=pages,
+            category=category,
+            targets=targets,
+        )
+        reference = str(item["reference"])
         document = self.load()
-        item = {
-            "reference": reference,
-            "name": str(name or reference),
-            "intro": str(intro),
-            "intros": _normalize_intros(intros or {}),
-            "version": str(version),
-            "engine": str(engine),
-            "dependencies": sorted({validate_reference(item) for item in dependencies}),
-            "source": source_value,
-            "pages": [normalize_page_descriptor(page) for page in pages],
-            "category": str(category or "Other"),
-            "targets": sorted({str(target) for target in targets if str(target)}),
-        }
         packages = [
             entry
             for entry in document["packages"]
@@ -210,7 +242,6 @@ class PluginRegistry:
         dependencies: Iterable[str] = (),
         enabled: bool = True,
         transaction_id: str = "",
-        package_sha256: str = "",
         python_requirements: Iterable[Mapping[str, object]] = (),
         python_changes: Iterable[Mapping[str, object]] = (),
         python_install: Mapping[str, object] | None = None,
@@ -236,7 +267,6 @@ class PluginRegistry:
             "dependencies": sorted({validate_reference(item) for item in dependencies}),
             "transaction_id": str(transaction_id or uuid.uuid4().hex),
             "installed_at": time.time(),
-            "package_sha256": str(package_sha256).casefold(),
             "enabled": bool(enabled),
             "python_requirements": normalized_python_requirements,
             "python_changes": normalized_python_changes,
@@ -515,7 +545,6 @@ class PluginRegistry:
     def _empty() -> dict[str, object]:
         return {
             "$schema": REGISTRY_SCHEMA,
-            "registry_version": REGISTRY_VERSION,
             "packages": [],
             "installed": [],
             "python_installs": [],
@@ -534,7 +563,6 @@ class PluginRegistry:
                         "reference",
                         "version",
                         "engine",
-                        "package_sha256",
                         "transaction_id",
                         "installed_at",
                         "source",
@@ -547,7 +575,6 @@ class PluginRegistry:
             )
         document = {
             "$schema": "infernux.package_lock",
-            "lock_version": 1,
             "packages": packages,
             "python": list(registry.get("python_installs", [])),
             "python_dependencies": list(
@@ -716,5 +743,4 @@ __all__ = [
     "LOCK_RELATIVE_PATH",
     "PluginRegistry",
     "REGISTRY_RELATIVE_PATH",
-    "REGISTRY_VERSION",
 ]

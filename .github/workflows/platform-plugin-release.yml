@@ -1,0 +1,89 @@
+name: Platform Plugin Release Assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing Infernux GitHub release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-platform-plugins:
+    runs-on: windows-latest
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          $tag = $env:RELEASE_EVENT_TAG
+          if (-not $tag) {
+            $tag = $env:RELEASE_INPUT_TAG
+          }
+          if ($tag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw "Invalid release tag: $tag"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install the released Windows wheel
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force out/release-wheel | Out-Null
+          gh release download '${{ steps.release.outputs.tag }}' `
+            --repo '${{ github.repository }}' `
+            --pattern 'infernux-*-cp313-cp313-win_amd64.whl' `
+            --dir out/release-wheel
+          $wheels = @(Get-ChildItem out/release-wheel -Filter '*.whl')
+          if ($wheels.Count -ne 1) {
+            throw "The release must contain exactly one cp313 Windows wheel"
+          }
+          python -m pip install $wheels[0].FullName
+
+      - name: Build current official packages
+        shell: pwsh
+        run: |
+          $native = python -c "import pathlib, Infernux.lib; print(pathlib.Path(Infernux.lib.__file__).parent)"
+          $env:INFERNUX_NATIVE_MODULE_DIR = $native.Trim()
+          python external/plugins/build_official_plugins.py `
+            --source-root external/plugins `
+            --output-root out/official-plugins `
+            --catalog external/plugins/plugins.json
+          python external/plugins/build_release_assets.py `
+            --package-root out/official-plugins `
+            --output-root out/platform-plugin-release `
+            --catalog external/plugins/plugins.json `
+            --repository 'https://github.com/ChenlizheMe/Infernux' `
+            --release-tag '${{ steps.release.outputs.tag }}'
+
+      - name: Upload platform plugin assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(Get-ChildItem out/platform-plugin-release -File)
+          if ($assets.Count -ne 8) {
+            throw "Expected four platform packages and four release manifests"
+          }
+          gh release upload '${{ steps.release.outputs.tag }}' `
+            --repo '${{ github.repository }}' `
+            --clobber `
+            @($assets.FullName)

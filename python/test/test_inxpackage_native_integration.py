@@ -132,7 +132,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     artifact = resources / "official_packages" / "infernux.mcp.inxpkg"
     preview = InxPackage.inspect(str(artifact))
     assert preview.metadata["reference"] == "infernux/mcp"
-    assert preview.metadata["format_version"] == 2
+    assert "format_version" not in preview.metadata
     assert "preload" not in preview.metadata
     assert "plugin_root" not in preview.metadata
     assert {item["role"] for item in preview.file_records} == {"editor", "control"}
@@ -216,7 +216,9 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     assert {item["reference"] for item in manager.registry.available()} == {
         "infernux/mcp",
         "infernux/platform-android",
+        "infernux/platform-linux",
         "infernux/platform-web",
+        "infernux/platform-windows",
     }
     record = manager.registry.installed_record("infernux/mcp")
     localized_pages = manager.content_pages(record, locale="zh")
@@ -346,10 +348,12 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         ".gemini/settings.json",
     ):
         assert not (project / discovery_path).exists()
-    assert not any(
-        name == "infernux_mcp" or name.startswith("infernux_mcp.")
-        for name in sys.modules
-    )
+    remaining_mcp_modules = {
+        name: str(getattr(module, "__file__", "") or "")
+        for name, module in sys.modules.items()
+        if name == "infernux_mcp" or name.startswith("infernux_mcp.")
+    }
+    assert not remaining_mcp_modules, remaining_mcp_modules
     manager = PluginManager.startup(str(project), runtime=False)
     assert manager.registry.installed() == ()
 

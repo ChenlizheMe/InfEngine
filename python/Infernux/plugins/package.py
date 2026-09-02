@@ -2,13 +2,12 @@
 
 An ``.inxpkg`` stores a package-source tree rather than arbitrary project
 destinations. Installation routing is derived from the top-level package
-layout and every payload file carries a stable GUID plus a content digest.
-Paths are mutable locations; GUIDs are the durable identity.
+layout and every payload file carries a stable GUID. Paths are mutable
+locations; GUIDs are the durable identity.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import posixpath
@@ -43,7 +42,6 @@ PACKAGE_EXTENSION = ".inxpkg"
 PACKAGE_MANIFEST = "InxPackage.json"
 SOURCE_MANIFEST = PACKAGE_MANIFEST
 PACKAGE_SCHEMA = "infernux.inxpackage"
-PACKAGE_VERSION = 2
 PACKAGE_ENTRY_PREFIX = "Package/"
 _GUID_NAMESPACE = uuid.UUID("2bd3f0e2-0e94-4a61-bfe4-146b96bb66ab")
 _IGNORED_PARTS = frozenset({".git", "__pycache__", ".venv", "venv", "build", "dist"})
@@ -137,8 +135,6 @@ class InxPackage:
         records: list[dict[str, object]] = []
         payloads: list[tuple[str, str, bytes]] = []
         for logical, source in files:
-            payload = Path(source).read_bytes()
-            digest = hashlib.sha256(payload).hexdigest()
             guid, meta_payload = InxPackage._asset_identity(reference, logical, source)
             role = package_role(logical)
             archive_path = PACKAGE_ENTRY_PREFIX + logical
@@ -147,12 +143,9 @@ class InxPackage:
                 {
                     "logical_path": logical,
                     "guid": guid,
-                    "sha256": digest,
-                    "size": len(payload),
                     "role": role,
                     "archive_path": archive_path,
                     "meta_archive_path": meta_archive_path,
-                    "meta_sha256": hashlib.sha256(meta_payload).hexdigest(),
                 }
             )
             payloads.append((archive_path, source, meta_payload))
@@ -162,7 +155,6 @@ class InxPackage:
             raise ValueError("InxPackage source dependencies must be a list")
         document: dict[str, object] = {
             "$schema": PACKAGE_SCHEMA,
-            "format_version": PACKAGE_VERSION,
             "reference": reference,
             "name": str(source_document.get("name") or reference.rsplit("/", 1)[-1]),
             "version": str(source_document.get("version") or "0.0.0"),
@@ -243,20 +235,7 @@ class InxPackage:
                 raise ValueError(
                     f"InxPackage native manifest is missing payload: {record['logical_path']}"
                 )
-            payload = read_entry(path, archive_path)
             meta_payload = read_entry(path, meta_archive_path)
-            if len(payload) != record["size"]:
-                raise ValueError(
-                    f"InxPackage payload size mismatch: {record['logical_path']}"
-                )
-            if hashlib.sha256(payload).hexdigest() != record["sha256"]:
-                raise ValueError(
-                    f"InxPackage payload hash mismatch: {record['logical_path']}"
-                )
-            if hashlib.sha256(meta_payload).hexdigest() != record["meta_sha256"]:
-                raise ValueError(
-                    f"InxPackage metadata hash mismatch: {record['logical_path']}"
-                )
             if _guid_from_meta_bytes(meta_payload) != record["guid"]:
                 raise ValueError(
                     f"InxPackage GUID disagrees with metadata: {record['logical_path']}"
@@ -332,7 +311,12 @@ class InxPackage:
     def validate_metadata(value: object) -> None:
         if not isinstance(value, Mapping):
             raise ValueError("InxPackage metadata must be an object")
-        if value.get("$schema") != PACKAGE_SCHEMA or value.get("format_version") != PACKAGE_VERSION:
+        expected_fields = {
+            "$schema", "reference", "name", "version", "intro", "intros",
+            "requirements", "engine", "dependencies", "pages", "control_guid",
+            "files",
+        }
+        if value.get("$schema") != PACKAGE_SCHEMA or set(value) != expected_fields:
             raise ValueError("Unsupported InxPackage metadata schema")
         reference = validate_reference(str(value.get("reference", "")))
         control_guid = str(value.get("control_guid", ""))
@@ -346,6 +330,10 @@ class InxPackage:
         for item in files:
             if not isinstance(item, Mapping):
                 raise ValueError("InxPackage file record must be an object")
+            if set(item) != {
+                "logical_path", "guid", "role", "archive_path", "meta_archive_path"
+            }:
+                raise ValueError("InxPackage file record does not match the current schema")
             logical = _safe_relative(str(item.get("logical_path", "")))
             _validate_canonical_layout(logical)
             if logical in logical_paths:
@@ -356,15 +344,6 @@ class InxPackage:
             if guid.casefold() in guids:
                 raise ValueError(f"Duplicate InxPackage GUID: {guid}")
             guids.add(guid.casefold())
-            digest = str(item.get("sha256", ""))
-            meta_digest = str(item.get("meta_sha256", ""))
-            size = item.get("size")
-            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-                raise ValueError(f"Invalid InxPackage payload size: {logical}")
-            if not re.fullmatch(r"[0-9a-f]{64}", digest) or not re.fullmatch(
-                r"[0-9a-f]{64}", meta_digest
-            ):
-                raise ValueError(f"Invalid InxPackage digest: {logical}")
             if item.get("role") != package_role(logical):
                 raise ValueError(f"InxPackage role is not canonical: {logical}")
             if item.get("archive_path") != PACKAGE_ENTRY_PREFIX + logical:
@@ -662,7 +641,6 @@ __all__ = [
     "PACKAGE_EXTENSION",
     "PACKAGE_MANIFEST",
     "PACKAGE_SCHEMA",
-    "PACKAGE_VERSION",
     "SOURCE_MANIFEST",
     "normalize_player_rules",
     "package_control_root",

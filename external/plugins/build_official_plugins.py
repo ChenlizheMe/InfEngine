@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -35,7 +34,7 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
     if (
         not isinstance(source_document, dict)
         or source_document.get("$schema") != "infernux.official_plugin_sources"
-        or source_document.get("catalog_version") != 1
+        or set(source_document) != {"$schema", "plugins"}
         or not isinstance(source_document.get("plugins"), list)
     ):
         raise RuntimeError(f"Invalid official plugin source catalog: {catalog_path}")
@@ -65,8 +64,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
             str(output_root / artifact),
             profile="release",
         )
-        artifact_path = output_root / artifact
-        artifact_payload = artifact_path.read_bytes()
         source: dict[str, object] = {}
         if repository:
             source = {
@@ -83,8 +80,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
                 "intro": str(preview.metadata.get("intro", "")),
                 "intros": dict(preview.metadata.get("intros", {})),
                 "artifact": artifact,
-                "artifact_sha256": hashlib.sha256(artifact_payload).hexdigest(),
-                "artifact_size": len(artifact_payload),
                 "engine": str(preview.metadata.get("engine", "")),
                 "dependencies": list(preview.metadata.get("dependencies", [])),
                 "repository": repository,
@@ -104,7 +99,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         output_root / "official-registry.json",
         {
             "$schema": "infernux.official_plugin_registry",
-            "catalog_version": 1,
             "packages": registry,
         },
     )
@@ -112,7 +106,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         output_root / "default-libraries.json",
         {
             "$schema": "infernux.default_libraries",
-            "catalog_version": 1,
             "libraries": defaults,
         },
     )

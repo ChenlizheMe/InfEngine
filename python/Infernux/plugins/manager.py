@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import posixpath
@@ -30,6 +29,7 @@ from Infernux.engine.path_utils import (
     portable_path,
     relative_path,
     resolved_path,
+    same_path,
 )
 from Infernux.engine.player_package_native import read_entry
 from Infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
@@ -41,7 +41,7 @@ from .content import (
     read_plugin_pages,
     resolve_plugin_page_asset,
 )
-from .cache import PackageBlobCache
+from .cache import SharedPackageCache
 from .package import (
     InxPackage,
     InxPackagePreview,
@@ -59,6 +59,26 @@ from .registry import PluginRegistry
 
 _URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
 _InstallProgress = Callable[[str, float], None]
+_SOURCE_DESCRIPTOR_FIELDS = frozenset(
+    {
+        "type",
+        "location",
+        "reference",
+        "revision",
+        "subdirectory",
+        "official",
+        "builtin",
+        "repository",
+        "cache_scope",
+        "cache_location",
+        "release_tag",
+        "release_url",
+        "version",
+        "acquisition",
+        "commit",
+        "source_snapshot",
+    }
+)
 
 
 def _report_progress(
@@ -118,7 +138,6 @@ class _PlannedFile:
     destination: str
     destination_relative: str
     guid: str
-    sha256: str
     role: str
     payload: bytes
     meta_payload: bytes
@@ -215,6 +234,12 @@ class PluginManager:
                     "Official plugin catalog is unavailable; continuing with "
                     f"installed, local, Git, and pip sources: {exc}"
                 )
+            # An existing built-in package may be reloaded by
+            # install_bundled_packages(). Its Python dependencies therefore
+            # have to exist before that call; restoring them afterwards leaves
+            # the current Editor process with a failed preload even if pip later
+            # succeeds.
+            manager._reconcile_python_requirements_for_startup()
             install_bundled_packages(normalized, manager=manager)
             manager._reconcile_python_requirements_for_startup()
         manager.registry.save(manager.registry.load())
@@ -259,6 +284,18 @@ class PluginManager:
         self.preloads.reload_package(reference)
         self._rebuild_states()
         return self.states[reference.casefold()]
+
+    def catch_up_preloads(self) -> tuple[PreloadState, ...]:
+        """Load lifecycles that entered the GUID catalog after startup preload.
+
+        Called once the startup AssetDatabase refresh has committed, so
+        scripts created without a ``.meta`` sidecar still preload on their
+        first editor session instead of waiting for the next restart.
+        """
+        loaded = self.preloads.catch_up()
+        if loaded:
+            self._rebuild_states()
+        return loaded
 
     def content_pages(
         self,
@@ -340,10 +377,6 @@ class PluginManager:
     ) -> PluginState:
         _report_progress(progress, "inspect_package", 0.36)
         package_path = resolved_path(package_path)
-        expected_sha256 = str((source or {}).get("sha256", "")).strip().casefold()
-        package_sha256 = _file_hash(package_path)
-        if expected_sha256 and package_sha256 != expected_sha256:
-            raise RuntimeError(f"InxPackage source hash mismatch: {package_path}")
         preview = InxPackage.inspect(package_path)
         compatibility = str(preview.metadata.get("engine", "")).strip()
         if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(compatibility):
@@ -370,12 +403,13 @@ class PluginManager:
         self._installing.add(key)
         try:
             cache_path, cache_relative = self._cache_package(
-                package_path, package_sha256
+                package_path,
+                reference,
+                str(preview.metadata.get("version", "")),
             )
             resolved_source = dict(source or {})
             resolved_source.setdefault("type", "local")
             resolved_source.setdefault("location", package_path)
-            resolved_source["sha256"] = package_sha256
             resolved_source["cache_location"] = cache_relative
             resolved_source["cache_scope"] = "hub"
             dependencies: list[str] = []
@@ -425,7 +459,6 @@ class PluginManager:
                         "logical_path": item.logical_path,
                         "path_hint": item.destination_relative,
                         "guid": item.guid,
-                        "sha256": item.sha256,
                         "role": item.role,
                         "owned": item.owned,
                     }
@@ -435,7 +468,6 @@ class PluginManager:
                     "logical_path": PACKAGE_MANIFEST,
                     "path_hint": str(control["path_hint"]),
                     "guid": str(control["guid"]),
-                    "sha256": hashlib.sha256(control_payload).hexdigest(),
                     "role": "control",
                     "owned": bool(control["owned"]),
                 }
@@ -449,7 +481,6 @@ class PluginManager:
                     source=resolved_source,
                     dependencies=dependencies,
                     transaction_id=transaction.id,
-                    package_sha256=package_sha256,
                     python_requirements=(
                         pip_effect.requirements if pip_effect else ()
                     ),
@@ -569,7 +600,7 @@ class PluginManager:
             if str(descriptor.get("cache_scope", "")).casefold() == "hub":
                 cache_path = resolved_path(
                     os.path.join(
-                        PackageBlobCache().root,
+                        SharedPackageCache().root,
                         *cache_location.split("/"),
                     )
                 )
@@ -592,7 +623,7 @@ class PluginManager:
             progress=progress,
         )
 
-    def cached_reference_path(self, reference: str, *, verify: bool = True) -> str:
+    def cached_reference_path(self, reference: str) -> str:
         record = self.registry.find(reference)
         if record is None or not isinstance(record.get("source"), Mapping):
             return ""
@@ -602,16 +633,13 @@ class PluginManager:
             return ""
         if str(source.get("cache_scope", "")).casefold() == "hub":
             candidate = resolved_path(
-                os.path.join(PackageBlobCache().root, *location.split("/"))
+                os.path.join(SharedPackageCache().root, *location.split("/"))
             )
         else:
             candidate = resolved_path(
                 os.path.join(self.project_root, *location.split("/"))
             )
-        digest = str(source.get("sha256", "")).strip().casefold()
         if not os.path.isfile(candidate):
-            return ""
-        if verify and digest and _file_hash(candidate) != digest:
             return ""
         return candidate
 
@@ -638,7 +666,7 @@ class PluginManager:
             {
                 key: value
                 for key, value in source.items()
-                if key not in {"cache_location", "cache_scope", "sha256"}
+                if key not in {"cache_location", "cache_scope"}
             }
         )
         with tempfile.TemporaryDirectory(prefix="infernux-plugin-download-") as workspace:
@@ -664,15 +692,18 @@ class PluginManager:
                     f"InxPackage requires Infernux {compatibility}, current engine "
                     f"is {ENGINE_VERSION}"
                 )
-            digest = _file_hash(package_path)
-            cache = PackageBlobCache()
-            destination = cache.store(package_path, digest=digest)
+            version = str(preview.metadata.get("version", ""))
+            cache = SharedPackageCache()
+            destination = cache.store(
+                package_path,
+                reference=actual_reference,
+                version=version,
+            )
             cached_source = dict(acquired_source)
             cached_source.update(
                 {
                     "cache_scope": "hub",
-                    "cache_location": cache.relative_path(digest),
-                    "sha256": digest,
+                    "cache_location": cache.relative_path(actual_reference, version),
                 }
             )
             self.registry.add_package(
@@ -692,7 +723,6 @@ class PluginManager:
             return {
                 "reference": actual_reference,
                 "path": destination,
-                "sha256": digest,
                 "cached": False,
             }
 
@@ -799,8 +829,6 @@ class PluginManager:
                 if isinstance(item, Mapping)
                 and str(item.get("requirement", "")).strip()
             )
-            if not requirements:
-                requirements = self._discover_installed_python_requirements(record)
             if requirements:
                 requirements_by_plugin[reference] = requirements
                 all_requirements.extend(requirements)
@@ -842,12 +870,10 @@ class PluginManager:
             )
         except Exception as exc:
             self.python_requirement_error = str(exc)
-            Debug.log_warning(
-                "Installed plugin Python requirements could not be restored; "
-                "the editor will continue and affected plugins will report "
-                f"their preload errors: {exc}"
-            )
-            return ()
+            raise RuntimeError(
+                "Installed plugin Python requirements could not be restored: "
+                f"{exc}"
+            ) from exc
 
         repaired = tuple(
             reference
@@ -860,50 +886,6 @@ class PluginManager:
                 + ", ".join(repaired)
             )
         return repaired
-
-    def _discover_installed_python_requirements(
-        self, record: Mapping[str, object]
-    ) -> tuple[str, ...]:
-        """Recover pip declarations from an installed package's control files."""
-
-        reference = str(record.get("reference", "")).strip()
-        requirement_name = portable_path(
-            str(record.get("requirements", "requirements.txt"))
-        ).strip("/")
-        if not reference or not requirement_name:
-            return ()
-        control_root = package_control_root(self.project_root, reference)
-        requirement_path = resolved_path(
-            os.path.join(control_root, *requirement_name.split("/"))
-        )
-        if not is_path_within(requirement_path, control_root, allow_root=False):
-            Debug.log_warning(
-                f"Ignoring unsafe plugin requirements path for {reference}: "
-                f"{requirement_name}"
-            )
-            return ()
-        try:
-            text = Path(requirement_path).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return ()
-        except OSError as exc:
-            Debug.log_warning(
-                f"Installed plugin requirements are unreadable for {reference}: {exc}"
-            )
-            return ()
-
-        result: list[str] = []
-        for line in text.splitlines():
-            requirement = line.strip()
-            if not requirement or requirement.startswith("#"):
-                continue
-            if requirement.casefold().endswith(PACKAGE_EXTENSION):
-                continue
-            if self._registry_reference_for_requirement(requirement) is not None:
-                continue
-            if _pip_requirement_targets((requirement,)):
-                result.append(requirement)
-        return tuple(dict.fromkeys(result))
 
     def _install_pip_lines(
         self, lines: Iterable[str]
@@ -947,6 +929,24 @@ class PluginManager:
         self, executable: str | None = None
     ) -> dict[str, str]:
         python = executable or self._project_python_executable()
+        # When the project environment is the interpreter we are already
+        # running in, enumerate installed distributions in-process instead of
+        # spawning `python -m pip list` (which costs seconds on every editor
+        # startup, under the "Preloading project plugins…" splash step).
+        same_interpreter = same_path(python, sys.executable)
+        if same_interpreter:
+            import importlib.metadata
+
+            snapshot: dict[str, str] = {}
+            for distribution in importlib.metadata.distributions():
+                try:
+                    name = canonicalize_name(str(distribution.metadata["Name"] or ""))
+                    version = str(distribution.version or "")
+                except Exception:
+                    continue
+                if name and version and name not in snapshot:
+                    snapshot[name] = version
+            return snapshot
         result = self._run_process(
             [python, "-m", "pip", "list", "--format=json"],
             cwd=self.project_root,
@@ -1182,10 +1182,6 @@ class PluginManager:
                 path = guid_index.get(guid)
                 if not path:
                     continue
-                expected_hash = str(item.get("sha256", ""))
-                if _file_hash(path) != expected_hash:
-                    preserved.append(path)
-                    continue
                 transaction.remove(path)
                 transaction.remove(path + ".meta")
                 removed.append(path)
@@ -1216,7 +1212,7 @@ class PluginManager:
         self.preloads.forget_package(reference)
         self._rebuild_states()
         self._refresh_editor_assets()
-        return {**record, "removed_files": removed, "preserved_modified_files": preserved}
+        return {**record, "removed_files": removed, "preserved_shared_files": preserved}
 
     def _materialize_source(
         self,
@@ -1490,7 +1486,6 @@ class PluginManager:
             owned, actual_destination = self._preflight_file(
                 destination,
                 str(record["guid"]),
-                str(record["sha256"]),
                 guid_index,
             )
             planned.append(
@@ -1499,7 +1494,6 @@ class PluginManager:
                     actual_destination,
                     portable_path(relative_path(actual_destination, self.project_root)),
                     str(record["guid"]),
-                    str(record["sha256"]),
                     str(record["role"]),
                     payload,
                     meta_payload,
@@ -1515,7 +1509,6 @@ class PluginManager:
         owned, actual_control = self._preflight_file(
             control_path,
             control_guid,
-            hashlib.sha256(manifest_payload).hexdigest(),
             guid_index,
         )
         control = {
@@ -1530,33 +1523,16 @@ class PluginManager:
         self,
         destination: str,
         guid: str,
-        digest: str,
         guid_index: Mapping[str, str],
     ) -> tuple[bool, str]:
         existing_guid_path = guid_index.get(guid.casefold())
         if existing_guid_path:
-            if _file_hash(existing_guid_path) != digest:
-                raise PackageConflictError(
-                    f"GUID {guid} already exists with different content: {existing_guid_path}"
-                )
             return False, existing_guid_path
         if os.path.exists(destination):
             target_guid = _meta_guid(destination)
             if target_guid.casefold() != guid.casefold():
-                # Asset importers may have assigned a project-local identity to an
-                # otherwise byte-identical package payload before the package was
-                # installed (or while an older development package was detached).
-                # Re-identifying that exact payload is safe and keeps the package
-                # identity stable.  Different bytes remain a hard conflict so an
-                # install can never claim or overwrite user-authored content.
-                if _file_hash(destination) == digest:
-                    return True, destination
                 raise PackageConflictError(
                     f"Destination is occupied by another GUID: {destination}"
-                )
-            if _file_hash(destination) != digest:
-                raise PackageConflictError(
-                    f"Destination contains modified content: {destination}"
                 )
             return False, destination
         return True, destination
@@ -1691,10 +1667,19 @@ class PluginManager:
                 return candidate
         return sys.executable
 
-    def _cache_package(self, package_path: str, digest: str) -> tuple[str, str]:
-        cache = PackageBlobCache()
-        destination = cache.store(package_path, digest=digest)
-        return destination, cache.relative_path(digest)
+    def _cache_package(
+        self,
+        package_path: str,
+        reference: str,
+        version: str,
+    ) -> tuple[str, str]:
+        cache = SharedPackageCache()
+        destination = cache.store(
+            package_path,
+            reference=reference,
+            version=version,
+        )
+        return destination, cache.relative_path(reference, version)
 
     def _source_descriptor(
         self, source: Mapping[str, object] | str
@@ -1714,6 +1699,10 @@ class PluginManager:
                 source_type = "local"
             return {"type": source_type, "location": value}
         descriptor = dict(source)
+        unknown = set(descriptor).difference(_SOURCE_DESCRIPTOR_FIELDS)
+        if unknown:
+            fields = ", ".join(sorted(map(str, unknown)))
+            raise ValueError(f"Plugin source contains unknown fields: {fields}")
         source_type = str(descriptor.get("type", "")).strip().casefold()
         location = str(descriptor.get("location", "")).strip()
         if source_type not in {"local", "github", "git", "url"} or not location:
@@ -1911,12 +1900,12 @@ def _requirements_satisfied(
 
 def _same_install(record: Mapping[str, object], preview: InxPackagePreview) -> bool:
     current = {
-        (str(item.get("logical_path", "")), str(item.get("guid", "")), str(item.get("sha256", "")))
+        (str(item.get("logical_path", "")), str(item.get("guid", "")))
         for item in record.get("files", [])
         if isinstance(item, Mapping)
     }
     incoming = {
-        (str(item.get("logical_path", "")), str(item.get("guid", "")), str(item.get("sha256", "")))
+        (str(item.get("logical_path", "")), str(item.get("guid", "")))
         for item in preview.file_records
     }
     return current == incoming and str(record.get("version", "")) == str(
@@ -1931,17 +1920,6 @@ def _meta_guid(asset_path: str) -> str:
         return str(document["metadata"]["guid"]["value"]).strip()
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return ""
-
-
-def _file_hash(path: str) -> str:
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError:
-        return ""
-    return digest.hexdigest()
 
 
 def _minimal_meta(guid: str) -> bytes:

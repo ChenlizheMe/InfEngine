@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -17,17 +16,8 @@ from Infernux.engine.path_utils import resolved_path
 
 from .github_releases import (
     RELEASE_MANIFEST_SCHEMA,
-    RELEASE_MANIFEST_VERSION,
 )
 from .package import InxPackage
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _validated_metadata(package: Path) -> dict[str, object]:
@@ -61,7 +51,6 @@ def package_build(args: argparse.Namespace) -> int:
                 "path": str(output),
                 "reference": str(preview.metadata.get("reference", "")),
                 "version": str(preview.metadata.get("version", "")),
-                "sha256": _sha256(output),
                 "bytes": output.stat().st_size,
             },
             ensure_ascii=False,
@@ -86,7 +75,6 @@ def package_verify(args: argparse.Namespace) -> int:
                 "reference": str(metadata.get("reference", "")),
                 "version": str(metadata.get("version", "")),
                 "engine": engine,
-                "sha256": _sha256(package),
                 "bytes": package.stat().st_size,
                 "verified": True,
             },
@@ -103,26 +91,27 @@ def package_release_manifest(args: argparse.Namespace) -> int:
     version = str(metadata.get("version", "")).strip()
     expected_tag = f"v{version}"
     tag = str(args.tag or os.environ.get("GITHUB_REF_NAME", "")).strip()
-    if tag and tag != expected_tag:
+    if args.shared_release and not tag:
+        raise RuntimeError("A shared repository release requires an explicit tag")
+    if tag and not args.shared_release and tag != expected_tag:
         raise RuntimeError(
             f"Release tag {tag!r} does not match InxPackage version {version!r}"
         )
     document = {
         "$schema": RELEASE_MANIFEST_SCHEMA,
-        "manifest_version": RELEASE_MANIFEST_VERSION,
         "reference": str(metadata.get("reference", "")),
         "version": version,
         "engine": str(metadata.get("engine", "")),
         "artifact": {
             "name": package.name,
-            "sha256": _sha256(package),
-            "size": package.stat().st_size,
         },
         "generator": {
             "name": "Infernux",
             "version": ENGINE_VERSION,
         },
     }
+    if args.shared_release:
+        document["release_tag"] = tag
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_text(
@@ -155,7 +144,9 @@ def _parser() -> argparse.ArgumentParser:
     manifest.add_argument("package")
     manifest.add_argument("--output", required=True)
     manifest.add_argument("--tag", default="")
+    manifest.add_argument("--shared-release", action="store_true")
     manifest.set_defaults(handler=package_release_manifest)
+
     return parser
 
 
