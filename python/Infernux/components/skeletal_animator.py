@@ -157,7 +157,6 @@ class SkeletalAnimator(InxComponent):
     _blend_duration: float = 0.0
     _last_native_take_name: str = ""
     _last_native_pose_key = None
-    _last_native_submission_error: str = ""
     _duration_cache: Dict[tuple[str, str], float] = {}
     _current_timeline = None
     _timeline_cache: Dict[str, object] = {}
@@ -172,7 +171,6 @@ class SkeletalAnimator(InxComponent):
         self._timeline_base = None
         self._last_native_take_name = ""
         self._last_native_pose_key = None
-        self._last_native_submission_error = ""
         self._current_state_name = ""
         self._current_clip = None
         self._elapsed = 0.0
@@ -354,7 +352,6 @@ class SkeletalAnimator(InxComponent):
         self._timeline_base = None
         self._last_native_take_name = ""
         self._last_native_pose_key = None
-        self._last_native_submission_error = ""
         self._parameters = {}
         self._clear_blend_state()
 
@@ -536,59 +533,46 @@ class SkeletalAnimator(InxComponent):
         t = float(self._elapsed)
         normalized = float(self.normalized_time)
 
-        # Preferred: a 2-layer pose stack (correct per-bone N-way blend, needs the
-        # native pose-stack API); otherwise fall back to the 2-clip crossfade slot.
         native_renderers = [cpp for cpp in native_renderers if cpp is not None]
         if not native_renderers:
             return False
-        if take_a and take_b and all(callable(getattr(cpp, "submit_pose_stack", None)) for cpp in native_renderers):
+        if take_a and take_b:
             pose_key = ("stack", self._playing, take_a, source_a, take_b, source_b, t, lerp, loop)
             if pose_key == self._last_native_pose_key:
                 return True
-            try:
-                layers = [
-                    {"take_name": take_a, "source_model_guid": source_a,
-                     "time": t, "weight": 1.0 - lerp, "loop": loop},
-                    {"take_name": take_b, "source_model_guid": source_b,
-                     "time": t, "weight": lerp, "loop": loop},
-                ]
-                for cpp in native_renderers:
-                    cpp.submit_pose_stack(layers)
-                self._last_native_submission_error = ""
-                self._last_native_take_name = take_a
-                self._last_native_pose_key = pose_key
-                return True
-            except Exception as exc:
-                self._report_native_submission_error(exc)
-
-        if all(callable(getattr(cpp, "submit_animation_pose", None)) for cpp in native_renderers):
-            pose_key = (
-                "blend", self._playing, take_a or take_b, t, normalized,
-                take_b if take_a else "", lerp if take_a else 0.0, loop, source_a, source_b,
-            )
-            if pose_key == self._last_native_pose_key:
-                return True
-            try:
-                for cpp in native_renderers:
-                    cpp.submit_animation_pose(
-                        take_a or take_b,
-                        t,
-                        normalized,
-                        take_b if take_a else "",
-                        t,
-                        lerp if take_a else 0.0,
-                        loop,
-                        source_a if take_a else source_b,
-                        source_b if take_a else "",
-                    )
-                self._last_native_submission_error = ""
-            except Exception as exc:
-                self._report_native_submission_error(exc)
-                return True
-            self._last_native_take_name = take_a or take_b
+            layers = [
+                {"take_name": take_a, "source_model_guid": source_a,
+                 "time": t, "weight": 1.0 - lerp, "loop": loop},
+                {"take_name": take_b, "source_model_guid": source_b,
+                 "time": t, "weight": lerp, "loop": loop},
+            ]
+            for cpp in native_renderers:
+                cpp.submit_pose_stack(layers)
+            self._last_native_take_name = take_a
             self._last_native_pose_key = pose_key
             return True
-        return False
+
+        pose_key = (
+            "blend", self._playing, take_a or take_b, t, normalized,
+            "", 0.0, 0.0, loop, source_a if take_a else source_b, "",
+        )
+        if pose_key == self._last_native_pose_key:
+            return True
+        for cpp in native_renderers:
+            cpp.submit_animation_pose(
+                take_a or take_b,
+                t,
+                normalized,
+                "",
+                0.0,
+                0.0,
+                loop,
+                source_a if take_a else source_b,
+                "",
+            )
+        self._last_native_take_name = take_a or take_b
+        self._last_native_pose_key = pose_key
+        return True
 
     def _enter_state(
         self,
@@ -793,12 +777,6 @@ class SkeletalAnimator(InxComponent):
         # _sync_native_runtime_playback call performs the complete update.
         return
 
-    def _report_native_submission_error(self, exc: Exception) -> None:
-        message = f"[SkeletalAnimator] Animation retarget failed: {exc}"
-        if message != self._last_native_submission_error:
-            Debug.log_warning(message)
-            self._last_native_submission_error = message
-
     def _sync_native_runtime_playback(self) -> None:
         renderers = self._resolve_skinned_renderers()
         if not renderers:
@@ -842,23 +820,18 @@ class SkeletalAnimator(InxComponent):
         )
         if pose_key == self._last_native_pose_key:
             return
-        try:
-            for cpp in native_renderers:
-                cpp.submit_animation_pose(
-                    take_name,
-                    float(self._elapsed) if take_name else 0.0,
-                    normalized,
-                    blend_take,
-                    blend_time,
-                    blend_weight,
-                    loop,
-                    source_guid,
-                    blend_source_guid,
-                )
-            self._last_native_submission_error = ""
-        except Exception as exc:
-            self._report_native_submission_error(exc)
-            return
+        for cpp in native_renderers:
+            cpp.submit_animation_pose(
+                take_name,
+                float(self._elapsed) if take_name else 0.0,
+                normalized,
+                blend_take,
+                blend_time,
+                blend_weight,
+                loop,
+                source_guid,
+                blend_source_guid,
+            )
         self._last_native_take_name = take_name
         self._last_native_pose_key = pose_key
 

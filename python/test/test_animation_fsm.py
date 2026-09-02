@@ -86,9 +86,13 @@ class _HierarchyOwner:
 class _NativePoseRecorder:
     def __init__(self):
         self.calls = []
+        self.pose_stacks = []
 
     def submit_animation_pose(self, *args):
         self.calls.append(args)
+
+    def submit_pose_stack(self, layers):
+        self.pose_stacks.append(layers)
 
 
 def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
@@ -199,7 +203,7 @@ def test_skeletal_animator_submits_clip_source_separately_from_render_model(monk
         default_state="Walk",
     )
     animator._current_state_name = "Walk"
-    animator._current_clip = _FakeClip("Walk", source_model_guid="animation-fbx-guid")
+    animator._current_clip = _FakeClip("Walk", source_model_guid="d" * 32)
     animator._elapsed = 0.5
     animator._playing = True
     animator._last_native_pose_key = None
@@ -207,7 +211,67 @@ def test_skeletal_animator_submits_clip_source_separately_from_render_model(monk
     animator._sync_native_runtime_playback()
 
     assert len(native.calls) == 1
-    assert native.calls[0][7] == "animation-fbx-guid"
+    assert native.calls[0][7] == "d" * 32
+
+
+def test_blend_state_uses_pose_stack_as_its_only_native_path(monkeypatch):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    monkeypatch.setattr(
+        animator,
+        "_resolve_clip_b",
+        lambda _state: _FakeClip("Run", source_model_guid="e" * 32),
+    )
+    state = AnimState(name="Locomotion", kind="blend", blend_value=0.25)
+    animator._current_clip = _FakeClip("Walk", source_model_guid="d" * 32)
+    animator._elapsed = 0.5
+
+    assert animator._submit_blend_state([native], state) is True
+    assert native.calls == []
+    assert native.pose_stacks == [[
+        {
+            "take_name": "Walk",
+            "source_model_guid": "d" * 32,
+            "time": 0.5,
+            "weight": 0.75,
+            "loop": True,
+        },
+        {
+            "take_name": "Run",
+            "source_model_guid": "e" * 32,
+            "time": 0.5,
+            "weight": 0.25,
+            "loop": True,
+        },
+    ]]
+
+
+def test_blend_state_does_not_fall_back_when_pose_stack_is_missing(monkeypatch):
+    animator = _make_animator()
+    native = SimpleNamespace(submit_animation_pose=lambda *_args: None)
+    monkeypatch.setattr(animator, "_resolve_clip_b", lambda _state: _FakeClip("Run"))
+    animator._current_clip = _FakeClip("Walk")
+
+    with pytest.raises(AttributeError, match="submit_pose_stack"):
+        animator._submit_blend_state([native], AnimState(name="Locomotion", kind="blend"))
+
+
+def test_native_pose_submission_failure_propagates(monkeypatch):
+    animator = _make_animator()
+
+    class Native:
+        @staticmethod
+        def submit_animation_pose(*_args):
+            raise RuntimeError("native pose rejected")
+
+    owner = _HierarchyOwner(renderer=_RendererBinding(Native()))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator._fsm = AnimStateMachine(states=[AnimState(name="Walk")], default_state="Walk")
+    animator._current_state_name = "Walk"
+    animator._current_clip = _FakeClip("Walk")
+
+    with pytest.raises(RuntimeError, match="native pose rejected"):
+        animator._sync_native_runtime_playback()
 
 
 class TestTriggerConsumption:
