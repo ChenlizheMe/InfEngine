@@ -712,7 +712,6 @@ def test_player_control_capture_uses_player_game_render_target(tmp_path, monkeyp
     assert payload["ok"] is True
     assert payload["data"]["status"] == "completed"
     assert payload["data"]["pixel_origin"] == "engine_render_target"
-    assert payload["data"]["os_capture_fallback"] is False
 
 
 def test_player_control_capture_timeout_releases_command_channel(tmp_path, monkeypatch):

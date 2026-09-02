@@ -100,7 +100,6 @@ class PlayerControlChannel:
             if status in {"completed", "failed", "cancelled", "source_expired"}:
                 snapshot["terminal"] = True
                 snapshot["pixel_origin"] = "engine_render_target"
-                snapshot["os_capture_fallback"] = False
                 self._write_response(
                     str(pending["command_id"]),
                     status == "completed",

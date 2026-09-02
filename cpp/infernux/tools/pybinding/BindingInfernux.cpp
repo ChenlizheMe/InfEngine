@@ -1914,7 +1914,6 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 result["capture_id"] = value.id;
                 result["source"] = CaptureSourceName(value.source);
                 result["pixel_origin"] = "engine_render_target";
-                result["os_capture_fallback"] = false;
                 result["status"] = CaptureStatusName(value.status);
                 result["source_generation"] = value.sourceGeneration;
                 result["render_view_id"] = value.view.id;
