@@ -2107,21 +2107,6 @@ finally:
                 if len(fields) == 3 and fields[1] in known_guids:
                     yield fields[1], ""
 
-    def _load_json_asset_references(
-        self,
-        source_path: str,
-        *,
-        known_guids: frozenset[str] = frozenset(),
-    ) -> set[tuple[str, str]]:
-        try:
-            with open(source_path, "r", encoding="utf-8") as stream:
-                value = json.load(stream)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError(
-                f"Player cook cannot read indexed runtime document: {source_path}"
-            ) from exc
-        return set(self._asset_reference_values(value, known_guids))
-
     def _library_source_entry_path(self, entry: dict) -> str:
         raw = str(entry.get("normalized_path", "")).replace("\\", "/")
         candidate = raw if os.path.isabs(raw) else os.path.join(self.project_path, raw)

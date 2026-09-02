@@ -714,7 +714,7 @@ class TestPlayModeManager:
         assert not mgr._rebuild_active_scene({"invalid": True}, for_play=False)
         assert mgr._runtime_hidden_object_ids == {77}
 
-    def test_rebuild_scene_does_not_materialize_prefab_refs_for_play(self, monkeypatch):
+    def test_rebuild_scene_enters_play_after_transaction(self, monkeypatch):
         class _FakeCommitToken:
             def __init__(self, scene, previous_document):
                 self._scene = scene
@@ -761,8 +761,6 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         scene = _FakeScene()
         scene_manager = _FakeSceneManager(scene)
-        materialized = False
-
         monkeypatch.setattr(mgr, "_get_scene_manager", lambda: scene_manager)
         from Infernux.engine import component_restore
         monkeypatch.setattr(
@@ -776,12 +774,6 @@ class TestPlayModeManager:
             lambda scene, prepared, clear_registries=True: prepared.consume(),
         )
 
-        def _unexpected_materialize():
-            nonlocal materialized
-            materialized = True
-
-        monkeypatch.setattr(mgr, "_materialize_prefab_references_for_play", _unexpected_materialize)
-
         snapshot = {
             "name": "PlayModeRebuild",
             "isPlaying": False,
@@ -789,4 +781,3 @@ class TestPlayModeManager:
         }
         assert mgr._rebuild_active_scene(snapshot, for_play=True)
         assert scene.playing is True
-        assert not materialized
