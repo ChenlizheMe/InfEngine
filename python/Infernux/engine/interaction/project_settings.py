@@ -54,9 +54,6 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError("build settings must be a JSON object")
     value = copy.deepcopy(value)
-    # Assets is the only Player content boundary.  Drop the former authoring
-    # option when an existing project is next loaded and saved.
-    value.pop("additional_cook_roots", None)
     unknown = set(value) - set(BUILD_SETTINGS_DEFAULTS)
     if unknown:
         raise ValueError(

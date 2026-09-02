@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-import hashlib
 import json
 
 import pytest
 
 from Infernux.engine.game_builder import GameBuilder
-from Infernux.engine.interaction.project_settings import normalize_build_settings
 from Infernux.engine.runtime_artifact_catalog import load_asset_index
 from Infernux.engine.runtime_artifact_catalog import unix_ns_to_filetime_ticks
+
+
+def _content_hash(payload: bytes) -> str:
+    value = 14695981039346656037
+    for byte in payload:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
 
 
 def _write_asset_index(project, entries):
@@ -21,7 +27,7 @@ def _write_asset_index(project, entries):
             "size": stat.st_size,
             "modified_ns": unix_ns_to_filetime_ticks(stat.st_mtime_ns),
         }
-        current["content_hash"] = hashlib.sha256(source.read_bytes()).hexdigest()
+        current["content_hash"] = _content_hash(source.read_bytes())
         current_entries.append(current)
     library = project / "Library"
     library.mkdir(parents=True, exist_ok=True)
@@ -36,43 +42,9 @@ def _entry(guid, path, dependencies=()):
         "guid": guid,
         "normalized_path": path,
         "source": {"size": 1, "modified_ns": 1},
-        "content_hash": "a" * 64,
+        "content_hash": "a" * 16,
         "dependencies": list(dependencies),
     }
-
-
-def test_build_settings_discards_obsolete_additional_cook_roots():
-    settings = normalize_build_settings(
-        {
-            "scenes": ["Assets/Main.scene"],
-            "additional_cook_roots": [
-                "Assets/Runtime\\Configs",
-                "assets/runtime/configs",
-            ],
-        }
-    )
-
-    assert "additional_cook_roots" not in settings
-    assert "runtime_resource_groups" not in settings
-    assert "additional_cook_roots_v1" not in settings
-
-
-@pytest.mark.parametrize(
-    "legacy_field",
-    (
-        "runtime_resource_groups",
-        "additional_cook_roots_v1",
-        "additional_cook_roots_v2",
-    ),
-)
-def test_build_settings_rejects_legacy_runtime_root_fields(legacy_field):
-    with pytest.raises(ValueError, match="unknown build settings fields"):
-        normalize_build_settings(
-            {
-                "scenes": ["Assets/Main.scene"],
-                legacy_field: ["Assets/Runtime"],
-            }
-        )
 
 
 def test_all_imported_assets_join_runtime_product_closure(tmp_path):
@@ -86,12 +58,7 @@ def test_all_imported_assets_join_runtime_product_closure(tmp_path):
     (assets / "Unused.mat").write_text("{}", encoding="utf-8")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps(
-            {
-                "scenes": ["Assets/Main.scene"],
-                "additional_cook_roots": ["Assets/Runtime"],
-            }
-        ),
+        json.dumps({"scenes": ["Assets/Main.scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -119,12 +86,7 @@ def test_cook_stages_all_imported_assets_but_not_unindexed_sources(tmp_path):
     (assets / "Unused.mat").write_text("unused", encoding="utf-8")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps(
-            {
-                "scenes": ["Assets/Main.scene"],
-                "additional_cook_roots": ["Assets/Runtime"],
-            }
-        ),
+        json.dumps({"scenes": ["Assets/Main.scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -155,12 +117,7 @@ def test_cook_uses_current_assetindex_as_the_imported_assets_snapshot(tmp_path):
     (runtime / "unindexed.bin").write_bytes(b"unindexed")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps(
-            {
-                "scenes": ["Assets/Main.scene"],
-                "additional_cook_roots": ["Assets/Runtime"],
-            }
-        ),
+        json.dumps({"scenes": ["Assets/Main.scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(

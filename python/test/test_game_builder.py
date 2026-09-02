@@ -1020,7 +1020,6 @@ def test_rewrite_build_settings_strips_authoring_only_fields(tmp_path):
             "debug_mode": False,
             "lto": True,
             "enable_jit": False,
-            "additional_cook_roots": ["Assets/RuntimeOnly"],
         }
     )
     settings_path.write_text(json.dumps(settings), encoding="utf-8")
