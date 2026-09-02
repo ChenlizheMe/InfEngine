@@ -225,6 +225,51 @@ def test_web_exporter_plan_exposes_real_runtime_stages(monkeypatch, tmp_path):
     }
 
 
+def test_web_template_uses_default_or_requires_complete_project_shell(
+    monkeypatch, tmp_path
+):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    request = _request(tmp_path)
+    default_shell = tmp_path / "default-shell.html"
+    default_shell.write_text("default", encoding="utf-8")
+
+    assert exporter._resolve_web_template(request, default_shell) == (
+        default_shell.resolve(),
+        None,
+    )
+
+    template = Path(request.project_root) / "ProjectSettings" / "WebTemplate"
+    template.mkdir(parents=True)
+    with pytest.raises(ValueError, match="missing shell.html"):
+        exporter._resolve_web_template(request, default_shell)
+
+    (template / "shell.html").write_text(
+        '<canvas id="canvas"></canvas>\n{{{ SCRIPT }}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing required markers"):
+        exporter._resolve_web_template(request, default_shell)
+
+    (template / "shell.html").write_text(
+        "\n".join(
+            (
+                '<canvas id="canvas"></canvas>',
+                "@INFERNUX_WEB_ASSET_REVISION@",
+                "@INFERNUX_WEB_DISPLAY_MODE@",
+                "@INFERNUX_WEB_CANVAS_WIDTH@",
+                "@INFERNUX_WEB_CANVAS_HEIGHT@",
+                "{{{ SCRIPT }}}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    assert exporter._resolve_web_template(request, default_shell) == (
+        (template / "shell.html").resolve(),
+        template.resolve(),
+    )
+
+
 def test_web_staging_refresh_preserves_native_build_cache(monkeypatch, tmp_path):
     _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
@@ -263,6 +308,28 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         ),
     )
     request = _request(tmp_path)
+    project_template = (
+        Path(request.project_root) / "ProjectSettings" / "WebTemplate"
+    )
+    project_template.mkdir(parents=True)
+    (project_template / "shell.html").write_text(
+        "\n".join(
+            (
+                '<canvas id="canvas"></canvas>',
+                "@INFERNUX_WEB_ASSET_REVISION@",
+                "@INFERNUX_WEB_DISPLAY_MODE@",
+                "@INFERNUX_WEB_CANVAS_WIDTH@",
+                "@INFERNUX_WEB_CANVAS_HEIGHT@",
+                "{{{ SCRIPT }}}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (project_template / "theme").mkdir()
+    (project_template / "theme" / "site.css").write_text(
+        "body { background: black; }\n",
+        encoding="utf-8",
+    )
     player_assets = tmp_path / "player-assets"
     player_assets.mkdir()
     monkeypatch.setattr(
@@ -288,11 +355,20 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     revision = "1234567890abcdef12345678"
 
     captured_presentation = {}
+    captured_template = {}
 
     def _build_host(
-        _request, staging, _assets, _details, _source_root, presentation
+        _request,
+        staging,
+        _assets,
+        _details,
+        _source_root,
+        presentation,
+        web_shell,
+        web_template,
     ):
         captured_presentation.update(presentation)
+        captured_template.update(shell=web_shell, root=web_template)
         host_build = staging / "host-build"
         host_build.mkdir(parents=True)
         (host_build / "infernux-player.html").write_text(
@@ -343,12 +419,14 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         "webmanifest",
         "js",
         "json",
+        "css",
     ]
     assert all(Path(item.path).is_file() for item in result.artifacts)
     assert result.manifest["scope"] == "cooked-player"
     assert result.manifest["game"] == "Balance"
     assert result.manifest["asset_revision"] == revision
     assert result.manifest["entry_point"] == "infernux-player.html"
+    assert result.manifest["web_template"] == "project"
     assert result.manifest["presentation"] == {
         "display_mode": "fullscreen_borderless",
         "window_width": 1280,
@@ -364,6 +442,13 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     )
     assert published_capabilities["backend"] == "webgpu"
     assert captured_presentation == result.manifest["presentation"]
+    assert captured_template == {
+        "shell": (project_template / "shell.html").resolve(),
+        "root": project_template.resolve(),
+    }
+    assert (
+        Path(request.output_dir) / "web-template" / "theme" / "site.css"
+    ).read_text(encoding="utf-8") == "body { background: black; }\n"
     assert result.logs == ("host built",)
 
 
@@ -787,6 +872,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEB_DISPLAY_MODE" in cmake
     assert "INFERNUX_WEB_CANVAS_WIDTH" in cmake
     assert "INFERNUX_WEB_CANVAS_HEIGHT" in cmake
+    assert "INFERNUX_WEB_SHELL_FILE" in cmake
     assert "extract_package(package, data_root)" in bootstrap
     assert "INFERNUX_SINGLE_THREADED_RUNTIME=1" in cmake
     assert "register_shader" in host_module
@@ -916,6 +1002,9 @@ def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
     (player / "Content.inxpkg").write_bytes(b"content")
     (runtime / "main.cpp").write_bytes(b"runtime")
     (shaders / "manifest.json").write_bytes(b"shader")
+    project_template = tmp_path / "project-template"
+    project_template.mkdir()
+    (project_template / "shell.html").write_bytes(b"custom shell")
 
     fullscreen = {
         "display_mode": "fullscreen_borderless",
@@ -941,8 +1030,24 @@ def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
         runtime,
         presentation={**fullscreen, "display_mode": "windowed"},
     )
+    custom = exporter_module._web_asset_revision(
+        staging,
+        player,
+        runtime,
+        presentation=fullscreen,
+        project_template_root=project_template,
+    )
+    (project_template / "shell.html").write_bytes(b"custom shell changed")
+    custom_changed = exporter_module._web_asset_revision(
+        staging,
+        player,
+        runtime,
+        presentation=fullscreen,
+        project_template_root=project_template,
+    )
 
     assert re.fullmatch(r"[0-9a-f]{24}", first)
     assert first != second
     assert second != third
     assert third != windowed
+    assert custom != custom_changed

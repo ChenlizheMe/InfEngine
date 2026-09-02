@@ -16,6 +16,8 @@ set(INFERNUX_WEB_PLAYER_ASSETS "" CACHE PATH
     "Optional cooked project and Python assets to preload into the Web host")
 set(INFERNUX_WEB_BRANDING_DIR "" CACHE PATH
     "Generated project favicon, manifest, and browser branding")
+set(INFERNUX_WEB_SHELL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/shell.html" CACHE FILEPATH
+    "HTML shell used to generate the Web Player entry point")
 set(INFERNUX_WEB_ASSET_REVISION "" CACHE STRING
     "Deterministic identity shared by the Web Player JavaScript and data files")
 set(INFERNUX_WEB_DISPLAY_MODE "fullscreen_borderless" CACHE STRING
@@ -57,6 +59,9 @@ foreach(_web_canvas_extent INFERNUX_WEB_CANVAS_WIDTH INFERNUX_WEB_CANVAS_HEIGHT)
         message(FATAL_ERROR "${_web_canvas_extent} must be a positive integer")
     endif()
 endforeach()
+if(NOT EXISTS "${INFERNUX_WEB_SHELL_FILE}")
+    message(FATAL_ERROR "INFERNUX_WEB_SHELL_FILE must name an existing file")
+endif()
 option(INFERNUX_WEB_BUILD_NATIVE_MODULE_PROBE
     "Compile the existing Infernux Python binding surface for wasm without linking it"
     OFF
@@ -195,10 +200,10 @@ set_target_properties(InfernuxWebPlayerHost PROPERTIES
 )
 set_property(TARGET InfernuxWebPlayerHost APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/bootstrap.py"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shell.html"
+    "${INFERNUX_WEB_SHELL_FILE}"
 )
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/shell.html"
+    "${INFERNUX_WEB_SHELL_FILE}"
     "${CMAKE_CURRENT_BINARY_DIR}/shell.generated.html"
     @ONLY
 )

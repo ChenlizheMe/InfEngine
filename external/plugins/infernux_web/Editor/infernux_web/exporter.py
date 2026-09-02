@@ -64,6 +64,15 @@ _WEB_CAPABILITIES = PlatformCapabilities(
     ),
 )
 
+_PROJECT_WEB_TEMPLATE = Path("ProjectSettings") / "WebTemplate"
+_WEB_SHELL_REQUIRED_MARKERS = (
+    "{{{ SCRIPT }}}",
+    "@INFERNUX_WEB_ASSET_REVISION@",
+    "@INFERNUX_WEB_DISPLAY_MODE@",
+    "@INFERNUX_WEB_CANVAS_WIDTH@",
+    "@INFERNUX_WEB_CANVAS_HEIGHT@",
+)
+
 
 class WebPlatformExporter(PlatformExporter):
     @property
@@ -153,6 +162,13 @@ class WebPlatformExporter(PlatformExporter):
                 "window_width": int(build_settings["window_width"]),
                 "window_height": int(build_settings["window_height"]),
             }
+            default_shell = (
+                Path(__file__).resolve().parent / "templates" / "host" / "shell.html"
+            )
+            web_shell, project_web_template = _resolve_web_template(
+                request,
+                default_shell,
+            )
             request.report("prepare", 0, 1, "Preparing Web Player staging")
             _prepare_web_staging(staging)
             game_name, player_assets = _cook_web_player_assets(request, staging)
@@ -167,6 +183,8 @@ class WebPlatformExporter(PlatformExporter):
                 details,
                 source_root,
                 presentation,
+                web_shell,
+                project_web_template,
             )
             request.report("prepare", 1, 1, "Cooked Web Player host ready")
         except (OSError, RuntimeError, ValueError) as error:
@@ -195,7 +213,9 @@ class WebPlatformExporter(PlatformExporter):
 
         try:
             artifacts, asset_revision = _publish_web_player(
-                request, staging / "host-build"
+                request,
+                staging / "host-build",
+                project_web_template,
             )
         except (OSError, RuntimeError, ValueError) as error:
             return BuildResult(
@@ -236,6 +256,9 @@ class WebPlatformExporter(PlatformExporter):
                 "asset_revision": asset_revision,
                 "entry_point": "infernux-player.html",
                 "presentation": presentation,
+                "web_template": (
+                    "project" if project_web_template is not None else "default"
+                ),
                 "webgpu_capabilities": {
                     "path": WEBGPU_CAPABILITY_FILENAME,
                     "schema": capability_inventory["$schema"],
@@ -252,7 +275,9 @@ class WebPlatformExporter(PlatformExporter):
 
 
 def _publish_web_player(
-    request: BuildRequest, host_build: Path
+    request: BuildRequest,
+    host_build: Path,
+    project_web_template: Path | None,
 ) -> tuple[tuple[BuildArtifact, ...], str]:
     entry_point = host_build / "infernux-player.html"
     if not entry_point.is_file():
@@ -323,9 +348,75 @@ def _publish_web_player(
                 size=destination.stat().st_size,
             )
         )
+    template_output = output_root / "web-template"
+    template_temporary = output_root / ".web-template.tmp"
+    if template_temporary.exists():
+        shutil.rmtree(template_temporary)
+    if project_web_template is not None:
+        template_temporary.mkdir(parents=True)
+        for source in sorted(project_web_template.rglob("*")):
+            if source.is_symlink():
+                raise RuntimeError(
+                    f"Project Web template cannot contain symbolic links: {source}"
+                )
+            if not source.is_file():
+                continue
+            relative = source.relative_to(project_web_template)
+            if relative == Path("shell.html"):
+                continue
+            destination = template_temporary / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        if template_output.exists():
+            shutil.rmtree(template_output)
+        os.replace(template_temporary, template_output)
+        for destination in sorted(template_output.rglob("*")):
+            if not destination.is_file():
+                continue
+            artifacts.append(
+                BuildArtifact(
+                    str(destination),
+                    destination.suffix.lstrip(".") or "file",
+                    size=destination.stat().st_size,
+                )
+            )
+    elif template_output.exists():
+        shutil.rmtree(template_output)
     request.report("package", 1, 1, "Web Player package published")
     request.report("audit", 1, 1, "Web Player browser contract verified")
     return tuple(artifacts), revision
+
+
+def _resolve_web_template(
+    request: BuildRequest,
+    default_shell: Path,
+) -> tuple[Path, Path | None]:
+    template_root = Path(request.project_root).resolve() / _PROJECT_WEB_TEMPLATE
+    if not template_root.exists():
+        return default_shell.resolve(), None
+    if not template_root.is_dir():
+        raise ValueError(
+            f"Project Web template must be a directory: {template_root}"
+        )
+    shell = template_root / "shell.html"
+    if not shell.is_file():
+        raise ValueError(
+            f"Project Web template is missing shell.html: {template_root}"
+        )
+    if shell.is_symlink():
+        raise ValueError("Project Web template shell.html cannot be a symbolic link")
+    document = shell.read_text(encoding="utf-8")
+    missing = [
+        marker for marker in _WEB_SHELL_REQUIRED_MARKERS if marker not in document
+    ]
+    if not re.search(r"\bid\s*=\s*(['\"])canvas\1", document):
+        missing.append('id="canvas"')
+    if missing:
+        raise ValueError(
+            "Project Web template shell.html is missing required markers: "
+            + ", ".join(missing)
+        )
+    return shell.resolve(), template_root.resolve()
 
 
 def _stage_webgpu_capability_inventory(
@@ -773,6 +864,8 @@ def _configure_and_build_host(
     details: dict[str, object],
     source_root: Path,
     presentation: dict[str, object],
+    web_shell: Path,
+    project_web_template: Path | None,
 ) -> tuple[str, ...]:
     if os.name != "nt":
         raise RuntimeError(
@@ -783,6 +876,7 @@ def _configure_and_build_host(
     build_root = staging / "host-build"
     wsl_source_root = _wsl_path(source_root, distribution)
     wsl_host_template_source = _wsl_path(host_template_source, distribution)
+    wsl_web_shell = _wsl_path(web_shell, distribution)
     wsl_build_root = _wsl_path(build_root, distribution)
     wsl_player_assets = _wsl_path(player_assets, distribution)
     wsl_branding = _wsl_path(player_assets / "web-branding", distribution)
@@ -805,6 +899,7 @@ def _configure_and_build_host(
         player_assets,
         host_template_source,
         presentation=presentation,
+        project_template_root=project_web_template,
     )
     zstd_source = _find_local_zstd_source(source_root)
     zstd_argument = ""
@@ -829,6 +924,7 @@ def _configure_and_build_host(
         f"-DINFERNUX_ENGINE_SOURCE_ROOT={shlex.quote(wsl_source_root)} "
         f"-DINFERNUX_WEB_PLAYER_ASSETS={shlex.quote(wsl_player_assets)} "
         f"-DINFERNUX_WEB_BRANDING_DIR={shlex.quote(wsl_branding)} "
+        f"-DINFERNUX_WEB_SHELL_FILE={shlex.quote(wsl_web_shell)} "
         "-DINFERNUX_WEB_LINK_ENGINE_RUNTIME=ON "
         f"-DINFERNUX_WEB_ASSET_REVISION={asset_revision} "
         f"-DINFERNUX_WEB_DISPLAY_MODE={shlex.quote(display_mode)} "
@@ -900,6 +996,7 @@ def _web_asset_revision(
     host_template_source: Path,
     *,
     presentation: dict[str, object],
+    project_template_root: Path | None = None,
 ) -> str:
     """Hash every staged byte that can change the browser asset bundle."""
 
@@ -913,11 +1010,13 @@ def _web_asset_revision(
         ).encode("utf-8")
     )
     digest.update(b"\0")
-    roots = (
+    roots = [
         ("player", player_assets),
         ("host", host_template_source),
         ("shaders", staging / "shader-cook"),
-    )
+    ]
+    if project_template_root is not None:
+        roots.append(("project-template", project_template_root))
     files: list[tuple[str, Path]] = []
     for label, root in roots:
         if not root.is_dir():
