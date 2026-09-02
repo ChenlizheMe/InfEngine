@@ -8,7 +8,6 @@ methods, and panel/manager references live on the bootstrap instance.
 
 from __future__ import annotations
 
-import logging
 import os
 import pathlib
 import threading
@@ -21,7 +20,6 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.resources_manager import ResourcesManager
 from Infernux.engine.play_mode import PlayModeManager, PlayModeState
 from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.ui import (
     SceneViewPanel,
     GameViewPanel,
@@ -36,22 +34,7 @@ from Infernux.engine.ui import (
 )
 from Infernux.engine.ui import panel_state as _panel_state
 
-_log = logging.getLogger("Infernux.bootstrap")
-
 _TOTAL_STEPS = 13
-
-
-def _iter_project_material_paths(project_path: str):
-    """Yield user material assets without walking project runtimes or caches."""
-    assets_root = os.path.join(resolved_path(project_path), "Assets")
-    if not os.path.isdir(assets_root):
-        return
-
-    for dirpath, dirnames, filenames in os.walk(assets_root):
-        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
-        for name in filenames:
-            if name.lower().endswith(".mat"):
-                yield os.path.join(dirpath, name)
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -269,57 +252,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                     native.refresh_material_pipeline(material)
             except Exception as exc:
                 Debug.log_suppressed(f"EditorBootstrap.builtin_pipeline_prewarm[{name}]", exc)
-
-    def _prewarm_material_previews(self):
-        """Prewarm material preview textures once at startup.
-
-        Uses the same Python preview API path as inspector runtime so first click
-        can hit the exact same cache key (size/tag) and avoid a second load.
-        """
-        if not self.engine:
-            return
-
-        native = self.engine.get_native_engine()
-        if native is None:
-            return
-
-        material_paths = list(_iter_project_material_paths(self.project_path))
-
-        if not material_paths:
-            return
-
-        # Route through the same preview cache API used by inspector.
-        try:
-            from Infernux.engine.ui.asset_resource_preview import get_resource_preview_texture_id
-        except Exception as exc:
-            Debug.log_suppressed("EditorBootstrap.material_preview_prewarm.import", exc)
-            return
-
-        class _BootstrapPreviewPanel:
-            def __init__(self, native_engine):
-                self._native_engine = native_engine
-
-            def get_native_engine(self):
-                return self._native_engine
-
-        preview_panel = _BootstrapPreviewPanel(native)
-
-        for mat_path in material_paths:
-            try:
-                # Keep cache_tag empty to match first inspector draw.
-                get_resource_preview_texture_id(
-                    preview_panel,
-                    mat_path,
-                    preview_size=256,
-                    cache_tag="",
-                    material_async=False,
-                )
-            except Exception as exc:
-                Debug.log_suppressed(
-                    f"EditorBootstrap.material_preview_prewarm[{os.path.basename(mat_path)}]",
-                    exc,
-                )
-                continue
 
     def _create_managers(self):
         from Infernux.engine.interaction import EditorInteractionCore
