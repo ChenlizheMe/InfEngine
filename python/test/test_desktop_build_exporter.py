@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -33,6 +34,9 @@ def _request(tmp_path: Path, **options) -> BuildRequest:
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()
+    (project / "ProjectSettings" / "BuildSettings.json").write_text(
+        json.dumps({"scenes": []}), encoding="utf-8"
+    )
     entries = options.pop("asset_catalog_entries", ())
     return BuildRequest(
         str(project),

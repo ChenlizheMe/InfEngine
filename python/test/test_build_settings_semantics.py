@@ -83,6 +83,10 @@ class _Context:
         return 600.0
 
     @staticmethod
+    def get_dpi_scale() -> float:
+        return 1.0
+
+    @staticmethod
     def dummy(*_args) -> None:
         pass
 
@@ -217,7 +221,7 @@ def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
     panel._splash_items = [
         {
             "type": "image",
-            "path": "C:/Missing/splash.png",
+            "asset_guid": "missing-splash-guid",
             "duration": 3.0,
         }
     ]
@@ -227,7 +231,7 @@ def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
 
     panel.on_enable()
 
-    assert panel._splash_items[0]["path"] == "C:/Missing/splash.png"
+    assert panel._splash_items[0]["asset_guid"] == "missing-splash-guid"
     assert saves == []
 
 
@@ -282,7 +286,7 @@ def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
     panel._lto = True
     panel._enable_jit = False
     panel._output_dir = "C:/Builds/RacingPilot"
-    panel._icon_path = ""
+    panel._icon_guid = ""
     panel._save = lambda: None
     ctx = _Context()
 
@@ -661,6 +665,68 @@ def test_missing_platform_plugin_is_visible_and_blocks_build(monkeypatch):
         == "infernux/platform-android"
     )
     assert any("infernux/platform-android" in text for text in ctx.wrapped_texts)
+
+
+def test_build_settings_opens_plugins_and_selects_required_reference():
+    selected: list[str] = []
+    opened: list[tuple[str, str]] = []
+    plugin_panel = SimpleNamespace(
+        select_reference=lambda reference: selected.append(reference) or True
+    )
+
+    class _WindowManager:
+        def open_window_from_user(self, type_id, *, reason):
+            opened.append((type_id, reason))
+            return plugin_panel
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._window_manager = _WindowManager()
+
+    assert panel._open_platform_plugin("infernux/platform-web")
+    assert opened == [("plugins", "build_platform_plugin_navigation")]
+    assert selected == ["infernux/platform-web"]
+
+
+def test_plugin_panel_external_selection_clears_filters():
+    from Infernux.engine.ui.plugin_panel import PluginPanel
+
+    panel = PluginPanel()
+    panel._scope_index = 1
+    panel._search = "something else"
+
+    assert panel.select_reference("infernux/platform-web")
+    assert panel._scope_index == 0
+    assert panel._search == ""
+    assert panel._selected_reference == "infernux/platform-web"
+
+
+def test_plugin_panel_reads_the_current_shared_cache_contract():
+    from Infernux.engine.ui.plugin_panel import PluginPanel
+
+    registry = SimpleNamespace(
+        available=lambda: (
+            {
+                "reference": "infernux/platform-web",
+                "name": "Infernux Web Platform",
+                "version": "0.1.0",
+                "source": {"official": True},
+            },
+        ),
+        installed=lambda: (),
+    )
+    cache_queries: list[str] = []
+    manager = SimpleNamespace(
+        registry=registry,
+        states={},
+        cached_reference_path=lambda reference: cache_queries.append(reference) or "",
+    )
+
+    rows = PluginPanel()._visible_rows(manager)
+
+    assert [row["reference"] for row in rows] == ["infernux/platform-web"]
+    assert rows[0]["_official"] is True
+    assert rows[0]["_cached"] is False
+    assert cache_queries == ["infernux/platform-web"]
 
 
 def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatch):

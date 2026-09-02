@@ -6,7 +6,7 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable
 
 from .contracts import (
     BuildArtifact,
@@ -140,10 +140,13 @@ def execute_host_player_build(
 ) -> BuildResult:
     del plan
     from Infernux.engine.game_builder import GameBuilder
+    from Infernux.engine.platform_content_cook import (
+        build_settings_for_request,
+    )
 
     started = time.perf_counter()
-    settings = _build_settings(request.profile.options)
-    game_name = str(settings.get("game_name", "") or "").strip()
+    settings = build_settings_for_request(request)
+    game_name = str(settings["game_name"]).strip()
     if not game_name:
         game_name = Path(request.project_root).name
     if request.asset_catalog_entries:
@@ -159,20 +162,17 @@ def execute_host_player_build(
         request.project_root,
         request.output_dir,
         game_name=game_name,
-        icon_path=str(settings.get("icon_path", "") or "").strip() or None,
-        display_mode=str(
-            settings.get("display_mode", "fullscreen_borderless")
-            or "fullscreen_borderless"
-        ),
-        window_width=int(settings.get("window_width", 1280)),
-        window_height=int(settings.get("window_height", 720)),
-        window_resizable=bool(settings.get("window_resizable", True)),
-        splash_items=list(settings.get("splash_items", []) or []),
+        icon_guid=str(settings["icon_guid"]).strip(),
+        display_mode=str(settings["display_mode"]),
+        window_width=int(settings["window_width"]),
+        window_height=int(settings["window_height"]),
+        window_resizable=bool(settings["window_resizable"]),
+        splash_items=list(settings["splash_items"]),
         debug_mode=(
             request.profile.configuration is BuildConfiguration.DEVELOPMENT
         ),
-        lto=bool(settings.get("lto", True)),
-        enable_jit=bool(settings.get("enable_jit", False)),
+        lto=bool(settings["lto"]),
+        enable_jit=bool(settings["enable_jit"]),
     )
     builder.freeze_asset_index_entries(catalog_entries)
     builder._validate_output_directory()
@@ -196,13 +196,6 @@ def execute_host_player_build(
         },
         elapsed_seconds=time.perf_counter() - started,
     )
-
-
-def _build_settings(options: Mapping[str, object]) -> Mapping[str, object]:
-    value = options.get("build_settings", {})
-    return value if isinstance(value, Mapping) else {}
-
-
 __all__ = [
     "HOST_PLAYER_CAPABILITIES",
     "create_host_player_plan",

@@ -532,7 +532,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         output_dir: str,
         *,
         game_name: str = "",
-        icon_path: Optional[str] = None,
+        icon_guid: str = "",
         display_mode: str = "fullscreen_borderless",
         window_width: int = 1280,
         window_height: int = 720,
@@ -545,7 +545,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
         self.output_dir = resolved_path(output_dir)
-        self.icon_path = resolved_path(icon_path) if icon_path else ""
+        self.icon_guid = str(icon_guid).strip()
         self._built_icon_path = ""
         self.display_mode = display_mode
         self.window_width = window_width
@@ -1035,10 +1035,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._ensure_selected_particle_artifacts(selected)
         self._validate_animation_clip_assets()
 
-        if self.icon_path:
-            if not os.path.isfile(self.icon_path):
-                raise FileNotFoundError(f"Build icon not found: {self.icon_path}")
-            ext = os.path.splitext(self.icon_path)[1].lower()
+        if self.icon_guid:
+            icon_path = self._asset_source_for_guid(self.icon_guid, "Build icon")
+            ext = os.path.splitext(icon_path)[1].lower()
             if ext not in self._ICON_EXTS:
                 raise ValueError(
                     "Build icon must be a .png, .jpg, .jpeg, or .ico file."
@@ -1609,13 +1608,15 @@ finally:
         compiled_pkgs = [p for p in all_pkgs if p not in jit_set]
         raw_pkgs = {"numpy", "packaging"}
 
-        player_icon = self.icon_path
-        if not player_icon:
-            candidate = os.path.join(
+        player_icon = (
+            self._asset_source_for_guid(self.icon_guid, "Build icon")
+            if self.icon_guid
+            else os.path.join(
                 _resources.get_package_resources_path(), "icons", "icon.png"
             )
-            if os.path.isfile(candidate):
-                player_icon = candidate
+        )
+        if not os.path.isfile(player_icon):
+            raise FileNotFoundError(f"Player icon is missing: {player_icon}")
 
         nk = NuitkaBuilder(
             entry_script=boot_script,
@@ -1626,7 +1627,7 @@ finally:
                 else "_InfernuxPlayer.so"
             ),
             product_name="Infernux Player",
-            icon_path=player_icon or None,
+            icon_path=player_icon,
             extra_include_packages=compiled_pkgs,
             extra_requirements_files=self._project_requirement_files(),
             raw_copy_packages=sorted(raw_pkgs),
@@ -1936,13 +1937,14 @@ finally:
     def _process_build_icon(self, final_dir: str) -> None:
         """Stage the project icon for the runtime window and taskbar."""
         self._built_icon_path = ""
-        if not self.icon_path:
+        if not self.icon_guid:
             return
-        extension = os.path.splitext(self.icon_path)[1].lower()
+        icon_path = self._asset_source_for_guid(self.icon_guid, "Build icon")
+        extension = os.path.splitext(icon_path)[1].lower()
         branding_dir = os.path.join(final_dir, "Data", "Branding")
         os.makedirs(branding_dir, exist_ok=True)
         destination = os.path.join(branding_dir, "icon" + extension)
-        shutil.copy2(self.icon_path, destination)
+        shutil.copy2(icon_path, destination)
         self._built_icon_path = portable_path(relative_path(destination, os.path.join(final_dir, "Data")))
 
     # ------------------------------------------------------------------
@@ -2774,6 +2776,17 @@ finally:
             str(entry["guid"]): self._library_source_entry_path(entry)
             for entry in entries
         }
+
+    def _asset_source_for_guid(self, guid: str, owner: str) -> str:
+        source = self._build_asset_guid_index().get(str(guid).strip(), "")
+        if not source:
+            raise ValueError(f"{owner} GUID is absent from the current AssetIndex: {guid}")
+        assets_root = os.path.join(self.project_path, "Assets")
+        if not is_path_within(source, assets_root, allow_root=False):
+            raise ValueError(f"{owner} must reference an asset under Assets: {guid}")
+        if not os.path.isfile(source):
+            raise FileNotFoundError(f"{owner} source is missing for GUID {guid}: {source}")
+        return source
 
     @staticmethod
     def _particle_source_stable_id(source_path: str) -> str:
@@ -3685,7 +3698,7 @@ finally:
                     if (
                         portable_source.startswith("Infernux/resources/icons/")
                         and filename.casefold() == "icon.png"
-                        and self.icon_path
+                        and self.icon_guid
                     ):
                         # A configured project icon is staged once in Content.inxpkg
                         # and referenced by BuildManifest. Shipping the generic

@@ -45,6 +45,43 @@ def test_build_settings_reject_invalid_platform_target_and_artifact():
         normalize_build_settings({"android_artifact": "zip"})
 
 
+def test_build_branding_uses_asset_guid_identity():
+    settings = normalize_build_settings(
+        {
+            "icon_guid": "icon-guid",
+            "splash_items": [
+                {
+                    "type": "image",
+                    "asset_guid": "splash-guid",
+                    "duration": 1.5,
+                    "fade_in": 0.25,
+                    "fade_out": 0.25,
+                }
+            ],
+        }
+    )
+
+    assert settings["icon_guid"] == "icon-guid"
+    assert settings["splash_items"][0]["asset_guid"] == "splash-guid"
+
+
+def test_build_branding_requires_the_exact_current_splash_shape():
+    import pytest
+
+    with pytest.raises(TypeError, match="current asset GUID schema"):
+        normalize_build_settings(
+            {
+                "splash_items": [
+                    {
+                        "type": "image",
+                        "asset_guid": "splash-guid",
+                        "duration": 1.5,
+                    }
+                ]
+            }
+        )
+
+
 class _TagManager:
     def __init__(self):
         self.document = _tag_document()

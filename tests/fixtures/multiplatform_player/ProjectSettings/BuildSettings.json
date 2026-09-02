@@ -3,7 +3,7 @@
   "display_mode": "windowed",
   "enable_jit": false,
   "game_name": "InfernuxPlatformFixture",
-  "icon_path": "",
+  "icon_guid": "",
   "lto": false,
   "output_dir": "",
   "scenes": [

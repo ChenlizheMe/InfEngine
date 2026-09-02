@@ -41,7 +41,6 @@ import time
 from typing import Callable, Dict, List, Optional
 
 import Infernux._jit_kernels as _jit_kernels
-from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
 
@@ -56,26 +55,43 @@ class BuildSplashMixin:
 
         splash_dir = os.path.join(final_dir, "Data", "Splash")
         os.makedirs(splash_dir, exist_ok=True)
+        staged_by_guid: dict[str, str] = {}
+        if self._built_icon_path and self.icon_guid:
+            staged_by_guid[self.icon_guid] = self._built_icon_path
 
         for item in self.splash_items:
-            src_path = item.get("path", "")
-            if not os.path.isfile(src_path):
-                Debug.log_warning(f"Splash item not found: {src_path}")
-                continue
-
+            asset_guid = item["asset_guid"]
+            src_path = self._asset_source_for_guid(asset_guid, "Splash item")
             item_type = item.get("type", "image")
+            if item_type not in {"image", "video"}:
+                raise ValueError(f"Unsupported splash item type: {item_type}")
+            item["_layout"] = (
+                "logo"
+                if item_type == "image" and asset_guid == self.icon_guid
+                else "contain" if item_type == "image" else "cover"
+            )
+            existing = staged_by_guid.get(asset_guid)
+            if existing:
+                item["_built_path"] = existing
+                continue
             base_name = os.path.splitext(os.path.basename(src_path))[0]
 
             if item_type == "video":
                 out_name = base_name + ".infsplash"
                 out_path = os.path.join(splash_dir, out_name)
+                if os.path.exists(out_path):
+                    raise RuntimeError(f"Splash destination collision: {out_path}")
                 self._extract_video_frames(src_path, out_path)
                 item["_built_path"] = f"Splash/{out_name}"
             else:
                 ext = os.path.splitext(src_path)[1]
                 out_name = base_name + ext
-                shutil.copy2(src_path, os.path.join(splash_dir, out_name))
+                out_path = os.path.join(splash_dir, out_name)
+                if os.path.exists(out_path):
+                    raise RuntimeError(f"Splash destination collision: {out_path}")
+                shutil.copy2(src_path, out_path)
                 item["_built_path"] = f"Splash/{out_name}"
+            staged_by_guid[asset_guid] = item["_built_path"]
 
     def _extract_video_frames(self, video_path: str, output_path: str):
         """Extract video frames to .infsplash binary blob."""

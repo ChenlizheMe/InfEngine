@@ -57,6 +57,7 @@ from Infernux.engine.interaction import (
     normalize_build_settings,
 )
 from .editor_panel import EditorPanel
+from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from ._dialogs import pick_folder_dialog, pick_file_dialog
@@ -81,6 +82,14 @@ _ANDROID_ARTIFACTS = ["apk", "aab"]
 DRAG_DROP_SCENE = "SCENE_FILE"
 DRAG_DROP_REORDER = "BUILD_REORDER"
 _DRAG_TARGET_COLOR = Theme.DRAG_DROP_TARGET
+
+
+def _metric(ctx, value: float) -> float:
+    return scaled_editor_metric(ctx, value)
+
+
+def _metric_pair(ctx, value) -> tuple[float, float]:
+    return (_metric(ctx, value[0]), _metric(ctx, value[1]))
 
 
 def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:
@@ -141,7 +150,7 @@ class BuildSettingsPanel(EditorPanel):
         self._game_name: str = ""
         self._scenes: List[str] = []
         self._output_dir: str = ""
-        self._icon_path: str = ""
+        self._icon_guid: str = ""
         self._display_mode_idx: int = 0  # 0=fullscreen, 1=windowed
         self._window_width: int = 1280
         self._window_height: int = 720
@@ -283,7 +292,7 @@ class BuildSettingsPanel(EditorPanel):
         self._game_name = data.get("game_name", "")
         self._scenes = list(data.get("scenes", []))
         self._output_dir = data.get("output_dir", "")
-        self._icon_path = data.get("icon_path", "")
+        self._icon_guid = data.get("icon_guid", "")
         mode_key = data.get("display_mode", "fullscreen_borderless")
         self._display_mode_idx = (
             _DISPLAY_MODE_KEYS.index(mode_key)
@@ -304,7 +313,7 @@ class BuildSettingsPanel(EditorPanel):
             "game_name": self._game_name,
             "scenes": self._scenes,
             "output_dir": self._output_dir,
-            "icon_path": self._icon_path,
+            "icon_guid": self._icon_guid,
             "display_mode": _DISPLAY_MODE_KEYS[self._display_mode_idx],
             "window_width": self._window_width,
             "window_height": self._window_height,
@@ -363,21 +372,24 @@ class BuildSettingsPanel(EditorPanel):
         )
         return bool(BuildPreflightProgressService.instance().is_active)
 
-    def _footer_reserve_height(self) -> float:
+    def _footer_reserve_height(self, ctx) -> float:
         if self._building:
-            return 56.0 if self._is_preflight_active() else 96.0
+            value = 56.0 if self._is_preflight_active() else 96.0
+            return _metric(ctx, value)
         if self._build_error:
-            return 176.0
+            return _metric(ctx, 176.0)
         if self._build_cancelled or self._build_output_dir:
-            return 72.0
-        return 52.0
+            return _metric(ctx, 72.0)
+        return _metric(ctx, 52.0)
 
     def _render_wrapped_message(self, ctx, message: str, *, color=None, height: Optional[float] = None) -> None:
         if color is not None:
             ctx.push_style_color(ImGuiCol.Text, *color)
         writer = getattr(ctx, "text_wrapped", None)
         if height is not None:
-            if ctx.begin_child("##build_status_message", 0, float(height), True):
+            if ctx.begin_child(
+                "##build_status_message", 0, _metric(ctx, height), True
+            ):
                 if callable(writer):
                     writer(str(message))
                 else:
@@ -391,18 +403,26 @@ class BuildSettingsPanel(EditorPanel):
             ctx.pop_style_color(1)
 
     def _render_action_row(self, ctx, buttons) -> None:
-        gap = 8.0
-        widths = [float(width) for _label, _callback, width, _semantic_id, _enabled in buttons]
+        gap = _metric(ctx, 8.0)
+        widths = [
+            _metric(ctx, width)
+            for _label, _callback, width, _semantic_id, _enabled in buttons
+        ]
         total = sum(widths) + gap * max(0, len(buttons) - 1)
         avail = float(ctx.get_content_region_avail_width())
         get_x = getattr(ctx, "get_cursor_pos_x", None)
         set_x = getattr(ctx, "set_cursor_pos_x", None)
         if callable(get_x) and callable(set_x) and avail > total:
             set_x(float(get_x()) + avail - total)
-        for index, (label, callback, width, semantic_id, enabled) in enumerate(buttons):
+        for index, (label, callback, _width, semantic_id, enabled) in enumerate(buttons):
             if index:
                 ctx.same_line(0, gap)
-            ctx.button(label, callback, width=float(width), height=30)
+            ctx.button(
+                label,
+                callback,
+                width=widths[index],
+                height=_metric(ctx, 30.0),
+            )
             ctx.record_semantic_item(
                 "button",
                 str(label).split("##", 1)[0].strip(),
@@ -411,8 +431,10 @@ class BuildSettingsPanel(EditorPanel):
             )
 
     def _render_body(self, ctx):
-        ctx.dummy(0.0, 4.0)
-        child_h = max(0, ctx.get_content_region_avail_height() - self._footer_reserve_height())
+        ctx.dummy(0.0, _metric(ctx, 4.0))
+        child_h = max(
+            0, ctx.get_content_region_avail_height() - self._footer_reserve_height(ctx)
+        )
         # The worker can complete between BeginDisabled and EndDisabled.
         # Keep the pair governed by one immutable decision for this frame.
         building_this_frame = self._building
@@ -505,7 +527,7 @@ class BuildSettingsPanel(EditorPanel):
         selected = target_by_id.get(next_id)
         selected_support = support_by_id.get(next_id)
         if selected_support is not None:
-            ctx.dummy(0.0, 4.0)
+            ctx.dummy(0.0, _metric(ctx, 4.0))
             message_key = (
                 "build.plugin_disabled"
                 if selected_support.installed and not selected_support.enabled
@@ -523,6 +545,21 @@ class BuildSettingsPanel(EditorPanel):
                 "build_settings.target_support",
                 string_value=selected_support.package_reference,
             )
+            reference = selected_support.package_reference
+            ctx.dummy(0.0, _metric(ctx, 4.0))
+            ctx.button(
+                t("build.open_plugins") + "##build_open_platform_plugin",
+                lambda value=reference: self._open_platform_plugin(value),
+                width=_metric(ctx, 132.0),
+                height=_metric(ctx, 28.0),
+            )
+            ctx.record_semantic_item(
+                "button",
+                t("build.open_plugins"),
+                getattr(self, "_window_manager", None) is not None,
+                "build_settings.target_support.open_plugins",
+                string_value=reference,
+            )
 
         selected_platform = (
             str(selected.platform)
@@ -530,9 +567,9 @@ class BuildSettingsPanel(EditorPanel):
             else next_id.split("-", 1)[0]
         )
         if selected_platform == "android":
-            ctx.same_line(0, 20)
+            ctx.same_line(0, _metric(ctx, 20.0))
             ctx.label(t("build.android_artifact"))
-            ctx.same_line(0, 8)
+            ctx.same_line(0, _metric(ctx, 8.0))
             artifact_index = _ANDROID_ARTIFACTS.index(self._android_artifact)
             next_artifact_index = ctx.combo(
                 "##android_artifact",
@@ -553,6 +590,17 @@ class BuildSettingsPanel(EditorPanel):
                 self._android_artifact = next_artifact
                 self._save()
 
+    def _open_platform_plugin(self, reference: str) -> bool:
+        manager = getattr(self, "_window_manager", None)
+        if manager is None:
+            return False
+        panel = manager.open_window_from_user(
+            "plugins",
+            reason="build_platform_plugin_navigation",
+        )
+        select = getattr(panel, "select_reference", None)
+        return bool(callable(select) and select(reference))
+
     # ------------------------------------------------------------------
     # OUTPUT DIRECTORY
     # ------------------------------------------------------------------
@@ -561,7 +609,7 @@ class BuildSettingsPanel(EditorPanel):
         ctx.label(t("build.game_name"))
         root = get_project_root()
         placeholder = os.path.basename(root) if root else "MyGame"
-        ctx.set_next_item_width(300)
+        ctx.set_next_item_width(_metric(ctx, 300.0))
         new_name = ctx.text_input("##game_name", self._game_name, 256)
         ctx.record_semantic_item(
             "text_input",
@@ -573,7 +621,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_name != self._game_name:
             self._game_name = new_name
             self._save()
-        ctx.same_line(0, 20)
+        ctx.same_line(0, _metric(ctx, 20.0))
         new_debug = ctx.checkbox(t("build.debug_mode") + "##debug_mode", self._debug_mode)
         ctx.record_semantic_item(
             "checkbox",
@@ -585,7 +633,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_debug != self._debug_mode:
             self._debug_mode = new_debug
             self._save()
-        ctx.same_line(0, 20)
+        ctx.same_line(0, _metric(ctx, 20.0))
         new_lto = ctx.checkbox(t("build.lto") + "##lto", self._lto)
         ctx.record_semantic_item(
             "checkbox", t("build.lto"), True, "build_settings.lto", bool_value=new_lto
@@ -593,7 +641,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_lto != self._lto:
             self._lto = new_lto
             self._save()
-        ctx.same_line(0, 20)
+        ctx.same_line(0, _metric(ctx, 20.0))
         new_jit = ctx.checkbox(t("build.enable_jit") + "##enable_jit", self._enable_jit)
         ctx.record_semantic_item(
             "checkbox",
@@ -612,7 +660,9 @@ class BuildSettingsPanel(EditorPanel):
             ctx.pop_style_color(1)
 
         ctx.label(t("build.output_directory"))
-        ctx.set_next_item_width(ctx.get_content_region_avail_width() - 84)
+        ctx.set_next_item_width(
+            ctx.get_content_region_avail_width() - _metric(ctx, 84.0)
+        )
         new_val = ctx.text_input("##output_dir", self._output_dir, 512)
         ctx.record_semantic_item(
             "text_input",
@@ -626,7 +676,11 @@ class BuildSettingsPanel(EditorPanel):
             self._save()
         ctx.same_line()
         browse_output_label = t("build.browse")
-        ctx.button(browse_output_label + "##browse_out", self._browse_output_dir, width=80)
+        ctx.button(
+            browse_output_label + "##browse_out",
+            self._browse_output_dir,
+            width=_metric(ctx, 80.0),
+        )
         ctx.record_semantic_item(
             "button", browse_output_label, True, "build_settings.output_dir.browse"
         )
@@ -635,10 +689,15 @@ class BuildSettingsPanel(EditorPanel):
         ctx.pop_style_color(1)
 
         ctx.label(t("build.icon"))
-        clear_btn_w = 80 if self._icon_path else 0
-        icon_input_w = ctx.get_content_region_avail_width() - 84 - (clear_btn_w + (4 if clear_btn_w else 0))
-        ctx.set_next_item_width(max(120, icon_input_w))
-        new_icon = ctx.text_input("##build_icon", self._icon_path, 512)
+        icon_path = self._asset_path_for_guid(self._icon_guid)
+        clear_btn_w = _metric(ctx, 80.0) if self._icon_guid else 0.0
+        icon_input_w = (
+            ctx.get_content_region_avail_width()
+            - _metric(ctx, 84.0)
+            - (clear_btn_w + (_metric(ctx, 4.0) if clear_btn_w else 0.0))
+        )
+        ctx.set_next_item_width(max(_metric(ctx, 120.0), icon_input_w))
+        new_icon = ctx.text_input("##build_icon", icon_path, 512)
         ctx.record_semantic_item(
             "text_input",
             t("build.icon"),
@@ -646,19 +705,29 @@ class BuildSettingsPanel(EditorPanel):
             "build_settings.icon",
             string_value=new_icon,
         )
-        if new_icon != self._icon_path:
-            self._icon_path = new_icon
-            self._save()
+        if new_icon != icon_path:
+            if new_icon:
+                self._accept_icon_path(new_icon)
+            else:
+                self._clear_icon_path()
         ctx.same_line()
         browse_icon_label = t("build.browse")
-        ctx.button(browse_icon_label + "##browse_icon", self._browse_icon_path, width=80)
+        ctx.button(
+            browse_icon_label + "##browse_icon",
+            self._browse_icon_path,
+            width=_metric(ctx, 80.0),
+        )
         ctx.record_semantic_item(
             "button", browse_icon_label, True, "build_settings.icon.browse"
         )
-        if self._icon_path:
-            ctx.same_line(0, 4)
+        if self._icon_guid:
+            ctx.same_line(0, _metric(ctx, 4.0))
             clear_icon_label = t("build.clear_icon")
-            ctx.button(clear_icon_label + "##clear_icon", self._clear_icon_path, width=80)
+            ctx.button(
+                clear_icon_label + "##clear_icon",
+                self._clear_icon_path,
+                width=_metric(ctx, 80.0),
+            )
             ctx.record_semantic_item(
                 "button", clear_icon_label, True, "build_settings.icon.clear"
             )
@@ -702,14 +771,38 @@ class BuildSettingsPanel(EditorPanel):
         self._output_dir = str(path)
         self._save()
 
+    def _asset_path_for_guid(self, guid: str) -> str:
+        if not guid:
+            return ""
+        return str(self.services.asset_database.get_path_from_guid(guid) or "")
+
+    def _guid_for_project_asset(self, path: str) -> str:
+        project_root = get_project_root()
+        if not project_root:
+            raise RuntimeError("No project root found")
+        source = resolved_path(path)
+        assets_root = os.path.join(project_root, "Assets")
+        if not is_path_within(source, assets_root, allow_root=False):
+            raise ValueError(
+                "Build branding must be imported under the project Assets directory"
+            )
+        guid = str(
+            self.services.asset_database.get_guid_from_path(source) or ""
+        ).strip()
+        if not guid:
+            raise ValueError(
+                "Build branding asset has not been imported into the Asset Database"
+            )
+        return guid
+
     def _accept_icon_path(self, path: str) -> None:
-        self._icon_path = str(path)
+        self._icon_guid = self._guid_for_project_asset(path)
         self._save()
 
     def _clear_icon_path(self):
-        if not self._icon_path:
+        if not self._icon_guid:
             return
-        self._icon_path = ""
+        self._icon_guid = ""
         self._save()
 
     # ------------------------------------------------------------------
@@ -733,7 +826,12 @@ class BuildSettingsPanel(EditorPanel):
 
         if self._display_mode_idx == 1:  # Windowed
             ctx.label(t("build.window_size"))
-            new_w = ctx.input_int(t("build.width") + "##win_w", self._window_width, 16, 160)
+            new_w = ctx.input_int(
+                t("build.width") + "##win_w",
+                self._window_width,
+                16,
+                _metric(ctx, 160.0),
+            )
             ctx.record_semantic_item(
                 "int_input",
                 t("build.width"),
@@ -745,7 +843,12 @@ class BuildSettingsPanel(EditorPanel):
                 self._window_width = max(320, min(7680, new_w))
                 self._save()
             ctx.same_line()
-            new_h = ctx.input_int(t("build.height") + "##win_h", self._window_height, 16, 160)
+            new_h = ctx.input_int(
+                t("build.height") + "##win_h",
+                self._window_height,
+                16,
+                _metric(ctx, 160.0),
+            )
             ctx.record_semantic_item(
                 "int_input",
                 t("build.height"),
@@ -777,56 +880,64 @@ class BuildSettingsPanel(EditorPanel):
 
     def _render_splash_section(self, ctx):
         ctx.label(t("build.splash_sequence"))
-        ctx.button(t("build.add_splash") + "##add_splash", self._browse_splash_file, width=200)
+        ctx.button(
+            t("build.add_splash") + "##add_splash",
+            self._browse_splash_file,
+            width=_metric(ctx, 200.0),
+        )
 
         remove_idx: Optional[int] = None
 
         for i, item in enumerate(self._splash_items):
             ctx.push_id(i + 10000)
-            ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
+            ctx.push_style_var_vec2(
+                ImGuiStyleVar.ItemSpacing,
+                *_metric_pair(ctx, Theme.BUILD_SETTINGS_ROW_SPC),
+            )
 
-            fname = os.path.basename(item.get("path", "<none>"))
+            source_path = self._asset_path_for_guid(item.get("asset_guid", ""))
+            fname = os.path.basename(source_path) if source_path else "<missing>"
             item_type = item.get("type", "image")
             badge = "[IMG]" if item_type == "image" else "[VID]"
-            source_exists = os.path.isfile(item.get("path", ""))
+            source_exists = os.path.isfile(source_path)
 
             # ── Row 1: name ──
             if not source_exists:
                 ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.label(f"  {i + 1}. {badge}  {fname}")
             if not source_exists:
-                ctx.same_line(0, 8)
+                ctx.same_line(0, _metric(ctx, 8.0))
                 ctx.label(t("build.source_missing"))
                 ctx.pop_style_color(1)
             if ctx.is_item_hovered():
-                ctx.set_tooltip(item.get("path", ""))
+                ctx.set_tooltip(source_path)
 
             # ── Row 2: numeric fields ──
             if item_type == "image":
                 ctx.label(f"      {t('build.duration')} ({t('build.seconds_short')})")
-                ctx.same_line(0, 8)
-                ctx.set_next_item_width(120)
+                ctx.same_line(0, _metric(ctx, 8.0))
+                ctx.set_next_item_width(_metric(ctx, 120.0))
                 new_dur = ctx.input_float(f"##dur{i}", item.get("duration", 3.0), 0.1, 1.0)
                 if new_dur != item.get("duration", 3.0):
                     item["duration"] = max(0.1, new_dur)
                     self._save()
-                ctx.same_line(0, 24)
+                ctx.same_line(0, _metric(ctx, 24.0))
             else:
                 ctx.label("      ")
                 ctx.same_line(0, 0)
 
             ctx.label(f"{t('build.fade_in')} ({t('build.seconds_short')})")
-            ctx.same_line(0, 8)
-            ctx.set_next_item_width(120)
+            ctx.same_line(0, _metric(ctx, 8.0))
+            ctx.set_next_item_width(_metric(ctx, 120.0))
             new_fi = ctx.input_float(f"##fi{i}", item.get("fade_in", 0.5), 0.1, 0.5)
             if new_fi != item.get("fade_in", 0.5):
                 item["fade_in"] = max(0.0, new_fi)
                 self._save()
 
-            ctx.same_line(0, 24)
+            ctx.same_line(0, _metric(ctx, 24.0))
             ctx.label(f"{t('build.fade_out')} ({t('build.seconds_short')})")
-            ctx.same_line(0, 8)
-            ctx.set_next_item_width(120)
+            ctx.same_line(0, _metric(ctx, 8.0))
+            ctx.set_next_item_width(_metric(ctx, 120.0))
             new_fo = ctx.input_float(f"##fo{i}", item.get("fade_out", 0.5), 0.1, 0.5)
             if new_fo != item.get("fade_out", 0.5):
                 item["fade_out"] = max(0.0, new_fo)
@@ -835,12 +946,18 @@ class BuildSettingsPanel(EditorPanel):
             # ── Row 3: action buttons ──
             ctx.label(" ")
             
-            btn_w = 64
-            btn_spc = 4
+            btn_w = _metric(ctx, 64.0)
+            btn_spc = _metric(ctx, 4.0)
             num_btns = 1 + int(i > 0) + int(i < len(self._splash_items) - 1)
-            btn_area = num_btns * btn_w + (num_btns - 1) * btn_spc + 24
+            btn_area = (
+                num_btns * btn_w
+                + (num_btns - 1) * btn_spc
+                + _metric(ctx, 24.0)
+            )
             
-            ctx.same_line(max(ctx.get_window_width() - btn_area, 200))
+            ctx.same_line(
+                max(ctx.get_window_width() - btn_area, _metric(ctx, 200.0))
+            )
             
             if i > 0:
                 def _up(idx=i):
@@ -903,7 +1020,9 @@ class BuildSettingsPanel(EditorPanel):
         threading.Thread(target=_do, daemon=True).start()
 
     def _accept_splash_item(self, item: dict) -> None:
-        self._splash_items.append(copy.deepcopy(item))
+        current = copy.deepcopy(item)
+        current["asset_guid"] = self._guid_for_project_asset(current.pop("path"))
+        self._splash_items.append(current)
         self._save()
 
     # ------------------------------------------------------------------
@@ -953,10 +1072,13 @@ class BuildSettingsPanel(EditorPanel):
                 # Windows cannot compute a relative path across drive letters.
                 rel = absolute_scene
 
-            ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
+            ctx.push_style_var_vec2(
+                ImGuiStyleVar.ItemSpacing,
+                *_metric_pair(ctx, Theme.BUILD_SETTINGS_ROW_SPC),
+            )
             
             # Use a fixed row height so selectable and buttons align
-            row_h = 24
+            row_h = _metric(ctx, 24.0)
             ctx.selectable(f"  {i}    {name}    ({rel})##row", False, 16, 0, row_h)
             ctx.record_semantic_item(
                 "selectable",
@@ -982,12 +1104,18 @@ class BuildSettingsPanel(EditorPanel):
                     self._add_scene(str(payload))
             IGUI.multi_drop_target(ctx, (DRAG_DROP_REORDER, DRAG_DROP_SCENE), _on_drop)
 
-            btn_w = 64
-            btn_spc = 4
+            btn_w = _metric(ctx, 64.0)
+            btn_spc = _metric(ctx, 4.0)
             num_btns = 1 + int(i > 0) + int(i < len(self._scenes) - 1)
-            btn_area = num_btns * btn_w + (num_btns - 1) * btn_spc + 24
+            btn_area = (
+                num_btns * btn_w
+                + (num_btns - 1) * btn_spc
+                + _metric(ctx, 24.0)
+            )
             
-            ctx.same_line(max(ctx.get_window_width() - btn_area, 200))
+            ctx.same_line(
+                max(ctx.get_window_width() - btn_area, _metric(ctx, 200.0))
+            )
             if i > 0:
                 def _up(idx=i):
                     self._scenes[idx - 1], self._scenes[idx] = self._scenes[idx], self._scenes[idx - 1]
@@ -1070,7 +1198,7 @@ class BuildSettingsPanel(EditorPanel):
                     numeric_value=float(self._build_progress),
                 )
                 self._render_wrapped_message(ctx, progress_message)
-                ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
+                ctx.progress_bar(self._build_progress, -1.0, _metric(ctx, 20.0), "")
             else:
                 self._render_wrapped_message(ctx, progress_message)
             cancel_label = t("build.cancel")
@@ -1188,27 +1316,32 @@ class BuildSettingsPanel(EditorPanel):
             can_build_and_run = can_build and self.can_run_after_build()
 
             # Align build buttons to the right
-            ctx.same_line(max(ctx.get_window_width() - 360, 200))
+            ctx.same_line(
+                max(
+                    ctx.get_window_width() - _metric(ctx, 360.0),
+                    _metric(ctx, 200.0),
+                )
+            )
 
             if not can_build:
                 ctx.begin_disabled(True)
             ctx.button(
                 "  " + t("build.build") + "  ",
                 lambda: self._execute_build_command("build.start"),
-                width=140,
-                height=36,
+                width=_metric(ctx, 140.0),
+                height=_metric(ctx, 36.0),
             )
             ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
             if not can_build:
                 ctx.end_disabled()
-            ctx.same_line(0, 16)
+            ctx.same_line(0, _metric(ctx, 16.0))
             if not can_build_and_run:
                 ctx.begin_disabled(True)
             ctx.button(
                 "  " + t("build.build_and_run") + "  ",
                 lambda: self._execute_build_command("build.start_and_run"),
-                width=160,
-                height=36,
+                width=_metric(ctx, 160.0),
+                height=_metric(ctx, 36.0),
             )
             ctx.record_semantic_item(
                 "button",

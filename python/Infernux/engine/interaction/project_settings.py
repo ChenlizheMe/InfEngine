@@ -28,7 +28,7 @@ BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "game_name": "",
     "scenes": [],
     "output_dir": "",
-    "icon_path": "",
+    "icon_guid": "",
     "display_mode": "fullscreen_borderless",
     "window_width": 1280,
     "window_height": 720,
@@ -68,16 +68,37 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
         isinstance(item, str) and item for item in result["scenes"]
     ):
         raise TypeError("build settings scenes must contain non-empty strings")
-    if not isinstance(result["splash_items"], list) or not all(
-        isinstance(item, dict) for item in result["splash_items"]
-    ):
-        raise TypeError("build settings splash_items must contain objects")
+    if not isinstance(result["splash_items"], list):
+        raise TypeError("build settings splash_items must be an array")
+    splash_keys = {"type", "asset_guid", "duration", "fade_in", "fade_out"}
+    for index, item in enumerate(result["splash_items"]):
+        if not isinstance(item, dict) or set(item) != splash_keys:
+            raise TypeError(
+                f"build settings splash_items[{index}] must use the current asset GUID schema"
+            )
+        if item["type"] not in {"image", "video"}:
+            raise ValueError(
+                f"build settings splash_items[{index}].type is invalid"
+            )
+        if not isinstance(item["asset_guid"], str) or not item["asset_guid"]:
+            raise TypeError(
+                f"build settings splash_items[{index}].asset_guid must be a non-empty string"
+            )
+        for field in ("duration", "fade_in", "fade_out"):
+            if isinstance(item[field], bool) or not isinstance(item[field], (int, float)):
+                raise TypeError(
+                    f"build settings splash_items[{index}].{field} must be numeric"
+                )
+            if item[field] < 0:
+                raise ValueError(
+                    f"build settings splash_items[{index}].{field} must not be negative"
+                )
     for field in (
         "build_target",
         "android_artifact",
         "game_name",
         "output_dir",
-        "icon_path",
+        "icon_guid",
         "display_mode",
     ):
         if not isinstance(result[field], str):
@@ -93,6 +114,8 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
     for field in ("window_width", "window_height"):
         if isinstance(result[field], bool) or not isinstance(result[field], int):
             raise TypeError(f"build settings {field} must be an integer")
+        if result[field] <= 0:
+            raise ValueError(f"build settings {field} must be positive")
     for field in ("window_resizable", "debug_mode", "lto", "enable_jit"):
         if not isinstance(result[field], bool):
             raise TypeError(f"build settings {field} must be a boolean")

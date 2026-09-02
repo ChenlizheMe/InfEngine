@@ -26,61 +26,6 @@ _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
 _COMPONENT_SCRIPT_NAMESPACE = uuid.UUID("594f85cc-9c3a-4ea9-93ed-65a26f77e3a4")
 _COMPONENT_TYPE_NAMESPACE = uuid.UUID("41934666-ab60-4a29-b7ae-c8e15faf83c2")
 
-_FALLBACK_PROJECT_GITIGNORE = """# Infernux generated state
-/Library/
-/Temp/
-/Logs/
-/Cache/
-/.runtime/
-/.venv/
-/Build/
-/Builds/
-/Dist/
-/Export/
-/Exports/
-/ProjectSettings/.infernux-engine-lock.json
-__pycache__/
-*.py[cod]
-*.meta.tmp
-*.tmp
-*.bak
-*.log
-.vs/
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-desktop.ini
-imgui.ini
-"""
-
-_FALLBACK_PROJECT_GITATTRIBUTES = """# Keep project text deterministic across platforms
-* text=auto
-*.py text eol=lf
-*.scene text eol=lf
-*.prefab text eol=lf
-*.mat text eol=lf
-*.effect text eol=lf
-*.effectgroup text eol=lf
-*.particlegraph text eol=lf
-*.meta text eol=lf
-
-# Binary assets must never receive line-ending conversion
-*.png binary
-*.jpg binary
-*.jpeg binary
-*.tga binary
-*.dds binary
-*.ktx binary
-*.ktx2 binary
-*.fbx binary
-*.glb binary
-*.wav binary
-*.mp3 binary
-*.ogg binary
-"""
-
-
 def _project_python_version(project_dir: str) -> str:
     version = read_project_python_version(project_dir, required=is_frozen())
     if version:
@@ -108,9 +53,8 @@ def _write_json_document(path: str, document: dict) -> None:
 def _write_asset_identity_meta(path: str, guid: str, resource_type: str) -> None:
     """Seed an asset identity before the first AssetDatabase scan.
 
-    The AssetDatabase recognizes sidecars without a content hash as legacy
-    identity records.  On first scan it rebuilds all derived metadata while
-    preserving this GUID, so generated references are valid from frame zero.
+    The first AssetDatabase scan fills the derived metadata while preserving
+    this GUID, so generated references are valid from frame zero.
     """
     _write_json_document(
         path + ".meta",
@@ -359,7 +303,7 @@ def _create_default_project_content(
             "display_mode": "windowed",
             "enable_jit": False,
             "game_name": project_name,
-            "icon_path": "",
+            "icon_guid": "",
             "lto": True,
             "output_dir": "",
             "scenes": [final_scene_path],
@@ -767,10 +711,6 @@ class ProjectModel:
             raise RuntimeError(f"Failed to relocate the project in Infernux Hub:\n{info.path}")
         return record, info
 
-    def delete_project(self, project_id: str) -> bool:
-        """Compatibility alias for old callers; never deletes project files."""
-        return self.remove_project(project_id)
-
     def init_project_folder(
         self,
         project_name: str,
@@ -893,7 +833,7 @@ class ProjectModel:
         source_name: str,
         dest_path: str,
         engine_version: str,
-    ) -> bool:
+    ) -> None:
         """Copy one support template from the source tree or selected wheel."""
         import zipfile
 
@@ -908,7 +848,7 @@ class ProjectModel:
         )
         if os.path.isfile(source_path):
             shutil.copy2(source_path, dest_path)
-            return True
+            return
 
         wheel = ""
         if engine_version and self.version_manager is not None:
@@ -916,37 +856,32 @@ class ProjectModel:
         if not wheel and not is_frozen():
             wheel = _find_dev_wheel()
         if wheel and os.path.isfile(wheel):
-            try:
-                with zipfile.ZipFile(wheel) as zf:
-                    archive_suffix = f"resources/project_templates/{source_name}"
-                    for name in zf.namelist():
-                        if name.endswith(archive_suffix):
-                            with zf.open(name) as src, open(dest_path, "wb") as dst:
-                                shutil.copyfileobj(src, dst)
-                            return True
-            except zipfile.BadZipFile as exc:
-                logging.getLogger(__name__).debug(
-                    "[Suppressed] %s: %s", type(exc).__name__, exc
-                )
-        return False
+            with zipfile.ZipFile(wheel) as zf:
+                archive_suffix = f"resources/project_templates/{source_name}"
+                matches = [name for name in zf.namelist() if name.endswith(archive_suffix)]
+                if len(matches) != 1:
+                    raise RuntimeError(
+                        f"Infernux wheel must contain exactly one current project "
+                        f"template '{archive_suffix}', found {len(matches)}"
+                    )
+                with zf.open(matches[0]) as src, open(dest_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                return
+        raise RuntimeError(
+            f"Required Infernux project template is unavailable: {source_name}"
+        )
 
     def _copy_bundled_project_gitignore(self, dest_path: str, engine_version: str) -> None:
-        if self._copy_bundled_support_file(
+        self._copy_bundled_support_file(
             "project.gitignore.txt", dest_path, engine_version
-        ):
-            return
-        with open(dest_path, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(_FALLBACK_PROJECT_GITIGNORE)
+        )
 
     def _copy_bundled_project_gitattributes(
         self, dest_path: str, engine_version: str
     ) -> None:
-        if self._copy_bundled_support_file(
+        self._copy_bundled_support_file(
             "project.gitattributes.txt", dest_path, engine_version
-        ):
-            return
-        with open(dest_path, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(_FALLBACK_PROJECT_GITATTRIBUTES)
+        )
 
     def _copy_bundled_requirements(self, dest_path: str, engine_version: str) -> None:
         """Copy the default requirements.txt to *dest_path*.

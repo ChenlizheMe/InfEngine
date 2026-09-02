@@ -28,6 +28,7 @@ from Infernux.engine.runtime_artifact_catalog import (
     artifact_source_hash,
     build_catalog,
     logical_type_for_path,
+    load_asset_index,
     payload_kind_for,
     runtime_artifact_reason_for,
     source_fingerprint,
@@ -1017,7 +1018,7 @@ def test_rewrite_build_settings_strips_authoring_only_fields(tmp_path):
     settings.update(
         {
             "output_dir": str(tmp_path / "private-player-output"),
-            "icon_path": str(project_root / "Assets" / "icon.png"),
+            "icon_guid": "icon-guid",
             "debug_mode": False,
             "lto": True,
             "enable_jit": False,
@@ -2547,15 +2548,23 @@ def test_windows_player_host_icon_is_replaced_with_project_icon(tmp_path):
 
 def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    icon = tmp_path / "project-icon.png"
-    splash = tmp_path / "opening.png"
+    icon = Path(builder.project_path) / "Assets" / "project-icon.png"
+    splash = Path(builder.project_path) / "Assets" / "opening.png"
     icon.write_bytes(b"icon")
     splash.write_bytes(b"splash")
-    builder.icon_path = str(icon)
+    entries = load_asset_index(builder.project_path)
+    entries.extend(
+        (
+            _asset_index_entry(Path(builder.project_path), icon, "icon-guid", "", "Texture"),
+            _asset_index_entry(Path(builder.project_path), splash, "splash-guid", "", "Texture"),
+        )
+    )
+    builder.freeze_asset_index_entries(entries)
+    builder.icon_guid = "icon-guid"
     builder.splash_items = [
         {
             "type": "image",
-            "path": str(splash),
+            "asset_guid": "splash-guid",
             "duration": 2.0,
             "fade_in": 0.25,
             "fade_out": 0.5,
@@ -2589,13 +2598,20 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
 
 def test_build_branding_reuses_identical_icon_for_splash(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    branding = tmp_path / "branding.png"
+    branding = Path(builder.project_path) / "Assets" / "branding.png"
     branding.write_bytes(b"one-branding-payload")
-    builder.icon_path = str(branding)
+    entries = load_asset_index(builder.project_path)
+    entries.append(
+        _asset_index_entry(
+            Path(builder.project_path), branding, "branding-guid", "", "Texture"
+        )
+    )
+    builder.freeze_asset_index_entries(entries)
+    builder.icon_guid = "branding-guid"
     builder.splash_items = [
         {
             "type": "image",
-            "path": str(branding),
+            "asset_guid": "branding-guid",
             "duration": 2.0,
             "fade_in": 0.25,
             "fade_out": 0.5,
@@ -3658,9 +3674,9 @@ def test_core_runtime_archive_omits_generic_icon_for_configured_project_icon(
     tmp_path,
 ):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    project_icon = tmp_path / "project-icon.png"
+    project_icon = Path(builder.project_path) / "Assets" / "project-icon.png"
     project_icon.write_bytes(b"project-icon")
-    builder.icon_path = str(project_icon)
+    builder.icon_guid = "project-icon-guid"
     final_dir = tmp_path / "dist"
     data_root = final_dir / "TestGame_Data"
     data_root.mkdir(parents=True)
