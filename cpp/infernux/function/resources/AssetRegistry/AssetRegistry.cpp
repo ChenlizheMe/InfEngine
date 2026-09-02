@@ -46,7 +46,6 @@ void AssetRegistry::Initialize(std::unique_ptr<AssetDatabase> adb)
     m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     m_cpuEvictionCount = 0;
     m_initialized = true;
-    INXLOG_INFO("AssetRegistry initialized.");
 }
 
 void AssetRegistry::Shutdown()
@@ -94,7 +93,6 @@ void AssetRegistry::PopulateAssetDatabaseLoaders()
     for (auto &[type, loader] : m_loaders) {
         m_assetDb->SetMetaLoader(type, loader.get());
     }
-    INXLOG_INFO("AssetRegistry: populated AssetDatabase with ", m_loaders.size(), " loaders");
 }
 
 // =============================================================================
@@ -551,8 +549,6 @@ void AssetRegistry::InitializeBuiltinMaterials()
     registerBuiltin("EditorToolsMaterial", InxMaterial::CreateEditorToolsMaterial());
     registerBuiltin("SkyboxProcedural", InxMaterial::CreateSkyboxProceduralMaterial());
     registerBuiltin("ErrorMaterial", InxMaterial::CreateErrorMaterial());
-
-    INXLOG_INFO("AssetRegistry: built-in materials initialized.");
 }
 
 // =============================================================================

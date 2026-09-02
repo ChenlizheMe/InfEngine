@@ -72,8 +72,6 @@ bool AudioEngine::Initialize()
     int sampleFrames = 0;
     if (SDL_GetAudioDeviceFormat(m_deviceId, &actualSpec, &sampleFrames)) {
         m_deviceSpec = actualSpec;
-        INXLOG_INFO("Audio device opened: ", m_deviceSpec.freq, " Hz, ", m_deviceSpec.channels,
-                    " ch, format=", static_cast<int>(m_deviceSpec.format));
     } else {
         m_deviceSpec = requestedSpec;
         INXLOG_WARN("Could not query device format, using requested spec");
@@ -106,7 +104,6 @@ bool AudioEngine::Initialize()
             source->Play(0);
     }
 
-    INXLOG_INFO("AudioEngine initialized successfully");
     return true;
 }
 

@@ -249,7 +249,6 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     // Store instance for InxRenderer access
     m_instance = m_backend.Device().GetInstance();
 
-    INXLOG_INFO("InxVkCoreModular instance initialized successfully");
     return true;
 }
 

@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <core/log/InxLog.h>
 #include <limits>
 
 namespace infernux
@@ -171,9 +170,6 @@ void JobSystem::Initialize(uint32_t workerCount)
     for (uint32_t i = 0; i < resolved; ++i) {
         instance->m_workers.emplace_back([instance] { instance->WorkerLoop(); });
     }
-
-    INXLOG_INFO("JobSystem online with ", resolved,
-                " worker thread(s) (hw_concurrency=", std::thread::hardware_concurrency(), ")");
 }
 
 void JobSystem::InitializeInline()
@@ -187,7 +183,6 @@ void JobSystem::InitializeInline()
     instance->m_inline = true;
     instance->m_state.store(State::Running, std::memory_order_release);
     g_instance.store(instance, std::memory_order_release);
-    INXLOG_INFO("JobSystem online in owner-thread mode");
 }
 
 void JobSystem::Shutdown()
