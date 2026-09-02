@@ -2647,13 +2647,11 @@ finally:
                 "modified_ns": int(source_state.get("modified_ns", 0)),
                 "content_hash": str(entry.get("content_hash", "")),
             }
-            artifact_sha256 = self._sha256_file(destination)
             binding = {
                 "source_guid": guid,
                 "source_path": source_relative,
                 "source_fingerprint": source_fingerprint,
                 "artifact_path": runtime_path,
-                "artifact_sha256": artifact_sha256,
                 "artifact_source_hash": str(entry.get("content_hash", "")),
                 "dependencies": [],
             }
@@ -3413,14 +3411,6 @@ finally:
                 + (f" (expected reason: {reason})" if reason else "")
             )
         return ""
-
-    @staticmethod
-    def _sha256_file(path: str) -> str:
-        digest = hashlib.sha256()
-        with open(path, "rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
 
     @staticmethod
     def _remove_empty_directory_tree(path: str) -> None:

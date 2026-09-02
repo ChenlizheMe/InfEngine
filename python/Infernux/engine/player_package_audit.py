@@ -1314,7 +1314,6 @@ def audit_player_package(
             "source_path",
             "source_fingerprint",
             "artifact_source_hash",
-            "artifact_sha256",
             "artifact_path",
         )
         if any(not isinstance(source_asset.get(field), (str, dict)) for field in required):
@@ -1323,7 +1322,7 @@ def audit_player_package(
             )
         if any(
             not isinstance(source_asset.get(field), str) or not source_asset[field]
-            for field in ("source_guid", "source_path", "artifact_source_hash", "artifact_sha256", "artifact_path")
+            for field in ("source_guid", "source_path", "artifact_source_hash", "artifact_path")
         ):
             source_replacement_gaps.append(
                 f"compiled artifact source binding has empty identity: {artifact_id}"

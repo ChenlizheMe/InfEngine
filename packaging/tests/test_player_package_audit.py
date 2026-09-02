@@ -118,7 +118,6 @@ def test_runtime_catalog_records_compiled_library_source_binding():
         "source_path": "Assets/Smoke.png",
         "source_fingerprint": {"size": 12, "modified_ns": 34, "content_hash": "a" * 16},
         "artifact_source_hash": "a" * 16,
-        "artifact_sha256": "b" * 64,
         "artifact_path": "Library/Artifacts/Texture/texture-guid.inxtex",
         "dependencies": [],
     }

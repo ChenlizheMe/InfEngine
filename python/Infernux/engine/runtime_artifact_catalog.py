@@ -317,17 +317,6 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
     return value
 
 
-def artifact_fingerprint(path: str | os.PathLike[str]) -> str:
-    digest = hashlib.sha256()
-    try:
-        with Path(path).open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise RuntimeArtifactError(f"Library artifact is unreadable: {path}") from exc
-    return digest.hexdigest()
-
-
 def expected_artifact_source_hash(
     project_root: str | os.PathLike[str],
     entry: dict[str, Any],
@@ -408,7 +397,6 @@ def validate_artifact(
         "source_path": relative_path(source_path, root),
         "source_fingerprint": source_fp,
         "artifact_source_hash": expected_hash,
-        "artifact_sha256": artifact_fingerprint(artifact),
         "artifact_path": artifact_relative,
     }
 
@@ -800,7 +788,6 @@ def build_catalog(
 __all__ = [
     "CATALOG_SCHEMA",
     "build_catalog",
-    "artifact_fingerprint",
     "artifact_source_hash",
     "expected_artifact_source_hash",
     "load_asset_index",
