@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from Infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
@@ -295,6 +297,35 @@ def test_scene_registry_reconcile_only_restores_persistent_components(monkeypatc
         501: [active_component],
         502: [persistent_component],
     }
+
+
+def test_scene_registry_rebuild_propagates_persistent_scene_failure(monkeypatch):
+    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import Infernux.lib as native_lib
+
+    class _Scene:
+        @staticmethod
+        def get_all_objects():
+            return ()
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return type(
+                "_Manager",
+                (),
+                {
+                    "get_runtime_persistent_scene": lambda self: (_ for _ in ()).throw(
+                        RuntimeError("persistent scene unavailable")
+                    )
+                },
+            )()
+
+    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
+
+    transaction = SceneDocumentTransaction(_Scene(), document={})
+    with pytest.raises(RuntimeError, match="persistent scene unavailable"):
+        transaction._rebuild_python_registries()
 
 
 def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
