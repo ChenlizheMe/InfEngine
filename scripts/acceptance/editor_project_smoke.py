@@ -23,6 +23,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--play-seconds", type=float, default=5.0)
     parser.add_argument("--startup-timeout", type=float, default=60.0)
     parser.add_argument("--transition-timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--dialog-timeout",
+        type=float,
+        default=120.0,
+        help="Maximum time for a person or desktop driver to complete each native dialog",
+    )
+    parser.add_argument(
+        "--native-open-dialog",
+        default="",
+        help="Open this existing file through the Editor's native file dialog",
+    )
+    parser.add_argument(
+        "--native-save-dialog",
+        default="",
+        help="Choose this destination through the Editor's native save dialog",
+    )
     return parser
 
 
@@ -54,6 +70,20 @@ def _wait_until(
     raise TimeoutError(f"Timed out waiting for {label}; last value: {last_value!r}")
 
 
+def _require_dialog_path(result: dict[str, object], expected_path: str) -> str:
+    error = str(result.get("error", "") or "")
+    if error:
+        raise RuntimeError(f"Native file dialog failed: {error}")
+    if not bool(result.get("accepted")):
+        raise RuntimeError(f"Native file dialog did not accept a path: {result!r}")
+    selected_path = resolved_path(str(result.get("path", "") or ""))
+    if not same_path(selected_path, expected_path):
+        raise RuntimeError(
+            f"Native file dialog selected {selected_path!r}, expected {expected_path!r}"
+        )
+    return selected_path
+
+
 def _run_smoke(
     project: str,
     scene_path: str,
@@ -61,6 +91,9 @@ def _run_smoke(
     play_seconds: float,
     startup_timeout: float,
     transition_timeout: float,
+    dialog_timeout: float,
+    native_open_dialog: str,
+    native_save_dialog: str,
 ) -> None:
     queue = MainThreadCommandQueue.instance()
     try:
@@ -73,6 +106,13 @@ def _run_smoke(
                 f"editor-smoke.{name}",
                 fn,
                 timeout_ms=max(int(transition_timeout * 1000), 1),
+            )
+
+        def run_dialog(name: str, fn: Callable[[], Any]) -> Any:
+            return queue.run_sync(
+                f"editor-smoke.{name}",
+                fn,
+                timeout_ms=max(int(dialog_timeout * 1000), 1),
             )
 
         def project_info() -> dict[str, object]:
@@ -106,6 +146,35 @@ def _run_smoke(
         if not saved:
             raise RuntimeError(f"Editor failed to save scene: {scene_path}")
         _emit("editor-ready", project=project, scene=scene_path, saved=True)
+
+        if native_open_dialog or native_save_dialog:
+            from Infernux.lib import _Infernux as native
+
+            if native_open_dialog:
+                result = run_dialog(
+                    "native-open-dialog",
+                    lambda: native._show_native_file_dialog(
+                        "open_file",
+                        "Infernux Open Dialog Acceptance",
+                        os.path.dirname(native_open_dialog),
+                        [("Text", "txt")],
+                    ),
+                )
+                selected = _require_dialog_path(result, native_open_dialog)
+                _emit("native-open-dialog", path=selected)
+
+            if native_save_dialog:
+                result = run_dialog(
+                    "native-save-dialog",
+                    lambda: native._show_native_file_dialog(
+                        "save_file",
+                        "Infernux Save Dialog Acceptance",
+                        native_save_dialog,
+                        [("Text", "txt")],
+                    ),
+                )
+                selected = _require_dialog_path(result, native_save_dialog)
+                _emit("native-save-dialog", path=selected)
 
         entered = run(
             "enter-play",
@@ -187,6 +256,13 @@ def main() -> int:
             "play_seconds": args.play_seconds,
             "startup_timeout": args.startup_timeout,
             "transition_timeout": args.transition_timeout,
+            "dialog_timeout": args.dialog_timeout,
+            "native_open_dialog": resolved_path(args.native_open_dialog)
+            if args.native_open_dialog
+            else "",
+            "native_save_dialog": resolved_path(args.native_save_dialog)
+            if args.native_save_dialog
+            else "",
         },
         name="InfernuxEditorProjectSmoke",
         daemon=True,
