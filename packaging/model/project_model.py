@@ -56,10 +56,22 @@ def _write_asset_identity_meta(path: str, guid: str, resource_type: str) -> None
     The first AssetDatabase scan fills the derived metadata while preserving
     this GUID, so generated references are valid from frame zero.
     """
+    with open(path, "rb") as stream:
+        content = stream.read()
+
+    content_hash = 14695981039346656037
+    for byte in content:
+        content_hash ^= byte
+        content_hash = (content_hash * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+
     _write_json_document(
         path + ".meta",
         {
             "metadata": {
+                "content_hash": {
+                    "type": "string",
+                    "value": f"{content_hash:016x}",
+                },
                 "guid": {"type": "string", "value": guid},
                 "resource_type": {
                     "type": "enum infernux::ResourceType",
