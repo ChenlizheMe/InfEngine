@@ -330,7 +330,6 @@ def install_bundled_packages(
         for _package_path, preview in previews:
             reference = str(preview.metadata["reference"])
             if manager.registry.installed_record(reference) is not None:
-                installed.append(manager.reload(reference))
                 continue
             installed.append(manager.install_reference(reference))
         return tuple(installed)

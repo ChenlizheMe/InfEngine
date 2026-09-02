@@ -569,7 +569,7 @@ def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     )
 
     assert [state.reference for state in first] == ["infernux/platform-fixture"]
-    assert [state.reference for state in second] == ["infernux/platform-fixture"]
+    assert second == ()
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
     assert record["source"]["location"] == str(package.resolve())
@@ -601,7 +601,7 @@ def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
         str(project), resources_root=str(resources), manager=manager
     )
 
-    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert states == ()
     assert (
         project / "Packages/infernux/platform-fixture/Runtime/fixture.py"
     ).read_text(encoding="utf-8") == "RELEASE = 'project'\n"

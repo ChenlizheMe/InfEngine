@@ -18,6 +18,7 @@ from typing import Any, Iterable, Iterator, Mapping
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import (
     is_path_within,
+    lexical_path_key,
     path_key,
     portable_path,
     relative_path,
@@ -462,7 +463,7 @@ class PreloadManager:
                     )
                     if os.path.isfile(path):
                         candidates[path_key(path)] = path
-            ownership = self._path_ownership()
+            ownership = self._path_ownership(guid_paths)
             for path in sorted(candidates.values(), key=path_key):
                 owner = ownership.get(path_key(path))
                 if owner is not None and not bool(owner.get("enabled", True)):
@@ -539,14 +540,17 @@ class PreloadManager:
         )
         return any(is_path_within(path, root, allow_root=False) for root in roots)
 
-    def _path_ownership(self) -> dict[str, dict[str, object]]:
+    def _path_ownership(
+        self, guid_paths: Mapping[str, str] | None = None
+    ) -> dict[str, dict[str, object]]:
         if self._ownership_cache is not None:
             return self._ownership_cache
         result: dict[str, dict[str, object]] = {}
-        guid_paths, _native = project_guid_paths(
-            self.project_root,
-            engine=self.engine,
-        )
+        if guid_paths is None:
+            guid_paths, _native = project_guid_paths(
+                self.project_root,
+                engine=self.engine,
+            )
         for package in self.registry.installed():
             for item in package.get("files", []):
                 if not isinstance(item, Mapping):
@@ -908,10 +912,13 @@ def _new_project_modules(
     project_root: str, modules_before: set[str]
 ) -> tuple[str, ...]:
     result: list[str] = []
+    project_key = lexical_path_key(project_root)
     for name in set(sys.modules) - modules_before:
         module = sys.modules.get(name)
         path = str(getattr(module, "__file__", "") or "")
-        if path and is_path_within(path, project_root, allow_root=False):
+        if path and _lexically_below(path, project_key) and is_path_within(
+            path, project_root, allow_root=False
+        ):
             result.append(name)
     return tuple(sorted(result))
 
@@ -928,14 +935,30 @@ def _package_module_names(
             *package_reference.split("/"),
         ),
     )
+    root_keys = tuple(lexical_path_key(root) for root in roots)
     result: list[str] = []
     for name, module in tuple(sys.modules.items()):
         path = str(getattr(module, "__file__", "") or "")
         if path and any(
-            is_path_within(path, root, allow_root=False) for root in roots
+            _lexically_below(path, root_key)
+            and is_path_within(path, root, allow_root=False)
+            for root, root_key in zip(roots, root_keys)
         ):
             result.append(name)
     return tuple(sorted(result))
+
+
+def _lexically_below(path: str, root_key: str) -> bool:
+    candidate = lexical_path_key(path)
+    if not candidate or not root_key:
+        return False
+    try:
+        return (
+            os.path.commonpath((candidate, root_key)) == root_key
+            and candidate != root_key
+        )
+    except ValueError:
+        return False
 
 
 def _new_native_modules(modules_before: set[str]) -> tuple[str, ...]:
