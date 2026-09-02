@@ -202,12 +202,10 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 
     if (value.contains("data_interface_layout") && !value["data_interface_layout"].is_none()) {
         const py::dict layout = py::cast<py::dict>(value["data_interface_layout"]);
-        for (const char *field : {"version", "metadata_binding", "mesh_interfaces"}) {
+        for (const char *field : {"metadata_binding", "mesh_interfaces"}) {
             if (!layout.contains(field))
                 throw std::invalid_argument(std::string("GPU data interface layout is missing ") + field);
         }
-        if (py::cast<uint32_t>(layout["version"]) != 1)
-            throw std::invalid_argument("GPU data interface layout version is unsupported");
         const py::sequence meshInterfaces = py::cast<py::sequence>(layout["mesh_interfaces"]);
         program.meshInterfaces.reserve(meshInterfaces.size());
         for (const py::handle item : meshInterfaces) {
