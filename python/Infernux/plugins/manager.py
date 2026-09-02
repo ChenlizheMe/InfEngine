@@ -48,6 +48,7 @@ from .package import (
     PACKAGE_EXTENSION,
     PACKAGE_MANIFEST,
     SOURCE_MANIFEST,
+    current_meta_bytes,
     package_control_root,
     package_destination,
     validate_reference,
@@ -452,7 +453,7 @@ class PluginManager:
                     transaction.write(str(control["absolute_path"]), control_payload)
                     transaction.write(
                         str(control["absolute_path"]) + ".meta",
-                        _minimal_meta(str(control["guid"])),
+                        current_meta_bytes(str(control["guid"]), control_payload),
                     )
                 file_records = [
                     {
@@ -1914,17 +1915,6 @@ def _meta_guid(asset_path: str) -> str:
         return str(document["metadata"]["guid"]["value"]).strip()
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return ""
-
-
-def _minimal_meta(guid: str) -> bytes:
-    return (
-        json.dumps(
-            {"metadata": {"guid": {"type": "string", "value": guid}}},
-            ensure_ascii=False,
-            indent=4,
-        )
-        + "\n"
-    ).encode("utf-8")
 
 
 __all__ = ["PackageConflictError", "PluginManager", "PluginState"]

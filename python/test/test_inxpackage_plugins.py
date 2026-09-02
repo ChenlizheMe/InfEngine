@@ -110,6 +110,14 @@ def _meta(guid: str) -> str:
     return json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}})
 
 
+def _fnv1a64(payload: bytes) -> str:
+    value = 14695981039346656037
+    for byte in payload:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
 def _source(
     path: Path, reference: str, *, version: str = "1.0.0", engine: str = ""
 ) -> Path:
@@ -150,6 +158,40 @@ def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path)
     assert preview.logical_entries == ("Neon.mat",)
     assert preview.project_entries == ("Assets/Plugins/materials/Neon.mat",)
     assert preview.file_records[0]["guid"] == guid
+
+    archived_meta = json.loads(
+        player_package_native.read_entry(
+            str(package), preview.file_records[0]["meta_archive_path"]
+        ).decode("utf-8")
+    )
+    assert archived_meta["metadata"]["content_hash"] == {
+        "type": "string",
+        "value": _fnv1a64(asset.read_bytes()),
+    }
+
+
+def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
+    source = _source(tmp_path / "source", "vendor/current-meta")
+    asset = source / "Runtime" / "plugin.py"
+    asset.parent.mkdir()
+    asset.write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "CurrentMeta.inxpkg")
+    project = _project(tmp_path / "project")
+
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), install_dependencies=False)
+
+    for installed in (
+        project / "Packages/vendor/current-meta/Runtime/plugin.py",
+        project / "Packages/vendor/current-meta/InxPackage.json",
+    ):
+        metadata = json.loads(
+            installed.with_name(installed.name + ".meta").read_text(encoding="utf-8")
+        )
+        assert metadata["metadata"]["content_hash"] == {
+            "type": "string",
+            "value": _fnv1a64(installed.read_bytes()),
+        }
 
 
 def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path):

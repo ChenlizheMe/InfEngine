@@ -293,15 +293,20 @@ class InxPackage:
         manifest_destination = os.path.join(control_root, PACKAGE_MANIFEST)
         if selected_set is None:
             os.makedirs(control_root, exist_ok=True)
+            manifest_payload = (
+                json.dumps(preview.metadata, ensure_ascii=False, indent=2).encode("utf-8")
+                + b"\n"
+            )
             _atomic_write(
                 manifest_destination,
-                json.dumps(preview.metadata, ensure_ascii=False, indent=2).encode("utf-8")
-                + b"\n",
+                manifest_payload,
                 project,
             )
             _atomic_write(
                 manifest_destination + ".meta",
-                _minimal_meta_bytes(str(preview.metadata["control_guid"])),
+                current_meta_bytes(
+                    str(preview.metadata["control_guid"]), manifest_payload
+                ),
                 project,
             )
             extracted.append(manifest_destination)
@@ -476,14 +481,15 @@ class InxPackage:
 
     @staticmethod
     def _asset_identity(reference: str, logical: str, source: str) -> tuple[str, bytes]:
+        content = Path(source).read_bytes()
         meta_path = source + ".meta"
         if os.path.isfile(meta_path):
             payload = Path(meta_path).read_bytes()
             guid = _guid_from_meta_bytes(payload)
             _validate_guid(guid, logical)
-            return guid, payload
+            return guid, current_meta_bytes(guid, content, existing=payload)
         guid = uuid.uuid5(_GUID_NAMESPACE, f"{reference}\0{logical}").hex
-        return guid, _minimal_meta_bytes(guid)
+        return guid, current_meta_bytes(guid, content)
 
 
 def validate_reference(value: str) -> str:
@@ -596,8 +602,38 @@ def _guid_from_meta_bytes(payload: bytes) -> str:
         return ""
 
 
-def _minimal_meta_bytes(guid: str) -> bytes:
-    document = {"metadata": {"guid": {"type": "string", "value": guid}}}
+def _content_hash(payload: bytes) -> str:
+    value = 14695981039346656037
+    for byte in payload:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def current_meta_bytes(
+    guid: str,
+    content: bytes,
+    *,
+    existing: bytes | None = None,
+) -> bytes:
+    if existing is None:
+        document: dict[str, object] = {"metadata": {}}
+    else:
+        try:
+            document = json.loads(existing.decode("utf-8"))
+            metadata = document["metadata"]
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ValueError("InxPackage asset metadata is not valid") from exc
+        if not isinstance(document, dict) or not isinstance(metadata, dict):
+            raise ValueError("InxPackage asset metadata is not valid")
+
+    metadata = document["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["guid"] = {"type": "string", "value": guid}
+    metadata["content_hash"] = {
+        "type": "string",
+        "value": _content_hash(content),
+    }
     return (json.dumps(document, ensure_ascii=False, indent=4) + "\n").encode("utf-8")
 
 
