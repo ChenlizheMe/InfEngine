@@ -52,6 +52,7 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
     build_step = text.index("- name: Build Windows Player runtime")
 
     assert loader_step < build_step
+    assert '$runtimeBin | Out-File -FilePath $env:GITHUB_PATH' in text[loader_step:build_step]
     assert 'Copy-Item -LiteralPath $loader -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
 
 
@@ -114,9 +115,9 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     emulator_step = text.index("ReactiveCircus/android-emulator-runner@")
     emulator_script = text.index("script: |", emulator_step)
     emulator_body = text[emulator_script:]
-    assert 'python_executable="$CONDA/envs/infernux/bin/python"' in emulator_body
-    assert 'test -x "$python_executable"' in emulator_body
-    assert '"$python_executable" scripts/acceptance/build_player.py' in emulator_body
+    assert 'python_executable=' not in emulator_body
+    assert 'test -x "$CONDA/envs/infernux/bin/python"' in emulator_body
+    assert '"$CONDA/envs/infernux/bin/python" scripts/acceptance/build_player.py' in emulator_body
     assert '"--keep-running"' in smoke
     assert '"--require-log"' in smoke
     assert '"shell", "am", "force-stop", arguments.package' in smoke
