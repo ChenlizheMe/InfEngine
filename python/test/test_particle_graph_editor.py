@@ -3297,14 +3297,25 @@ def test_color_node_can_drive_sprite_output_and_compile_to_gpu_glsl():
     assert gpu_program.emitters
 
 
-def test_particle_gradient_editor_uses_hdr_and_channel_semantics():
+def test_particle_gradient_editor_uses_shared_hdr_color_bar_and_channel_semantics(monkeypatch):
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.engine.ui import inspector_utils
     from Infernux.graph.ramp import Gradient
+
+    color_calls = []
+
+    def render_color_bar(_ctx, widget_id, value, **kwargs):
+        color_calls.append((widget_id, list(value), kwargs))
+        return list(value)
+
+    monkeypatch.setattr(inspector_utils, "render_color_value_bar", render_color_bar)
 
     class Context:
         def __init__(self):
-            self.hdr = False
             self.items = []
+
+        def get_dpi_scale(self):
+            return 1.0
 
         def combo(self, _label, value, _options, _popup_height):
             return value
@@ -3315,12 +3326,17 @@ def test_particle_gradient_editor_uses_hdr_and_channel_semantics():
         def label(self, _label):
             pass
 
+        def align_text_to_frame_padding(self):
+            pass
+
+        def same_line(self, _offset):
+            pass
+
+        def set_next_item_width(self, _width):
+            pass
+
         def drag_float(self, _label, value, _speed, _minimum, _maximum):
             return value
-
-        def color_edit(self, _label, *color, hdr=False):
-            self.hdr = hdr
-            return color
 
         def button(self, _label):
             return False
@@ -3337,7 +3353,9 @@ def test_particle_gradient_editor_uses_hdr_and_channel_semantics():
     )
 
     assert result == Gradient().to_dict()
-    assert ctx.hdr is True
+    assert len(color_calls) == 2
+    assert all(call[2]["allow_hdr"] is True for call in color_calls)
+    assert all(call[2]["default_hdr_enabled"] is True for call in color_calls)
     semantic_ids = {args[3] for args, _kwargs in ctx.items}
     assert "particle_graph.node.update::sample.property.gradient.key.0.time" in semantic_ids
     assert (

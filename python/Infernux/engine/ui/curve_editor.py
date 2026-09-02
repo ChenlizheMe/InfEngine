@@ -330,16 +330,19 @@ def render_curve_property(
             if state.selected + 1 < len(keys)
             else 1.0e7
         )
+        first_input_x = 92.0 * dpi
+        second_label_x = 218.0 * dpi
+        second_input_x = 294.0 * dpi
         ctx.align_text_to_frame_padding()
         ctx.label("Time")
-        ctx.same_line(92.0 * dpi)
-        ctx.set_next_item_width(-1.0)
+        ctx.same_line(first_input_x)
+        ctx.set_next_item_width(110.0 * dpi)
         selected["time"] = float(
             ctx.drag_float(f"##{widget_id}_time", selected["time"], 0.01, minimum, maximum)
         )
-        ctx.align_text_to_frame_padding()
+        ctx.same_line(second_label_x)
         ctx.label("Value")
-        ctx.same_line(92.0 * dpi)
+        ctx.same_line(second_input_x)
         ctx.set_next_item_width(-1.0)
         selected["value"] = float(
             ctx.drag_float(
@@ -352,14 +355,14 @@ def render_curve_property(
         )
         ctx.align_text_to_frame_padding()
         ctx.label("In Tangent")
-        ctx.same_line(92.0 * dpi)
-        ctx.set_next_item_width(-1.0)
+        ctx.same_line(first_input_x)
+        ctx.set_next_item_width(110.0 * dpi)
         selected["in_tangent"] = float(
             ctx.drag_float(f"##{widget_id}_in", selected["in_tangent"], 0.02, -1.0e7, 1.0e7)
         )
-        ctx.align_text_to_frame_padding()
+        ctx.same_line(second_label_x)
         ctx.label("Out Tangent")
-        ctx.same_line(92.0 * dpi)
+        ctx.same_line(second_input_x)
         ctx.set_next_item_width(-1.0)
         selected["out_tangent"] = float(
             ctx.drag_float(f"##{widget_id}_out", selected["out_tangent"], 0.02, -1.0e7, 1.0e7)

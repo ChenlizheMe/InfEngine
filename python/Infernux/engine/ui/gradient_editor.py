@@ -5,6 +5,8 @@ from __future__ import annotations
 from Infernux.engine.i18n import t
 from Infernux.graph.ramp import GRADIENT_MODES, MAX_RAMP_KEYS, Gradient
 
+from .dpi import editor_dpi_scale
+
 
 def render_gradient_property(
     ctx,
@@ -15,6 +17,9 @@ def render_gradient_property(
     hdr: bool = False,
 ):
     """Render an authored Gradient document and return its edited document."""
+    from Infernux.engine.ui.inspector_utils import render_color_value_bar
+
+    dpi = editor_dpi_scale(ctx)
     gradient = Gradient.from_dict(value)
     keys = [item.to_dict() for item in gradient.keys]
     mode_index = ctx.combo(
@@ -50,26 +55,20 @@ def render_gradient_property(
             f"{prefix}.key.{index}.time",
             numeric_value=item["time"],
         )
-        color = list(
-            ctx.color_edit(
-                f"{t('particle_graph_editor.color')}##{widget_id}_{index}_color",
-                *item["color"],
-                hdr=hdr,
-            )
+        ctx.align_text_to_frame_padding()
+        ctx.label(t("particle_graph_editor.color"))
+        ctx.same_line(92.0 * dpi)
+        ctx.set_next_item_width(-1.0)
+        color = render_color_value_bar(
+            ctx,
+            f"##{widget_id}_{index}_color",
+            item["color"],
+            allow_hdr=hdr,
+            default_hdr_enabled=hdr,
         )
         for channel_index, channel in enumerate(("r", "g", "b", "a")):
-            maximum = 1.0 if channel == "a" or not hdr else 64.0
-            color[channel_index] = float(
-                ctx.drag_float(
-                    f"{channel.upper()}##{widget_id}_{index}_{channel}",
-                    color[channel_index],
-                    0.01,
-                    0.0,
-                    maximum,
-                )
-            )
             ctx.record_semantic_item(
-                "drag_float",
+                "color_channel",
                 channel.upper(),
                 True,
                 f"{prefix}.key.{index}.color.{channel}",

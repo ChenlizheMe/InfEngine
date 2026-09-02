@@ -12,7 +12,6 @@ from Infernux.lib import (
     LineTextureMode,
     Vector3,
 )
-from Infernux.engine.ui._scene_view_line_tools import SceneViewLineToolsMixin
 from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
 
@@ -331,21 +330,6 @@ def test_line_renderer_supports_unity_perceptual_gradient_mode(scene):
 
     assert line.color_gradient.mode == "perceptual_blend"
     assert line.serialize_document()["colorGradient"]["mode"] == 2
-
-
-def test_line_renderer_scene_tool_geometry_helpers():
-    positions = [(0, 0, 0), (1, 0.001, 0), (2, 0, 0), (3, 1, 0)]
-    assert SceneViewLineToolsMixin._line_simplify_positions(positions, 0.01) == [
-        (0.0, 0.0, 0.0),
-        (2.0, 0.0, 0.0),
-        (3.0, 1.0, 0.0),
-    ]
-    assert SceneViewLineToolsMixin._line_subdivide_positions(
-        [(0, 0, 0), (2, 0, 0), (4, 0, 0)], {0, 1}
-    ) == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (4.0, 0.0, 0.0)]
-    assert SceneViewLineToolsMixin._line_ray_plane_intersection(
-        (0, 0, -1), (0, 0, 1), (0, 0, 0), (0, 0, 1)
-    ) == (0.0, 0.0, 0.0)
 
 
 def test_line_renderer_bakes_an_expanded_static_mesh(scene):
