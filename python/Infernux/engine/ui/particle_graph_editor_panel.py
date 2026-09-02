@@ -1517,7 +1517,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             isinstance(candidate, dict)
             and not any(
                 str(candidate.get(name) or "").strip()
-                for name in ("guid", "path_hint", "path", "builtin", "built_in")
+                for name in ("guid", "path_hint", "builtin")
             )
         ):
             reference = AssetReference().to_dict()

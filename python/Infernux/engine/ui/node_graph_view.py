@@ -1669,8 +1669,8 @@ class NodeGraphView:
 
         display = ""
         if isinstance(ref, dict):
-            path_hint = str(ref.get("path_hint") or ref.get("path") or "")
-            builtin = str(ref.get("builtin") or ref.get("built_in") or "")
+            path_hint = str(ref.get("path_hint") or "")
+            builtin = str(ref.get("builtin") or "")
             if builtin:
                 display = f"Built-in {builtin}"
             elif path_hint:
@@ -1686,7 +1686,7 @@ class NodeGraphView:
             isinstance(ref, dict)
             and any(
                 str(ref.get(name) or "").strip()
-                for name in ("guid", "path_hint", "path", "builtin", "built_in")
+                for name in ("guid", "path_hint", "builtin")
             )
         )
 

@@ -1200,9 +1200,7 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
 
     def _on_preview_texture_drop(payload):
         if isinstance(payload, dict):
-            tex_path = str(
-                payload.get("path_hint") or payload.get("path") or ""
-            ).strip()
+            tex_path = str(payload.get("path_hint") or "").strip()
             if not tex_path and payload.get("guid"):
                 try:
                     from Infernux.core.assets import AssetManager
@@ -1358,7 +1356,7 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         supplied_guid = ""
         if isinstance(path, dict):
             supplied_guid = str(path.get("guid") or "").strip()
-            p = str(path.get("path_hint") or path.get("path") or "").strip()
+            p = str(path.get("path_hint") or "").strip()
             if supplied_guid and not p:
                 try:
                     adb = getattr(AssetManager, "_asset_database", None)

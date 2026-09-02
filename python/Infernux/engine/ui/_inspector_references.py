@@ -98,7 +98,7 @@ def _resolve_guid_and_path(payload):
 
     if isinstance(payload, dict):
         guid = str(payload.get("guid") or "").strip()
-        path_hint = str(payload.get("path_hint") or payload.get("path") or "").strip()
+        path_hint = str(payload.get("path_hint") or "").strip()
     else:
         guid = ""
         path_hint = str(payload or "").strip()
@@ -650,9 +650,7 @@ def _apply_builtin_audio_clip_drop(comp, cpp_attr: str, payload):
         supplied_guid = ""
         if isinstance(payload, dict):
             supplied_guid = str(payload.get("guid") or "").strip()
-            file_path = str(
-                payload.get("path_hint") or payload.get("path") or ""
-            ).strip()
+            file_path = str(payload.get("path_hint") or "").strip()
         else:
             file_path = str(payload)
         if supplied_guid and not file_path:

@@ -282,9 +282,7 @@ class SpriteRenderer(BuiltinComponent):
         path = ""
         if isinstance(candidate, dict):
             supplied_guid = str(candidate.get("guid") or "").strip()
-            path = str(
-                candidate.get("path_hint") or candidate.get("path") or ""
-            ).strip()
+            path = str(candidate.get("path_hint") or "").strip()
         else:
             supplied_guid = self._extract_guid(candidate)
             path = str(candidate or "").strip()
@@ -521,7 +519,6 @@ class SpriteRenderer(BuiltinComponent):
         field_label(ctx, "Material", lw)
         material_path = str(
             getattr(mat, "file_path", "")
-            or getattr(mat, "path", "")
             or ""
         )
         has_custom_material = bool(

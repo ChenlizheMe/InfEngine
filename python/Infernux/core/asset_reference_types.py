@@ -131,10 +131,8 @@ class AssetReferenceType:
                     f"'{source_type}'"
                 )
             guid = str(payload.get("guid") or "").strip()
-            path = str(payload.get("path_hint") or payload.get("path") or "").strip()
-            builtin = str(
-                payload.get("builtin") or payload.get("built_in") or ""
-            ).strip()
+            path = str(payload.get("path_hint") or "").strip()
+            builtin = str(payload.get("builtin") or "").strip()
             if builtin:
                 if self.allow_structured_reference:
                     return ""
@@ -151,14 +149,9 @@ class AssetReferenceType:
             path = str(
                 getattr(payload, "path_hint", "")
                 or getattr(payload, "file_path", "")
-                or getattr(payload, "path", "")
                 or ""
             ).strip()
-            builtin = str(
-                getattr(payload, "builtin", "")
-                or getattr(payload, "built_in", "")
-                or ""
-            ).strip()
+            builtin = str(getattr(payload, "builtin", "") or "").strip()
             if builtin:
                 if self.allow_structured_reference:
                     return ""
@@ -244,8 +237,8 @@ class AssetReferenceCodec:
         builtin = ""
         if isinstance(value, dict):
             guid = str(value.get("guid") or "").strip()
-            path_hint = str(value.get("path_hint") or value.get("path") or "").strip()
-            builtin = str(value.get("builtin") or value.get("built_in") or "").strip()
+            path_hint = str(value.get("path_hint") or "").strip()
+            builtin = str(value.get("builtin") or "").strip()
         elif isinstance(value, str):
             path_hint = value.strip()
         elif value is not None:
@@ -253,14 +246,9 @@ class AssetReferenceCodec:
             path_hint = str(
                 getattr(value, "path_hint", "")
                 or getattr(value, "file_path", "")
-                or getattr(value, "path", "")
                 or ""
             ).strip()
-            builtin = str(
-                getattr(value, "builtin", "")
-                or getattr(value, "built_in", "")
-                or ""
-            ).strip()
+            builtin = str(getattr(value, "builtin", "") or "").strip()
         guid, path_hint = canonical_asset_reference_identity(guid, path_hint)
         return {
             "asset_type": str(asset_type or "").strip(),
