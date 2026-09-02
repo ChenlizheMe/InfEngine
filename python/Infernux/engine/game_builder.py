@@ -1278,59 +1278,30 @@ for _bootstrap_api in (
     if not hasattr(_NATIVE_PACK, _bootstrap_api):
         raise RuntimeError("The Player bootstrap is missing API: " + _bootstrap_api)
 
-def _validate_native_archive_paths(_archive_path, _allowed_roots=None):
-    """Reject unsafe or out-of-contract entries before native extraction."""
-    _manifest = dict(_NATIVE_PACK._inxpack_read_manifest(_archive_path))
-    _roots = None if _allowed_roots is None else set(_allowed_roots)
-    for _item in _manifest.get("files", []):
-        _name = str(_item.get("path", "")).replace("\\\\", "/")
-        _parts = _name.split("/")
-        if (
-            not _name
-            or "\\x00" in _name
-            or _name.startswith("/")
-            or (_name.startswith("\\\\"))
-            or (len(_name) >= 2 and _name[1] == ":")
-            or any(_part in {"", ".", ".."} for _part in _parts)
-        ):
-            raise RuntimeError(
-                "Native Player package contains an unsafe entry path: " + _name
-            )
-        if _roots is not None and _parts[0] not in _roots:
-            raise RuntimeError(
-                "Native Player package contains an unexpected root: " + _name
-            )
-    return _manifest
-
 def _load_player_package_index():
     """Read the tiny pre-runtime package identity index without json/stdlib."""
     _index_path = os.path.join(_DATA_ROOT, "PackageIndex.inxmanifest")
     _records = {}
-    try:
-        with open(_index_path, "r", encoding="ascii") as _stream:
-            _header = _stream.readline().strip()
-            if _header != "INFERNUX_PLAYER_PACKAGE_INDEX":
-                return _records
-            for _line in _stream:
-                _parts = _line.rstrip("\\r\\n").split("\\t")
-                if len(_parts) != 3:
-                    continue
-                _kind, _archive_hash, _archive_bytes = _parts
-                if (
-                    _kind not in {"runtime", "content", "parallel"}
-                    or len(_archive_hash) != 64
-                    or any(_ch not in "0123456789abcdef" for _ch in _archive_hash)
-                ):
-                    continue
-                try:
-                    _archive_bytes = int(_archive_bytes)
-                except ValueError:
-                    continue
-                if _archive_bytes < 0:
-                    continue
-                _records[_kind] = (_archive_hash, _archive_bytes)
-    except OSError:
-        pass
+    with open(_index_path, "r", encoding="ascii") as _stream:
+        _header = _stream.readline().strip()
+        if _header != "INFERNUX_PLAYER_PACKAGE_INDEX":
+            raise RuntimeError("Player package index has an invalid header")
+        for _line in _stream:
+            _parts = _line.rstrip("\\r\\n").split("\\t")
+            if len(_parts) != 3:
+                raise RuntimeError("Player package index has an invalid record")
+            _kind, _archive_hash, _archive_bytes_text = _parts
+            if (
+                _kind not in {"runtime", "content", "parallel"}
+                or _kind in _records
+                or len(_archive_hash) != 64
+                or any(_ch not in "0123456789abcdef" for _ch in _archive_hash)
+            ):
+                raise RuntimeError("Player package index has an invalid identity")
+            _archive_bytes = int(_archive_bytes_text)
+            if _archive_bytes < 0:
+                raise RuntimeError("Player package index has an invalid byte count")
+            _records[_kind] = (_archive_hash, _archive_bytes)
     return _records
 
 _PLAYER_PACKAGE_INDEX = _load_player_package_index()
@@ -1346,16 +1317,12 @@ def _extract_cached_archive(_archive_path, _cache_kind, _allowed_roots=None):
     if not os.path.isfile(_archive_path):
         raise RuntimeError("Required native Player package is missing: " + _archive_path)
     _archive_stat = os.stat(_archive_path)
-    _indexed_identity = _PLAYER_PACKAGE_INDEX.get(str(_cache_kind))
-    _manifest = None
-    if _indexed_identity is None:
-        _manifest = _validate_native_archive_paths(_archive_path, _allowed_roots)
-        _expected_hash = str(_manifest.get("archive_sha256", ""))
-        _expected_bytes = int(_manifest.get("archive_bytes", -1))
-    else:
-        _expected_hash, _expected_bytes = _indexed_identity
-    if not _expected_hash:
-        raise RuntimeError("Native Player package has no archive checksum: " + _archive_path)
+    try:
+        _expected_hash, _expected_bytes = _PLAYER_PACKAGE_INDEX[str(_cache_kind)]
+    except KeyError as _error:
+        raise RuntimeError(
+            "Player package index has no " + str(_cache_kind) + " identity"
+        ) from _error
     if _expected_bytes != _archive_stat.st_size:
         raise RuntimeError("Native Player package size mismatch: " + _archive_path)
     # The build-authored digest is the durable archive identity.  File times

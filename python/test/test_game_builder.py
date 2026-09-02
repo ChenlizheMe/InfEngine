@@ -5464,7 +5464,6 @@ class TestGameBuilderOutputSafety:
         boot_path = builder._generate_boot_script()
         boot_bytes = Path(boot_path).read_bytes()
         assert b"\x00" not in boot_bytes
-        assert b"\\x00" in boot_bytes
         boot_source = boot_bytes.decode("utf-8")
         compile(boot_source, boot_path, "exec")
         assert "import json" not in boot_source
@@ -5491,6 +5490,9 @@ class TestGameBuilderOutputSafety:
         assert '_index_path = os.path.join(_DATA_ROOT, "PackageIndex.inxmanifest")' in boot_source
         assert "_PLAYER_PACKAGE_INDEX = _load_player_package_index()" in boot_source
         assert "for _package_kind, (_package_hash, _package_bytes) in _PLAYER_PACKAGE_INDEX.items():" in boot_source
+        assert "_validate_native_archive_paths" not in boot_source
+        assert "_PLAYER_PACKAGE_INDEX[str(_cache_kind)]" in boot_source
+        assert "_indexed_identity" not in boot_source
         assert '_source_marker = os.path.join(_cache_root, ".source")' in boot_source
         assert "_archive_stat.st_mtime_ns" not in boot_source
         assert '_source_identity = _expected_hash + "\\n" + str(_archive_stat.st_size)' in boot_source
