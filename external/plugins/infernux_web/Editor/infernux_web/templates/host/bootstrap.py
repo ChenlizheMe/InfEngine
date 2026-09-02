@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import deque
-import hashlib
 import importlib.util
 import json
 import marshal
+import math
 import os
+import struct
 import sys
 from types import CodeType, ModuleType
 from typing import Any
@@ -19,11 +20,19 @@ _frame_count = 0
 _player_session: Any = None
 _player_scene_manager: Any = None
 _player_initial_scene_path = ""
+_player_runtime_manifest: Any = None
+_player_runtime_catalog: Any = None
+_player_asset_database: Any = None
+_player_asset_count = 0
+_player_type_count = 0
+_player_initial_scene_name = ""
 _player_activated = False
 _screen_width = 1
 _screen_height = 1
 _screen_ui_renderer: Any = None
 _screen_ui_texture_cache: Any = None
+_screen_ui_event_processor: Any = None
+_web_splash: Any = None
 _runtime_api_installed = False
 _player_root = "/infernux/player"
 _player_python = f"{_player_root}/python/site-packages"
@@ -75,8 +84,6 @@ def _prepare_cooked_player_content() -> str:
             not isinstance(summary, dict)
             or int(summary.get("archive_bytes", -1))
             != int(package_record.get("archive_bytes", -2))
-            or str(summary.get("archive_sha256", "")).casefold()
-            != str(package_record.get("archive_sha256", "")).casefold()
         ):
             raise RuntimeError(f"Web Player package identity mismatch: {relative}")
         extracted_packages.add(normalized.casefold())
@@ -179,7 +186,7 @@ def _register_web_shaders() -> None:
         catalog = json.load(stream)
     if (
         catalog.get("$schema") != "infernux.web_shader_catalog"
-        or catalog.get("version") != 1
+        or "version" in catalog
         or not isinstance(catalog.get("shaders"), list)
         or not catalog["shaders"]
     ):
@@ -209,11 +216,6 @@ def _register_web_shaders() -> None:
         shader_path = os.path.join(shader_root, *normalized.split("/"))
         with open(shader_path, "rb") as stream:
             payload = stream.read()
-        if (
-            len(payload) != int(entry.get("bytes", -1))
-            or hashlib.sha256(payload).hexdigest() != entry.get("sha256")
-        ):
-            raise RuntimeError(f"Web Player shader identity mismatch: {name} ({stage})")
         try:
             source = payload.decode("utf-8")
         except UnicodeDecodeError as error:
@@ -443,9 +445,13 @@ def _install_runtime_lifecycle_bridge(scene_manager: Any, scheduler: Any) -> Non
     scheduler.sync_native_work_availability()
 
 
-def _prepare_player_runtime() -> None:
-    global _player_initial_scene_path, _player_session, _player_scene_manager
+def _prepare_player_asset_contract() -> None:
+    global _player_initial_scene_path, _player_runtime_manifest
+    global _player_runtime_catalog, _player_asset_database
+    global _player_asset_count, _player_type_count, _player_initial_scene_name
 
+    if _player_runtime_catalog is not None:
+        return
     if not _runtime_data_root:
         raise RuntimeError("Web Player has no extracted runtime data root")
     os.environ["_INFERNUX_PLAYER_MODE"] = "1"
@@ -457,14 +463,13 @@ def _prepare_player_runtime() -> None:
 
     _install_platform_runtime_api(native_module)
     from _InfernuxWebHost import initialize_runtime_assets
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
     from Infernux.engine.player_service_graph import (
         PlayerRuntimeAssetCatalog,
         RuntimeProductManifest,
     )
     from Infernux.engine.project_context import set_project_root
     from Infernux.engine.runtime_type_registry import install_runtime_type_registry
-    from Infernux.lib import AssetRegistry, SceneManager
+    from Infernux.lib import AssetRegistry
 
     set_project_root(_runtime_data_root)
     manifest_document = _read_json(
@@ -510,18 +515,43 @@ def _prepare_player_runtime() -> None:
         "INFERNUX_WEB_COMPONENT_SURFACE_READY "
         "audio=true particle=true"
     )
-    session = PlayerRuntimeSession(asset_database=database)
-    session.configure_runtime_contract(runtime_manifest, runtime_catalog)
     scene_path = runtime_catalog.resolve_scene(scenes[0])
+    if scene_path is None:
+        raise RuntimeError(
+            f"Web Player runtime catalog cannot resolve initial scene: {scenes[0]}"
+        )
+    _player_initial_scene_path = scene_path
+    _player_runtime_manifest = runtime_manifest
+    _player_runtime_catalog = runtime_catalog
+    _player_asset_database = database
+    _player_asset_count = asset_count
+    _player_type_count = type_count
+    _player_initial_scene_name = scenes[0]
+
+
+def _prepare_player_runtime() -> None:
+    global _player_session, _player_scene_manager
+
+    if _player_session is not None:
+        return
+    _prepare_player_asset_contract()
+    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from Infernux.lib import SceneManager
+
+    session = PlayerRuntimeSession(asset_database=_player_asset_database)
+    session.configure_runtime_contract(
+        _player_runtime_manifest, _player_runtime_catalog
+    )
+    scene_manager = SceneManager.instance()
+    _install_runtime_lifecycle_bridge(scene_manager, session.execution_scheduler)
+    scene_path = _player_initial_scene_path
+    scenes = [_player_initial_scene_name]
     print(f"INFERNUX_WEB_SCENE_LOADING scene={scenes[0]}")
-    if scene_path is None or not session.load_scene(scene_path):
+    if not session.load_scene(scene_path):
         raise RuntimeError(
             "Web Player could not load its initial scene: "
             f"{session.last_scene_error or scenes[0]}"
         )
-    _player_initial_scene_path = scene_path
-    scene_manager = SceneManager.instance()
-    _install_runtime_lifecycle_bridge(scene_manager, session.execution_scheduler)
     active_scene = scene_manager.get_active_scene()
     if active_scene is None:
         raise RuntimeError("Web Player scene transaction published no active scene")
@@ -529,15 +559,242 @@ def _prepare_player_runtime() -> None:
     _player_scene_manager = scene_manager
     print(
         "INFERNUX_WEB_SCENE_READY "
-        f"assets={asset_count} types={type_count} "
+        f"assets={_player_asset_count} types={_player_type_count} "
         f"objects={len(active_scene.get_all_objects())} scene={scenes[0]}"
     )
 
 
-def infernux_web_ready(details: dict[str, Any]) -> dict[str, Any]:
+class _WebSplashPlayer:
+    """Engine-canvas splash playback for the WebGPU Player."""
+
+    def __init__(self, items: list[dict[str, Any]], data_root: str) -> None:
+        import _InfernuxWebHost as host
+
+        self._host = host
+        self._data_root = os.path.abspath(data_root)
+        self._items = [self._validate_item(item) for item in items]
+        self._index = 0
+        self._elapsed = 0.0
+        self._texture_id = 0
+        self._width = 0
+        self._height = 0
+        self._video_payload = b""
+        self._video_frames: tuple[tuple[int, int], ...] = ()
+        self._video_fps = 0.0
+        self._video_frame = -1
+        self._loaded = False
+
+    @property
+    def is_finished(self) -> bool:
+        return self._index >= len(self._items)
+
+    def _validate_item(self, source: Any) -> dict[str, Any]:
+        if not isinstance(source, dict):
+            raise RuntimeError("Web Player splash entries must be objects")
+        required = {"type", "path", "layout", "duration", "fade_in", "fade_out"}
+        if set(source) != required:
+            raise RuntimeError("Web Player splash entry must use the current exact field set")
+        item_type = str(source["type"])
+        if item_type not in {"image", "video"}:
+            raise RuntimeError(f"Web Player splash type is unsupported: {item_type!r}")
+        layout = str(source["layout"])
+        if layout not in {"logo", "contain", "cover"}:
+            raise RuntimeError(f"Web Player splash layout is unsupported: {layout!r}")
+        if item_type == "video" and layout != "cover":
+            raise RuntimeError("Web Player video splash must use cover layout")
+        relative = str(source["path"])
+        normalized = os.path.normpath(relative).replace("\\", "/")
+        if not relative or normalized.startswith("../") or os.path.isabs(relative):
+            raise RuntimeError("Web Player splash path is invalid")
+        path = os.path.abspath(os.path.join(self._data_root, *normalized.split("/")))
+        if os.path.commonpath((self._data_root, path)) != self._data_root or not os.path.isfile(path):
+            raise RuntimeError(f"Web Player splash asset is missing: {relative}")
+        duration = float(source["duration"])
+        fade_in = float(source["fade_in"])
+        fade_out = float(source["fade_out"])
+        if (
+            not math.isfinite(duration)
+            or duration <= 0.0
+            or not math.isfinite(fade_in)
+            or fade_in < 0.0
+            or not math.isfinite(fade_out)
+            or fade_out < 0.0
+        ):
+            raise RuntimeError("Web Player splash timing is invalid")
+        return {
+            "type": item_type,
+            "path": path,
+            "layout": layout,
+            "duration": duration,
+            "fade_in": fade_in,
+            "fade_out": fade_out,
+        }
+
+    def _upload_image(self, encoded: bytes) -> None:
+        texture_id, width, height = self._host.screen_ui_upload_image(
+            encoded, self._texture_id
+        )
+        self._texture_id = int(texture_id)
+        self._width = int(width)
+        self._height = int(height)
+
+    def _load_item(self) -> None:
+        item = self._items[self._index]
+        with open(item["path"], "rb") as stream:
+            payload = stream.read()
+        if item["type"] == "image":
+            self._upload_image(payload)
+        else:
+            if len(payload) < 24 or payload[:8] != b"INFSPLSH":
+                raise RuntimeError("Web Player video splash header is invalid")
+            count, fps, width, height = struct.unpack_from("<IfII", payload, 8)
+            index_end = 24 + int(count) * 8
+            if (
+                count == 0
+                or not math.isfinite(float(fps))
+                or fps <= 0.0
+                or width == 0
+                or height == 0
+                or index_end > len(payload)
+            ):
+                raise RuntimeError("Web Player video splash metadata is invalid")
+            frames: list[tuple[int, int]] = []
+            frame_data_bytes = len(payload) - index_end
+            for frame_index in range(int(count)):
+                offset, size = struct.unpack_from("<II", payload, 24 + frame_index * 8)
+                if size == 0 or offset > frame_data_bytes or size > frame_data_bytes - offset:
+                    raise RuntimeError("Web Player video splash frame index is invalid")
+                frames.append((index_end + int(offset), int(size)))
+            self._video_payload = payload
+            self._video_frames = tuple(frames)
+            self._video_fps = float(fps)
+            self._video_frame = 0
+            self._upload_video_frame(0)
+        self._loaded = True
+
+    def _upload_video_frame(self, frame_index: int) -> None:
+        offset, size = self._video_frames[frame_index]
+        self._upload_image(self._video_payload[offset : offset + size])
+
+    def _duration(self, item: dict[str, Any]) -> float:
+        if item["type"] == "video":
+            return len(self._video_frames) / self._video_fps
+        return float(item["duration"])
+
+    @staticmethod
+    def _alpha(elapsed: float, duration: float, fade_in: float, fade_out: float) -> float:
+        if elapsed < fade_in:
+            return elapsed / fade_in if fade_in > 0.0 else 1.0
+        if elapsed > duration - fade_out:
+            return max(0.0, duration - elapsed) / fade_out if fade_out > 0.0 else 0.0
+        return 1.0
+
+    @staticmethod
+    def _layout_rect(
+        layout: str, view_width: int, view_height: int, image_width: int, image_height: int
+    ):
+        if layout == "logo":
+            scale = min(view_width * 0.45 / image_width, view_height * 0.45 / image_height)
+        elif layout == "contain":
+            scale = min(view_width / image_width, view_height / image_height)
+        elif layout == "cover":
+            scale = max(view_width / image_width, view_height / image_height)
+        else:
+            raise RuntimeError(f"Web Player splash layout is unsupported: {layout!r}")
+        width = image_width * scale
+        height = image_height * scale
+        return ((view_width - width) * 0.5, (view_height - height) * 0.5, width, height)
+
+    def _release_item(self) -> None:
+        self._video_payload = b""
+        self._video_frames = ()
+        self._video_fps = 0.0
+        self._video_frame = -1
+        self._loaded = False
+
+    def update(self, delta_time: float, view_width: int, view_height: int) -> bool:
+        if self.is_finished:
+            return False
+        if not self._loaded:
+            self._load_item()
+        item = self._items[self._index]
+        duration = self._duration(item)
+        if item["type"] == "video":
+            frame_index = min(
+                int(self._elapsed * self._video_fps), len(self._video_frames) - 1
+            )
+            if frame_index != self._video_frame:
+                self._upload_video_frame(frame_index)
+                self._video_frame = frame_index
+
+        alpha = self._alpha(
+            self._elapsed, duration, float(item["fade_in"]), float(item["fade_out"])
+        )
+        x, y, width, height = self._layout_rect(
+            item["layout"], view_width, view_height, self._width, self._height
+        )
+        self._host.screen_ui_begin_frame(view_width, view_height)
+        self._host.screen_ui_add_filled_rect(
+            1, 0.0, 0.0, float(view_width), float(view_height), 0.0, 0.0, 0.0, 1.0, 0.0
+        )
+        self._host.screen_ui_add_image(
+            1,
+            self._texture_id,
+            x,
+            y,
+            x + width,
+            y + height,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            alpha,
+            0.0,
+            False,
+            False,
+            0.0,
+        )
+        self._elapsed += max(0.0, float(delta_time))
+        if self._elapsed >= duration:
+            self._release_item()
+            self._index += 1
+            self._elapsed = 0.0
+        return not self.is_finished
+
+    def close(self) -> None:
+        if self._texture_id:
+            self._host.screen_ui_release_texture(self._texture_id)
+            self._texture_id = 0
+        self._release_item()
+
+
+def _activate_web_player_session() -> None:
+    global _player_activated
+
+    if _player_activated:
+        return
+    if _player_session is None or not _player_session.activate():
+        raise RuntimeError("Web Player runtime session could not be activated")
+    _player_activated = True
+    print("INFERNUX_WEB_RUNTIME_ACTIVE")
+
+
+def _create_web_splash() -> _WebSplashPlayer | None:
+    manifest = _read_json(os.path.join(_runtime_data_root, "BuildManifest.json"))
+    items = manifest.get("splash_items", [])
+    if not isinstance(items, list):
+        raise RuntimeError("Web Player splash_items must be an array")
+    return _WebSplashPlayer(items, _runtime_data_root) if items else None
+
+
+def infernux_web_ready(details: dict[str, Any]) -> None:
     """Receive the browser graphics and viewport contract from the native host."""
 
-    global _player_activated, _screen_width, _screen_height, _screen_ui_renderer, _screen_ui_texture_cache
+    global _screen_width, _screen_height, _screen_ui_renderer, _screen_ui_texture_cache
+    global _screen_ui_event_processor, _web_splash
 
     print(
         "INFERNUX_WEB_HOST_READY "
@@ -546,22 +803,31 @@ def infernux_web_ready(details: dict[str, Any]) -> dict[str, Any]:
     )
     if _player_session is None:
         _prepare_player_runtime()
-    if _player_session is None or not _player_session.activate():
-        raise RuntimeError("Web Player runtime session could not be activated")
     _screen_width = max(1, int(details.get("width", 1)))
     _screen_height = max(1, int(details.get("height", 1)))
     _screen_ui_renderer = _WebScreenUIRenderer()
     _screen_ui_texture_cache = _WebScreenUITextureCache()
-    _player_activated = True
-    print("INFERNUX_WEB_RUNTIME_ACTIVE")
+    from Infernux.input import Input
+    from Infernux.ui.ui_event_system import UIEventProcessor
+
+    Input.set_game_focused(True)
+    Input.set_game_viewport_origin(0.0, 0.0)
+    _screen_ui_event_processor = UIEventProcessor()
+    _web_splash = _create_web_splash()
+    if _web_splash is None:
+        _activate_web_player_session()
+    else:
+        print(f"INFERNUX_WEB_SPLASH_READY items={len(_web_splash._items)}")
     print("INFERNUX_WEB_AUDIO_USER_ACTIVATION_PENDING")
-    return infernux_web_render_settings()
+    return None
 
 
 def infernux_web_render_settings() -> dict[str, Any]:
     """Return the active RenderStack subset implemented by the Web host."""
 
+    _prepare_player_asset_contract()
     settings: dict[str, Any] = {
+        "msaa_samples": 4,
         "bloom_enabled": False,
         "bloom_threshold": 1.0,
         "bloom_intensity": 0.8,
@@ -573,30 +839,56 @@ def infernux_web_render_settings() -> dict[str, Any]:
         "tonemapping_exposure": 1.0,
     }
     stack = _web_render_stack_document()
-    if stack is not None:
-        for slot in stack.get("effect_slots") or ():
-            fields = slot.get("fields") if isinstance(slot, dict) else None
-            if not isinstance(fields, dict) or not fields.get("enabled", False):
-                continue
-            reference = fields.get("effect")
-            if not isinstance(reference, dict):
-                continue
-            for feature_type, parameters in _iter_web_render_effects(reference):
-                if feature_type == "infernux.post.bloom":
-                    settings["bloom_enabled"] = True
-                    settings["bloom_threshold"] = float(parameters.get("threshold", 1.0))
-                    settings["bloom_intensity"] = float(parameters.get("intensity", 0.8))
-                    settings["bloom_scatter"] = float(parameters.get("scatter", 0.7))
-                    settings["bloom_clamp"] = float(parameters.get("clamp", 65472.0))
-                    settings["bloom_iterations"] = int(parameters.get("max_iterations", 5))
-                    tint = parameters.get("tint", [1.0, 1.0, 1.0, 1.0])
-                    if isinstance(tint, (list, tuple)) and len(tint) >= 3:
-                        settings["bloom_tint"] = [float(tint[0]), float(tint[1]), float(tint[2])]
-                elif feature_type == "infernux.post.tonemapping":
-                    settings["tonemapping_mode"] = int(parameters.get("mode", 2))
-                    settings["tonemapping_exposure"] = float(parameters.get("exposure", 1.0))
+    if stack is None:
+        raise RuntimeError("Web Player initial scene requires an authored RenderStack")
+    pipeline_name = str(stack.get("pipeline_class_name", ""))
+    if pipeline_name != "Default Forward":
+        raise RuntimeError(
+            "Web Player currently requires the Default Forward RenderStack pipeline; "
+            f"received {pipeline_name!r}"
+        )
+    pipeline_parameters = stack.get("pipeline_params_json")
+    if not isinstance(pipeline_parameters, str):
+        raise RuntimeError("Web Player RenderStack pipeline_params_json must be a JSON string")
+    parameter_document = json.loads(pipeline_parameters)
+    default_parameters = parameter_document.get("__default__")
+    if not isinstance(default_parameters, dict):
+        raise RuntimeError("Web Player RenderStack parameters are missing the __default__ object")
+    serialized_msaa = default_parameters.get("msaa_samples")
+    if isinstance(serialized_msaa, dict):
+        serialized_msaa = serialized_msaa.get("__enum_name__")
+    sample_names = {"X1": 1, "X4": 4}
+    if serialized_msaa not in sample_names:
+        raise RuntimeError(
+            "WebGPU supports RenderStack MSAA X1 or X4; "
+            f"received {serialized_msaa!r}"
+        )
+    settings["msaa_samples"] = sample_names[serialized_msaa]
+    for slot in stack.get("effect_slots") or ():
+        fields = slot.get("fields") if isinstance(slot, dict) else None
+        if not isinstance(fields, dict) or not fields.get("enabled", False):
+            continue
+        reference = fields.get("effect")
+        if not isinstance(reference, dict):
+            raise RuntimeError("Web Player enabled RenderStack slot has no effect reference")
+        for feature_type, parameters in _iter_web_render_effects(reference):
+            if feature_type == "infernux.post.bloom":
+                settings["bloom_enabled"] = True
+                settings["bloom_threshold"] = float(parameters.get("threshold", 1.0))
+                settings["bloom_intensity"] = float(parameters.get("intensity", 0.8))
+                settings["bloom_scatter"] = float(parameters.get("scatter", 0.7))
+                settings["bloom_clamp"] = float(parameters.get("clamp", 65472.0))
+                settings["bloom_iterations"] = int(parameters.get("max_iterations", 5))
+                tint = parameters.get("tint", [1.0, 1.0, 1.0, 1.0])
+                if not isinstance(tint, (list, tuple)) or len(tint) < 3:
+                    raise RuntimeError("Web Player Bloom tint must contain at least three values")
+                settings["bloom_tint"] = [float(tint[0]), float(tint[1]), float(tint[2])]
+            elif feature_type == "infernux.post.tonemapping":
+                settings["tonemapping_mode"] = int(parameters.get("mode", 2))
+                settings["tonemapping_exposure"] = float(parameters.get("exposure", 1.0))
     print(
         "INFERNUX_WEB_RENDER_STACK_READY "
+        f"msaa={settings['msaa_samples']} "
         f"bloom={int(bool(settings['bloom_enabled']))} "
         f"iterations={settings['bloom_iterations']} "
         f"tonemapping={settings['tonemapping_mode']}"
@@ -671,20 +963,22 @@ def _iter_web_render_effects(
 
 
 def _web_render_effect_path(guid: str, path_hint: str) -> str:
-    """Resolve a packaged render-effect reference through its GUID first."""
+    """Resolve a packaged render-effect reference through its GUID."""
 
     from Infernux.lib import AssetRegistry
 
+    if not guid:
+        raise RuntimeError(
+            f"Web Player render effect has no GUID: path_hint={path_hint!r}"
+        )
     database = AssetRegistry.instance().get_asset_database()
-    path = str(database.get_path_from_guid(guid) or "") if database and guid else ""
-    if not path:
-        path = path_hint
-    candidates = [path]
+    if database is None:
+        raise RuntimeError("Web Player asset database is unavailable while resolving RenderStack")
+    path = str(database.get_path_from_guid(guid) or "")
     if path and not os.path.isabs(path):
-        candidates = [os.path.join(_runtime_data_root, path), path]
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return os.path.abspath(candidate)
+        path = os.path.join(_runtime_data_root, path)
+    if path and os.path.isfile(path):
+        return os.path.abspath(path)
     raise RuntimeError(
         "Web Player could not resolve render effect "
         f"guid={guid!r} path_hint={path_hint!r}"
@@ -696,8 +990,8 @@ def infernux_web_activate(audio_ready: bool) -> bool:
 
     if not audio_ready:
         raise RuntimeError("Web Player audio did not unlock from the user gesture")
-    if not _player_activated or _player_session is None:
-        raise RuntimeError("Web Player gameplay was not ready before audio activation")
+    if _player_session is None:
+        raise RuntimeError("Web Player scene was not ready before audio activation")
     print("INFERNUX_WEB_AUDIO_USER_ACTIVATED")
     return True
 
@@ -718,10 +1012,30 @@ def infernux_web_input(kind: str, payload: dict[str, Any]) -> None:
 def infernux_web_runtime_diagnostic(probe: int, argument: int) -> float:
     """Return one numeric, read-only runtime probe for browser acceptance."""
 
-    if probe == 0:
-        from Infernux.input import Input
+    from Infernux.input import Input
 
+    if probe == 0:
         return float(Input.get_key(int(argument)))
+    if probe == 5:
+        return float(Input.touch_count)
+    if 6 <= probe <= 10:
+        touch = Input.get_touch(int(argument))
+        if probe == 6:
+            return float(touch.finger_id)
+        if probe == 7:
+            return float(touch.normalized_position[0])
+        if probe == 8:
+            return float(touch.normalized_position[1])
+        if probe == 9:
+            return float(touch.is_primary)
+        phase_codes = {
+            "began": 0,
+            "moved": 1,
+            "stationary": 2,
+            "ended": 3,
+            "canceled": 4,
+        }
+        return float(phase_codes[touch.phase.value])
     if _player_session is None:
         return float("nan")
     scheduler = _player_session.execution_scheduler
@@ -874,17 +1188,85 @@ def _submit_screen_ui() -> None:
         )
 
 
-def infernux_web_tick(delta_time: float) -> None:
+def _process_screen_ui_events(delta_time: float) -> None:
+    """Dispatch browser mouse input through the same Screen UI event system as Players."""
+
+    if _player_scene_manager is None or _screen_ui_event_processor is None:
+        return
+
+    from Infernux.engine.ui.runtime_canvas_snapshot import (
+        collect_sorted_runtime_canvas_snapshot,
+    )
+    from Infernux.input import Input
+
+    scene = _player_scene_manager.get_active_scene()
+    persistent_scene = _player_scene_manager.get_runtime_persistent_scene()
+    canvases = (
+        tuple(collect_sorted_runtime_canvas_snapshot(scene, persistent_scene))
+        if scene is not None
+        else ()
+    )
+    if not canvases:
+        _screen_ui_event_processor.reset()
+        return
+
+    mouse_x, mouse_y, scroll_x, scroll_y, held, down, up = (
+        Input.get_game_mouse_frame_state(0)
+    )
+    canvas_positions: list[tuple[float, float]] = []
+    for canvas in canvases:
+        reference_width = float(canvas.reference_width)
+        reference_height = float(canvas.reference_height)
+        if reference_width < 1.0 or reference_height < 1.0:
+            canvas_positions.append((0.0, 0.0))
+            continue
+        scale_x, scale_y, _ = canvas.compute_scale(
+            float(_screen_width), float(_screen_height)
+        )
+        canvas_positions.append(
+            (
+                float(mouse_x) / max(float(scale_x), 1.0e-6),
+                float(mouse_y) / max(float(scale_y), 1.0e-6),
+            )
+        )
+
+    _screen_ui_event_processor.process(
+        list(canvases),
+        canvas_positions,
+        bool(down),
+        bool(up),
+        bool(held),
+        (float(scroll_x), float(scroll_y)),
+        max(0.0, min(float(delta_time), 0.25)),
+    )
+
+
+def infernux_web_tick(delta_time: float) -> bool:
     """Advance the Python side once per browser animation frame."""
 
-    global _frame_count
-    if not _player_activated or _player_session is None:
-        return
+    global _frame_count, _web_splash
+    if _player_session is None:
+        return False
+    if _web_splash is not None:
+        splash_active = _web_splash.update(
+            max(0.0, min(float(delta_time), 0.25)), _screen_width, _screen_height
+        )
+        if splash_active:
+            return True
+        _web_splash.close()
+        _web_splash = None
+        print("INFERNUX_WEB_SPLASH_COMPLETE")
+        _activate_web_player_session()
+        return False
+    if not _player_activated:
+        return False
     _player_session.tick(max(0.0, min(float(delta_time), 0.25)))
+    _process_screen_ui_events(delta_time)
     _submit_screen_ui()
     _frame_count += 1
     if _frame_count == 1:
         print("INFERNUX_WEB_FIRST_FRAME_READY")
+    return False
 
 
 print("INFERNUX_WEB_PYTHON_READY version=3.13 runtime_stage=scene-prepared")

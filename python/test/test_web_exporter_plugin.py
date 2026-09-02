@@ -3,8 +3,11 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
+
+import pytest
 
 from Infernux.engine.build import BuildProfile, BuildRequest
 from Infernux.plugins import player_file_exported
@@ -27,7 +30,7 @@ def _request(tmp_path: Path) -> BuildRequest:
         str(tmp_path / "project"),
         "web-wasm32",
         str(tmp_path / "output"),
-        BuildProfile(),
+        BuildProfile(options={"build_settings": {"scenes": []}}),
     )
 
 
@@ -68,7 +71,82 @@ def test_web_exporter_contributes_only_webgpu_target(monkeypatch):
         "gesture-gated-webaudio",
         "multi-pointer",
         "safe-area",
+        "webgpu-capability-inventory",
     } <= capabilities.features
+
+
+def test_webgpu_capability_inventory_is_explicit_and_fire_forced(monkeypatch):
+    _web_module(monkeypatch)
+    capability_module = importlib.import_module("infernux_web.capabilities")
+    document = capability_module.webgpu_capability_inventory()
+
+    capability_module.validate_webgpu_capability_inventory(document)
+    features = {feature["id"]: feature for feature in document["features"]}
+    assert document["policy"] == "fire-forced"
+    assert document["reference_backend"] == "vulkan"
+    assert set(document["required_feature_ids"]) == {
+        feature_id
+        for feature_id, feature in features.items()
+        if feature["required_for_040"]
+    }
+    assert all(
+        features[feature_id]["status"] != "unsupported"
+        for feature_id in document["required_feature_ids"]
+    )
+    assert features["material.custom-surface"]["status"] == "unsupported"
+    assert features["material.custom-surface"]["required_for_040"] is False
+    fixed_frame_features = {
+        "render.pbr-material",
+        "animation.skeletal",
+        "shadow.directional",
+        "render.transparent",
+        "render.line-renderer",
+        "particles.gpu-sprite",
+        "post.bloom-hdr",
+        "post.aces",
+    }
+    assert all(
+        "web.smoke.vulkan-webgpu-fixed-frame" in features[feature_id]["validation"]
+        for feature_id in fixed_frame_features
+    )
+    assert all(
+        features[feature_id]["parity_gate"] == "closed"
+        for feature_id in fixed_frame_features
+    )
+    assert features["lighting.point-lights"]["required_for_040"] is True
+    assert features["lighting.point-lights"]["parity_gate"] == "closed"
+    assert features["lighting.spot-lights"]["status"] == "unsupported"
+
+
+def test_webgpu_capability_inventory_rejects_required_unsupported_feature(monkeypatch):
+    _web_module(monkeypatch)
+    capability_module = importlib.import_module("infernux_web.capabilities")
+    document = capability_module.webgpu_capability_inventory()
+    pbr = next(
+        feature
+        for feature in document["features"]
+        if feature["id"] == "render.pbr-material"
+    )
+    pbr["status"] = "unsupported"
+    pbr["reason"] = "fixture"
+
+    with pytest.raises(ValueError, match="render.pbr-material is unsupported"):
+        capability_module.validate_webgpu_capability_inventory(document)
+
+
+def test_webgpu_capability_inventory_rejects_required_open_parity_gate(monkeypatch):
+    _web_module(monkeypatch)
+    capability_module = importlib.import_module("infernux_web.capabilities")
+    document = capability_module.webgpu_capability_inventory()
+    pbr = next(
+        feature
+        for feature in document["features"]
+        if feature["id"] == "render.pbr-material"
+    )
+    pbr["parity_gate"] = "open"
+
+    with pytest.raises(ValueError, match="open parity gate"):
+        capability_module.validate_webgpu_capability_inventory(document)
 
 
 def test_web_doctor_accepts_pinned_toolchain(monkeypatch):
@@ -199,6 +277,11 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         exporter_module,
+        "_stage_web_branding",
+        lambda _assets, _source_root, _game_name: None,
+    )
+    monkeypatch.setattr(
+        exporter_module,
         "_stage_web_shader_sources",
         lambda _request, _staging, _assets, _source_root: None,
     )
@@ -228,6 +311,18 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
                 suffix.encode("ascii")
             )
         (host_build / "infernux-logo.png").write_bytes(b"png")
+        for name in (
+            "infernux-favicon.png",
+            "infernux-icon-192.png",
+            "infernux-icon-512.png",
+            "infernux.webmanifest",
+            "infernux-branding.js",
+        ):
+            (host_build / name).write_bytes(name.encode("ascii"))
+        shutil.copy2(
+            player_assets / "infernux-webgpu-capabilities.json",
+            host_build / "infernux-webgpu-capabilities.json",
+        )
         return ("host built",)
 
     monkeypatch.setattr(exporter_module, "_configure_and_build_host", _build_host)
@@ -242,6 +337,12 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         "wasm",
         "data",
         "png",
+        "png",
+        "png",
+        "png",
+        "webmanifest",
+        "js",
+        "json",
     ]
     assert all(Path(item.path).is_file() for item in result.artifacts)
     assert result.manifest["scope"] == "cooked-player"
@@ -253,8 +354,64 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         "window_width": 1280,
         "window_height": 720,
     }
+    capability_manifest = result.manifest["webgpu_capabilities"]
+    assert capability_manifest["path"] == "infernux-webgpu-capabilities.json"
+    assert capability_manifest["open_parity_gates"] == []
+    published_capabilities = json.loads(
+        (
+            Path(request.output_dir) / "infernux-webgpu-capabilities.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert published_capabilities["backend"] == "webgpu"
     assert captured_presentation == result.manifest["presentation"]
     assert result.logs == ("host built",)
+
+
+def test_web_branding_uses_cooked_project_icon_and_game_name(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_web.exporter")
+    from PIL import Image
+
+    player_assets = tmp_path / "player-assets"
+    data_root = player_assets / "BrandingGame_Data"
+    icon = data_root / "Branding" / "project-icon.png"
+    icon.parent.mkdir(parents=True)
+    Image.new("RGBA", (96, 48), (240, 96, 48, 255)).save(icon)
+    from Infernux.engine.player_package_native import write_pack
+
+    write_pack(
+        (("Branding/project-icon.png", icon),),
+        data_root / "Content.inxpkg",
+    )
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"icon_path": "Branding/project-icon.png"}),
+        encoding="utf-8",
+    )
+
+    branding = exporter_module._stage_web_branding(
+        player_assets,
+        ROOT,
+        "Branding Game",
+    )
+
+    for name, size in (
+        ("infernux-favicon.png", 32),
+        ("infernux-icon-192.png", 192),
+        ("infernux-icon-512.png", 512),
+    ):
+        with Image.open(branding / name) as generated:
+            assert generated.mode == "RGBA"
+            assert generated.size == (size, size)
+    manifest = json.loads(
+        (branding / "infernux.webmanifest").read_text(encoding="utf-8")
+    )
+    assert manifest["name"] == "Branding Game"
+    assert [item["sizes"] for item in manifest["icons"]] == ["192x192", "512x512"]
+    branding_script = (branding / "infernux-branding.js").read_text(
+        encoding="utf-8"
+    )
+    assert '"game_name":"Branding Game"' in branding_script
+    assert "document.title" in branding_script
 
 
 def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
@@ -292,6 +449,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
 
     assert "libpython3.13.a" in cmake
     assert "--use-port=emdawnwebgpu" in cmake
+    assert "infernux-webgpu-capabilities.json" in cmake
     assert "-sSTACK_SIZE=2097152" in cmake
     assert "set(CROSS_PLATFORM_DETERMINISTIC ON" in cmake
     assert "target_link_libraries(${_web_jolt_consumer} PRIVATE Jolt)" in cmake
@@ -366,7 +524,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "TextureSampleType::Depth" in rhi_backend
     assert "SamplerBindingType::NonFiltering" in rhi_backend
     assert "IsBlockCompressedFormat" in rhi_backend
-    assert "SampleCount::Four" not in rhi_backend
+    assert "format == rhi::PixelFormat::RGBA16SFloat" in rhi_backend
+    assert "SampleCount::Four" in rhi_backend
     assert "INFERNUX_WEBGPU_FULLSCREEN_RHI_READY" in main
     assert "g_sceneRenderer.Render" in main
     assert "!g_webGpuValidationFailed && g_sceneRenderer.Prepare" in main
@@ -394,7 +553,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "rhi::PixelFormat::RGBA16SFloat" in particle_runtime
     assert "wgpu::TextureFormat::RGBA16Float" in particle_runtime
     assert "let coverage =" not in particle_runtime
-    assert "return input.color;" in particle_runtime
+    assert "return input.color * output_data.material_tint;" in particle_runtime
+    assert "ReadOutputMaterialTint(program)" in particle_runtime
+    assert "INFERNUX_WEBGPU_PARTICLE_OUTPUT_READY" in particle_runtime
     assert "correction[1][1] = -1.0f" in scene_renderer
     assert "correction[1][1] = -1.0f" in particle_runtime
     assert "skinBoneMatrices" in scene_renderer
@@ -404,6 +565,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "CreateRenderPipeline" in rhi_backend
     assert "encoder.Draw(3)" in fullscreen
     assert "InfernuxWebPointerEvent" in main
+    assert "xPixels * surfaceScaleX" in main
+    assert "yPixels * surfaceScaleY" in main
     assert "emscripten_set_touchstart_callback" not in main
     assert "emscripten_set_mousedown_callback" not in main
     assert "emscripten_set_keydown_callback" in main
@@ -411,6 +574,12 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "InfernuxWebGetKeyState" in main
     assert "InfernuxWebGetObjectPositionAxis" in main
     assert "InfernuxWebGetRuntimeDiagnostic" in main
+    assert "return float(Input.touch_count)" in bootstrap
+    assert "touch = Input.get_touch(int(argument))" in bootstrap
+    assert "touch.normalized_position[0]" in bootstrap
+    assert "touch.normalized_position[1]" in bootstrap
+    assert "touch.is_primary" in bootstrap
+    assert "phase_codes[touch.phase.value]" in bootstrap
     assert "emscripten_set_visibilitychange_callback" in main
     assert "emscripten_sample_gamepad_data" in main
     assert "InfernuxWebTextInput" in main
@@ -430,6 +599,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "InfernuxWebPageLifecycle" in main
     assert "InfernuxWebUserActivation" in main
     assert "InfernuxWebSetRenderDiagnostic" in main
+    assert "g_particleRenderingEnabledForDiagnostics" in main
+    assert "SetBloomEnabledForDiagnostics" in main
     assert "INFERNUX_WEB_AUDIO_READY" in main
     assert "pagehide" in shell
     assert "pageshow" in shell
@@ -450,10 +621,20 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEB_USER_ACTIVATION_REQUIRED" not in bootstrap
     assert "INFERNUX_WEB_AUDIO_USER_ACTIVATION_PENDING" in bootstrap
     assert "_player_session.activate()" in bootstrap
+    assert "class _WebSplashPlayer:" in bootstrap
+    assert "INFERNUX_WEB_SPLASH_READY" in bootstrap
+    assert "INFERNUX_WEB_SPLASH_COMPLETE" in bootstrap
+    assert "screen_ui_upload_image" in bootstrap
+    assert "screen_ui_release_texture" in bootstrap
+    assert "document.createElement" not in bootstrap
+    assert "!g_splashActive && !g_webGpuValidationFailed" in main
     assert 'importlib.import_module("Infernux.screen")' in bootstrap
     assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell
-    assert '<link rel="icon" href="data:,">' in shell
+    assert 'rel="icon" type="image/png"' in shell
+    assert 'rel="manifest"' in shell
+    assert 'rel="apple-touch-icon"' in shell
+    assert "infernux-branding.js" in shell
     assert "locateFile(path)" in shell
     assert "assetRevision" in shell
     assert "versionedAssets[path]" in shell
@@ -490,14 +671,28 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert '"submit_screen_ui"' not in host_module
     assert "INFERNUX_WEB_FIXED_CANVAS" in main
     assert "g_screenUIRenderer.Render" in main
-    assert "g_postProcessRenderer.SceneColorView()" in main
+    assert "g_postProcessRenderer.SceneColorAttachmentView()" in main
+    assert "colorAttachment.resolveTarget = g_postProcessRenderer.SceneColorView()" in main
+    assert "wgpu::StoreOp::Discard" in main
+    assert "ReadRenderSettings(renderSettings" in main
+    assert 'ReadSettingUInt(settings, "msaa_samples"' in main
+    assert "pipelineDescriptor.multisample.count = m_sceneSampleCount" in scene_renderer
+    assert "skyPipelineDescriptor.multisample.count = m_sceneSampleCount" in scene_renderer
+    assert "descriptor.sampleCount = m_sceneSampleCount" in scene_renderer
+    assert "pipelineDesc.multisample.count = static_cast<uint32_t>(sceneSampleCount)" in particle_runtime
+    assert "descriptor.sampleCount = m_sceneSampleCount" in post_process_renderer
+    assert "m_sceneColorMultisampled" in post_process_renderer
+    assert '"msaa_samples": 4' in bootstrap
+    assert 'sample_names = {"X1": 1, "X4": 4}' in bootstrap
+    assert "return infernux_web_render_settings()" not in bootstrap
     assert "g_postProcessRenderer.PrepareBloom(encoder)" in main
-    assert "ConfigurePostProcess(result)" in main
+    assert "g_postProcessRenderer.Configure(postProcessSettings)" in main
     assert "INFERNUX_WEB_POST_PROCESS_READY" in post_process_renderer
     assert "bloom_threshold" in post_process_renderer
     assert "downsample_13" in post_process_renderer
     assert "quadratic_threshold" in post_process_renderer
     assert "m_settings.bloomScatter" in post_process_renderer
+    assert "BloomEnabled()" in post_process_renderer
     assert "aces_film" in post_process_renderer
     assert "mat3x3<f32>" in post_process_renderer
     assert "0.59719" in post_process_renderer
@@ -506,6 +701,57 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "def _web_render_stack_document()" in bootstrap
     assert "def _iter_web_render_effects(" in bootstrap
     assert "database.get_path_from_guid(guid)" in bootstrap
+    render_settings = bootstrap[
+        bootstrap.index("def infernux_web_render_settings()") : bootstrap.index(
+            "def _web_render_stack_document()"
+        )
+    ]
+    assert render_settings.index("_prepare_player_asset_contract()") < render_settings.index(
+        "stack = _web_render_stack_document()"
+    )
+    asset_contract = bootstrap[
+        bootstrap.index("def _prepare_player_asset_contract()") : bootstrap.index(
+            "def _prepare_player_runtime()"
+        )
+    ]
+    player_runtime = bootstrap[
+        bootstrap.index("def _prepare_player_runtime()") : bootstrap.index(
+            "class _WebSplashPlayer"
+        )
+    ]
+    assert "session.load_scene(" not in asset_contract
+    assert "_player_initial_scene_path = scene_path" in asset_contract
+    assert "_prepare_player_asset_contract()" in player_runtime
+    assert "session.load_scene(scene_path)" in player_runtime
+    assert player_runtime.index("_install_runtime_lifecycle_bridge(") < player_runtime.index(
+        "session.load_scene(scene_path)"
+    )
+    assert main.index("g_particleRuntime.Initialize(") < main.index(
+        'PyObject_GetAttrString(mainModule, "infernux_web_ready")'
+    )
+    particle_initialization = main[
+        main.index("if (!g_particleRuntime.Initialize(") : main.index(
+            'std::printf("INFERNUX_WEBGPU_FULLSCREEN_RHI_READY'
+        )
+    ]
+    assert 'std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_RUNTIME_FAILED' in particle_initialization
+    assert "return;" in particle_initialization
+    ready_contract = main[
+        main.index('PyObject *ready = PyObject_GetAttrString(mainModule, "infernux_web_ready")') :
+        main.index('std::printf("INFERNUX_WEBGPU_DEVICE_READY')
+    ]
+    assert "if (ready == nullptr)" in ready_contract
+    assert 'PrintPythonError("ready-contract")' in ready_contract
+    assert 'PrintPythonError("ready")' in ready_contract
+    assert ready_contract.count("return;") == 2
+    assert 'raise RuntimeError("Web Player initial scene requires an authored RenderStack")' in render_settings
+    render_effect_path = bootstrap[
+        bootstrap.index("def _web_render_effect_path(") : bootstrap.index(
+            "def infernux_web_activate("
+        )
+    ]
+    assert "if not guid:" in render_effect_path
+    assert "path = path_hint" not in render_effect_path
     assert "render_effect_compiler" not in bootstrap
     assert '"infernux.post.bloom"' in bootstrap
     assert '"infernux.post.tonemapping"' in bootstrap
@@ -514,12 +760,21 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "descriptor.depthStencil" not in screen_ui_renderer
     assert "INFERNUX_WEB_SCREEN_UI_TEXTURE_READY" in host_module
     assert "screen_ui_resolve_texture" in host_module
+    assert '"screen_ui_upload_image", ScreenUIUploadImage' in host_module
+    assert '"screen_ui_release_texture", ScreenUIReleaseTexture' in host_module
+    assert "stbi_load_from_memory" in host_module
     assert "AddImageRounded" in screen_ui_renderer
     assert "command.GetTexID()" in screen_ui_renderer
     assert "screen_ui_add_text" in host_module
     assert "_WebScreenUITextureCache" in bootstrap
     assert "_screen_ui_texture_cache.get" in bootstrap
     assert "RuntimeScreenUISubmission._submit_canvas" in bootstrap
+    assert "def _process_screen_ui_events(delta_time: float)" in bootstrap
+    assert "UIEventProcessor()" in bootstrap
+    assert "Input.get_game_mouse_frame_state(0)" in bootstrap
+    assert bootstrap.index("_process_screen_ui_events(delta_time)") < bootstrap.index(
+        "_submit_screen_ui()", bootstrap.index("def infernux_web_tick")
+    )
     assert "INFERNUX_WEB_DISPLAY_MODE" in cmake
     assert "INFERNUX_WEB_CANVAS_WIDTH" in cmake
     assert "INFERNUX_WEB_CANVAS_HEIGHT" in cmake
