@@ -1452,20 +1452,6 @@ class AssetManager:
                 metadata["edit_revision"] = revision_state.edit_revision
 
     @classmethod
-    def _latest_committed_file_state(cls, normalized: str):
-        """Find a completed same-editor commit before the Python poll tick."""
-        for record in reversed(cls._pending_document_write_records.get(normalized, ())):
-            if not bool(getattr(record.ticket, "is_complete", False)):
-                continue
-            if str(getattr(record.ticket, "status", "") or "").lower() != "succeeded":
-                continue
-            committed = getattr(record.ticket, "committed_file_state", None)
-            if committed is not None:
-                return committed
-        state = cls._asset_revision_states.get(normalized)
-        return getattr(state, "persisted_file_state", None) if state else None
-
-    @classmethod
     def _submit_document_snapshot(
         cls,
         file_path: str,

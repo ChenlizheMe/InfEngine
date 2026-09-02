@@ -2856,10 +2856,6 @@ def _dist(x1, y1, x2, y2):
     return math.hypot(x2 - x1, y2 - y1)
 
 
-def _point_segment_dist(px, py, ax, ay, bx, by):
-    return _point_segment_projection(px, py, ax, ay, bx, by)[0]
-
-
 def _point_segment_projection(px, py, ax, ay, bx, by):
     """Return distance to a segment and the clamped projection along it."""
     dx = bx - ax

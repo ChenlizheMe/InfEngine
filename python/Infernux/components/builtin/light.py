@@ -38,10 +38,6 @@ def _v_add(a, b):
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
 
-def _v_sub(a, b):
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
 def _v_mul(v, scalar):
     return (v[0] * scalar, v[1] * scalar, v[2] * scalar)
 
@@ -56,14 +52,6 @@ def _v_normalize(v):
         return (0.0, 0.0, 1.0)
     inv = 1.0 / length
     return (v[0] * inv, v[1] * inv, v[2] * inv)
-
-
-def _v_cross(a, b):
-    return (
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    )
 
 
 def _clamp(value, min_value, max_value):

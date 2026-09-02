@@ -14,7 +14,6 @@ from enum import Enum
 from typing import Callable, Iterable, Mapping
 
 from Infernux.renderstack.pass_result import (
-    BufferHandle,
     PassResult,
     normalize_buffer_name,
 )
@@ -222,12 +221,6 @@ def topological_provider_order(
 
 def _semantic(value: str) -> str:
     return normalize_buffer_name(value)
-
-
-def _semantic_name(value: str | BufferHandle) -> str:
-    if isinstance(value, BufferHandle):
-        return value.name
-    return _semantic(value)
 
 
 __all__ = [
