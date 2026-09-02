@@ -133,7 +133,6 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
     ):
         return False
 
-    Debug.log_internal(f"Applied overrides to prefab: {os.path.basename(prefab_path)}")
     return True
 
 
@@ -322,7 +321,6 @@ def revert_overrides(instance_obj, prefab_path: str,
         Debug.log_error(f"Failed to deserialize during revert: {exc}")
         return False
 
-    Debug.log_internal("Reverted prefab instance to source.")
     return True
 
 

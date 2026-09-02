@@ -766,39 +766,16 @@ def create_script(current_path: str, script_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{script_name}' already exists"
 
-    started = time.perf_counter()
-    marks: list[tuple[str, float]] = []
-
-    def mark(label: str) -> None:
-        marks.append((label, time.perf_counter()))
-
     content = SCRIPT_TEMPLATE.format(class_name=class_name)
     written, error = _write_new_text_asset(file_path, content)
-    mark("write")
     if not written:
         return False, error
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            mark("import")
-            Debug.log_internal(
-                f"[ProjectPanel] Registered script: {script_name} -> {guid}"
-            )
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
-
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-    if elapsed_ms >= 10.0:
-        previous = started
-        pieces = []
-        for label, current in marks:
-            pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-            previous = current
-        Debug.log_internal(
-            f"[ScriptAssetProfile] create={elapsed_ms:.2f}ms "
-            f"file={script_name} " + " ".join(pieces)
-        )
 
     return True, ""
 
@@ -847,8 +824,7 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered shader: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -880,8 +856,7 @@ def create_scene(current_path: str, scene_name: str, asset_database=None):
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered scene: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -913,8 +888,7 @@ def create_material(current_path: str, material_name: str, asset_database=None):
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered material: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -1003,8 +977,7 @@ def create_animclip(current_path: str, clip_name: str, asset_database=None):
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered animclip2d: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -1036,8 +1009,7 @@ def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered animclip3d: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -1069,8 +1041,7 @@ def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered animfsm: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -1206,8 +1177,7 @@ def create_animtimeline(current_path: str, timeline_name: str, asset_database=No
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered animtimeline: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -1239,8 +1209,7 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
 
     if asset_database:
         try:
-            guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered timelinefsm: {file_name} -> {guid}")
+            _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return False, str(exc)
 
@@ -1255,12 +1224,6 @@ def delete_item(item_path: str, asset_database=None):
     """Delete a file or directory from the filesystem and notify AssetDatabase."""
     if not item_path or not os.path.exists(item_path):
         return False
-
-    started = time.perf_counter()
-    marks: list[tuple[str, float]] = []
-
-    def mark(label: str) -> None:
-        marks.append((label, time.perf_counter()))
 
     is_dir = os.path.isdir(item_path)
     deleted_script_guid = ""
@@ -1283,11 +1246,8 @@ def delete_item(item_path: str, asset_database=None):
             guid_hint=deleted_script_guid,
         ):
             raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
-        mark("asset_database")
-
     try:
         if is_dir:
-            import shutil
             shutil.rmtree(item_path)
         else:
             # On Windows, transient locks (antivirus, indexer, font loader)
@@ -1309,7 +1269,6 @@ def delete_item(item_path: str, asset_database=None):
                     f"file may be in use by another process. ({last_exc})"
                 )
                 return False
-        mark("filesystem")
     except OSError as _exc:
         Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
         return False
@@ -1317,18 +1276,6 @@ def delete_item(item_path: str, asset_database=None):
     # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_details_renderer
     asset_details_renderer.invalidate_asset(item_path)
-    mark("ui_invalidate")
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-    if elapsed_ms >= 10.0:
-        previous = started
-        pieces = []
-        for label, current in marks:
-            pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-            previous = current
-        Debug.log_internal(
-            f"[AssetMutationProfile] delete={elapsed_ms:.2f}ms "
-            f"file={os.path.basename(item_path)} " + " ".join(pieces)
-        )
     return True
 
 

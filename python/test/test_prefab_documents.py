@@ -63,6 +63,25 @@ def test_link_created_prefab_source_stamps_root_and_children(scene, tmp_path):
     assert child.prefab_root is False
 
 
+def test_prefab_save_fails_when_asset_registration_fails(scene, tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    class FailedMutation:
+        error = "registration rejected"
+
+        def __bool__(self):
+            return False
+
+    monkeypatch.setattr(
+        AssetManager,
+        "import_asset",
+        staticmethod(lambda _path, *, database: FailedMutation()),
+    )
+    root = scene.create_game_object("StrictPrefab")
+
+    assert save_prefab(root, str(tmp_path / "strict.prefab"), object()) is False
+
+
 def test_authoritative_object_snapshot_overlays_live_component_data():
     class _Component:
         component_id = 7

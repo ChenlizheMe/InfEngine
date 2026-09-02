@@ -332,15 +332,14 @@ def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None)
             if not mutation:
                 raise RuntimeError(mutation.error)
             guid = mutation.guid
-            Debug.log_internal(f"Registered prefab: {os.path.basename(file_path)} -> {guid}")
             _invalidate_prefab_template_cache(file_path, guid)
         except Exception as exc:
-            Debug.log_warning(f"Failed to register prefab in AssetDatabase: {exc}")
             _invalidate_prefab_template_cache(file_path, "")
+            Debug.log_error(f"Failed to register prefab in AssetDatabase: {exc}")
+            return False
     else:
         _invalidate_prefab_template_cache(file_path, "")
 
-    Debug.log_internal(f"Prefab saved: {file_path}")
     return True
 
 
