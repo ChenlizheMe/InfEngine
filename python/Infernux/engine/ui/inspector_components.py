@@ -344,13 +344,8 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
         if getattr(meta, 'hidden', False):
             continue
 
-        if meta.visible_when is not None:
-            try:
-                if not meta.visible_when(comp):
-                    continue
-            except (RuntimeError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+        if meta.visible_when is not None and not meta.visible_when(comp):
+            continue
 
         current = _get_cached_component_value(
             cache_entry, refresh_values, cpp_attr,
@@ -1424,13 +1419,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         if getattr(metadata, 'hidden', False):
             continue
 
-        if metadata.visible_when is not None:
-            try:
-                if not metadata.visible_when(py_comp):
-                    continue
-            except (RuntimeError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+        if metadata.visible_when is not None and not metadata.visible_when(py_comp):
+            continue
 
         current_value = _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_values, _REF_TYPES)
 

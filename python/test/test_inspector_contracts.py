@@ -2204,3 +2204,31 @@ def test_builtin_list_field_is_planned_and_committed_generically(monkeypatch):
             "Set points",
         )
     ]
+
+
+def test_builtin_field_visibility_failure_is_not_treated_as_visible():
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import inspector_components as module
+
+    def invalid_visibility(_component):
+        raise RuntimeError("invalid visibility dependency")
+
+    metadata = FieldMetadata(
+        name="value",
+        field_type=FieldType.FLOAT,
+        default=0.0,
+        visible_when=invalid_visibility,
+    )
+    prop = SimpleNamespace(metadata=metadata, cpp_attr="value")
+    ctx = SimpleNamespace(create_property_batch_plan=lambda descriptors: descriptors)
+
+    with pytest.raises(RuntimeError, match="invalid visibility dependency"):
+        module._build_builtin_cached_plan(
+            ctx,
+            SimpleNamespace(value=1.0),
+            [("value", prop)],
+            80.0,
+            None,
+            {"values": {}, "field_revisions": {}},
+            True,
+        )
