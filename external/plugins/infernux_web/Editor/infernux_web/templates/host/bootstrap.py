@@ -185,8 +185,9 @@ def _register_web_shaders() -> None:
     with open(catalog_path, encoding="utf-8") as stream:
         catalog = json.load(stream)
     if (
-        catalog.get("$schema") != "infernux.web_shader_catalog"
-        or "version" in catalog
+        not isinstance(catalog, dict)
+        or set(catalog) != {"$schema", "shaders"}
+        or catalog.get("$schema") != "infernux.web_shader_catalog"
         or not isinstance(catalog.get("shaders"), list)
         or not catalog["shaders"]
     ):
@@ -196,7 +197,7 @@ def _register_web_shaders() -> None:
 
     identities: set[tuple[str, str]] = set()
     for entry in catalog["shaders"]:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or set(entry) != {"name", "stage", "path"}:
             raise RuntimeError("Web Player shader catalog entry is invalid")
         name = str(entry.get("name", ""))
         stage = str(entry.get("stage", ""))

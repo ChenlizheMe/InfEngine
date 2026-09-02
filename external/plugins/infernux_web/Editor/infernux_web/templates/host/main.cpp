@@ -34,6 +34,16 @@
 #include <emscripten.h>
 #include <emscripten/html5.h>
 
+EM_JS(double, InfernuxWebAcceptanceFixedDelta, (), {
+    const clock = Module.infernuxAcceptanceClock;
+    return clock && clock.enabled ? Number(clock.fixedDeltaSeconds) : 0.0;
+});
+
+EM_JS(double, InfernuxWebAcceptancePauseFrame, (), {
+    const clock = Module.infernuxAcceptanceClock;
+    return clock && clock.enabled ? Number(clock.pauseAfterFrame) : 0.0;
+});
+
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
 PyMODINIT_FUNC PyInit__Infernux();
 #endif
@@ -54,6 +64,7 @@ infernux::web::WebParticleRuntime g_particleRuntime;
 infernux::web::WebPostProcessRenderer g_postProcessRenderer;
 infernux::web::WebScreenUIRenderer g_screenUIRenderer;
 bool g_particleRuntimeReady = false;
+bool g_particleRenderingEnabledForDiagnostics = true;
 bool g_webGpuValidationFailed = false;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
@@ -68,6 +79,7 @@ std::array<double, 32> g_gamepadTimestamps{};
 std::unordered_map<int, std::pair<float, float>> g_pointerPositions;
 double g_lastFrameTimeMilliseconds = 0.0;
 bool g_runtimeFrameFailed = false;
+bool g_splashActive = false;
 double g_safeAreaLeft = 0.0;
 double g_safeAreaTop = 0.0;
 double g_safeAreaRight = 0.0;
@@ -75,6 +87,29 @@ double g_safeAreaBottom = 0.0;
 double g_keyboardInset = 0.0;
 bool g_keyboardInsetKnown = false;
 bool g_runtimeActivated = false;
+double g_acceptanceFixedDeltaSeconds = 0.0;
+uint64_t g_acceptancePauseAfterFrame = 0;
+bool g_acceptancePaused = false;
+
+bool ConfigureAcceptanceClock()
+{
+    const double fixedDelta = InfernuxWebAcceptanceFixedDelta();
+    const double pauseFrame = InfernuxWebAcceptancePauseFrame();
+    if (fixedDelta == 0.0 && pauseFrame == 0.0)
+        return true;
+    if (!std::isfinite(fixedDelta) || fixedDelta <= 0.0 || fixedDelta > 0.25 || !std::isfinite(pauseFrame) ||
+        pauseFrame < 1.0 || std::floor(pauseFrame) != pauseFrame ||
+        pauseFrame > static_cast<double>(std::numeric_limits<uint64_t>::max())) {
+        std::fprintf(stderr, "INFERNUX_WEB_ACCEPTANCE_CLOCK_INVALID fixed_delta=%g pause_frame=%g\n", fixedDelta,
+                     pauseFrame);
+        return false;
+    }
+    g_acceptanceFixedDeltaSeconds = fixedDelta;
+    g_acceptancePauseAfterFrame = static_cast<uint64_t>(pauseFrame);
+    std::printf("INFERNUX_WEB_ACCEPTANCE_CLOCK_READY fixed_delta=%g pause_frame=%llu\n", fixedDelta,
+                static_cast<unsigned long long>(g_acceptancePauseAfterFrame));
+    return true;
+}
 
 int BrowserCodeToScancode(std::string_view code)
 {
@@ -286,14 +321,16 @@ bool ReadSettingUInt(PyObject *settings, const char *key, uint32_t &value)
     return true;
 }
 
-bool ConfigurePostProcess(PyObject *settings)
+bool ReadRenderSettings(PyObject *settings, infernux::web::WebPostProcessRenderer::Settings &values,
+                        uint32_t &sceneSampleCount)
 {
     if (!settings || !PyDict_Check(settings))
         return false;
-    infernux::web::WebPostProcessRenderer::Settings values;
     PyObject *bloomEnabled = PyDict_GetItemString(settings, "bloom_enabled");
     const int enabled = bloomEnabled ? PyObject_IsTrue(bloomEnabled) : -1;
-    if (enabled < 0 || !ReadSettingFloat(settings, "bloom_threshold", values.bloomThreshold) ||
+    if (enabled < 0 || !ReadSettingUInt(settings, "msaa_samples", sceneSampleCount) ||
+        (sceneSampleCount != 1 && sceneSampleCount != 4) ||
+        !ReadSettingFloat(settings, "bloom_threshold", values.bloomThreshold) ||
         !ReadSettingFloat(settings, "bloom_intensity", values.bloomIntensity) ||
         !ReadSettingFloat(settings, "bloom_scatter", values.bloomScatter) ||
         !ReadSettingFloat(settings, "bloom_clamp", values.bloomClamp) ||
@@ -319,7 +356,7 @@ bool ConfigurePostProcess(PyObject *settings)
         values.bloomTint[static_cast<size_t>(index)] = static_cast<float>(component);
     }
     Py_DECREF(sequence);
-    return g_postProcessRenderer.Configure(values);
+    return true;
 }
 
 void DispatchInput(const char *kind, PyObject *payload)
@@ -433,6 +470,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebSetRenderDiagnostic(int feature,
         break;
     case 1:
         g_sceneRenderer.SetShadowsEnabledForDiagnostics(enabled != 0);
+        break;
+    case 2:
+        g_particleRenderingEnabledForDiagnostics = enabled != 0;
+        break;
+    case 3:
+        if (!g_postProcessRenderer.SetBloomEnabledForDiagnostics(enabled != 0)) {
+            std::fprintf(stderr, "INFERNUX_WEB_RENDER_DIAGNOSTIC_BLOOM_FAILED enabled=%d\n", enabled);
+            g_webGpuValidationFailed = true;
+        }
         break;
     default:
         std::fprintf(stderr, "INFERNUX_WEB_RENDER_DIAGNOSTIC_INVALID feature=%d\n", feature);
@@ -580,6 +626,20 @@ extern "C" EMSCRIPTEN_KEEPALIVE double InfernuxWebGetRuntimeDiagnostic(int probe
     return value;
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE double InfernuxWebGetAcceptanceFrame()
+{
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    return static_cast<double>(infernux::SceneManager::Instance().GetRuntimeFrameCount());
+#else
+    return 0.0;
+#endif
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int InfernuxWebGetAcceptancePaused()
+{
+    return g_acceptancePaused ? 1 : 0;
+}
+
 EM_BOOL OnWheel(int, const EmscriptenWheelEvent *event, void *)
 {
     infernux::InputManager::Instance().ProcessScrollEvent(static_cast<float>(event->deltaX),
@@ -610,8 +670,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebPointerEvent(int eventKind, int 
     const bool terminal = eventKind == 2 || eventKind == 3;
 
     if (pointerType == 0) {
-        input.ProcessPointerMotionEvent(static_cast<float>(xPixels), static_cast<float>(yPixels),
-                                        static_cast<float>(movementXPixels), static_cast<float>(movementYPixels));
+        const double surfaceScaleX = static_cast<double>(g_width) / g_cssWidth;
+        const double surfaceScaleY = static_cast<double>(g_height) / g_cssHeight;
+        input.ProcessPointerMotionEvent(
+            static_cast<float>(xPixels * surfaceScaleX), static_cast<float>(yPixels * surfaceScaleY),
+            static_cast<float>(movementXPixels * surfaceScaleX), static_cast<float>(movementYPixels * surfaceScaleY));
         const int mappedButton = BrowserButtonToUnityButton(static_cast<unsigned short>(button));
         if (mappedButton >= 0 && (eventKind == 0 || terminal))
             input.ProcessPointerButtonEvent(mappedButton, eventKind == 0);
@@ -805,29 +868,51 @@ bool InitializePython()
 void Frame()
 {
     const double frameTimeMilliseconds = emscripten_get_now();
-    const double deltaSeconds =
+    const double wallDeltaSeconds =
         g_lastFrameTimeMilliseconds > 0.0 ? (frameTimeMilliseconds - g_lastFrameTimeMilliseconds) / 1000.0 : 0.0;
     g_lastFrameTimeMilliseconds = frameTimeMilliseconds;
+    const bool acceptanceClockEnabled = g_acceptancePauseAfterFrame > 0;
+    const double deltaSeconds =
+        acceptanceClockEnabled ? (g_acceptancePaused ? 0.0 : g_acceptanceFixedDeltaSeconds) : wallDeltaSeconds;
+    bool pauseAcceptanceAfterRender = false;
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
     if (infernux::JobSystem::IsAvailable())
         infernux::JobSystem::Get().RunPendingJobs(64);
 #endif
     PollGamepads();
-    if (g_tick != nullptr && !g_runtimeFrameFailed) {
+    if (g_tick != nullptr && !g_runtimeFrameFailed && !g_acceptancePaused) {
         PyObject *result = PyObject_CallFunction(g_tick, "d", deltaSeconds);
         if (result == nullptr) {
             PrintPythonError("frame");
             g_runtimeFrameFailed = true;
-        } else
+        } else {
+            const int splashActive = PyObject_IsTrue(result);
+            if (splashActive < 0) {
+                PrintPythonError("frame-result");
+                g_runtimeFrameFailed = true;
+            } else
+                g_splashActive = splashActive == 1;
             Py_DECREF(result);
+        }
     }
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
-    if (!g_runtimeFrameFailed) {
+    if (!g_runtimeFrameFailed && !g_acceptancePaused && !g_splashActive) {
         auto &sceneManager = infernux::SceneManager::Instance();
         const float delta = static_cast<float>(std::clamp(deltaSeconds, 0.0, 0.25));
         sceneManager.Update(delta);
         sceneManager.LateUpdate(delta);
         sceneManager.EndFrame();
+        if (acceptanceClockEnabled && sceneManager.IsPlaying()) {
+            const uint64_t frame = sceneManager.GetRuntimeFrameCount();
+            if (frame > g_acceptancePauseAfterFrame) {
+                std::fprintf(stderr, "INFERNUX_WEB_ACCEPTANCE_CLOCK_OVERRUN requested=%llu actual=%llu\n",
+                             static_cast<unsigned long long>(g_acceptancePauseAfterFrame),
+                             static_cast<unsigned long long>(frame));
+                g_runtimeFrameFailed = true;
+            } else if (frame == g_acceptancePauseAfterFrame) {
+                pauseAcceptanceAfterRender = true;
+            }
+        }
     }
 #endif
     wgpu::SurfaceTexture surfaceTexture;
@@ -835,9 +920,12 @@ void Frame()
     if (surfaceTexture.texture) {
         wgpu::TextureView view = surfaceTexture.texture.CreateView();
         wgpu::RenderPassColorAttachment colorAttachment;
-        colorAttachment.view = g_postProcessRenderer.SceneColorView();
+        colorAttachment.view = g_postProcessRenderer.SceneColorAttachmentView();
+        if (g_postProcessRenderer.SceneSampleCount() > 1)
+            colorAttachment.resolveTarget = g_postProcessRenderer.SceneColorView();
         colorAttachment.loadOp = wgpu::LoadOp::Clear;
-        colorAttachment.storeOp = wgpu::StoreOp::Store;
+        colorAttachment.storeOp =
+            g_postProcessRenderer.SceneSampleCount() > 1 ? wgpu::StoreOp::Discard : wgpu::StoreOp::Store;
         colorAttachment.clearValue = {0.015, 0.035, 0.065, 1.0};
         wgpu::RenderPassDescriptor passDescriptor;
         passDescriptor.colorAttachmentCount = 1;
@@ -850,24 +938,26 @@ void Frame()
             depthAttachment.depthClearValue = 1.0f;
         }
         wgpu::CommandEncoder encoder = g_device.CreateCommandEncoder();
-        if (g_particleRuntimeReady && !g_webGpuValidationFailed)
+        if (!g_splashActive && g_particleRuntimeReady && !g_webGpuValidationFailed)
             g_particleRuntime.RecordCompute(encoder);
-        const bool scenePrepared = !g_webGpuValidationFailed && g_sceneRenderer.Prepare(encoder, g_width, g_height);
+        const bool scenePrepared =
+            !g_splashActive && !g_webGpuValidationFailed && g_sceneRenderer.Prepare(encoder, g_width, g_height);
         if (scenePrepared && g_sceneRenderer.HasDepthTarget())
             passDescriptor.depthStencilAttachment = &depthAttachment;
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDescriptor);
         const bool renderedScene = scenePrepared && g_sceneRenderer.RenderPrepared(pass);
-        if (!renderedScene && g_rhi) {
+        if (!g_splashActive && !renderedScene && g_rhi) {
             infernux::web::WebGpuGraphicsCommandContext context;
             auto commands = g_rhi->MakeGraphicsCommandEncoder(context, pass);
             const auto &pipeline = g_fullscreenRenderer.EnsurePipeline(g_fullscreenPipelineKey);
             infernux::FullscreenPushConstants pushConstants;
             g_fullscreenRenderer.Draw(commands, pipeline, {}, {}, pushConstants, sizeof(pushConstants));
         }
-        if (scenePrepared && g_particleRuntimeReady && !g_webGpuValidationFailed)
+        if (scenePrepared && g_particleRuntimeReady && g_particleRenderingEnabledForDiagnostics &&
+            !g_webGpuValidationFailed)
             (void)g_particleRuntime.Render(pass, g_width, g_height);
         pass.End();
-        if (!g_webGpuValidationFailed && !g_postProcessRenderer.PrepareBloom(encoder)) {
+        if (!g_splashActive && !g_webGpuValidationFailed && !g_postProcessRenderer.PrepareBloom(encoder)) {
             std::fprintf(stderr, "INFERNUX_WEB_BLOOM_RECORDING_FAILED\n");
             g_webGpuValidationFailed = true;
         }
@@ -881,7 +971,7 @@ void Frame()
         presentDescriptor.colorAttachmentCount = 1;
         presentDescriptor.colorAttachments = &presentAttachment;
         wgpu::RenderPassEncoder presentPass = encoder.BeginRenderPass(&presentDescriptor);
-        if (!g_webGpuValidationFailed)
+        if (!g_splashActive && !g_webGpuValidationFailed)
             (void)g_postProcessRenderer.Render(presentPass);
         if (!g_webGpuValidationFailed) {
             (void)g_screenUIRenderer.Render(presentPass, 0, g_width, g_height);
@@ -891,11 +981,23 @@ void Frame()
         wgpu::CommandBuffer commands = encoder.Finish();
         g_queue.Submit(1, &commands);
     }
+#if defined(INFERNUX_WEB_ENGINE_RUNTIME)
+    if (pauseAcceptanceAfterRender) {
+        auto &sceneManager = infernux::SceneManager::Instance();
+        sceneManager.Pause();
+        g_acceptancePaused = true;
+        std::printf("INFERNUX_WEB_ACCEPTANCE_PAUSED frame=%llu fixed_delta=%g\n",
+                    static_cast<unsigned long long>(sceneManager.GetRuntimeFrameCount()),
+                    g_acceptanceFixedDeltaSeconds);
+    }
+#endif
     infernux::InputManager::Instance().BeginFrame();
 }
 
 void StartSurface()
 {
+    if (!ConfigureAcceptanceClock())
+        return;
     g_queue = g_device.GetQueue();
     wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasSource;
     canvasSource.selector = "#canvas";
@@ -915,12 +1017,30 @@ void StartSurface()
                      g_rhi ? g_rhi->LastError().c_str() : "unsupported surface format");
         return;
     }
-    if (!g_postProcessRenderer.Initialize(g_device, g_surfaceFormat)) {
+    PyObject *mainModule = PyImport_AddModule("__main__");
+    PyObject *renderSettingsFunction = PyObject_GetAttrString(mainModule, "infernux_web_render_settings");
+    PyObject *renderSettings = renderSettingsFunction ? PyObject_CallNoArgs(renderSettingsFunction) : nullptr;
+    Py_XDECREF(renderSettingsFunction);
+    if (!renderSettings) {
+        PrintPythonError("render-settings");
+        return;
+    }
+    infernux::web::WebPostProcessRenderer::Settings postProcessSettings;
+    uint32_t sceneSampleCount = 0;
+    if (!ReadRenderSettings(renderSettings, postProcessSettings, sceneSampleCount)) {
+        Py_DECREF(renderSettings);
+        std::fprintf(stderr, "INFERNUX_WEB_RENDER_STACK_CONFIGURATION_FAILED\n");
+        return;
+    }
+    Py_DECREF(renderSettings);
+
+    if (!g_postProcessRenderer.Initialize(g_device, g_surfaceFormat, sceneSampleCount) ||
+        !g_postProcessRenderer.Configure(postProcessSettings)) {
         std::fprintf(stderr, "INFERNUX_WEB_POST_PROCESS_INITIALIZATION_FAILED\n");
         return;
     }
     const auto sceneColorFormat = g_postProcessRenderer.SceneColorFormat();
-    if (!g_sceneRenderer.Initialize(g_device, g_queue, sceneColorFormat)) {
+    if (!g_sceneRenderer.Initialize(g_device, g_queue, sceneColorFormat, sceneSampleCount)) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_SCENE_PIPELINE_FAILED\n");
         return;
     }
@@ -929,12 +1049,14 @@ void StartSurface()
         return;
     }
     InfernuxWebSetScreenUIRenderer(&g_screenUIRenderer);
-    if (!g_particleRuntime.Initialize(*g_rhi, infernux::rhi::PixelFormat::RGBA16SFloat)) {
+    const auto particleSampleCount =
+        sceneSampleCount == 4 ? infernux::rhi::SampleCount::Four : infernux::rhi::SampleCount::One;
+    if (!g_particleRuntime.Initialize(*g_rhi, infernux::rhi::PixelFormat::RGBA16SFloat, particleSampleCount)) {
         std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_RUNTIME_FAILED %s\n", g_particleRuntime.LastError().c_str());
-    } else {
-        g_particleRuntimeReady = true;
-        InfernuxWebSetParticleRuntime(&g_particleRuntime);
+        return;
     }
+    g_particleRuntimeReady = true;
+    InfernuxWebSetParticleRuntime(&g_particleRuntime);
     std::printf("INFERNUX_WEBGPU_FULLSCREEN_RHI_READY\n");
     ResizeCanvas();
     emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false, OnResize);
@@ -948,21 +1070,20 @@ void StartSurface()
     SetDictString(details, "graphics_api", "webgpu");
     SetDictInteger(details, "width", g_width);
     SetDictInteger(details, "height", g_height);
-    PyObject *mainModule = PyImport_AddModule("__main__");
     PyObject *ready = PyObject_GetAttrString(mainModule, "infernux_web_ready");
-    if (ready != nullptr) {
-        PyObject *result = PyObject_CallOneArg(ready, details);
-        if (result == nullptr)
-            PrintPythonError("ready");
-        else {
-            if (!ConfigurePostProcess(result)) {
-                std::fprintf(stderr, "INFERNUX_WEB_RENDER_STACK_CONFIGURATION_FAILED\n");
-                g_webGpuValidationFailed = true;
-            }
-            Py_DECREF(result);
-        }
-        Py_DECREF(ready);
+    if (ready == nullptr) {
+        Py_DECREF(details);
+        PrintPythonError("ready-contract");
+        return;
     }
+    PyObject *result = PyObject_CallOneArg(ready, details);
+    Py_DECREF(ready);
+    if (result == nullptr) {
+        Py_DECREF(details);
+        PrintPythonError("ready");
+        return;
+    }
+    Py_DECREF(result);
     Py_DECREF(details);
 
     std::printf("INFERNUX_WEBGPU_DEVICE_READY format=%d\n", static_cast<int>(g_surfaceFormat));

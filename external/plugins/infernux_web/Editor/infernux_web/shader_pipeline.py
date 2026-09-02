@@ -129,7 +129,7 @@ def compile_shader_manifest(
 
     output_root.mkdir(parents=True, exist_ok=True)
     compiled_entries: list[dict[str, object]] = []
-    for name, stage, source_path in normalized_entries:
+    for index, (name, stage, source_path) in enumerate(normalized_entries):
         try:
             source = source_path.read_text(encoding="utf-8")
         except OSError as error:
@@ -142,10 +142,7 @@ def compile_shader_manifest(
             glslang=glslang,
             tint=tint,
         )
-        identity_hash = hashlib.sha256(
-            f"{name}\0{stage}".encode("utf-8")
-        ).hexdigest()[:20]
-        filename = f"{identity_hash}.{compiled.stage}.wgsl"
+        filename = f"shader-{index:04d}.{compiled.stage}.wgsl"
         payload = compiled.wgsl.encode("utf-8")
         (output_root / filename).write_bytes(payload)
         compiled_entries.append(
@@ -153,14 +150,11 @@ def compile_shader_manifest(
                 "name": name,
                 "stage": stage,
                 "path": filename,
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "bytes": len(payload),
             }
         )
 
     catalog: dict[str, object] = {
         "$schema": "infernux.web_shader_catalog",
-        "version": 1,
         "shaders": sorted(
             compiled_entries,
             key=lambda item: (str(item["name"]), str(item["stage"])),

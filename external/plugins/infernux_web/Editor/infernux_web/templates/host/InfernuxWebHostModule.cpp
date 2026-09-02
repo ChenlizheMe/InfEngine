@@ -5,10 +5,12 @@
 #include "WebParticleRuntime.h"
 #include "WebScreenUIRenderer.h"
 
+#include <function/resources/InxTexture/InxTexture.h>
 #include <platform/filesystem/InxPack.h>
 #include <platform/input/InputManager.h>
 
 #include <emscripten.h>
+#include <stb_image.h>
 
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
 #include <core/config/EngineConfig.h>
@@ -28,6 +30,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -95,13 +98,10 @@ PyObject *ExtractPackage(PyObject *, PyObject *arguments)
             Py_DECREF(item);
             return result == 0;
         };
-        PyObject *hash = PyUnicode_FromString(infernux::inxpack::HashToHex(manifest.archiveHash).c_str());
         const bool complete = setInteger("entries", static_cast<uint64_t>(manifest.entries.size())) &&
                               setInteger("raw_bytes", manifest.rawBytes) &&
                               setInteger("stored_bytes", manifest.storedBytes) &&
-                              setInteger("archive_bytes", manifest.archiveBytes) && hash != nullptr &&
-                              PyDict_SetItemString(summary, "archive_sha256", hash) == 0;
-        Py_XDECREF(hash);
+                              setInteger("archive_bytes", manifest.archiveBytes);
         if (!complete) {
             Py_DECREF(summary);
             return nullptr;
@@ -546,6 +546,64 @@ PyObject *ScreenUIResolveTexture(PyObject *, PyObject *arguments)
 #endif
 }
 
+PyObject *ScreenUIUploadImage(PyObject *, PyObject *arguments)
+{
+    Py_buffer encoded{};
+    unsigned long long replaceTextureId = 0;
+    if (!PyArg_ParseTuple(arguments, "y*|K:screen_ui_upload_image", &encoded, &replaceTextureId))
+        return nullptr;
+    if (!g_screenUIRenderer || encoded.len <= 0 || encoded.len > std::numeric_limits<int>::max()) {
+        PyBuffer_Release(&encoded);
+        PyErr_SetString(PyExc_ValueError, "Screen UI encoded image payload is unavailable or invalid");
+        return nullptr;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *decoded = stbi_load_from_memory(static_cast<const stbi_uc *>(encoded.buf), static_cast<int>(encoded.len),
+                                             &width, &height, &channels, STBI_rgb_alpha);
+    PyBuffer_Release(&encoded);
+    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> release(decoded, &stbi_image_free);
+    if (!decoded || width <= 0 || height <= 0 ||
+        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) > std::numeric_limits<size_t>::max() / 4ULL) {
+        PyErr_SetString(PyExc_ValueError, "Screen UI encoded image could not be decoded as RGBA8");
+        return nullptr;
+    }
+
+    infernux::TextureCpuData texture;
+    texture.dimension = infernux::TextureDimension::Texture2D;
+    texture.semantic = infernux::TextureSemantic::UserInterface;
+    texture.format = infernux::TextureFormat::Rgba8Srgb;
+    infernux::TextureMipLevel mip;
+    mip.width = static_cast<uint32_t>(width);
+    mip.height = static_cast<uint32_t>(height);
+    mip.depth = 1;
+    mip.byteOffset = 0;
+    mip.byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ULL;
+    mip.rowPitch = static_cast<uint64_t>(width) * 4ULL;
+    mip.slicePitch = mip.byteSize;
+    texture.mipLevels.push_back(mip);
+    texture.bytes.assign(decoded, decoded + static_cast<size_t>(mip.byteSize));
+    const uint64_t textureId = g_screenUIRenderer->UploadTexture(texture, static_cast<uint64_t>(replaceTextureId));
+    if (textureId == 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Screen UI decoded image could not be uploaded to WebGPU");
+        return nullptr;
+    }
+    return Py_BuildValue("(KII)", static_cast<unsigned long long>(textureId), static_cast<unsigned int>(width),
+                         static_cast<unsigned int>(height));
+}
+
+PyObject *ScreenUIReleaseTexture(PyObject *, PyObject *arguments)
+{
+    unsigned long long textureId = 0;
+    if (!PyArg_ParseTuple(arguments, "K:screen_ui_release_texture", &textureId))
+        return nullptr;
+    if (g_screenUIRenderer)
+        g_screenUIRenderer->ReleaseTexture(static_cast<uint64_t>(textureId));
+    Py_RETURN_NONE;
+}
+
 PyMethodDef kMethods[] = {
     {"read_entry", ReadPackageEntry, METH_VARARGS,
      "Read and validate one entry from the native Infernux Player container."},
@@ -574,6 +632,8 @@ PyMethodDef kMethods[] = {
     {"screen_ui_add_text", ScreenUIAddText, METH_VARARGS, nullptr},
     {"screen_ui_measure_text", ScreenUIMeasureText, METH_VARARGS, nullptr},
     {"screen_ui_resolve_texture", ScreenUIResolveTexture, METH_VARARGS, nullptr},
+    {"screen_ui_upload_image", ScreenUIUploadImage, METH_VARARGS, nullptr},
+    {"screen_ui_release_texture", ScreenUIReleaseTexture, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 

@@ -200,11 +200,14 @@ wgpu::Buffer UniformBuffer(wgpu::Device device, uint64_t bytes)
 }
 } // namespace
 
-bool WebPostProcessRenderer::Initialize(wgpu::Device device, wgpu::TextureFormat surfaceFormat)
+bool WebPostProcessRenderer::Initialize(wgpu::Device device, wgpu::TextureFormat surfaceFormat,
+                                        uint32_t sceneSampleCount)
 {
     m_device = device;
     m_surfaceFormat = surfaceFormat;
-    if (!m_device || surfaceFormat == wgpu::TextureFormat::Undefined)
+    m_sceneSampleCount = sceneSampleCount;
+    if (!m_device || surfaceFormat == wgpu::TextureFormat::Undefined ||
+        (sceneSampleCount != 1 && sceneSampleCount != 4))
         return false;
     wgpu::SamplerDescriptor sampler;
     sampler.addressModeU = wgpu::AddressMode::ClampToEdge;
@@ -292,6 +295,21 @@ bool WebPostProcessRenderer::Configure(const Settings &settings)
     return CreateBloomTargets() && CreateResolveBindGroup();
 }
 
+bool WebPostProcessRenderer::SetBloomEnabledForDiagnostics(bool enabled)
+{
+    if (m_bloomEnabledForDiagnostics == enabled)
+        return true;
+    m_bloomEnabledForDiagnostics = enabled;
+    if (m_width == 0 || m_height == 0)
+        return true;
+    return CreateBloomTargets() && CreateResolveBindGroup();
+}
+
+bool WebPostProcessRenderer::BloomEnabled() const noexcept
+{
+    return m_settings.bloomEnabled && m_bloomEnabledForDiagnostics;
+}
+
 bool WebPostProcessRenderer::CreateSceneTarget()
 {
     wgpu::TextureDescriptor descriptor;
@@ -303,13 +321,26 @@ bool WebPostProcessRenderer::CreateSceneTarget()
     descriptor.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
     m_sceneColor = m_device.CreateTexture(&descriptor);
     m_sceneColorView = m_sceneColor ? m_sceneColor.CreateView() : wgpu::TextureView{};
-    return static_cast<bool>(m_sceneColorView);
+    if (!m_sceneColorView)
+        return false;
+
+    m_sceneColorMultisampled = {};
+    m_sceneColorMultisampledView = {};
+    if (m_sceneSampleCount == 1)
+        return true;
+
+    descriptor.sampleCount = m_sceneSampleCount;
+    descriptor.usage = wgpu::TextureUsage::RenderAttachment;
+    m_sceneColorMultisampled = m_device.CreateTexture(&descriptor);
+    m_sceneColorMultisampledView =
+        m_sceneColorMultisampled ? m_sceneColorMultisampled.CreateView() : wgpu::TextureView{};
+    return static_cast<bool>(m_sceneColorMultisampledView);
 }
 
 bool WebPostProcessRenderer::CreateBloomTargets()
 {
     m_bloomLevels.clear();
-    if (!m_settings.bloomEnabled)
+    if (!BloomEnabled())
         return true;
     const uint32_t count = std::clamp(m_settings.bloomIterations, 1u, 8u);
     m_bloomLevels.resize(count);
@@ -393,7 +424,7 @@ bool WebPostProcessRenderer::CreateResolveBindGroup()
     const wgpu::TextureView bloom =
         m_bloomLevels.empty() ? m_sceneColorView
                               : (m_bloomLevels.size() == 1 ? m_bloomLevels[0].downView : m_bloomLevels[0].upView);
-    m_resolveValues.bloomIntensity = m_settings.bloomEnabled ? m_settings.bloomIntensity : 0.0f;
+    m_resolveValues.bloomIntensity = BloomEnabled() ? m_settings.bloomIntensity : 0.0f;
     m_resolveValues.exposure = m_settings.exposure;
     m_resolveValues.toneMappingMode = static_cast<float>(m_settings.toneMappingMode);
     m_resolveValues.bloomTint = m_settings.bloomTint;
@@ -442,6 +473,16 @@ wgpu::TextureFormat WebPostProcessRenderer::SceneColorFormat() const noexcept
     return kHdrFormat;
 }
 
+uint32_t WebPostProcessRenderer::SceneSampleCount() const noexcept
+{
+    return m_sceneSampleCount;
+}
+
+wgpu::TextureView WebPostProcessRenderer::SceneColorAttachmentView() const noexcept
+{
+    return m_sceneSampleCount == 1 ? m_sceneColorView : m_sceneColorMultisampledView;
+}
+
 wgpu::TextureView WebPostProcessRenderer::SceneColorView() const noexcept
 {
     return m_sceneColorView;
@@ -449,7 +490,7 @@ wgpu::TextureView WebPostProcessRenderer::SceneColorView() const noexcept
 
 bool WebPostProcessRenderer::PrepareBloom(wgpu::CommandEncoder encoder)
 {
-    if (!m_settings.bloomEnabled)
+    if (!BloomEnabled())
         return true;
     for (auto &level : m_bloomLevels) {
         if (!RecordColorPass(encoder, level.downView, m_downsamplePipeline, level.downGroup))
@@ -473,8 +514,8 @@ bool WebPostProcessRenderer::Render(wgpu::RenderPassEncoder pass)
     pass.SetBindGroup(0, m_resolveGroup);
     pass.Draw(3, 1, 0, 0);
     if (!m_reportedReady) {
-        std::printf("INFERNUX_WEB_POST_PROCESS_READY hdr=rgba16float bloom=%d iterations=%u tonemap=%u\n",
-                    m_settings.bloomEnabled ? 1 : 0, m_settings.bloomIterations, m_settings.toneMappingMode);
+        std::printf("INFERNUX_WEB_POST_PROCESS_READY hdr=rgba16float msaa=%u bloom=%d iterations=%u tonemap=%u\n",
+                    m_sceneSampleCount, BloomEnabled() ? 1 : 0, m_settings.bloomIterations, m_settings.toneMappingMode);
         m_reportedReady = true;
     }
     return true;

@@ -42,7 +42,8 @@ class WebScreenUIRenderer final
     [[nodiscard]] std::pair<float, float> MeasureText(const std::string &text, float fontSize, float wrapWidth,
                                                       const std::string &fontPath, float lineHeight,
                                                       float letterSpacing) const;
-    [[nodiscard]] uint64_t UploadTexture(const TextureCpuData &texture);
+    [[nodiscard]] uint64_t UploadTexture(const TextureCpuData &texture, uint64_t replaceTextureId = 0);
+    void ReleaseTexture(uint64_t textureId);
 
     bool Render(wgpu::RenderPassEncoder pass, int list, uint32_t width, uint32_t height);
 
@@ -64,6 +65,7 @@ class WebScreenUIRenderer final
 
     ImDrawList *DrawList(int list) const;
     bool CreatePipelineAndFontAtlas();
+    bool RefreshFontAtlas();
     bool EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required, wgpu::BufferUsage usage);
 
     wgpu::Device m_device;
@@ -75,6 +77,8 @@ class WebScreenUIRenderer final
     wgpu::Texture m_fontTexture;
     wgpu::TextureView m_fontView;
     wgpu::Sampler m_fontSampler;
+    uint32_t m_fontWidth = 0;
+    uint32_t m_fontHeight = 0;
     wgpu::Buffer m_vertexBuffer;
     wgpu::Buffer m_indexBuffer;
     uint64_t m_vertexCapacity = 0;
@@ -90,6 +94,7 @@ class WebScreenUIRenderer final
     uint32_t m_cachedHeight = 0;
     uint64_t m_cachedRevision = 0;
     bool m_reportedFirstDraw = false;
+    bool m_fontAtlasDirty = false;
 };
 
 } // namespace infernux::web

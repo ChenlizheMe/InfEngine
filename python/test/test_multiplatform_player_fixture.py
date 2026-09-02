@@ -26,11 +26,44 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
         for component in item.get("components", [])
     ]
     assert any(item["type_id"] == "native:infernux.Camera" for item in components)
-    assert any(item["type_id"] == "native:infernux.Light" for item in components)
+    light = next(item for item in components if item["type_id"] == "native:infernux.Light")
+    assert light["data"]["shadows"] != 0
+    assert any(
+        item["type_id"].endswith(":Scripts.Bootstrap:PlatformFixtureBootstrap")
+        for item in components
+    )
+    render_probe = next(
+        item for item in scene["objects"] if item["name"] == "Render Probe"
+    )
     renderer = next(
-        item for item in components if item["type_id"] == "native:infernux.MeshRenderer"
+        item
+        for item in render_probe["components"]
+        if item["type_id"] == "native:infernux.MeshRenderer"
     )
     assert renderer["data"]["inlineMeshName"] == "Cube"
+    assert render_probe["transform"]["scale"] == [3.0, 3.0, 3.0]
+
+    shadow_casters = {
+        item["name"]: item
+        for item in scene["objects"]
+        if item["name"].startswith("Shadow Caster ")
+    }
+    assert set(shadow_casters) == {"Shadow Caster Left", "Shadow Caster Right"}
+    assert all(
+        item["components"][0]["data"]["castShadows"] is True
+        for item in shadow_casters.values()
+    )
+
+    shadow_receiver = next(
+        item for item in scene["objects"] if item["name"] == "Shadow Receiver"
+    )
+    receiver_renderer = next(
+        item
+        for item in shadow_receiver["components"]
+        if item["type_id"] == "native:infernux.MeshRenderer"
+    )
+    assert receiver_renderer["data"]["receivesShadows"] is True
+    assert shadow_receiver["transform"]["scale"] == [8.0, 0.4, 8.0]
     material_guid = renderer["data"]["materials"][0]
     material_meta = json.loads(
         (FIXTURE / "Assets" / "Materials" / "RenderProbe.mat.meta").read_text(
@@ -40,4 +73,14 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
     assert material_meta["metadata"]["guid"]["value"] == material_guid
     script = FIXTURE / "Assets" / "Scripts" / "Bootstrap.py"
     assert script.is_file()
-    compile(script.read_text(encoding="utf-8"), str(script), "exec")
+    source = script.read_text(encoding="utf-8")
+    compile(source, str(script), "exec")
+    assert "import infernux as inx" in source
+    assert "Infernux" not in source
+    assert "add_component(inx.ui.UICanvas)" in source
+    assert "add_component(inx.ui.UIImage)" in source
+    assert "InputActionMap.standard_gameplay()" in source
+    assert 'add_component("Rigidbody")' in source
+    assert 'add_component("LineRenderer")' in source
+    assert "self._body.add_force" in source
+    assert "self._trail.set_positions" in source

@@ -3,6 +3,7 @@
 #include "InfernuxWebHostModule.h"
 #include "WebGpuRhiDevice.h"
 
+#include <core/types/ColorSpace.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/scene/Camera.h>
 #include <function/scene/Scene.h>
@@ -52,6 +53,11 @@ struct ParticleInstance {
 @group(1) @binding(0) var<storage, read> instances: array<ParticleInstance>;
 @group(1) @binding(1) var<storage, read> render_indices: array<u32>;
 
+struct OutputData {
+    material_tint: vec4<f32>,
+};
+@group(1) @binding(2) var<uniform> output_data: OutputData;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -87,7 +93,10 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Sprite geometry is a quad. Coverage belongs to the selected particle
     // material/texture; imposing a radial mask here made every untextured
     // particle circular and diverged from the Vulkan renderer.
-    return input.color;
+    // Keep authored colors in linear HDR space. Values above one must reach
+    // the RGBA16F scene target so Bloom and tone mapping observe the same
+    // energy as the Vulkan particle material path.
+    return input.color * output_data.material_tint;
 }
 )wgsl";
 
@@ -135,6 +144,52 @@ bool ReadFloat(PyObject *value, float &result)
     }
     result = static_cast<float>(decoded);
     return true;
+}
+
+bool ReadVector4(PyObject *value, glm::vec4 &result)
+{
+    PyObject *sequence = PySequence_Fast(value, "particle color must contain four numbers");
+    if (sequence) {
+        bool valid = PySequence_Fast_GET_SIZE(sequence) == 4;
+        for (Py_ssize_t index = 0; valid && index < 4; ++index)
+            valid = ReadFloat(PySequence_Fast_GET_ITEM(sequence, index), result[static_cast<glm::length_t>(index)]);
+        Py_DECREF(sequence);
+        return valid;
+    }
+    PyErr_Clear();
+    constexpr std::array<const char *, 4> names = {"x", "y", "z", "w"};
+    for (size_t index = 0; index < names.size(); ++index) {
+        PyObject *component = PyObject_GetAttrString(value, names[index]);
+        if (!component || !ReadFloat(component, result[static_cast<glm::length_t>(index)])) {
+            Py_XDECREF(component);
+            PyErr_Clear();
+            return false;
+        }
+        Py_DECREF(component);
+    }
+    return true;
+}
+
+glm::vec4 ReadOutputMaterialTint(PyObject *program)
+{
+    glm::vec4 tint(1.0f);
+    PyObject *outputs = PySequence_Fast(Field(program, "outputs"), "particle outputs must be a sequence");
+    if (!outputs || PySequence_Fast_GET_SIZE(outputs) < 1) {
+        Py_XDECREF(outputs);
+        PyErr_Clear();
+        return tint;
+    }
+    PyObject *material = Field(PySequence_Fast_GET_ITEM(outputs, 0), "material");
+    PyObject *native = Field(material, "native");
+    PyObject *color = native ? PyObject_CallMethod(native, "get_color", "s", "baseColor") : nullptr;
+    glm::vec4 authored(1.0f);
+    if (color && ReadVector4(color, authored))
+        tint = inx::color::SrgbToLinear(authored);
+    else
+        PyErr_Clear();
+    Py_XDECREF(color);
+    Py_DECREF(outputs);
+    return tint;
 }
 
 bool ReadWordVector(PyObject *value, std::vector<uint32_t> &result)
@@ -313,6 +368,7 @@ struct WebParticleRuntime::State
         std::vector<FrameRequest> pending;
         std::unique_ptr<particle::ParticleGpuRuntime> runtime;
         rhi::BindGroupHandle spawnGroup;
+        wgpu::Buffer outputBuffer;
         wgpu::BindGroup renderGroup;
     };
 
@@ -346,6 +402,7 @@ struct WebParticleRuntime::State
     void ReleaseEmitter(Emitter &emitter) noexcept
     {
         emitter.renderGroup = {};
+        emitter.outputBuffer = {};
         if (rhi)
             rhi->Release(emitter.spawnGroup);
         emitter.spawnGroup = {};
@@ -380,7 +437,8 @@ WebParticleRuntime::~WebParticleRuntime()
     Shutdown();
 }
 
-bool WebParticleRuntime::Initialize(WebGpuRhiDevice &device, rhi::PixelFormat colorFormat)
+bool WebParticleRuntime::Initialize(WebGpuRhiDevice &device, rhi::PixelFormat colorFormat,
+                                    rhi::SampleCount sceneSampleCount)
 {
     Shutdown();
     m_state->rhi = &device;
@@ -416,12 +474,16 @@ bool WebParticleRuntime::Initialize(WebGpuRhiDevice &device, rhi::PixelFormat co
     cameraGroupDesc.entries = &cameraBinding;
     m_state->cameraGroup = m_state->device.CreateBindGroup(&cameraGroupDesc);
 
-    std::array<wgpu::BindGroupLayoutEntry, 2> geometryEntries{};
-    for (uint32_t index = 0; index < geometryEntries.size(); ++index) {
+    std::array<wgpu::BindGroupLayoutEntry, 3> geometryEntries{};
+    for (uint32_t index = 0; index < 2; ++index) {
         geometryEntries[index].binding = index;
         geometryEntries[index].visibility = wgpu::ShaderStage::Vertex;
         geometryEntries[index].buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
     }
+    geometryEntries[2].binding = 2;
+    geometryEntries[2].visibility = wgpu::ShaderStage::Fragment;
+    geometryEntries[2].buffer.type = wgpu::BufferBindingType::Uniform;
+    geometryEntries[2].buffer.minBindingSize = sizeof(glm::vec4);
     wgpu::BindGroupLayoutDescriptor geometryLayoutDesc;
     geometryLayoutDesc.entryCount = geometryEntries.size();
     geometryLayoutDesc.entries = geometryEntries.data();
@@ -465,6 +527,7 @@ bool WebParticleRuntime::Initialize(WebGpuRhiDevice &device, rhi::PixelFormat co
     pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     pipelineDesc.primitive.cullMode = wgpu::CullMode::None;
     pipelineDesc.depthStencil = &depth;
+    pipelineDesc.multisample.count = static_cast<uint32_t>(sceneSampleCount);
     m_state->renderPipeline = m_state->device.CreateRenderPipeline(&pipelineDesc);
     if (!m_state->cameraBuffer || !m_state->cameraLayout || !m_state->cameraGroup || !m_state->geometryLayout ||
         !m_state->renderPipeline) {
@@ -664,22 +727,34 @@ std::string WebParticleRuntime::ReplaceGraph(uint64_t graphInstanceId, PyObject 
 
         const auto instances = m_state->rhi->GetNativeBuffer(emitter->runtime->InstanceBuffer());
         const auto indices = m_state->rhi->GetNativeBuffer(emitter->runtime->RenderIndexBuffer());
-        std::array<wgpu::BindGroupEntry, 2> geometryBindings{};
+        const glm::vec4 materialTint = ReadOutputMaterialTint(program);
+        wgpu::BufferDescriptor outputBufferDescriptor;
+        outputBufferDescriptor.size = sizeof(materialTint);
+        outputBufferDescriptor.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        emitter->outputBuffer = m_state->device.CreateBuffer(&outputBufferDescriptor);
+        if (emitter->outputBuffer)
+            m_state->queue.WriteBuffer(emitter->outputBuffer, 0, &materialTint, sizeof(materialTint));
+        std::array<wgpu::BindGroupEntry, 3> geometryBindings{};
         geometryBindings[0].binding = 0;
         geometryBindings[0].buffer = instances;
         geometryBindings[0].size = static_cast<uint64_t>(capacity) * particle::ParticleGpuRuntime::RenderInstanceStride;
         geometryBindings[1].binding = 1;
         geometryBindings[1].buffer = indices;
         geometryBindings[1].size = static_cast<uint64_t>(capacity) * sizeof(uint32_t);
+        geometryBindings[2].binding = 2;
+        geometryBindings[2].buffer = emitter->outputBuffer;
+        geometryBindings[2].size = sizeof(materialTint);
         wgpu::BindGroupDescriptor geometryGroupDesc;
         geometryGroupDesc.layout = m_state->geometryLayout;
         geometryGroupDesc.entryCount = geometryBindings.size();
         geometryGroupDesc.entries = geometryBindings.data();
         emitter->renderGroup = m_state->device.CreateBindGroup(&geometryGroupDesc);
-        if (!emitter->spawnGroup.IsValid() || !emitter->renderGroup) {
+        if (!emitter->spawnGroup.IsValid() || !emitter->outputBuffer || !emitter->renderGroup) {
             Py_DECREF(programSequence);
             return "WebGPU particle bind groups could not be created";
         }
+        std::printf("INFERNUX_WEBGPU_PARTICLE_OUTPUT_READY tint=%.4f,%.4f,%.4f,%.4f hdr=1\n", materialTint.x,
+                    materialTint.y, materialTint.z, materialTint.w);
         m_state->emitters.emplace(emitter->id, std::move(emitter));
     }
     Py_DECREF(programSequence);

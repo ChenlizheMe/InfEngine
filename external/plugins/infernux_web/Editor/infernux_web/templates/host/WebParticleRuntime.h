@@ -25,7 +25,8 @@ class WebParticleRuntime final
     WebParticleRuntime(const WebParticleRuntime &) = delete;
     WebParticleRuntime &operator=(const WebParticleRuntime &) = delete;
 
-    [[nodiscard]] bool Initialize(WebGpuRhiDevice &device, rhi::PixelFormat colorFormat);
+    [[nodiscard]] bool Initialize(WebGpuRhiDevice &device, rhi::PixelFormat colorFormat,
+                                  rhi::SampleCount sceneSampleCount);
     void Shutdown() noexcept;
 
     [[nodiscard]] std::string ReplaceGraph(uint64_t graphInstanceId, PyObject *programs, PyObject *removeIds);

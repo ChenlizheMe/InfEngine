@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
   <meta name="theme-color" content="#07111d">
-  <link rel="icon" href="data:,">
+  <link rel="icon" type="image/png" href="infernux-favicon.png?v=@INFERNUX_WEB_ASSET_REVISION@">
+  <link rel="manifest" href="infernux.webmanifest?v=@INFERNUX_WEB_ASSET_REVISION@">
+  <link rel="apple-touch-icon" href="infernux-icon-192.png?v=@INFERNUX_WEB_ASSET_REVISION@">
   <title>Infernux Player</title>
   <style>
     :root { color-scheme: dark; background: #111214; }
@@ -77,6 +79,7 @@
   </style>
 </head>
 <body>
+  <script src="infernux-branding.js?v=@INFERNUX_WEB_ASSET_REVISION@"></script>
   <main id="infernux-shell">
     <canvas id="canvas" tabindex="0" autofocus aria-label="Infernux game canvas"></canvas>
     <div id="infernux-safe-area-probe" aria-hidden="true"></div>
@@ -314,8 +317,33 @@
       schedule();
       recordDiagnostic('INFERNUX_WEB_VISUAL_VIEWPORT_READY');
     }
+    function readAcceptanceClock() {
+      const parameters = new URLSearchParams(window.location.search);
+      const fixedDeltaText = parameters.get('acceptanceFixedDelta');
+      const pauseFrameText = parameters.get('acceptancePauseFrame');
+      if (fixedDeltaText === null && pauseFrameText === null) {
+        return Object.freeze({enabled: false, fixedDeltaSeconds: 0, pauseAfterFrame: 0});
+      }
+      if (fixedDeltaText === null || pauseFrameText === null) {
+        throw new Error('Web acceptance clock requires acceptanceFixedDelta and acceptancePauseFrame');
+      }
+      const fixedDeltaSeconds = Number(fixedDeltaText);
+      if (!Number.isFinite(fixedDeltaSeconds) || fixedDeltaSeconds <= 0 || fixedDeltaSeconds > 0.25) {
+        throw new Error('acceptanceFixedDelta must be finite and in (0, 0.25]');
+      }
+      if (!/^[1-9][0-9]*$/.test(pauseFrameText)) {
+        throw new Error('acceptancePauseFrame must be a positive integer');
+      }
+      const pauseAfterFrame = Number(pauseFrameText);
+      if (!Number.isSafeInteger(pauseAfterFrame)) {
+        throw new Error('acceptancePauseFrame exceeds the exact JavaScript integer range');
+      }
+      return Object.freeze({enabled: true, fixedDeltaSeconds, pauseAfterFrame});
+    }
+    const acceptanceClock = readAcceptanceClock();
     var Module = {
       canvas: canvasNode,
+      infernuxAcceptanceClock: acceptanceClock,
       locateFile(path) {
         return versionedAssets[path] || path;
       },

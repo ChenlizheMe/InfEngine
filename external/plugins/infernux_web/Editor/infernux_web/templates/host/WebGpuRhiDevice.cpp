@@ -375,10 +375,9 @@ WebGpuRhiDevice::WebGpuRhiDevice(wgpu::Device device, wgpu::Queue queue)
             rhi::FormatFeature::Sampled | rhi::FormatFeature::TransferSource | rhi::FormatFeature::TransferDestination;
         caps.optimalTiling |= rhi::IsDepthFormat(format) ? rhi::FormatFeature::DepthStencilAttachment
                                                          : rhi::FormatFeature::ColorAttachment;
-        // Advertise only the sample count the backend has validated for every
-        // published format. Format-specific 4x MSAA can be enabled later from
-        // an explicit WebGPU capability table.
         caps.sampleCounts = rhi::SampleCountBit(rhi::SampleCount::One);
+        if (format == rhi::PixelFormat::RGBA16SFloat)
+            caps.sampleCounts |= rhi::SampleCountBit(rhi::SampleCount::Four);
     }
 }
 

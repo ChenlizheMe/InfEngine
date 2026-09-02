@@ -39,6 +39,13 @@
           "enabled": true,
           "execution_order": 0,
           "type_id": "native:infernux.Camera"
+        },
+        {
+          "component_id": 7,
+          "data": {},
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "python:04000000000000000000000000000002:5404b2d7055554a7b25478520b70e30b:Scripts.Bootstrap:PlatformFixtureBootstrap"
         }
       ],
       "id": 1,
@@ -74,11 +81,9 @@
             "outerSpotAngle": 45.0,
             "range": 10.0,
             "renderMode": 0,
-            "shadowBias": 1.0,
-            "shadowNormalBias": 1.0,
             "shadowSoftness": 1.0,
             "shadowStrength": 1.0,
-            "shadows": 0,
+            "shadows": 2,
             "spotAngle": 30.0
           },
           "enabled": true,
@@ -132,9 +137,120 @@
         "component_id": 5,
         "enabled": true,
         "execution_order": 0,
-        "position": [0.0, 0.0, 0.0],
+        "position": [0.0, 0.5, 0.0],
         "rotation": [0.0, 25.0, 0.0],
+        "scale": [3.0, 3.0, 3.0],
+        "type": "Transform"
+      }
+    },
+    {
+      "active": true,
+      "children": [],
+      "components": [
+        {
+          "component_id": 11,
+          "data": {
+            "boundsMax": [0.5, 0.5, 0.5],
+            "boundsMin": [-0.5, -0.5, -0.5],
+            "castShadows": true,
+            "inlineMeshBuiltin": true,
+            "inlineMeshName": "Cube",
+            "materials": ["04000000000000000000000000000003"],
+            "meshId": 0,
+            "receivesShadows": true,
+            "useInlineMesh": true
+          },
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "native:infernux.MeshRenderer"
+        }
+      ],
+      "id": 10,
+      "is_static": true,
+      "layer": 0,
+      "name": "Shadow Caster Left",
+      "tag": "Untagged",
+      "transform": {
+        "component_id": 10,
+        "enabled": true,
+        "execution_order": 0,
+        "position": [-3.0, 0.0, 1.0],
+        "rotation": [0.0, -20.0, 0.0],
         "scale": [2.0, 2.0, 2.0],
+        "type": "Transform"
+      }
+    },
+    {
+      "active": true,
+      "children": [],
+      "components": [
+        {
+          "component_id": 13,
+          "data": {
+            "boundsMax": [0.5, 0.5, 0.5],
+            "boundsMin": [-0.5, -0.5, -0.5],
+            "castShadows": true,
+            "inlineMeshBuiltin": true,
+            "inlineMeshName": "Cube",
+            "materials": ["04000000000000000000000000000003"],
+            "meshId": 0,
+            "receivesShadows": true,
+            "useInlineMesh": true
+          },
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "native:infernux.MeshRenderer"
+        }
+      ],
+      "id": 12,
+      "is_static": true,
+      "layer": 0,
+      "name": "Shadow Caster Right",
+      "tag": "Untagged",
+      "transform": {
+        "component_id": 12,
+        "enabled": true,
+        "execution_order": 0,
+        "position": [3.0, 0.0, 1.0],
+        "rotation": [0.0, 20.0, 0.0],
+        "scale": [2.0, 2.0, 2.0],
+        "type": "Transform"
+      }
+    },
+    {
+      "active": true,
+      "children": [],
+      "components": [
+        {
+          "component_id": 9,
+          "data": {
+            "boundsMax": [0.5, 0.5, 0.5],
+            "boundsMin": [-0.5, -0.5, -0.5],
+            "castShadows": true,
+            "inlineMeshBuiltin": true,
+            "inlineMeshName": "Cube",
+            "materials": ["04000000000000000000000000000003"],
+            "meshId": 0,
+            "receivesShadows": true,
+            "useInlineMesh": true
+          },
+          "enabled": true,
+          "execution_order": 0,
+          "type_id": "native:infernux.MeshRenderer"
+        }
+      ],
+      "id": 8,
+      "is_static": true,
+      "layer": 0,
+      "name": "Shadow Receiver",
+      "tag": "Untagged",
+      "transform": {
+        "component_id": 8,
+        "enabled": true,
+        "execution_order": 0,
+        "position": [0.0, -1.2, 1.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [8.0, 0.4, 8.0],
         "type": "Transform"
       }
     }

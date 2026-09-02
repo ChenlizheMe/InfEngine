@@ -31,6 +31,11 @@ from Infernux.engine.build import (
 )
 
 from .doctor import inspect_web_toolchain
+from .capabilities import (
+    WEBGPU_CAPABILITY_FILENAME,
+    validate_webgpu_capability_inventory,
+    webgpu_capability_inventory,
+)
 
 
 _WEB_CAPABILITIES = PlatformCapabilities(
@@ -54,6 +59,7 @@ _WEB_CAPABILITIES = PlatformCapabilities(
             "gesture-gated-webaudio",
             "multi-pointer",
             "safe-area",
+            "webgpu-capability-inventory",
         }
     ),
 )
@@ -107,6 +113,7 @@ class WebPlatformExporter(PlatformExporter):
 
     def execute(self, request: BuildRequest, plan: BuildPlan) -> BuildResult:
         started = time.perf_counter()
+        capability_inventory: dict[str, object] = {}
         report = self.doctor(request)
         if not report.available:
             return BuildResult(
@@ -136,14 +143,11 @@ class WebPlatformExporter(PlatformExporter):
         staging = _web_staging_directory(request)
         logs: tuple[str, ...] = ()
         try:
-            from Infernux.engine.interaction import normalize_build_settings
             from Infernux.engine.platform_content_cook import (
                 build_settings_for_request,
             )
 
-            build_settings = normalize_build_settings(
-                build_settings_for_request(request)
-            )
+            build_settings = build_settings_for_request(request)
             presentation = {
                 "display_mode": str(build_settings["display_mode"]),
                 "window_width": int(build_settings["window_width"]),
@@ -152,8 +156,10 @@ class WebPlatformExporter(PlatformExporter):
             request.report("prepare", 0, 1, "Preparing Web Player staging")
             _prepare_web_staging(staging)
             game_name, player_assets = _cook_web_player_assets(request, staging)
+            _stage_web_branding(player_assets, source_root, game_name)
             _stage_engine_python_package(request, player_assets, source_root)
             _stage_web_shader_sources(request, staging, player_assets, source_root)
+            capability_inventory = _stage_webgpu_capability_inventory(player_assets)
             logs = _configure_and_build_host(
                 request,
                 staging,
@@ -222,7 +228,6 @@ class WebPlatformExporter(PlatformExporter):
             artifacts=artifacts,
             manifest={
                 "exporter": self.exporter_id,
-                "contract_version": self.contract_version,
                 "abi": "wasm32",
                 "graphics_api": "webgpu",
                 "python": "3.13",
@@ -231,6 +236,15 @@ class WebPlatformExporter(PlatformExporter):
                 "asset_revision": asset_revision,
                 "entry_point": "infernux-player.html",
                 "presentation": presentation,
+                "webgpu_capabilities": {
+                    "path": WEBGPU_CAPABILITY_FILENAME,
+                    "schema": capability_inventory["$schema"],
+                    "open_parity_gates": sorted(
+                        str(feature["id"])
+                        for feature in capability_inventory["features"]
+                        if feature["parity_gate"] == "open"
+                    ),
+                },
             },
             logs=logs,
             elapsed_seconds=time.perf_counter() - started,
@@ -254,12 +268,31 @@ def _publish_web_player(
         f"infernux-player.{revision}.wasm",
         f"infernux-player.{revision}.data",
         "infernux-logo.png",
+        "infernux-favicon.png",
+        "infernux-icon-192.png",
+        "infernux-icon-512.png",
+        "infernux.webmanifest",
+        "infernux-branding.js",
+        WEBGPU_CAPABILITY_FILENAME,
     )
     missing = [name for name in names if not (host_build / name).is_file()]
     if missing:
         raise RuntimeError(
             "Web host publication is incomplete: " + ", ".join(missing)
         )
+    capability_path = host_build / WEBGPU_CAPABILITY_FILENAME
+    try:
+        capability_document = json.loads(capability_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"WebGPU capability inventory is unreadable: {error}"
+        ) from error
+    if not isinstance(capability_document, dict):
+        raise RuntimeError("WebGPU capability inventory must be a JSON object")
+    try:
+        validate_webgpu_capability_inventory(capability_document)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
     if names[1] not in html:
         raise RuntimeError(f"Web host entry point does not reference {names[1]}")
     for suffix in ("wasm", "data"):
@@ -283,18 +316,30 @@ def _publish_web_player(
         temporary = output_root / f".{name}.tmp"
         shutil.copy2(source, temporary)
         os.replace(temporary, destination)
-        payload = destination.read_bytes()
         artifacts.append(
             BuildArtifact(
                 str(destination),
                 destination.suffix.lstrip("."),
-                hashlib.sha256(payload).hexdigest(),
-                len(payload),
+                size=destination.stat().st_size,
             )
         )
     request.report("package", 1, 1, "Web Player package published")
     request.report("audit", 1, 1, "Web Player browser contract verified")
     return tuple(artifacts), revision
+
+
+def _stage_webgpu_capability_inventory(
+    player_assets: Path,
+) -> dict[str, object]:
+    document = webgpu_capability_inventory()
+    validate_webgpu_capability_inventory(document)
+    destination = player_assets / WEBGPU_CAPABILITY_FILENAME
+    destination.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return document
 
 
 def _prepare_web_staging(staging: Path) -> None:
@@ -355,6 +400,101 @@ def _cook_web_player_assets(
         player_assets / cooked.data_directory.name,
     )
     return cooked.game_name, player_assets
+
+
+def _stage_web_branding(
+    player_assets: Path,
+    source_root: Path,
+    game_name: str,
+) -> Path:
+    """Create browser metadata from the shared cooked Player branding."""
+
+    from Infernux.engine.platform_content_cook import read_cooked_player_icon
+
+    data_roots = sorted(path for path in player_assets.glob("*_Data") if path.is_dir())
+    if len(data_roots) != 1:
+        raise ValueError("Web Player branding requires exactly one cooked *_Data directory")
+    source_icon = read_cooked_player_icon(
+        data_roots[0],
+        default_icon=(
+            source_root
+            / "python"
+            / "Infernux"
+            / "resources"
+            / "icons"
+            / "icon.png"
+        ),
+    )
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as error:
+        raise ValueError("Pillow is required to generate Web application icons") from error
+    try:
+        from io import BytesIO
+
+        with Image.open(BytesIO(source_icon)) as opened:
+            source = opened.convert("RGBA")
+    except (OSError, ValueError) as error:
+        raise ValueError("Cooked Web application icon is unreadable") from error
+
+    branding = player_assets / "web-branding"
+    shutil.rmtree(branding, ignore_errors=True)
+    branding.mkdir(parents=True)
+    for name, size in (
+        ("infernux-favicon.png", 32),
+        ("infernux-icon-192.png", 192),
+        ("infernux-icon-512.png", 512),
+    ):
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        contained = ImageOps.contain(
+            source,
+            (size, size),
+            method=Image.Resampling.LANCZOS,
+        )
+        canvas.alpha_composite(
+            contained,
+            ((size - contained.width) // 2, (size - contained.height) // 2),
+        )
+        canvas.save(branding / name, format="PNG", optimize=True)
+
+    manifest = {
+        "name": game_name,
+        "short_name": game_name,
+        "display": "fullscreen",
+        "background_color": "#111214",
+        "theme_color": "#111214",
+        "icons": [
+            {
+                "src": "infernux-icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+            },
+            {
+                "src": "infernux-icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+            },
+        ],
+    }
+    (branding / "infernux.webmanifest").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    branding_document = json.dumps(
+        {"game_name": game_name},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    (branding / "infernux-branding.js").write_text(
+        "globalThis.InfernuxBranding = Object.freeze("
+        + branding_document
+        + ");\n"
+        "document.title = globalThis.InfernuxBranding.game_name;\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return branding
 
 
 def _stage_engine_python_package(
@@ -601,7 +741,6 @@ void main() {
 
     manifest = {
         "$schema": "infernux.web_shader_cook",
-        "version": 1,
         "shaders": shader_entries,
     }
     (shader_root / "manifest.json").write_text(
@@ -611,7 +750,6 @@ void main() {
     )
     particle_catalog = {
         "$schema": "infernux.web_particle_catalog",
-        "version": 1,
         "kernels": sorted(
             particle_kernels.values(), key=lambda item: str(item["kernel_hash"])
         ),
@@ -647,6 +785,7 @@ def _configure_and_build_host(
     wsl_host_template_source = _wsl_path(host_template_source, distribution)
     wsl_build_root = _wsl_path(build_root, distribution)
     wsl_player_assets = _wsl_path(player_assets, distribution)
+    wsl_branding = _wsl_path(player_assets / "web-branding", distribution)
     wsl_shader_manifest = _wsl_path(
         staging / "shader-cook" / "manifest.json", distribution
     )
@@ -689,6 +828,7 @@ def _configure_and_build_host(
         f"{shlex.quote(cpython_root + '/builddir/emscripten-browser')} "
         f"-DINFERNUX_ENGINE_SOURCE_ROOT={shlex.quote(wsl_source_root)} "
         f"-DINFERNUX_WEB_PLAYER_ASSETS={shlex.quote(wsl_player_assets)} "
+        f"-DINFERNUX_WEB_BRANDING_DIR={shlex.quote(wsl_branding)} "
         "-DINFERNUX_WEB_LINK_ENGINE_RUNTIME=ON "
         f"-DINFERNUX_WEB_ASSET_REVISION={asset_revision} "
         f"-DINFERNUX_WEB_DISPLAY_MODE={shlex.quote(display_mode)} "
@@ -720,6 +860,12 @@ def _configure_and_build_host(
         "infernux-player.wasm",
         "infernux-player.data",
         "infernux-logo.png",
+        "infernux-favicon.png",
+        "infernux-icon-192.png",
+        "infernux-icon-512.png",
+        "infernux.webmanifest",
+        "infernux-branding.js",
+        WEBGPU_CAPABILITY_FILENAME,
         f"infernux-player.{asset_revision}.js",
         f"infernux-player.{asset_revision}.wasm",
         f"infernux-player.{asset_revision}.data",

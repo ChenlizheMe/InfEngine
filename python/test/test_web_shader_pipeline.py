@@ -121,7 +121,7 @@ void main() {}
     assert "@binding(503u) var sourceTexture_sampler" in compiled.wgsl
 
 
-def test_web_shader_manifest_builds_hashed_runtime_catalog(
+def test_web_shader_manifest_builds_current_runtime_catalog(
     shader_pipeline, monkeypatch, tmp_path
 ):
     source = tmp_path / "stage.vert"
@@ -155,7 +155,7 @@ def test_web_shader_manifest_builds_hashed_runtime_catalog(
     catalog = shader_pipeline.compile_shader_manifest(manifest, output)
 
     assert catalog["$schema"] == "infernux.web_shader_catalog"
-    assert catalog["version"] == 1
+    assert "version" not in catalog
     entry = catalog["shaders"][0]
     assert entry["name"] == "Fullscreen Triangle"
     assert entry["stage"] == "vertex"

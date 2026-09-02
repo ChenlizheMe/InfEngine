@@ -803,12 +803,15 @@ glm::mat4 ToWebClipSpace(const glm::mat4 &vulkanViewProjection)
 
 } // namespace
 
-bool WebSceneRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::TextureFormat colorFormat)
+bool WebSceneRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::TextureFormat colorFormat,
+                                  uint32_t sceneSampleCount)
 {
     m_device = std::move(device);
     m_queue = std::move(queue);
     m_colorFormat = colorFormat;
-    if (!m_device || !m_queue || colorFormat == wgpu::TextureFormat::Undefined)
+    m_sceneSampleCount = sceneSampleCount;
+    if (!m_device || !m_queue || colorFormat == wgpu::TextureFormat::Undefined ||
+        (sceneSampleCount != 1 && sceneSampleCount != 4))
         return false;
 
     wgpu::BufferDescriptor cameraBufferDescriptor;
@@ -1162,7 +1165,7 @@ bool WebSceneRenderer::CreatePipelines()
     pipelineDescriptor.primitive.frontFace = wgpu::FrontFace::CW;
     pipelineDescriptor.primitive.cullMode = wgpu::CullMode::None;
     pipelineDescriptor.depthStencil = &depth;
-    pipelineDescriptor.multisample.count = 1;
+    pipelineDescriptor.multisample.count = m_sceneSampleCount;
     m_opaquePipeline = m_device.CreateRenderPipeline(&pipelineDescriptor);
     if (!m_opaquePipeline)
         return false;
@@ -1197,6 +1200,7 @@ bool WebSceneRenderer::CreatePipelines()
     skyPipelineDescriptor.fragment = &skyFragment;
     skyPipelineDescriptor.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     skyPipelineDescriptor.primitive.cullMode = wgpu::CullMode::None;
+    skyPipelineDescriptor.multisample.count = m_sceneSampleCount;
     wgpu::DepthStencilState skyDepth;
     skyDepth.format = wgpu::TextureFormat::Depth24Plus;
     skyDepth.depthWriteEnabled = wgpu::OptionalBool::False;
@@ -1244,7 +1248,7 @@ void WebSceneRenderer::Resize(uint32_t width, uint32_t height)
     descriptor.size = {width, height, 1};
     descriptor.format = wgpu::TextureFormat::Depth24Plus;
     descriptor.mipLevelCount = 1;
-    descriptor.sampleCount = 1;
+    descriptor.sampleCount = m_sceneSampleCount;
     descriptor.usage = wgpu::TextureUsage::RenderAttachment;
     m_depthTexture = m_device.CreateTexture(&descriptor);
     m_depthView = m_depthTexture ? m_depthTexture.CreateView() : wgpu::TextureView{};
@@ -1444,6 +1448,11 @@ bool WebSceneRenderer::BuildFrame(uint32_t width, uint32_t height)
             std::memcpy(vertex.surface, &surfaceParameters, sizeof(vertex.surface));
             m_vertices.push_back(vertex);
         }
+        // LineRenderer alpha is carried per vertex rather than in the
+        // material base color.  It must therefore use the transparent pass
+        // even when the material itself is nominally opaque.
+        if (range.line)
+            range.transparent = true;
 
         m_indices.reserve(m_indices.size() + indexCount);
         for (uint32_t index = 0; index < indexCount; ++index) {
@@ -1641,17 +1650,25 @@ bool WebSceneRenderer::RenderPrepared(wgpu::RenderPassEncoder pass)
     pass.SetBindGroup(0, m_cameraGroup);
     pass.SetVertexBuffer(0, m_vertexBuffer, 0, vertexBytes);
     pass.SetIndexBuffer(m_indexBuffer, wgpu::IndexFormat::Uint32, 0, indexBytes);
-    bool transparentPipeline = false;
     pass.SetPipeline(m_opaquePipeline);
     size_t transparentCount = 0;
     size_t lineCount = 0;
+    // Populate the complete opaque depth buffer first.  Interleaving opaque
+    // and transparent ranges lets a later opaque draw cover a line that is
+    // actually in front because transparent geometry intentionally does not
+    // write depth.
     for (const WebDrawRange &range : m_drawRanges) {
-        if (range.transparent != transparentPipeline) {
-            transparentPipeline = range.transparent;
-            pass.SetPipeline(transparentPipeline ? m_transparentPipeline : m_opaquePipeline);
-        }
         transparentCount += range.transparent ? 1u : 0u;
         lineCount += range.line ? 1u : 0u;
+        if (range.transparent)
+            continue;
+        pass.SetBindGroup(1, range.materialTextureGroup ? range.materialTextureGroup : m_defaultMaterialTextureGroup);
+        pass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
+    }
+    pass.SetPipeline(m_transparentPipeline);
+    for (const WebDrawRange &range : m_drawRanges) {
+        if (!range.transparent)
+            continue;
         pass.SetBindGroup(1, range.materialTextureGroup ? range.materialTextureGroup : m_defaultMaterialTextureGroup);
         pass.DrawIndexed(range.indexCount, 1, range.firstIndex, 0, 0);
     }

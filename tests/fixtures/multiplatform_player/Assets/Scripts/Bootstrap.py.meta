@@ -1,8 +1,40 @@
 {
-  "metadata": {
-    "guid": {
-      "type": "string",
-      "value": "04000000000000000000000000000002"
+    "metadata": {
+        "content_hash": {
+            "type": "string",
+            "value": "c406749e606dc9fd"
+        },
+        "file_extension": {
+            "type": "string",
+            "value": ".py"
+        },
+        "file_path": {
+            "type": "string",
+            "value": "E:/project/InfEngine/tests/fixtures/multiplatform_player/Assets/Scripts/Bootstrap.py"
+        },
+        "file_size": {
+            "type": "size_t",
+            "value": 912
+        },
+        "file_type": {
+            "type": "string",
+            "value": "script"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000002"
+        },
+        "language": {
+            "type": "string",
+            "value": "python"
+        },
+        "last_modified": {
+            "type": "string",
+            "value": "1788225164"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "Script"
+        }
     }
-  }
 }

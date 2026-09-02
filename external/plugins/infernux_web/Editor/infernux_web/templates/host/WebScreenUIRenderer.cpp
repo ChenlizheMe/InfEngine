@@ -146,6 +146,8 @@ bool WebScreenUIRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgp
     textureDescriptor.sampleCount = 1;
     textureDescriptor.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding;
     m_fontTexture = m_device.CreateTexture(&textureDescriptor);
+    m_fontWidth = static_cast<uint32_t>(atlasWidth);
+    m_fontHeight = static_cast<uint32_t>(atlasHeight);
     m_fontView = m_fontTexture ? m_fontTexture.CreateView() : wgpu::TextureView{};
     wgpu::TexelCopyTextureInfo destination;
     destination.texture = m_fontTexture;
@@ -162,6 +164,59 @@ bool WebScreenUIRenderer::Initialize(wgpu::Device device, wgpu::Queue queue, wgp
     samplerDescriptor.magFilter = wgpu::FilterMode::Linear;
     m_fontSampler = m_device.CreateSampler(&samplerDescriptor);
     return m_fontTexture && m_fontView && m_fontSampler && CreatePipelineAndFontAtlas();
+}
+
+bool WebScreenUIRenderer::RefreshFontAtlas()
+{
+    if (!m_fontAtlasDirty || !m_context || !m_device || !m_queue || !m_textureLayout)
+        return true;
+    ImGui::SetCurrentContext(m_context);
+    unsigned char *pixels = nullptr;
+    int atlasWidth = 0;
+    int atlasHeight = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &atlasWidth, &atlasHeight);
+    if (!pixels || atlasWidth < 1 || atlasHeight < 1)
+        return false;
+
+    const uint32_t width = static_cast<uint32_t>(atlasWidth);
+    const uint32_t height = static_cast<uint32_t>(atlasHeight);
+    if (!m_fontTexture || width != m_fontWidth || height != m_fontHeight) {
+        wgpu::TextureDescriptor textureDescriptor;
+        textureDescriptor.dimension = wgpu::TextureDimension::e2D;
+        textureDescriptor.size = {width, height, 1};
+        textureDescriptor.format = wgpu::TextureFormat::RGBA8Unorm;
+        textureDescriptor.mipLevelCount = 1;
+        textureDescriptor.sampleCount = 1;
+        textureDescriptor.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding;
+        m_fontTexture = m_device.CreateTexture(&textureDescriptor);
+        m_fontView = m_fontTexture ? m_fontTexture.CreateView() : wgpu::TextureView{};
+        m_fontWidth = width;
+        m_fontHeight = height;
+    }
+    if (!m_fontTexture || !m_fontView)
+        return false;
+
+    wgpu::TexelCopyTextureInfo destination;
+    destination.texture = m_fontTexture;
+    wgpu::TexelCopyBufferLayout layout;
+    layout.bytesPerRow = width * 4;
+    layout.rowsPerImage = height;
+    const wgpu::Extent3D extent{width, height, 1};
+    m_queue.WriteTexture(&destination, pixels, static_cast<size_t>(width) * height * 4, &layout, &extent);
+
+    std::array<wgpu::BindGroupEntry, 2> groupEntries{};
+    groupEntries[0].binding = 0;
+    groupEntries[0].sampler = m_fontSampler;
+    groupEntries[1].binding = 1;
+    groupEntries[1].textureView = m_fontView;
+    wgpu::BindGroupDescriptor groupDescriptor;
+    groupDescriptor.layout = m_textureLayout;
+    groupDescriptor.entryCount = groupEntries.size();
+    groupDescriptor.entries = groupEntries.data();
+    m_fontGroup = m_device.CreateBindGroup(&groupDescriptor);
+    ImGui::GetIO().Fonts->SetTexID(static_cast<ImTextureID>(kFontTextureId));
+    m_fontAtlasDirty = false;
+    return static_cast<bool>(m_fontGroup);
 }
 
 bool WebScreenUIRenderer::CreatePipelineAndFontAtlas()
@@ -312,6 +367,7 @@ void WebScreenUIRenderer::AddText(int list, float minX, float minY, float maxX, 
     textlayout::RenderTextBox(draw, minX, minY, maxX, maxY, layout, ImGui::ColorConvertFloat4ToU32({r, g, b, a}),
                               alignX, alignY, letterSpacing);
     draw->PopTextureID();
+    m_fontAtlasDirty = true;
     TransformVertices(*draw, firstVertex, minX, minY, maxX, maxY, rotation, mirrorH, mirrorV);
 }
 
@@ -325,7 +381,7 @@ std::pair<float, float> WebScreenUIRenderer::MeasureText(const std::string &text
     return {layout.totalWidth, layout.totalHeight};
 }
 
-uint64_t WebScreenUIRenderer::UploadTexture(const TextureCpuData &texture)
+uint64_t WebScreenUIRenderer::UploadTexture(const TextureCpuData &texture, uint64_t replaceTextureId)
 {
     if (!m_device || !m_queue || texture.dimension != TextureDimension::Texture2D || !texture.IsValid())
         return 0;
@@ -379,10 +435,18 @@ uint64_t WebScreenUIRenderer::UploadTexture(const TextureCpuData &texture)
     if (!gpu.group)
         return 0;
 
-    const uint64_t id = m_nextTextureId++;
-    m_textures.emplace(id, std::move(gpu));
+    const uint64_t id = replaceTextureId > kFontTextureId ? replaceTextureId : m_nextTextureId++;
+    m_textures.insert_or_assign(id, std::move(gpu));
     m_cacheValid = false;
     return id;
+}
+
+void WebScreenUIRenderer::ReleaseTexture(uint64_t textureId)
+{
+    if (textureId <= kFontTextureId)
+        return;
+    if (m_textures.erase(textureId) != 0)
+        m_cacheValid = false;
 }
 
 bool WebScreenUIRenderer::EnsureBuffer(wgpu::Buffer &buffer, uint64_t &capacity, uint64_t required,
@@ -405,6 +469,8 @@ bool WebScreenUIRenderer::Render(wgpu::RenderPassEncoder pass, int list, uint32_
     ImDrawList *draw = DrawList(list);
     if (!pass || !m_pipeline || !draw || draw->VtxBuffer.empty() || draw->IdxBuffer.empty() || width == 0 ||
         height == 0)
+        return false;
+    if (!RefreshFontAtlas())
         return false;
     std::vector<GPUVertex> vertices(static_cast<size_t>(draw->VtxBuffer.Size));
     for (int index = 0; index < draw->VtxBuffer.Size; ++index) {

@@ -29,7 +29,7 @@ namespace infernux::web
 class WebSceneRenderer final
 {
   public:
-    bool Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::TextureFormat colorFormat);
+    bool Initialize(wgpu::Device device, wgpu::Queue queue, wgpu::TextureFormat colorFormat, uint32_t sceneSampleCount);
     void Resize(uint32_t width, uint32_t height);
 
     [[nodiscard]] bool HasDepthTarget() const noexcept;
@@ -170,6 +170,7 @@ class WebSceneRenderer final
     wgpu::TextureView m_depthView;
     uint32_t m_depthWidth = 0;
     uint32_t m_depthHeight = 0;
+    uint32_t m_sceneSampleCount = 1;
     uint32_t m_shadowResolution = 2048;
     SceneRenderExtractor m_extractor;
     RenderWorldSnapshot m_world;

@@ -5,6 +5,15 @@ const path = require("path");
 const { chromium } = require("playwright");
 const { PNG } = require("pngjs");
 
+function writeJsonAtomic(outputPath, payload) {
+  if (!outputPath) return;
+  const resolved = path.resolve(outputPath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const temporary = `${resolved}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  fs.renameSync(temporary, resolved);
+}
+
 function resolveBrowserExecutable() {
   if (process.env.INFERNUX_WEB_BROWSER) {
     return process.env.INFERNUX_WEB_BROWSER;
@@ -154,17 +163,23 @@ async function setRenderDiagnostic(page, feature, enabled) {
 }
 
 async function main() {
-  const url = process.argv[2];
+  const startedAt = process.hrtime.bigint();
+  let url = process.argv[2];
   if (!url) {
     throw new Error(
       "usage: node web_mobile_input_smoke.cjs <url> " +
-      "[--cdp-endpoint URL] [--require-active-audio] [--startup-timeout-ms N] " +
+      "[--report PATH] [--cdp-endpoint URL] [--require-active-audio] " +
+      "[--startup-timeout-ms N] " +
       "[--viewport-width N] [--viewport-height N] " +
       "[--expect-presentation fullscreen-borderless|windowed] " +
       "[--expect-render-width N] [--expect-render-height N] " +
       "[--track-object NAME] [--movement-key KEY|--movement-touch] " +
       "[--min-displacement N] [--require-diagnostic TEXT] " +
-      "[--capture-frame-output PATH] [--skip-frame-checks]",
+      "[--require-diagnostic-order BEFORE=>AFTER] " +
+      "[--capture-frame-output PATH] [--skip-frame-checks] " +
+      "[--capture-only --fixed-delta N --pause-after-frame N] " +
+      "[--device-scale-factor N] " +
+      "[--verify-particle-bloom] [--verify-native-multitouch]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -184,6 +199,7 @@ async function main() {
     return values;
   };
   const requireActiveAudio = process.argv.includes("--require-active-audio");
+  const reportPath = argumentValue("--report");
   const movementTouch = process.argv.includes("--movement-touch");
   const skipFrameChecks = process.argv.includes("--skip-frame-checks");
   const cdpIndex = process.argv.indexOf("--cdp-endpoint");
@@ -207,10 +223,48 @@ async function main() {
   const movementKey = argumentValue("--movement-key", "w");
   const minimumDisplacement = Number(argumentValue("--min-displacement", "0.02"));
   const requiredDiagnostics = argumentValues("--require-diagnostic");
+  const forbiddenDiagnostics = [
+    "AudioSource::StartVoice: AudioEngine not initialized",
+  ];
+  const requiredDiagnosticOrders = argumentValues("--require-diagnostic-order").map(
+    (value) => {
+      const separator = value.indexOf("=>");
+      if (separator <= 0 || separator >= value.length - 2) {
+        throw new Error(
+          "--require-diagnostic-order must use the form BEFORE=>AFTER",
+        );
+      }
+      return {
+        before: value.slice(0, separator),
+        after: value.slice(separator + 2),
+      };
+    },
+  );
   const captureFrameOutput = argumentValue("--capture-frame-output");
+  const captureOnly = process.argv.includes("--capture-only");
+  const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
+  const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
+  const fixedDelta = Number(argumentValue("--fixed-delta", "0"));
+  const pauseAfterFrame = Number(argumentValue("--pause-after-frame", "0"));
+  const deterministicCapture = fixedDelta !== 0 || pauseAfterFrame !== 0;
+  const deviceScaleFactor = Number(argumentValue(
+    "--device-scale-factor",
+    deterministicCapture ? "1" : "2",
+  ));
   if (!Number.isInteger(viewportWidth) || viewportWidth <= 0 ||
       !Number.isInteger(viewportHeight) || viewportHeight <= 0) {
     throw new Error("viewport dimensions must be positive integers");
+  }
+  if (!Number.isFinite(deviceScaleFactor) || deviceScaleFactor <= 0) {
+    throw new Error("--device-scale-factor must be a positive number");
+  }
+  for (const [name, value] of [
+    ["--expect-render-width", expectedRenderWidth],
+    ["--expect-render-height", expectedRenderHeight],
+  ]) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${name} must be a non-negative integer`);
+    }
   }
   if (expectedPresentation &&
       !["fullscreen-borderless", "windowed"].includes(expectedPresentation)) {
@@ -218,6 +272,41 @@ async function main() {
   }
   if (!Number.isFinite(minimumDisplacement) || minimumDisplacement < 0) {
     throw new Error("--min-displacement must be a non-negative number");
+  }
+  if (deterministicCapture) {
+    if (!Number.isFinite(fixedDelta) || fixedDelta <= 0 || fixedDelta > 0.25 ||
+        !Number.isSafeInteger(pauseAfterFrame) || pauseAfterFrame <= 0) {
+      throw new Error(
+        "deterministic capture requires --fixed-delta in (0, 0.25] and " +
+        "a positive integer --pause-after-frame",
+      );
+    }
+    if (!captureOnly || !captureFrameOutput) {
+      throw new Error(
+        "deterministic capture requires --capture-only and --capture-frame-output",
+      );
+    }
+    if (!expectedRenderWidth || !expectedRenderHeight) {
+      throw new Error(
+        "deterministic capture requires explicit --expect-render-width and " +
+        "--expect-render-height",
+      );
+    }
+    if (viewportWidth !== expectedRenderWidth ||
+        viewportHeight !== expectedRenderHeight) {
+      throw new Error(
+        "deterministic capture viewport must exactly match the expected render size",
+      );
+    }
+    if (deviceScaleFactor !== 1) {
+      throw new Error("deterministic capture requires --device-scale-factor 1");
+    }
+    const target = new URL(url);
+    target.searchParams.set("acceptanceFixedDelta", String(fixedDelta));
+    target.searchParams.set("acceptancePauseFrame", String(pauseAfterFrame));
+    url = target.toString();
+  } else if (captureOnly) {
+    throw new Error("--capture-only requires the deterministic clock arguments");
   }
   let browser;
   let page;
@@ -242,7 +331,7 @@ async function main() {
     });
     page = await browser.newPage({
       viewport: { width: viewportWidth, height: viewportHeight },
-      deviceScaleFactor: 2,
+      deviceScaleFactor,
       hasTouch: true,
       isMobile: true,
     });
@@ -250,7 +339,7 @@ async function main() {
   const pageErrors = [];
   const consoleErrors = [];
   const consoleMessages = [];
-  page.on("pageerror", (error) => pageErrors.push(String(error)));
+  page.on("pageerror", (error) => pageErrors.push(error?.stack || String(error)));
   page.on("console", (message) => {
     consoleMessages.push(`${message.type()}: ${message.text()}`);
     if (consoleMessages.length > 200) consoleMessages.shift();
@@ -294,6 +383,164 @@ async function main() {
     const canvas = page.locator("#canvas");
     const canvasBox = await canvas.boundingBox();
     if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
+    if (captureOnly) {
+      await page.waitForFunction((expectedFrame) => (
+        Module.ccall("InfernuxWebGetAcceptancePaused", "number", [], []) === 1 &&
+        Module.ccall("InfernuxWebGetAcceptanceFrame", "number", [], []) === expectedFrame
+      ), pauseAfterFrame, { timeout: startupTimeout });
+      const capturedRuntimeFrame = await page.evaluate(() => Module.ccall(
+        "InfernuxWebGetAcceptanceFrame", "number", [], [],
+      ));
+      const captureLayout = await page.evaluate(() => {
+        const target = document.querySelector("#canvas");
+        const rect = target.getBoundingClientRect();
+        return {
+          left: rect.left,
+          top: rect.top,
+          cssWidth: rect.width,
+          cssHeight: rect.height,
+          renderWidth: target.width,
+          renderHeight: target.height,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          deviceScaleFactor: window.devicePixelRatio,
+        };
+      });
+      const exactCaptureLayout = (
+        captureLayout.renderWidth === expectedRenderWidth &&
+        captureLayout.renderHeight === expectedRenderHeight &&
+        Math.abs(captureLayout.cssWidth - expectedRenderWidth) <= 0.01 &&
+        Math.abs(captureLayout.cssHeight - expectedRenderHeight) <= 0.01 &&
+        captureLayout.viewportWidth === expectedRenderWidth &&
+        captureLayout.viewportHeight === expectedRenderHeight &&
+        Math.abs(captureLayout.deviceScaleFactor - 1) <= 0.001
+      );
+      if (!exactCaptureLayout) {
+        throw new Error(JSON.stringify({
+          phase: "deterministic-capture-layout",
+          expectedRenderWidth,
+          expectedRenderHeight,
+          captureLayout,
+        }));
+      }
+      const captureFramePath = path.resolve(captureFrameOutput);
+      fs.mkdirSync(path.dirname(captureFramePath), { recursive: true });
+      await canvas.screenshot({ path: captureFramePath, animations: "disabled" });
+      const frame = await measureCanvasFrame(canvas);
+      if (frame.width !== expectedRenderWidth ||
+          frame.height !== expectedRenderHeight) {
+        throw new Error(JSON.stringify({
+          phase: "deterministic-capture-pixels",
+          expectedRenderWidth,
+          expectedRenderHeight,
+          frame,
+        }));
+      }
+      let particleBloom = null;
+      if (verifyParticleBloom) {
+        const particleWithBloom = await readCanvasFrame(canvas);
+        await setRenderDiagnostic(page, 2, false);
+        const noParticleWithBloom = await readCanvasFrame(canvas);
+        await setRenderDiagnostic(page, 3, false);
+        const noParticleNoBloom = await readCanvasFrame(canvas);
+        await setRenderDiagnostic(page, 2, true);
+        const particleNoBloom = await readCanvasFrame(canvas);
+        await setRenderDiagnostic(page, 3, true);
+        const diagnosticBase = captureFramePath.replace(/\.png$/i, "");
+        for (const [suffix, image] of [
+          ["particle-with-bloom", particleWithBloom],
+          ["no-particle-with-bloom", noParticleWithBloom],
+          ["no-particle-no-bloom", noParticleNoBloom],
+          ["particle-no-bloom", particleNoBloom],
+        ]) {
+          fs.writeFileSync(`${diagnosticBase}.${suffix}.png`, PNG.sync.write(image));
+        }
+        const withBloomContribution = compareCanvasFrames(
+          particleWithBloom,
+          noParticleWithBloom,
+        );
+        const withoutBloomContribution = compareCanvasFrames(
+          particleNoBloom,
+          noParticleNoBloom,
+        );
+        const haloPixelRatio = Math.max(
+          0,
+          withBloomContribution.changedPixelRatio -
+            withoutBloomContribution.changedPixelRatio,
+        );
+        particleBloom = {
+          withBloomContribution,
+          withoutBloomContribution,
+          haloPixelRatio,
+          participates: (
+            withBloomContribution.changedPixelRatio >= 0.0001 &&
+            haloPixelRatio >= 0.0001
+          ),
+        };
+      }
+      const diagnosticTail = await page.evaluate(() => {
+        const canvas = document.querySelector("#canvas");
+        const diagnostics = JSON.parse(canvas?.dataset.infernuxDiagnostics || "[]");
+        return diagnostics.slice(-120);
+      });
+      const requiredDiagnosticMatches = Object.fromEntries(
+        requiredDiagnostics.map((requirement) => [
+          requirement,
+          diagnosticTail.find((item) => item.includes(requirement)) || "",
+        ]),
+      );
+      const requiredDiagnosticOrderResults = requiredDiagnosticOrders.map(
+        ({ before, after }) => {
+          const beforeIndex = diagnosticTail.findIndex((item) => item.includes(before));
+          const afterIndex = diagnosticTail.findIndex((item) => item.includes(after));
+          return {
+            before,
+            after,
+            beforeIndex,
+            afterIndex,
+            ordered: beforeIndex >= 0 && afterIndex > beforeIndex,
+          };
+        },
+      );
+      const forbiddenDiagnosticMatches = Object.fromEntries(
+        forbiddenDiagnostics.map((requirement) => [
+          requirement,
+          diagnosticTail.find((item) => item.includes(requirement)) || "",
+        ]),
+      );
+      const result = {
+        state: await canvas.getAttribute("data-infernux-state"),
+        captureOnly: true,
+        fixedDeltaSeconds: fixedDelta,
+        pauseAfterFrame,
+        capturedRuntimeFrame,
+        captureFramePath,
+        captureLayout,
+        frame,
+        particleBloom,
+        requiredDiagnostics: requiredDiagnosticMatches,
+        requiredDiagnosticOrders: requiredDiagnosticOrderResults,
+        forbiddenDiagnostics: forbiddenDiagnosticMatches,
+        diagnosticTail,
+      };
+      if (capturedRuntimeFrame !== pauseAfterFrame ||
+          (verifyParticleBloom && !particleBloom?.participates) ||
+          Object.values(requiredDiagnosticMatches).some((match) => !match) ||
+          requiredDiagnosticOrderResults.some((order) => !order.ordered) ||
+          Object.values(forbiddenDiagnosticMatches).some((match) => match) ||
+          pageErrors.length || consoleErrors.length) {
+        throw new Error(JSON.stringify(result));
+      }
+      writeJsonAtomic(reportPath, {
+        schema: 1,
+        status: "passed",
+        url,
+        elapsed_seconds: Number(process.hrtime.bigint() - startedAt) / 1e9,
+        result,
+      });
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
     const stateBeforeActivation = await canvas.getAttribute("data-infernux-state");
     const initialKeyboardFocus = await page.evaluate(
       () => document.activeElement === document.querySelector("#canvas"),
@@ -348,18 +595,27 @@ async function main() {
       let whileHeld;
       if (movementTouch) {
         const touchSession = await page.context().newCDPSession(page);
-        const touchPoint = {
-          x: canvasBox.x + canvasBox.width * 0.325,
-          y: canvasBox.y + canvasBox.height * 0.1,
+        const stickCenter = {
+          x: canvasBox.x + canvasBox.width * 0.092,
+          y: canvasBox.y + canvasBox.height * 0.836,
           id: 91,
           radiusX: 14,
           radiusY: 12,
           force: 0.7,
         };
+        const stickForward = {
+          ...stickCenter,
+          y: canvasBox.y + canvasBox.height * 0.66,
+        };
         try {
           await touchSession.send("Input.dispatchTouchEvent", {
             type: "touchStart",
-            touchPoints: [touchPoint],
+            touchPoints: [stickCenter],
+          });
+          await page.waitForTimeout(120);
+          await touchSession.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [stickForward],
           });
           await page.waitForTimeout(1200);
           whileHeld = await readPosition(trackedObject);
@@ -446,6 +702,114 @@ async function main() {
     }, null, { timeout: 30000 });
     await page.waitForTimeout(250);
     const frameAfterActivation = skipFrameChecks ? null : await measureCanvasFrame(canvas);
+    let nativeMultitouch = null;
+    if (verifyNativeMultitouch) {
+      const touchSession = await page.context().newCDPSession(page);
+      const firstStart = {
+        x: canvasBox.x + canvasBox.width * 0.18,
+        y: canvasBox.y + canvasBox.height * 0.72,
+        id: 301,
+        radiusX: 13,
+        radiusY: 11,
+        force: 0.55,
+      };
+      const secondStart = {
+        x: canvasBox.x + canvasBox.width * 0.82,
+        y: canvasBox.y + canvasBox.height * 0.72,
+        id: 302,
+        radiusX: 15,
+        radiusY: 12,
+        force: 0.7,
+      };
+      const firstMoved = {
+        ...firstStart,
+        x: firstStart.x + canvasBox.width * 0.08,
+        y: firstStart.y - canvasBox.height * 0.08,
+      };
+      const secondMoved = {
+        ...secondStart,
+        x: secondStart.x - canvasBox.width * 0.08,
+        y: secondStart.y - canvasBox.height * 0.08,
+      };
+      const readUnityTouches = async () => page.evaluate(() => {
+        const diagnostic = (probe, argument = 0) => Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic",
+          "number",
+          ["number", "number"],
+          [probe, argument],
+        );
+        const count = Math.trunc(diagnostic(5));
+        return {
+          count,
+          touches: Array.from({ length: count }, (_, index) => ({
+            fingerId: diagnostic(6, index),
+            normalizedX: diagnostic(7, index),
+            normalizedY: diagnostic(8, index),
+            isPrimary: diagnostic(9, index) === 1,
+            phase: diagnostic(10, index),
+          })),
+        };
+      });
+      let contactsActive = false;
+      try {
+        const before = await readUnityTouches();
+        await touchSession.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [firstStart, secondStart],
+        });
+        contactsActive = true;
+        await page.waitForTimeout(80);
+        const started = await readUnityTouches();
+        await touchSession.send("Input.dispatchTouchEvent", {
+          type: "touchMove",
+          touchPoints: [firstMoved, secondMoved],
+        });
+        await page.waitForTimeout(80);
+        const moved = await readUnityTouches();
+        await touchSession.send("Input.dispatchTouchEvent", {
+          type: "touchCancel",
+          touchPoints: [],
+        });
+        contactsActive = false;
+        await page.waitForTimeout(120);
+        const canceled = await readUnityTouches();
+        const startedIds = started.touches.map((touch) => touch.fingerId);
+        const movedIds = moved.touches.map((touch) => touch.fingerId);
+        const movedDistances = moved.touches.map((touch, index) => Math.hypot(
+          touch.normalizedX - started.touches[index].normalizedX,
+          touch.normalizedY - started.touches[index].normalizedY,
+        ));
+        nativeMultitouch = {
+          before,
+          started,
+          moved,
+          canceled,
+          movedDistances,
+          passed: (
+            before.count === 0 &&
+            started.count === 2 && moved.count === 2 &&
+            new Set(startedIds).size === 2 &&
+            startedIds.every((id, index) => id === movedIds[index]) &&
+            started.touches.filter((touch) => touch.isPrimary).length === 1 &&
+            moved.touches.filter((touch) => touch.isPrimary).length === 1 &&
+            started.touches.every((touch) => (
+              touch.normalizedX >= 0 && touch.normalizedX <= 1 &&
+              touch.normalizedY >= 0 && touch.normalizedY <= 1
+            )) &&
+            movedDistances.every((distance) => distance >= 0.05) &&
+            canceled.count === 0
+          ),
+        };
+      } finally {
+        if (contactsActive) {
+          await touchSession.send("Input.dispatchTouchEvent", {
+            type: "touchCancel",
+            touchPoints: [],
+          });
+        }
+        await touchSession.detach();
+      }
+    }
     const contextMenuPrevented = await page.evaluate(() => {
       const canvas = document.querySelector("#canvas");
       const contextMenu = new MouseEvent("contextmenu", {
@@ -497,7 +861,7 @@ async function main() {
     });
     await page.waitForTimeout(1000);
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
-    const result = await page.evaluate((requirements) => {
+    const result = await page.evaluate((contract) => {
       const canvas = document.querySelector("#canvas");
       const diagnostics = JSON.parse(canvas.dataset.infernuxDiagnostics || "[]");
       const activeVoiceMarker = diagnostics.find(
@@ -556,14 +920,35 @@ async function main() {
         })(),
         unhandledErrors: diagnostics.filter((item) => item.startsWith("ERROR:")),
         requiredDiagnostics: Object.fromEntries(
-          requirements.map((requirement) => [
+          contract.requirements.map((requirement) => [
+            requirement,
+            diagnostics.find((item) => item.includes(requirement)) || "",
+          ]),
+        ),
+        requiredDiagnosticOrders: contract.orders.map(({ before, after }) => {
+          const beforeIndex = diagnostics.findIndex((item) => item.includes(before));
+          const afterIndex = diagnostics.findIndex((item) => item.includes(after));
+          return {
+            before,
+            after,
+            beforeIndex,
+            afterIndex,
+            ordered: beforeIndex >= 0 && afterIndex > beforeIndex,
+          };
+        }),
+        forbiddenDiagnostics: Object.fromEntries(
+          contract.forbidden.map((requirement) => [
             requirement,
             diagnostics.find((item) => item.includes(requirement)) || "",
           ]),
         ),
         diagnosticTail: diagnostics.slice(-80),
       };
-    }, requiredDiagnostics);
+    }, {
+      requirements: requiredDiagnostics,
+      orders: requiredDiagnosticOrders,
+      forbidden: forbiddenDiagnostics,
+    });
     result.frameBeforeActivation = frameBeforeActivation;
     result.sceneFrame = sceneFrame;
     result.shadowDifference = shadowDifference;
@@ -576,6 +961,7 @@ async function main() {
     result.nativeWReleased = nativeWReleased;
     result.pythonWPressed = pythonWPressed;
     result.gameplayMovement = gameplayMovement;
+    result.nativeMultitouch = nativeMultitouch;
     if (captureFramePath) result.captureFramePath = captureFramePath;
     const frameIsVisible = (frame) => frame && (
       frame.nonBlackRatio >= 0.1 &&
@@ -624,7 +1010,10 @@ async function main() {
         !result.nativeWPressed || !result.nativeWReleased || !result.pythonWPressed ||
         (result.gameplayMovement &&
           result.gameplayMovement.horizontalDisplacement < minimumDisplacement) ||
+        (verifyNativeMultitouch && !result.nativeMultitouch?.passed) ||
         Object.values(result.requiredDiagnostics).some((match) => !match) ||
+        result.requiredDiagnosticOrders.some((order) => !order.ordered) ||
+        Object.values(result.forbiddenDiagnostics).some((match) => match) ||
         !result.audioReady || !result.audioContextRunning ||
         (requireActiveAudio && result.activeAudioVoices < 1) ||
         !result.pointerDown || !result.pointerCancel || !result.textInput ||
@@ -638,6 +1027,13 @@ async function main() {
       throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));
     }
     delete result.diagnosticTail;
+    writeJsonAtomic(reportPath, {
+      schema: 1,
+      status: "passed",
+      url,
+      elapsed_seconds: Number(process.hrtime.bigint() - startedAt) / 1e9,
+      result,
+    });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } finally {
     await browser.close();

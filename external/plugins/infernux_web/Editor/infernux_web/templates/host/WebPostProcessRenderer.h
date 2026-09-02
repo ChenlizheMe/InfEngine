@@ -31,11 +31,14 @@ class WebPostProcessRenderer final
         float exposure = 1.0f;
     };
 
-    bool Initialize(wgpu::Device device, wgpu::TextureFormat surfaceFormat);
+    bool Initialize(wgpu::Device device, wgpu::TextureFormat surfaceFormat, uint32_t sceneSampleCount);
     bool Resize(uint32_t width, uint32_t height);
     bool Configure(const Settings &settings);
+    bool SetBloomEnabledForDiagnostics(bool enabled);
 
     [[nodiscard]] wgpu::TextureFormat SceneColorFormat() const noexcept;
+    [[nodiscard]] uint32_t SceneSampleCount() const noexcept;
+    [[nodiscard]] wgpu::TextureView SceneColorAttachmentView() const noexcept;
     [[nodiscard]] wgpu::TextureView SceneColorView() const noexcept;
     [[nodiscard]] bool PrepareBloom(wgpu::CommandEncoder encoder);
     [[nodiscard]] bool Render(wgpu::RenderPassEncoder pass);
@@ -86,11 +89,14 @@ class WebPostProcessRenderer final
     bool CreateSceneTarget();
     bool CreateBloomTargets();
     bool CreateResolveBindGroup();
+    [[nodiscard]] bool BloomEnabled() const noexcept;
     bool RecordColorPass(wgpu::CommandEncoder encoder, wgpu::TextureView target, wgpu::RenderPipeline pipeline,
                          wgpu::BindGroup group);
 
     wgpu::Device m_device;
     wgpu::TextureFormat m_surfaceFormat = wgpu::TextureFormat::Undefined;
+    wgpu::Texture m_sceneColorMultisampled;
+    wgpu::TextureView m_sceneColorMultisampledView;
     wgpu::Texture m_sceneColor;
     wgpu::TextureView m_sceneColorView;
     wgpu::Sampler m_sampler;
@@ -105,8 +111,10 @@ class WebPostProcessRenderer final
     std::vector<BloomLevel> m_bloomLevels;
     uint32_t m_width = 0;
     uint32_t m_height = 0;
+    uint32_t m_sceneSampleCount = 1;
     Settings m_settings;
     ResolveParameters m_resolveValues;
+    bool m_bloomEnabledForDiagnostics = true;
     bool m_reportedReady = false;
 };
 
