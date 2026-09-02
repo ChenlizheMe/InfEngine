@@ -589,12 +589,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         def _blog(msg: str):
             """Write to both the engine console and the build log file."""
-            try:
-                build_log.write(msg + "\n")
-                build_log.flush()
-            except OSError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+            build_log.write(msg + "\n")
+            build_log.flush()
 
         def _p(msg: str, pct: float):
             nonlocal _stage_t0
@@ -628,13 +624,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             )
             raise
         finally:
-            try:
-                build_log.close()
-            except OSError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+            build_log.close()
             if build_succeeded:
-                shutil.rmtree(log_dir, ignore_errors=True)
+                shutil.rmtree(log_dir)
             self._abort_output_transaction()
 
     def cook_platform_content(
@@ -1146,19 +1138,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         for name in os.listdir(self.output_dir):
             path = os.path.join(self.output_dir, name)
             if os.path.isdir(path) and not os.path.islink(path):
-                if sys.platform == "win32":
-                    subprocess.run(
-                        ["cmd", "/c", "rd", "/s", "/q", path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                else:
-                    shutil.rmtree(path, ignore_errors=True)
+                shutil.rmtree(path)
             else:
                 try:
                     os.remove(path)
-                except FileNotFoundError as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                except FileNotFoundError:
                     continue
 
             if os.path.exists(path):
@@ -2968,21 +2952,14 @@ finally:
                         raise RuntimeError(
                             f"auto_parallel compilation rejected for {fname}: {exc}"
                         ) from exc
-                    except OSError as exc:
-                        Debug.log_warning(f"  Typed HIR preparation failed for {fname}: {exc}")
-
-                    try:
-                        py_compile.compile(
-                            py_path,
-                            cfile=py_path + "c",
-                            dfile=relative_path(py_path, data_dir),
-                            optimize=2,
-                            doraise=True,
-                        )
-                        os.remove(py_path)
-                    except py_compile.PyCompileError as _exc:
-                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                        pass
+                    py_compile.compile(
+                        py_path,
+                        cfile=py_path + "c",
+                        dfile=relative_path(py_path, data_dir),
+                        optimize=2,
+                        doraise=True,
+                    )
+                    os.remove(py_path)
 
         Debug.log_internal(
             f"  compiled {_compile_count} scripts in "
@@ -4409,16 +4386,16 @@ finally:
     def _cleanup_dist(self, final_dir: str):
         """Remove editor-only and redundant files from the build output."""
         removed_bytes = 0
-        dirs_to_remove: list[str] = []
-        files_to_remove: list[str] = []
+        dirs_to_remove: set[str] = set()
+        files_to_remove: set[str] = set()
 
         def _queue_dir(d: str):
             if os.path.isdir(d):
-                dirs_to_remove.append(d)
+                dirs_to_remove.add(d)
 
         def _queue_file(f: str):
             if os.path.isfile(f):
-                files_to_remove.append(f)
+                files_to_remove.add(f)
 
         # Directories that are entirely unnecessary at runtime
         _queue_dir(os.path.join(final_dir, "Infernux", "lib", "_player_runtime"))
@@ -4507,53 +4484,28 @@ finally:
         for root, dirs, files in os.walk(final_dir, topdown=False):
             for dname in dirs:
                 if dname == "__pycache__" or dname.endswith(".dist-info"):
-                    dirs_to_remove.append(os.path.join(root, dname))
+                    dirs_to_remove.add(os.path.join(root, dname))
             for fname in files:
                 if os.path.splitext(fname)[1].lower() in {".pdb", ".lib", ".exp", ".pyi"}:
-                    files_to_remove.append(os.path.join(root, fname))
+                    files_to_remove.add(os.path.join(root, fname))
 
         # ── Execute removals ─────────────────────────────────────────
         # 1. Remove individual files (fast, no subprocess)
-        for f in files_to_remove:
-            try:
-                removed_bytes += os.path.getsize(f)
-            except OSError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
-            try:
-                os.remove(f)
-            except OSError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+        for f in sorted(files_to_remove):
+            removed_bytes += os.path.getsize(f)
+            os.remove(f)
 
         # 2. Count bytes in queued dirs, then batch-remove
-        for d in dirs_to_remove:
+        for d in sorted(dirs_to_remove):
             if not os.path.isdir(d):
                 continue
             for r, _, fs in os.walk(d):
                 for fname in fs:
-                    try:
-                        removed_bytes += os.path.getsize(os.path.join(r, fname))
-                    except OSError as _exc:
-                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                        pass
+                    removed_bytes += os.path.getsize(os.path.join(r, fname))
 
-        if sys.platform == "win32" and dirs_to_remove:
-            # Single cmd process to remove all directories at once
-            rd_args = []
-            for d in dirs_to_remove:
-                if os.path.isdir(d):
-                    rd_args.extend(["rd", "/s", "/q", d, "&"])
-            if rd_args:
-                rd_args.pop()  # remove trailing "&"
-                subprocess.run(
-                    ["cmd", "/c"] + rd_args,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-        else:
-            for d in dirs_to_remove:
-                shutil.rmtree(d, ignore_errors=True)
+        for d in sorted(dirs_to_remove, reverse=True):
+            if os.path.isdir(d):
+                shutil.rmtree(d)
 
         # Empty package directories are never useful in a Player.  This also
         # removes ``Infernux`` after editor-only data has been cleaned and the
@@ -4586,11 +4538,7 @@ finally:
                 sz = 0
                 for root, _, files in os.walk(item.path):
                     for f in files:
-                        try:
-                            sz += os.path.getsize(os.path.join(root, f))
-                        except OSError as _exc:
-                            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                            pass
+                        sz += os.path.getsize(os.path.join(root, f))
                 entries.append((item.name + "/", sz))
             elif item.is_file(follow_symlinks=False):
                 sz = item.stat().st_size

@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import py_compile
 import shutil
 import sys
 import threading
@@ -5503,6 +5504,22 @@ class TestGameBuilderOutputSafety:
         assert output_dir.is_dir()
         assert list(output_dir.iterdir()) == []
 
+    def test_clean_output_propagates_directory_removal_failure(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "build_output"
+        nested_dir = output_dir / "Data"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "stale.txt").write_text("stale", encoding="utf-8")
+        builder = _make_builder(tmp_path, output_dir)
+        builder._write_output_marker(str(output_dir))
+
+        def reject_removal(_path):
+            raise PermissionError("directory is locked")
+
+        monkeypatch.setattr(game_builder_module.shutil, "rmtree", reject_removal)
+
+        with pytest.raises(PermissionError, match="directory is locked"):
+            builder._clean_output()
+
     def test_write_output_marker_creates_reusable_build_marker(self, tmp_path):
         output_dir = tmp_path / "build_output"
         output_dir.mkdir()
@@ -5895,6 +5912,38 @@ class TestGameBuilderDependencyCollection:
 
 
 class TestGameBuilderAutoParallelExport:
+    def test_compile_user_scripts_propagates_bytecode_failure(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "build_output"
+        assets_dir = output_dir / "Data" / "Assets"
+        assets_dir.mkdir(parents=True)
+        script_path = assets_dir / "gameplay.py"
+        script_path.write_text("score = 1\n", encoding="utf-8")
+
+        builder = _make_builder(tmp_path, output_dir)
+        _bind_staged_script_to_asset_index(
+            builder,
+            output_dir,
+            script_path,
+            guid="gameplay-script-guid",
+        )
+        failure = py_compile.PyCompileError(
+            SyntaxError,
+            SyntaxError("compiler rejected source"),
+            str(script_path),
+            "compiler rejected source",
+        )
+
+        def reject_compile(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(game_builder_module.py_compile, "compile", reject_compile)
+
+        with pytest.raises(py_compile.PyCompileError):
+            builder._compile_user_scripts(str(output_dir))
+
+        assert script_path.is_file()
+        assert not (assets_dir / "gameplay.pyc").exists()
+
     def test_compile_user_scripts_embeds_auto_parallel_without_sidecar(self, tmp_path):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
