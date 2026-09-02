@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -16,7 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from hub_utils import get_app_dir, is_frozen
-from incremental_update import MANIFEST_SCHEMA, PRODUCT_NAME
+from hub_release import MANIFEST_SCHEMA, PRODUCT_NAME, load_manifest, validate_manifest
 
 
 GITHUB_LATEST_RELEASE = "https://api.github.com/repos/ChenlizheMe/Infernux/releases/latest"
@@ -33,11 +32,8 @@ class HubUpdate:
     release_url: str
     asset_name: str
     asset_url: str
-    sha256: str
     size: int
-    incremental: bool
     manifest_url: str
-    manifest_sha256: str
     required: bool = False
 
 
@@ -94,42 +90,20 @@ def check_for_update(current_version: str | None = None) -> HubUpdate | None:
         return None
 
     assets = {asset["name"]: asset for asset in release.get("assets", [])}
-    checksum_asset = assets.get("SHA256SUMS.txt")
-    if not checksum_asset:
-        return None
-    checksums = {}
-    checksum_text = _request_bytes(checksum_asset["browser_download_url"]).decode("utf-8")
-    for line in checksum_text.splitlines():
-        parts = line.strip().split(maxsplit=1)
-        if len(parts) == 2 and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
-            checksums[parts[1].lstrip("* ")] = parts[0].lower()
-
     manifest_name = "InfernuxHub-manifest.json"
     manifest_asset = assets.get(manifest_name)
-    if not manifest_asset or manifest_name not in checksums:
-        return None
-    patch_name = f"InfernuxHub-{current}-to-{target}-windows-x64.patch.zip"
     full_name = f"InfernuxHub-{target}-windows-x64-full.zip"
-    asset = assets.get(patch_name)
-    asset_name = patch_name
-    incremental = True
-    if not asset or patch_name not in checksums:
-        asset = assets.get(full_name)
-        asset_name = full_name
-        incremental = False
-    if not asset or asset_name not in checksums:
+    asset = assets.get(full_name)
+    if not manifest_asset or not asset:
         return None
     return HubUpdate(
         current_version=current,
         target_version=target,
         release_url=release.get("html_url", ""),
-        asset_name=asset_name,
+        asset_name=full_name,
         asset_url=asset["browser_download_url"],
-        sha256=checksums[asset_name],
         size=int(asset.get("size", 0)),
-        incremental=incremental,
         manifest_url=manifest_asset["browser_download_url"],
-        manifest_sha256=checksums[manifest_name],
         required=_update_is_required(current, target),
     )
 
@@ -147,7 +121,6 @@ def _download(
     progress: Callable[[int, int], None] | None = None,
 ) -> None:
     request = urllib.request.Request(update.asset_url, headers={"User-Agent": "InfernuxHub-Updater"})
-    digest = hashlib.sha256()
     received = 0
     with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as stream:
         total = int(response.headers.get("Content-Length", update.size or 0))
@@ -156,13 +129,14 @@ def _download(
             if not chunk:
                 break
             stream.write(chunk)
-            digest.update(chunk)
             received += len(chunk)
             if progress:
                 progress(received, total)
-    if digest.hexdigest().lower() != update.sha256:
+    if update.size and received != update.size:
         destination.unlink(missing_ok=True)
-        raise ValueError("Downloaded update failed SHA-256 verification")
+        raise ValueError(
+            f"Downloaded update is incomplete: expected {update.size} bytes, received {received}"
+        )
 
 
 def stage_update(
@@ -174,76 +148,51 @@ def stage_update(
         shutil.rmtree(base)
     stage = base / "stage"
     stage.mkdir(parents=True)
-    patch_path = base / update.asset_name
-    _download(update, patch_path, progress)
+    archive_path = base / update.asset_name
+    _download(update, archive_path, progress)
 
     manifest_path = base / "InfernuxHub-manifest.json"
     manifest_bytes = _request_bytes(update.manifest_url, timeout=60)
-    if hashlib.sha256(manifest_bytes).hexdigest() != update.manifest_sha256:
-        raise ValueError("Hub update manifest failed SHA-256 verification")
     manifest_path.write_bytes(manifest_bytes)
-    target_manifest = json.loads(manifest_bytes.decode("utf-8"))
-    if (
-        target_manifest.get("$schema") != MANIFEST_SCHEMA
-        or target_manifest.get("product") != PRODUCT_NAME
-        or target_manifest.get("version") != update.target_version
-    ):
+    target_manifest = validate_manifest(json.loads(manifest_bytes.decode("utf-8")))
+    if target_manifest["version"] != update.target_version:
         raise ValueError("Hub update manifest does not match the target release")
 
-    with zipfile.ZipFile(patch_path) as archive:
+    local_manifest = load_manifest(Path(get_app_dir()) / "InfernuxHub-manifest.json")
+    if local_manifest["version"] != update.current_version:
+        raise ValueError("Installed Hub manifest does not match the running version")
+    old_paths = {entry["path"] for entry in local_manifest["files"]}
+    target_entries = list(target_manifest["files"])
+    target_paths = {entry["path"] for entry in target_entries}
+    metadata = {
+        "$schema": MANIFEST_SCHEMA,
+        "product": PRODUCT_NAME,
+        "base_version": update.current_version,
+        "target_version": update.target_version,
+        "files": target_entries,
+        "delete": sorted(old_paths - target_paths),
+    }
+
+    with zipfile.ZipFile(archive_path) as archive:
         names = set(archive.namelist())
-        if update.incremental:
-            if "hub-update.json" not in names:
-                raise ValueError("Update package is missing hub-update.json")
-            metadata = json.loads(archive.read("hub-update.json").decode("utf-8"))
-            if metadata.get("$schema") != MANIFEST_SCHEMA or metadata.get("product") != PRODUCT_NAME:
-                raise ValueError("Update package does not match the current Hub update contract")
-            if metadata.get("base_version") != update.current_version:
-                raise ValueError("Update package does not match the installed Hub version")
-            if metadata.get("target_version") != update.target_version:
-                raise ValueError("Update package target version does not match the release")
-        else:
-            old_paths = set()
-            local_manifest = Path(get_app_dir()) / "InfernuxHub-manifest.json"
-            try:
-                old_data = json.loads(local_manifest.read_text(encoding="utf-8"))
-                old_paths = {entry["path"] for entry in old_data.get("files", [])}
-            except (OSError, ValueError, KeyError, json.JSONDecodeError):
-                pass
-            target_paths = {entry["path"] for entry in target_manifest.get("files", [])}
-            metadata = {
-                "$schema": MANIFEST_SCHEMA,
-                "product": PRODUCT_NAME,
-                "base_version": update.current_version,
-                "target_version": update.target_version,
-                "files": target_manifest.get("files", []),
-                "delete": sorted(old_paths - target_paths),
-            }
-        for entry in metadata.get("files", []):
+        if names != target_paths:
+            missing = sorted(target_paths - names)
+            unexpected = sorted(names - target_paths)
+            raise ValueError(
+                "Hub update archive does not match its manifest: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        for entry in target_entries:
             relative = _safe_path(entry["path"])
-            member = f"payload/{relative.as_posix()}" if update.incremental else relative.as_posix()
-            if member not in names:
-                raise ValueError(f"Update package is missing {relative.as_posix()}")
             destination = stage.joinpath(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member) as source, destination.open("wb") as target:
+            with archive.open(relative.as_posix()) as source, destination.open("wb") as target:
                 shutil.copyfileobj(source, target)
-            digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-            if destination.stat().st_size != entry["size"] or digest != entry["sha256"]:
-                raise ValueError(f"Update payload verification failed: {relative.as_posix()}")
-        for relative in metadata.get("delete", []):
+        for relative in metadata["delete"]:
             _safe_path(relative)
 
-    manifest_entry = {
-        "path": "InfernuxHub-manifest.json",
-        "size": len(manifest_bytes),
-        "sha256": update.manifest_sha256,
-    }
     shutil.copy2(manifest_path, stage / "InfernuxHub-manifest.json")
-    metadata["files"] = [
-        entry for entry in metadata.get("files", [])
-        if entry["path"] != "InfernuxHub-manifest.json"
-    ] + [manifest_entry]
+    metadata["files"] = target_entries + [{"path": "InfernuxHub-manifest.json"}]
 
     metadata_path = base / "hub-update.json"
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -273,7 +222,7 @@ def _launch_elevated_powershell(
     arguments: list[str],
     working_directory: Path,
 ) -> None:
-    """Launch the verified replacement step with the installer's privileges."""
+    """Launch the staged replacement step with the installer's privileges."""
     import ctypes
 
     parameters = subprocess.list2cmdline(
@@ -335,27 +284,17 @@ $form.Show()
 [Windows.Forms.Application]::DoEvents()
 $backup = Join-Path (Split-Path $MetadataPath) "backup"
 $applied = New-Object System.Collections.Generic.List[string]
-function Get-Sha256([string]$Path) {
-    $stream = [IO.File]::OpenRead($Path)
-    try {
-        $algorithm = [Security.Cryptography.SHA256]::Create()
-        try { return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
-        finally { $algorithm.Dispose() }
-    } finally { $stream.Dispose() }
-}
 try {
     while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
         Start-Sleep -Milliseconds 100
         [Windows.Forms.Application]::DoEvents()
     }
-    $status.Text = "Replacing verified application files..."
+    $status.Text = "Replacing application files..."
     [Windows.Forms.Application]::DoEvents()
     $metadata = Get-Content -LiteralPath $MetadataPath -Raw | ConvertFrom-Json
     foreach ($file in $metadata.files) {
         $source = Join-Path $StageDir $file.path
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Staged file is missing: $($file.path)" }
-        $hash = Get-Sha256 $source
-        if ($hash -ne $file.sha256) { throw "Staged file failed verification: $($file.path)" }
     }
     New-Item -ItemType Directory -Force -Path $backup | Out-Null
     $affected = @($metadata.files.path) + @($metadata.delete)

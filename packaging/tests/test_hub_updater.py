@@ -1,4 +1,3 @@
-import hashlib
 import json
 import shutil
 import zipfile
@@ -7,15 +6,30 @@ from pathlib import Path
 import pytest
 
 import hub_updater
+from hub_release import create_manifest, write_manifest
 from hub_updater import HubUpdate, check_for_update, stage_update
-from incremental_update import create_manifest
 
 
 def _asset(name: str, size: int = 1) -> dict:
-    return {"name": name, "browser_download_url": f"https://example.invalid/{name}", "size": size}
+    return {
+        "name": name,
+        "browser_download_url": f"https://example.invalid/{name}",
+        "size": size,
+    }
 
 
-def test_packaged_hub_version_requires_the_current_document(tmp_path: Path, monkeypatch):
+def _release(target: str) -> dict:
+    full = f"InfernuxHub-{target}-windows-x64-full.zip"
+    return {
+        "tag_name": f"v{target}",
+        "html_url": "https://example.invalid/release",
+        "assets": [_asset(full), _asset("InfernuxHub-manifest.json")],
+    }
+
+
+def test_packaged_hub_version_requires_the_current_document(
+    tmp_path: Path, monkeypatch
+):
     monkeypatch.setattr(hub_updater, "is_frozen", lambda: True)
     monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(tmp_path))
     (tmp_path / "hub-version.json").write_text(
@@ -26,55 +40,42 @@ def test_packaged_hub_version_requires_the_current_document(tmp_path: Path, monk
         hub_updater.current_hub_version()
 
 
-def test_check_prefers_exact_incremental_asset(monkeypatch):
-    current = "1.0.0"
-    target = "1.1.0"
-    patch = f"InfernuxHub-{current}-to-{target}-windows-x64.patch.zip"
-    full = f"InfernuxHub-{target}-windows-x64-full.zip"
-    manifest = "InfernuxHub-manifest.json"
-    checksums = f"{'1' * 64}  {patch}\n{'2' * 64}  {full}\n{'3' * 64}  {manifest}\n"
-    release = {
-        "tag_name": f"v{target}",
-        "html_url": "https://example.invalid/release",
-        "assets": [_asset("SHA256SUMS.txt"), _asset(patch), _asset(full), _asset(manifest)],
-    }
-    responses = iter([json.dumps(release).encode(), checksums.encode()])
-    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: next(responses))
-    update = check_for_update(current)
+def test_check_selects_the_standalone_update(monkeypatch):
+    release = _release("1.1.0")
+    monkeypatch.setattr(
+        hub_updater,
+        "_request_bytes",
+        lambda *_args, **_kwargs: json.dumps(release).encode(),
+    )
+
+    update = check_for_update("1.0.0")
+
     assert update is not None
-    assert update.incremental is True
-    assert update.asset_name == patch
+    assert update.asset_name == "InfernuxHub-1.1.0-windows-x64-full.zip"
+    assert update.asset_url.endswith(update.asset_name)
+    assert update.manifest_url.endswith("InfernuxHub-manifest.json")
     assert update.required is False
 
 
-def test_check_falls_back_to_full_asset(monkeypatch):
-    target = "1.1.0"
-    full = f"InfernuxHub-{target}-windows-x64-full.zip"
-    manifest = "InfernuxHub-manifest.json"
-    checksums = f"{'2' * 64}  {full}\n{'3' * 64}  {manifest}\n"
-    release = {
-        "tag_name": f"v{target}",
-        "assets": [_asset("SHA256SUMS.txt"), _asset(full), _asset(manifest)],
-    }
-    responses = iter([json.dumps(release).encode(), checksums.encode()])
-    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: next(responses))
-    update = check_for_update("1.0.0")
-    assert update is not None
-    assert update.incremental is False
-    assert update.asset_name == full
+def test_check_requires_the_current_release_pair(monkeypatch):
+    release = _release("1.1.0")
+    release["assets"] = [release["assets"][0]]
+    monkeypatch.setattr(
+        hub_updater,
+        "_request_bytes",
+        lambda *_args, **_kwargs: json.dumps(release).encode(),
+    )
+
+    assert check_for_update("1.0.0") is None
 
 
 def test_update_into_versioned_runtime_hub_is_required(monkeypatch):
-    target = "0.4.0"
-    full = f"InfernuxHub-{target}-windows-x64-full.zip"
-    manifest = "InfernuxHub-manifest.json"
-    checksums = f"{'2' * 64}  {full}\n{'3' * 64}  {manifest}\n"
-    release = {
-        "tag_name": f"v{target}",
-        "assets": [_asset("SHA256SUMS.txt"), _asset(full), _asset(manifest)],
-    }
-    responses = iter([json.dumps(release).encode(), checksums.encode()])
-    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: next(responses))
+    release = _release("0.4.0")
+    monkeypatch.setattr(
+        hub_updater,
+        "_request_bytes",
+        lambda *_args, **_kwargs: json.dumps(release).encode(),
+    )
 
     update = check_for_update("0.3.7")
 
@@ -83,16 +84,12 @@ def test_update_into_versioned_runtime_hub_is_required(monkeypatch):
 
 
 def test_updates_after_runtime_catalog_migration_are_optional(monkeypatch):
-    target = "0.4.1"
-    full = f"InfernuxHub-{target}-windows-x64-full.zip"
-    manifest = "InfernuxHub-manifest.json"
-    checksums = f"{'2' * 64}  {full}\n{'3' * 64}  {manifest}\n"
-    release = {
-        "tag_name": f"v{target}",
-        "assets": [_asset("SHA256SUMS.txt"), _asset(full), _asset(manifest)],
-    }
-    responses = iter([json.dumps(release).encode(), checksums.encode()])
-    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: next(responses))
+    release = _release("0.4.1")
+    monkeypatch.setattr(
+        hub_updater,
+        "_request_bytes",
+        lambda *_args, **_kwargs: json.dumps(release).encode(),
+    )
 
     update = check_for_update("0.4.0")
 
@@ -108,7 +105,9 @@ def test_packaged_updater_requests_elevation(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(hub_updater.sys, "platform", "win32")
     monkeypatch.setattr(hub_updater, "is_frozen", lambda: True)
-    monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(tmp_path / "installed"))
+    monkeypatch.setattr(
+        hub_updater, "get_app_dir", lambda: str(tmp_path / "installed")
+    )
 
     def launch(script, arguments, working_directory):
         observed["script"] = script
@@ -126,7 +125,9 @@ def test_packaged_updater_requests_elevation(tmp_path: Path, monkeypatch):
     assert "-MetadataPath" in observed["arguments"]
 
 
-def test_stage_full_update_verifies_every_file(tmp_path: Path, monkeypatch):
+def test_stage_update_uses_the_archive_and_current_manifests(
+    tmp_path: Path, monkeypatch
+):
     payload = tmp_path / "payload"
     payload.mkdir()
     (payload / "Infernux Hub.exe").write_bytes(b"new executable")
@@ -138,32 +139,94 @@ def test_stage_full_update_verifies_every_file(tmp_path: Path, monkeypatch):
         for file in payload.iterdir():
             archive.write(file, file.name)
 
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / "Infernux Hub.exe").write_bytes(b"old executable")
+    (installed / "removed.dll").write_bytes(b"removed")
+    write_manifest(
+        create_manifest(installed, "1.0.0"),
+        installed / "InfernuxHub-manifest.json",
+    )
     update = HubUpdate(
         current_version="1.0.0",
         target_version="1.1.0",
         release_url="",
         asset_name=archive_path.name,
         asset_url="",
-        sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
         size=archive_path.stat().st_size,
-        incremental=False,
         manifest_url="",
-        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(installed))
     monkeypatch.setattr(
         hub_updater,
         "_download",
-        lambda _update, destination, _progress=None: shutil.copy2(archive_path, destination),
+        lambda _update, destination, _progress=None: shutil.copy2(
+            archive_path, destination
+        ),
     )
-    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *args, **kwargs: manifest_bytes)
+    monkeypatch.setattr(
+        hub_updater, "_request_bytes", lambda *_args, **_kwargs: manifest_bytes
+    )
 
     staged = stage_update(update)
+
     assert (staged / "stage" / "Infernux Hub.exe").read_bytes() == b"new executable"
     assert (staged / "stage" / "lib.dll").read_bytes() == b"new library"
-    assert (staged / "stage" / "InfernuxHub-manifest.json").read_bytes() == manifest_bytes
-    metadata = json.loads((staged / "hub-update.json").read_text(encoding="utf-8"))
+    assert (
+        staged / "stage" / "InfernuxHub-manifest.json"
+    ).read_bytes() == manifest_bytes
+    metadata = json.loads(
+        (staged / "hub-update.json").read_text(encoding="utf-8")
+    )
     assert metadata["target_version"] == "1.1.0"
+    assert metadata["delete"] == ["removed.dll"]
     assert {entry["path"] for entry in metadata["files"]} == {
-        "Infernux Hub.exe", "lib.dll", "InfernuxHub-manifest.json",
+        "Infernux Hub.exe",
+        "lib.dll",
+        "InfernuxHub-manifest.json",
     }
+
+
+def test_stage_update_rejects_an_unowned_archive_member(tmp_path: Path, monkeypatch):
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    (payload / "Infernux Hub.exe").write_bytes(b"new executable")
+    manifest = create_manifest(payload, "1.1.0")
+    manifest_bytes = json.dumps(manifest).encode()
+    archive_path = tmp_path / "full.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.write(payload / "Infernux Hub.exe", "Infernux Hub.exe")
+        archive.writestr("unexpected.dll", b"unexpected")
+
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / "Infernux Hub.exe").write_bytes(b"old executable")
+    write_manifest(
+        create_manifest(installed, "1.0.0"),
+        installed / "InfernuxHub-manifest.json",
+    )
+    update = HubUpdate(
+        current_version="1.0.0",
+        target_version="1.1.0",
+        release_url="",
+        asset_name=archive_path.name,
+        asset_url="",
+        size=archive_path.stat().st_size,
+        manifest_url="",
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(installed))
+    monkeypatch.setattr(
+        hub_updater,
+        "_download",
+        lambda _update, destination, _progress=None: shutil.copy2(
+            archive_path, destination
+        ),
+    )
+    monkeypatch.setattr(
+        hub_updater, "_request_bytes", lambda *_args, **_kwargs: manifest_bytes
+    )
+
+    with pytest.raises(ValueError, match="does not match its manifest"):
+        stage_update(update)

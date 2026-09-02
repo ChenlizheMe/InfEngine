@@ -8,19 +8,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-function Get-Sha256([string]$Path) {
-    $Stream = [IO.File]::OpenRead($Path)
-    try {
-        $Algorithm = [Security.Cryptography.SHA256]::Create()
-        try {
-            return ([BitConverter]::ToString($Algorithm.ComputeHash($Stream))).Replace('-', '').ToLowerInvariant()
-        } finally {
-            $Algorithm.Dispose()
-        }
-    } finally {
-        $Stream.Dispose()
-    }
-}
 
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $Root "dist\releases"))
@@ -119,11 +106,11 @@ if ($UploadOnly) {
     }
     New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
-Write-Host "[1/6] Configuring the release preset..." -ForegroundColor Cyan
+Write-Host "[1/5] Configuring the release preset..." -ForegroundColor Cyan
 & cmake --preset windows-msvc-release
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 
-Write-Host "[2/6] Building the staged and verified Release wheel..." -ForegroundColor Cyan
+Write-Host "[2/5] Building the staged Release wheel..." -ForegroundColor Cyan
 & cmake --build --preset windows-msvc-wheel --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Release wheel build failed.' }
 $WheelDir = Join-Path $Root 'out\build\windows-msvc-release\python-wheel'
@@ -131,7 +118,7 @@ $Wheels = @(Get-ChildItem -LiteralPath $WheelDir -Filter '*.whl' -File)
 if ($Wheels.Count -ne 1) { throw "Expected one wheel in $WheelDir, found $($Wheels.Count)." }
 Copy-Item -LiteralPath $Wheels[0].FullName -Destination $ReleaseDir
 
-Write-Host "[3/6] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
+Write-Host "[3/5] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
 & cmake --build --preset windows-hub-installer
 if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
 $HubDir = Join-Path $Root 'out\package\hub'
@@ -140,12 +127,11 @@ if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub outp
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
 Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe")
 
-Write-Host "[4/6] Using standalone full-package Hub updates..." -ForegroundColor Cyan
-Write-Host "       Release assets are independently installable; incremental patches are not published." -ForegroundColor DarkGray
+Write-Host "[4/5] Using the standalone Hub update package..." -ForegroundColor Cyan
 
-Write-Host "[5/6] Generating standalone Hub assets..." -ForegroundColor Cyan
+Write-Host "[5/5] Generating standalone Hub assets..." -ForegroundColor Cyan
 $Arguments = @(
-    (Join-Path $Root 'packaging\incremental_update.py'),
+    (Join-Path $Root 'packaging\hub_release.py'),
     '--hub-dir', $HubDir,
     '--version', $Version,
     '--output-dir', $ReleaseDir
@@ -153,15 +139,7 @@ $Arguments = @(
 & python @Arguments
 if ($LASTEXITCODE -ne 0) { throw 'Hub update artifact generation failed.' }
 
-$ChecksumPath = Join-Path $ReleaseDir 'SHA256SUMS.txt'
-$Artifacts = Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name
-$ChecksumLines = foreach ($Artifact in $Artifacts) {
-    $Hash = Get-Sha256 $Artifact.FullName
-    "$Hash  $($Artifact.Name)"
-}
-[IO.File]::WriteAllLines($ChecksumPath, $ChecksumLines, [Text.UTF8Encoding]::new($false))
-
-Write-Host "[6/6] Release assets are ready:" -ForegroundColor Green
+Write-Host "Release assets are ready:" -ForegroundColor Green
 Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object {
     Write-Host ("  {0,-72} {1,10:N1} MB" -f $_.Name, ($_.Length / 1MB))
 }
@@ -171,9 +149,7 @@ $RequiredAssets = @(
     "infernux-$Version-cp313-cp313-win_amd64.whl",
     "InfernuxHubInstaller-$Version.exe",
     "InfernuxHub-$Version-windows-x64-full.zip",
-    "InfernuxHub-$Version-manifest.json",
-    'InfernuxHub-manifest.json',
-    'SHA256SUMS.txt'
+    'InfernuxHub-manifest.json'
 )
 foreach ($AssetName in $RequiredAssets) {
     $AssetPath = Join-Path $ReleaseDir $AssetName
