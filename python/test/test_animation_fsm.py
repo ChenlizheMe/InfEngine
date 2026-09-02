@@ -881,7 +881,7 @@ def test_spirit_animator_guid_does_not_fall_back_to_stale_path(monkeypatch, tmp_
 
     state = AnimState(
         name="Walk",
-        clip_guid="missing-guid",
+        clip_guid="b" * 32,
         clip_path=str(stale_path),
     )
 
@@ -899,7 +899,7 @@ def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch)
     monkeypatch.setattr(animator_module, "_get_asset_database", lambda: Database())
 
     with pytest.raises(RuntimeError, match="catalog unavailable"):
-        animator_module._resolve_clip_path_from("broken-guid", "stale.animclip3d")
+        animator_module._resolve_clip_path_from("c" * 32, "stale.animclip3d")
 
 
 class TestSpiritAnimatorAssetReload:

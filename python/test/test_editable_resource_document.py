@@ -780,7 +780,7 @@ def test_animation_clip_documents_replace_state_without_losing_asset_identity():
 
     clip_3d = AnimationClip3D(
         name="Walk",
-        source_model_guid="model-guid",
+        source_model_guid="a" * 32,
         take_name="Walk",
     )
     clip_3d.file_path = "Assets/Walk.animclip3d"
