@@ -179,7 +179,8 @@ async function main() {
       "[--capture-frame-output PATH] [--skip-frame-checks] " +
       "[--capture-only --fixed-delta N --pause-after-frame N] " +
       "[--device-scale-factor N] " +
-      "[--verify-particle-bloom] [--verify-native-multitouch]",
+      "[--verify-particle-bloom] [--verify-native-multitouch] " +
+      "[--verify-mobile-ime]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -244,6 +245,10 @@ async function main() {
   const captureOnly = process.argv.includes("--capture-only");
   const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
   const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
+  const verifyMobileIme = process.argv.includes("--verify-mobile-ime");
+  if (verifyMobileIme && !cdpEndpoint) {
+    throw new Error("--verify-mobile-ime requires a physical browser through --cdp-endpoint");
+  }
   const fixedDelta = Number(argumentValue("--fixed-delta", "0"));
   const pauseAfterFrame = Number(argumentValue("--pause-after-frame", "0"));
   const deterministicCapture = fixedDelta !== 0 || pauseAfterFrame !== 0;
@@ -383,6 +388,37 @@ async function main() {
     const canvas = page.locator("#canvas");
     const canvasBox = await canvas.boundingBox();
     if (!canvasBox) throw new Error("Web Player canvas has no interactive bounds");
+    const movementTouchGeometry = movementTouch ? await page.evaluate(() => {
+      const canvas = document.querySelector("#canvas");
+      const safeAreaProbe = document.querySelector("#infernux-safe-area-probe");
+      const viewport = window.visualViewport;
+      const rect = canvas.getBoundingClientRect();
+      const safe = getComputedStyle(safeAreaProbe);
+      const pixels = (value) => Math.max(0, Number.parseFloat(value) || 0);
+      const viewportLeft = viewport.offsetLeft;
+      const viewportTop = viewport.offsetTop;
+      const safeLeft = Math.max(
+        0,
+        Math.min(rect.width, viewportLeft + pixels(safe.paddingLeft) - rect.left),
+      );
+      const safeBottom = Math.max(
+        0,
+        Math.min(
+          rect.height,
+          rect.bottom - (viewportTop + viewport.height - pixels(safe.paddingBottom)),
+        ),
+      );
+      const scale = Math.min(rect.width / 1920, rect.height / 1080);
+      const centerOffset = (52 + 125) * scale;
+      const centerY = rect.bottom - safeBottom - centerOffset;
+      return {
+        centerX: rect.left + safeLeft + centerOffset,
+        centerY,
+        forwardY: centerY - rect.height * 0.20,
+        safeLeft,
+        safeBottom,
+      };
+    }) : null;
     if (captureOnly) {
       await page.waitForFunction((expectedFrame) => (
         Module.ccall("InfernuxWebGetAcceptancePaused", "number", [], []) === 1 &&
@@ -596,8 +632,8 @@ async function main() {
       if (movementTouch) {
         const touchSession = await page.context().newCDPSession(page);
         const stickCenter = {
-          x: canvasBox.x + canvasBox.width * 0.092,
-          y: canvasBox.y + canvasBox.height * 0.836,
+          x: movementTouchGeometry.centerX,
+          y: movementTouchGeometry.centerY,
           id: 91,
           radiusX: 14,
           radiusY: 12,
@@ -605,7 +641,7 @@ async function main() {
         };
         const stickForward = {
           ...stickCenter,
-          y: canvasBox.y + canvasBox.height * 0.66,
+          y: movementTouchGeometry.forwardY,
         };
         try {
           await touchSession.send("Input.dispatchTouchEvent", {
@@ -664,6 +700,7 @@ async function main() {
         horizontalDisplacement,
         runtimeBefore,
         runtimeAfter,
+        geometry: movementTouch ? movementTouchGeometry : null,
       };
     }
     let frameBeforeActivation = null;
@@ -750,9 +787,18 @@ async function main() {
           })),
         };
       });
+      const waitForNoUnityTouches = async () => {
+        await page.waitForFunction(() => Module.ccall(
+          "InfernuxWebGetRuntimeDiagnostic",
+          "number",
+          ["number", "number"],
+          [5, 0],
+        ) === 0, null, { timeout: 10000 });
+        return readUnityTouches();
+      };
       let contactsActive = false;
       try {
-        const before = await readUnityTouches();
+        const before = await waitForNoUnityTouches();
         await touchSession.send("Input.dispatchTouchEvent", {
           type: "touchStart",
           touchPoints: [firstStart, secondStart],
@@ -771,10 +817,19 @@ async function main() {
           touchPoints: [],
         });
         contactsActive = false;
-        await page.waitForTimeout(120);
+        await page.waitForTimeout(20);
         const canceled = await readUnityTouches();
+        const cleared = await waitForNoUnityTouches();
         const startedIds = started.touches.map((touch) => touch.fingerId);
         const movedIds = moved.touches.map((touch) => touch.fingerId);
+        const canceledDiagnostics = await page.evaluate(() => JSON.parse(
+          document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+        ).filter((item) => (
+          item.includes("BALANCE // TOUCH END") && item.includes("phase=canceled")
+        )));
+        const canceledIdsObserved = startedIds.every((id) => (
+          canceledDiagnostics.some((item) => item.includes(`finger=${id} phase=canceled`))
+        ));
         const movedDistances = moved.touches.map((touch, index) => Math.hypot(
           touch.normalizedX - started.touches[index].normalizedX,
           touch.normalizedY - started.touches[index].normalizedY,
@@ -784,6 +839,8 @@ async function main() {
           started,
           moved,
           canceled,
+          cleared,
+          canceledDiagnostics,
           movedDistances,
           passed: (
             before.count === 0 &&
@@ -797,7 +854,8 @@ async function main() {
               touch.normalizedY >= 0 && touch.normalizedY <= 1
             )) &&
             movedDistances.every((distance) => distance >= 0.05) &&
-            canceled.count === 0
+            canceledIdsObserved &&
+            cleared.count === 0
           ),
         };
       } finally {
@@ -810,7 +868,108 @@ async function main() {
         await touchSession.detach();
       }
     }
-    const contextMenuPrevented = await page.evaluate(() => {
+    let mobileIme = null;
+    if (verifyMobileIme) {
+      const imeSession = await page.context().newCDPSession(page);
+      const committedText = "输入测试中文🙂";
+      const before = await page.evaluate(() => ({
+        innerHeight: window.innerHeight,
+        visualViewportHeight: window.visualViewport.height,
+      }));
+      const textProbe = {
+        x: canvasBox.x + canvasBox.width * 0.82,
+        y: canvasBox.y + canvasBox.height * 0.18,
+        id: 401,
+        radiusX: 13,
+        radiusY: 11,
+        force: 0.65,
+      };
+      try {
+        await imeSession.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [textProbe],
+        });
+        await imeSession.send("Input.dispatchTouchEvent", {
+          type: "touchEnd",
+          touchPoints: [],
+        });
+        await page.waitForFunction(() => (
+          document.activeElement?.id === "infernux-text-input" &&
+          window.visualViewport.height < window.innerHeight - 1
+        ), null, { timeout: 15000 });
+        const visible = await page.evaluate(() => ({
+          activeElement: document.activeElement?.id || "",
+          innerHeight: window.innerHeight,
+          visualViewportHeight: window.visualViewport.height,
+          visualViewportOffsetTop: window.visualViewport.offsetTop,
+        }));
+        await imeSession.send("Input.insertText", { text: committedText });
+        await page.waitForFunction((expected) => {
+          const diagnostics = JSON.parse(
+            document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+          );
+          return diagnostics.some((item) => (
+            item.includes("BALANCE // TEXT INPUT") && item.includes(expected)
+          ));
+        }, committedText, { timeout: 10000 });
+        await imeSession.send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+        });
+        await imeSession.send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+        });
+        await page.waitForFunction((expected) => {
+          const diagnostics = JSON.parse(
+            document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+          );
+          return document.activeElement?.id !== "infernux-text-input" &&
+            diagnostics.some((item) => (
+              item.includes("BALANCE // TEXT COMMIT") && item.includes(expected)
+            ));
+        }, committedText, { timeout: 10000 });
+        await page.waitForFunction((height) => (
+          window.visualViewport.height >= height - 1
+        ), before.visualViewportHeight, { timeout: 10000 });
+        const after = await page.evaluate(() => ({
+          activeElement: document.activeElement?.id || "",
+          innerHeight: window.innerHeight,
+          visualViewportHeight: window.visualViewport.height,
+          visualViewportOffsetTop: window.visualViewport.offsetTop,
+          diagnostics: JSON.parse(
+            document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+          ).filter((item) => (
+            item.includes("BALANCE // TEXT") ||
+            item.includes("BALANCE // KEYBOARD INSET")
+          )),
+        }));
+        mobileIme = {
+          before,
+          visible,
+          after,
+          committedText,
+          passed: (
+            visible.activeElement === "infernux-text-input" &&
+            visible.visualViewportHeight < visible.innerHeight - 1 &&
+            after.activeElement !== "infernux-text-input" &&
+            after.visualViewportHeight >= before.visualViewportHeight - 1 &&
+            after.diagnostics.some((item) => (
+              item.includes("BALANCE // TEXT COMMIT") && item.includes(committedText)
+            ))
+          ),
+        };
+      } finally {
+        await imeSession.detach();
+      }
+    }
+    const contextMenuPrevented = await page.evaluate((injectSyntheticText) => {
       const canvas = document.querySelector("#canvas");
       const contextMenu = new MouseEvent("contextmenu", {
         button: 2,
@@ -841,24 +1000,26 @@ async function main() {
       pointer("pointercancel", 77, 320, 600, false);
       pointer("pointerup", 41, 115, 575, true);
 
-      Module.infernuxBeginTextInput("", "text");
-      const input = document.querySelector("#infernux-text-input");
-      input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-      input.value = "中文🙂";
-      input.dispatchEvent(new CompositionEvent("compositionend", {
-        data: "中文🙂",
-        bubbles: true,
-      }));
-      input.dispatchEvent(new InputEvent("input", {
-        data: "中文🙂",
-        inputType: "insertCompositionText",
-        bubbles: true,
-      }));
-      Module.infernuxEndTextInput();
+      if (injectSyntheticText) {
+        Module.infernuxBeginTextInput("", "text");
+        const input = document.querySelector("#infernux-text-input");
+        input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        input.value = "中文🙂";
+        input.dispatchEvent(new CompositionEvent("compositionend", {
+          data: "中文🙂",
+          bubbles: true,
+        }));
+        input.dispatchEvent(new InputEvent("input", {
+          data: "中文🙂",
+          inputType: "insertCompositionText",
+          bubbles: true,
+        }));
+        Module.infernuxEndTextInput();
+      }
       Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [0]);
       Module.ccall("InfernuxWebPageLifecycle", null, ["number"], [1]);
       return contextMenu.defaultPrevented;
-    });
+    }, !verifyMobileIme);
     await page.waitForTimeout(1000);
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
     const result = await page.evaluate((contract) => {
@@ -962,6 +1123,7 @@ async function main() {
     result.pythonWPressed = pythonWPressed;
     result.gameplayMovement = gameplayMovement;
     result.nativeMultitouch = nativeMultitouch;
+    result.mobileIme = mobileIme;
     if (captureFramePath) result.captureFramePath = captureFramePath;
     const frameIsVisible = (frame) => frame && (
       frame.nonBlackRatio >= 0.1 &&
@@ -1011,6 +1173,7 @@ async function main() {
         (result.gameplayMovement &&
           result.gameplayMovement.horizontalDisplacement < minimumDisplacement) ||
         (verifyNativeMultitouch && !result.nativeMultitouch?.passed) ||
+        (verifyMobileIme && !result.mobileIme?.passed) ||
         Object.values(result.requiredDiagnostics).some((match) => !match) ||
         result.requiredDiagnosticOrders.some((order) => !order.ordered) ||
         Object.values(result.forbiddenDiagnostics).some((match) => match) ||

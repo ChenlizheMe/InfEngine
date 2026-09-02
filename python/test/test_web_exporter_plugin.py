@@ -680,6 +680,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "compositionend" in shell
     assert "visualViewport" in shell
     assert "safe-area-inset-top" in shell
+    assert "const canvasRect = canvasNode.getBoundingClientRect()" in shell
+    assert "safeViewportLeft - canvasRect.left" in shell
+    assert "canvasRect.right - safeViewportRight" in shell
+    assert "[safeLeft, safeTop, safeRight, safeBottom" in shell
     assert "InfernuxWebViewportChanged" in main
     assert "InfernuxWebPageLifecycle" in main
     assert "InfernuxWebUserActivation" in main

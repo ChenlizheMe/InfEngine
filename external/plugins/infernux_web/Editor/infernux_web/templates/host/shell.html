@@ -287,14 +287,34 @@
         const viewport = window.visualViewport;
         const safe = getComputedStyle(safeAreaProbe);
         const readPixels = (value) => Math.max(0, Number.parseFloat(value) || 0);
+        const rawSafeLeft = readPixels(safe.paddingLeft);
+        const rawSafeTop = readPixels(safe.paddingTop);
+        const rawSafeRight = readPixels(safe.paddingRight);
+        const rawSafeBottom = readPixels(safe.paddingBottom);
+        const viewportLeft = viewport ? viewport.offsetLeft : 0;
+        const viewportTop = viewport ? viewport.offsetTop : 0;
+        const viewportWidth = viewport ? viewport.width : window.innerWidth;
+        const viewportHeight = viewport ? viewport.height : window.innerHeight;
+        const canvasRect = canvasNode.getBoundingClientRect();
+        const safeViewportLeft = viewportLeft + rawSafeLeft;
+        const safeViewportTop = viewportTop + rawSafeTop;
+        const safeViewportRight = viewportLeft + viewportWidth - rawSafeRight;
+        const safeViewportBottom = viewportTop + viewportHeight - rawSafeBottom;
+        const safeLeft = Math.max(0,
+          Math.min(canvasRect.width, safeViewportLeft - canvasRect.left));
+        const safeTop = Math.max(0,
+          Math.min(canvasRect.height, safeViewportTop - canvasRect.top));
+        const safeRight = Math.max(0,
+          Math.min(canvasRect.width, canvasRect.right - safeViewportRight));
+        const safeBottom = Math.max(0,
+          Math.min(canvasRect.height, canvasRect.bottom - safeViewportBottom));
         const keyboardKnown = document.activeElement === textInput && Boolean(viewport);
         const keyboardInset = keyboardKnown
           ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
           : 0;
         Module.ccall('InfernuxWebViewportChanged', null,
           ['number','number','number','number','number','number'],
-          [readPixels(safe.paddingLeft), readPixels(safe.paddingTop),
-           readPixels(safe.paddingRight), readPixels(safe.paddingBottom),
+          [safeLeft, safeTop, safeRight, safeBottom,
            keyboardKnown ? 1 : 0, keyboardInset]);
       };
       const schedule = () => {
