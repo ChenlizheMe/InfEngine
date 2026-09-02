@@ -116,7 +116,6 @@ void AudioEngine::Shutdown()
         return;
     }
 
-    INXLOG_DEBUG("AudioEngine shutting down...");
     StopPreview();
 
     std::vector<AudioSource *> sources;

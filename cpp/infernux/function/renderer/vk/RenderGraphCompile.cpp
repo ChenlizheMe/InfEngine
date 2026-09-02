@@ -278,16 +278,6 @@ void RenderGraph::CullPasses()
             producerPass.refCount++;
         }
     }
-
-    // Dead-pass elimination is expected for optional branches such as motion
-    // vectors when no mounted effect consumes them. Keep it available to
-    // graph diagnostics without presenting normal compilation as a warning.
-    for (uint32_t i = 0; i < m_passes.size(); i++) {
-        if (m_passes[i].culled) {
-            INXLOG_DEBUG("RenderGraph::CullPasses - Pass '", m_passes[i].name, "' (index ", i,
-                         ") was culled (no path to output)");
-        }
-    }
 }
 
 void RenderGraph::ComputeResourceLifetimes()

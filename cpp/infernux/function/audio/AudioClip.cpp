@@ -244,8 +244,6 @@ bool AudioClip::LoadFromFile(const std::string &filePath)
 
     ApplyImportSettings();
 
-    INXLOG_DEBUG("AudioClip loaded: '", m_name, "' (", m_spec.freq, " Hz, ", m_spec.channels, " ch, ", m_dataLength,
-                 " bytes)");
     return true;
 }
 

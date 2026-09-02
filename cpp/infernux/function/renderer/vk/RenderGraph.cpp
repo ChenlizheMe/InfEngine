@@ -1582,13 +1582,6 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
     if (commandBuffer == VK_NULL_HANDLE)
         return;
 
-    // One-shot diagnostic: log detailed per-pass info for first N executions
-    static int s_execDiagCount = 0;
-    const bool diagEnabled = (s_execDiagCount < 2);
-    if (diagEnabled) {
-        ++s_execDiagCount;
-    }
-
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
 #endif
@@ -1637,33 +1630,6 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #endif
         InsertBarriers(commandBuffer, passIndex);
 
-        // Per-pass diagnostic
-        if (diagEnabled) {
-            std::string clearInfo = "no-clear";
-            if (pass.clearColorEnabled) {
-                auto &cv = pass.clearColor;
-                clearInfo = "clear=(" + std::to_string(cv.float32[0]) + "," + std::to_string(cv.float32[1]) + "," +
-                            std::to_string(cv.float32[2]) + "," + std::to_string(cv.float32[3]) + ")";
-            }
-            std::string writeInfo;
-            for (const auto &w : pass.writes) {
-                if (!writeInfo.empty())
-                    writeInfo += ",";
-                if (w.handle.id < m_resources.size()) {
-                    writeInfo += m_resources[w.handle.id].name + "(id=" + std::to_string(w.handle.id) + ")";
-                }
-            }
-            std::string readInfo;
-            for (const auto &r : pass.reads) {
-                if (!readInfo.empty())
-                    readInfo += ",";
-                if (r.handle.id < m_resources.size()) {
-                    readInfo += m_resources[r.handle.id].name + "(id=" + std::to_string(r.handle.id) + ")";
-                }
-            }
-            INXLOG_DEBUG("RenderGraph::Execute pass[", passIndex, "] '", pass.name, "' writes=[", writeInfo,
-                         "] reads=[", readInfo, "] ", clearInfo);
-        }
 #if INFERNUX_FRAME_PROFILE
         auto stageNow = Clock::now();
         s_executeProfile.barrierMs += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();

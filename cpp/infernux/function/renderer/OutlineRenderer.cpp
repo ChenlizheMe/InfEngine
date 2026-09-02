@@ -734,7 +734,6 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
     }
 
     m_perMtlOutlinePipelines[key] = pipeline;
-    INXLOG_DEBUG("OutlineRenderer: Created per-material outline pipeline for '", material->GetName(), "'");
     return pipeline;
 }
 
