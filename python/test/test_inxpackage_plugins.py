@@ -513,7 +513,7 @@ def test_startup_degrades_when_official_catalog_is_unavailable(tmp_path):
     assert manager.registry.find("vendor/local") is not None
 
 
-def test_startup_restores_requirements_before_bundled_package_reload(
+def test_startup_restores_requirements_before_single_preload_catchup(
     tmp_path, monkeypatch
 ):
     project = _project(tmp_path / "project")
@@ -532,9 +532,9 @@ def test_startup_restores_requirements_before_bundled_package_reload(
         lambda self: events.append("requirements") or (),
     )
     monkeypatch.setattr(
-        PluginManager,
-        "reload_all",
-        lambda self: events.append("reload") or (),
+        preload_module.PreloadManager,
+        "catch_up",
+        lambda self: events.append("catchup") or (),
     )
 
     manager = PluginManager.startup(str(project), runtime=False)
@@ -543,8 +543,7 @@ def test_startup_restores_requirements_before_bundled_package_reload(
             "sync",
             "requirements",
             "bundled",
-            "requirements",
-            "reload",
+            "catchup",
         ]
     finally:
         manager.shutdown()

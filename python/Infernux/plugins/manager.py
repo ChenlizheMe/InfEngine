@@ -242,9 +242,11 @@ class PluginManager:
             # succeeds.
             manager._reconcile_python_requirements_for_startup()
             install_bundled_packages(normalized, manager=manager)
-            manager._reconcile_python_requirements_for_startup()
-        manager.registry.save(manager.registry.load())
-        manager.reload_all()
+        # Bundled packages load their own lifecycle exactly once while being
+        # synchronized.  Catch up the remaining project/plugin declarations
+        # without unloading those live instances and importing them again.
+        manager.preloads.catch_up()
+        manager._rebuild_states()
         if not runtime:
             manager._attach_resource_events()
         return manager
