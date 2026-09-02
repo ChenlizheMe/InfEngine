@@ -15,7 +15,6 @@ import uuid
 _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
 
 from Infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, TextureData
-from Infernux.debug import Debug
 from Infernux import resources as _resources
 from .engine import Engine, LogLevel
 from .path_utils import resolved_path
@@ -54,14 +53,10 @@ def __getattr__(name: str):
 def _signal_engine_loaded() -> None:
     ready_file = os.environ.get("_INFERNUX_READY_FILE", "").strip()
     if ready_file:
-        try:
-            with open(ready_file, "w", encoding="utf-8") as f:
-                f.write("ENGINE_LOADED\n")
-                f.flush()
-                os.fsync(f.fileno())
-        except OSError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        with open(ready_file, "w", encoding="utf-8") as f:
+            f.write("ENGINE_LOADED\n")
+            f.flush()
+            os.fsync(f.fileno())
     print("ENGINE_LOADED", flush=True)
 
 
@@ -70,34 +65,38 @@ def _is_pid_running(pid: int) -> bool:
         return False
 
     if os.name == "nt":
-        try:
-            import ctypes
+        import ctypes
 
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                False,
-                pid,
-            )
-            if not handle:
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        ERROR_INVALID_PARAMETER = 87
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            False,
+            pid,
+        )
+        if not handle:
+            error_code = ctypes.windll.kernel32.GetLastError()
+            if error_code == ERROR_INVALID_PARAMETER:
                 return False
-            try:
-                exit_code = ctypes.c_ulong()
-                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                    return False
-                return exit_code.value == STILL_ACTIVE
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return False
+            raise ctypes.WinError(error_code)
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(
+                handle,
+                ctypes.byref(exit_code),
+            ):
+                raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
 
     try:
         os.kill(pid, 0)
-    except OSError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
@@ -108,12 +107,11 @@ def _default_lock_path(project_path: str) -> str:
 def _remove_project_lock(lock_path: str, token: str) -> None:
     if not lock_path or not os.path.isfile(lock_path):
         return
-    try:
-        with open(lock_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        data = None
-    if data and data.get("token") != token:
+    with open(lock_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"project lock must contain a JSON object: {lock_path}")
+    if data.get("token") != token:
         return
     last_error = None
     for attempt in range(20):
@@ -130,7 +128,7 @@ def _remove_project_lock(lock_path: str, token: str) -> None:
             last_error = exc
             break
     if last_error is not None:
-        Debug.log(f"[Suppressed] {type(last_error).__name__}: {last_error}")
+        raise last_error
 
 
 def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
@@ -138,22 +136,27 @@ def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
     token = os.environ.get("_INFERNUX_PROJECT_LOCK_TOKEN", "").strip() or uuid.uuid4().hex
 
     if os.path.isfile(lock_path):
-        try:
-            with open(lock_path, "r", encoding="utf-8") as f:
-                current = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            current = None
-
-        if current:
-            current_pid = int(current.get("pid", 0) or 0)
-            current_token = str(current.get("token", ""))
-            if current_pid > 0 and _is_pid_running(current_pid):
-                if current_token != token:
-                    raise RuntimeError(
-                        f"Project is already open in another Infernux process:\n{project_path}"
-                    )
-            else:
-                _remove_project_lock(lock_path, current_token or token)
+        with open(lock_path, "r", encoding="utf-8") as f:
+            current = json.load(f)
+        if not isinstance(current, dict):
+            raise ValueError(f"project lock must contain a JSON object: {lock_path}")
+        current_pid = current.get("pid")
+        current_token = current.get("token")
+        if (
+            isinstance(current_pid, bool)
+            or not isinstance(current_pid, int)
+            or current_pid <= 0
+            or not isinstance(current_token, str)
+            or not current_token
+        ):
+            raise ValueError(f"project lock has invalid process identity: {lock_path}")
+        if _is_pid_running(current_pid):
+            if current_token != token:
+                raise RuntimeError(
+                    f"Project is already open in another Infernux process:\n{project_path}"
+                )
+        else:
+            _remove_project_lock(lock_path, current_token)
 
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     payload = {
@@ -196,12 +199,8 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
         # Window title: "Infernux{version} - {project name}", version taken
         # from the installed package metadata (single source: pyproject.toml).
-        try:
-            from importlib.metadata import version as _pkg_version
-            _engine_version = _pkg_version("Infernux")
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            _engine_version = ""
+        from importlib.metadata import version as _pkg_version
+        _engine_version = _pkg_version("Infernux")
         _project_name = os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
 
