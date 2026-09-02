@@ -13,15 +13,6 @@ import sys
 from functools import wraps
 
 
-def _log_suppressed(exc: BaseException) -> None:
-    """Best-effort log for early-init code (Debug may not be available yet)."""
-    try:
-        from Infernux.debug import Debug
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    except Exception:
-        pass
-
-
 lib_dir = os.path.join(os.path.dirname(__file__))
 lib_dir = os.path.abspath(lib_dir)
 native_dir = lib_dir
@@ -69,6 +60,12 @@ def _register_native_module_override() -> str | None:
         __path__.insert(0, native_dir)
     _register_native_search_dir(native_dir)
     return native_dir
+
+
+def _register_default_native_search_dir(override_dir: str | None) -> None:
+    """Register the package library directory only when no override is active."""
+    if override_dir is None:
+        _register_native_search_dir(lib_dir)
 
 
 def _native_module_candidate(directory: str) -> str:
@@ -150,25 +147,6 @@ def _iter_dev_native_search_dirs():
             continue
         seen.add(normalized)
         yield normalized
-
-    # Retain the legacy single-config layout for older developer build trees.
-    for config in configs:
-        candidate = os.path.join(build_root, config)
-        normalized = os.path.abspath(candidate)
-        if normalized not in seen:
-            seen.add(normalized)
-            yield normalized
-
-    externals = (
-        ("external", "assimp", "bin"),
-        ("external", "glslang", "glslang"),
-        ("external", "JoltPhysics"),
-        ("external", "SDL"),
-    )
-    for prefix in externals:
-        for config in configs:
-            yield os.path.join(build_root, *prefix, config)
-
 
 _SYSTEM_DLL_CHECKS = (
     ("MSVCP140.dll", "Install or repair the Microsoft Visual C++ Redistributable."),
@@ -302,13 +280,13 @@ def _preload_bundled_crt_dlls() -> None:
         if os.path.isfile(full):
             try:
                 ctypes.WinDLL(full)
-            except OSError as _exc:
-                _log_suppressed(_exc)
-                pass  # Best-effort; the import below will give a clear error.
+            except OSError:
+                # The native import below owns the final dependency diagnostic.
+                pass
 
 
 _native_override_dir = _register_native_module_override()
-_register_native_search_dir(lib_dir)
+_register_default_native_search_dir(_native_override_dir)
 _preload_bundled_crt_dlls()
 
 try:
@@ -403,68 +381,21 @@ def _is_native_lifetime_error(exc) -> bool:
     return any(marker in message for marker in _INVALID_NATIVE_LIFETIME_MARKERS)
 
 
-def _zero_vec3():
-    return Vector3(0.0, 0.0, 0.0)
+class InvalidNativeObjectError(RuntimeError):
+    """Raised when Python touches a native object that has been destroyed.
+
+    ``bool(obj)`` is the sanctioned liveness check (a destroyed object is
+    falsy, mirroring Unity's destroyed-object semantics). Any other access to
+    a stale handle is a caller bug and fails immediately instead of returning
+    a fabricated default.
+    """
 
 
-def _one_vec3():
-    return Vector3(1.0, 1.0, 1.0)
-
-
-def _identity_quat():
-    return quatf(0.0, 0.0, 0.0, 1.0)
-
-
-def _identity_matrix4x4():
-    return [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
-    ]
-
-
-def _native_safe_default(obj, name: str):
-    """Return a conservative fallback for invalid native-object access."""
-    if name in {"id", "component_id", "game_object_id", "child_count", "get_child_count"}:
-        return 0
-    if name in {"active", "enabled", "has_changed", "is_trigger", "is_active_in_hierarchy", "is_child_of"}:
-        return False
-    if name in {"name", "type_name"}:
-        return ""
-    if name in {"transform", "get_transform", "game_object", "get_parent", "parent", "root", "get_component",
-                "get_cpp_component", "get_py_component", "get_child", "find", "collider"}:
-        return None
-    if name in {"get_components", "get_cpp_components", "get_py_components", "get_children"}:
-        return []
-    if name in {"serialize"}:
-        return "{}"
-    if name in {"deserialize", "remove_component", "remove_py_component"}:
-        return False
-    if name in {"position", "local_position", "euler_angles", "local_euler_angles", "forward", "up", "right",
-                "local_forward", "local_up", "local_right", "contact_point", "contact_normal", "relative_velocity",
-                "point", "normal"}:
-        return _zero_vec3()
-    if name in {"local_scale", "lossy_scale"}:
-        return _one_vec3()
-    if name in {"rotation", "local_rotation"}:
-        return _identity_quat()
-    if name in {"local_to_world_matrix", "world_to_local_matrix"}:
-        return _identity_matrix4x4()
-    if name == "distance":
-        return 0.0
-
-    if name.startswith("get_") and name.endswith("s"):
-        return []
-    if name.startswith("get_"):
-        return None
-    if name.startswith(("is_", "has_")):
-        return False
-    if name.startswith(("set_", "add_", "move_", "wake_", "sleep", "look_", "translate", "rotate", "detach_", "clear")):
-        return None
-    if name.startswith("remove_"):
-        return False
-    return None
+def _raise_invalid_native(obj, name: str, exc: RuntimeError):
+    raise InvalidNativeObjectError(
+        f"{type(obj).__name__}.{name}: native object has been destroyed "
+        f"(use `if obj:` to test liveness before access)"
+    ) from exc
 
 
 def _wrap_native_callable(obj, name: str, func):
@@ -474,7 +405,7 @@ def _wrap_native_callable(obj, name: str, func):
             return func(*args, **kwargs)
         except RuntimeError as exc:
             if _is_native_lifetime_error(exc):
-                return _native_safe_default(obj, name)
+                _raise_invalid_native(obj, name, exc)
             raise
 
     setattr(_guarded, "_infernux_native_guarded", True)
@@ -482,7 +413,7 @@ def _wrap_native_callable(obj, name: str, func):
 
 
 def _install_native_lifetime_guard(cls) -> None:
-    """Patch a pybind class so stale native pointers fail safely in Python."""
+    """Patch a pybind class so stale native pointers fail fast with a typed error."""
     if getattr(cls, "_infernux_native_lifetime_guard_installed", False):
         return
 
@@ -494,7 +425,7 @@ def _install_native_lifetime_guard(cls) -> None:
             value = original_getattribute(self, name)
         except RuntimeError as exc:
             if _is_native_lifetime_error(exc):
-                return _native_safe_default(self, name)
+                _raise_invalid_native(self, name, exc)
             raise
 
         if name.startswith("__"):
@@ -508,20 +439,22 @@ def _install_native_lifetime_guard(cls) -> None:
             return original_setattr(self, name, value)
         except RuntimeError as exc:
             if _is_native_lifetime_error(exc):
-                return None
+                _raise_invalid_native(self, name, exc)
             raise
 
     def _guarded_bool(self):
-        try:
-            identifier = _guarded_getattribute(self, "id")
-        except AttributeError:
-            identifier = 0
-        if identifier is None or identifier == 0:
+        for attr in ("id", "component_id"):
             try:
-                identifier = _guarded_getattribute(self, "component_id")
+                identifier = original_getattribute(self, attr)
             except AttributeError:
-                identifier = 0
-        return bool(identifier)
+                continue
+            except RuntimeError as exc:
+                if _is_native_lifetime_error(exc):
+                    return False
+                raise
+            if identifier:
+                return True
+        return False
 
     cls.__getattribute__ = _guarded_getattribute
     cls.__setattr__ = _guarded_setattr
@@ -786,7 +719,7 @@ def _call_native_game_object(method_name: str, native_method, game_object, *args
         return native_method(game_object, *args)
     except RuntimeError as exc:
         if _is_native_lifetime_error(exc):
-            return _native_safe_default(game_object, method_name)
+            _raise_invalid_native(game_object, method_name, exc)
         raise
 
 
@@ -802,22 +735,16 @@ def _resolve_game_object_instantiate_source(original):
     if isinstance(original, GameObject):
         return "game_object", original
 
-    try:
-        from Infernux.components.ref_wrappers import GameObjectRef, PrefabRef
-        if isinstance(original, PrefabRef):
-            return "prefab", original
-        if isinstance(original, GameObjectRef):
-            return "game_object", original.resolve()
-    except Exception as _exc:
-        _log_suppressed(_exc)
-        pass
+    from Infernux.components.ref_wrappers import GameObjectRef, PrefabRef
+
+    if isinstance(original, PrefabRef):
+        return "prefab", original
+    if isinstance(original, GameObjectRef):
+        return "game_object", original.resolve()
 
     resolver = getattr(original, "resolve", None)
     if callable(resolver):
-        try:
-            resolved = resolver()
-        except Exception:
-            resolved = None
+        resolved = resolver()
         if isinstance(resolved, GameObject):
             return "game_object", resolved
 
@@ -830,13 +757,10 @@ def _coerce_parent_game_object(parent):
     if isinstance(parent, GameObject):
         return parent
 
-    try:
-        from Infernux.components.ref_wrappers import GameObjectRef
-        if isinstance(parent, GameObjectRef):
-            return parent.resolve()
-    except Exception as _exc:
-        _log_suppressed(_exc)
-        pass
+    from Infernux.components.ref_wrappers import GameObjectRef
+
+    if isinstance(parent, GameObjectRef):
+        return parent.resolve()
 
     game_object = getattr(parent, "game_object", None)
     if isinstance(game_object, GameObject):
