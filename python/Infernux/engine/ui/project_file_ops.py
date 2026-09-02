@@ -297,28 +297,25 @@ def _iter_asset_move_pairs(old_path: str, new_path: str):
 
 def _update_build_settings_scene_path(old_path: str, new_path: str):
     """Project a scene asset move into the shared Project Settings document."""
-    try:
-        from Infernux.engine.interaction import ensure_project_settings_document
-        from Infernux.engine.project_context import get_project_root
+    from Infernux.engine.interaction import ensure_project_settings_document
+    from Infernux.engine.project_context import get_project_root
 
-        root = get_project_root()
-        if not root:
-            return
-        controller = ensure_project_settings_document(root)
-        settings = controller.section("build")
-        scenes = settings.get("scenes", [])
-        old_norm = path_key(old_path)
-        changed = False
-        for i, s in enumerate(scenes):
-            scene_path = s if os.path.isabs(s) else os.path.join(root, s)
-            if path_key(scene_path) == old_norm:
-                scenes[i] = relative_path(new_path, root)
-                changed = True
-        if changed:
-            settings["scenes"] = scenes
-            controller.apply_derived_section("build", settings)
-    except Exception as _exc:
-        Debug.log(f"[BuildSettings] Failed to update scene path: {_exc}")
+    root = get_project_root()
+    if not root:
+        return
+    controller = ensure_project_settings_document(root)
+    settings = controller.section("build")
+    scenes = settings.get("scenes", [])
+    old_norm = path_key(old_path)
+    changed = False
+    for i, s in enumerate(scenes):
+        scene_path = s if os.path.isabs(s) else os.path.join(root, s)
+        if path_key(scene_path) == old_norm:
+            scenes[i] = relative_path(new_path, root)
+            changed = True
+    if changed:
+        settings["scenes"] = scenes
+        controller.apply_derived_section("build", settings)
 
 
 def on_asset_mutation(change) -> None:
@@ -412,12 +409,7 @@ def move_paths_batch(
     from Infernux.engine.interaction import AssetMutationService
 
     mutations = AssetMutationService.instance()
-    try:
-        database = AssetManager._mutation_database(asset_database)
-    except RuntimeError:
-        if mutations is not None:
-            mutations = None
-        database = asset_database
+    database = AssetManager._mutation_database(asset_database)
     relocation_entries = tuple(
         (
             old_file,
@@ -449,8 +441,7 @@ def move_paths_batch(
     except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         if plan is not None:
             mutations.abort_relocation(plan)
-        Debug.log_error(f"Asset reference relocation preflight failed: {exc}")
-        return None
+        raise RuntimeError("asset reference relocation preflight failed") from exc
     workspace_moves: list[tuple[str, str]] = []
     patched_sources: list[tuple[str, tuple[str, str]]] = []
     patched_references = []
@@ -521,13 +512,17 @@ def move_paths_batch(
                     )
         if plan is not None:
             mutations.commit_relocation(plan)
-    except (OSError, RuntimeError, ValueError) as _exc:
+    except (OSError, RuntimeError, ValueError) as exc:
+        rollback_failures = []
         for old_abs, new_abs in reversed(workspace_moves):
             try:
                 shutil.move(new_abs, old_abs)
             except OSError as rollback_exc:
-                Debug.log_error(
-                    f"Asset workspace rollback failed for '{new_abs}' -> '{old_abs}': {rollback_exc}"
+                rollback_failures.append(
+                    RuntimeError(
+                        f"asset workspace rollback failed for '{new_abs}' -> "
+                        f"'{old_abs}': {rollback_exc}"
+                    )
                 )
         for patch in reversed(patched_references):
             if not os.path.isfile(patch.source_path):
@@ -537,8 +532,11 @@ def move_paths_batch(
 
                 write_document_text(patch.source_path, patch.original)
             except OSError as rollback_exc:
-                Debug.log_error(
-                    f"Asset reference rollback failed for '{patch.source_path}': {rollback_exc}"
+                rollback_failures.append(
+                    RuntimeError(
+                        f"asset reference rollback failed for "
+                        f"'{patch.source_path}': {rollback_exc}"
+                    )
                 )
         for old_abs, patch in reversed(patched_sources):
             if not os.path.isfile(old_abs):
@@ -548,7 +546,11 @@ def move_paths_batch(
 
                 write_document_text(old_abs, patch[0])
             except OSError as rollback_exc:
-                Debug.log_error(f"Asset content rollback failed for '{old_abs}': {rollback_exc}")
+                rollback_failures.append(
+                    RuntimeError(
+                        f"asset content rollback failed for '{old_abs}': {rollback_exc}"
+                    )
+                )
         for old_file, new_file in reversed(database_moves):
             try:
                 _notify_asset_moved(
@@ -560,13 +562,20 @@ def move_paths_batch(
                     publish_interaction=False,
                 )
             except Exception as rollback_exc:
-                Debug.log_error(
-                    f"Asset catalog rollback failed for '{new_file}' -> '{old_file}': {rollback_exc}"
+                rollback_failures.append(
+                    RuntimeError(
+                        f"asset catalog rollback failed for '{new_file}' -> "
+                        f"'{old_file}': {rollback_exc}"
+                    )
                 )
         if plan is not None:
             mutations.abort_relocation(plan)
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+        if rollback_failures:
+            raise ExceptionGroup(
+                "asset relocation failed and rollback was incomplete",
+                [exc, *rollback_failures],
+            )
+        raise
 
     return tuple(destination for _source, destination in roots)
 
@@ -1356,11 +1365,7 @@ def do_rename(
     if old_path == new_path:
         return new_path  # Nothing to do
 
-    try:
-        source_text_patch = _build_rename_content_patch(old_path, new_path)
-    except (OSError, ValueError, json.JSONDecodeError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+    source_text_patch = _build_rename_content_patch(old_path, new_path)
 
     return move_path(
         old_path,

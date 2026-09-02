@@ -440,7 +440,16 @@ class TestProjectPanelCallbacks:
             lambda old, new, _database=None: moved.append((Path(old), Path(new))),
         )
 
-        destination = project_file_ops.do_rename(str(source), "RenamedFolder")
+        class _Database:
+            project_root = str(tmp_path)
+
+            @staticmethod
+            def get_guid_from_path(_path):
+                return ""
+
+        destination = project_file_ops.do_rename(
+            str(source), "RenamedFolder", _Database()
+        )
 
         expected = tmp_path / "RenamedFolder"
         assert Path(destination) == expected.resolve()
