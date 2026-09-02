@@ -161,8 +161,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             }
 
             m_uniformBuffers.push_back(info);
-            INXLOG_DEBUG("Reflected UBO: ", info.name, " binding=", info.binding, " set=", info.set,
-                         " size=", info.size);
         }
 
         // Process sampled images (combined image samplers and separate textures)
@@ -178,7 +176,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.arraySize = type.array.empty() ? 1 : type.array[0];
 
             m_sampledImages.push_back(info);
-            INXLOG_DEBUG("Reflected sampled image: ", info.name, " binding=", info.binding, " set=", info.set);
         }
 
         // Process separate samplers
@@ -192,7 +189,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
             m_sampledImages.push_back(info);
-            INXLOG_DEBUG("Reflected separate sampler: ", info.name, " binding=", info.binding);
         }
 
         // Process separate images
@@ -208,7 +204,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.arraySize = type.array.empty() ? 1 : type.array[0];
 
             m_sampledImages.push_back(info);
-            INXLOG_DEBUG("Reflected separate image: ", info.name, " binding=", info.binding);
         }
 
         for (const auto &buffer : resources.storage_buffers) {
@@ -223,7 +218,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.readOnly = accessFlags.get(spv::DecorationNonWritable);
             info.writeOnly = accessFlags.get(spv::DecorationNonReadable);
             m_storageBuffers.push_back(info);
-            INXLOG_DEBUG("Reflected storage buffer: ", info.name, " binding=", info.binding, " set=", info.set);
         }
 
         for (const auto &image : resources.storage_images) {
@@ -239,7 +233,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.writeOnly = type.image.access == spv::AccessQualifierWriteOnly ||
                              compiler.has_decoration(image.id, spv::DecorationNonReadable);
             m_storageImages.push_back(info);
-            INXLOG_DEBUG("Reflected storage image: ", info.name, " binding=", info.binding, " set=", info.set);
         }
 
         // Process push constants
@@ -268,7 +261,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             }
 
             m_pushConstants.push_back(info);
-            INXLOG_DEBUG("Reflected push constant: ", info.name, " size=", info.size);
         }
 
         // Process stage inputs
@@ -294,10 +286,6 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
             m_outputs.push_back(var);
         }
-
-        INXLOG_DEBUG("Shader reflection complete: ", m_uniformBuffers.size(), " UBOs, ", m_sampledImages.size(),
-                     " sampled resources, ", m_storageBuffers.size(), " storage buffers, ", m_storageImages.size(),
-                     " storage images");
 
         return true;
     } catch (const std::exception &e) {

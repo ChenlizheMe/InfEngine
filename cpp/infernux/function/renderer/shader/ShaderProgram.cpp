@@ -330,11 +330,6 @@ void ShaderProgram::MergeReflectionData()
                       return a.set < b.set;
                   return a.binding < b.binding;
               });
-
-    INXLOG_DEBUG("Merged ", m_descriptorBindings.size(), " descriptor bindings for shader: ", m_shaderId);
-    for (const auto &b : m_descriptorBindings) {
-        INXLOG_DEBUG("  binding=", b.binding, " set=", b.set, " type=", static_cast<int>(b.type), " name=", b.name);
-    }
 }
 
 // Helper: human-readable name for VkFormat
@@ -427,8 +422,6 @@ void ShaderProgram::ExtractMaterialUBOLayout()
             m_materialUBOLayout.members = ubo.members;
             m_hasMaterialUBO = true;
 
-            INXLOG_DEBUG("Found material UBO '", ubo.name, "' at binding ", ubo.binding, " with ", ubo.members.size(),
-                         " members, size=", ubo.size);
             break;
         }
     }
@@ -443,8 +436,6 @@ void ShaderProgram::ExtractMaterialUBOLayout()
             m_vertexMaterialUBOLayout.members = ubo.members;
             m_hasVertexMaterialUBO = true;
 
-            INXLOG_DEBUG("Found vertex material UBO '", ubo.name, "' at binding 14 with ", ubo.members.size(),
-                         " members, size=", ubo.size);
             break;
         }
     }
@@ -546,8 +537,6 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
         }
 
         m_descriptorSetLayouts[setIndex] = layout;
-        INXLOG_DEBUG("Created descriptor set layout for set ", setIndex, " with ", bindings.size(), " bindings",
-                     (enableUpdateAfterBind && setIndex == 0) ? " (UPDATE_AFTER_BIND)" : "");
     }
 
     // If no bindings, create an empty layout for set 0

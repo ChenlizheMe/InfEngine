@@ -314,7 +314,6 @@ AssetDatabase::AssetDatabase()
     m_querySnapshot = std::make_shared<const QuerySnapshot>();
     // Loaders are populated later by AssetRegistry::PopulateAssetDatabaseLoaders()
     // after all IAssetLoader plug-ins have been registered.
-    INXLOG_DEBUG("AssetDatabase created (loaders pending)");
 }
 
 AssetDatabase::~AssetDatabase()
@@ -578,8 +577,6 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;
     PublishQuerySnapshot();
-
-    INXLOG_DEBUG("AssetDatabase initialized. ProjectRoot=", m_projectRoot, ", AssetsRoot=", m_assetsRoot);
 }
 
 void AssetDatabase::InitializeRuntime(const std::string &projectRoot)
@@ -599,8 +596,6 @@ void AssetDatabase::InitializeRuntime(const std::string &projectRoot)
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;
     PublishQuerySnapshot(false);
-
-    INXLOG_DEBUG("Runtime AssetDatabase initialized. ProjectRoot=", m_projectRoot);
 }
 
 void AssetDatabase::AddScanRoot(const std::string &path)
@@ -615,7 +610,6 @@ void AssetDatabase::AddScanRoot(const std::string &path)
             return;
     }
     m_extraScanRoots.push_back(std::move(norm));
-    INXLOG_DEBUG("AssetDatabase: added extra scan root: ", m_extraScanRoots.back());
 }
 
 void AssetDatabase::AddReadOnlyScanRoot(const std::string &path)
@@ -1277,8 +1271,6 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
     for (const auto &tempPath : artifact.orphanedTempFiles) {
         std::error_code error;
         std::filesystem::remove(ToFsPath(tempPath), error);
-        if (!error)
-            INXLOG_DEBUG("AssetDatabase.Refresh: cleaned orphaned temp file: ", tempPath);
     }
 
     bool unchanged = !m_assetIndexDirty && artifact.files.size() == artifact.index.Size() &&
@@ -2754,8 +2746,6 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                                 bool persistMetadata, const std::string &identityKey)
 {
-    INXLOG_DEBUG("Registering resource: filePath = ", filePath, ", type = ", static_cast<int>(type));
-
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
         return "";
@@ -2806,7 +2796,6 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     std::string guid = metaFile.GetGuid();
     m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
     UpdateMapping(guid, filePath);
-    INXLOG_DEBUG("Resource metadata registered with GUID: ", guid);
 
     return guid;
 }
@@ -2895,7 +2884,6 @@ void AssetDatabase::DeleteMetadata(const std::string &path)
     auto metaFsPath = ToFsPath(metaPath);
     if (fs::exists(metaFsPath)) {
         fs::remove(metaFsPath);
-        INXLOG_DEBUG("AssetDatabase: deleted metadata file: ", metaPath);
     }
 }
 

@@ -180,7 +180,6 @@ InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const
 
     if (!pixels) {
         if (DecodePnmToRgba(fileBytes.data(), fileBytes.size(), result)) {
-            INXLOG_DEBUG("Loaded PNM texture: ", result.name, " [", result.width, "x", result.height, "]");
             return result;
         }
         INXLOG_ERROR("stbi_load failed for: ", filePath, " - ", stbi_failure_reason());
@@ -195,7 +194,6 @@ InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const
 
     stbi_image_free(pixels);
 
-    INXLOG_DEBUG("Loaded texture: ", result.name, " [", width, "x", height, "]");
     return result;
 }
 
@@ -210,7 +208,6 @@ InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_
 
     if (!pixels) {
         if (DecodePnmToRgba(data, dataSize, result)) {
-            INXLOG_DEBUG("Loaded PNM texture from memory: ", result.name, " [", result.width, "x", result.height, "]");
             return result;
         }
         INXLOG_ERROR("stbi_load_from_memory failed: ", stbi_failure_reason());
@@ -225,7 +222,6 @@ InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_
 
     stbi_image_free(pixels);
 
-    INXLOG_DEBUG("Loaded texture from memory: ", result.name, " [", width, "x", height, "]");
     return result;
 }
 
@@ -246,8 +242,6 @@ InxTextureData InxTextureLoader::CreateSolidColor(int width, int height, unsigne
         result.pixels[i * 4 + 3] = a;
     }
 
-    INXLOG_DEBUG("Created solid color texture: ", name, " [", width, "x", height, "] RGBA(", (int)r, ",", (int)g, ",",
-                 (int)b, ",", (int)a, ")");
     return result;
 }
 
@@ -278,7 +272,6 @@ InxTextureData InxTextureLoader::CreateCheckerboard(int width, int height, int c
         }
     }
 
-    INXLOG_DEBUG("Created checkerboard texture: ", name, " [", width, "x", height, "] checker size: ", checkerSize);
     return result;
 }
 
