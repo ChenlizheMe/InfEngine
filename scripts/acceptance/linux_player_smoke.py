@@ -41,6 +41,10 @@ class SmokeResult:
     vk_driver_files: str
     fatal_count: int
     elapsed_seconds: float
+    runtime_frame_count: int
+    submission_ready: bool
+    component_assertions: list[dict[str, Any]]
+    component_fields: dict[str, Any]
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -95,6 +99,177 @@ def _axis_delta(
     return final[{"x": 0, "y": 1, "z": 2}[axis]] - initial[
         {"x": 0, "y": 1, "z": 2}[axis]
     ]
+
+
+def _gameplay_control_ready(
+    observation: dict[str, Any], *, allow_paused: bool = False
+) -> bool:
+    return bool(observation.get("gameplay_ready")) and (
+        allow_paused or not bool(observation.get("scene_manager_paused"))
+    )
+
+
+_COMPONENT_ASSERTION_OPERATORS = {
+    "equal",
+    "not_equal",
+    "greater",
+    "greater_or_equal",
+    "less",
+    "less_or_equal",
+    "truthy",
+    "falsy",
+    "non_empty",
+}
+
+
+def _parse_component_probe(encoded: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(encoded)
+    except json.JSONDecodeError as error:
+        raise argparse.ArgumentTypeError(
+            f"component probe must be a JSON object: {error.msg}"
+        ) from error
+    if not isinstance(raw, dict):
+        raise argparse.ArgumentTypeError("component probe must be a JSON object")
+    object_name = str(raw.get("object_name", "") or "").strip()
+    component_type = str(raw.get("component_type", "") or "").strip()
+    ordinal = int(raw.get("ordinal", 0) or 0)
+    fields = [str(field or "").strip() for field in raw.get("fields", [])]
+    assertions = raw.get("assertions", [])
+    if not object_name or not component_type or ordinal < 0 or not fields:
+        raise argparse.ArgumentTypeError(
+            "component probe requires object_name, component_type, fields, and a non-negative ordinal"
+        )
+    if len(fields) > 16 or any(not field or field.startswith("_") for field in fields):
+        raise argparse.ArgumentTypeError(
+            "component probe fields must contain 1-16 public field names"
+        )
+    if not isinstance(assertions, list) or not assertions:
+        raise argparse.ArgumentTypeError(
+            "component probe requires at least one assertion"
+        )
+    normalized_assertions = []
+    for assertion in assertions:
+        if not isinstance(assertion, dict):
+            raise argparse.ArgumentTypeError("component assertions must be JSON objects")
+        field = str(assertion.get("field", "") or "").strip()
+        operator = str(assertion.get("operator", "") or "").strip()
+        if not field or field.split(".", 1)[0] not in fields:
+            raise argparse.ArgumentTypeError(
+                "component assertion fields must start with a probed public field"
+            )
+        if operator not in _COMPONENT_ASSERTION_OPERATORS:
+            raise argparse.ArgumentTypeError(
+                f"unsupported component assertion operator: {operator!r}"
+            )
+        if operator not in {"truthy", "falsy", "non_empty"} and "value" not in assertion:
+            raise argparse.ArgumentTypeError(
+                f"component assertion operator {operator!r} requires value"
+            )
+        normalized_assertions.append(
+            {
+                "field": field,
+                "operator": operator,
+                **({"value": assertion["value"]} if "value" in assertion else {}),
+            }
+        )
+    return {
+        "object_name": object_name,
+        "component_type": component_type,
+        "ordinal": ordinal,
+        "fields": list(dict.fromkeys(fields)),
+        "assertions": normalized_assertions,
+    }
+
+
+def _player_component_probes(probes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "object_name": probe["object_name"],
+            "component_type": probe["component_type"],
+            "ordinal": probe["ordinal"],
+            "fields": probe["fields"],
+        }
+        for probe in probes
+    ]
+
+
+def _probe_object_names(primary: str, probes: list[dict[str, Any]]) -> list[str]:
+    return list(
+        dict.fromkeys([primary, *(probe["object_name"] for probe in probes)])
+    )
+
+
+def _nested_public_value(fields: dict[str, Any], path: str) -> Any:
+    value: Any = fields
+    for segment in path.split("."):
+        if not isinstance(value, dict) or segment not in value:
+            raise RuntimeError(f"component observation is missing public field {path!r}")
+        value = value[segment]
+    return value
+
+
+def _numeric(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"component field {field!r} is not numeric: {value!r}")
+    return float(value)
+
+
+def _assert_component_probes(
+    observation: dict[str, Any], probes: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    results = []
+    observed_fields: dict[str, Any] = {}
+    objects = observation.get("objects", {})
+    for probe in probes:
+        object_name = probe["object_name"]
+        component_key = f"{probe['component_type']}[{probe['ordinal']}]"
+        fields = (
+            objects.get(object_name, {})
+            .get("component_fields", {})
+            .get(component_key)
+        )
+        if not isinstance(fields, dict):
+            raise RuntimeError(
+                f"Player did not publish {object_name}/{component_key} component fields"
+            )
+        observed_fields[f"{object_name}/{component_key}"] = fields
+        for assertion in probe["assertions"]:
+            field = assertion["field"]
+            operator = assertion["operator"]
+            actual = _nested_public_value(fields, field)
+            expected = assertion.get("value")
+            if operator == "equal":
+                passed = actual == expected
+            elif operator == "not_equal":
+                passed = actual != expected
+            elif operator == "truthy":
+                passed = bool(actual)
+            elif operator == "falsy":
+                passed = not bool(actual)
+            elif operator == "non_empty":
+                passed = actual is not None and hasattr(actual, "__len__") and len(actual) > 0
+            else:
+                actual_number = _numeric(actual, field)
+                expected_number = _numeric(expected, field)
+                passed = {
+                    "greater": actual_number > expected_number,
+                    "greater_or_equal": actual_number >= expected_number,
+                    "less": actual_number < expected_number,
+                    "less_or_equal": actual_number <= expected_number,
+                }[operator]
+            result = {
+                "object_name": object_name,
+                "component": component_key,
+                "field": field,
+                "operator": operator,
+                "actual": actual,
+                **({"expected": expected} if "value" in assertion else {}),
+            }
+            if not passed:
+                raise RuntimeError(f"component assertion failed: {result!r}")
+            results.append(result)
+    return results, observed_fields
 
 
 class ControlClient:
@@ -211,6 +386,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--press-duration", type=float, default=1.0)
     parser.add_argument("--axis", choices=("x", "y", "z"), default="z")
     parser.add_argument("--minimum-axis-delta", type=float, default=0.1)
+    parser.add_argument(
+        "--component-probe",
+        action="append",
+        type=_parse_component_probe,
+        default=[],
+        help="Repeatable JSON component probe with public fields and assertions",
+    )
     return parser
 
 
@@ -232,6 +414,9 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     state_log = _state_log(game)
     state_start = state_log.stat().st_size if state_log.is_file() else 0
     token = secrets.token_hex(24)
+    probes = list(args.component_probe)
+    player_probes = _player_component_probes(probes)
+    object_names = _probe_object_names(args.object, probes)
     environment = os.environ.copy()
     environment.update(
         {
@@ -300,18 +485,24 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             remaining = max(0.1, deadline - time.monotonic())
             observation = control.call(
                 "observe",
-                {"object_names": [args.object]},
+                {
+                    "object_names": object_names,
+                    "component_probes": player_probes,
+                },
                 timeout=remaining,
                 process=player_process,
             )
             try:
                 initial = _position(observation, args.object)
-                break
+                if _gameplay_control_ready(observation):
+                    break
             except RuntimeError:
-                time.sleep(0.1)
+                pass
+            time.sleep(0.1)
         else:
             raise TimeoutError(
-                f"Linux Player did not publish object '{args.object}' before startup timeout"
+                "Linux Player did not enter gameplay with object "
+                f"'{args.object}' before startup timeout"
             )
 
         press = control.call(
@@ -319,7 +510,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             {
                 "scancode": args.press_scancode,
                 "duration_seconds": args.press_duration,
-                "object_names": [args.object],
+                "object_names": object_names,
+                "component_probes": player_probes,
             },
             timeout=args.startup_timeout + args.press_duration,
             process=player_process,
@@ -331,6 +523,36 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             raise RuntimeError(
                 f"Player input produced only {delta:.6f} movement on {args.axis}; "
                 f"minimum is {args.minimum_axis_delta:.6f}"
+            )
+
+        feature_deadline = time.monotonic() + args.startup_timeout
+        assertion_results: list[dict[str, Any]] = []
+        component_fields: dict[str, Any] = {}
+        last_feature_error = "renderer submission is not ready"
+        while time.monotonic() < feature_deadline:
+            feature_observation = control.call(
+                "observe",
+                {
+                    "object_names": object_names,
+                    "component_probes": player_probes,
+                },
+                timeout=max(0.1, feature_deadline - time.monotonic()),
+                process=player_process,
+            )
+            if not bool(feature_observation.get("submission_ready")):
+                time.sleep(0.05)
+                continue
+            try:
+                assertion_results, component_fields = _assert_component_probes(
+                    feature_observation, probes
+                )
+                break
+            except RuntimeError as error:
+                last_feature_error = str(error)
+                time.sleep(0.05)
+        else:
+            raise RuntimeError(
+                "Linux Player feature readiness timed out: " + last_feature_error
             )
 
         control.call("shutdown", timeout=10.0, process=player_process)
@@ -360,6 +582,10 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             vk_driver_files=str(environment.get("VK_DRIVER_FILES", "")),
             fatal_count=0,
             elapsed_seconds=time.monotonic() - started,
+            runtime_frame_count=int(feature_observation.get("runtime_frame_count", 0)),
+            submission_ready=bool(feature_observation.get("submission_ready")),
+            component_assertions=assertion_results,
+            component_fields=component_fields,
         )
     finally:
         _terminate(player_process)

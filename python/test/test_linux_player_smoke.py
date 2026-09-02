@@ -21,6 +21,22 @@ def _module():
     return module
 
 
+def test_gameplay_control_ready_requires_started_runtime_and_unpaused_input():
+    module = _module()
+
+    assert not module._gameplay_control_ready({"gameplay_ready": False})
+    assert module._gameplay_control_ready(
+        {"gameplay_ready": True, "scene_manager_paused": False}
+    )
+    assert not module._gameplay_control_ready(
+        {"gameplay_ready": True, "scene_manager_paused": True}
+    )
+    assert module._gameplay_control_ready(
+        {"gameplay_ready": True, "scene_manager_paused": True},
+        allow_paused=True,
+    )
+
+
 def test_linux_smoke_requires_debug_player_control(tmp_path: Path):
     module = _module()
     player = tmp_path / "Balance"
@@ -85,6 +101,79 @@ def test_linux_smoke_parser_defaults_to_managed_cleanup():
     assert arguments.press_scancode == 26
     assert arguments.axis == "z"
     assert not arguments.validation
+    assert arguments.component_probe == []
+
+
+def test_linux_smoke_component_probe_asserts_nested_public_state():
+    module = _module()
+    probe = module._parse_component_probe(
+        json.dumps(
+            {
+                "object_name": "GoalParticles",
+                "component_type": "ParticleSystem",
+                "fields": ["is_playing", "time", "last_compile_error"],
+                "assertions": [
+                    {"field": "is_playing", "operator": "truthy"},
+                    {"field": "time", "operator": "greater", "value": 0.0},
+                    {
+                        "field": "last_compile_error",
+                        "operator": "equal",
+                        "value": "",
+                    },
+                ],
+            }
+        )
+    )
+    observation = {
+        "objects": {
+            "GoalParticles": {
+                "component_fields": {
+                    "ParticleSystem[0]": {
+                        "is_playing": True,
+                        "time": 0.75,
+                        "last_compile_error": "",
+                    }
+                }
+            }
+        }
+    }
+
+    results, fields = module._assert_component_probes(observation, [probe])
+
+    assert len(results) == 3
+    assert fields["GoalParticles/ParticleSystem[0]"]["time"] == 0.75
+
+
+def test_linux_smoke_component_probe_rejects_failed_contract():
+    module = _module()
+    probe = module._parse_component_probe(
+        json.dumps(
+            {
+                "object_name": "BallTrail",
+                "component_type": "LineRenderer",
+                "fields": ["position_count"],
+                "assertions": [
+                    {
+                        "field": "position_count",
+                        "operator": "greater_or_equal",
+                        "value": 3,
+                    }
+                ],
+            }
+        )
+    )
+    observation = {
+        "objects": {
+            "BallTrail": {
+                "component_fields": {
+                    "LineRenderer[0]": {"position_count": 2}
+                }
+            }
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="component assertion failed"):
+        module._assert_component_probes(observation, [probe])
 
 
 def test_linux_smoke_fatal_scan_includes_vulkan_validation():
