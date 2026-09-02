@@ -675,9 +675,16 @@ void LineRenderer::RebuildMesh()
                 samples.push_back({geometryPositions[index], tangent, distance, t, distributed, segment, 1.0f});
             }
         } else {
-            glm::vec3 tangent = glm::normalize(incoming + outgoing);
-            if (!std::isfinite(tangent.x) || !std::isfinite(tangent.y) || !std::isfinite(tangent.z))
-                tangent = outgoing;
+            // Near a perfect reversal incoming + outgoing is a near-zero
+            // vector whose direction is pure float noise; normalizing it
+            // yields a garbage tangent that swings the expanded ribbon a full
+            // width at the turn point. Threshold the sum before normalizing
+            // (this also covers the exact-zero NaN case) and keep the
+            // deterministic outgoing direction instead.
+            const glm::vec3 combined = incoming + outgoing;
+            const glm::vec3 tangent = glm::dot(combined, combined) > DIRECTION_EPSILON * DIRECTION_EPSILON
+                                          ? glm::normalize(combined)
+                                          : outgoing;
             samples.push_back({geometryPositions[index], tangent, distance, t, distributed, segment, 1.0f});
         }
     }

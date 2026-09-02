@@ -17,7 +17,7 @@ from Infernux.graph.ramp import (
     CURVE_WRAP_MODES,
     GRADIENT_MODES,
     MAX_RAMP_KEYS,
-    Curve,
+    AnimationCurve,
     Gradient,
 )
 
@@ -2544,7 +2544,7 @@ class _StageCompiler:
                 "state.spawn_generation)"
             )
         elif opcode == "sample_curve":
-            curve = Curve.from_dict(immediate["curve"])
+            curve = AnimationCurve.from_dict(immediate["curve"])
             sample_time = f"{result}_time"
             self._lines.append(
                 f"float {sample_time} = {_glsl_wrapped_curve_time(operands[0], curve)};"
@@ -2867,7 +2867,7 @@ def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
     )
 
 
-def _glsl_wrapped_curve_time(source: str, curve: Curve) -> str:
+def _glsl_wrapped_curve_time(source: str, curve: AnimationCurve) -> str:
     first = curve.keys[0].time
     last = curve.keys[-1].time
     if first == last:
@@ -2900,7 +2900,7 @@ def _glsl_curve_segment(sample_time: str, left, right) -> str:
     )
 
 
-def _glsl_curve_sample(sample_time: str, curve: Curve) -> str:
+def _glsl_curve_sample(sample_time: str, curve: AnimationCurve) -> str:
     if len(curve.keys) == 1:
         return _float_literal(curve.keys[0].value)
     expression = _float_literal(curve.keys[-1].value)
@@ -2941,7 +2941,6 @@ def _data_interface_layout(
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
 ) -> dict[str, Any]:
     layout = {
-        "version": 1,
         "metadata_binding": 0,
     }
     layout.update(_volume_interface_layout(emitter))
@@ -7712,7 +7711,7 @@ def pack_gpu_particle_parameters(
         slot_width = _parameter_slot_width(parameter.value_type)
         if kind is ValueType.CURVE:
             try:
-                curve = Curve.from_dict(value)
+                curve = AnimationCurve.from_dict(value)
             except (TypeError, ValueError) as exc:
                 raise GpuParticleCompileError(
                     f"particle parameter {parameter.name!r} requires a Curve"

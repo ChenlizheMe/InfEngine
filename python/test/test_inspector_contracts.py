@@ -2056,3 +2056,90 @@ def test_color_inspector_respects_field_hdr_metadata(monkeypatch):
     enabled = render(True)
     assert enabled["allow_hdr"] is True
     assert enabled["default_hdr_enabled"] is True
+
+
+def test_animation_curve_serialized_field_uses_shared_popup_editor(monkeypatch):
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import curve_editor
+    from Infernux.graph.ramp import AnimationCurve, Keyframe
+
+    captured = {}
+    monkeypatch.setattr(inspector_utils, "_label_or_fullwidth", lambda *_args: None)
+
+    def render_curve(_ctx, widget_id, document, **kwargs):
+        captured.update(widget_id=widget_id, document=document, **kwargs)
+        return AnimationCurve(
+            (Keyframe(0.0, 1.0), Keyframe(1.0, 2.0))
+        ).to_dict()
+
+    monkeypatch.setattr(curve_editor, "render_curve_property", render_curve)
+    metadata = FieldMetadata(
+        name="curve",
+        field_type=FieldType.ANIMATION_CURVE,
+        default=AnimationCurve(),
+        curve_non_negative=True,
+    )
+
+    result = inspector_utils.render_serialized_field(
+        SimpleNamespace(),
+        "##curve",
+        "Curve",
+        metadata,
+        AnimationCurve(),
+        80.0,
+    )
+
+    assert isinstance(result, AnimationCurve)
+    assert result.keys[-1].value == 2.0
+    assert captured["widget_id"] == "##curve"
+    assert captured["non_negative"] is True
+
+
+def test_builtin_list_field_is_planned_and_committed_generically(monkeypatch):
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import inspector_components as module
+
+    metadata = FieldMetadata(
+        name="points",
+        field_type=FieldType.LIST,
+        default=[],
+        element_type=FieldType.VEC3,
+    )
+    prop = SimpleNamespace(metadata=metadata, cpp_attr="points")
+    comp = SimpleNamespace(points=[(0.0, 0.0, 0.0)])
+    ctx = SimpleNamespace(create_property_batch_plan=lambda descriptors: descriptors)
+    cache = {"values": {}, "field_revisions": {}}
+
+    plan = module._build_builtin_cached_plan(
+        ctx, comp, [("points", prop)], 80.0, None, cache, True
+    )
+
+    assert [op["kind"] for op in plan["ops"]] == ["list"]
+
+    recorded = []
+    monkeypatch.setattr(
+        module,
+        "_render_list_field",
+        lambda _ctx, target, field, _meta, current, _lw, **kwargs: kwargs[
+            "on_change"
+        ](target, field, current, [(1.0, 2.0, 3.0)]),
+    )
+    monkeypatch.setattr(module, "_tooltip_and_info", lambda *_args: None)
+    monkeypatch.setattr(
+        module,
+        "_record_builtin_property",
+        lambda target, field, old, new, description: recorded.append(
+            (target, field, old, new, description)
+        ),
+    )
+
+    assert module._replay_builtin_cached_plan(ctx, comp, plan, cache) is True
+    assert recorded == [
+        (
+            comp,
+            "points",
+            [(0.0, 0.0, 0.0)],
+            [(1.0, 2.0, 3.0)],
+            "Set points",
+        )
+    ]

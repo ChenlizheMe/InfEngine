@@ -31,6 +31,8 @@ class FieldType(Enum):
     ENUM = auto()
     LIST = auto()
     SERIALIZABLE_OBJECT = auto()
+    ANIMATION_CURVE = auto()
+    GRADIENT = auto()
     UNKNOWN = auto()
 
 
@@ -114,6 +116,7 @@ class FieldMetadata:
     serializable_class: Optional[Type] = ...
     component_type: Optional[str] = ...
     hdr: bool = ...
+    curve_non_negative: bool = ...
     asset_type: Optional[str] = ...
     python_type: Optional[Type] = ...
     getter: Optional[Callable] = ...
@@ -189,6 +192,7 @@ def serialized_field(
     required_component: Optional[str] = ...,
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
+    curve_non_negative: bool = ...,
     hidden: bool = ...,
 ) -> _T:
     """Mark a field as serialized and inspector-visible.
@@ -215,6 +219,7 @@ def serialized_field(
         required_component: For GAME_OBJECT fields only.
         visible_when: ``fn(component) -> bool``; hides field when False.
         hdr: For COLOR fields only.  Allow HDR values (> 1.0).
+        curve_non_negative: For ANIMATION_CURVE fields, constrain key values to >= 0.
         hidden: Serialize without showing the field in the Inspector.
 
     Example::

@@ -95,6 +95,9 @@ class ValueCodecRegistry:
         if isinstance(value, Enum):
             from .value_document import make_enum
             return make_enum(type(value).__qualname__, value.name)
+        from Infernux.graph.ramp import AnimationCurve, Gradient
+        if isinstance(value, (AnimationCurve, Gradient)):
+            return self._encode_builtin(value.to_dict(), path)
         if isinstance(value, float):
             if not math.isfinite(value):
                 raise ValueError(f"{path}: floating-point values must be finite")
@@ -188,6 +191,20 @@ class ValueCodecRegistry:
             if not isinstance(value, str):
                 raise TypeError(f"{path}: STRING field requires a string")
             return
+        if field_type == FieldType.ANIMATION_CURVE:
+            from Infernux.graph.ramp import AnimationCurve
+            try:
+                AnimationCurve.from_dict(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path}: invalid AnimationCurve: {exc}") from exc
+            return
+        if field_type == FieldType.GRADIENT:
+            from Infernux.graph.ramp import Gradient
+            try:
+                Gradient.from_dict(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path}: invalid Gradient: {exc}") from exc
+            return
 
         if field_type == FieldType.SERIALIZABLE_OBJECT:
             if not isinstance(value, dict):
@@ -242,7 +259,7 @@ class ValueCodecRegistry:
         if isinstance(value, dict):
             if not all(isinstance(key, str) for key in value):
                 raise TypeError(f"{path}: serialized dictionary keys must be strings")
-            self._reject_legacy_marker_document(value, path)
+            self._reject_reserved_document_fields(value, path)
             document_type = self._validate_typed_document(value, path)
             if document_type is not None:
                 return
@@ -266,6 +283,12 @@ class ValueCodecRegistry:
             return value
         if field_type == FieldType.FLOAT:
             return float(value)
+        if field_type == FieldType.ANIMATION_CURVE:
+            from Infernux.graph.ramp import AnimationCurve
+            return AnimationCurve.from_dict(value)
+        if field_type == FieldType.GRADIENT:
+            from Infernux.graph.ramp import Gradient
+            return Gradient.from_dict(value)
         if field_type == FieldType.SERIALIZABLE_OBJECT:
             from .serializable_object import SerializableObject
             return SerializableObject._deserialize(value)
@@ -376,7 +399,7 @@ class ValueCodecRegistry:
             if not all(isinstance(key, str) for key in value):
                 raise TypeError(f"{path}: encoded dictionary keys must be strings")
             if not allow_custom_type:
-                ValueCodecRegistry._reject_legacy_marker_document(value, path)
+                ValueCodecRegistry._reject_reserved_document_fields(value, path)
             from .value_document import TYPE_KEY
             if TYPE_KEY in value and not allow_custom_type:
                 ValueCodecRegistry._validate_typed_document(value, path)
@@ -390,15 +413,12 @@ class ValueCodecRegistry:
         raise TypeError(f"{path}: codec produced non-document value {type(value).__qualname__}")
 
     @staticmethod
-    def _reject_legacy_marker_document(value: dict, path: str) -> None:
-        legacy_keys = {
-            key
-            for key in value
-            if key in {"__game_object__", "__component_ref__", "__serializable_type__", "__enum__", "__path_hint__"}
-            or (key.startswith("__") and key.endswith("_ref__"))
-        }
-        if legacy_keys:
-            raise ValueError(f"{path}: legacy marker documents are not supported: {sorted(legacy_keys)}")
+    def _reject_reserved_document_fields(value: dict, path: str) -> None:
+        reserved = sorted(
+            key for key in value if key.startswith("__") and key.endswith("__")
+        )
+        if reserved:
+            raise ValueError(f"{path}: reserved document fields are not supported: {reserved}")
 
     @staticmethod
     def _validate_typed_document(value: dict, path: str) -> str | None:

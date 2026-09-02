@@ -24,7 +24,7 @@ from .types import (
     TypeSystem,
     ValueType,
 )
-from .ramp import Curve, Gradient
+from .ramp import AnimationCurve, Gradient
 
 
 @dataclass(frozen=True)
@@ -535,7 +535,7 @@ class ExpressionCompiler:
         kind = value_type.value_type
         if kind is ValueType.CURVE:
             try:
-                Curve.from_dict(value)
+                AnimationCurve.from_dict(value)
                 return ""
             except (TypeError, ValueError) as exc:
                 return str(exc)

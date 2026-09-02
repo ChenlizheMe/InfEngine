@@ -207,6 +207,8 @@ class FieldType(Enum):
     ENUM = auto()
     LIST = auto()
     SERIALIZABLE_OBJECT = auto()  # Custom data class (SerializableObject subclass)
+    ANIMATION_CURVE = auto()  # Reusable authored AnimationCurve value
+    GRADIENT = auto()         # Reusable authored color Gradient value
     UNKNOWN = auto()
 
 
@@ -236,6 +238,7 @@ class FieldMetadata:
     serializable_class: Optional[Type] = None  # For SERIALIZABLE_OBJECT: the concrete class to instantiate
     component_type: Optional[str] = None       # For COMPONENT (ComponentRef): target component type name
     hdr: bool = False                            # For COLOR: allow HDR mode toggle
+    curve_non_negative: bool = False             # For ANIMATION_CURVE: clamp edited values to >= 0
     asset_type: Optional[str] = None             # For ASSET: registered asset type name (e.g. "AudioClip", "AnimStateMachine")
     hidden: bool = False                         # Unity HideInInspector: serialized but not rendered
     former_names: tuple[str, ...] = ()            # Explicit schema-migration sources; never runtime aliases.
@@ -771,6 +774,12 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
             return [_ensure_asset_ref(v, asset_type) for v in value]
     if field_type == FieldType.COLOR:
         return normalize_rgba(value)
+    if field_type == FieldType.ANIMATION_CURVE:
+        from Infernux.graph.ramp import AnimationCurve
+        return value if isinstance(value, AnimationCurve) else AnimationCurve.from_dict(value)
+    if field_type == FieldType.GRADIENT:
+        from Infernux.graph.ramp import Gradient
+        return value if isinstance(value, Gradient) else Gradient.from_dict(value)
     return value
 
 
@@ -874,6 +883,14 @@ def coerce_serialized_field_input(
                 f"got {type(decoded).__qualname__}"
             )
         return decoded
+
+    if field_type in {FieldType.ANIMATION_CURVE, FieldType.GRADIENT}:
+        from .value_codec import VALUE_CODECS
+        if isinstance(value, dict):
+            return VALUE_CODECS.decode(value, field_meta_or_type, path)
+        normalized = normalize_runtime_field_value(value, field_meta_or_type)
+        VALUE_CODECS.validate(VALUE_CODECS.encode(normalized, path), field_meta_or_type, path)
+        return normalized
 
     from .value_document import (
         TYPE_KEY,
@@ -1064,6 +1081,14 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             return FieldType.FLOAT
         if isinstance(default, str):
             return FieldType.STRING
+        try:
+            from Infernux.graph.ramp import AnimationCurve, Gradient
+            if isinstance(default, AnimationCurve):
+                return FieldType.ANIMATION_CURVE
+            if isinstance(default, Gradient):
+                return FieldType.GRADIENT
+        except ImportError:
+            pass
         if is_rgba_storage(default):
             return FieldType.COLOR
         if hasattr(default, 'x') and hasattr(default, 'y'):
@@ -1138,6 +1163,20 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                 field_type=FieldType.COLOR,
                 default=list(RGBA_DEFAULT),
             )
+        if simple_name == 'AnimationCurve':
+            from Infernux.graph.ramp import AnimationCurve
+            return FieldMetadata(
+                name="",
+                field_type=FieldType.ANIMATION_CURVE,
+                default=AnimationCurve(),
+            )
+        if simple_name == 'Gradient':
+            from Infernux.graph.ramp import Gradient
+            return FieldMetadata(
+                name="",
+                field_type=FieldType.GRADIENT,
+                default=Gradient(),
+            )
         _vec_ft = _VEC_ANNOTATION_MAP.get(simple_name)
         if _vec_ft is not None:
             return FieldMetadata(name="", field_type=_vec_ft, default=_make_vec_default(_vec_ft))
@@ -1195,6 +1234,21 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
     # ── Color (RGBA tuple subclass) ──
     if annotation is Color or type_name == 'Color':
         return FieldMetadata(name="", field_type=FieldType.COLOR, default=list(RGBA_DEFAULT))
+
+    if type_name == 'AnimationCurve':
+        from Infernux.graph.ramp import AnimationCurve
+        return FieldMetadata(
+            name="",
+            field_type=FieldType.ANIMATION_CURVE,
+            default=AnimationCurve(),
+        )
+    if type_name == 'Gradient':
+        from Infernux.graph.ramp import Gradient
+        return FieldMetadata(
+            name="",
+            field_type=FieldType.GRADIENT,
+            default=Gradient(),
+        )
 
     # ── Enum subclass → ENUM field (default: first member) ──
     if issubclass(annotation, Enum):
@@ -1370,6 +1424,12 @@ def _coerce_default(meta: 'FieldMetadata', default: Any) -> Any:
             return int(default)
         if ft == FieldType.COLOR:
             return normalize_rgba(default)
+        if ft == FieldType.ANIMATION_CURVE:
+            from Infernux.graph.ramp import AnimationCurve
+            return default if isinstance(default, AnimationCurve) else AnimationCurve.from_dict(default)
+        if ft == FieldType.GRADIENT:
+            from Infernux.graph.ramp import Gradient
+            return default if isinstance(default, Gradient) else Gradient.from_dict(default)
         if ft == FieldType.STRING and default is None:
             return ""
     except Exception as exc:
@@ -1498,6 +1558,7 @@ def serialized_field(
     required_component: Optional[str] = None,
     visible_when: Optional[Callable] = None,
     hdr: bool = False,
+    curve_non_negative: bool = False,
     hidden: bool = False,
 ) -> Any:
     """
@@ -1531,6 +1592,8 @@ def serialized_field(
             the Hierarchy panel.
         hdr: For COLOR fields only.  If True, allow HDR values (> 1.0)
             in the colour picker.
+        curve_non_negative: For ANIMATION_CURVE fields, constrain edited key
+            values to be non-negative.
         hidden: Serialize the field without showing it in the Inspector.
     Returns:
         A descriptor that manages the field value and metadata
@@ -1577,6 +1640,21 @@ def serialized_field(
             default = _ensure_shader_ref(None)
         elif inferred_type == FieldType.ASSET:
             default = _ensure_asset_ref(None, asset_type)
+        elif inferred_type == FieldType.ANIMATION_CURVE:
+            from Infernux.graph.ramp import AnimationCurve
+            default = AnimationCurve()
+        elif inferred_type == FieldType.GRADIENT:
+            from Infernux.graph.ramp import Gradient
+            default = Gradient()
+
+    if inferred_type == FieldType.ANIMATION_CURVE:
+        from Infernux.graph.ramp import AnimationCurve
+        if not isinstance(default, AnimationCurve):
+            default = AnimationCurve.from_dict(default)
+    elif inferred_type == FieldType.GRADIENT:
+        from Infernux.graph.ramp import Gradient
+        if not isinstance(default, Gradient):
+            default = Gradient.from_dict(default)
 
     inferred_element_type = element_type
     if inferred_type == FieldType.LIST and inferred_element_type is None:
@@ -1611,6 +1689,7 @@ def serialized_field(
         serializable_class=serializable_class,
         component_type=component_type,
         hdr=hdr,
+        curve_non_negative=curve_non_negative,
         asset_type=asset_type,
         hidden=hidden,
     )

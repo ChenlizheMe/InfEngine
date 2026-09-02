@@ -390,7 +390,15 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
 
             for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                 DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
-                dc.forceBufferUpdate = false;
+                // A rebuilt procedural mesh frequently reuses the freed heap
+                // block of its previous build, so EnsureObjectBuffers' pointer
+                // + size fast path cannot detect the content change on its
+                // own. bufferDirty is the authoritative content-change signal
+                // and must reach the GPU path exactly like RebuildDrawCalls
+                // does, otherwise every-frame trails freeze at the last frame
+                // whose allocation happened to move (and flicker between the
+                // frozen and the fresh publication as sizes drift).
+                dc.forceBufferUpdate = bufferDirty && mr->HasInlineMesh();
                 if (bufferDirty && mr->HasInlineMesh()) {
                     dc.meshDataOwner = source.inlineMeshOwner;
                     dc.meshVertices = source.inlineVertices;

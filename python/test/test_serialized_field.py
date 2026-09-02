@@ -29,6 +29,7 @@ from Infernux.components.fields import (
 )
 from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef, PrefabRef
 from Infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 
 
 # ── annotation unwrapping ────────────────────────────────────────────────
@@ -137,6 +138,35 @@ class TestBuildField:
     def test_hdr_marker(self):
         meta = build_field_from_annotation(Annotated[Color, HDR], default=_UNSET)
         assert meta.hdr is True
+
+    @pytest.mark.parametrize(
+        ("annotation", "field_type"),
+        [
+            (AnimationCurve, FieldType.ANIMATION_CURVE),
+            (Gradient, FieldType.GRADIENT),
+        ],
+    )
+    def test_ramp_annotations_are_first_class_serialized_fields(
+        self, annotation, field_type
+    ):
+        meta = build_field_from_annotation(annotation, default=_UNSET)
+
+        assert meta.field_type == field_type
+        assert isinstance(meta.default, annotation)
+
+    def test_curve_editor_document_coerces_to_animation_curve(self):
+        meta = build_field_from_annotation(AnimationCurve, default=_UNSET)
+        document = AnimationCurve(
+            (Keyframe(0.0, 2.0), Keyframe(1.0, 3.0)),
+            "repeat",
+            "ping_pong",
+        ).to_dict()
+
+        value = coerce_serialized_field_input(document, meta, "Probe.width")
+
+        assert isinstance(value, AnimationCurve)
+        assert value.pre_wrap == "repeat"
+        assert value.post_wrap == "ping_pong"
 
     def test_unsupported_annotation_falls_back_to_value(self):
         class Weird:

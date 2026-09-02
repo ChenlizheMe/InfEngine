@@ -40,7 +40,7 @@ from Infernux.particle import (
 )
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 from Infernux.particle.nodes import (
     PARTICLE_EVENT_ACTIVE_TYPE_ID,
     PARTICLE_EVENT_TRIGGER_TYPE_ID,
@@ -120,7 +120,7 @@ def test_gpu_fused_update_rendering_stage_has_structured_symbols_and_workgroup_c
     assert fused.count("inx_push_free(particle_index)") == 1
 
 
-def test_gpu_noneligible_emitter_keeps_only_fallback_stages():
+def test_gpu_noneligible_emitter_keeps_separate_update_and_rendering_stages():
     kernel = ParticleKernelLowerer().lower(
         ParticleGraphCompiler().compile(_scene_collision_asset())
     )
@@ -3180,10 +3180,10 @@ def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
 
 
 def test_gpu_curve_and_gradient_parameters_use_fixed_hot_update_layouts():
-    curve = Curve(
+    curve = AnimationCurve(
         (
-            CurveKey(0.0, 0.25, 0.0, 1.0),
-            CurveKey(1.0, 2.0, -0.5, 0.0),
+            Keyframe(0.0, 0.25, 0.0, 1.0),
+            Keyframe(1.0, 2.0, -0.5, 0.0),
         ),
         "repeat",
         "ping_pong",
@@ -3268,7 +3268,7 @@ def test_gpu_curve_and_gradient_parameters_use_fixed_hot_update_layouts():
     changed_words = pack_gpu_particle_parameters(
         kernel.parameters,
         {
-            "size-over-life": Curve((CurveKey(0.0, 4.0),)).to_dict(),
+            "size-over-life": AnimationCurve((Keyframe(0.0, 4.0),)).to_dict(),
             "color-over-life": Gradient(
                 (GradientKey(0.0, (0.0, 1.0, 0.0, 1.0)),),
                 "fixed",

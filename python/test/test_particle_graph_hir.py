@@ -5032,11 +5032,11 @@ class TargetMotion(ParticleScript):
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField",
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, Curve, CurveKey, Gradient, GradientKey",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, AnimationCurve, Keyframe, Gradient, GradientKey",
     ).replace(
         "particles .add_velocity((0.0, -0.2, 0.0))",
         """particles.set_size(ctx.sample_curve(
-                Curve(keys=(CurveKey(0.0, 0.0, 1.0, 1.0), CurveKey(1.0, 1.0, 1.0, 1.0))),
+                AnimationCurve(keys=(Keyframe(0.0, 0.0, 1.0, 1.0), Keyframe(1.0, 1.0, 1.0, 1.0))),
                 particles.age / particles.lifetime,
             ))
             particles.set_color(ctx.sample_gradient(
@@ -5057,12 +5057,12 @@ def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations(
 def test_particle_script_curve_and_gradient_parameters_share_dynamic_kernel_path():
     source = '''\
 from Infernux.particle import (
-    Curve, Gradient, Parameter, ParticleScript, ParticleEmitter, EmitterSettings,
+    AnimationCurve, Gradient, Parameter, ParticleScript, ParticleEmitter, EmitterSettings,
 )
 
 class RampParameters(ParticleScript):
     parameters = (
-        Parameter("size", "Size", "curve", Curve()),
+        Parameter("size", "Size", "curve", AnimationCurve()),
         Parameter("color", "Color", "gradient", Gradient()),
     )
 

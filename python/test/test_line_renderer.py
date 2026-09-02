@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from Infernux import LineRenderer as LineRendererComponent
-from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 from Infernux.lib import (
     LineAlignment,
     LineRenderer as NativeLineRenderer,
@@ -44,56 +44,44 @@ def test_line_renderer_default_material_is_double_sided_and_transparent(scene):
     assert state.render_queue == 3000
 
 
-def test_line_renderer_inspector_uses_specialized_curve_gradient_and_position_editors(
-    scene, monkeypatch
-):
-    from Infernux.engine.ui import inspector_components, inspector_utils
-    from Infernux.engine.ui.particle_graph_editor_panel import (
-        ParticleGraphEditorPanel,
-    )
+def test_line_renderer_default_material_survives_shader_annotation_defaults(scene):
+    """The line ribbon uses the general-purpose "Unlit" surface shader, whose
+    annotation defaults (Cull Back, Queue 2000) are stamped onto materials via
+    ApplyShaderRenderMeta right before pipeline creation. Back-face culling
+    deletes every folded (reversed-winding) trail section and flickers the
+    live tip, so the authored fields must be marked as explicit overrides.
+    """
+    from Infernux.lib import RenderStateOverride
 
-    line = scene.create_game_object("InspectedLine").add_component("LineRenderer")
-    visited = []
+    line = scene.create_game_object("OverrideLine").add_component("LineRenderer")
+    material = line._cpp_component.get_effective_material()
 
-    class Context:
-        def collapsing_header(self, label):
-            visited.append(label)
-            return True
+    assert material.name == "DefaultLineMaterial"
+    for flag in (
+        RenderStateOverride.CULL_MODE,
+        RenderStateOverride.DEPTH_WRITE,
+        RenderStateOverride.DEPTH_TEST,
+        RenderStateOverride.BLEND_ENABLE,
+        RenderStateOverride.BLEND_MODE,
+        RenderStateOverride.RENDER_QUEUE,
+    ):
+        assert material.has_override(flag), f"missing override for {flag}"
 
-        def vector3(self, _label, x, y, z, _speed, _label_width):
-            return (x, y, z)
 
-    monkeypatch.setattr(
-        inspector_components,
-        "render_builtin_via_setters",
-        lambda *_args, **_kwargs: visited.append("Built-in Properties"),
-    )
-    monkeypatch.setattr(inspector_utils, "max_label_w", lambda *_args: 120.0)
-    monkeypatch.setattr(
-        ParticleGraphEditorPanel,
-        "_render_curve_property",
-        lambda _ctx, _uid, _key, value, **_kwargs: (
-            visited.append("Curve Editor") or value
-        ),
-    )
-    monkeypatch.setattr(
-        ParticleGraphEditorPanel,
-        "_render_gradient_property",
-        lambda _ctx, _uid, _key, value, **_kwargs: (
-            visited.append("Gradient Editor") or value
-        ),
-    )
+def test_line_renderer_inspector_is_entirely_generic_serialized_fields():
+    from Infernux.components.builtin.line_renderer import LineRenderer
+    from Infernux.components.fields import FieldType
+    from Infernux.engine.ui.inspector_components import _collect_cpp_properties
 
-    line.render_inspector(Context())
+    assert "render_inspector" not in LineRenderer.__dict__
 
-    assert visited == [
-        "Built-in Properties",
-        "Width Curve",
-        "Curve Editor",
-        "Color Gradient",
-        "Gradient Editor",
-        "Positions",
-    ]
+    fields = dict(_collect_cpp_properties(LineRenderer))
+    assert fields["positions"].metadata.field_type == FieldType.LIST
+    assert fields["positions"].metadata.element_type == FieldType.VEC3
+    assert fields["width_curve"].metadata.field_type == FieldType.ANIMATION_CURVE
+    assert fields["width_curve"].metadata.curve_non_negative is True
+    assert fields["color_gradient"].metadata.field_type == FieldType.GRADIENT
+    assert fields["color_gradient"].metadata.hdr is True
 
 
 def test_line_renderer_point_edits_rebuild_only_derived_geometry(scene):
@@ -152,6 +140,40 @@ def test_line_renderer_view_alignment_preserves_winding_when_direction_reverses(
         assert "[3].xyz - centerWorld.xyz" not in source
 
 
+def test_line_renderer_defaults_to_world_space_like_unity(scene):
+    # Trails feed world positions; a local-space default re-transforms them by
+    # the owner's world matrix, so a moving owner renders the ribbon displaced
+    # and its culling bounds drift away from the visible geometry.
+    line = scene.create_game_object("WorldSpaceDefault").add_component("LineRenderer")
+
+    assert line.use_world_space is True
+    assert NativeLineRenderer().use_world_space is True
+
+
+def test_line_renderer_near_reversal_tangent_is_deterministic(scene):
+    # incoming + outgoing is a near-zero vector at a perfect turnaround; the
+    # rebuilt tangent must fall back to the outgoing direction instead of
+    # normalizing float noise into a random ribbon orientation.
+    line = scene.create_game_object("NearReversal").add_component("LineRenderer")
+    line.start_width = 0.4
+    line.end_width = 0.4
+    line.set_positions([(0, 0, 0), (1, 1e-9, 0), (1e-8, 0, 0)])
+    target = scene.create_game_object("NearReversalBake").add_component("MeshRenderer")
+
+    line.bake_mesh(target)
+
+    positions = target._cpp_component.get_positions()
+    assert len(positions) == 6
+    for position in positions:
+        for channel in position:
+            assert abs(float(channel)) < 10.0
+    first_side_y = float(positions[1][1]) - float(positions[0][1])
+    assert abs(first_side_y) > 0.1
+    for sample in range(1, 3):
+        side_y = float(positions[sample * 2 + 1][1]) - float(positions[sample * 2][1])
+        assert side_y * first_side_y > 0.0
+
+
 def test_line_renderer_retraced_path_keeps_ribbon_sides_continuous(scene):
     line = scene.create_game_object("RetracedLine").add_component("LineRenderer")
     line.set_positions([(0, 0, 0), (1, 0, 0), (0, 0, 0)])
@@ -188,11 +210,11 @@ def test_line_renderer_serializes_authored_state_without_generated_mesh(scene):
     line.num_cap_vertices = 2
     line.shadow_bias = 0.25
     line.generate_lighting_data = True
-    line.width_curve = Curve(
+    line.width_curve = AnimationCurve(
         (
-            CurveKey(0.0, 0.25),
-            CurveKey(0.5, 1.5, 0.0, 0.0),
-            CurveKey(1.0, 0.75),
+            Keyframe(0.0, 0.25),
+            Keyframe(0.5, 1.5, 0.0, 0.0),
+            Keyframe(1.0, 0.75),
         )
     )
     line.color_gradient = Gradient(
@@ -264,8 +286,8 @@ def test_line_renderer_supports_unity_texture_modes_curves_and_rounding(scene):
     assert line._cpp_component.vertex_count == 14
     assert line._cpp_component.index_count == 36
 
-    line.width_curve = Curve(
-        (CurveKey(0.0, 0.1), CurveKey(0.5, 1.0), CurveKey(1.0, 0.2)),
+    line.width_curve = AnimationCurve(
+        (Keyframe(0.0, 0.1), Keyframe(0.5, 1.0), Keyframe(1.0, 0.2)),
         "repeat",
         "ping_pong",
     )

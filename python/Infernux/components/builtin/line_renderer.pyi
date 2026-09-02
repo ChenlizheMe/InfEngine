@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Sequence
 
-from Infernux.graph.ramp import Curve, Gradient
+from Infernux.graph.ramp import AnimationCurve, Gradient
 from Infernux.lib import Camera, LineAlignment, LineTextureMode, Vector3
 
 from .mesh_renderer import MeshRenderer
@@ -16,7 +16,7 @@ class LineRenderer(MeshRenderer):
     end_width: float
     start_color: List[float]
     end_color: List[float]
-    width_curve: Curve
+    width_curve: AnimationCurve
     color_gradient: Gradient
     loop: bool
     use_world_space: bool

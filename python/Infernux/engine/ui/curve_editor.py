@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 
-from Infernux.graph.ramp import CURVE_WRAP_MODES, MAX_RAMP_KEYS, Curve
+from Infernux.graph.ramp import CURVE_WRAP_MODES, MAX_RAMP_KEYS, AnimationCurve
 
+from .dpi import editor_dpi_scale
 from .theme import Theme
 
 
@@ -79,6 +80,7 @@ def _draw_curve(
     *,
     selected: int = -1,
     show_handles: bool = False,
+    dpi_scale: float = 1.0,
 ) -> dict[str, tuple[float, float]]:
     x0, y0, x1, y1 = rect
     time_min, time_max, value_min, value_max = bounds
@@ -93,18 +95,18 @@ def _draw_curve(
             y1 - (value - value_min) / value_span * height,
         )
 
-    ctx.draw_filled_rect(x0, y0, x1, y1, *Theme.CURVE_EDITOR_BG, 3.0)
+    ctx.draw_filled_rect(x0, y0, x1, y1, *Theme.CURVE_EDITOR_BG, 3.0 * dpi_scale)
     for index in range(1, 5):
         gx = x0 + width * index / 5.0
         gy = y0 + height * index / 5.0
-        ctx.draw_line(gx, y0, gx, y1, *Theme.CURVE_EDITOR_GRID, 1.0)
-        ctx.draw_line(x0, gy, x1, gy, *Theme.CURVE_EDITOR_GRID, 1.0)
+        ctx.draw_line(gx, y0, gx, y1, *Theme.CURVE_EDITOR_GRID, 1.0 * dpi_scale)
+        ctx.draw_line(x0, gy, x1, gy, *Theme.CURVE_EDITOR_GRID, 1.0 * dpi_scale)
     if time_min <= 0.0 <= time_max:
         axis_x, _ = to_screen(0.0, value_min)
-        ctx.draw_line(axis_x, y0, axis_x, y1, *Theme.CURVE_EDITOR_AXIS, 1.0)
+        ctx.draw_line(axis_x, y0, axis_x, y1, *Theme.CURVE_EDITOR_AXIS, 1.0 * dpi_scale)
     if value_min <= 0.0 <= value_max:
         _, axis_y = to_screen(time_min, 0.0)
-        ctx.draw_line(x0, axis_y, x1, axis_y, *Theme.CURVE_EDITOR_AXIS, 1.0)
+        ctx.draw_line(x0, axis_y, x1, axis_y, *Theme.CURVE_EDITOR_AXIS, 1.0 * dpi_scale)
 
     previous = None
     steps = max(64, int(width * 0.5))
@@ -112,14 +114,15 @@ def _draw_curve(
         time = time_min + time_span * index / steps
         point = to_screen(time, _evaluate_keys(keys, time))
         if previous is not None:
-            ctx.draw_line(*previous, *point, *Theme.CURVE_EDITOR_LINE, 2.0)
+            ctx.draw_line(*previous, *point, *Theme.CURVE_EDITOR_LINE, 2.0 * dpi_scale)
         previous = point
 
     handles: dict[str, tuple[float, float]] = {}
     for index, item in enumerate(keys):
         point = to_screen(float(item["time"]), float(item["value"]))
         color = Theme.CURVE_EDITOR_KEY_SELECTED if index == selected else Theme.CURVE_EDITOR_KEY
-        ctx.draw_filled_circle(*point, 5.0 if index == selected else 4.0, *color, 16)
+        radius = (5.0 if index == selected else 4.0) * dpi_scale
+        ctx.draw_filled_circle(*point, radius, *color, 16)
         if index == selected:
             handles["key"] = point
 
@@ -131,16 +134,28 @@ def _draw_curve(
             ("in", -1.0, "in_tangent"),
             ("out", 1.0, "out_tangent"),
         ):
-            handle_time = float(item["time"]) + direction * 48.0 * time_per_pixel
+            handle_time = float(item["time"]) + direction * 48.0 * dpi_scale * time_per_pixel
             handle_value = float(item["value"]) + (
                 handle_time - float(item["time"])
             ) * float(item[tangent_name])
             handle = to_screen(handle_time, handle_value)
-            ctx.draw_line(key_x, key_y, *handle, *Theme.CURVE_EDITOR_TANGENT, 1.0)
-            ctx.draw_filled_circle(*handle, 3.5, *Theme.CURVE_EDITOR_TANGENT, 12)
+            ctx.draw_line(
+                key_x, key_y, *handle, *Theme.CURVE_EDITOR_TANGENT, 1.0 * dpi_scale
+            )
+            ctx.draw_filled_circle(
+                *handle, 3.5 * dpi_scale, *Theme.CURVE_EDITOR_TANGENT, 12
+            )
             handles[name] = handle
 
-    ctx.draw_rect(x0, y0, x1, y1, *Theme.INSPECTOR_LIST_BODY_BORDER, 1.0, 3.0)
+    ctx.draw_rect(
+        x0,
+        y0,
+        x1,
+        y1,
+        *Theme.INSPECTOR_LIST_BODY_BORDER,
+        1.0 * dpi_scale,
+        3.0 * dpi_scale,
+    )
     return handles
 
 
@@ -157,14 +172,17 @@ def render_curve_property(
     non_negative: bool = False,
 ):
     """Render a compact curve field; clicking it opens a visual curve editor."""
-    curve = Curve.from_dict(value)
+    dpi = editor_dpi_scale(ctx)
+    curve = AnimationCurve.from_dict(value)
     keys = [item.to_dict() for item in curve.keys]
     state = _STATES.setdefault(widget_id, _CurveEditorState())
     state.selected = min(max(state.selected, 0), len(keys) - 1)
 
-    preview_width = max(120.0, float(ctx.get_content_region_avail_width()))
+    preview_width = max(120.0 * dpi, float(ctx.get_content_region_avail_width()))
     clicked = ctx.invisible_button(
-        f"##{widget_id}_curve_preview", preview_width, Theme.CURVE_EDITOR_PREVIEW_H
+        f"##{widget_id}_curve_preview",
+        preview_width,
+        Theme.CURVE_EDITOR_PREVIEW_H * dpi,
     )
     preview_rect = (
         float(ctx.get_item_rect_min_x()),
@@ -172,13 +190,19 @@ def render_curve_property(
         float(ctx.get_item_rect_max_x()),
         float(ctx.get_item_rect_max_y()),
     )
-    _draw_curve(ctx, keys, preview_rect, _view_bounds(keys, non_negative=non_negative))
+    _draw_curve(
+        ctx,
+        keys,
+        preview_rect,
+        _view_bounds(keys, non_negative=non_negative),
+        dpi_scale=dpi,
+    )
     if ctx.is_item_hovered():
         ctx.set_mouse_cursor(7)
         ctx.set_tooltip("Click to edit curve")
     ctx.record_semantic_rect(
         "curve",
-        "Curve",
+        "AnimationCurve",
         preview_rect[0],
         preview_rect[1],
         preview_rect[2] - preview_rect[0],
@@ -190,25 +214,25 @@ def render_curve_property(
     popup_id = f"##{widget_id}_curve_editor"
     if clicked:
         ctx.open_popup(popup_id)
-    ctx.set_next_window_size(440.0, 440.0, Theme.COND_ALWAYS)
+    ctx.set_next_window_size(440.0 * dpi, 440.0 * dpi, Theme.COND_ALWAYS)
     if not ctx.begin_popup(popup_id):
         return curve.to_dict()
 
     try:
         ctx.align_text_to_frame_padding()
         ctx.label("Pre Wrap")
-        ctx.same_line(72.0)
-        ctx.set_next_item_width(120.0)
+        ctx.same_line(72.0 * dpi)
+        ctx.set_next_item_width(120.0 * dpi)
         pre_index = ctx.combo(
             f"##{widget_id}_pre",
             CURVE_WRAP_MODES.index(curve.pre_wrap),
             list(CURVE_WRAP_MODES),
             -1,
         )
-        ctx.same_line(218.0)
+        ctx.same_line(218.0 * dpi)
         ctx.align_text_to_frame_padding()
         ctx.label("Post Wrap")
-        ctx.same_line(294.0)
+        ctx.same_line(294.0 * dpi)
         ctx.set_next_item_width(-1.0)
         post_index = ctx.combo(
             f"##{widget_id}_post",
@@ -217,9 +241,11 @@ def render_curve_property(
             -1,
         )
 
-        canvas_width = max(280.0, float(ctx.get_content_region_avail_width()))
+        canvas_width = max(280.0 * dpi, float(ctx.get_content_region_avail_width()))
         ctx.invisible_button(
-            f"##{widget_id}_curve_canvas", canvas_width, Theme.CURVE_EDITOR_CANVAS_H
+            f"##{widget_id}_curve_canvas",
+            canvas_width,
+            Theme.CURVE_EDITOR_CANVAS_H * dpi,
         )
         canvas_rect = (
             float(ctx.get_item_rect_min_x()),
@@ -229,7 +255,13 @@ def render_curve_property(
         )
         bounds = _view_bounds(keys, non_negative=non_negative)
         handles = _draw_curve(
-            ctx, keys, canvas_rect, bounds, selected=state.selected, show_handles=True
+            ctx,
+            keys,
+            canvas_rect,
+            bounds,
+            selected=state.selected,
+            show_handles=True,
+            dpi_scale=dpi,
         )
         hovered = bool(ctx.is_item_hovered())
         mouse = (float(ctx.get_mouse_pos_x()), float(ctx.get_mouse_pos_y()))
@@ -258,14 +290,14 @@ def render_curve_property(
             candidates = [(name, _distance_squared(mouse, point)) for name, point in handles.items()]
             if candidates:
                 name, distance = min(candidates, key=lambda item: item[1])
-                if distance <= 12.0**2:
+                if distance <= (12.0 * dpi) ** 2:
                     state.dragging = name
             for index, item in enumerate(keys):
                 key_point = (
                     x0 + (float(item["time"]) - time_min) / max(1.0e-6, time_max - time_min) * (x1 - x0),
                     y1 - (float(item["value"]) - value_min) / max(1.0e-6, value_max - value_min) * (y1 - y0),
                 )
-                if _distance_squared(mouse, key_point) <= 10.0**2:
+                if _distance_squared(mouse, key_point) <= (10.0 * dpi) ** 2:
                     state.selected = index
                     state.dragging = "key"
                     break
@@ -300,14 +332,14 @@ def render_curve_property(
         )
         ctx.align_text_to_frame_padding()
         ctx.label("Time")
-        ctx.same_line(92.0)
+        ctx.same_line(92.0 * dpi)
         ctx.set_next_item_width(-1.0)
         selected["time"] = float(
             ctx.drag_float(f"##{widget_id}_time", selected["time"], 0.01, minimum, maximum)
         )
         ctx.align_text_to_frame_padding()
         ctx.label("Value")
-        ctx.same_line(92.0)
+        ctx.same_line(92.0 * dpi)
         ctx.set_next_item_width(-1.0)
         selected["value"] = float(
             ctx.drag_float(
@@ -320,14 +352,14 @@ def render_curve_property(
         )
         ctx.align_text_to_frame_padding()
         ctx.label("In Tangent")
-        ctx.same_line(92.0)
+        ctx.same_line(92.0 * dpi)
         ctx.set_next_item_width(-1.0)
         selected["in_tangent"] = float(
             ctx.drag_float(f"##{widget_id}_in", selected["in_tangent"], 0.02, -1.0e7, 1.0e7)
         )
         ctx.align_text_to_frame_padding()
         ctx.label("Out Tangent")
-        ctx.same_line(92.0)
+        ctx.same_line(92.0 * dpi)
         ctx.set_next_item_width(-1.0)
         selected["out_tangent"] = float(
             ctx.drag_float(f"##{widget_id}_out", selected["out_tangent"], 0.02, -1.0e7, 1.0e7)
@@ -358,12 +390,12 @@ def render_curve_property(
             )
             state.selected = insertion_index
         if len(keys) > 1:
-            ctx.same_line(0, 8.0)
+            ctx.same_line(0, 8.0 * dpi)
             if ctx.button(f"Remove Key##{widget_id}_remove"):
                 del keys[state.selected]
                 state.selected = min(state.selected, len(keys) - 1)
 
-        return Curve.from_dict(
+        return AnimationCurve.from_dict(
             {
                 "keys": keys,
                 "pre_wrap": CURVE_WRAP_MODES[pre_index],

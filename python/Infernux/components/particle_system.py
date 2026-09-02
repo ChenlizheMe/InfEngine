@@ -30,7 +30,7 @@ from Infernux.graph import (
     ValueType,
     builtin_mesh_name,
 )
-from Infernux.graph.ramp import Curve, Gradient
+from Infernux.graph.ramp import AnimationCurve, Gradient
 from Infernux.particle import (
     GpuParticleEmitterController,
     EmitterShapeKind,
@@ -701,14 +701,14 @@ class ParticleSystem(InxComponent):
         )
         return AssetReference.from_dict(value)
 
-    def set_curve(self, name: str, value: Curve | dict) -> None:
+    def set_curve(self, name: str, value: AnimationCurve | dict) -> None:
         self._set_typed_parameter(name, value, ValueType.CURVE)
 
-    def get_curve(self, name: str) -> Curve:
+    def get_curve(self, name: str) -> AnimationCurve:
         value = self._get_typed_parameter(
-            name, ValueType.CURVE, Curve().to_dict()
+            name, ValueType.CURVE, AnimationCurve().to_dict()
         )
-        return Curve.from_dict(value)
+        return AnimationCurve.from_dict(value)
 
     def set_gradient(self, name: str, value: Gradient | dict) -> None:
         self._set_typed_parameter(name, value, ValueType.GRADIENT)
@@ -891,6 +891,26 @@ class ParticleSystem(InxComponent):
             "events": self.runtime_event_schema(),
             "emitters": emitters,
         }
+
+    @property
+    def is_resident(self) -> bool:
+        """Whether this system currently owns valid native GPU runtime state."""
+        return bool(self.runtime_diagnostics()["resident"])
+
+    @property
+    def is_playing(self) -> bool:
+        """Whether at least one enabled resident emitter is advancing."""
+        return bool(self.runtime_diagnostics()["playing"])
+
+    @property
+    def time(self) -> float:
+        """Authoritative graph simulation time in seconds."""
+        return int(getattr(self, "_graph_simulation_time_ticks", 0)) / 1_000_000_000.0
+
+    @property
+    def last_compile_error(self) -> str:
+        """Most recent graph compilation error, or an empty string."""
+        return str(self._last_compile_error)
 
     def request_gpu_diagnostics(
         self, sample_frames: int = 60, state_sample_count: int = 0
@@ -1621,78 +1641,58 @@ class ParticleSystem(InxComponent):
                 )
             guid = getattr(graph_ref, "guid", "")
             editor_source = Application.is_editor() and os.path.isfile(path)
-            artifact = ParticleArtifactRegistry.get(path, guid=guid)
-            recovery_attempted = False
-            if artifact is None:
-                runtime_load_error = None
-                try:
+            if editor_source:
+                artifact = ParticleArtifactRegistry.compile_path(path, guid=guid)
+            else:
+                artifact = ParticleArtifactRegistry.get(path, guid=guid)
+                if artifact is None:
                     artifact = ParticleArtifactRegistry.load_runtime_reference(
                         path, guid=guid
                     )
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    runtime_load_error = exc
-                if artifact is None:
-                    if editor_source:
-                        artifact = ParticleArtifactRegistry.compile_path(
-                            path, guid=guid, force_recompile=True
-                        )
-                        recovery_attempted = True
-                    elif runtime_load_error is not None:
-                        raise runtime_load_error
             if artifact is None:
                 raise RuntimeError(
                     "ParticleGraph AOT artifact is missing or stale; save the "
                     "ParticleGraph before Play"
                 )
 
-            while True:
-                try:
-                    metadata, kernel, decoded_emitters = (
-                        ParticleArtifactRegistry.decode_runtime_artifact(artifact)
+            metadata, kernel, decoded_emitters = (
+                ParticleArtifactRegistry.decode_runtime_artifact(artifact)
+            )
+            revision = artifact.revision
+            source_key = artifact.source_key
+            self._reconcile_parameter_overrides(metadata.parameters)
+            self._reconcile_emitter_overrides(metadata.emitters)
+            previous_metadata = getattr(self, "_particle_metadata", None)
+            previous_kernel = getattr(self, "_particle_kernel", None)
+            reload_compatibility = [None] * len(metadata.emitters)
+            if previous_metadata is not None and previous_kernel is not None:
+                previous_emitters = {
+                    emitter.stable_id: (emitter, kernel_emitter)
+                    for emitter, kernel_emitter in (
+                        zip(previous_metadata.emitters, previous_kernel.emitters)
                     )
-                    revision = artifact.revision
-                    source_key = artifact.source_key
-                    self._reconcile_parameter_overrides(metadata.parameters)
-                    self._reconcile_emitter_overrides(metadata.emitters)
-                    previous_metadata = getattr(self, "_particle_metadata", None)
-                    previous_kernel = getattr(self, "_particle_kernel", None)
-                    reload_compatibility = [None] * len(metadata.emitters)
-                    if previous_metadata is not None and previous_kernel is not None:
-                        previous_emitters = {
-                            emitter.stable_id: (emitter, kernel_emitter)
-                            for emitter, kernel_emitter in (
-                                zip(previous_metadata.emitters, previous_kernel.emitters)
-                            )
-                        }
-                        for emitter_index, (emitter, kernel_emitter) in enumerate(
-                            zip(metadata.emitters, kernel.emitters)
-                        ):
-                            previous = previous_emitters.get(emitter.stable_id)
-                            if previous is None:
-                                continue
-                            previous_emitter, previous_kernel_emitter = previous
-                            compatibility = classify_emitter_update(
-                                previous_kernel_emitter,
-                                kernel_emitter,
-                                previous_emitter.settings,
-                                emitter.settings,
-                            )
-                            reload_compatibility[emitter_index] = compatibility
-                    self._publish_gpu_particle_graph(
-                        artifact,
-                        metadata,
-                        kernel,
-                        reload_compatibility,
-                        decoded_emitters,
+                }
+                for emitter_index, (emitter, kernel_emitter) in enumerate(
+                    zip(metadata.emitters, kernel.emitters)
+                ):
+                    previous = previous_emitters.get(emitter.stable_id)
+                    if previous is None:
+                        continue
+                    previous_emitter, previous_kernel_emitter = previous
+                    compatibility = classify_emitter_update(
+                        previous_kernel_emitter,
+                        kernel_emitter,
+                        previous_emitter.settings,
+                        emitter.settings,
                     )
-                    break
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    if recovery_attempted or not editor_source:
-                        raise
-                    artifact = ParticleArtifactRegistry.compile_path(
-                        path, guid=guid, force_recompile=True
-                    )
-                    recovery_attempted = True
+                    reload_compatibility[emitter_index] = compatibility
+            self._publish_gpu_particle_graph(
+                artifact,
+                metadata,
+                kernel,
+                reload_compatibility,
+                decoded_emitters,
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._report_compile_failure(exc)
             return False
@@ -3449,7 +3449,11 @@ class ParticleSystem(InxComponent):
         kind = parameter.value_type.value_type
         if kind is ValueType.CURVE:
             try:
-                curve = value if isinstance(value, Curve) else Curve.from_dict(value)
+                curve = (
+                    value
+                    if isinstance(value, AnimationCurve)
+                    else AnimationCurve.from_dict(value)
+                )
             except (TypeError, ValueError) as exc:
                 raise TypeError(
                     f"particle parameter {parameter.name!r} requires a Curve"
