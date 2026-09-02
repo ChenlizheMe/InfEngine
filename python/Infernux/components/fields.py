@@ -427,11 +427,8 @@ class SerializedFieldDescriptor:
             self._weak_refs.pop(inst_id, None)
 
     def default_value(self) -> Any:
-        """Return a copy-safe default value for class-level fallback access."""
-        try:
-            return copy.deepcopy(self.metadata.default)
-        except Exception:
-            return self.metadata.default
+        """Return an instance-owned copy of the declared default value."""
+        return copy.deepcopy(self.metadata.default)
 
     def _coerce_other(self, other: Any) -> Any:
         if isinstance(other, SerializedFieldDescriptor):
@@ -1417,23 +1414,20 @@ def _apply_markers(meta: 'FieldMetadata', markers: list) -> Optional['FieldMetad
 def _coerce_default(meta: 'FieldMetadata', default: Any) -> Any:
     """Coerce a user-provided default to match the annotated field type."""
     ft = meta.field_type
-    try:
-        if ft == FieldType.FLOAT and isinstance(default, int) and not isinstance(default, bool):
-            return float(default)
-        if ft == FieldType.INT and isinstance(default, float) and default.is_integer():
-            return int(default)
-        if ft == FieldType.COLOR:
-            return normalize_rgba(default)
-        if ft == FieldType.ANIMATION_CURVE:
-            from Infernux.graph.ramp import AnimationCurve
-            return default if isinstance(default, AnimationCurve) else AnimationCurve.from_dict(default)
-        if ft == FieldType.GRADIENT:
-            from Infernux.graph.ramp import Gradient
-            return default if isinstance(default, Gradient) else Gradient.from_dict(default)
-        if ft == FieldType.STRING and default is None:
-            return ""
-    except Exception as exc:
-        Debug.log_suppressed(f"serialized_field._coerce_default[{meta.name}]", exc)
+    if ft == FieldType.FLOAT and isinstance(default, int) and not isinstance(default, bool):
+        return float(default)
+    if ft == FieldType.INT and isinstance(default, float) and default.is_integer():
+        return int(default)
+    if ft == FieldType.COLOR:
+        return normalize_rgba(default)
+    if ft == FieldType.ANIMATION_CURVE:
+        from Infernux.graph.ramp import AnimationCurve
+        return default if isinstance(default, AnimationCurve) else AnimationCurve.from_dict(default)
+    if ft == FieldType.GRADIENT:
+        from Infernux.graph.ramp import Gradient
+        return default if isinstance(default, Gradient) else Gradient.from_dict(default)
+    if ft == FieldType.STRING and default is None:
+        return ""
     return default
 
 
@@ -1747,18 +1741,6 @@ def get_serialized_fields(component_class: Type['InxComponent']) -> Dict[str, Fi
         own = cls.__dict__.get('_serialized_fields_')
         if own:
             fields.update(own)
-    # Fallback: if _serialized_fields_ was cleared (e.g. by a script reload),
-    # rediscover descriptors directly from the class hierarchy.
-    if not fields:
-        for cls in reversed(component_class.__mro__):
-            for attr_name, attr in cls.__dict__.items():
-                if attr_name.startswith('_'):
-                    continue
-                if isinstance(attr, SerializedFieldDescriptor):
-                    fields[attr_name] = attr.metadata
-                    continue
-                if getattr(attr, '_is_cpp_property', False) and hasattr(attr, 'metadata'):
-                    fields[attr_name] = attr.metadata
     _SERIALIZED_FIELDS_CACHE[component_class] = fields
     return fields
 
@@ -1790,11 +1772,7 @@ class HiddenField:
             return self
         hidden_name = f'_hidden_{self._name}'
         if not hasattr(obj, hidden_name):
-            try:
-                value = copy.deepcopy(self.default)
-            except Exception:
-                value = self.default
-            setattr(obj, hidden_name, value)
+            setattr(obj, hidden_name, copy.deepcopy(self.default))
         return getattr(obj, hidden_name)
     
     def __set__(self, obj, value):
