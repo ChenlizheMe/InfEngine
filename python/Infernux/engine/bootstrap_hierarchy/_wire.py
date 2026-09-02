@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 from Infernux.debug import Debug
 from Infernux.engine.bootstrap_hierarchy._helpers import (
-    _get_children_safe,
-    _get_py_components_safe,
+    _get_children,
+    _get_py_components,
 )
 
 if TYPE_CHECKING:
@@ -88,7 +88,7 @@ def _wire_canvas_queries(ctx):
                     continue
                 if current_id:
                     canvas_tree_ids.add(current_id)
-                pending.extend(_get_children_safe(current))
+                pending.extend(_get_children(current))
 
         query_cache["scene_ref"] = scene
         query_cache["scene_structure_version"] = scene_structure_version
@@ -112,7 +112,7 @@ def _wire_canvas_queries(ctx):
         go = scene.find_by_id(oid)
         if not go:
             return False
-        for comp in _get_py_components_safe(go):
+        for comp in _get_py_components(go):
             if isinstance(comp, InxUIScreenComponent):
                 return True
         return False

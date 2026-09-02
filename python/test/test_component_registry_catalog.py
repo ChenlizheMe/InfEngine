@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from Infernux.components.registry import (
     get_component_constraints,
     get_component_registrations,
@@ -12,6 +14,10 @@ from Infernux.engine.bootstrap_inspector._helpers import (
     _get_add_component_entries,
     _get_component_script_error,
     _get_py_components_safe,
+)
+from Infernux.engine.bootstrap_hierarchy._helpers import (
+    _get_children,
+    _get_py_components,
 )
 
 
@@ -86,6 +92,29 @@ def test_inspector_reads_python_components_from_selected_object():
             return tuple(components)
 
     assert _get_py_components_safe(SelectedObject()) == components
+
+
+def test_inspector_component_query_does_not_hide_native_failure():
+    class SelectedObject:
+        def get_py_components(self):
+            raise RuntimeError("component query failed")
+
+    with pytest.raises(RuntimeError, match="component query failed"):
+        _get_py_components_safe(SelectedObject())
+
+
+def test_hierarchy_queries_do_not_replace_native_failures_with_empty_lists():
+    class SelectedObject:
+        def get_py_components(self):
+            raise RuntimeError("component query failed")
+
+        def get_children(self):
+            raise RuntimeError("child query failed")
+
+    with pytest.raises(RuntimeError, match="component query failed"):
+        _get_py_components(SelectedObject())
+    with pytest.raises(RuntimeError, match="child query failed"):
+        _get_children(SelectedObject())
 
 
 def test_missing_script_placeholder_does_not_replace_live_registered_type():
