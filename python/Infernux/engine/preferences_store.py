@@ -2,7 +2,7 @@
 Shared preferences storage for the Infernux editor.
 
 This module provides a minimal JSON-backed preference store used by
-different preference classes. It preserves the original persistence logic:
+different preference classes:
 
 - preferences file: Documents/Infernux/preferences.json
 - load the whole JSON object
@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-from Infernux.debug import Debug
 
 _PREFS_FILE = "preferences.json"
 
@@ -23,15 +22,13 @@ _PREFS_FILE = "preferences.json"
 def _prefs_path() -> str:
     """Return the path to the global preferences file."""
     if os.name == "nt":
-        docs = pathlib.Path.home() / "Documents"
-        try:
-            import ctypes.wintypes
-            buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
-            if buf.value:
-                docs = pathlib.Path(buf.value)
-        except (OSError, ValueError) as exc:
-            Debug.log_suppressed("preferences_store.resolve_documents_dir", exc)
+        import ctypes.wintypes
+
+        buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+        result = ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
+        if result != 0 or not buf.value:
+            raise OSError(result, "Windows did not resolve the Documents directory")
+        docs = pathlib.Path(buf.value)
     else:
         docs = pathlib.Path.home() / "Documents"
 
@@ -62,21 +59,22 @@ class PreferencesStore:
         if not os.path.isfile(self._path):
             return {}
 
-        try:
-            with open(self._path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError) as exc:
-            Debug.log_suppressed("preferences_store.load", exc)
-            return {}
+        with open(self._path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise TypeError("preferences.json must contain a JSON object")
+        return data
 
     def save(self, data: dict) -> None:
         """Save the full preferences dictionary."""
-        try:
-            from Infernux.core.document_store import write_document_text
-            write_document_text(self._path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        except (OSError, RuntimeError) as exc:
-            Debug.log_suppressed("preferences_store.save", exc)
+        if not isinstance(data, dict):
+            raise TypeError("preferences must be a dictionary")
+        from Infernux.core.document_store import write_document_text
+
+        write_document_text(
+            self._path,
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        )
 
     def get(self, key: str, default=None):
         """Return a single preference value."""
