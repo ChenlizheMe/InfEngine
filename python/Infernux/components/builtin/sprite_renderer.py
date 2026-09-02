@@ -231,32 +231,16 @@ class SpriteRenderer(BuiltinComponent):
         correct texture binding *before* the first render frame, avoiding
         the white-quad-until-clicked problem.
         """
-        try:
-            if scene is None:
-                from Infernux.lib import SceneManager
-                scene = SceneManager.instance().get_active_scene()
-            if scene is None:
-                return
-            find_objects = getattr(scene, "find_objects_with_component", None)
-            all_objects = (
-                find_objects("SpriteRenderer")
-                if callable(find_objects)
-                else scene.get_all_objects()
-            )
-            count = 0
-            for obj in all_objects:
-                try:
-                    cpp_comp = obj.get_component("SpriteRenderer")
-                    if cpp_comp is not None:
-                        # SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
-                        w = SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
-                        w._ensure_material()
-                        count += 1
-                except Exception:
-                    pass
-            if count > 0:
-        except Exception as e:
-            Debug.log_warning(f"SpriteRenderer.init_all_in_scene failed: {e}")
+        if scene is None:
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            return
+        for obj in scene.find_objects_with_component("SpriteRenderer"):
+            cpp_comp = obj.get_component("SpriteRenderer")
+            if cpp_comp is not None:
+                w = SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                w._ensure_material()
 
     # ── Sprite GUID (wraps C++ string, exposes as TEXTURE for Inspector) ──
 
