@@ -220,14 +220,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         registry, or live component state.  ``force=True`` callers may invoke
         it on the owner thread when the watcher is unavailable.
         """
-        started = time.perf_counter()
         processed = len(self._script_change_collector.process_worker_batch(max_items))
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if processed and elapsed_ms >= 25.0:
-            Debug.log_internal(
-                f"[ScriptReloadProfile] frontend={elapsed_ms:.2f}ms "
-                f"members={processed}"
-            )
         if processed:
             self._wake_editor()
         return processed
@@ -373,7 +366,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if callable(request_full_speed):
                 request_full_speed()
         for event in events:
-            event_started = time.perf_counter()
             try:
                 # A full AssetDatabase refresh owns the mutation transaction
                 # until its prepared commit is published on this thread.
@@ -391,14 +383,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
             except Exception as exc:
                 Debug.log_error(f"Asset event failed: {event}: {exc}")
-            finally:
-                elapsed_ms = (time.perf_counter() - event_started) * 1000.0
-                if elapsed_ms >= 25.0:
-                    Debug.log_internal(
-                        f"[AssetReloadProfile] event={event.kind.value} "
-                        f"elapsed={elapsed_ms:.2f}ms pending={self._coordinator.pending_count} "
-                        f"path={event.path}"
-                    )
 
         # Dispatch first: a script event can submit its immutable snapshot to
         # the frontend worker, whose result may already be ready by the time
@@ -563,10 +547,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._script_transactions[transaction_id]
             )
             return
-        Debug.log_internal(
-            "Restarted superseded startup script scan "
-            f"(transaction={transaction_id}, members={submitted})"
-        )
 
     def _seed_script_dependency_closure(
         self,
@@ -640,38 +620,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
         """Publish diagnostics and callbacks after collector LKG commit."""
         from Infernux.components.script_loader import _clear_script_error
 
-        started = time.perf_counter()
-        marks: list[tuple[str, float]] = []
-
-        def mark(label: str) -> None:
-            marks.append((label, time.perf_counter()))
-
         _clear_script_error(result.path)
-        mark("diagnostic_registry")
         Debug.clear_source_entries(result.path)
-        mark("console")
-        Debug.log_internal(f"[OK] Script OK: {os.path.basename(result.path)}")
         rm = ResourcesManager.instance()
         if rm is not None:
             catalog_event = result.change.effective_catalog_event
             if catalog_event is not None:
                 rm.notify_script_catalog_changed(result.path, catalog_event)
-            mark("catalog_callbacks")
             abs_path = path_key(result.path)
             for callback in list(rm._script_reload_callbacks.get(abs_path, [])):
                 callback(result.path)
-            mark("file_callbacks")
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if elapsed_ms >= 10.0:
-            previous = started
-            pieces = []
-            for label, current in marks:
-                pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                previous = current
-            Debug.log_internal(
-                f"[ScriptReloadProfile] post_commit={elapsed_ms:.2f}ms "
-                f"file={os.path.basename(result.path)} " + " ".join(pieces)
-            )
 
     def _rollback_script_publication(self, token: _ScriptPublicationRollback) -> None:
         rollback_errors: list[str] = []
@@ -799,12 +757,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             ScriptReloadBatchInput,
         )
 
-        profile_started = time.perf_counter()
-        profile_marks: list[tuple[str, float]] = []
-
-        def mark(label: str) -> None:
-            profile_marks.append((label, time.perf_counter()))
-
         # This is intentionally inside the collector publication callback:
         # the source/hash check is repeated after claim and immediately before
         # any live, registry, or graph mutation.
@@ -818,10 +770,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 {result.path: result.source for result in ready},
                 removals=state.retire_paths,
             )
-        mark("dependency_graph")
-
         registry_snapshot = snapshot_component_registry_state()
-        mark("registry_snapshot")
         play_mode = PlayModeManager.instance()
         play_batch = None
         token = _ScriptPublicationRollback(
@@ -830,7 +779,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         )
         try:
             ordered = self._ordered_script_results(state, ready_stage)
-            mark("order")
             move_owner_key = (
                 path_key(state.expected_paths[0])
                 if state.expected_paths
@@ -858,17 +806,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     for result in ordered
                 )
                 play_batch = play_mode.prepare_script_reload_batch(revisions)
-                mark("prepare_live_batch")
                 token.play_batch = play_batch
                 outcome = play_mode.commit_script_reload_batch(play_batch)
-                mark("commit_live_batch")
                 if not outcome.success:
                     play_mode.rollback_script_reload_batch(play_batch)
                     token.play_batch = None
                     return False
                 for result in ordered:
                     self._publish_script_registry_member(result)
-                mark("publish_registry")
             else:
                 for result in ordered:
                     if not self._publish_valid_script(
@@ -890,18 +835,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 mutation = graph.commit_transaction(ready_stage)
                 token.graph_committed = True
                 self._last_dependency_affected = tuple(mutation.affected)
-            mark("commit_dependency_graph")
-            total_ms = (time.perf_counter() - profile_started) * 1000.0
-            if total_ms >= 25.0:
-                previous = profile_started
-                pieces = []
-                for label, current in profile_marks:
-                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                    previous = current
-                Debug.log_internal(
-                    f"[ScriptReloadProfile] publish_detail total={total_ms:.2f}ms "
-                    + " ".join(pieces)
-                )
             return token
         except Exception as exc:
             self._rollback_script_publication(token)
@@ -967,7 +900,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if any(not result.succeeded for result in state.results.values()):
             state.failed = True
             return self._discard_failed_script_transaction(state)
-        publish_started = time.perf_counter()
         try:
             published = self._script_change_collector.publish_ready_batch(
                 state.expected_paths,
@@ -983,12 +915,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             )
             self._discard_failed_script_transaction(state)
             return False
-        publish_elapsed_ms = (time.perf_counter() - publish_started) * 1000.0
-        if publish_elapsed_ms >= 25.0:
-            Debug.log_internal(
-                f"[ScriptReloadProfile] publish={publish_elapsed_ms:.2f}ms "
-                f"members={len(state.expected_paths)}"
-            )
         if published is False:
             state.failed = True
             self._discard_failed_script_transaction(state)
@@ -1109,14 +1035,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if not os.path.isfile(event.path) or os.path.isfile(event.path + ".meta"):
                 return
             if AssetManager.is_meta_watcher_suppressed(event.path):
-                Debug.log_internal(f"[AssetManager] suppressed meta watcher echo: {event}")
                 return
         elif AssetManager.is_watcher_echo_suppressed(
             event.kind.value,
             event.path,
             event.destination,
         ):
-            Debug.log_internal(f"[AssetManager] suppressed watcher echo: {event}")
             return
         from Infernux.engine.interaction import ActionOrigin, action_origin_scope
 
@@ -1193,9 +1117,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if not documents.preflight_external_resource_change(path):
             return
         script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
-        profile_started = time.perf_counter() if script_change else 0.0
         was_registered = self._asset_database.contains_path(path)
-        import_started = time.perf_counter() if script_change else 0.0
         try:
             if was_registered:
                 result = AssetManager.reimport_asset(
@@ -1232,14 +1154,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             documents.fail_external_resource_change(path, message=str(exc))
             raise
         if script_change:
-            import_elapsed_ms = (time.perf_counter() - import_started) * 1000.0
             self._check_script(path, catalog_event="modified")
-            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
-            if elapsed_ms >= 25.0:
-                Debug.log_internal(
-                    f"[ScriptReloadProfile] asset_reimport={import_elapsed_ms:.2f}ms "
-                    f"owner_submit={elapsed_ms:.2f}ms file={os.path.basename(path)}"
-                )
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
 
@@ -1318,7 +1233,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
              which regenerates the sidecar while preserving the in-memory GUID.
           2. Reload the live resource + GPU caches so the change takes effect now.
         """
-        Debug.log_internal(f"[Meta Missing] regenerate + reload for {owner_path}")
         if not owner_path or not os.path.isfile(owner_path):
             return
         if os.path.isfile(owner_path + ".meta"):
@@ -1326,7 +1240,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
         from Infernux.core.assets import AssetManager
         if AssetManager.is_meta_watcher_suppressed(owner_path):
-            Debug.log_internal(f"[Meta Missing] suppressed rebuild echo for {owner_path}")
             return
 
         if self._asset_database.contains_path(owner_path):
@@ -1459,7 +1372,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if _defer_post_commit:
             return True
         _clear_script_error(file_path)
-        Debug.log_internal(f"[OK] Script OK: {os.path.basename(file_path)}")
         rm = ResourcesManager.instance()
         if rm is not None and catalog_event is not None:
             rm.notify_script_catalog_changed(file_path, catalog_event)
@@ -1474,7 +1386,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # Invalidate shader caches in UI
         for callback in self._shader_cache_invalidation_callbacks:
             callback()
-        Debug.log_internal(f"[OK] Shader reloaded: {os.path.basename(file_path)}")
     
     def register_shader_cache_callback(self, callback):
         """Register a callback to be called when shader cache should be invalidated."""
@@ -1615,17 +1526,11 @@ class ResourcesManager:
             return
         if on_progress:
             on_progress("Scanning project scripts...")
-        phase_started = time.perf_counter()
         self._ensure_event_handler()
-        Debug.log_internal(
-            "Startup resource refresh event handler initialized in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
 
         # Start the watcher/frontend worker before submitting the startup
         # snapshots.  skip_initial_scan keeps a single owner-created startup
         # transaction while the worker performs the expensive frontend work.
-        phase_started = time.perf_counter()
         self.start(skip_initial_scan=True)
         worker_deadline = time.monotonic() + 5.0
         while (
@@ -1638,25 +1543,10 @@ class ResourcesManager:
             if callable(pump_events):
                 pump_events()
             time.sleep(0)
-        Debug.log_internal(
-            "Startup resource refresh worker started in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
-
-        phase_started = time.perf_counter()
         self._initial_script_scan()
-        Debug.log_internal(
-            "Startup resource refresh snapshots submitted in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
         if on_progress:
             on_progress("Publishing project scripts...")
-        phase_started = time.perf_counter()
         self._wait_for_startup_idle()
-        Debug.log_internal(
-            "Startup resource refresh revisions published in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
         self._startup_prepared = True
 
     def _scan_resources(self):
@@ -1729,20 +1619,16 @@ class ResourcesManager:
                 script_paths,
                 initial_scan=True,
             )
-        submitted = 0
         for fpath in script_paths:
             if self._event_handler is None:
                 continue
-            if self._event_handler._check_script(
+            self._event_handler._check_script(
                 fpath,
                 catalog_event=None,
                 origin="initial_scan",
                 change_kind="initial_scan",
                 transaction_id=transaction_id,
-            ) is not None:
-                submitted += 1
-        if submitted:
-            Debug.log_internal(f"Startup scan queued {submitted} script revision(s)")
+            )
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
         """Commit worker artifacts and asset events on the main thread."""
@@ -1834,19 +1720,11 @@ class ResourcesManager:
 
     def notify_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         """Notify listeners that Python script catalog may have changed."""
-        started = time.perf_counter()
         for cb in list(self._script_catalog_callbacks):
             try:
                 cb(file_path, event_type)
             except Exception as e:
                 Debug.log_error(f"Script catalog callback failed: {e}")
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if elapsed_ms >= 10.0:
-            Debug.log_internal(
-                f"[ScriptReloadProfile] catalog_callbacks={elapsed_ms:.2f}ms "
-                f"listeners={len(self._script_catalog_callbacks)} "
-                f"file={os.path.basename(file_path)} event={event_type}"
-            )
 
     def reload_moved_script(self, old_path: str, new_path: str) -> None:
         """Queue a GUID-stable script move after the durable asset move."""
@@ -1917,5 +1795,3 @@ class ResourcesManager:
         self._script_catalog_callbacks.clear()
         if ResourcesManager._instance is self:
             ResourcesManager._instance = None
-        
-        Debug.log_internal("ResourcesManager cleanup completed")
