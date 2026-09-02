@@ -527,10 +527,6 @@ class PlayerBootstrap:
             # RuntimeAssetCatalog is the final authority inside the Player.
             if self._resolve_runtime_scene(requested_scene) is not None:
                 first_scene = requested_scene
-                Debug.log_internal(
-                    "Loaded Supervisor validation scene: "
-                    f"{os.path.basename(requested_scene)}"
-                )
             else:
                 Debug.log_warning("Ignored invalid Supervisor Player start-scene override")
         # Resolve relative paths against project root (packaged builds
