@@ -657,20 +657,14 @@ class BootstrapPanelsMixin:
             elif hasattr(inst, "load_state") and callable(inst.load_state):
                 data = _panel_state.get(f"panel:{wid}")
                 if data:
-                    try:
-                        inst.load_state(data)
-                    except Exception:
-                        pass
+                    inst.load_state(data)
 
         self._suspend_persist_state = False
         self.project_panel.on_state_changed = self._persist_editor_state
         wm.set_on_state_changed(self._persist_editor_state)
-        try:
-            self.engine.set_before_exit_callback(
-                lambda: self._persist_editor_state(include_scene_draft=True)
-            )
-        except Exception:
-            pass
+        self.engine.set_before_exit_callback(
+            lambda: self._persist_editor_state(include_scene_draft=True)
+        )
 
         self._persist_editor_state()
 
