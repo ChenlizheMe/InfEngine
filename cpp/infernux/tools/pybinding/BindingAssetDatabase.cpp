@@ -83,7 +83,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("try_commit_refresh", &AssetDatabase::TryCommitRefresh,
              "Advance asynchronous scan/import and finalize a completed artifact on the owner thread")
         .def_property_readonly("refresh_pending", &AssetDatabase::IsRefreshPending)
-        .def("flush_derived_index", &AssetDatabase::FlushDerivedIndex, "Persist a dirty derived AssetIndex")
+        .def("flush_derived_index", &AssetDatabase::FlushDerivedIndex, py::arg("wait_for_pending_scan") = true,
+             "Persist a dirty derived AssetIndex")
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), "Import a single asset")
