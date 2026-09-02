@@ -1,8 +1,10 @@
 from pathlib import Path
 import json
 
+import pytest
+
 from Infernux.engine.bootstrap import EditorBootstrap
-from Infernux.particle.artifact import ParticleArtifactRegistry
+from Infernux.particle.artifact import ParticleArtifactError, ParticleArtifactRegistry
 from Infernux.particle.asset import ParticleGraphAsset
 
 
@@ -42,7 +44,7 @@ def test_editor_bootstrap_compiles_missing_particle_artifacts(tmp_path):
     assert payload["source_hash"]
 
 
-def test_editor_bootstrap_continues_when_particle_compile_fails(tmp_path):
+def test_editor_bootstrap_rejects_particle_compile_failure(tmp_path):
     ParticleArtifactRegistry.clear()
     path = tmp_path / "Assets" / "VFX" / "Broken.particlegraph"
     path.parent.mkdir(parents=True)
@@ -50,4 +52,5 @@ def test_editor_bootstrap_continues_when_particle_compile_fails(tmp_path):
 
     bootstrap = EditorBootstrap.__new__(EditorBootstrap)
     bootstrap.project_path = str(tmp_path)
-    bootstrap._ensure_particle_artifacts()
+    with pytest.raises(ParticleArtifactError, match="Particle artifact compile failed"):
+        bootstrap._ensure_particle_artifacts()

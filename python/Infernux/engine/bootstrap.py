@@ -208,32 +208,15 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
     def _log_startup_profile(message: str) -> None:
         if os.environ.get("INFERNUX_PROFILE_STARTUP", "").strip() == "1":
             Debug.log(message)
-        else:
-            Debug.log_internal(message)
-
 
     def _ensure_particle_artifacts(self) -> None:
         """Compile missing or stale particle Library products before the first frame."""
-        try:
-            from Infernux.particle.artifact import ParticleArtifactRegistry
+        from Infernux.particle.artifact import ParticleArtifactRegistry
 
-            summary = ParticleArtifactRegistry.ensure_project_compiled(
-                self.project_path,
-                raise_on_error=False,
-            )
-        except Exception as exc:
-            Debug.log_warning(f"Particle artifact startup compile skipped: {exc}")
-            return
-        compiled = summary.get("compiled") or []
-        failed = summary.get("failed") or []
-        if compiled:
-            Debug.log_internal(
-                f"Particle artifacts compiled on startup: {len(compiled)}"
-            )
-        if failed:
-            Debug.log_error(
-                f"Particle artifacts failed on startup: {len(failed)}"
-            )
+        ParticleArtifactRegistry.ensure_project_compiled(
+            self.project_path,
+            raise_on_error=True,
+        )
 
     def _ensure_project_requirements(self):
         from Infernux.engine.project_requirements import ensure_project_requirements
@@ -321,27 +304,22 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         preview_panel = _BootstrapPreviewPanel(native)
 
-        warmed = 0
         for mat_path in material_paths:
             try:
                 # Keep cache_tag empty to match first inspector draw.
-                tex_id = int(get_resource_preview_texture_id(
+                get_resource_preview_texture_id(
                     preview_panel,
                     mat_path,
                     preview_size=256,
                     cache_tag="",
                     material_async=False,
-                ))
-                if tex_id:
-                    warmed += 1
+                )
             except Exception as exc:
                 Debug.log_suppressed(
                     f"EditorBootstrap.material_preview_prewarm[{os.path.basename(mat_path)}]",
                     exc,
                 )
                 continue
-
-        Debug.log_internal(f"Material preview prewarm: {warmed}/{len(material_paths)}")
 
     def _create_managers(self):
         from Infernux.engine.interaction import EditorInteractionCore

@@ -12,7 +12,6 @@ import sys
 import importlib
 import importlib.util
 import inspect
-import time
 import tokenize
 import types
 from dataclasses import dataclass, fields as dataclass_fields
@@ -807,12 +806,6 @@ def stage_component_body_reload_batch(
     requests: Iterable[ComponentBodyReloadRequest],
 ) -> ComponentBodyReloadTransaction:
     """Stage all script candidates before touching any live class body."""
-    profile_started = time.perf_counter()
-    profile_marks: list[tuple[str, float]] = []
-
-    def mark(label: str) -> None:
-        profile_marks.append((label, time.perf_counter()))
-
     incoming_requests = tuple(requests)
     if not incoming_requests:
         raise ValueError("at least one reload request is required")
@@ -849,7 +842,6 @@ def stage_component_body_reload_batch(
         request_modules.append(module_name)
     normalized_requests = tuple(normalized_requests)
     request_modules = tuple(request_modules)
-    mark("normalize")
 
     from .registry import (
         restore_component_registry_state,
@@ -858,7 +850,6 @@ def stage_component_body_reload_batch(
 
     registry_snapshot = snapshot_component_registry_state()
     diagnostic_snapshot = _snapshot_script_diagnostics()
-    mark("snapshots")
     module_snapshot: dict[str, object] = {}
     plans: list[tuple[type, tuple[tuple[str, bool, object], ...]]] = []
     matched_types: list[tuple[type, type]] = []
@@ -877,7 +868,6 @@ def stage_component_body_reload_batch(
             source=request.source,
             code=request.code,
         )
-    mark("register_candidates")
 
     try:
         for request, module_name in zip(normalized_requests, request_modules):
@@ -935,8 +925,6 @@ def stage_component_body_reload_batch(
                     # Loading a candidate must not publish diagnostics. The
                     # outer collector clears errors after durable commit.
                     _restore_script_diagnostics(diagnostic_snapshot)
-
-            mark(f"load_candidate:{os.path.basename(file_path)}")
 
             if diagnostic:
                 raise ScriptLoadError(
@@ -1041,7 +1029,6 @@ def stage_component_body_reload_batch(
             candidate_import.publishable_modules,
             replacements,
         )
-        mark("rebind")
         schema_migrations.extend(
             build_class_schema_migration(target_type, candidate_type)
             for target_type, candidate_type in matched_types
@@ -1053,8 +1040,6 @@ def stage_component_body_reload_batch(
             )
             for target_type, candidate_type in matched_types
         )
-        mark("schema_and_plans")
-
         transaction = ComponentBodyReloadTransaction(
             normalized_requests,
             tuple(plans),
@@ -1069,18 +1054,6 @@ def stage_component_body_reload_batch(
             cds_publish_types=tuple(cds_publish_types),
             registration_publish_types=tuple(registration_publish_types),
         )
-        mark("transaction_snapshot")
-        total_ms = (time.perf_counter() - profile_started) * 1000.0
-        if total_ms >= 25.0:
-            previous = profile_started
-            pieces = []
-            for label, current in profile_marks:
-                pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                previous = current
-            Debug.log_internal(
-                f"[ScriptReloadProfile] stage_detail total={total_ms:.2f}ms "
-                + " ".join(pieces)
-            )
         return transaction
     except Exception:
         candidate_import.rollback()

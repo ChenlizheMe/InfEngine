@@ -100,9 +100,6 @@ class PlayerSceneService:
             return False
         self._last_error = ""
         self._pending_scene_path = target
-        Debug.log_internal(
-            f"Player scene load queued: {os.path.basename(target)}"
-        )
         return True
 
     def request_prepared_load(
@@ -129,9 +126,6 @@ class PlayerSceneService:
         self._transaction_generation = generation
         self._wait_for_ready = True
         self._hold_for_activation = bool(hold_for_activation)
-        Debug.log_internal(
-            f"Player scene background preparation started: {os.path.basename(target)}"
-        )
         return True
 
     def activate_prepared_load(self) -> bool:
@@ -208,7 +202,6 @@ class PlayerSceneService:
             f"scene={os.path.basename(target)!r}, {details}"
         )
         _player_log(message)
-        Debug.log_internal(message)
 
     def cancel_pending_load(self) -> None:
         self._request_generation += 1
@@ -283,7 +276,6 @@ class PlayerSceneService:
             f"camera={scene is not None and scene.main_camera is not None})"
         )
         _player_log(f"[SceneLoad] {message}")
-        Debug.log_internal(message)
 
 
 __all__ = ["PlayerSceneService"]

@@ -84,7 +84,6 @@ class GizmosCollector:
         self._icon_cache: Dict[str, list] = {}
         self._cache_built: set = set()   # type_names whose cache entry is filled
         self._last_structure_version: int = -1  # track Scene.structure_version
-        self._last_logged_icon_count: int = -1
         self._builtin_registry = None
         # The selected-object subtree is stable until the scene structure or
         # selection changes.  Keep only its IDs: component state and Gizmo
@@ -314,14 +313,8 @@ class GizmosCollector:
             pos_color_buf, id_buf, kind_buf, icon_count = icon_packed
             native.upload_component_gizmo_icons(
                 pos_color_buf, id_buf, kind_buf, icon_count)
-            if icon_count != self._last_logged_icon_count:
-                Debug.log_internal(f"[Gizmos] uploaded {icon_count} component icon(s)")
-                self._last_logged_icon_count = icon_count
         else:
             native.clear_component_gizmo_icons()
-            if self._last_logged_icon_count != 0:
-                Debug.log_internal("[Gizmos] uploaded 0 component icons")
-                self._last_logged_icon_count = 0
 
     # ------------------------------------------------------------------
     # Private helpers
