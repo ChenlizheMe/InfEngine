@@ -25,6 +25,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._committed_text = ""
         self._text_input_button = None
         self._text_input_status = None
+        self._last_screen_view = None
+        self._back_reported = False
 
     def start(self):
         scene = inx.SceneManager.get_active_scene()
@@ -103,9 +105,64 @@ class PlatformFixtureBootstrap(inx.InxComponent):
 
     def update(self, delta_time: float):
         del delta_time
+        self._validate_screen_state()
+        self._validate_cancel_action()
         self._validate_touch_input()
         self._validate_text_input()
         self._record_trail_position()
+
+    def _validate_screen_state(self):
+        revision = inx.Screen.revision
+        width, height = inx.Screen.size
+        framebuffer_width, framebuffer_height = inx.Screen.framebuffer_size
+        safe = inx.Screen.safe_area
+        insets = inx.Screen.safe_insets
+        pixel_ratio = inx.Screen.pixel_ratio
+        screen_view = (
+            width,
+            height,
+            framebuffer_width,
+            framebuffer_height,
+            safe.x,
+            safe.y,
+            safe.width,
+            safe.height,
+            pixel_ratio,
+        )
+        if screen_view == self._last_screen_view:
+            return
+        if width <= 0 or height <= 0:
+            raise RuntimeError("Screen logical size must be positive")
+        if framebuffer_width <= 0 or framebuffer_height <= 0:
+            raise RuntimeError("Screen framebuffer size must be positive")
+        if pixel_ratio <= 0.0:
+            raise RuntimeError("Screen pixel ratio must be positive")
+        if (
+            safe.x < 0
+            or safe.y < 0
+            or safe.width <= 0
+            or safe.height <= 0
+            or safe.x + safe.width > width
+            or safe.y + safe.height > height
+        ):
+            raise RuntimeError("Screen safe area is outside the logical viewport")
+
+        self._last_screen_view = screen_view
+        inx.Debug.log(
+            "INFERNUX_PLATFORM_FIXTURE_SCREEN_STATE "
+            f"revision={revision} size={width}x{height} "
+            f"framebuffer={framebuffer_width}x{framebuffer_height} "
+            f"safe={safe.x},{safe.y},{safe.width},{safe.height} "
+            f"insets={insets.left},{insets.top},{insets.right},{insets.bottom} "
+            f"pixel_ratio={pixel_ratio:.6f}"
+        )
+
+    def _validate_cancel_action(self):
+        if self._back_reported:
+            return
+        if self._actions["Cancel"].was_pressed_this_frame:
+            self._back_reported = True
+            inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_BACK_READY")
 
     def _begin_text_input(self):
         if self._text_input_requested:

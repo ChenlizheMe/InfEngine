@@ -24,12 +24,34 @@ from android_player_smoke import (
 
 _PASSED_RESULT = "INSTRUMENTATION_RESULT: INFERNUX_MULTITOUCH_INJECTION=passed"
 _PASSED_IME_RESULT = "INSTRUMENTATION_RESULT: INFERNUX_IME_INJECTION=passed"
+_PASSED_ORIENTATION_RESULT = (
+    "INSTRUMENTATION_RESULT: INFERNUX_ORIENTATION_INJECTION=passed"
+)
+_PASSED_BACK_RESULT = "INSTRUMENTATION_RESULT: INFERNUX_BACK_INJECTION=passed"
 _PASSED_CODE = "INSTRUMENTATION_CODE: -1"
 _EXTENT_PATTERN = re.compile(r"INSTRUMENTATION_RESULT: (height|width)=(\d+)")
 _IME_INSET_PATTERN = re.compile(r"INSTRUMENTATION_RESULT: imeInset=(\d+)")
 _COMMITTED_TEXT_PATTERN = re.compile(r"INSTRUMENTATION_RESULT: committedText=(.+)")
+_ROTATION_PATTERN = re.compile(
+    r"INSTRUMENTATION_RESULT: "
+    r"(landscapeRotation|reverseLandscapeRotation)=(\d+)"
+)
+_SAFE_INSETS_PATTERN = re.compile(
+    r"INSTRUMENTATION_RESULT: "
+    r"(landscapeSafeInsets|reverseLandscapeSafeInsets)="
+    r"(\d+),(\d+),(\d+),(\d+)"
+)
+_SCREEN_STATE_PATTERN = re.compile(
+    r"INFERNUX_PLATFORM_FIXTURE_SCREEN_STATE\s+"
+    r"revision=(\d+)\s+size=(\d+)x(\d+)\s+"
+    r"framebuffer=(\d+)x(\d+)\s+"
+    r"safe=(\d+),(\d+),(\d+),(\d+)\s+"
+    r"insets=(\d+),(\d+),(\d+),(\d+)\s+"
+    r"pixel_ratio=([0-9.]+)"
+)
 _EXPECTED_TEXT = "输入测试中文🙂"
 _DEFAULT_REQUIRED_LOGS = (
+    "INFERNUX_PLATFORM_FIXTURE_SCREEN_STATE",
     "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
     "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
     "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",
@@ -37,6 +59,7 @@ _DEFAULT_REQUIRED_LOGS = (
     "INFERNUX_PLATFORM_FIXTURE_IME_VISIBLE",
     f"INFERNUX_PLATFORM_FIXTURE_TEXT_COMMITTED value={_EXPECTED_TEXT}",
     "INFERNUX_PLATFORM_FIXTURE_IME_HIDDEN",
+    "INFERNUX_PLATFORM_FIXTURE_BACK_READY",
 )
 
 
@@ -55,6 +78,11 @@ class MultiTouchResult:
     height: int
     ime_inset: int
     committed_text: str
+    landscape_rotation: int
+    reverse_landscape_rotation: int
+    landscape_safe_insets: tuple[int, int, int, int]
+    reverse_landscape_safe_insets: tuple[int, int, int, int]
+    screen_states: tuple[dict[str, object], ...]
     required_logs: tuple[str, ...]
     fatal_count: int
     elapsed_seconds: float
@@ -69,10 +97,62 @@ def instrumentation_extent(output: str) -> tuple[int, int]:
     return values["width"], values["height"]
 
 
-def validate_instrumentation_output(output: str) -> tuple[int, int, int, str]:
+def screen_state_samples(log: str) -> tuple[dict[str, object], ...]:
+    samples: list[dict[str, object]] = []
+    identities: set[tuple[object, ...]] = set()
+    for match in _SCREEN_STATE_PATTERN.finditer(log):
+        values = match.groups()
+        sample = {
+            "revision": int(values[0]),
+            "size": (int(values[1]), int(values[2])),
+            "framebuffer_size": (int(values[3]), int(values[4])),
+            "safe_area": tuple(int(value) for value in values[5:9]),
+            "safe_insets": tuple(int(value) for value in values[9:13]),
+            "pixel_ratio": float(values[13]),
+        }
+        width, height = sample["size"]
+        left, top, right, bottom = sample["safe_insets"]
+        expected_safe_area = (
+            left,
+            top,
+            width - left - right,
+            height - top - bottom,
+        )
+        if sample["safe_area"] != expected_safe_area:
+            raise RuntimeError(
+                "Python Screen safe_area and safe_insets disagree: "
+                + repr(sample)
+            )
+        identity = (
+            sample["size"],
+            sample["framebuffer_size"],
+            sample["safe_area"],
+            sample["safe_insets"],
+            sample["pixel_ratio"],
+        )
+        if identity not in identities:
+            identities.add(identity)
+            samples.append(sample)
+    return tuple(samples)
+
+
+def validate_instrumentation_output(
+    output: str,
+) -> tuple[
+    int,
+    int,
+    int,
+    str,
+    int,
+    int,
+    tuple[int, int, int, int],
+    tuple[int, int, int, int],
+]:
     if (
         _PASSED_RESULT not in output
         or _PASSED_IME_RESULT not in output
+        or _PASSED_ORIENTATION_RESULT not in output
+        or _PASSED_BACK_RESULT not in output
         or _PASSED_CODE not in output
     ):
         raise RuntimeError("Android system input instrumentation failed:\n" + output)
@@ -83,7 +163,39 @@ def validate_instrumentation_output(output: str) -> tuple[int, int, int, str]:
         raise RuntimeError("Android instrumentation did not report a visible IME inset")
     if text_match is None or text_match.group(1).strip() != _EXPECTED_TEXT:
         raise RuntimeError("Android instrumentation did not commit the expected Unicode text")
-    return width, height, int(inset_match.group(1)), text_match.group(1).strip()
+    rotations = {
+        name: int(value) for name, value in _ROTATION_PATTERN.findall(output)
+    }
+    if rotations != {"landscapeRotation": 1, "reverseLandscapeRotation": 3}:
+        raise RuntimeError(
+            "Android instrumentation did not traverse both landscape rotations"
+        )
+    safe_insets = {
+        name: tuple(int(value) for value in values)
+        for name, *values in _SAFE_INSETS_PATTERN.findall(output)
+    }
+    expected_safe_keys = {
+        "landscapeSafeInsets",
+        "reverseLandscapeSafeInsets",
+    }
+    if set(safe_insets) != expected_safe_keys:
+        raise RuntimeError(
+            "Android instrumentation did not report both safe-area snapshots"
+        )
+    for values in safe_insets.values():
+        left, top, right, bottom = values
+        if min(values) < 0 or left + right >= width or top + bottom >= height:
+            raise RuntimeError("Android instrumentation reported invalid safe insets")
+    return (
+        width,
+        height,
+        int(inset_match.group(1)),
+        text_match.group(1).strip(),
+        rotations["landscapeRotation"],
+        rotations["reverseLandscapeRotation"],
+        safe_insets["landscapeSafeInsets"],
+        safe_insets["reverseLandscapeSafeInsets"],
+    )
 
 
 def _write_report(destination: Path | None, payload: dict[str, object]) -> None:
@@ -133,11 +245,34 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             arguments.runner,
             timeout=arguments.wait_milliseconds / 1000.0 + 90.0,
         )
-        width, height, ime_inset, committed_text = validate_instrumentation_output(
-            output
-        )
+        (
+            width,
+            height,
+            ime_inset,
+            committed_text,
+            landscape_rotation,
+            reverse_landscape_rotation,
+            landscape_safe_insets,
+            reverse_landscape_safe_insets,
+        ) = validate_instrumentation_output(output)
         time.sleep(0.5)
         log = adb.run("logcat", "-d", "-v", "brief", check=False)
+        screen_states = screen_state_samples(log)
+        if not screen_states:
+            raise RuntimeError("Android Player did not publish Python Screen state")
+        published_insets = {
+            tuple(sample["safe_insets"]) for sample in screen_states
+        }
+        expected_insets = {
+            landscape_safe_insets,
+            reverse_landscape_safe_insets,
+        }
+        if not expected_insets.issubset(published_insets):
+            raise RuntimeError(
+                "Python Screen did not receive both Android landscape safe areas: "
+                f"expected={sorted(expected_insets)!r}, "
+                f"published={sorted(published_insets)!r}"
+            )
         required_logs = (
             tuple(arguments.require_log)
             if arguments.require_log
@@ -173,6 +308,11 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             height=height,
             ime_inset=ime_inset,
             committed_text=committed_text,
+            landscape_rotation=landscape_rotation,
+            reverse_landscape_rotation=reverse_landscape_rotation,
+            landscape_safe_insets=landscape_safe_insets,
+            reverse_landscape_safe_insets=reverse_landscape_safe_insets,
+            screen_states=screen_states,
             required_logs=required_logs,
             fatal_count=0,
             elapsed_seconds=time.perf_counter() - started,

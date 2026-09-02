@@ -5,12 +5,15 @@ import android.app.Instrumentation;
 import android.app.UiAutomation;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.graphics.Insets;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -42,6 +45,7 @@ public final class MultiTouchInstrumentation extends Instrumentation {
     public void onStart() {
         final Bundle result = new Bundle();
         UiAutomation automation = null;
+        Activity targetActivity = null;
         String originalKeyboardSetting = null;
         boolean keyboardSettingChanged = false;
         try {
@@ -71,6 +75,13 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             final long waitMilliseconds = readPositiveLong("waitMilliseconds", 7000L);
             SystemClock.sleep(waitMilliseconds);
 
+            targetActivity = waitForTargetActivity(10000L);
+            final RotationSnapshot landscape = rotateTo(
+                    targetActivity,
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                    Surface.ROTATION_90,
+                    10000L);
+
             final WindowManager windowManager = getTargetContext().getSystemService(WindowManager.class);
             if (windowManager == null) {
                 throw new IllegalStateException("Target context has no WindowManager");
@@ -87,8 +98,17 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             injectCanceledGesture(automation, width, height);
             SystemClock.sleep(350L);
 
-            injectTap(automation, width, height, 0.5f, 0.07f);
-            final Activity targetActivity = waitForTargetActivity(10000L);
+            final RotationSnapshot reverseLandscape = rotateTo(
+                    targetActivity,
+                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,
+                    Surface.ROTATION_270,
+                    10000L);
+            injectTap(
+                    automation,
+                    reverseLandscape.width,
+                    reverseLandscape.height,
+                    0.5f,
+                    0.07f);
             final ImeSnapshot visibleIme = waitForIme(targetActivity, true, 10000L);
             if (!visibleIme.editorFocused) {
                 throw new IllegalStateException(
@@ -97,13 +117,27 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             commitText(targetActivity, EXPECTED_TEXT);
             waitForIme(targetActivity, false, 10000L);
 
+            shell(automation, "input keyevent KEYCODE_BACK");
+            SystemClock.sleep(500L);
+            if (targetActivity.isFinishing() || targetActivity.isDestroyed()) {
+                throw new IllegalStateException("Android Back terminated the target Activity");
+            }
+
             restoreKeyboardSetting(automation, originalKeyboardSetting);
             keyboardSettingChanged = false;
 
             result.putString("INFERNUX_MULTITOUCH_INJECTION", "passed");
             result.putString("INFERNUX_IME_INJECTION", "passed");
+            result.putString("INFERNUX_ORIENTATION_INJECTION", "passed");
+            result.putString("INFERNUX_BACK_INJECTION", "passed");
             result.putString("committedText", EXPECTED_TEXT);
             result.putInt("imeInset", visibleIme.inset);
+            result.putInt("landscapeRotation", landscape.rotation);
+            result.putInt("reverseLandscapeRotation", reverseLandscape.rotation);
+            result.putString("landscapeSafeInsets", formatInsets(landscape.safeInsets));
+            result.putString(
+                    "reverseLandscapeSafeInsets",
+                    formatInsets(reverseLandscape.safeInsets));
             result.putInt("width", width);
             result.putInt("height", height);
             finish(Activity.RESULT_OK, result);
@@ -117,8 +151,16 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             }
             result.putString("INFERNUX_MULTITOUCH_INJECTION", "failed");
             result.putString("INFERNUX_IME_INJECTION", "failed");
+            result.putString("INFERNUX_ORIENTATION_INJECTION", "failed");
+            result.putString("INFERNUX_BACK_INJECTION", "failed");
             result.putString("error", error.toString());
             finish(Activity.RESULT_CANCELED, result);
+        } finally {
+            if (targetActivity != null) {
+                final Activity activity = targetActivity;
+                runOnMainSync(() -> activity.setRequestedOrientation(
+                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE));
+            }
         }
     }
 
@@ -137,6 +179,11 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                 FileInputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
+    }
+
+    private static String formatInsets(Insets insets) {
+        return insets.left + "," + insets.top + ","
+                + insets.right + "," + insets.bottom;
     }
 
     private static void restoreKeyboardSetting(
@@ -161,6 +208,57 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             SystemClock.sleep(50L);
         }
         throw new IllegalStateException("SDL target Activity did not become available");
+    }
+
+    private RotationSnapshot rotateTo(
+            Activity activity,
+            int requestedOrientation,
+            int expectedRotation,
+            long timeoutMilliseconds) {
+        runOnMainSync(() -> activity.setRequestedOrientation(requestedOrientation));
+        final long deadline = SystemClock.uptimeMillis() + timeoutMilliseconds;
+        RotationSnapshot snapshot = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            snapshot = readRotationSnapshot(activity);
+            if (snapshot.rotation == expectedRotation
+                    && snapshot.width > snapshot.height) {
+                return snapshot;
+            }
+            SystemClock.sleep(50L);
+        }
+        throw new IllegalStateException(
+                "Android orientation did not become rotation " + expectedRotation
+                        + "; last=" + snapshot);
+    }
+
+    private RotationSnapshot readRotationSnapshot(Activity activity) {
+        final RotationSnapshot[] result = new RotationSnapshot[1];
+        runOnMainSync(() -> {
+            final View decorView = activity.getWindow().getDecorView();
+            final WindowInsets windowInsets = decorView.getRootWindowInsets();
+            if (windowInsets == null) {
+                throw new IllegalStateException("Android window has no root insets");
+            }
+            final int types = WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.systemGestures()
+                    | WindowInsets.Type.mandatorySystemGestures()
+                    | WindowInsets.Type.tappableElement()
+                    | WindowInsets.Type.displayCutout();
+            final Insets safeInsets = windowInsets.getInsets(types);
+            final Rect bounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+            final int safeWidth = bounds.width() - safeInsets.left - safeInsets.right;
+            final int safeHeight = bounds.height() - safeInsets.top - safeInsets.bottom;
+            if (safeWidth <= 0 || safeHeight <= 0) {
+                throw new IllegalStateException(
+                        "Android safe area is outside the window: " + safeInsets);
+            }
+            result[0] = new RotationSnapshot(
+                    activity.getDisplay().getRotation(),
+                    bounds.width(),
+                    bounds.height(),
+                    safeInsets);
+        });
+        return result[0];
     }
 
     private ImeSnapshot waitForIme(
@@ -236,6 +334,27 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             return "ImeSnapshot{visible=" + visible
                     + ", inset=" + inset
                     + ", editorFocused=" + editorFocused + "}";
+        }
+    }
+
+    private static final class RotationSnapshot {
+        final int rotation;
+        final int width;
+        final int height;
+        final Insets safeInsets;
+
+        RotationSnapshot(int rotation, int width, int height, Insets safeInsets) {
+            this.rotation = rotation;
+            this.width = width;
+            this.height = height;
+            this.safeInsets = safeInsets;
+        }
+
+        @Override
+        public String toString() {
+            return "RotationSnapshot{rotation=" + rotation
+                    + ", size=" + width + "x" + height
+                    + ", safeInsets=" + safeInsets + "}";
         }
     }
 
