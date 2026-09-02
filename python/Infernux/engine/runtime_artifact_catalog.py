@@ -103,34 +103,19 @@ def unix_ns_to_filetime_ticks(unix_ns: int) -> int:
     return int(unix_ns) // 100 + WINDOWS_FILETIME_EPOCH_OFFSET_TICKS
 
 
-def _source_content_hash(path: str, expected: str) -> str:
-    """Hash source bytes in the format carried by one AssetIndex entry."""
+def _source_content_hash(path: str) -> str:
+    """Return the native AssetIndex FNV-1a source fingerprint."""
 
-    normalized = str(expected or "").strip().casefold()
-    if not re.fullmatch(r"[0-9a-f]+", normalized):
-        raise RuntimeArtifactError(
-            f"AssetIndex content_hash has an unsupported format for {path}: {expected!r}"
-        )
     try:
         with Path(path).open("rb") as stream:
-            if len(normalized) == 16:
-                # Native InxResourceMeta uses stable FNV-1a 64-bit hashes.
-                value = 14695981039346656037
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    for byte in chunk:
-                        value ^= byte
-                        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-                return f"{value:016x}"
-            if len(normalized) == 64:
-                digest = hashlib.sha256()
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                return digest.hexdigest()
+            value = 14695981039346656037
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                for byte in chunk:
+                    value ^= byte
+                    value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+            return f"{value:016x}"
     except OSError as exc:
         raise RuntimeArtifactError(f"Asset source cannot be fingerprinted: {path}") from exc
-    raise RuntimeArtifactError(
-        f"AssetIndex content_hash has an unsupported format for {path}: {expected!r}"
-    )
 
 
 def _metadata_value(entry: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -197,7 +182,9 @@ def load_asset_index(project_root: str | os.PathLike[str]) -> list[dict[str, Any
             or not isinstance(source.get("modified_ns"), int)
         ):
             raise RuntimeArtifactError(f"AssetIndex.entries[{index}].source is invalid")
-        if not isinstance(entry.get("content_hash"), str) or not entry["content_hash"]:
+        if not isinstance(entry.get("content_hash"), str) or not re.fullmatch(
+            r"[0-9a-fA-F]{16}", entry["content_hash"]
+        ):
             raise RuntimeArtifactError(f"AssetIndex.entries[{index}].content_hash is invalid")
         if "artifact_path" in entry and not isinstance(entry["artifact_path"], str):
             raise RuntimeArtifactError(f"AssetIndex.entries[{index}].artifact_path is invalid")
@@ -255,7 +242,7 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
             f"expected={expected!r}, current={current!r}"
         )
     if current["modified_ns"] != expected_modified:
-        actual_hash = _source_content_hash(source, content_hash)
+        actual_hash = _source_content_hash(source)
         if actual_hash.casefold() != content_hash.casefold():
             raise RuntimeArtifactError(
                 f"Asset source fingerprint is stale for {source}: "

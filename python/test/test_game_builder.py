@@ -579,7 +579,7 @@ def _asset_index_entry(
             "modified_ns": unix_ns_to_filetime_ticks(stat.st_mtime_ns),
         },
         "meta": {"size": 0, "modified_ns": 0},
-        "content_hash": content_hash or hashlib.sha256(source.read_bytes()).hexdigest()[:16],
+        "content_hash": content_hash or _fnv1a64(source.read_bytes()),
         "dependencies": [],
         "read_only": False,
         "import_succeeded": True,
