@@ -44,6 +44,15 @@ def test_player_host_is_a_static_inxpack_bootstrap():
     assert launcher.index("#include <windows.h>") < launcher.index("#include <shellapi.h>")
 
 
+def test_player_pack_codec_builds_only_the_current_zstandard_format():
+    external_cmake = (ROOT / "external/CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert 'set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)' in external_cmake
+    assert external_cmake.index("set(ZSTD_LEGACY_SUPPORT OFF") < external_cmake.index(
+        "if(INFERNUX_ZSTD_SOURCE_DIR)"
+    )
+
+
 def test_player_host_cache_is_outside_install_directory():
     host = (ROOT / "cpp/infernux/tools/launcher/PlayerHost.cpp").read_text(encoding="utf-8")
     assert '"Infernux" / "PlayerCache"' in host
@@ -63,3 +72,15 @@ def test_player_package_contract_has_bootstrap_archive_and_no_root_bootstrap_fil
     assert "stdlib/encodings/__init__.pyc" in audit
     assert "_pack_player_bootstrap_archive" in builder
     assert "BOOTSTRAP_NATIVE_ROOT_ALLOWLIST: dict[str, dict[str, str]] = {}" in audit
+
+
+def test_linux_bootstrap_foundation_is_a_sibling_of_the_bootstrap_module():
+    builder = (ROOT / "python/Infernux/engine/game_builder.py").read_text(
+        encoding="utf-8"
+    )
+    audit = (ROOT / "python/Infernux/engine/player_package_audit.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"libInfernuxFoundation.so": str(foundation)' in builder
+    assert '"Infernux/lib/libInfernuxFoundation.so": str(foundation)' not in builder
+    assert '"libInfernuxFoundation.so",' in audit

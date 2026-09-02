@@ -764,6 +764,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert '"infernux.post.bloom"' in bootstrap
     assert '"infernux.post.tonemapping"' in bootstrap
     assert "WebScreenUIRenderer.cpp" in cmake
+    assert 'set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)' in cmake
     assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
     assert "descriptor.depthStencil" not in screen_ui_renderer
     assert "INFERNUX_WEB_SCREEN_UI_TEXTURE_READY" in host_module

@@ -14,6 +14,8 @@ set(INFERNUX_ENGINE_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." CAC
     "Infernux source directory providing the backend-neutral RHI contract")
 set(INFERNUX_WEB_PLAYER_ASSETS "" CACHE PATH
     "Optional cooked project and Python assets to preload into the Web host")
+set(INFERNUX_WEB_BRANDING_DIR "" CACHE PATH
+    "Generated project favicon, manifest, and browser branding")
 set(INFERNUX_WEB_ASSET_REVISION "" CACHE STRING
     "Deterministic identity shared by the Web Player JavaScript and data files")
 set(INFERNUX_WEB_DISPLAY_MODE "fullscreen_borderless" CACHE STRING
@@ -32,6 +34,23 @@ if(NOT INFERNUX_WEB_DISPLAY_MODE STREQUAL "fullscreen_borderless" AND
    NOT INFERNUX_WEB_DISPLAY_MODE STREQUAL "windowed")
     message(FATAL_ERROR
         "INFERNUX_WEB_DISPLAY_MODE must be fullscreen_borderless or windowed")
+endif()
+foreach(_web_branding_file
+        infernux-favicon.png
+        infernux-icon-192.png
+        infernux-icon-512.png
+        infernux.webmanifest
+        infernux-branding.js)
+    if(NOT EXISTS "${INFERNUX_WEB_BRANDING_DIR}/${_web_branding_file}")
+        message(FATAL_ERROR
+            "INFERNUX_WEB_BRANDING_DIR is missing ${_web_branding_file}")
+    endif()
+endforeach()
+set(_web_capability_inventory
+    "${INFERNUX_WEB_PLAYER_ASSETS}/infernux-webgpu-capabilities.json")
+if(NOT EXISTS "${_web_capability_inventory}")
+    message(FATAL_ERROR
+        "Web Player assets are missing infernux-webgpu-capabilities.json")
 endif()
 foreach(_web_canvas_extent INFERNUX_WEB_CANVAS_WIDTH INFERNUX_WEB_CANVAS_HEIGHT)
     if(NOT "${${_web_canvas_extent}}" MATCHES "^[1-9][0-9]*$")
@@ -115,6 +134,7 @@ set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
 set(INFERNUX_WEB_ZSTD_SOURCE_DIR "" CACHE PATH
     "Optional pinned Zstandard source tree for offline Web Player builds")
 if(INFERNUX_WEB_ZSTD_SOURCE_DIR)
@@ -185,6 +205,23 @@ configure_file(
 configure_file(
     "${INFERNUX_ENGINE_SOURCE_ROOT}/docs/assets/logo.png"
     "${CMAKE_CURRENT_BINARY_DIR}/infernux-logo.png"
+    COPYONLY
+)
+foreach(_web_branding_file
+        infernux-favicon.png
+        infernux-icon-192.png
+        infernux-icon-512.png
+        infernux.webmanifest
+        infernux-branding.js)
+    configure_file(
+        "${INFERNUX_WEB_BRANDING_DIR}/${_web_branding_file}"
+        "${CMAKE_CURRENT_BINARY_DIR}/${_web_branding_file}"
+        COPYONLY
+    )
+endforeach()
+configure_file(
+    "${_web_capability_inventory}"
+    "${CMAKE_CURRENT_BINARY_DIR}/infernux-webgpu-capabilities.json"
     COPYONLY
 )
 
