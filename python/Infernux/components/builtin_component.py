@@ -86,6 +86,8 @@ class CppProperty:
         range: Optional[tuple] = None,
         enum_type=None,
         enum_labels: Optional[list] = None,
+        element_type: Optional[FieldType] = None,
+        element_class=None,
         visible_when=None,
         asset_type: Optional[str] = None,
         get_converter=None,
@@ -93,6 +95,7 @@ class CppProperty:
         native_getter=None,
         native_setter=None,
         hdr: bool = False,
+        curve_non_negative: bool = False,
         slider: bool = False,
     ):
         self.cpp_attr = cpp_attr
@@ -111,9 +114,12 @@ class CppProperty:
             range=range,
             enum_type=enum_type,
             enum_labels=enum_labels,
+            element_type=element_type,
+            element_class=element_class,
             visible_when=visible_when,
             asset_type=asset_type,
             hdr=hdr,
+            curve_non_negative=curve_non_negative,
             slider=slider,
         )
 
