@@ -18,6 +18,9 @@ def test_player_host_is_a_static_inxpack_bootstrap():
         encoding="utf-8"
     )
     assert "cpp/infernux/platform/filesystem/InxPack.cpp" in cmake
+    assert "INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR" in cmake
+    assert '"$<TARGET_FILE:InfernuxPlayerHost>"' in cmake
+    assert '"${INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR}/$<TARGET_FILE_NAME:InfernuxPlayerHost>"' in cmake
     assert "target_link_libraries(InfernuxPlayerHost PRIVATE InfernuxFoundation" not in cmake
     assert "${INFERNUX_ZSTD_TARGET}" in cmake
     assert "PyConfig_InitIsolatedConfig" in host

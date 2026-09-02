@@ -35,6 +35,23 @@ set_target_properties(InfernuxPlayerHost PROPERTIES
     COMPILE_PDB_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/symbols"
     COMPILE_PDB_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/symbols"
 )
+
+# A source checkout imports the Python package directly during development, so
+# keep its ignored PlayerHost resource synchronized with this exact target.
+# Wheel staging still installs from the target below; both paths therefore come
+# from one native build instead of allowing a stale source-tree executable.
+set(INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR
+    "${CMAKE_SOURCE_DIR}/python/Infernux/resources/player_runtime"
+)
+add_custom_command(TARGET InfernuxPlayerHost POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:InfernuxPlayerHost>"
+        "${INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR}/$<TARGET_FILE_NAME:InfernuxPlayerHost>"
+    COMMENT "Synchronize the development PlayerHost resource"
+    VERBATIM
+)
 if(MSVC)
     target_compile_options(InfernuxPlayerHost PRIVATE /utf-8 /O1)
     # Python's Windows headers inject the import library. PlayerHost resolves
