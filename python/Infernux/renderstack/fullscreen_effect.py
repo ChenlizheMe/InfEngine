@@ -44,7 +44,6 @@ from Infernux.renderstack._pipeline_common import (
 )
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
-from Infernux.debug import Debug
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -113,11 +112,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
         from Infernux.components.fields import get_serialized_fields
         for field_name, meta in get_serialized_fields(self.__class__).items():
             if not hasattr(self, f"_sf_{field_name}"):
-                try:
-                    setattr(self, field_name, meta.default)
-                except (AttributeError, TypeError) as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    pass
+                setattr(self, field_name, meta.default)
 
     # ==================================================================
     # Texture helper — eliminates per-effect _tex() boilerplate
