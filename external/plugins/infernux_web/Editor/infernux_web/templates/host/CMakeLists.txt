@@ -156,7 +156,7 @@ else()
     FetchContent_Declare(
         infernux_web_zstd
         GIT_REPOSITORY https://github.com/facebook/zstd.git
-        GIT_TAG 35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad
+        GIT_TAG 794ea1b0afca0f020f4e57b6732332231fb23c70
         SOURCE_SUBDIR build/cmake
     )
     FetchContent_MakeAvailable(infernux_web_zstd)

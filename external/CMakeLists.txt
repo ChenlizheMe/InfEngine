@@ -136,7 +136,7 @@ elseif(INFERNUX_PLAYER_PACK_FETCH_ZSTD)
         infernux_zstd
         GIT_REPOSITORY https://github.com/facebook/zstd.git
         # Full commit pin: v1.5.6 (do not replace this with a moving tag).
-        GIT_TAG 35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad
+        GIT_TAG 794ea1b0afca0f020f4e57b6732332231fb23c70
         SOURCE_SUBDIR build/cmake
     )
     FetchContent_MakeAvailable(infernux_zstd)

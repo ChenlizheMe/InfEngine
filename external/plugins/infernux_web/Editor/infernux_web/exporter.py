@@ -29,6 +29,7 @@ from Infernux.engine.build import (
     PlatformCapabilities,
     PlatformExporter,
 )
+from Infernux.engine.build.source_library import GitSource, acquire_git_source
 
 from .doctor import inspect_web_toolchain
 from .capabilities import (
@@ -71,6 +72,12 @@ _WEB_SHELL_REQUIRED_MARKERS = (
     "@INFERNUX_WEB_DISPLAY_MODE@",
     "@INFERNUX_WEB_CANVAS_WIDTH@",
     "@INFERNUX_WEB_CANVAS_HEIGHT@",
+)
+_WEB_ZSTD_SOURCE = GitSource(
+    "zstd",
+    "https://github.com/facebook/zstd.git",
+    "794ea1b0afca0f020f4e57b6732332231fb23c70",
+    ("build/cmake/CMakeLists.txt", "lib/zstd.h"),
 )
 
 
@@ -891,13 +898,11 @@ def _configure_and_build_host(
         presentation=presentation,
         project_template_root=project_web_template,
     )
-    zstd_source = _find_local_zstd_source(source_root)
-    zstd_argument = ""
-    if zstd_source is not None:
-        zstd_argument = (
-            " -DINFERNUX_WEB_ZSTD_SOURCE_DIR="
-            + shlex.quote(_wsl_path(zstd_source, distribution))
-        )
+    zstd_source = acquire_git_source(request, _WEB_ZSTD_SOURCE)
+    zstd_argument = (
+        " -DINFERNUX_WEB_ZSTD_SOURCE_DIR="
+        + shlex.quote(_wsl_path(zstd_source, distribution))
+    )
     configuration = (
         "Release"
         if request.profile.configuration.value == "release"
@@ -963,21 +968,6 @@ def _configure_and_build_host(
         )
     request.report("compile", 1, 1, "Cooked WebGPU Player host compiled")
     return logs
-
-
-def _find_local_zstd_source(source_root: Path) -> Path | None:
-    """Reuse a verified source checkout from an existing native build."""
-
-    build_root = source_root / "out" / "build"
-    if not build_root.is_dir():
-        return None
-    for candidate in sorted(build_root.glob("*/_deps/infernux_zstd-src")):
-        if (
-            (candidate / "build" / "cmake" / "CMakeLists.txt").is_file()
-            and (candidate / "lib" / "zstd.h").is_file()
-        ):
-            return candidate.resolve()
-    return None
 
 
 def _web_asset_revision(

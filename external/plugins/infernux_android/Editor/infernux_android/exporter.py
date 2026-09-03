@@ -30,6 +30,7 @@ from Infernux.engine.build import (
     PlatformCapabilities,
     PlatformExporter,
 )
+from Infernux.engine.build.source_library import GitSource, acquire_git_source
 
 from .doctor import (
     ANDROID_CMAKE,
@@ -73,6 +74,26 @@ _NUMPY_RUNTIME_EXCLUDED_PREFIXES = ("numpy/random/_examples/",)
 _ANDROID_ARCHIVE_ABIS = frozenset({"arm64-v8a", "armeabi-v7a", "x86", "x86_64"})
 _ANDROID_FORBIDDEN_DISTRIBUTIONS = frozenset(
     {"llvmlite", "numba", "torch", "torchaudio", "torchvision"}
+)
+_ANDROID_NATIVE_SOURCES = (
+    GitSource(
+        "zstd",
+        "https://github.com/facebook/zstd.git",
+        "794ea1b0afca0f020f4e57b6732332231fb23c70",
+        ("build/cmake/CMakeLists.txt", "lib/zstd.h"),
+    ),
+    GitSource(
+        "SPIRV-Cross",
+        "https://github.com/KhronosGroup/SPIRV-Cross.git",
+        "9c3c8e2cefdd8194b193bb8ed2fdff4d5527e382",
+        ("CMakeLists.txt", "spirv_cross.hpp"),
+    ),
+    GitSource(
+        "volk",
+        "https://github.com/zeux/volk.git",
+        "2e19a77ce9b5bd8df0106f66b91032c0e5c776a1",
+        ("CMakeLists.txt", "volk.h"),
+    ),
 )
 
 
@@ -1285,6 +1306,10 @@ def _build_engine_runtime(
     pybind11_dir = _host_pybind11_cmake_dir()
     build_type = _native_build_type(request.profile.configuration)
     build_root = _android_build_cache_root(request) / "AndroidEngine" / abi / build_type
+    native_sources = {
+        source.name: acquire_git_source(request, source)
+        for source in _ANDROID_NATIVE_SOURCES
+    }
     configure_command = [
         str(cmake),
         "-S",
@@ -1309,32 +1334,10 @@ def _build_engine_runtime(
         "-DINFERNUX_BUILD_TESTS=OFF",
         "-DINFERNUX_RELEASE_LTO=OFF",
         "-DINFERNUX_ENABLE_VULKAN_VALIDATION=OFF",
+        f"-DINFERNUX_ZSTD_SOURCE_DIR={native_sources['zstd']}",
+        f"-DINFERNUX_SPIRV_CROSS_SOURCE_DIR={native_sources['SPIRV-Cross']}",
+        f"-DINFERNUX_VOLK_SOURCE_DIR={native_sources['volk']}",
     ]
-    for option_name, environment_name, cmake_name in (
-        (
-            "zstd_source_dir",
-            "INFERNUX_ZSTD_SOURCE_DIR",
-            "INFERNUX_ZSTD_SOURCE_DIR",
-        ),
-        (
-            "spirv_cross_source_dir",
-            "INFERNUX_SPIRV_CROSS_SOURCE_DIR",
-            "INFERNUX_SPIRV_CROSS_SOURCE_DIR",
-        ),
-        (
-            "volk_source_dir",
-            "INFERNUX_VOLK_SOURCE_DIR",
-            "INFERNUX_VOLK_SOURCE_DIR",
-        ),
-    ):
-        source_directory = str(
-            request.profile.options.get(option_name, "")
-            or os.environ.get(environment_name, "")
-        ).strip()
-        if source_directory:
-            configure_command.append(
-                f"-D{cmake_name}={Path(source_directory).expanduser().resolve()}"
-            )
     environment = {
         **os.environ,
         "ANDROID_SDK_ROOT": str(sdk_root),

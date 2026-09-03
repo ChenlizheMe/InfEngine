@@ -604,7 +604,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "smoothstep(-0.10, 0.45, y)" in scene_renderer
     assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake
     assert "InxPack.cpp" in cmake
-    assert "35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad" in cmake
+    assert "794ea1b0afca0f020f4e57b6732332231fb23c70" in cmake
     assert "INFERNUX_WEB_ZSTD_SOURCE_DIR" in cmake
     assert "SDL3::SDL3-static" in cmake
     assert "AudioEngine.cpp" in cmake
@@ -1004,18 +1004,14 @@ def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_p
     assert catalog["kernels"][0]["stable_ids"] == ["emitter-a", "emitter-b"]
     assert len(catalog["kernels"][0]["stages"]) == len(stage_names)
 
-def test_web_exporter_reuses_verified_native_zstd_checkout(monkeypatch, tmp_path):
+def test_web_exporter_declares_one_shared_zstd_source(monkeypatch):
     _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
-    checkout = tmp_path / "out" / "build" / "windows" / "_deps" / "infernux_zstd-src"
-    (checkout / "build" / "cmake").mkdir(parents=True)
-    (checkout / "lib").mkdir()
-    (checkout / "build" / "cmake" / "CMakeLists.txt").write_text(
-        "project(zstd)\n", encoding="utf-8"
-    )
-    (checkout / "lib" / "zstd.h").write_text("", encoding="utf-8")
 
-    assert exporter_module._find_local_zstd_source(tmp_path) == checkout.resolve()
+    source = exporter_module._WEB_ZSTD_SOURCE
+    assert source.name == "zstd"
+    assert source.repository == "https://github.com/facebook/zstd.git"
+    assert source.revision == "794ea1b0afca0f020f4e57b6732332231fb23c70"
 
 
 def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
