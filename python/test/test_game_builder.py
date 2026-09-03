@@ -1727,6 +1727,36 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     assert not (tmp_path / "staging" / "boot.dist" / "_infernux_runtime_pack.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("short_name", "alias_name"),
+    [
+        ("_Infernux.pyd", "_Infernux.cp313-win_amd64.pyd"),
+        ("_Infernux.so", "_Infernux.cpython-313-x86_64-linux-gnu.so"),
+    ],
+)
+def test_runtime_pack_keeps_one_engine_native_module_name(
+    tmp_path, monkeypatch, short_name, alias_name
+):
+    cache_root = tmp_path / "runtime-packs"
+    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
+    builder = object.__new__(NuitkaBuilder)
+    builder.console_mode = "disable"
+    builder.lto = True
+    builder._player_compile_input_fingerprint = lambda: "current-player-runtime"
+    dist = tmp_path / "original.dist"
+    package_lib = dist / "Infernux" / "lib"
+    package_lib.mkdir(parents=True)
+    (package_lib / short_name).write_bytes(b"runtime")
+    (package_lib / alias_name).write_bytes(b"duplicate")
+
+    builder._store_runtime_pack("a" * 64, str(dist))
+
+    manifest = read_manifest(cache_root / ("a" * 64) / "Runtime.inxrt")
+    paths = {entry["path"] for entry in manifest["files"]}
+    assert f"Infernux/lib/{short_name}" in paths
+    assert f"Infernux/lib/{alias_name}" not in paths
+
+
 def test_packaged_runtime_pack_restores_without_local_cache(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
     packaged_root = tmp_path / "wheel" / "_runtime_packs"
@@ -2010,6 +2040,12 @@ def test_runtime_pack_fingerprint_tracks_generated_boot_and_keeps_environment_in
     first = builder._runtime_pack_fingerprint(
         ["python", str(staged_entry), "--jobs=8"]
     )
+    original_layout = builder._RUNTIME_PACK_LAYOUT
+    builder._RUNTIME_PACK_LAYOUT = "different-layout"
+    assert builder._runtime_pack_fingerprint(
+        ["python", str(staged_entry), "--jobs=8"]
+    ) != first
+    builder._RUNTIME_PACK_LAYOUT = original_layout
     staged_entry.write_text("BOOT = 2\n", encoding="utf-8")
 
     assert builder._runtime_pack_fingerprint(

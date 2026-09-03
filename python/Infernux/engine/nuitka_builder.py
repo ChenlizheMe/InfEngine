@@ -962,6 +962,8 @@ def _install_requirements_files(python_exe: str, requirement_files: List[str]) -
 class NuitkaBuilder:
     """Wraps Nuitka compilation for Infernux standalone builds."""
 
+    _RUNTIME_PACK_LAYOUT = "engine-native-short-name"
+
     # Packages that are excluded from Nuitka compilation and injected as raw
     # site-packages. NumPy and packaging are engine runtime dependencies;
     # Numba/llvmlite additionally require Python bytecode for LLVM JIT.
@@ -1239,6 +1241,7 @@ class NuitkaBuilder:
         """Fingerprint every input that can change a reusable Player runtime."""
         digest = hashlib.sha256()
         digest.update(b"runtime-pack\0")
+        digest.update(self._RUNTIME_PACK_LAYOUT.encode("ascii"))
         normalized_command = []
         for index, argument in enumerate(cmd):
             value = str(argument)
@@ -1300,7 +1303,8 @@ class NuitkaBuilder:
             )
 
         payload = {
-            "contract": 2,
+            "contract": "infernux-runtime-pack",
+            "layout": self._RUNTIME_PACK_LAYOUT,
             "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
             "platform": sys.platform,
             "machine": platform.machine().lower(),
@@ -1638,6 +1642,8 @@ print(json.dumps({{
                 if source_path.suffix.lower() in _RUNTIME_PACK_FORBIDDEN_SUFFIXES:
                     continue
                 relative = source_path.relative_to(dist_dir).as_posix()
+                if self._is_redundant_engine_native_alias(source_path, Path(dist_dir)):
+                    continue
                 source_files.append((relative, str(source_path)))
             if not source_files:
                 raise RuntimeError("Native Runtime.inxrt would be empty")
@@ -1673,6 +1679,18 @@ print(json.dumps({{
             )
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
+
+    @staticmethod
+    def _is_redundant_engine_native_alias(source_path: Path, dist_root: Path) -> bool:
+        """Exclude the ABI alias when Nuitka already emitted its runtime short name."""
+        if source_path.parent != dist_root / "Infernux" / "lib":
+            return False
+        name = source_path.name
+        if name.startswith("_Infernux.cp") and name.endswith(".pyd"):
+            return (source_path.parent / "_Infernux.pyd").is_file()
+        if name.startswith("_Infernux.cpython-") and name.endswith(".so"):
+            return (source_path.parent / "_Infernux.so").is_file()
+        return False
 
     def export_runtime_pack(self, destination_root: str) -> str:
         """Copy the most recently built pack into a wheel package-data root."""
