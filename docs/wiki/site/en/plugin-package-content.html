@@ -239,6 +239,7 @@
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    web/module.wasm
 </code></pre></div>
 <p>The outer repository is unrestricted. CMake, Cargo, Gradle, npm, or another build may place its final outputs into <code>package/</code>. The packer treats known and unknown extensions as bytes; location, not extension guessing, defines ownership and Player export.</p>
+<p>Run <code>python package.py [destination.inxpkg]</code> from any working directory. The script depends only on the Python standard library and writes the native InxPack format directly, so neither Infernux nor a C++ toolchain is required on the author's packaging machine. When the destination is omitted, the archive is written beside the script using the repository directory name. Two builds from identical bytes and metadata produce an identical archive.</p>
 <h2 id="installation-routes">Installation routes<a class="headerlink" href="#installation-routes" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

@@ -239,6 +239,7 @@
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    web/module.wasm
 </code></pre></div>
 <p>外层仓库不限制语言和构建工具。CMake、Cargo、Gradle、npm 或其它构建只需把最终产物放进 <code>package/</code>。打包器不会按扩展名猜用途，已知和未知文件都只是字节；目录位置决定所有权与 Player 导出规则。</p>
+<p>可在任意工作目录运行 <code>python package.py [目标.inxpkg]</code>。脚本只依赖 Python 标准库并直接写出原生 InxPack 格式，因此作者的打包机器无需安装 Infernux 或 C++ 工具链。省略目标时，包会以仓库目录名写到脚本旁边；输入字节与元数据相同时，两次构建的归档字节完全一致。</p>
 <h2 id="_3">安装路由<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
