@@ -203,92 +203,85 @@
     </aside>
     
                 <h1 id="_1">插件<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
-<p>Infernux 的插件就是一个 InxPackage。代码、场景、Prefab、贴图都可以打进去。</p>
-<p>用法接近 Unity 的 Package Manager：丢一个 <code>.inxpkg</code>、选一个本地目录、贴 GitHub 地址，或者从官方列表里点安装。</p>
-<h2 id="_2">目录怎么放<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>MyPlugin/
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  InxPackage.json
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  README.md
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  README.zh-CN.md
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  LICENSE
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  requirements.txt
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  Runtime/            # 进游戏
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  Editor/             # 只在编辑器里跑
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  InxPluginPages/     # 插件窗口里的额外页
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  ...                 # 其余都当普通资源
+<p>Infernux 的插件就是 InxPackage。Python、原生库、Wasm、Java 资源、材质、Shader、网页或任意文件都可以携带。</p>
+<h2 id="_2">本地开发<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>本地导出时，用户选中的目录本身就是包根：</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>abc/
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  runtime/          # Editor 和 Player 都可用
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  editor/           # 只供 Editor 使用
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  plugin_pages/     # 插件窗口中的独立页面
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  materials/
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  shaders/
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  web/
 </code></pre></div>
-<p>装进项目之后：</p>
-<table>
-<thead>
-<tr>
-<th>你放的</th>
-<th>落到项目里</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Runtime/</code>、<code>Editor/</code>、README、许可证</td>
-<td><code>Packages/&lt;插件名&gt;/</code></td>
-</tr>
-<tr>
-<td>模型、场景、Prefab、贴图</td>
-<td><code>Assets/Plugins/</code>，保持包内相对路径</td>
-</tr>
-</tbody>
-</table>
-<p><code>Runtime</code>、<code>Editor</code>、<code>InxPluginPages</code> 这三个名字大小写要写对。如果你只是想放一个普通文件夹也叫 Runtime，外面再包一层，比如 <code>Content/Runtime</code>。</p>
-<p>插件名可以带命名空间，例如 <code>studio/vfx-kit</code>。目录套在一起不代表有依赖关系。</p>
-<p>从项目窗口打包时，选中的目录名会原样保留。多选几个裸目录后导入，
-它们会直接在 <code>Assets/Plugins/</code> 下展开；引擎不会暗中增加插件名或
-<code>selection</code> 外层。若目标路径已经被另一个 GUID 占用，导入会明确失败。</p>
-<h2 id="inxpackagejson">InxPackage.json<a class="headerlink" href="#inxpackagejson" title="Permanent link">&para;</a></h2>
-<p>最少写这些：</p>
+<p><code>inx_package.json</code> 可以不写。缺失时由 export 生成包内 metadata，默认 <code>name</code> 和 <code>reference</code> 取用户命名的 <code>.inxpkg</code> 文件名。例如把 <code>abc/</code> 导出为 <code>physics_tools.inxpkg</code>，默认身份就是 <code>physics_tools</code>。只有需要明确 metadata 时才写：</p>
 <div class="language-json highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"reference"</span><span class="p">:</span><span class="w"> </span><span class="s2">"studio/vfx-kit"</span><span class="p">,</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"VFX Kit"</span><span class="p">,</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1.0.0"</span><span class="p">,</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"engine"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=0.3.7,&lt;0.4"</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">}</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"engine"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=0.4,&lt;0.5"</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"intro"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Reusable visual effects."</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">}</span>
 </code></pre></div>
-<p><code>reference</code> 装完不会变，是这个插件的身份。</p>
-<h2 id="_3">插件窗口里的说明<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
-<p>不用写编辑器代码也能出说明页：</p>
-<ul>
-<li><code>README.md</code> 是描述页，<code>README.zh-CN.md</code> 是中文版</li>
-<li><code>LICENSE</code> 是许可证页</li>
-<li><code>InxPluginPages/</code> 里的 markdown / 文本会变成额外页签</li>
-</ul>
-<p>中文文件只认一种写法：在扩展名前加 <code>.zh-CN</code>，例如 <code>Guide.zh-CN.md</code>。编辑器是中文就显示中文，没有就回退默认文件。<code>.en</code>、<code>Docs/</code>、语言目录这些引擎都不认。</p>
-<p>图片用普通 markdown 语法，文件要打进包里。网上的图不会下载。</p>
-<p>想自己排页签顺序，在 <code>InxPackage.json</code> 里写 <code>pages</code>：</p>
-<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"intro"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"描述"</span><span class="p">,</span><span class="w"> </span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"README.md"</span><span class="p">},</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"guide"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"使用"</span><span class="p">,</span><span class="w"> </span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"InxPluginPages/Guide.md"</span><span class="p">}</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="p">]</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">}</span>
+<p>manifest 目前不声明 <code>requirements</code> 或 <code>dependencies</code>。可选的 <code>requirements.txt</code> 只按固定文件名识别。</p>
+<h2 id="git">Git 仓库结构<a class="headerlink" href="#git" title="Permanent link">&para;</a></h2>
+<p>Git 仓库只比本地包根多一层：</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vfx-kit/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  README.md          # 只给 GitHub 看，不进入包
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  package.py         # 只依赖 Python 标准库的打包器
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  CMakeLists.txt     # 可选作者构建，不进入包
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  package/           # 唯一会进入 .inxpkg 的目录
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    inx_package.json
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    runtime/
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    editor/
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    plugin_pages/
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    native/backend.pyd
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    web/module.wasm
 </code></pre></div>
-<p>没写 <code>intro</code> 的话，列表里的短介绍会取 README 第一段。</p>
-<h2 id="_4">编辑器启动时跑代码<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
-<p>继承 <code>InxPreload</code>。不用在 json 里登记，引擎会自己扫 <code>Assets</code> 和 <code>Packages</code>：</p>
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.lifecycle</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxPreload</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">Bootstrap</span><span class="p">(</span><span class="n">InxPreload</span><span class="p">):</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        <span class="k">pass</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        <span class="k">pass</span>
-</code></pre></div>
-<p>禁用的包不会加载。<code>unload</code> 失败时引擎会停下来让你重启，不会假装卸干净了。</p>
-<p>包内 Python 代码必须使用显式相对导入，例如 <code>from .service import Service</code>。每个已安装包都有独立且确定的模块命名空间，互不相关的插件即使文件同名也不会共享模块状态。<code>Runtime/</code> 参与玩法组件加载和热刷新；<code>Editor/</code> 只由插件生命周期加载。</p>
-<h2 id="_5">依赖<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
-<p><code>requirements.txt</code> 里写别的插件名，会先当插件装；对不上再交给 pip。pip 装进来的只是 Python 包，不会变成 Infernux 插件。pip 失败时会尽量卸掉这次新装的东西，本地 wheel 或 git 装的不一定能原样恢复。</p>
-<h2 id="_6">打包游戏<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
-<p><code>Runtime</code> 和普通资源会进 Player。<code>Editor</code>、README、许可证、说明页不会。没有单独的包含/排除列表。</p>
-<h2 id="_7">装、卸、搬家<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
-<p>文件靠 GUID 认，你在项目里挪位置没关系。卸载只删这个包自己的、而且你没改过的文件。父包卸了不会连带卸子包。</p>
-<p>包里面再塞一个 <code>.inxpkg</code>，默认只是个文件。你自己再导入，或写进 <code>requirements.txt</code>，才会当真插件装。</p>
+<p>外层仓库不限制语言和构建工具。CMake、Cargo、Gradle、npm 或其它构建只需把最终产物放进 <code>package/</code>。打包器不会按扩展名猜用途，已知和未知文件都只是字节；目录位置决定所有权与 Player 导出规则。</p>
+<h2 id="_3">安装路由<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>包内路径</th>
+<th>项目位置</th>
+<th>Player</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runtime/...</code></td>
+<td><code>Packages/&lt;reference&gt;/runtime/...</code></td>
+<td>进入</td>
+</tr>
+<tr>
+<td><code>editor/...</code></td>
+<td><code>Packages/&lt;reference&gt;/editor/...</code></td>
+<td>不进入</td>
+</tr>
+<tr>
+<td><code>plugin_pages/...</code></td>
+<td><code>Packages/&lt;reference&gt;/plugin_pages/...</code></td>
+<td>不进入</td>
+</tr>
+<tr>
+<td><code>requirements.txt</code></td>
+<td><code>Packages/&lt;reference&gt;/requirements.txt</code></td>
+<td>不进入</td>
+</tr>
+<tr>
+<td>其它所有内容</td>
+<td><code>Assets/Plugins/...</code></td>
+<td>进入</td>
+</tr>
+</tbody>
+</table>
+<p><code>runtime</code>、<code>editor</code>、<code>plugin_pages</code> 必须精确小写。文件靠 GUID 识别，卸载时只删除属于该包且用户没有修改的文件。</p>
+<h2 id="_4">插件说明页<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p>只有 <code>plugin_pages/</code> 下的 markdown 或文本会成为插件窗口内容。仓库根部 README 和许可证只是仓库文档，不再被读取成插件页面。中文文件在扩展名前加 <code>.zh-CN</code>，例如 <code>guide.zh-CN.md</code>；图片使用相对路径并留在包根内。</p>
+<h2 id="player">代码与 Player<a class="headerlink" href="#player" title="Permanent link">&para;</a></h2>
+<p>生命周期代码继承 <code>InxPreload</code>。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。<code>runtime/</code> 参与玩法组件加载和热刷新；<code>editor/</code> 只由 Editor 生命周期加载。</p>
+<p>这里没有 include/exclude fallback 清单。<code>.pyd</code> 或 <code>.wasm</code> 放在 <code>runtime/</code> 就属于运行时，放在 <code>editor/</code> 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 <code>Assets/Plugins</code>，再通过正常资产管线进入 Player。</p>
                 
     <nav class="doc-trail" data-doc-trail aria-label="文档连续阅读与反馈">
         <a class="doc-trail-fallback" href="/wiki/site/zh/api/index.html">返回 API 目录</a>

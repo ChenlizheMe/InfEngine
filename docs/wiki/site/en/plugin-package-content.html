@@ -203,93 +203,85 @@
     </aside>
     
                 <h1 id="plugins">Plugins<a class="headerlink" href="#plugins" title="Permanent link">&para;</a></h1>
-<p>An Infernux plugin is an InxPackage. You can ship code, assets, or both.</p>
-<p>It works like Unity's Package Manager: drop a <code>.inxpkg</code>, point at a local folder, paste a GitHub URL, or install from the official list.</p>
-<h2 id="folder-layout">Folder layout<a class="headerlink" href="#folder-layout" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>MyPlugin/
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  InxPackage.json
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  README.md
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  README.zh-CN.md
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  LICENSE
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  requirements.txt
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  Runtime/            # ships with the game
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  Editor/             # Editor only
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  InxPluginPages/     # extra tabs in the Plugins window
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  ...                 # everything else is regular assets
+<p>An Infernux plugin is an InxPackage. It may carry Python, native libraries, Wasm, Java resources, materials, shaders, web pages, or arbitrary files.</p>
+<h2 id="local-authoring">Local authoring<a class="headerlink" href="#local-authoring" title="Permanent link">&para;</a></h2>
+<p>When you export a local folder, that folder is already the package root:</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>abc/
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  runtime/          # available in Editor and Player
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  editor/           # Editor only
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  plugin_pages/     # pages in the Plugins window
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  materials/
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  shaders/
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  web/
 </code></pre></div>
-<p>After install:</p>
-<table>
-<thead>
-<tr>
-<th>You put</th>
-<th>It lands in</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Runtime/</code>, <code>Editor/</code>, README, license</td>
-<td><code>Packages/&lt;name&gt;/</code></td>
-</tr>
-<tr>
-<td>Models, scenes, prefabs, textures</td>
-<td><code>Assets/Plugins/</code>, preserving package-relative paths</td>
-</tr>
-</tbody>
-</table>
-<p><code>Runtime</code>, <code>Editor</code>, and <code>InxPluginPages</code> are case-sensitive. If you just want a regular folder named Runtime, nest it, e.g. <code>Content/Runtime</code>.</p>
-<p>Names can have a namespace, like <code>studio/vfx-kit</code>. Nested folders are not dependencies.</p>
-<p>When authoring from Project view, every selected directory name is preserved.
-Importing several bare directories expands them directly below <code>Assets/Plugins/</code>;
-the engine does not invent a plugin-name or <code>selection</code> wrapper. Import fails
-explicitly if another GUID already owns a destination path.</p>
-<h2 id="inxpackagejson">InxPackage.json<a class="headerlink" href="#inxpackagejson" title="Permanent link">&para;</a></h2>
-<p>This is enough:</p>
+<p><code>inx_package.json</code> is optional. If it is absent, export generates the package metadata and uses the output <code>.inxpkg</code> filename as the default <code>name</code> and <code>reference</code>. For example, exporting <code>abc/</code> as <code>physics_tools.inxpkg</code> creates the identity <code>physics_tools</code>. Add the manifest only when you need explicit metadata:</p>
 <div class="language-json highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"reference"</span><span class="p">:</span><span class="w"> </span><span class="s2">"studio/vfx-kit"</span><span class="p">,</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"VFX Kit"</span><span class="p">,</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"1.0.0"</span><span class="p">,</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"engine"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=0.3.7,&lt;0.4"</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">}</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"engine"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=0.4,&lt;0.5"</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"intro"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Reusable visual effects."</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">}</span>
 </code></pre></div>
-<p><code>reference</code> is the plugin's identity. It does not change after install.</p>
-<h2 id="pages-in-the-plugins-window">Pages in the Plugins window<a class="headerlink" href="#pages-in-the-plugins-window" title="Permanent link">&para;</a></h2>
-<p>You do not need editor code to show docs:</p>
-<ul>
-<li><code>README.md</code> is the Description tab. <code>README.zh-CN.md</code> is the Chinese one.</li>
-<li><code>LICENSE</code> is the License tab.</li>
-<li>Extra markdown or text under <code>InxPluginPages/</code> becomes more tabs.</li>
-</ul>
-<p>Chinese files only work one way: insert <code>.zh-CN</code> before the extension, e.g. <code>Guide.zh-CN.md</code>. The editor shows Chinese when the UI language is Chinese, otherwise the default file. <code>.en</code>, <code>Docs/</code>, and locale folders are ignored.</p>
-<p>Images use normal markdown and must live in the package. Remote images are not downloaded.</p>
-<p>To control tab order, set <code>pages</code> in <code>InxPackage.json</code>:</p>
-<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"intro"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Description"</span><span class="p">,</span><span class="w"> </span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"README.md"</span><span class="p">},</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"guide"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Usage"</span><span class="p">,</span><span class="w"> </span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"InxPluginPages/Guide.md"</span><span class="p">}</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="p">]</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">}</span>
+<p>The manifest does not currently declare <code>requirements</code> or <code>dependencies</code>. An optional <code>requirements.txt</code> is recognized by its fixed filename.</p>
+<h2 id="git-repository-layout">Git repository layout<a class="headerlink" href="#git-repository-layout" title="Permanent link">&para;</a></h2>
+<p>A repository adds exactly one wrapper:</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vfx-kit/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  README.md          # GitHub documentation, never packaged
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  package.py         # standalone standard-library packer
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  CMakeLists.txt     # optional author build, never packaged
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  package/           # the only directory entering .inxpkg
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    inx_package.json
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    runtime/
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    editor/
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    plugin_pages/
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    native/backend.pyd
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    web/module.wasm
 </code></pre></div>
-<p>If you omit <code>intro</code>, the package list uses the first paragraph of the README.</p>
-<h2 id="code-that-runs-when-the-editor-starts">Code that runs when the Editor starts<a class="headerlink" href="#code-that-runs-when-the-editor-starts" title="Permanent link">&para;</a></h2>
-<p>Subclass <code>InxPreload</code>. You do not register it in the json. The engine scans <code>Assets</code> and <code>Packages</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.lifecycle</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxPreload</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">Bootstrap</span><span class="p">(</span><span class="n">InxPreload</span><span class="p">):</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        <span class="k">pass</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        <span class="k">pass</span>
-</code></pre></div>
-<p>Disabled packages are skipped. If <code>unload</code> fails, the engine stops and asks you to restart. It will not pretend the plugin is gone.</p>
-<p>Use explicit relative imports for package-local Python code, for example <code>from .service import Service</code>. Every installed package has its own deterministic module namespace, so matching filenames in unrelated plugins never share module state. <code>Runtime/</code> participates in gameplay component loading and hot refresh; <code>Editor/</code> is loaded only by the plugin lifecycle.</p>
-<h2 id="dependencies">Dependencies<a class="headerlink" href="#dependencies" title="Permanent link">&para;</a></h2>
-<p>Names in <code>requirements.txt</code> are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin. If pip fails, Infernux tries to remove what that install added. Local wheels and git installs may not come back exactly.</p>
-<h2 id="player-builds">Player builds<a class="headerlink" href="#player-builds" title="Permanent link">&para;</a></h2>
-<p><code>Runtime</code> and regular assets go into the game. <code>Editor</code>, README, license, and doc pages stay out. There is no include/exclude list.</p>
-<h2 id="install-uninstall-moving-files">Install, uninstall, moving files<a class="headerlink" href="#install-uninstall-moving-files" title="Permanent link">&para;</a></h2>
-<p>Files are tracked by GUID, so moving them in the project is fine. Uninstall only deletes files this package owns and you have not edited. Removing a parent package does not remove child packages.</p>
-<p>A <code>.inxpkg</code> sitting inside another package is just a file until you import it yourself or list it in <code>requirements.txt</code>.</p>
+<p>The outer repository is unrestricted. CMake, Cargo, Gradle, npm, or another build may place its final outputs into <code>package/</code>. The packer treats known and unknown extensions as bytes; location, not extension guessing, defines ownership and Player export.</p>
+<h2 id="installation-routes">Installation routes<a class="headerlink" href="#installation-routes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Package path</th>
+<th>Project destination</th>
+<th>Player</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runtime/...</code></td>
+<td><code>Packages/&lt;reference&gt;/runtime/...</code></td>
+<td>included</td>
+</tr>
+<tr>
+<td><code>editor/...</code></td>
+<td><code>Packages/&lt;reference&gt;/editor/...</code></td>
+<td>excluded</td>
+</tr>
+<tr>
+<td><code>plugin_pages/...</code></td>
+<td><code>Packages/&lt;reference&gt;/plugin_pages/...</code></td>
+<td>excluded</td>
+</tr>
+<tr>
+<td><code>requirements.txt</code></td>
+<td><code>Packages/&lt;reference&gt;/requirements.txt</code></td>
+<td>excluded</td>
+</tr>
+<tr>
+<td>everything else</td>
+<td><code>Assets/Plugins/...</code></td>
+<td>included</td>
+</tr>
+</tbody>
+</table>
+<p>The lowercase names <code>runtime</code>, <code>editor</code>, and <code>plugin_pages</code> are exact. Files are tracked by GUID, so uninstall removes only unedited files owned by that package.</p>
+<h2 id="plugin-pages">Plugin pages<a class="headerlink" href="#plugin-pages" title="Permanent link">&para;</a></h2>
+<p>Only markdown or text under <code>plugin_pages/</code> becomes Plugins-window content. Root README and license files are repository documentation and are not read as plugin pages. Chinese content inserts <code>.zh-CN</code> before the extension, such as <code>guide.zh-CN.md</code>. Images use relative paths and stay under the package root.</p>
+<h2 id="code-and-player-builds">Code and Player builds<a class="headerlink" href="#code-and-player-builds" title="Permanent link">&para;</a></h2>
+<p>Subclass <code>InxPreload</code> for lifecycle work. Use explicit relative imports for package-local Python code. Every installed package receives an isolated deterministic module namespace. <code>runtime/</code> participates in gameplay component loading and hot refresh; <code>editor/</code> is loaded only by the Editor lifecycle.</p>
+<p>No include/exclude fallback list exists. A <code>.pyd</code> or <code>.wasm</code> under <code>runtime/</code> is runtime-owned; the same file under <code>editor/</code> is Editor-only. Materials, shaders, HTML, and other ordinary assets are imported under <code>Assets/Plugins</code> and included in the Player through the normal asset pipeline.</p>
                 
     <nav class="doc-trail" data-doc-trail aria-label="Document navigation and feedback">
         <a class="doc-trail-fallback" href="/wiki/site/en/api/index.html">Back to API index</a>
