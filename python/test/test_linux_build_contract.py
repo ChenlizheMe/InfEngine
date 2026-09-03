@@ -72,6 +72,7 @@ def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
     assert "QT_QPA_PLATFORM: offscreen" in linux_job
     assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in linux_job
     assert "xvfb-run --auto-servernum python -m pytest python/test" in linux_job
+    assert 'conda install --yes --channel conda-forge "libpython-static=3.13.15"' in linux_job
 
 
 def test_clang_format_is_an_explicit_developer_target_dependency() -> None:
