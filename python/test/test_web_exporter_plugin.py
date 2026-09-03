@@ -36,7 +36,7 @@ def _request(tmp_path: Path) -> BuildRequest:
 
 def _probe_result(**overrides: object) -> dict[str, object]:
     details: dict[str, object] = {
-        "detected_emscripten_version": "6.0.8",
+        "detected_emscripten_version": "4.0.10",
         "node_version": "v24.19.0",
         "emcc": True,
         "emdawn_port": True,

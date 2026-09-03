@@ -135,11 +135,10 @@ jobs:
           conda activate infernux
           $env:VK_DRIVER_FILES = "${{ github.workspace }}\out\toolchains\windows-swiftshader\build\Windows\vk_swiftshader_icd.json"
           $env:VK_ICD_FILENAMES = $env:VK_DRIVER_FILES
-          $capabilities = & "C:\VulkanSDK\$env:VULKAN_SDK_VERSION\Bin\vulkaninfo.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'vulkaninfo could not initialize pinned SwiftShader.' }
-          if (-not ($capabilities -match 'VK_KHR_win32_surface')) {
-            throw 'Pinned SwiftShader does not expose VK_KHR_win32_surface.'
-          }
+          python scripts\acceptance\validate_vulkan_extensions.py `
+            --loader python\Infernux\lib\vulkan-1.dll `
+            --require VK_KHR_surface `
+            --require VK_KHR_win32_surface
 
       - name: Build Windows Player runtime
         shell: pwsh
