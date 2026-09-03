@@ -91,6 +91,9 @@ def _fake_inxpack(tmp_path, monkeypatch):
         "INFERNUX_PACKAGE_CACHE_ROOT",
         str(tmp_path / "hub-package-cache"),
     )
+    engine_resources = tmp_path / "engine-resources"
+    engine_resources.mkdir()
+    monkeypatch.setattr("Infernux.resources._package_dir", str(engine_resources))
     _FakeInxPack.archives.clear()
     player_package_native.set_test_backend(_FakeInxPack)
     yield
