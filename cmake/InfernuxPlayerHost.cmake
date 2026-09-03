@@ -66,12 +66,7 @@ target_include_directories(InfernuxPlayerHost PRIVATE
     ${CMAKE_SOURCE_DIR}/external
     ${INFERNUX_PYTHON_INCLUDE_DIRS}
 )
-# PlayerHost runs before the Data archive is extracted, so its bootstrap closure
-# must remain self-contained.
-target_sources(InfernuxPlayerHost PRIVATE
-    cpp/infernux/platform/filesystem/InxPack.cpp
-)
-target_link_libraries(InfernuxPlayerHost PRIVATE ${INFERNUX_ZSTD_TARGET} ${CMAKE_DL_LIBS})
+target_link_libraries(InfernuxPlayerHost PRIVATE ${CMAKE_DL_LIBS})
 if(WIN32)
     target_link_libraries(InfernuxPlayerHost PRIVATE shell32)
 else()

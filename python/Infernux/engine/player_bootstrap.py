@@ -160,14 +160,16 @@ class PlayerBootstrap:
             raise RuntimeError("Player package must have exactly one executable entry point")
         layout = str(product.get("layout", ""))
         required_artifacts = {
-            "single_executable_native_packages": ("Runtime.inxrt", "Content.inxpkg"),
+            "direct_native_runtime": ("Runtime",),
             "platform_native_packages": ("Content.inxpkg",),
         }.get(layout)
         if required_artifacts is None:
             raise RuntimeError(f"Player package layout is unsupported: {layout or '<missing>'}")
         required_root = data_root or os.path.dirname(manifest_path)
         for artifact in required_artifacts:
-            if not os.path.isfile(os.path.join(required_root, artifact)):
+            path = os.path.join(required_root, artifact)
+            exists = os.path.isdir(path) if artifact == "Runtime" else os.path.isfile(path)
+            if not exists:
                 raise RuntimeError(f"Player package artifact is missing: {artifact}")
 
         self._runtime_manifest = runtime_manifest
@@ -328,13 +330,21 @@ class PlayerBootstrap:
             raise RuntimeError("Player splash configuration disagrees with the service graph")
 
         data_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
-        parallel_module = os.path.join(
+        parallel_archive = os.path.join(
             data_root or self.project_path,
             "Modules",
             "Parallel.inxmod",
         )
-        if os.path.isfile(parallel_module) != manifest.features.parallel:
-            raise RuntimeError("Parallel.inxmod presence disagrees with RuntimeManifest")
+        parallel_runtime = os.path.join(
+            data_root or self.project_path,
+            "Modules",
+            "Parallel",
+        )
+        parallel_present = os.path.isfile(parallel_archive) or os.path.isdir(
+            parallel_runtime
+        )
+        if parallel_present != manifest.features.parallel:
+            raise RuntimeError("Parallel runtime presence disagrees with RuntimeManifest")
 
         self.engine_log_level = (
             LogLevel.Debug

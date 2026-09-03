@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import importlib.machinery
 import hashlib
-import inspect
 import json
 import os
 from pathlib import Path
@@ -2338,16 +2337,7 @@ def test_cleanup_temp_removes_boot_directory_synchronously(tmp_path):
     assert not boot_dir.exists()
 
 
-def test_player_boot_file_helpers_replace_shutil_without_losing_atomic_copy(tmp_path):
-    source = tmp_path / "source.json"
-    destination = tmp_path / "nested" / "destination.json"
-    source.write_bytes(b'{"complete": true}')
-
-    game_builder_module._copy_player_file_atomic(str(source), str(destination))
-
-    assert destination.read_bytes() == source.read_bytes()
-    assert not list(destination.parent.glob("destination.json.*.tmp"))
-
+def test_player_build_tree_removal_uses_boot_required_stdlib(tmp_path):
     tree = tmp_path / "cache-tree"
     (tree / "nested").mkdir(parents=True)
     (tree / "nested" / "payload.bin").write_bytes(b"payload")
@@ -5138,15 +5128,13 @@ def test_generated_player_boot_registers_lowercase_public_namespace(tmp_path):
     assert 'sys.modules["infernux"] = _public_api' in source
 
 
-def test_generated_player_boot_requires_and_republishes_build_manifest(tmp_path):
+def test_generated_player_boot_requires_build_manifest_in_the_data_tree(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     source = Path(builder._generate_boot_script()).read_text(encoding="utf-8")
 
     required = 'if not os.path.isfile(_BUILD_MANIFEST_PATH):'
-    copied = "_copy_player_file_atomic(\n    _BUILD_MANIFEST_PATH,"
     assert required in source
-    assert copied in source
-    assert source.index(required) < source.index(copied)
+    assert "_copy_player_file_atomic" not in source
     assert 'if os.path.isfile(_BUILD_MANIFEST_PATH):' not in source
 
 
@@ -5239,6 +5227,46 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
         }
         for artifact in catalog["artifacts"]
     )
+
+
+def test_desktop_player_materializes_one_direct_runtime_tree(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = _prepare_runtime_catalog_inputs(builder, final_dir)
+    bootstrap_source = tmp_path / "bootstrap.pyd"
+    python_source = tmp_path / "python313.dll"
+    bootstrap_source.write_bytes(b"bootstrap")
+    python_source.write_bytes(b"python")
+    write_pack(
+        (
+            ("_InfernuxBootstrap.pyd", bootstrap_source),
+            ("python313.dll", python_source),
+        ),
+        data_root / "Bootstrap.inxrt",
+    )
+    (data_root / "BuildManifest.json").write_text("{}", encoding="utf-8")
+    builder._write_payload_manifest(str(final_dir))
+
+    builder._materialize_desktop_player_layout(str(final_dir))
+    builder._audit_direct_player_layout(str(final_dir))
+
+    assert (data_root / "Runtime" / "_InfernuxBootstrap.pyd").read_bytes() == b"bootstrap"
+    assert (data_root / "Runtime" / "python313.dll").read_bytes() == b"python"
+    assert (data_root / "Runtime" / "Infernux" / "resources" / "runtime.bin").read_bytes() == b"runtime"
+    assert (data_root / "RuntimeAssets" / "content.bin").read_bytes() == b"content"
+    assert not (data_root / "Bootstrap.inxrt").exists()
+    assert not (data_root / builder._RUNTIME_ARCHIVE_FILENAME).exists()
+    assert not (data_root / builder._CONTENT_ARCHIVE_FILENAME).exists()
+    assert not (data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME).exists()
+    assert not (data_root / "Cache").exists()
+    catalog = json.loads(
+        (data_root / "Library" / "RuntimeAssetCatalog.json").read_text(encoding="utf-8")
+    )
+    assert catalog["packages"] == []
+    manifest = json.loads(
+        (data_root / builder._PLAYER_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["product"]["layout"] == "direct_native_runtime"
 
 
 def test_payload_manifest_supports_platform_native_player_host(tmp_path):
@@ -5447,39 +5475,26 @@ class TestGameBuilderOutputSafety:
         assert 'os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = _DATA_ROOT' in boot_source
         assert "sys.dont_write_bytecode = True" in boot_source
         assert 'os.environ["_INFERNUX_PACKAGED_RESOURCE_ROOT"]' in boot_source
-        assert '_RUNTIME_ARCHIVE = os.path.join(_DATA_ROOT, "Runtime.inxrt")' in boot_source
+        assert "_CORE_RUNTIME_DIR = _RUNTIME_ROOT" in boot_source
+        assert "if not os.path.isdir(_CORE_RUNTIME_DIR):" in boot_source
         assert '"stdlib"' in boot_source
-        assert '{"Infernux", "numpy", "numpy.libs", "packaging", "stdlib"}' in boot_source
         assert '_STDLIB_RUNTIME_DIR' in boot_source
         assert 'os.add_dll_directory(_dll_dir)' in boot_source
-        assert '_CONTENT_ARCHIVE = os.path.join(_DATA_ROOT, "Content.inxpkg")' in boot_source
-        assert '_PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")' in boot_source
-        assert 'class _ParallelRuntimeFinder:' in boot_source
-        assert '_mark_boot_phase("parallel_deferred")' in boot_source
-        assert '_RUNTIME_MODULE_DIR = _extract_cached_archive(' in boot_source
-        assert 'if os.path.isfile(_PARALLEL_ARCHIVE):\n    _RUNTIME_MODULE_DIR = _extract_cached_archive(' not in boot_source
-        assert '_index_path = os.path.join(_DATA_ROOT, "PackageIndex.inxmanifest")' in boot_source
-        assert "_PLAYER_PACKAGE_INDEX = _load_player_package_index()" in boot_source
-        assert "for _package_kind, (_package_hash, _package_bytes) in _PLAYER_PACKAGE_INDEX.items():" in boot_source
+        assert "_DATA_DIR = _DATA_ROOT" in boot_source
+        assert '_RUNTIME_MODULE_DIR = os.path.join(_DATA_ROOT, "Modules", "Parallel")' in boot_source
+        assert 'if os.path.isdir(_RUNTIME_MODULE_DIR):' in boot_source
+        assert '_mark_boot_phase("parallel_ready")' in boot_source
+        assert 'class _ParallelRuntimeFinder:' not in boot_source
+        assert "_extract_cached_archive" not in boot_source
+        assert "PackageIndex.inxmanifest" not in boot_source
         assert "_validate_native_archive_paths" not in boot_source
-        assert "_PLAYER_PACKAGE_INDEX[str(_cache_kind)]" in boot_source
-        assert "_indexed_identity" not in boot_source
-        assert '_source_marker = os.path.join(_cache_root, ".source")' in boot_source
-        assert "_archive_stat.st_mtime_ns" not in boot_source
-        assert '_source_identity = _expected_hash + "\\n" + str(_archive_stat.st_size)' in boot_source
-        assert "_extracted_manifest = dict(" in boot_source
-        assert "identity does not match its build index" in boot_source
         assert '"_INFERNUX_PLAYER_DATA_ROOT"' in boot_source
-        assert "_extract_cached_archive" in boot_source
-        assert "_NATIVE_PACK._inxpack_extract" in boot_source
         assert "_INFERNUX_PLAYER_" in boot_source
-        assert "_ARCHIVE_SHA256" in boot_source
-        assert "_ARCHIVE_BYTES" in boot_source
+        assert "_ARCHIVE_SHA256" not in boot_source
+        assert "_ARCHIVE_BYTES" not in boot_source
         assert '_GAME_NAME = _EXE_STEM or "InfernuxPlayer"' in boot_source
         assert 'if os.environ.get("_INFERNUX_PLAYER_CONTROL_FILE"):' in boot_source
-        pre_native_boot = boot_source.split(
-            "_CORE_RUNTIME_DIR = _extract_cached_archive", 1
-        )[0]
+        pre_native_boot = boot_source.split("_CORE_RUNTIME_DIR = _RUNTIME_ROOT", 1)[0]
         assert "from Infernux" not in pre_native_boot
         assert "import Infernux" not in pre_native_boot
         assert "os.path.dirname(sys.executable)" in pre_native_boot
@@ -5495,19 +5510,8 @@ class TestGameBuilderOutputSafety:
         assert "from Infernux.lib import _Infernux" not in boot_source
         assert '_INFERNUX_LIB_DIR = os.path.join(_CORE_RUNTIME_DIR, "Infernux", "lib")' in boot_source
         assert 'os.environ["INFERNUX_NATIVE_MODULE_DIR"] = _INFERNUX_LIB_DIR' in boot_source
-        assert "os.O_EXCL" in boot_source
-        assert "Timed out waiting for Player cache publication" in boot_source
-        expected_cache_helper = inspect.getsource(
-            game_builder_module._publish_player_cache
-        ).strip()
-        assert "json." not in expected_cache_helper
-        assert 'str(os.getpid()).encode("ascii")' in expected_cache_helper
-        assert expected_cache_helper in boot_source.replace("\r\n", "\n")
-        assert "_NATIVE_PACK._inxplayer_process_is_alive(pid)" in boot_source
-        assert "os.kill(pid, 0)" not in boot_source
-        assert "_remove_player_path(cache_root)" in boot_source
-        assert "_copy_player_file_atomic(" in boot_source
-        assert "os.replace(lock_path, stale_path)" in boot_source
+        assert "PlayerCache" not in boot_source
+        assert "cache.complete" not in boot_source
         assert boot_source.index("import _InfernuxBootstrap as _NATIVE_PACK") < boot_source.index(
             "from Infernux.engine import run_player"
         )
@@ -5628,145 +5632,6 @@ class TestGameBuilderOutputSafety:
 
         with pytest.raises(BuildOutputDirectoryError, match="must be empty"):
             builder._clean_output()
-
-
-@pytest.fixture
-def native_player_process_probe(monkeypatch):
-    calls = []
-
-    class _NativePack:
-        @staticmethod
-        def _inxplayer_process_is_alive(pid):
-            calls.append(pid)
-            return pid == os.getpid()
-
-    monkeypatch.setattr(game_builder_module, "_NATIVE_PACK", _NativePack, raising=False)
-    return calls
-
-
-def test_player_cache_publication_is_safe_for_competing_processes(
-    tmp_path, native_player_process_probe
-):
-    expected_hash = "a" * 64
-    cache_root = tmp_path / "cache" / "runtime-a"
-    barrier = threading.Barrier(2)
-    results: list[str] = []
-    errors: list[BaseException] = []
-
-    def publish(index: int) -> None:
-        temporary = tmp_path / f"runtime-{index}.tmp"
-        temporary.mkdir()
-        (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-        (temporary / "payload.bin").write_bytes(b"same payload")
-        try:
-            barrier.wait(timeout=5)
-            results.append(
-                game_builder_module._publish_player_cache(
-                    str(temporary), str(cache_root), expected_hash
-                )
-            )
-        except BaseException as exc:
-            errors.append(exc)
-
-    workers = [threading.Thread(target=publish, args=(index,)) for index in range(2)]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=10)
-
-    assert not errors
-    assert results == [str(cache_root), str(cache_root)]
-    assert (cache_root / ".ready").read_text(encoding="ascii") == expected_hash
-    assert (cache_root / "payload.bin").read_bytes() == b"same payload"
-    assert not (tmp_path / "cache" / "runtime-a.lock").exists()
-
-
-def test_player_cache_reclaims_stale_lock(tmp_path, native_player_process_probe):
-    expected_hash = "b" * 64
-    cache_root = tmp_path / "cache" / "runtime-b"
-    lock_path = Path(str(cache_root) + ".lock")
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(str(2**31 - 1), encoding="ascii")
-    stale_time = time.time() - 60
-    os.utime(lock_path, (stale_time, stale_time))
-
-    temporary = tmp_path / "runtime-b.tmp"
-    temporary.mkdir()
-    (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-    (temporary / "payload.bin").write_bytes(b"recovered payload")
-
-    published = game_builder_module._publish_player_cache(
-        str(temporary),
-        str(cache_root),
-        expected_hash,
-        timeout_seconds=0.5,
-        stale_lock_seconds=0.01,
-    )
-
-    assert published == str(cache_root)
-    assert (cache_root / "payload.bin").read_bytes() == b"recovered payload"
-    assert not lock_path.exists()
-
-
-def test_player_cache_default_stale_window_precedes_timeout(
-    tmp_path, native_player_process_probe
-):
-    helper_signature = inspect.signature(game_builder_module._publish_player_cache)
-    default_timeout = helper_signature.parameters["timeout_seconds"].default
-    default_stale_window = helper_signature.parameters["stale_lock_seconds"].default
-    assert default_stale_window <= 1.0
-    assert default_stale_window < default_timeout
-
-    expected_hash = "d" * 64
-    cache_root = tmp_path / "cache" / "runtime-d"
-    lock_path = Path(str(cache_root) + ".lock")
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(str(2**31 - 1), encoding="ascii")
-    stale_time = time.time() - 2
-    os.utime(lock_path, (stale_time, stale_time))
-
-    temporary = tmp_path / "runtime-d.tmp"
-    temporary.mkdir()
-    (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-
-    # Keep the test bounded while leaving stale_lock_seconds at its default.
-    published = game_builder_module._publish_player_cache(
-        str(temporary),
-        str(cache_root),
-        expected_hash,
-        timeout_seconds=1.0,
-    )
-
-    assert published == str(cache_root)
-    assert not lock_path.exists()
-
-
-def test_player_cache_does_not_reclaim_live_lock(tmp_path, native_player_process_probe):
-    expected_hash = "c" * 64
-    cache_root = tmp_path / "cache" / "runtime-c"
-    lock_path = Path(str(cache_root) + ".lock")
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(str(os.getpid()), encoding="ascii")
-    stale_time = time.time() - 60
-    os.utime(lock_path, (stale_time, stale_time))
-
-    temporary = tmp_path / "runtime-c.tmp"
-    temporary.mkdir()
-    (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-
-    try:
-        with pytest.raises(RuntimeError, match="Timed out waiting"):
-            game_builder_module._publish_player_cache(
-                str(temporary),
-                str(cache_root),
-                expected_hash,
-                timeout_seconds=0.05,
-                stale_lock_seconds=0.01,
-            )
-        assert lock_path.exists()
-        assert os.getpid() in native_player_process_probe
-    finally:
-        lock_path.unlink(missing_ok=True)
 
 
 class TestGameBuilderDependencyCollection:

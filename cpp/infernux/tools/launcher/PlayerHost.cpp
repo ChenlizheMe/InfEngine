@@ -6,31 +6,21 @@
 #define NOMINMAX
 #endif
 #ifdef _WIN32
-#include <shlobj.h>
 #include <windows.h>
 #else
 #include <dlfcn.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <cstring>
 #endif
 
-#include <algorithm>
-#include <chrono>
 #include <codecvt>
 #include <cstdlib>
-#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <locale>
 #include <sstream>
 #include <system_error>
-#include <thread>
-
-#include <platform/filesystem/InxPack.h>
 
 namespace infernux::playerhost
 {
@@ -52,30 +42,6 @@ using PyConfigClear = void(INFERNUX_PYTHON_CALL *)(PyConfig *);
 using PyRunSimpleStringFlags = int(INFERNUX_PYTHON_CALL *)(const char *, PyCompilerFlags *);
 using PyStatusException = int(INFERNUX_PYTHON_CALL *)(PyStatus);
 
-std::filesystem::path UserCachePath()
-{
-#ifdef _WIN32
-    wchar_t buffer[MAX_PATH]{};
-    DWORD length = ::GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, ARRAYSIZE(buffer));
-    if (length != 0 && length < ARRAYSIZE(buffer))
-        return std::filesystem::path(buffer, buffer + length);
-
-    PWSTR knownFolder = nullptr;
-    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &knownFolder))) {
-        std::filesystem::path result(knownFolder);
-        ::CoTaskMemFree(knownFolder);
-        return result;
-    }
-    return {};
-#else
-    if (const char *xdgCache = std::getenv("XDG_CACHE_HOME"); xdgCache != nullptr && *xdgCache != '\0')
-        return std::filesystem::path(xdgCache);
-    if (const char *home = std::getenv("HOME"); home != nullptr && *home != '\0')
-        return std::filesystem::path(home) / ".cache";
-    return {};
-#endif
-}
-
 std::wstring ErrorText(const std::wstring &prefix)
 {
     std::wstringstream stream;
@@ -87,15 +53,6 @@ std::wstring ErrorText(const std::wstring &prefix)
            << L")";
 #endif
     return stream.str();
-}
-
-bool IsHexHash(const std::string &value)
-{
-    if (value.size() != 64)
-        return false;
-    return std::all_of(value.begin(), value.end(), [](const char value) {
-        return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F');
-    });
 }
 
 std::filesystem::path FindPythonLibrary(const std::filesystem::path &cacheRoot)
@@ -145,166 +102,6 @@ bool HasPlayerModule(const std::filesystem::path &cacheRoot)
         }
     }
     return false;
-}
-
-class CacheLock
-{
-  public:
-    explicit CacheLock(const std::filesystem::path &path) : path_(path)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        for (;;) {
-#ifdef _WIN32
-            handle_ = ::CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                                    FILE_ATTRIBUTE_TEMPORARY, nullptr);
-            if (handle_ != INVALID_HANDLE_VALUE) {
-#else
-            handle_ = ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
-            if (handle_ >= 0) {
-#endif
-                WriteMetadata();
-                return;
-            }
-#ifdef _WIN32
-            const DWORD error = ::GetLastError();
-            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
-                return;
-#else
-            if (errno != EEXIST)
-                return;
-#endif
-            if (ReclaimStale())
-                continue;
-            if (std::chrono::steady_clock::now() >= deadline)
-                return;
-#ifdef _WIN32
-            ::Sleep(100);
-#else
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-#endif
-        }
-    }
-    ~CacheLock()
-    {
-#ifdef _WIN32
-        if (handle_ != INVALID_HANDLE_VALUE) {
-            ::CloseHandle(handle_);
-#else
-        if (handle_ >= 0) {
-            ::close(handle_);
-#endif
-            std::error_code ignored;
-            std::filesystem::remove(path_, ignored);
-        }
-    }
-    CacheLock(const CacheLock &) = delete;
-    CacheLock &operator=(const CacheLock &) = delete;
-    bool valid() const noexcept
-    {
-#ifdef _WIN32
-        return handle_ != INVALID_HANDLE_VALUE;
-#else
-        return handle_ >= 0;
-#endif
-    }
-
-  private:
-    void WriteMetadata()
-    {
-#ifdef _WIN32
-        if (handle_ == INVALID_HANDLE_VALUE)
-            return;
-        const std::string metadata =
-            "pid=" + std::to_string(::GetCurrentProcessId()) + "\ntime=" + std::to_string(std::time(nullptr)) + "\n";
-        DWORD written = 0;
-        ::WriteFile(handle_, metadata.data(), static_cast<DWORD>(metadata.size()), &written, nullptr);
-        ::FlushFileBuffers(handle_);
-#else
-        if (handle_ < 0)
-            return;
-        const std::string metadata =
-            "pid=" + std::to_string(::getpid()) + "\ntime=" + std::to_string(std::time(nullptr)) + "\n";
-        const auto ignored = ::write(handle_, metadata.data(), metadata.size());
-        (void)ignored;
-        ::fsync(handle_);
-#endif
-    }
-
-    static bool ProcessAlive(unsigned long pid)
-    {
-        if (pid == 0)
-            return false;
-#ifdef _WIN32
-        HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (process == nullptr)
-            return false;
-        DWORD exitCode = 0;
-        const bool alive = ::GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
-        ::CloseHandle(process);
-        return alive;
-#else
-        return ::kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM;
-#endif
-    }
-
-    bool ReclaimStale()
-    {
-        std::ifstream input(path_);
-        unsigned long pid = 0;
-        long long timestamp = 0;
-        std::string line;
-        while (std::getline(input, line)) {
-            if (line.rfind("pid=", 0) == 0)
-                pid = std::strtoul(line.c_str() + 4, nullptr, 10);
-            else if (line.rfind("time=", 0) == 0)
-                timestamp = std::strtoll(line.c_str() + 5, nullptr, 10);
-        }
-        const auto now = std::time(nullptr);
-        if (timestamp == 0 || now - timestamp < 2 || ProcessAlive(pid))
-            return false;
-        std::filesystem::path stale = path_;
-#ifdef _WIN32
-        stale += L".stale." + std::to_wstring(::GetCurrentProcessId()) + L"." +
-                 std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
-#else
-        stale += ".stale." + std::to_string(::getpid()) + "." +
-                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-        std::error_code error;
-        std::filesystem::rename(path_, stale, error);
-        if (error)
-            return false;
-        std::filesystem::remove(stale, error);
-        return true;
-    }
-
-#ifdef _WIN32
-    HANDLE handle_ = INVALID_HANDLE_VALUE;
-#else
-    int handle_ = -1;
-#endif
-    std::filesystem::path path_;
-};
-
-bool CacheMarkerMatches(const std::filesystem::path &cache, const std::string &hash)
-{
-    std::ifstream marker(cache / "cache.complete", std::ios::binary);
-    std::string value;
-    std::getline(marker, value);
-    return !marker.fail() && value == hash && std::filesystem::is_regular_file(FindPythonLibrary(cache)) &&
-           HasPlayerModule(cache);
-}
-
-bool PublishCache(const std::filesystem::path &staging, const std::filesystem::path &destination)
-{
-    std::error_code error;
-    std::filesystem::rename(staging, destination, error);
-    if (!error)
-        return true;
-    // Another publisher may have won the rename race. Accept it only after
-    // the marker and the two executable startup requirements are present.
-    return std::filesystem::is_regular_file(destination / "cache.complete") &&
-           std::filesystem::is_regular_file(FindPythonLibrary(destination)) && HasPlayerModule(destination);
 }
 
 std::wstring WidePath(const std::filesystem::path &path)
@@ -400,19 +197,8 @@ Layout ResolveLayout(const std::filesystem::path &hostExecutable)
 #else
     layout.dataRoot = layout.installRoot / (layout.hostExecutable.stem().string() + "_Data");
 #endif
-    layout.bootstrapArchive = layout.dataRoot / "Bootstrap.inxrt";
-    const auto userCache = UserCachePath();
-    if (userCache.empty())
-        throw std::runtime_error("The per-user cache directory is unavailable for the Player cache");
-    layout.warmCacheRoot = userCache / "Infernux" / "PlayerCache" / layout.hostExecutable.stem();
+    layout.runtimeRoot = layout.dataRoot / "Runtime";
     return layout;
-}
-
-std::filesystem::path CachePath(const Layout &layout, const std::string &archiveHash)
-{
-    if (!IsHexHash(archiveHash))
-        throw std::invalid_argument("PlayerHost cache identity must be a SHA-256 hash");
-    return layout.warmCacheRoot / archiveHash;
 }
 
 std::vector<std::wstring> BuildPythonArguments(const std::filesystem::path &hostExecutable,
@@ -432,104 +218,34 @@ bool PlayerHost::Fail(const std::wstring &message)
     return false;
 }
 
-bool PlayerHost::PrepareCache(const Layout &layout, std::filesystem::path &cacheRoot)
+bool PlayerHost::PrepareRuntime(const Layout &layout)
 {
-    if (!std::filesystem::is_regular_file(layout.bootstrapArchive))
-        return Fail(L"Bootstrap.inxrt is missing:\n" + layout.bootstrapArchive.wstring());
-
-    infernux::inxpack::Manifest manifest;
-    try {
-        manifest = infernux::inxpack::ReadManifest(layout.bootstrapArchive);
-    } catch (const std::exception &exception) {
-        return Fail(L"Bootstrap.inxrt is damaged or unsupported:\n" +
-                    std::filesystem::path(exception.what()).wstring());
-    }
-    const std::string archiveHash = infernux::inxpack::HashToHex(manifest.archiveHash);
-    if (!IsHexHash(archiveHash) || manifest.entries.empty())
-        return Fail(L"Bootstrap.inxrt has no valid content hash or entries.");
-
-    try {
-        std::filesystem::create_directories(layout.warmCacheRoot);
-        cacheRoot = CachePath(layout, archiveHash);
-    } catch (const std::exception &exception) {
-        return Fail(L"Unable to create the Player warm-cache path:\n" +
-                    std::filesystem::path(exception.what()).wstring());
-    }
-
-    if (CacheMarkerMatches(cacheRoot, archiveHash)) {
-        state_ = State::CacheReady;
-        return true;
-    }
-
-    const auto lockPath = layout.warmCacheRoot / (archiveHash + ".lock");
-    CacheLock lock(lockPath);
-    if (!lock.valid() && CacheMarkerMatches(cacheRoot, archiveHash)) {
-        state_ = State::CacheReady;
-        return true;
-    }
-    if (!lock.valid())
-        return Fail(ErrorText(L"Unable to acquire the Player warm-cache lock"));
-    if (CacheMarkerMatches(cacheRoot, archiveHash)) {
-        state_ = State::CacheReady;
-        return true;
-    }
-
-    std::error_code cleanupError;
-    std::filesystem::remove_all(cacheRoot, cleanupError);
-    const auto staging =
-        layout.warmCacheRoot / (archiveHash + ".staging." +
-#ifdef _WIN32
-                                std::to_string(::GetCurrentProcessId()) + "." +
-#else
-                                std::to_string(::getpid()) + "." +
-#endif
-                                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    std::filesystem::remove_all(staging, cleanupError);
-    try {
-        infernux::inxpack::Extract(layout.bootstrapArchive, staging);
-        std::ofstream marker(staging / "cache.complete", std::ios::binary | std::ios::trunc);
-        marker << archiveHash << '\n';
-        marker.flush();
-        if (!marker) {
-            std::filesystem::remove_all(staging, cleanupError);
-            return Fail(L"Unable to write the Player warm-cache completion marker.");
-        }
-        marker.close();
-        if (!PublishCache(staging, cacheRoot)) {
-            std::filesystem::remove_all(staging, cleanupError);
-            return Fail(ErrorText(L"Unable to atomically publish the Player warm cache"));
-        }
-    } catch (const std::exception &exception) {
-        std::filesystem::remove_all(staging, cleanupError);
-        return Fail(L"Unable to extract Bootstrap.inxrt:\n" + std::filesystem::path(exception.what()).wstring());
-    }
-
-    if (!CacheMarkerMatches(cacheRoot, archiveHash))
-        return Fail(L"The published Player warm cache failed validation.");
-    state_ = State::CacheReady;
+    if (!std::filesystem::is_directory(layout.runtimeRoot))
+        return Fail(L"The Player Runtime directory is missing:\n" + layout.runtimeRoot.wstring());
+    if (!HasPlayerModule(layout.runtimeRoot))
+        return Fail(L"The Player Runtime does not contain the _InfernuxPlayer module.");
+    if (FindPythonLibrary(layout.runtimeRoot).empty())
+        return Fail(L"The Player Runtime does not contain the configured CPython shared library.");
+    state_ = State::RuntimeReady;
     return true;
 }
 
-bool PlayerHost::LoadPython(const Layout &layout, const std::filesystem::path &cacheRoot)
+bool PlayerHost::LoadPython(const Layout &layout)
 {
-    if (!HasPlayerModule(cacheRoot))
-        return Fail(L"Bootstrap.inxrt does not contain the _InfernuxPlayer module.");
-    const auto pythonLibrary = FindPythonLibrary(cacheRoot);
-    if (pythonLibrary.empty())
-        return Fail(L"Bootstrap.inxrt does not contain the configured CPython shared library in the warm cache.");
+    const auto pythonLibrary = FindPythonLibrary(layout.runtimeRoot);
 
 #ifdef _WIN32
     if (!::SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS))
         return Fail(ErrorText(L"Unable to configure the secure Player DLL search policy"));
-    AddSearchDirectory(cacheRoot);
+    AddSearchDirectory(layout.runtimeRoot);
     AddSearchDirectory(pythonLibrary.parent_path());
-    AddSearchDirectory(cacheRoot / "Infernux" / "lib");
+    AddSearchDirectory(layout.runtimeRoot / "Infernux" / "lib");
 #endif
 
     if (!SetEnvironmentPath("_INFERNUX_PLAYER_INSTALL_ROOT", layout.installRoot) ||
         !SetEnvironmentPath("_INFERNUX_PLAYER_DATA_ROOT", layout.dataRoot) ||
-        !SetEnvironmentPath("_INFERNUX_PLAYER_RUNTIME_ROOT", cacheRoot) ||
-        !SetEnvironmentPath("INFERNUX_NATIVE_MODULE_DIR", cacheRoot / "Infernux" / "lib"))
+        !SetEnvironmentPath("_INFERNUX_PLAYER_RUNTIME_ROOT", layout.runtimeRoot) ||
+        !SetEnvironmentPath("INFERNUX_NATIVE_MODULE_DIR", layout.runtimeRoot / "Infernux" / "lib"))
         return Fail(ErrorText(L"Unable to configure the Player runtime environment"));
     // The isolated PyConfig below owns all import paths. Remove inherited
     // Python environment variables before loading any extension module.
@@ -539,12 +255,12 @@ bool PlayerHost::LoadPython(const Layout &layout, const std::filesystem::path &c
     HMODULE python = ::LoadLibraryExW(pythonLibrary.c_str(), nullptr,
                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (python == nullptr)
-        return Fail(ErrorText(L"Unable to load the CPython shared library from the warm cache"));
+        return Fail(ErrorText(L"Unable to load the CPython shared library from the Player Runtime"));
 #else
     void *python = ::dlopen(pythonLibrary.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (python == nullptr) {
         const char *detail = ::dlerror();
-        return Fail(L"Unable to load the CPython shared library from the warm cache: " +
+        return Fail(L"Unable to load the CPython shared library from the Player Runtime: " +
                     std::filesystem::path(detail != nullptr ? detail : "unknown loader error").wstring());
     }
 #endif
@@ -553,8 +269,7 @@ bool PlayerHost::LoadPython(const Layout &layout, const std::filesystem::path &c
     return true;
 }
 
-int PlayerHost::ExecuteModule(const Layout &layout, const std::filesystem::path &cacheRoot,
-                              const std::vector<std::wstring> &gameArguments)
+int PlayerHost::ExecuteModule(const Layout &layout, const std::vector<std::wstring> &gameArguments)
 {
 #ifdef _WIN32
     auto *python = static_cast<HMODULE>(pythonModule_);
@@ -602,9 +317,9 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::filesystem::path 
         return 3;
     }
     const std::vector<std::filesystem::path> searchPaths = {
-        cacheRoot,
-        cacheRoot / "stdlib",
-        cacheRoot / "Infernux" / "lib",
+        layout.runtimeRoot,
+        layout.runtimeRoot / "stdlib",
+        layout.runtimeRoot / "Infernux" / "lib",
     };
     for (const auto &path : searchPaths) {
         const std::wstring widePath = WidePath(path);
@@ -645,8 +360,7 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::filesystem::path 
 int PlayerHost::Run(const Layout &layout, const std::vector<std::wstring> &gameArguments)
 {
     state_ = State::LayoutResolved;
-    std::filesystem::path cacheRoot;
-    if (!PrepareCache(layout, cacheRoot) || !LoadPython(layout, cacheRoot)) {
+    if (!PrepareRuntime(layout) || !LoadPython(layout)) {
 #ifdef _WIN32
         if (HasManagedPlayerControlChannel()) {
             ReportManagedPlayerFailure(error_);
@@ -659,7 +373,7 @@ int PlayerHost::Run(const Layout &layout, const std::vector<std::wstring> &gameA
 #endif
         return 2;
     }
-    const int result = ExecuteModule(layout, cacheRoot, gameArguments);
+    const int result = ExecuteModule(layout, gameArguments);
     if (state_ != State::Failed)
         state_ = State::Exited;
     if (state_ == State::Failed) {

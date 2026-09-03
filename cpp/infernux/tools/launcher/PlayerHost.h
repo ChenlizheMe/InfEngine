@@ -11,8 +11,7 @@ enum class State
 {
     Created,
     LayoutResolved,
-    ArchiveValidated,
-    CacheReady,
+    RuntimeReady,
     PythonLoaded,
     ModuleExecuted,
     Exited,
@@ -24,12 +23,10 @@ struct Layout
     std::filesystem::path hostExecutable;
     std::filesystem::path installRoot;
     std::filesystem::path dataRoot;
-    std::filesystem::path bootstrapArchive;
-    std::filesystem::path warmCacheRoot;
+    std::filesystem::path runtimeRoot;
 };
 
 Layout ResolveLayout(const std::filesystem::path &hostExecutable);
-std::filesystem::path CachePath(const Layout &layout, const std::string &archiveHash);
 std::vector<std::wstring> BuildPythonArguments(const std::filesystem::path &hostExecutable,
                                                const std::vector<std::wstring> &gameArguments);
 
@@ -50,10 +47,9 @@ class PlayerHost
 
   private:
     bool Fail(const std::wstring &message);
-    bool PrepareCache(const Layout &layout, std::filesystem::path &cacheRoot);
-    bool LoadPython(const Layout &layout, const std::filesystem::path &cacheRoot);
-    int ExecuteModule(const Layout &layout, const std::filesystem::path &cacheRoot,
-                      const std::vector<std::wstring> &gameArguments);
+    bool PrepareRuntime(const Layout &layout);
+    bool LoadPython(const Layout &layout);
+    int ExecuteModule(const Layout &layout, const std::vector<std::wstring> &gameArguments);
 
     State state_ = State::Created;
     std::wstring error_;

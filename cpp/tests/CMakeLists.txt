@@ -51,10 +51,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/external
         ${Python3_INCLUDE_DIRS}
     )
-    target_sources(infernux_player_host_tests PRIVATE
-        cpp/infernux/platform/filesystem/InxPack.cpp
-    )
-    target_link_libraries(infernux_player_host_tests PRIVATE ${INFERNUX_ZSTD_TARGET} ${CMAKE_DL_LIBS})
+    target_link_libraries(infernux_player_host_tests PRIVATE ${CMAKE_DL_LIBS})
     if(WIN32)
         target_link_libraries(infernux_player_host_tests PRIVATE shell32)
         set_target_properties(infernux_player_host_tests PROPERTIES
