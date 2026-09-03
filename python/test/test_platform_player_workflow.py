@@ -145,6 +145,10 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     assert '"$python_executable" scripts/acceptance/build_player.py' in driver
     assert "android-x64-emulator" in driver
     assert "gradle -p tests/android/input_instrumentation" in driver
+    smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
+    assert driver.index("locksettings set-disabled true") < smoke
+    assert driver.index("KEYCODE_WAKEUP") < smoke
+    assert driver.index("wm dismiss-keyguard") < smoke
     assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
     assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
