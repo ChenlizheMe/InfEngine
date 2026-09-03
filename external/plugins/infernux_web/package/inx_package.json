@@ -6,7 +6,5 @@
   "intros": {
     "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
   },
-  "engine": ">=0.4.0,<0.5",
-  "dependencies": []
+  "engine": ">=0.4.0,<0.5"
 }
-

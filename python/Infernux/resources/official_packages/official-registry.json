@@ -21,49 +21,30 @@
       "targets": [],
       "pages": [
         {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.md",
-          "format": "markdown"
-        },
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.zh-CN.md",
-          "format": "markdown",
-          "locale": "zh-CN"
-        },
-        {
           "id": "operations",
           "title": "Usage",
-          "path": "InxPluginPages/Operations.md",
+          "path": "plugin_pages/operations.md",
           "format": "markdown"
         },
         {
           "id": "operations",
           "title": "使用",
-          "path": "InxPluginPages/Operations.zh-CN.md",
+          "path": "plugin_pages/operations.zh-CN.md",
           "format": "markdown",
           "locale": "zh-CN"
         },
         {
           "id": "trust",
           "title": "Notes",
-          "path": "InxPluginPages/Trust.md",
+          "path": "plugin_pages/trust.md",
           "format": "markdown"
         },
         {
           "id": "trust",
           "title": "注意",
-          "path": "InxPluginPages/Trust.zh-CN.md",
+          "path": "plugin_pages/trust.zh-CN.md",
           "format": "markdown",
           "locale": "zh-CN"
-        },
-        {
-          "id": "license",
-          "title": "License",
-          "path": "LICENSE",
-          "format": "text"
         }
       ]
     },
@@ -89,21 +70,7 @@
       "targets": [
         "windows-x64"
       ],
-      "pages": [
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.md",
-          "format": "markdown"
-        },
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.zh-CN.md",
-          "format": "markdown",
-          "locale": "zh-CN"
-        }
-      ]
+      "pages": []
     },
     {
       "reference": "infernux/platform-linux",
@@ -127,21 +94,7 @@
       "targets": [
         "linux-x64"
       ],
-      "pages": [
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.md",
-          "format": "markdown"
-        },
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.zh-CN.md",
-          "format": "markdown",
-          "locale": "zh-CN"
-        }
-      ]
+      "pages": []
     },
     {
       "reference": "infernux/platform-android",
@@ -166,27 +119,7 @@
         "android-arm64",
         "android-x64-emulator"
       ],
-      "pages": [
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.md",
-          "format": "markdown"
-        },
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.zh-CN.md",
-          "format": "markdown",
-          "locale": "zh-CN"
-        },
-        {
-          "id": "license",
-          "title": "License",
-          "path": "LICENSE",
-          "format": "text"
-        }
-      ]
+      "pages": []
     },
     {
       "reference": "infernux/platform-web",
@@ -210,21 +143,7 @@
       "targets": [
         "web-wasm32"
       ],
-      "pages": [
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.md",
-          "format": "markdown"
-        },
-        {
-          "id": "intro",
-          "title": "Description",
-          "path": "README.zh-CN.md",
-          "format": "markdown",
-          "locale": "zh-CN"
-        }
-      ]
+      "pages": []
     }
   ]
 }

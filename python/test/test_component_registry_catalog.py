@@ -44,11 +44,11 @@ def test_project_component_source_is_registered_without_execution(tmp_path):
 
 def test_package_runtime_component_is_visible_but_editor_component_is_not(tmp_path):
     package_root = tmp_path / "Packages" / "vendor" / "gameplay"
-    runtime = package_root / "Runtime" / "runtime_component.py"
-    editor = package_root / "Editor" / "editor_component.py"
+    runtime = package_root / "runtime" / "runtime_component.py"
+    editor = package_root / "editor" / "editor_component.py"
     runtime.parent.mkdir(parents=True)
     editor.parent.mkdir(parents=True)
-    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
     runtime.write_text(
         "class PackageRuntimeComponent(InxComponent):\n    pass\n",
         encoding="utf-8",
@@ -71,11 +71,33 @@ def test_package_runtime_component_is_visible_but_editor_component_is_not(tmp_pa
         unregister_component_script(str(editor))
 
 
+def test_manifestless_local_package_uses_first_packages_directory_as_boundary(tmp_path):
+    package_root = tmp_path / "Packages" / "abc"
+    runtime = package_root / "runtime" / "component.py"
+    editor = package_root / "editor" / "tool.py"
+    runtime.parent.mkdir(parents=True)
+    editor.parent.mkdir(parents=True)
+    runtime.write_text("class LocalRuntimeComponent(InxComponent):\n    pass\n", encoding="utf-8")
+    editor.write_text("class LocalEditorComponent(InxComponent):\n    pass\n", encoding="utf-8")
+    try:
+        assert register_component_script(str(runtime))
+        assert register_component_script(str(editor))
+        names = {
+            entry.type_name
+            for entry in get_component_registrations(project_root=str(tmp_path))
+        }
+        assert "LocalRuntimeComponent" in names
+        assert "LocalEditorComponent" not in names
+    finally:
+        unregister_component_script(str(runtime))
+        unregister_component_script(str(editor))
+
+
 def test_disabled_package_runtime_component_is_not_visible(tmp_path):
     package_root = tmp_path / "Packages" / "vendor" / "disabled"
-    runtime = package_root / "Runtime" / "component.py"
+    runtime = package_root / "runtime" / "component.py"
     runtime.parent.mkdir(parents=True)
-    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
     runtime.write_text(
         "class DisabledPackageComponent(InxComponent):\n    pass\n",
         encoding="utf-8",

@@ -1,109 +1,73 @@
 # Plugins
 
-An Infernux plugin is an InxPackage. You can ship code, assets, or both.
+An Infernux plugin is an InxPackage. It may carry Python, native libraries, Wasm, Java resources, materials, shaders, web pages, or arbitrary files.
 
-It works like Unity's Package Manager: drop a `.inxpkg`, point at a local folder, paste a GitHub URL, or install from the official list.
+## Local authoring
 
-## Folder layout
+When you export a local folder, that folder is already the package root:
 
-```
-MyPlugin/
-  InxPackage.json
-  README.md
-  README.zh-CN.md
-  LICENSE
-  requirements.txt
-  Runtime/            # ships with the game
-  Editor/             # Editor only
-  InxPluginPages/     # extra tabs in the Plugins window
-  ...                 # everything else is regular assets
+```text
+abc/
+  runtime/          # available in Editor and Player
+  editor/           # Editor only
+  plugin_pages/     # pages in the Plugins window
+  materials/
+  shaders/
+  web/
 ```
 
-After install:
-
-| You put | It lands in |
-|---|---|
-| `Runtime/`, `Editor/`, README, license | `Packages/<name>/` |
-| Models, scenes, prefabs, textures | `Assets/Plugins/`, preserving package-relative paths |
-
-`Runtime`, `Editor`, and `InxPluginPages` are case-sensitive. If you just want a regular folder named Runtime, nest it, e.g. `Content/Runtime`.
-
-Names can have a namespace, like `studio/vfx-kit`. Nested folders are not dependencies.
-
-When authoring from Project view, every selected directory name is preserved.
-Importing several bare directories expands them directly below `Assets/Plugins/`;
-the engine does not invent a plugin-name or `selection` wrapper. Import fails
-explicitly if another GUID already owns a destination path.
-
-## InxPackage.json
-
-This is enough:
+`inx_package.json` is optional. If it is absent, export generates the package metadata and uses the output `.inxpkg` filename as the default `name` and `reference`. For example, exporting `abc/` as `physics_tools.inxpkg` creates the identity `physics_tools`. Add the manifest only when you need explicit metadata:
 
 ```json
 {
   "reference": "studio/vfx-kit",
   "name": "VFX Kit",
   "version": "1.0.0",
-  "engine": ">=0.3.7,<0.4"
+  "engine": ">=0.4,<0.5",
+  "intro": "Reusable visual effects."
 }
 ```
 
-`reference` is the plugin's identity. It does not change after install.
+The manifest does not currently declare `requirements` or `dependencies`. An optional `requirements.txt` is recognized by its fixed filename.
 
-## Pages in the Plugins window
+## Git repository layout
 
-You do not need editor code to show docs:
+A repository adds exactly one wrapper:
 
-- `README.md` is the Description tab. `README.zh-CN.md` is the Chinese one.
-- `LICENSE` is the License tab.
-- Extra markdown or text under `InxPluginPages/` becomes more tabs.
-
-Chinese files only work one way: insert `.zh-CN` before the extension, e.g. `Guide.zh-CN.md`. The editor shows Chinese when the UI language is Chinese, otherwise the default file. `.en`, `Docs/`, and locale folders are ignored.
-
-Images use normal markdown and must live in the package. Remote images are not downloaded.
-
-To control tab order, set `pages` in `InxPackage.json`:
-
-```json
-{
-  "pages": [
-    {"id": "intro", "title": "Description", "path": "README.md"},
-    {"id": "guide", "title": "Usage", "path": "InxPluginPages/Guide.md"}
-  ]
-}
+```text
+vfx-kit/
+  README.md          # GitHub documentation, never packaged
+  package.py         # standalone standard-library packer
+  CMakeLists.txt     # optional author build, never packaged
+  package/           # the only directory entering .inxpkg
+    inx_package.json
+    runtime/
+    editor/
+    plugin_pages/
+    native/backend.pyd
+    web/module.wasm
 ```
 
-If you omit `intro`, the package list uses the first paragraph of the README.
+The outer repository is unrestricted. CMake, Cargo, Gradle, npm, or another build may place its final outputs into `package/`. The packer treats known and unknown extensions as bytes; location, not extension guessing, defines ownership and Player export.
 
-## Code that runs when the Editor starts
+## Installation routes
 
-Subclass `InxPreload`. You do not register it in the json. The engine scans `Assets` and `Packages`:
+| Package path | Project destination | Player |
+|---|---|---|
+| `runtime/...` | `Packages/<reference>/runtime/...` | included |
+| `editor/...` | `Packages/<reference>/editor/...` | excluded |
+| `plugin_pages/...` | `Packages/<reference>/plugin_pages/...` | excluded |
+| `requirements.txt` | `Packages/<reference>/requirements.txt` | excluded |
+| everything else | `Assets/Plugins/...` | included |
 
-```python
-from Infernux.lifecycle import InxPreload
+The lowercase names `runtime`, `editor`, and `plugin_pages` are exact. Files are tracked by GUID, so uninstall removes only unedited files owned by that package.
 
-class Bootstrap(InxPreload):
-    def preload(self, context):
-        pass
+## Plugin pages
 
-    def unload(self):
-        pass
-```
+Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root README and license files are repository documentation and are not read as plugin pages. Chinese content inserts `.zh-CN` before the extension, such as `guide.zh-CN.md`. Images use relative paths and stay under the package root.
 
-Disabled packages are skipped. If `unload` fails, the engine stops and asks you to restart. It will not pretend the plugin is gone.
+## Code and Player builds
 
-Use explicit relative imports for package-local Python code, for example `from .service import Service`. Every installed package has its own deterministic module namespace, so matching filenames in unrelated plugins never share module state. `Runtime/` participates in gameplay component loading and hot refresh; `Editor/` is loaded only by the plugin lifecycle.
+Subclass `InxPreload` for lifecycle work. Use explicit relative imports for package-local Python code. Every installed package receives an isolated deterministic module namespace. `runtime/` participates in gameplay component loading and hot refresh; `editor/` is loaded only by the Editor lifecycle.
 
-## Dependencies
-
-Names in `requirements.txt` are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin. If pip fails, Infernux tries to remove what that install added. Local wheels and git installs may not come back exactly.
-
-## Player builds
-
-`Runtime` and regular assets go into the game. `Editor`, README, license, and doc pages stay out. There is no include/exclude list.
-
-## Install, uninstall, moving files
-
-Files are tracked by GUID, so moving them in the project is fine. Uninstall only deletes files this package owns and you have not edited. Removing a parent package does not remove child packages.
-
-A `.inxpkg` sitting inside another package is just a file until you import it yourself or list it in `requirements.txt`.
+No include/exclude fallback list exists. A `.pyd` or `.wasm` under `runtime/` is runtime-owned; the same file under `editor/` is Editor-only. Materials, shaders, HTML, and other ordinary assets are imported under `Assets/Plugins` and included in the Player through the normal asset pipeline.

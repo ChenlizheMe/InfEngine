@@ -48,6 +48,7 @@ from .package import (
     InxPackagePreview,
     PACKAGE_EXTENSION,
     PACKAGE_MANIFEST,
+    REPOSITORY_PACKAGE_DIRECTORY,
     SOURCE_MANIFEST,
     current_meta_bytes,
     package_control_root,
@@ -435,12 +436,6 @@ class PluginManager:
             dependencies: list[str] = []
             if install_dependencies:
                 _report_progress(progress, "resolve_dependencies", 0.48)
-                dependencies.extend(
-                    self._install_manifest_dependencies(
-                        preview,
-                        progress=_scaled_progress(progress, 0.48, 0.57),
-                    )
-                )
                 requirement_dependencies, pip_effect = self._install_requirements(
                     preview,
                     progress=_scaled_progress(progress, 0.57, 0.66),
@@ -723,7 +718,7 @@ class PluginManager:
                 name=str(preview.metadata.get("name", record.get("name", ""))),
                 version=str(preview.metadata.get("version", "")),
                 engine=compatibility,
-                dependencies=preview.metadata.get("dependencies", ()),
+                dependencies=(),
                 intro=str(preview.metadata.get("intro", record.get("intro", ""))),
                 intros=preview.metadata.get("intros", record.get("intros", {})),
                 pages=preview.metadata.get("pages", record.get("pages", ())),
@@ -1378,12 +1373,18 @@ class PluginManager:
             if not os.path.isfile(package_path):
                 raise FileNotFoundError(package_path)
             return package_path, dict(source)
-        packages = sorted(Path(path).glob(f"*{PACKAGE_EXTENSION}"))
-        if len(packages) == 1 and not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
-            return str(packages[0]), dict(source)
-        if not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
-            raise ValueError("Plugin source must contain InxPackage.json or one .inxpkg")
-        package = os.path.join(workspace, f"source-{uuid.uuid4().hex}.inxpkg")
+        repository_root = os.path.join(path, REPOSITORY_PACKAGE_DIRECTORY)
+        repository_manifest = os.path.isfile(os.path.join(repository_root, SOURCE_MANIFEST))
+        if bool(source.get("source_snapshot")) and not repository_manifest:
+            raise ValueError(
+                "Repository plugin source must put distributable files under "
+                "package/inx_package.json"
+            )
+        source_name = Path(path).name
+        if bool(source.get("source_snapshot")):
+            location_path = urlsplit(str(source.get("location", ""))).path.rstrip("/")
+            source_name = Path(location_path).stem or source_name
+        package = os.path.join(workspace, f"{source_name}.inxpkg")
         _report_progress(progress, "build_source_package", 0.28)
         InxPackage.export_source(path, package)
         return package, dict(source)
@@ -1394,11 +1395,7 @@ class PluginManager:
         *,
         progress: _InstallProgress | None = None,
     ) -> tuple[tuple[str, ...], _PipInstallEffect | None]:
-        requirement_name = portable_path(
-            str(preview.metadata.get("requirements", "requirements.txt"))
-        ).strip("/")
-        if not requirement_name:
-            return (), None
+        requirement_name = "requirements.txt"
         requirement_record = next(
             (
                 item
@@ -1438,31 +1435,6 @@ class PluginManager:
             _report_progress(progress, "install_python_dependencies", 0.58)
             effect = self._install_pip_lines(pip_lines)
         return tuple(dict.fromkeys(dependencies)), effect
-
-    def _install_manifest_dependencies(
-        self,
-        preview: InxPackagePreview,
-        *,
-        progress: _InstallProgress | None = None,
-    ) -> tuple[str, ...]:
-        """Resolve the package dependency manifest through the plugin registry."""
-
-        resolved: list[str] = []
-        for value in preview.metadata.get("dependencies", []):
-            reference = validate_reference(str(value))
-            installed = self.registry.installed_record(reference)
-            if installed is None:
-                state = self.install_reference(reference, progress=progress)
-                resolved.append(state.reference)
-                continue
-            installed_reference = str(installed.get("reference", reference))
-            if not bool(installed.get("enabled", True)):
-                self.set_enabled(installed_reference, True)
-            resolved.append(installed_reference)
-        unique: dict[str, str] = {}
-        for value in resolved:
-            unique.setdefault(value.casefold(), value)
-        return tuple(unique.values())
 
     def _nested_requirement(
         self, preview: InxPackagePreview, requirement_name: str, requirement: str

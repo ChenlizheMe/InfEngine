@@ -64,14 +64,21 @@ In 0.3.7, animation-only FBX files can drive a matching skinned model without ge
 
 An Infernux plugin is an InxPackage. Drop a `.inxpkg`, point at a folder, paste a GitHub URL, or install from the official list.
 
+```text
+MyPluginRepository/
+  README.md          # repository only
+  package.py         # standalone packer
+  package/
+    inx_package.json # optional metadata overrides
+    runtime/         # ships with the game
+    editor/          # Editor only
+    plugin_pages/    # extra tabs in the Plugins window
 ```
-MyPlugin/
-  InxPackage.json
-  README.md
-  Runtime/          # ships with the game
-  Editor/           # Editor only
-  InxPluginPages/   # extra tabs in the Plugins window
-```
+
+For local authoring, the selected folder itself is the package root; no
+`package/` wrapper or manifest is required. The output `.inxpkg` filename
+becomes the default name and reference. Repository builds archive only
+`package/`, so CMake, Gradle, Cargo, README, and temporary output stay outside.
 
 Runtime code and regular assets go into a Player build. Editor scripts stay in the Editor.
 

@@ -91,7 +91,7 @@ def package_script_role(path: str, project_root: Optional[str] = None) -> str:
 
     The nearest package manifest owns the layout boundary.  This avoids
     guessing where a namespaced package reference ends when a reference itself
-    contains a segment named ``Runtime`` or ``Editor``.
+    contains a segment named ``runtime`` or ``editor``.
     """
 
     _, role, _ = _package_script_layout(path, project_root)
@@ -114,16 +114,25 @@ def _package_script_layout(
 
     current = os.path.dirname(candidate)
     while is_path_within(current, packages_root, allow_root=False):
-        if os.path.isfile(os.path.join(current, "InxPackage.json")):
+        if os.path.isfile(os.path.join(current, "inx_package.json")):
             logical = portable_path(relative_path(candidate, current))
             first, separator, remainder = logical.partition("/")
-            if separator and first in {"Runtime", "Editor"}:
-                return current, first.casefold(), remainder
+            if separator and first in {"runtime", "editor"}:
+                return current, first, remainder
             return "", "", ""
         parent = os.path.dirname(current)
         if parent == current:
             break
         current = parent
+    # A local author may develop a simple package directly as
+    # Packages/<name>/{runtime,editor}/... without writing a manifest.  The
+    # first directory is then the package identity boundary; namespaced
+    # references use an explicit manifest to remove that ambiguity.
+    relative = portable_path(relative_path(candidate, packages_root))
+    parts = relative.split("/")
+    if len(parts) >= 3 and parts[1] in {"runtime", "editor"}:
+        package_root = resolved_path(os.path.join(packages_root, parts[0]))
+        return package_root, parts[1], "/".join(parts[2:])
     return "", "", ""
 
 
@@ -216,7 +225,7 @@ def get_script_module_name(
     - ``Assets/scripts/foo.py`` -> ``scripts.foo``
 
     Installed package code uses an isolated, deterministic namespace:
-    ``Packages/vendor/tool/Runtime/foo.py`` maps to
+    ``Packages/vendor/tool/runtime/foo.py`` maps to
     ``_infernux_packages.vendor.tool.runtime.foo``.  The package namespace
     prevents two plugins with the same filenames from sharing ``sys.modules``.
 

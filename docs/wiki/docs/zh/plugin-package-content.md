@@ -1,108 +1,73 @@
 # 插件
 
-Infernux 的插件就是一个 InxPackage。代码、场景、Prefab、贴图都可以打进去。
+Infernux 的插件就是 InxPackage。Python、原生库、Wasm、Java 资源、材质、Shader、网页或任意文件都可以携带。
 
-用法接近 Unity 的 Package Manager：丢一个 `.inxpkg`、选一个本地目录、贴 GitHub 地址，或者从官方列表里点安装。
+## 本地开发
 
-## 目录怎么放
+本地导出时，用户选中的目录本身就是包根：
 
-```
-MyPlugin/
-  InxPackage.json
-  README.md
-  README.zh-CN.md
-  LICENSE
-  requirements.txt
-  Runtime/            # 进游戏
-  Editor/             # 只在编辑器里跑
-  InxPluginPages/     # 插件窗口里的额外页
-  ...                 # 其余都当普通资源
+```text
+abc/
+  runtime/          # Editor 和 Player 都可用
+  editor/           # 只供 Editor 使用
+  plugin_pages/     # 插件窗口中的独立页面
+  materials/
+  shaders/
+  web/
 ```
 
-装进项目之后：
-
-| 你放的 | 落到项目里 |
-|---|---|
-| `Runtime/`、`Editor/`、README、许可证 | `Packages/<插件名>/` |
-| 模型、场景、Prefab、贴图 | `Assets/Plugins/`，保持包内相对路径 |
-
-`Runtime`、`Editor`、`InxPluginPages` 这三个名字大小写要写对。如果你只是想放一个普通文件夹也叫 Runtime，外面再包一层，比如 `Content/Runtime`。
-
-插件名可以带命名空间，例如 `studio/vfx-kit`。目录套在一起不代表有依赖关系。
-
-从项目窗口打包时，选中的目录名会原样保留。多选几个裸目录后导入，
-它们会直接在 `Assets/Plugins/` 下展开；引擎不会暗中增加插件名或
-`selection` 外层。若目标路径已经被另一个 GUID 占用，导入会明确失败。
-
-## InxPackage.json
-
-最少写这些：
+`inx_package.json` 可以不写。缺失时由 export 生成包内 metadata，默认 `name` 和 `reference` 取用户命名的 `.inxpkg` 文件名。例如把 `abc/` 导出为 `physics_tools.inxpkg`，默认身份就是 `physics_tools`。只有需要明确 metadata 时才写：
 
 ```json
 {
   "reference": "studio/vfx-kit",
   "name": "VFX Kit",
   "version": "1.0.0",
-  "engine": ">=0.3.7,<0.4"
+  "engine": ">=0.4,<0.5",
+  "intro": "Reusable visual effects."
 }
 ```
 
-`reference` 装完不会变，是这个插件的身份。
+manifest 目前不声明 `requirements` 或 `dependencies`。可选的 `requirements.txt` 只按固定文件名识别。
 
-## 插件窗口里的说明
+## Git 仓库结构
 
-不用写编辑器代码也能出说明页：
+Git 仓库只比本地包根多一层：
 
-- `README.md` 是描述页，`README.zh-CN.md` 是中文版
-- `LICENSE` 是许可证页
-- `InxPluginPages/` 里的 markdown / 文本会变成额外页签
-
-中文文件只认一种写法：在扩展名前加 `.zh-CN`，例如 `Guide.zh-CN.md`。编辑器是中文就显示中文，没有就回退默认文件。`.en`、`Docs/`、语言目录这些引擎都不认。
-
-图片用普通 markdown 语法，文件要打进包里。网上的图不会下载。
-
-想自己排页签顺序，在 `InxPackage.json` 里写 `pages`：
-
-```json
-{
-  "pages": [
-    {"id": "intro", "title": "描述", "path": "README.md"},
-    {"id": "guide", "title": "使用", "path": "InxPluginPages/Guide.md"}
-  ]
-}
+```text
+vfx-kit/
+  README.md          # 只给 GitHub 看，不进入包
+  package.py         # 只依赖 Python 标准库的打包器
+  CMakeLists.txt     # 可选作者构建，不进入包
+  package/           # 唯一会进入 .inxpkg 的目录
+    inx_package.json
+    runtime/
+    editor/
+    plugin_pages/
+    native/backend.pyd
+    web/module.wasm
 ```
 
-没写 `intro` 的话，列表里的短介绍会取 README 第一段。
+外层仓库不限制语言和构建工具。CMake、Cargo、Gradle、npm 或其它构建只需把最终产物放进 `package/`。打包器不会按扩展名猜用途，已知和未知文件都只是字节；目录位置决定所有权与 Player 导出规则。
 
-## 编辑器启动时跑代码
+## 安装路由
 
-继承 `InxPreload`。不用在 json 里登记，引擎会自己扫 `Assets` 和 `Packages`：
+| 包内路径 | 项目位置 | Player |
+|---|---|---|
+| `runtime/...` | `Packages/<reference>/runtime/...` | 进入 |
+| `editor/...` | `Packages/<reference>/editor/...` | 不进入 |
+| `plugin_pages/...` | `Packages/<reference>/plugin_pages/...` | 不进入 |
+| `requirements.txt` | `Packages/<reference>/requirements.txt` | 不进入 |
+| 其它所有内容 | `Assets/Plugins/...` | 进入 |
 
-```python
-from Infernux.lifecycle import InxPreload
+`runtime`、`editor`、`plugin_pages` 必须精确小写。文件靠 GUID 识别，卸载时只删除属于该包且用户没有修改的文件。
 
-class Bootstrap(InxPreload):
-    def preload(self, context):
-        pass
+## 插件说明页
 
-    def unload(self):
-        pass
-```
+只有 `plugin_pages/` 下的 markdown 或文本会成为插件窗口内容。仓库根部 README 和许可证只是仓库文档，不再被读取成插件页面。中文文件在扩展名前加 `.zh-CN`，例如 `guide.zh-CN.md`；图片使用相对路径并留在包根内。
 
-禁用的包不会加载。`unload` 失败时引擎会停下来让你重启，不会假装卸干净了。
+## 代码与 Player
 
-包内 Python 代码必须使用显式相对导入，例如 `from .service import Service`。每个已安装包都有独立且确定的模块命名空间，互不相关的插件即使文件同名也不会共享模块状态。`Runtime/` 参与玩法组件加载和热刷新；`Editor/` 只由插件生命周期加载。
+生命周期代码继承 `InxPreload`。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。`runtime/` 参与玩法组件加载和热刷新；`editor/` 只由 Editor 生命周期加载。
 
-## 依赖
-
-`requirements.txt` 里写别的插件名，会先当插件装；对不上再交给 pip。pip 装进来的只是 Python 包，不会变成 Infernux 插件。pip 失败时会尽量卸掉这次新装的东西，本地 wheel 或 git 装的不一定能原样恢复。
-
-## 打包游戏
-
-`Runtime` 和普通资源会进 Player。`Editor`、README、许可证、说明页不会。没有单独的包含/排除列表。
-
-## 装、卸、搬家
-
-文件靠 GUID 认，你在项目里挪位置没关系。卸载只删这个包自己的、而且你没改过的文件。父包卸了不会连带卸子包。
-
-包里面再塞一个 `.inxpkg`，默认只是个文件。你自己再导入，或写进 `requirements.txt`，才会当真插件装。
+这里没有 include/exclude fallback 清单。`.pyd` 或 `.wasm` 放在 `runtime/` 就属于运行时，放在 `editor/` 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 `Assets/Plugins`，再通过正常资产管线进入 Player。

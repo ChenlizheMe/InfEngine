@@ -839,14 +839,14 @@ def test_background_asset_refresh_uses_native_transaction_result(tmp_path):
 def test_initial_script_scan_includes_assets_and_installed_packages(monkeypatch, tmp_path):
     assets = tmp_path / "Assets"
     package_root = tmp_path / "Packages" / "vendor" / "gameplay"
-    runtime = package_root / "Runtime"
+    runtime = package_root / "runtime"
     assets.mkdir()
     runtime.mkdir(parents=True)
     asset_script = assets / "asset_component.py"
     package_script = runtime / "package_component.py"
     asset_script.write_text("value = 1\n", encoding="utf-8")
     package_script.write_text("value = 2\n", encoding="utf-8")
-    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
 
     manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
     handler = manager._ensure_event_handler()
@@ -874,9 +874,9 @@ def test_package_runtime_script_publishes_with_isolated_graph_identity(
 ):
     (tmp_path / "Assets").mkdir()
     package_root = tmp_path / "Packages" / "vendor" / "gameplay"
-    runtime = package_root / "Runtime"
+    runtime = package_root / "runtime"
     runtime.mkdir(parents=True)
-    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
     script = runtime / "package_component.py"
     script.write_text("value = 1\n", encoding="utf-8")
 

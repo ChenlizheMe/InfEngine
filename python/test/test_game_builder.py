@@ -676,13 +676,13 @@ def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
 
 def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_path):
     project = _make_project(tmp_path)
-    runtime = project / "Packages/vendor/gameplay/Runtime/lifecycle.py"
-    editor = project / "Packages/vendor/gameplay/Editor/panel.py"
+    runtime = project / "Packages/vendor/gameplay/runtime/lifecycle.py"
+    editor = project / "Packages/vendor/gameplay/editor/panel.py"
     content = project / "Assets/Plugins/Scenes/Demo.scene"
-    control = project / "Packages/vendor/gameplay/InxPackage.json"
+    control = project / "Packages/vendor/gameplay/inx_package.json"
     files = (
-        (runtime, "runtime-guid", "Runtime/lifecycle.py", "runtime", b"VALUE = 1\n"),
-        (editor, "editor-guid", "Editor/panel.py", "editor", b"PANEL = True\n"),
+        (runtime, "runtime-guid", "runtime/lifecycle.py", "runtime", b"VALUE = 1\n"),
+        (editor, "editor-guid", "editor/panel.py", "editor", b"PANEL = True\n"),
         (content, "content-guid", "Scenes/Demo.scene", "content", b"{}\n"),
     )
     records = []
@@ -714,7 +714,7 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
         {"reference": "vendor/gameplay", "name": "Gameplay", "version": "1.0"},
         files=records,
         control={
-            "logical_path": "InxPackage.json",
+            "logical_path": "inx_package.json",
             "path_hint": control.relative_to(project).as_posix(),
             "guid": "control-guid",
             "role": "control",
@@ -739,14 +739,14 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
 
     builder._stage_player_plugins(str(data))
 
-    staged_runtime = data / "Packages/vendor/gameplay/Runtime/lifecycle.py"
+    staged_runtime = data / "Packages/vendor/gameplay/runtime/lifecycle.py"
     assert staged_runtime.read_bytes() == b"VALUE = 1\n"
-    assert not (data / "Packages/vendor/gameplay/Editor/panel.py").exists()
+    assert not (data / "Packages/vendor/gameplay/editor/panel.py").exists()
     shipped = json.loads(
         (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
     )
     assert [item["logical_path"] for item in shipped["installed"][0]["files"]] == [
-        "Runtime/lifecycle.py",
+        "runtime/lifecycle.py",
         "Scenes/Demo.scene",
     ]
 

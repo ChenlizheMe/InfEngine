@@ -6,6 +6,5 @@
   "intros": {
     "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
   },
-  "engine": ">=0.4.0,<0.5",
-  "dependencies": []
+  "engine": ">=0.4.0,<0.5"
 }

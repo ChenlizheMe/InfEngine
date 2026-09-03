@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = (
     ROOT
-    / "external/plugins/infernux_android/Editor/infernux_android/runtime_manifest.py"
+    / "external/plugins/infernux_android/package/editor/infernux_android/runtime_manifest.py"
 )
 
 

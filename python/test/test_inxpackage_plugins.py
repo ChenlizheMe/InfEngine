@@ -129,14 +129,13 @@ def _source(
     path: Path, reference: str, *, version: str = "1.0.0", engine: str = ""
 ) -> Path:
     path.mkdir(parents=True)
-    (path / "InxPackage.json").write_text(
+    (path / "inx_package.json").write_text(
         json.dumps(
             {
                 "reference": reference,
                 "name": reference,
                 "version": version,
                 "engine": engine,
-                "requirements": "requirements.txt",
             }
         ),
         encoding="utf-8",
@@ -149,7 +148,7 @@ def _export(source: Path, package: Path) -> Path:
     return package
 
 
-def test_manifestless_folder_export_preserves_selected_directory(tmp_path):
+def test_manifestless_folder_is_the_package_root_and_uses_output_name(tmp_path):
     project = _project(tmp_path / "project")
     materials = project / "Assets" / "Materials"
     materials.mkdir()
@@ -158,12 +157,13 @@ def test_manifestless_folder_export_preserves_selected_directory(tmp_path):
     guid = "0123456789abcdef0123456789abcdef"
     (materials / "Neon.mat.meta").write_text(_meta(guid), encoding="utf-8")
 
-    package = tmp_path / "Materials.inxpkg"
+    package = tmp_path / "material_tools.inxpkg"
     preview = InxPackage.export(str(project), [str(materials)], str(package))
 
-    assert preview.metadata["reference"] == "materials"
-    assert preview.logical_entries == ("Materials/Neon.mat",)
-    assert preview.project_entries == ("Assets/Plugins/Materials/Neon.mat",)
+    assert preview.metadata["reference"] == "material_tools"
+    assert preview.metadata["name"] == "material_tools"
+    assert preview.logical_entries == ("Neon.mat",)
+    assert preview.project_entries == ("Assets/Plugins/Neon.mat",)
     assert preview.file_records[0]["guid"] == guid
 
     archived_meta = json.loads(
@@ -204,7 +204,7 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
     monkeypatch,
 ):
     source = _source(tmp_path / "source", "vendor/runtime-component")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "component.py").write_text("VALUE = 1\n", encoding="utf-8")
     package = _export(source, tmp_path / "RuntimeComponent.inxpkg")
@@ -236,7 +236,7 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
         install_dependencies=False,
     )
 
-    runtime_path = project / "Packages/vendor/runtime-component/Runtime/component.py"
+    runtime_path = project / "Packages/vendor/runtime-component/runtime/component.py"
     assert published[0] == ("begin", (runtime_path,))
     assert published[1][0] == runtime_path
     assert published[1][1]["force"] is True
@@ -247,7 +247,7 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
 
 def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
     source = _source(tmp_path / "source", "vendor/current-meta")
-    asset = source / "Runtime" / "plugin.py"
+    asset = source / "runtime" / "plugin.py"
     asset.parent.mkdir()
     asset.write_text("VALUE = 1\n", encoding="utf-8")
     package = _export(source, tmp_path / "CurrentMeta.inxpkg")
@@ -257,8 +257,8 @@ def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
     manager.install_package(str(package), install_dependencies=False)
 
     for installed in (
-        project / "Packages/vendor/current-meta/Runtime/plugin.py",
-        project / "Packages/vendor/current-meta/InxPackage.json",
+        project / "Packages/vendor/current-meta/runtime/plugin.py",
+        project / "Packages/vendor/current-meta/inx_package.json",
     ):
         metadata = json.loads(
             installed.with_name(installed.name + ".meta").read_text(encoding="utf-8")
@@ -271,10 +271,10 @@ def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
 
 def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path):
     source = _source(tmp_path / "source", "aabbc/physics/jolt")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "backend.py").write_text("BACKEND = 'jolt'\n", encoding="utf-8")
-    (source / "Editor").mkdir()
-    (source / "Editor" / "panel.py").write_text("PANEL = True\n", encoding="utf-8")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "backend.py").write_text("BACKEND = 'jolt'\n", encoding="utf-8")
+    (source / "editor").mkdir()
+    (source / "editor" / "panel.py").write_text("PANEL = True\n", encoding="utf-8")
     (source / "README.md").write_text("# Jolt\n\nPhysics backend.\n", encoding="utf-8")
     (source / "LICENSE").write_text("license", encoding="utf-8")
     (source / "Scenes").mkdir()
@@ -286,20 +286,57 @@ def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path
 
     assert preview.metadata["$schema"] == "infernux.inxpackage"
     assert len({item["guid"] for item in preview.file_records}) == len(preview.file_records)
-    assert "Packages/aabbc/physics/jolt/Runtime/backend.py" in preview.project_entries
-    assert "Packages/aabbc/physics/jolt/Editor/panel.py" in preview.project_entries
-    assert "Packages/aabbc/physics/jolt/README.md" in preview.project_entries
+    assert "Packages/aabbc/physics/jolt/runtime/backend.py" in preview.project_entries
+    assert "Packages/aabbc/physics/jolt/editor/panel.py" in preview.project_entries
+    assert "Assets/Plugins/README.md" in preview.project_entries
     assert "Assets/Plugins/Scenes/Demo.scene" in preview.project_entries
     assert "Assets/Plugins/Variants/Alternative.inxpkg" in preview.project_entries
 
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(tmp_path / "Jolt.inxpkg"), install_dependencies=False)
-    assert (project / "Packages/aabbc/physics/jolt/Runtime/backend.py").is_file()
+    assert (project / "Packages/aabbc/physics/jolt/runtime/backend.py").is_file()
     assert (project / "Assets/Plugins/Scenes/Demo.scene").is_file()
     assert {item["reference"] for item in manager.registry.installed()} == {
         "aabbc/physics/jolt"
     }
+
+
+def test_repository_export_archives_only_pythonic_package_tree_and_any_payload(tmp_path):
+    repository = tmp_path / "repository"
+    package_source = _source(repository / "package", "vendor/mixed-payload")
+    (repository / "README.md").write_text("repository only", encoding="utf-8")
+    (repository / "CMakeLists.txt").write_text("project(plugin)", encoding="utf-8")
+    (repository / "build.gradle").write_text("plugins {}", encoding="utf-8")
+    payloads = {
+        "runtime/native_backend.pyd": b"pyd",
+        "runtime/web_backend.wasm": b"wasm",
+        "editor/compiler.dll": b"dll",
+        "materials/neon.mat": b"material",
+        "shaders/neon.frag": b"shader",
+        "web/index.html": b"<button>plugin page</button>",
+        "build/generated_backend.wasm": b"generated-wasm",
+        ".well-known/plugin.json": b"{}",
+    }
+    for relative, payload in payloads.items():
+        path = package_source.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    preview = InxPackage.export_source(
+        str(repository), str(tmp_path / "mixed.inxpkg")
+    )
+
+    assert set(preview.logical_entries) == set(payloads)
+    assert "README.md" not in preview.logical_entries
+    assert "CMakeLists.txt" not in preview.logical_entries
+    assert "build.gradle" not in preview.logical_entries
+    assert player_file_exported(preview.metadata, "runtime/native_backend.pyd")
+    assert player_file_exported(preview.metadata, "runtime/web_backend.wasm")
+    assert not player_file_exported(preview.metadata, "editor/compiler.dll")
+    assert player_file_exported(preview.metadata, "materials/neon.mat")
+    assert player_file_exported(preview.metadata, "shaders/neon.frag")
+    assert player_file_exported(preview.metadata, "web/index.html")
 
 
 def test_package_metadata_schema_rejects_unknown_fields(tmp_path):
@@ -307,9 +344,9 @@ def test_package_metadata_schema_rejects_unknown_fields(tmp_path):
     (source / "Data.bin").write_bytes(b"payload")
     package = _export(source, tmp_path / "current.inxpkg")
     archive = _FakeInxPack.archives[str(package.resolve())]
-    document = json.loads(archive["InxPackage.json"].decode("utf-8"))
+    document = json.loads(archive["inx_package.json"].decode("utf-8"))
     document["unexpected"] = True
-    archive["InxPackage.json"] = (
+    archive["inx_package.json"] = (
         json.dumps(document, ensure_ascii=False, indent=2) + "\n"
     ).encode("utf-8")
 
@@ -345,7 +382,7 @@ def test_export_preserves_meta_guid_and_is_deterministic(tmp_path):
 
 def test_generated_guid_is_stable_when_package_content_changes(tmp_path):
     source = _source(tmp_path / "source", "vendor/stable-identity")
-    asset = source / "Runtime" / "backend.py"
+    asset = source / "runtime" / "backend.py"
     asset.parent.mkdir()
     asset.write_text("VALUE = 1\n", encoding="utf-8")
 
@@ -353,14 +390,14 @@ def test_generated_guid_is_stable_when_package_content_changes(tmp_path):
     first_record = next(
         item
         for item in first.file_records
-        if item["logical_path"] == "Runtime/backend.py"
+        if item["logical_path"] == "runtime/backend.py"
     )
     asset.write_text("VALUE = 2\n", encoding="utf-8")
     second = InxPackage.inspect(str(_export(source, tmp_path / "second.inxpkg")))
     second_record = next(
         item
         for item in second.file_records
-        if item["logical_path"] == "Runtime/backend.py"
+        if item["logical_path"] == "runtime/backend.py"
     )
 
     assert first_record["guid"] == second_record["guid"]
@@ -386,7 +423,7 @@ def test_engine_compatibility_is_validated_and_enforced_before_install(tmp_path)
     assert not (project / "Assets/Plugins/Data.bin").exists()
 
 
-@pytest.mark.parametrize("directory", ["runtime", "RUNTIME", "editor"])
+@pytest.mark.parametrize("directory", ["Runtime", "RUNTIME", "Editor"])
 def test_reserved_layout_requires_canonical_casing(tmp_path, directory):
     source = _source(tmp_path / "source", "vendor/case")
     (source / directory).mkdir()
@@ -409,7 +446,7 @@ def test_manifest_cannot_register_information_pages_outside_fixed_layout(tmp_pat
     source = _source(tmp_path / "source", "vendor/strict-pages")
     (source / "Docs").mkdir()
     (source / "Docs" / "Guide.md").write_text("not a plugin page", encoding="utf-8")
-    manifest_path = source / "InxPackage.json"
+    manifest_path = source / "inx_package.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["pages"] = [
         {"id": "guide", "title": "Guide", "path": "Docs/Guide.md"}
@@ -426,7 +463,7 @@ def test_plugin_page_descriptor_rejects_locale_aliases(locale):
             {
                 "id": "intro",
                 "title": "Description",
-                "path": "README.zh-CN.md",
+                "path": "plugin_pages/intro.zh-CN.md",
                 "locale": locale,
             }
         )
@@ -468,7 +505,7 @@ def test_uninstall_dependency_blocker_is_case_insensitive(tmp_path):
         files=[],
         control={
             "guid": "dependency-control-guid",
-            "path_hint": "Packages/vendor/x/InxPackage.json",
+            "path_hint": "Packages/vendor/x/inx_package.json",
             "owned": False,
         },
     )
@@ -477,7 +514,7 @@ def test_uninstall_dependency_blocker_is_case_insensitive(tmp_path):
         files=[],
         control={
             "guid": "consumer-control-guid",
-            "path_hint": "Packages/vendor/consumer/InxPackage.json",
+            "path_hint": "Packages/vendor/consumer/inx_package.json",
             "owned": False,
         },
         dependencies=["Vendor/X"],
@@ -626,8 +663,8 @@ def test_startup_restores_requirements_before_single_preload_catchup(
 
 def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     source = _source(tmp_path / "source", "infernux/platform-fixture")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "fixture.py").write_text(
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
         "PLATFORM_FIXTURE = True\n", encoding="utf-8"
     )
     resources = tmp_path / "resources"
@@ -649,13 +686,13 @@ def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     assert record is not None
     assert record["source"]["location"] == str(package.resolve())
     assert record["source"]["builtin"] is True
-    assert (project / "Packages/infernux/platform-fixture/Runtime/fixture.py").is_file()
+    assert (project / "Packages/infernux/platform-fixture/runtime/fixture.py").is_file()
 
 
 def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
     bundled_source = _source(tmp_path / "bundled", "infernux/platform-fixture")
-    (bundled_source / "Runtime").mkdir()
-    (bundled_source / "Runtime" / "fixture.py").write_text(
+    (bundled_source / "runtime").mkdir()
+    (bundled_source / "runtime" / "fixture.py").write_text(
         "RELEASE = 'bundled'\n", encoding="utf-8"
     )
     resources = tmp_path / "resources"
@@ -663,8 +700,8 @@ def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
     _export(bundled_source, resources / "infernux.platform-fixture.inxpkg")
 
     project_source = _source(tmp_path / "project-release", "infernux/platform-fixture")
-    (project_source / "Runtime").mkdir()
-    (project_source / "Runtime" / "fixture.py").write_text(
+    (project_source / "runtime").mkdir()
+    (project_source / "runtime" / "fixture.py").write_text(
         "RELEASE = 'project'\n", encoding="utf-8"
     )
     project_package = _export(project_source, tmp_path / "project-release.inxpkg")
@@ -678,7 +715,7 @@ def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
 
     assert states == ()
     assert (
-        project / "Packages/infernux/platform-fixture/Runtime/fixture.py"
+        project / "Packages/infernux/platform-fixture/runtime/fixture.py"
     ).read_text(encoding="utf-8") == "RELEASE = 'project'\n"
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
@@ -690,8 +727,8 @@ def test_startup_installs_resources_root_inxpackages_without_official_catalog(
     tmp_path, monkeypatch
 ):
     source = _source(tmp_path / "source", "infernux/platform-fixture")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "fixture.py").write_text(
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
         "PLATFORM_FIXTURE = True\n", encoding="utf-8"
     )
     resources = tmp_path / "resources"
@@ -712,8 +749,8 @@ def test_new_project_installs_builtins_before_resolving_default_registry(
     tmp_path, monkeypatch
 ):
     source = _source(tmp_path / "source", "infernux/default-fixture")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "fixture.py").write_text(
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
         "DEFAULT_FIXTURE = True\n", encoding="utf-8"
     )
     resources = tmp_path / "resources"
@@ -776,8 +813,8 @@ def test_duplicate_resources_root_package_reference_is_rejected_before_install(
     tmp_path,
 ):
     source = _source(tmp_path / "source", "infernux/platform-fixture")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "fixture.py").write_text(
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
         "PLATFORM_FIXTURE = True\n", encoding="utf-8"
     )
     resources = tmp_path / "resources"
@@ -844,13 +881,13 @@ def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path)
 
 def test_identical_bytes_with_different_guid_are_not_adopted(tmp_path):
     source = _source(tmp_path / "source", "vendor/adopt-identical")
-    payload = source / "Runtime" / "backend.py"
+    payload = source / "runtime" / "backend.py"
     payload.parent.mkdir()
     payload.write_text("VALUE = 7\n", encoding="utf-8")
     package = _export(source, tmp_path / "adopt-identical.inxpkg")
 
     project = _project(tmp_path / "project")
-    occupied = project / "Packages/vendor/adopt-identical/Runtime/backend.py"
+    occupied = project / "Packages/vendor/adopt-identical/runtime/backend.py"
     occupied.parent.mkdir(parents=True)
     occupied.write_bytes(payload.read_bytes())
     previous_guid = "22222222222222222222222222222222"
@@ -886,7 +923,7 @@ def test_install_rolls_back_files_and_registry_if_registration_fails(tmp_path, m
         manager.install_package(str(package), install_dependencies=False)
     assert manager.registry.installed() == ()
     assert not (project / "Assets/Plugins/Data.bin").exists()
-    assert not (project / "Packages/vendor/rollback/InxPackage.json").exists()
+    assert not (project / "Packages/vendor/rollback/inx_package.json").exists()
 
 
 def test_rejected_parent_install_removes_new_plugin_dependencies(tmp_path, monkeypatch):
@@ -1253,7 +1290,7 @@ def test_github_source_snapshot_downloads_only_selected_subdirectory(
     with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
         for name, payload in (
             (
-                "Infernux-a/external/plugins/infernux_linux/InxPackage.json",
+                "Infernux-a/external/plugins/infernux_linux/package/inx_package.json",
                 b"{}",
             ),
             (
@@ -1307,7 +1344,7 @@ def test_github_source_snapshot_downloads_only_selected_subdirectory(
 
     root = Path(result.root)
     assert result.commit == commit
-    assert (root / "InxPackage.json").read_bytes() == b"{}"
+    assert (root / "package" / "inx_package.json").read_bytes() == b"{}"
     assert (root / "README.md").read_bytes() == b"Linux plugin"
     assert not (root / "external").exists()
     assert any(stage == "download_source" and detail for stage, _, detail in progress)
@@ -1415,8 +1452,8 @@ def test_official_release_downloads_to_project_cache_then_imports(
             version="0.1.0",
             engine=">=0.4,<0.5",
         )
-        (source / "Runtime").mkdir()
-        (source / "Runtime" / "api.py").write_text(
+        (source / "runtime").mkdir()
+        (source / "runtime" / "api.py").write_text(
             "VALUE = 1\n",
             encoding="utf-8",
         )
@@ -1595,8 +1632,8 @@ def test_incompatible_github_protocol_release_never_falls_back_to_head(
 
 def test_package_cli_build_verify_and_release_manifest(tmp_path):
     source = _source(tmp_path / "source", "vendor/cli", version="1.2.3")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "api.py").write_text("VALUE = 3\n", encoding="utf-8")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "api.py").write_text("VALUE = 3\n", encoding="utf-8")
     package = tmp_path / "vendor.cli.inxpkg"
     manifest = tmp_path / RELEASE_MANIFEST_NAME
 
@@ -1697,11 +1734,13 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
     tmp_path, monkeypatch
 ):
     source = _source(tmp_path / "source", "vendor/distributed")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "api.py").write_text("VALUE = 7\n", encoding="utf-8")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "api.py").write_text("VALUE = 7\n", encoding="utf-8")
     (source / "Scene.scene").write_text("scene", encoding="utf-8")
     package = _export(source, tmp_path / "distributed.inxpkg")
     expected_archive = dict(_FakeInxPack.archives[str(package.resolve())])
+    repository_source = tmp_path / "repository-source"
+    shutil.copytree(source, repository_source / "package")
 
     inventories = []
     cases = (
@@ -1718,7 +1757,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
         def run_process(command, cwd=None):
             if command[:2] == ["git", "clone"]:
                 checkout = Path(command[-1])
-                shutil.copytree(source, checkout, dirs_exist_ok=True)
+                shutil.copytree(repository_source, checkout, dirs_exist_ok=True)
             output = "a" * 40 if command[:3] == ["git", "rev-parse", "HEAD"] else ""
             return type("Result", (), {"stdout": output})()
 
@@ -1730,7 +1769,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
 
         def download_source(_location, destination, **_kwargs):
             checkout = Path(destination) / "checkout"
-            shutil.copytree(source, checkout, dirs_exist_ok=True)
+            shutil.copytree(repository_source, checkout, dirs_exist_ok=True)
             return SimpleNamespace(root=str(checkout), commit="a" * 40)
 
         monkeypatch.setattr(
@@ -1865,21 +1904,21 @@ def test_uninstall_file_failure_rolls_back_payload_meta_and_registry(tmp_path, m
 
 def test_runtime_native_payload_uses_package_route_and_player_policy(tmp_path):
     source = _source(tmp_path / "source", "vendor/native-runtime")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "backend.pyd").write_bytes(b"native-extension-fixture")
     package = _export(source, tmp_path / "native-runtime.inxpkg")
     preview = InxPackage.inspect(str(package))
     record = next(
-        item for item in preview.file_records if item["logical_path"] == "Runtime/backend.pyd"
+        item for item in preview.file_records if item["logical_path"] == "runtime/backend.pyd"
     )
     assert record["role"] == "runtime"
-    assert player_file_exported(preview.metadata, "Runtime/backend.pyd") is True
+    assert player_file_exported(preview.metadata, "runtime/backend.pyd") is True
 
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    installed = project / "Packages/vendor/native-runtime/Runtime/backend.pyd"
+    installed = project / "Packages/vendor/native-runtime/runtime/backend.pyd"
     assert installed.read_bytes() == b"native-extension-fixture"
     assert Path(str(installed) + ".meta").is_file()
 
@@ -2100,7 +2139,7 @@ def test_reference_identity_is_casefolded_across_platforms(tmp_path):
 
 def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     source = _source(tmp_path / "source", "vendor/stubborn")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "service.py").write_text(
         "from Infernux.lifecycle import InxPreload\n"
@@ -2113,7 +2152,7 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    script = project / "Packages/vendor/stubborn/Runtime/service.py"
+    script = project / "Packages/vendor/stubborn/runtime/service.py"
 
     with pytest.raises(RuntimeError, match="uninstall aborted"):
         manager.uninstall("vendor/stubborn")
@@ -2132,7 +2171,7 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
 
 def test_package_preload_supports_relative_imports(tmp_path):
     source = _source(tmp_path / "source", "vendor/relative-preload")
-    package_module = source / "Editor" / "infernux_relative_preload"
+    package_module = source / "editor" / "infernux_relative_preload"
     package_module.mkdir(parents=True)
     (package_module / "__init__.py").write_text("", encoding="utf-8")
     (package_module / "service.py").write_text(
@@ -2166,7 +2205,7 @@ def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
 
     for reference, marker in (("vendor/first", "first"), ("vendor/second", "second")):
         source = _source(tmp_path / marker, reference)
-        package_module = source / "Editor" / "shared_name"
+        package_module = source / "editor" / "shared_name"
         package_module.mkdir(parents=True)
         (package_module / "__init__.py").write_text("", encoding="utf-8")
         (package_module / "service.py").write_text(
@@ -2200,8 +2239,8 @@ def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
     tmp_path, monkeypatch
 ):
     stubborn = _source(tmp_path / "stubborn", "vendor/stubborn-slice")
-    (stubborn / "Runtime").mkdir()
-    (stubborn / "Runtime" / "service.py").write_text(
+    (stubborn / "runtime").mkdir()
+    (stubborn / "runtime" / "service.py").write_text(
         "from Infernux.lifecycle import InxPreload\n"
         "class Stubborn(InxPreload):\n"
         "    def preload(self, context): pass\n"
@@ -2209,8 +2248,8 @@ def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
         encoding="utf-8",
     )
     safe = _source(tmp_path / "safe", "vendor/safe-slice")
-    (safe / "Runtime").mkdir()
-    (safe / "Runtime" / "service.py").write_text(
+    (safe / "runtime").mkdir()
+    (safe / "runtime" / "service.py").write_text(
         "from pathlib import Path\n"
         "from Infernux.lifecycle import InxPreload\n"
         "class Safe(InxPreload):\n"
@@ -2522,7 +2561,7 @@ def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch)
 
 def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tmp_path):
     source = _source(tmp_path / "source", "vendor/lifecycle")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "foundation.py").write_text(
         "from abc import abstractmethod\n"
@@ -2554,8 +2593,8 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     assert state.lifecycle[0]["restart_reason"] == "native test state"
     original_identity = state.lifecycle[0]["identity"]
 
-    old = project / "Packages/vendor/lifecycle/Runtime/startup.py"
-    moved = project / "Packages/vendor/lifecycle/Runtime/boot.py"
+    old = project / "Packages/vendor/lifecycle/runtime/startup.py"
+    moved = project / "Packages/vendor/lifecycle/runtime/boot.py"
     old.replace(moved)
     Path(str(old) + ".meta").replace(Path(str(moved) + ".meta"))
     state = manager.reload("vendor/lifecycle")
@@ -2572,7 +2611,7 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
 def test_package_dependency_preload_and_reverse_unload_order(tmp_path):
     def lifecycle_source(reference: str, label: str) -> Path:
         source = _source(tmp_path / label, reference)
-        runtime = source / "Runtime"
+        runtime = source / "runtime"
         runtime.mkdir()
         (runtime / "startup.py").write_text(
             "from pathlib import Path\n"
@@ -2614,67 +2653,17 @@ def test_package_dependency_preload_and_reverse_unload_order(tmp_path):
     ]
 
 
-def test_manifest_dependencies_are_installed_and_recorded(tmp_path):
-    dependency = _source(tmp_path / "dependency", "vendor/manifest-child")
-    (dependency / "Child.bin").write_bytes(b"child")
-    dependency_package = _export(dependency, tmp_path / "manifest-child.inxpkg")
-    parent = _source(tmp_path / "parent", "vendor/manifest-parent")
-    manifest_path = parent / "InxPackage.json"
+@pytest.mark.parametrize("field,value", [("dependencies", []), ("requirements", "requirements.txt")])
+def test_source_manifest_rejects_unimplemented_dependency_fields(tmp_path, field, value):
+    source = _source(tmp_path / "source", "vendor/current-schema")
+    manifest_path = source / "inx_package.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["dependencies"] = ["vendor/manifest-child"]
+    manifest[field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    (parent / "Parent.bin").write_bytes(b"parent")
-    parent_package = _export(parent, tmp_path / "manifest-parent.inxpkg")
-    project = _project(tmp_path / "project")
-    manager = PluginManager(str(project))
-    manager.registry.add_package(
-        "vendor/manifest-child",
-        source={"type": "local", "location": str(dependency_package)},
-    )
+    (source / "payload.bin").write_bytes(b"payload")
 
-    manager.install_package(str(parent_package))
-
-    assert {item["reference"] for item in manager.registry.installed()} == {
-        "vendor/manifest-child",
-        "vendor/manifest-parent",
-    }
-    installed = manager.registry.installed_record("vendor/manifest-parent")
-    assert installed["dependencies"] == ["vendor/manifest-child"]
-    with pytest.raises(RuntimeError, match="required by"):
-        manager.uninstall("vendor/manifest-child")
-
-
-def test_manifest_dependency_failure_rolls_back_new_dependencies(tmp_path, monkeypatch):
-    dependency = _source(tmp_path / "dependency", "vendor/rollback-child")
-    (dependency / "Child.bin").write_bytes(b"child")
-    dependency_package = _export(dependency, tmp_path / "rollback-child.inxpkg")
-    parent = _source(tmp_path / "parent", "vendor/rollback-parent")
-    manifest_path = parent / "InxPackage.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["dependencies"] = ["vendor/rollback-child"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    (parent / "Parent.bin").write_bytes(b"parent")
-    parent_package = _export(parent, tmp_path / "rollback-parent.inxpkg")
-    project = _project(tmp_path / "project")
-    manager = PluginManager(str(project))
-    manager.registry.add_package(
-        "vendor/rollback-child",
-        source={"type": "local", "location": str(dependency_package)},
-    )
-    original_plan = manager._plan_install
-
-    def fail_parent(preview, selected):
-        if preview.metadata["reference"] == "vendor/rollback-parent":
-            raise RuntimeError("simulated parent planning failure")
-        return original_plan(preview, selected)
-
-    monkeypatch.setattr(manager, "_plan_install", fail_parent)
-
-    with pytest.raises(RuntimeError, match="planning failure"):
-        manager.install_package(str(parent_package))
-
-    assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/Child.bin").exists()
+    with pytest.raises(ValueError, match=f"Unsupported inx_package.json fields: {field}"):
+        _export(source, tmp_path / "invalid.inxpkg")
 
 
 def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
@@ -2695,7 +2684,7 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
             return True
 
     source = _source(tmp_path / "source", "vendor/live-panel")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "startup.py").write_text(
         "from Infernux.engine.interaction import PanelInteractionDescriptor\n"
@@ -2738,8 +2727,8 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
 
 def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatch):
     dependency = _source(tmp_path / "dependency", "vendor/dependency", version="2.1.0")
-    (dependency / "Runtime").mkdir()
-    (dependency / "Runtime" / "api.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (dependency / "runtime").mkdir()
+    (dependency / "runtime" / "api.py").write_text("VALUE = 1\n", encoding="utf-8")
     dep_package = _export(dependency, tmp_path / "dependency.inxpkg")
     parent = _source(tmp_path / "parent", "vendor/parent")
     (parent / "requirements.txt").write_text(
@@ -2780,18 +2769,19 @@ def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatc
     assert install_calls[0][:4] == ["project-python", "-m", "pip", "install"]
 
 
-def test_readme_license_pages_markdown_and_relative_images(tmp_path):
+def test_only_plugin_pages_are_displayed_and_resolve_relative_images(tmp_path):
     source = _source(tmp_path / "source", "vendor/documented")
     (source / "README.md").write_text(
         "# Plugin\n\nIntro paragraph.\n\n## Gallery\n\n![Preview](Images/preview.png)\n",
         encoding="utf-8",
     )
     (source / "LICENSE").write_text("License text", encoding="utf-8")
-    (source / "Images").mkdir()
-    (source / "Images" / "preview.png").write_bytes(b"image")
-    (source / "InxPluginPages").mkdir()
-    (source / "InxPluginPages" / "Guide.md").write_text(
-        "### Guide\n\nSteps", encoding="utf-8"
+    (source / "plugin_pages").mkdir()
+    (source / "plugin_pages" / "media").mkdir()
+    (source / "plugin_pages" / "media" / "preview.png").write_bytes(b"image")
+    (source / "plugin_pages" / "guide.md").write_text(
+        "# Guide\n\nSteps\n\n## Gallery\n\n![Preview](media/preview.png)\n",
+        encoding="utf-8",
     )
     package = _export(source, tmp_path / "documented.inxpkg")
     project = _project(tmp_path / "project")
@@ -2799,11 +2789,13 @@ def test_readme_license_pages_markdown_and_relative_images(tmp_path):
     manager.install_package(str(package), install_dependencies=False)
     record = manager.registry.installed_record("vendor/documented")
     pages = manager.content_pages(record)
-    assert [page["id"] for page in pages] == ["intro", "guide", "license"]
+    assert [page["id"] for page in pages] == ["guide"]
     blocks = parse_markdown_blocks(pages[0]["content"])
     assert [block["level"] for block in blocks if block["kind"] == "heading"] == [1, 2]
     image = next(block for block in split_markdown_images(pages[0]["content"]) if block["kind"] == "image")
     assert Path(manager.content_asset_path(record, pages[0], image["source"])).is_file()
+    assert (project / "Assets/Plugins/README.md").is_file()
+    assert (project / "Assets/Plugins/LICENSE").is_file()
 
 
 def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
@@ -2819,7 +2811,7 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
     )
     (source / "LICENSE").write_text("English license", encoding="utf-8")
     (source / "LICENSE.zh-CN.md").write_text("中文许可证", encoding="utf-8")
-    pages_root = source / "InxPluginPages"
+    pages_root = source / "plugin_pages"
     pages_root.mkdir()
     (pages_root / "Guide.md").write_text(
         "# Guide\n\nEnglish guide.", encoding="utf-8"
@@ -2827,6 +2819,11 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
     (pages_root / "Guide.zh-CN.md").write_text(
         "# 指南\n\n中文指南。", encoding="utf-8"
     )
+    manifest_path = source / "inx_package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["intro"] = "English summary."
+    manifest["intros"] = {"zh-CN": "中文摘要。"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     package = _export(source, tmp_path / "localized.inxpkg")
     preview = InxPackage.inspect(str(package))
@@ -2835,12 +2832,8 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
         for page in preview.metadata["pages"]
     ]
     assert page_keys == [
-        ("intro", ""),
-        ("intro", "zh-CN"),
         ("guide", ""),
         ("guide", "zh-CN"),
-        ("license", ""),
-        ("license", "zh-CN"),
     ]
     assert all(page["path"] != "README.zh.md" for page in preview.metadata["pages"])
     assert preview.metadata["intros"] == {"zh-CN": "中文摘要。"}
@@ -2854,20 +2847,16 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
     chinese = manager.content_pages(record, locale="zh")
     english = manager.content_pages(record, locale="en")
     assert [(page["id"], page.get("locale", "")) for page in chinese] == [
-        ("intro", "zh-CN"),
         ("guide", "zh-CN"),
-        ("license", "zh-CN"),
     ]
     assert [page["content"] for page in chinese] == [
-        "# 本地化插件\n\n中文摘要。\n",
         "# 指南\n\n中文指南。",
-        "中文许可证",
     ]
-    assert [page.get("locale", "") for page in english] == ["", "", ""]
+    assert [page.get("locale", "") for page in english] == [""]
 
 
 def test_player_policy_is_structural_and_custom_rules_are_rejected():
-    assert player_file_exported({}, "Runtime/game.py") is True
-    assert player_file_exported({}, "Editor/tool.py") is False
-    assert player_file_exported({}, "README.md") is False
+    assert player_file_exported({}, "runtime/game.py") is True
+    assert player_file_exported({}, "editor/tool.py") is False
+    assert player_file_exported({}, "README.md") is True
     assert player_file_exported({}, "Scenes/Demo.scene") is True

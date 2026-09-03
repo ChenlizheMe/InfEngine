@@ -53,7 +53,7 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         plugin_source = (source_root / relative).resolve()
         if plugin_source.parent != source_root.resolve() or not plugin_source.is_dir():
             raise RuntimeError(f"Official plugin source is missing or unsafe: {relative}")
-        manifest_path = plugin_source / "InxPackage.json"
+        manifest_path = plugin_source / "package" / "inx_package.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         reference = str(manifest.get("reference", "")).strip()
         if not reference:
@@ -84,7 +84,7 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
                 "intros": dict(preview.metadata.get("intros", {})),
                 "artifact": artifact,
                 "engine": str(preview.metadata.get("engine", "")),
-                "dependencies": list(preview.metadata.get("dependencies", [])),
+                "dependencies": [],
                 "repository": repository,
                 "source": source,
                 "category": str(source_entry.get("category", "Other")),

@@ -18,7 +18,7 @@ successful game build.
 
 Projects can own the exported page by creating
 `ProjectSettings/WebTemplate/shell.html`. Start from the package's
-`Editor/infernux_web/templates/host/shell.html`; the project copy may change
+`package/editor/infernux_web/templates/host/shell.html`; the project copy may change
 the page structure, CSS, metadata, and surrounding website integration while
 keeping the Infernux canvas and runtime markers intact. Additional files in
 the same directory are published under `web-template/`, preserving nested

@@ -64,9 +64,9 @@ def _write_source(root: Path, name: str, reference: str, repository: str) -> dic
         "intro": "test",
         "intros": {},
         "engine": ">=0.4,<0.5",
-        "dependencies": [],
     }
-    (plugin / "InxPackage.json").write_text(
+    (plugin / "package").mkdir()
+    (plugin / "package" / "inx_package.json").write_text(
         json.dumps(manifest), encoding="utf-8"
     )
     return {
@@ -179,10 +179,9 @@ def test_official_catalog_preserves_explicit_source_revision(tmp_path, monkeypat
             {
                 "reference": "infernux/platform-linux",
                 "name": "Linux",
-                "version": "0.1.0",
-                "engine": ">=0.4,<0.5",
-                "dependencies": [],
-                "pages": [],
+                    "version": "0.1.0",
+                    "engine": ">=0.4,<0.5",
+                    "pages": [],
             }
         ),
     )

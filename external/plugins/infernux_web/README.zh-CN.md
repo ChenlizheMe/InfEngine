@@ -14,7 +14,7 @@ Emdawnwebgpu 使用 WebGPU，不提供 WebGL 或 OpenGL 回退路径。
 ## 项目 Web 模板
 
 项目可以通过 `ProjectSettings/WebTemplate/shell.html` 管理导出网页。建议从
-插件内的 `Editor/infernux_web/templates/host/shell.html` 复制起步；项目副本
+插件内的 `package/editor/infernux_web/templates/host/shell.html` 复制起步；项目副本
 可以修改网页结构、CSS、元数据和外围网站集成，但必须保留 Infernux Canvas
 与运行时标记。同目录中的其它文件会保持多级目录结构发布到
 `web-template/`。

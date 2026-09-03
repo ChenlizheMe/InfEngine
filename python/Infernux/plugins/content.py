@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlsplit
 from Infernux.engine.path_utils import is_path_within, portable_path, resolved_path
 
 
-PLUGIN_PAGES_DIRECTORY = "InxPluginPages"
+PLUGIN_PAGES_DIRECTORY = "plugin_pages"
 LOCALIZED_CONTENT_LOCALE = "zh-CN"
 LOCALIZED_CONTENT_SUFFIX = ".zh-CN"
 PAGE_EXTENSIONS = frozenset({".md", ".markdown", ".txt"})
@@ -26,11 +26,7 @@ def discover_plugin_pages(plugin_root: str) -> tuple[dict[str, str], ...]:
     root = resolved_path(plugin_root)
     if not root or not os.path.isdir(root):
         return ()
-    root_files = [path for path in Path(root).iterdir() if path.is_file()]
     pages: list[dict[str, str]] = []
-
-    for readme, locale in _root_documents(root_files, "README.md"):
-        pages.append(_descriptor(root, readme, "intro", "Description", locale))
 
     seen = {(page["id"], page.get("locale", "")) for page in pages}
     pages_root = next(
@@ -53,11 +49,6 @@ def discover_plugin_pages(plugin_root: str) -> tuple[dict[str, str], ...]:
             pages.append(_descriptor(root, path, page_id, _document_title(path), locale))
             seen.add(key)
 
-    for license_path, locale in _root_documents(root_files, "LICENSE"):
-        key = ("license", locale)
-        if key not in seen:
-            pages.append(_descriptor(root, license_path, "license", "License", locale))
-            seen.add(key)
     return tuple(pages)
 
 
@@ -313,35 +304,6 @@ def resolve_plugin_page_asset(plugin_root: str, page_path: str, source: str) -> 
     return candidate
 
 
-def intro_from_readme(plugin_root: str, pages: Iterable[Mapping[str, object]]) -> str:
-    intro = next((item for item in select_localized_pages(pages, "") if item["id"] == "intro"), None)
-    if intro is None:
-        return ""
-    loaded = read_plugin_pages(plugin_root, [intro])
-    if not loaded:
-        return ""
-    return _intro_summary(loaded[0]["content"])
-
-
-def localized_intros_from_readmes(
-    plugin_root: str,
-    pages: Iterable[Mapping[str, object]],
-) -> dict[str, str]:
-    """Build localized package-list summaries from localized README pages."""
-    result: dict[str, str] = {}
-    for page in pages:
-        descriptor = normalize_page_descriptor(page)
-        locale = descriptor.get("locale", "")
-        if descriptor["id"] != "intro" or not locale:
-            continue
-        loaded = read_plugin_pages(plugin_root, [descriptor])
-        if loaded:
-            summary = _intro_summary(loaded[0]["content"])
-            if summary:
-                result[locale] = summary
-    return result
-
-
 def localized_intro(metadata: Mapping[str, object], preferred_locale: str) -> str:
     """Return the package summary matching the editor locale."""
     candidates: list[tuple[str, str]] = []
@@ -361,35 +323,6 @@ def localized_intro(metadata: Mapping[str, object], preferred_locale: str) -> st
         enumerate(candidates),
         key=lambda item: (_locale_score(item[1][0], preferred), item[0]),
     )[1][1]
-
-
-def _intro_summary(content: str) -> str:
-    plain = markdown_to_plain_text(content)
-    paragraphs = [item.strip() for item in re.split(r"\n\s*\n", plain) if item.strip()]
-    if not paragraphs:
-        return ""
-    # Skip a README heading when the following paragraph carries the summary.
-    summary = paragraphs[1] if len(paragraphs) > 1 and "\n" not in paragraphs[0] else paragraphs[0]
-    return summary[:500].strip()
-
-
-def _root_documents(
-    files: Iterable[Path], default_name: str
-) -> tuple[tuple[Path, str], ...]:
-    localized_name = (
-        f"{Path(default_name).stem}{LOCALIZED_CONTENT_SUFFIX}{Path(default_name).suffix}"
-        if Path(default_name).suffix
-        else f"{default_name}{LOCALIZED_CONTENT_SUFFIX}.md"
-    )
-    by_name = {path.name: path for path in files}
-    return tuple(
-        item for item in (
-            (by_name[default_name], "") if default_name in by_name else None,
-            (by_name[localized_name], LOCALIZED_CONTENT_LOCALE)
-            if localized_name in by_name else None,
-        )
-        if item is not None
-    )
 
 
 def _localized_document_identity(relative_path: Path) -> tuple[str, str]:
@@ -445,13 +378,6 @@ def _format_for_path(path: str) -> str:
 
 def _supported_page_path(path: str) -> bool:
     normalized = portable_path(path).strip("/")
-    if normalized in {
-        "README.md",
-        f"README{LOCALIZED_CONTENT_SUFFIX}.md",
-        "LICENSE",
-        f"LICENSE{LOCALIZED_CONTENT_SUFFIX}.md",
-    }:
-        return True
     prefix = PLUGIN_PAGES_DIRECTORY + "/"
     return (
         normalized.startswith(prefix)
@@ -479,7 +405,6 @@ __all__ = [
     "LOCALIZED_CONTENT_SUFFIX",
     "PLUGIN_PAGES_DIRECTORY",
     "discover_plugin_pages",
-    "intro_from_readme",
     "localized_intro",
     "markdown_to_plain_text",
     "merge_plugin_pages",

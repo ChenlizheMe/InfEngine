@@ -38,13 +38,12 @@ def _native_available() -> bool:
 
 def _source(path: Path, reference: str) -> Path:
     path.mkdir(parents=True)
-    (path / "InxPackage.json").write_text(
+    (path / "inx_package.json").write_text(
         json.dumps(
             {
                 "reference": reference,
                 "name": reference,
                 "version": "1.0.0",
-                "requirements": "requirements.txt",
             }
         ),
         encoding="utf-8",
@@ -139,8 +138,6 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     assert {
         (page["id"], page.get("locale", "")) for page in preview.metadata["pages"]
     } >= {
-        ("intro", ""),
-        ("intro", "zh-CN"),
         ("operations", ""),
         ("operations", "zh-CN"),
         ("trust", ""),
@@ -149,11 +146,11 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     assert {
         item["logical_path"]
         for item in preview.file_records
-        if item["logical_path"].startswith("InxPluginPages/media/")
+        if item["logical_path"].startswith("plugin_pages/media/")
     } >= {
-        "InxPluginPages/media/agent-loop.png",
-        "InxPluginPages/media/system-overview.png",
-        "InxPluginPages/media/trust-gates.png",
+        "plugin_pages/media/agent_loop.png",
+        "plugin_pages/media/system_overview.png",
+        "plugin_pages/media/trust_gates.png",
     }
 
     project = tmp_path / "project"
@@ -202,13 +199,13 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     assert states[0].loaded is True
     assert PluginManager.instance() is None
     assert (
-        project / "Packages/infernux/mcp/Editor/infernux_mcp/lifecycle.py"
+        project / "Packages/infernux/mcp/editor/infernux_mcp/lifecycle.py"
     ).is_file()
     assert (
-        project / "Packages/infernux/mcp/Editor/infernux_mcp/scene_operations.py"
+        project / "Packages/infernux/mcp/editor/infernux_mcp/scene_operations.py"
     ).is_file()
     assert (
-        project / "Packages/infernux/mcp/Editor/infernux_mcp/material_operations.py"
+        project / "Packages/infernux/mcp/editor/infernux_mcp/material_operations.py"
     ).is_file()
     assert {item["reference"] for item in manager.registry.available()} == {
         "infernux/mcp",
@@ -220,10 +217,8 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     record = manager.registry.installed_record("infernux/mcp")
     localized_pages = manager.content_pages(record, locale="zh")
     assert [page["id"] for page in localized_pages] == [
-        "intro",
         "operations",
         "trust",
-        "license",
     ]
     for page in localized_pages:
         for block in parse_markdown_blocks(page["content"]):

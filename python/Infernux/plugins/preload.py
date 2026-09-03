@@ -842,7 +842,7 @@ def _is_editor_source(
     relative = portable_path(relative_path(path, project_root))
     if relative.startswith("Packages/"):
         if owner is None:
-            return "/Editor/" in f"/{relative}/"
+            return "/editor/" in f"/{relative}/"
         for item in owner.get("files", []):
             if not isinstance(item, Mapping):
                 continue

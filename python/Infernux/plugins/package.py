@@ -30,8 +30,6 @@ from Infernux.engine.player_package_native import read_entry, read_manifest, wri
 
 from .content import (
     discover_plugin_pages,
-    intro_from_readme,
-    localized_intros_from_readmes,
     merge_plugin_pages,
     normalize_locale,
     normalize_page_descriptor,
@@ -39,15 +37,18 @@ from .content import (
 
 
 PACKAGE_EXTENSION = ".inxpkg"
-PACKAGE_MANIFEST = "InxPackage.json"
+PACKAGE_MANIFEST = "inx_package.json"
 SOURCE_MANIFEST = PACKAGE_MANIFEST
+REPOSITORY_PACKAGE_DIRECTORY = "package"
 PACKAGE_SCHEMA = "infernux.inxpackage"
-PACKAGE_ENTRY_PREFIX = "Package/"
+PACKAGE_ENTRY_PREFIX = "package/"
 _GUID_NAMESPACE = uuid.UUID("2bd3f0e2-0e94-4a61-bfe4-146b96bb66ab")
-_IGNORED_PARTS = frozenset({".git", "__pycache__", ".venv", "venv", "build", "dist"})
+_IGNORED_PARTS = frozenset({".git", "__pycache__"})
 _CONTROL_NAMES = frozenset({"requirements.txt"})
-_CONTROL_PREFIXES = ("readme", "license", "copying", "notice", "changelog")
-_CONTROL_DIRECTORIES = frozenset({"InxPluginPages"})
+_CONTROL_DIRECTORIES = frozenset({"plugin_pages"})
+_SOURCE_FIELDS = frozenset(
+    {"$schema", "reference", "name", "version", "intro", "intros", "engine", "pages"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,20 +94,25 @@ class InxPackage:
     ) -> InxPackagePreview:
         """Export selected sources into a deterministic package-source tree.
 
-        Selecting one directory that contains ``InxPackage.json`` treats that
-        directory as the package source root. File Manager selections preserve
-        every selected basename; import never invents or removes a content
-        directory layer.
+        A repository root may contain a single public ``package`` directory;
+        only that directory is archived.  A directly selected local directory
+        containing an optional ``inx_package.json`` is itself the package root.
+        Multiple File Manager selections preserve every selected basename.
         """
 
         project = resolved_path(project_root)
         if not project:
             raise ValueError("InxPackage export requires a project root")
+        destination = resolved_path(destination)
+        if not destination.casefold().endswith(PACKAGE_EXTENSION):
+            destination += PACKAGE_EXTENSION
         sources = InxPackage._resolve_sources(project, source_paths)
         source_root = InxPackage._package_source_root(sources)
+        if source_root and len(sources) == 1 and sources[0] != source_root:
+            sources = (source_root,)
         source_document = InxPackage._source_document(source_root, metadata)
         reference = validate_reference(
-            str(source_document.get("reference") or InxPackage._default_reference(sources))
+            str(source_document.get("reference") or InxPackage._default_reference(destination))
         )
         files = InxPackage._collect_logical_files(sources, source_root)
         if not files:
@@ -117,12 +123,7 @@ class InxPackage:
             source_document.get("pages"),
         )
         intro = str(source_document.get("intro") or "")
-        if not intro and source_root:
-            intro = intro_from_readme(source_root, pages)
-        intros = (
-            localized_intros_from_readmes(source_root, pages)
-            if source_root else {}
-        )
+        intros: dict[str, str] = {}
         explicit_intros = source_document.get("intros", {})
         if not isinstance(explicit_intros, Mapping):
             raise ValueError("InxPackage intros must be an object")
@@ -150,9 +151,6 @@ class InxPackage:
             )
             payloads.append((archive_path, source, meta_payload))
 
-        raw_dependencies = source_document.get("dependencies", [])
-        if not isinstance(raw_dependencies, list):
-            raise ValueError("InxPackage source dependencies must be a list")
         document: dict[str, object] = {
             "$schema": PACKAGE_SCHEMA,
             "reference": reference,
@@ -160,12 +158,7 @@ class InxPackage:
             "version": str(source_document.get("version") or "0.0.0"),
             "intro": intro,
             "intros": intros,
-            "requirements": str(source_document.get("requirements") or "requirements.txt"),
             "engine": str(source_document.get("engine") or ""),
-            "dependencies": [
-                validate_reference(str(item))
-                for item in raw_dependencies
-            ],
             "pages": pages,
             "control_guid": uuid.uuid5(
                 _GUID_NAMESPACE, f"{reference}\0{PACKAGE_MANIFEST}"
@@ -173,9 +166,6 @@ class InxPackage:
             "files": records,
         }
         InxPackage.validate_metadata(document)
-        destination = resolved_path(destination)
-        if not destination.casefold().endswith(PACKAGE_EXTENSION):
-            destination += PACKAGE_EXTENSION
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="infernux-inxpackage-") as workspace:
             manifest_path = os.path.join(workspace, PACKAGE_MANIFEST)
@@ -222,11 +212,11 @@ class InxPackage:
         )
         actual_paths = {str(entry.get("path", "")) for entry in entries}
         if PACKAGE_MANIFEST not in actual_paths:
-            raise ValueError("InxPackage is missing InxPackage.json")
+            raise ValueError("InxPackage is missing inx_package.json")
         try:
             metadata = json.loads(read_entry(path, PACKAGE_MANIFEST).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("InxPackage.json is not valid UTF-8 JSON") from exc
+            raise ValueError("inx_package.json is not valid UTF-8 JSON") from exc
         InxPackage.validate_metadata(metadata)
         for record in metadata["files"]:
             archive_path = str(record["archive_path"])
@@ -318,7 +308,7 @@ class InxPackage:
             raise ValueError("InxPackage metadata must be an object")
         expected_fields = {
             "$schema", "reference", "name", "version", "intro", "intros",
-            "requirements", "engine", "dependencies", "pages", "control_guid",
+            "engine", "pages", "control_guid",
             "files",
         }
         if value.get("$schema") != PACKAGE_SCHEMA or set(value) != expected_fields:
@@ -382,15 +372,6 @@ class InxPackage:
             SpecifierSet(str(value.get("engine", "")))
         except InvalidSpecifier as exc:
             raise ValueError("InxPackage engine compatibility is invalid") from exc
-        dependencies = value.get("dependencies", [])
-        if not isinstance(dependencies, list):
-            raise ValueError("InxPackage dependencies must be a list")
-        normalized_dependencies = [validate_reference(str(item)) for item in dependencies]
-        if len({item.casefold() for item in normalized_dependencies}) != len(
-            normalized_dependencies
-        ):
-            raise ValueError("InxPackage dependencies must be unique")
-
     @staticmethod
     def _resolve_sources(project: str, source_paths: Sequence[str]) -> tuple[str, ...]:
         if not source_paths:
@@ -410,26 +391,44 @@ class InxPackage:
         if len(sources) != 1 or not os.path.isdir(sources[0]):
             return ""
         candidate = sources[0]
-        return candidate if os.path.isfile(os.path.join(candidate, SOURCE_MANIFEST)) else ""
+        direct_manifest = os.path.join(candidate, SOURCE_MANIFEST)
+        repository_root = os.path.join(candidate, REPOSITORY_PACKAGE_DIRECTORY)
+        repository_manifest = os.path.join(repository_root, SOURCE_MANIFEST)
+        has_direct = os.path.isfile(direct_manifest)
+        has_repository = os.path.isfile(repository_manifest)
+        if has_direct and has_repository:
+            raise ValueError(
+                "Plugin source is ambiguous: keep inx_package.json either at the "
+                "selected local root or under package, not both"
+            )
+        if has_repository:
+            return repository_root
+        return candidate
 
     @staticmethod
     def _source_document(
         source_root: str, supplied: Mapping[str, object] | None
     ) -> dict[str, object]:
         document: dict[str, object] = {}
-        if source_root:
-            with open(os.path.join(source_root, SOURCE_MANIFEST), "r", encoding="utf-8") as stream:
+        manifest_path = os.path.join(source_root, SOURCE_MANIFEST) if source_root else ""
+        if manifest_path and os.path.isfile(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as stream:
                 loaded = json.load(stream)
             if not isinstance(loaded, dict):
-                raise ValueError("InxPackage.json must contain an object")
+                raise ValueError("inx_package.json must contain an object")
             document.update(loaded)
         if supplied:
             document.update(dict(supplied))
+        unknown = sorted(set(document) - _SOURCE_FIELDS)
+        if unknown:
+            raise ValueError(
+                "Unsupported inx_package.json fields: " + ", ".join(unknown)
+            )
         return document
 
     @staticmethod
-    def _default_reference(sources: Sequence[str]) -> str:
-        stem = Path(sources[0]).stem if len(sources) == 1 else "selection"
+    def _default_reference(destination: str) -> str:
+        stem = Path(destination).stem
         normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.").lower()
         return normalized or "package"
 
@@ -448,14 +447,13 @@ class InxPackage:
                     dirs[:] = sorted(
                         name
                         for name in dirs
-                        if name not in _IGNORED_PARTS and not name.startswith(".")
+                        if name not in _IGNORED_PARTS
                     )
                     for name in sorted(names):
                         if (
                             name == SOURCE_MANIFEST
                             or name in _IGNORED_PARTS
-                            or name.startswith(".")
-                            or name.endswith((".pyc", ".pyo", ".meta"))
+                            or name.endswith(".meta")
                         ):
                             continue
                         path = os.path.join(walk_root, name)
@@ -512,7 +510,6 @@ def package_role(logical_path: str) -> str:
     lower = basename.casefold()
     if (
         lower in _CONTROL_NAMES
-        or any(lower.startswith(prefix) for prefix in _CONTROL_PREFIXES)
         or first in _CONTROL_DIRECTORIES
     ):
         return "control"
@@ -570,7 +567,7 @@ def _validate_canonical_layout(logical_path: str) -> None:
 
     logical = _safe_relative(logical_path)
     first = logical.split("/", 1)[0]
-    canonical = {name.casefold(): name for name in ("Runtime", "Editor", *_CONTROL_DIRECTORIES)}
+    canonical = {name.casefold(): name for name in ("runtime", "editor", *_CONTROL_DIRECTORIES)}
     expected = canonical.get(first.casefold())
     if expected is not None and first != expected:
         raise ValueError(
@@ -651,7 +648,7 @@ def normalize_player_rules(value: object = None) -> dict[str, object]:
 
     if value not in (None, {}, False):
         raise ValueError(
-            "InxPackage no longer accepts player include/exclude rules; use Runtime/Editor layout"
+            "InxPackage no longer accepts player include/exclude rules; use runtime/editor layout"
         )
     return {"runtime": True, "editor": False}
 
@@ -666,6 +663,7 @@ def player_file_exported(metadata: Mapping[str, object], relative_path: str) -> 
 __all__ = [
     "InxPackage",
     "InxPackagePreview",
+    "REPOSITORY_PACKAGE_DIRECTORY",
     "PACKAGE_EXTENSION",
     "PACKAGE_MANIFEST",
     "PACKAGE_SCHEMA",

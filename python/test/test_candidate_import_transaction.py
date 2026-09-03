@@ -206,9 +206,9 @@ def test_installed_package_runtime_relative_import_uses_isolated_namespace(
     candidate_project,
 ):
     project = candidate_project.parent
-    runtime = project / "Packages" / "studio" / "ai-tools" / "Runtime"
+    runtime = project / "Packages" / "studio" / "ai-tools" / "runtime"
     runtime.mkdir(parents=True)
-    (runtime.parent / "InxPackage.json").write_text("{}", encoding="utf-8")
+    (runtime.parent / "inx_package.json").write_text("{}", encoding="utf-8")
     helper = runtime / "helper.py"
     component = runtime / "component.py"
     helper.write_text("VALUE = 'package-runtime'\n", encoding="utf-8")

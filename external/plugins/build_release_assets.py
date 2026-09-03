@@ -107,7 +107,7 @@ def build(
         plugin_root = (source_root / relative).resolve()
         if plugin_root.parent != source_root.resolve() or not plugin_root.is_dir():
             raise RuntimeError(f"Official plugin source is missing or unsafe: {relative}")
-        selected.append((raw, _read_object(plugin_root / "InxPackage.json")))
+        selected.append((raw, _read_object(plugin_root / "package" / "inx_package.json")))
 
     if not selected:
         raise RuntimeError(f"No official plugins are owned by {repository}")

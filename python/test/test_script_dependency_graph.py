@@ -47,11 +47,11 @@ def test_assets_paths_map_to_modules_and_packages(tmp_path):
 def test_package_runtime_is_namespaced_and_editor_is_excluded(tmp_path):
     project, _assets = _project(tmp_path)
     package = project / "Packages" / "studio" / "vfx-kit"
-    runtime = package / "Runtime"
-    editor = package / "Editor"
+    runtime = package / "runtime"
+    editor = package / "editor"
     runtime.mkdir(parents=True)
     editor.mkdir()
-    (package / "InxPackage.json").write_text("{}", encoding="utf-8")
+    (package / "inx_package.json").write_text("{}", encoding="utf-8")
     helper = _write(runtime, "helpers/value.py", "VALUE = 1\n")
     component = _write(
         runtime,

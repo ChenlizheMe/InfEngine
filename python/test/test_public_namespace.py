@@ -39,7 +39,7 @@ def _owned_public_documents(repository: Path) -> list[Path]:
     paths.update((repository / "external" / "plugins").glob("*/README*.md"))
     paths.update(
         (repository / "external" / "plugins" / "infernux_mcp").glob(
-            "InxPluginPages/*.md"
+            "plugin_pages/*.md"
         )
     )
     paths.update((repository / "tests" / "fixtures").glob("**/README*.md"))
