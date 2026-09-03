@@ -1958,6 +1958,14 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             },
             py::arg("capture_id"), "Cancel an unfinished engine capture request")
         .def(
+            "open_url",
+            [](Infernux &, const std::string &url) {
+                if (!SDL_OpenURL(url.c_str()))
+                    throw std::runtime_error(std::string("SDL_OpenURL failed: ") + SDL_GetError());
+                return true;
+            },
+            py::arg("url"), "Open a canonical URL through the active platform handler")
+        .def(
             "resize_game_render_target",
             [](Infernux &self, uint32_t width, uint32_t height) {
                 auto *r = self.GetRenderer();

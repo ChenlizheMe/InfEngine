@@ -17,6 +17,8 @@ import Infernux.plugins.preload as preload_module
 import Infernux.plugins.github_releases as github_releases_module
 import Infernux.plugins.cache as plugin_cache_module
 from Infernux.engine import player_package_native
+from Infernux.application import Application
+from Infernux.engine.project_context import set_project_root
 from Infernux.plugins import (
     InxPackage,
     SharedPackageCache,
@@ -43,6 +45,7 @@ from Infernux.plugins.github_releases import (
     resolve_github_release,
 )
 from Infernux.plugins.cli import main as package_cli_main
+from Infernux.ui import UIButton
 
 
 class _FakeInxPack:
@@ -359,6 +362,36 @@ def test_repository_export_archives_only_pythonic_package_tree_and_any_payload(t
     assert player_file_exported(preview.metadata, "materials/neon.mat")
     assert player_file_exported(preview.metadata, "shaders/neon.frag")
     assert player_file_exported(preview.metadata, "web/index.html")
+
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(tmp_path / "mixed.inxpkg"), install_dependencies=False)
+    installed_page = project / "Assets" / "Plugins" / "web" / "index.html"
+    assert installed_page.read_bytes() == payloads["web/index.html"]
+
+    class _UrlEngine:
+        def __init__(self):
+            self.urls = []
+
+        def open_url(self, url):
+            self.urls.append(url)
+            return True
+
+    engine = _UrlEngine()
+    set_project_root(str(project))
+    Application._bind_engine(engine, "player")
+    try:
+        button = UIButton()
+        button.on_click.add_listener(
+            lambda: Application.open_url(
+                Application.asset_path("Assets/Plugins/web/index.html")
+            )
+        )
+        button.on_pointer_click(None)
+        assert engine.urls == [installed_page.resolve().as_uri()]
+    finally:
+        Application._unbind_engine(engine)
+        set_project_root(None)
 
 
 def test_package_metadata_schema_rejects_unknown_fields(tmp_path):

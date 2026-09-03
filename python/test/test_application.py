@@ -18,6 +18,7 @@ class _Engine:
     def __init__(self):
         self.exit_requests = 0
         self.capture_requests = []
+        self.opened_urls = []
 
     @staticmethod
     def get_native_engine():
@@ -37,6 +38,10 @@ class _Engine:
     @staticmethod
     def cancel_capture(capture_id):
         return capture_id == 41
+
+    def open_url(self, url):
+        self.opened_urls.append(url)
+        return True
 
 
 def test_renderer_state_has_shared_editor_player_schema():
@@ -151,6 +156,28 @@ def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
             Application.asset_path(str(outside))
     finally:
         set_project_root(None)
+
+
+def test_open_url_observes_one_canonical_asset_url(tmp_path):
+    asset = tmp_path / "Assets" / "Plugins" / "abc" / "web" / "index.html"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("<button>plugin page</button>", encoding="utf-8")
+    engine = _Engine()
+    Application._bind_engine(engine, "player")
+    try:
+        assert Application.open_url(str(asset)) is True
+        assert engine.opened_urls == [asset.resolve().as_uri()]
+    finally:
+        Application._unbind_engine(engine)
+
+
+def test_open_url_rejects_relative_files_and_unsupported_schemes(tmp_path):
+    with pytest.raises(ValueError, match="asset_path"):
+        Application.open_url("Assets/Plugins/abc/web/index.html")
+    with pytest.raises(ValueError, match="HTTP"):
+        Application.open_url("javascript:alert(1)")
+    with pytest.raises(FileNotFoundError, match="not available"):
+        Application.open_url(str(tmp_path / "missing.html"))
 
 
 def test_persistent_data_path_uses_project_root_in_editor(monkeypatch, tmp_path):

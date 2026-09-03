@@ -1221,6 +1221,10 @@ class Engine():
         """Cancel an unfinished engine capture."""
         return bool(self._engine.cancel_capture(capture_id))
 
+    def open_url(self, url: str) -> bool:
+        """Open a canonical URL through the active SDL platform backend."""
+        return bool(self._engine.open_url(str(url)))
+
     def set_game_camera_enabled(self, enabled: bool):
         """Enable or disable game camera rendering."""
         if self._engine:

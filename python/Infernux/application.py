@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import threading
 import weakref
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from Infernux.engine.path_utils import is_path_within, resolved_path
 
@@ -85,6 +87,42 @@ class Application:
         if not resolved:
             raise FileNotFoundError(f"Project asset is not available at runtime: {path}")
         return resolved
+
+    @staticmethod
+    def open_url(target: str) -> bool:
+        """Open one absolute local file or HTTP(S) URL with the platform handler.
+
+        Project content must first be resolved with :meth:`asset_path`.  Keeping
+        resolution and opening separate makes the exact URL observable in tests
+        and avoids silently interpreting arbitrary relative paths.
+        """
+        value = str(target or "").strip()
+        if not value:
+            raise ValueError("URL target cannot be empty")
+        if os.path.isabs(value):
+            local_path = resolved_path(value)
+            if not os.path.isfile(local_path):
+                raise FileNotFoundError(f"Local URL target is not available: {value}")
+            canonical = Path(local_path).as_uri()
+        else:
+            parsed = urlsplit(value)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+                if parsed.scheme:
+                    raise ValueError(
+                        "Only absolute local files and HTTP(S) URLs can be opened"
+                    )
+                raise ValueError(
+                    "Local URL target must be absolute; resolve project content with "
+                    "Application.asset_path() first"
+                )
+            canonical = value
+
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError("Opening a URL requires a running graphical application")
+        if not bool(engine.open_url(canonical)):
+            raise RuntimeError(f"The platform URL handler rejected: {canonical}")
+        return True
 
     @staticmethod
     def renderer_state() -> dict[str, Any]:
