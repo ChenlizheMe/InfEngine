@@ -22,7 +22,7 @@ import types
 from dataclasses import dataclass
 from typing import Iterable
 
-from .path_utils import path_key, relative_path, resolved_path
+from .path_utils import is_path_within, relative_path, resolved_path
 from .project_context import get_assets_root, get_project_root, get_script_import_paths
 
 
@@ -261,13 +261,8 @@ class CandidateImportTransaction:
         module_path = resolved_path(getattr(module, "__file__", "") or "")
         if not module_path:
             return None
-        module_key = path_key(module_path)
-        project_roots = tuple(path_key(root) for root in self._roots if root)
-        if not any(
-            module_key == root
-            or module_key.startswith(root.rstrip("\\/") + "\\")
-            for root in project_roots
-        ):
+        project_roots = tuple(root for root in self._roots if root)
+        if not any(is_path_within(module_path, root) for root in project_roots):
             # Trusted interpreter/engine modules are not project LKG entries.
             return None
         expected = _module_names_from_path(module_path, self._roots)
