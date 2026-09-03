@@ -21,6 +21,8 @@ from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 from runtime_requirements import runtime_modules, runtime_packages
 import logging
 
+from hub_utils import get_hub_user_data_dir
+
 _RUNTIME_PACKAGES = runtime_packages()
 _RUNTIME_MODULES = runtime_modules()
 _RUNTIME_PROFILE_FILENAME = ".infernux-runtime-profile.json"
@@ -37,10 +39,10 @@ def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 _RUNTIME_PRUNE_DIR_NAMES = {"__pycache__", ".pytest_cache", "test", "tests"}
 _RUNTIME_PRUNE_FILE_SUFFIXES = (".pyc", ".pyo")
-if sys.platform == "win32":
-    _BOOTSTRAP_ROOT = os.path.join(os.environ.get("SystemDrive", "C:"), "_InxRuntime")
-else:
-    _BOOTSTRAP_ROOT = os.path.join(os.path.expanduser("~"), ".infernux", "_InxRuntime")
+
+
+def _bootstrap_root() -> str:
+    return os.path.join(get_hub_user_data_dir(), "Downloads", "RuntimeBootstrap")
 
 
 def _runtime_lib_names() -> list[str]:
@@ -396,8 +398,9 @@ def _extract_full_runtime(dest_root: str, *, archive_cache_root: str | None = No
 
 
 def _stage_runtime_from_archive(dest_root: str) -> None:
-    os.makedirs(_BOOTSTRAP_ROOT, exist_ok=True)
-    bootstrap_dir = tempfile.mkdtemp(prefix="bundle-", dir=_BOOTSTRAP_ROOT)
+    bootstrap_parent = _bootstrap_root()
+    os.makedirs(bootstrap_parent, exist_ok=True)
+    bootstrap_dir = tempfile.mkdtemp(prefix="bundle-", dir=bootstrap_parent)
     bootstrap_root = os.path.join(bootstrap_dir, _TARGET_DIRECTORY)
     archive_cache_root = os.path.dirname(dest_root)
 
@@ -436,11 +439,18 @@ def _candidate_python_paths() -> list[str]:
             candidates.append(found)
 
     if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA")
         program_files = os.environ.get("ProgramFiles")
 
+        candidates.append(
+            os.path.join(
+                get_hub_user_data_dir(),
+                "Runtimes",
+                _TARGET_DIRECTORY,
+                "python.exe",
+            )
+        )
+        local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            candidates.append(os.path.join(local_app_data, "InfernuxHub", "runtime", _TARGET_DIRECTORY, "python.exe"))
             candidates.append(os.path.join(local_app_data, "Programs", "Python", f"Python{_TARGET_RUNTIME.major}{_TARGET_RUNTIME.minor}", "python.exe"))
         if program_files:
             candidates.append(os.path.join(program_files, f"Python{_TARGET_RUNTIME.major}{_TARGET_RUNTIME.minor}", "python.exe"))

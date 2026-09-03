@@ -24,11 +24,16 @@ After install:
 | You put | It lands in |
 |---|---|
 | `Runtime/`, `Editor/`, README, license | `Packages/<name>/` |
-| Models, scenes, prefabs, textures | `Assets/Plugins/<name>/` |
+| Models, scenes, prefabs, textures | `Assets/Plugins/`, preserving package-relative paths |
 
 `Runtime`, `Editor`, and `InxPluginPages` are case-sensitive. If you just want a regular folder named Runtime, nest it, e.g. `Content/Runtime`.
 
 Names can have a namespace, like `studio/vfx-kit`. Nested folders are not dependencies.
+
+When authoring from Project view, every selected directory name is preserved.
+Importing several bare directories expands them directly below `Assets/Plugins/`;
+the engine does not invent a plugin-name or `selection` wrapper. Import fails
+explicitly if another GUID already owns a destination path.
 
 ## InxPackage.json
 
@@ -86,6 +91,8 @@ class Bootstrap(InxPreload):
 ```
 
 Disabled packages are skipped. If `unload` fails, the engine stops and asks you to restart. It will not pretend the plugin is gone.
+
+Use explicit relative imports for package-local Python code, for example `from .service import Service`. Every installed package has its own deterministic module namespace, so matching filenames in unrelated plugins never share module state. `Runtime/` participates in gameplay component loading and hot refresh; `Editor/` is loaded only by the plugin lifecycle.
 
 ## Dependencies
 

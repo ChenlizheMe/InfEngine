@@ -13,6 +13,7 @@ from installer.payload import (
 )
 from installer_safety import write_install_marker
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
+import installer_gui
 
 
 def _make_payload(path: Path, executable: bytes = b"new hub executable") -> Path:
@@ -23,6 +24,21 @@ def _make_payload(path: Path, executable: bytes = b"new hub executable") -> Path
     data_dir.mkdir()
     (data_dir / "new-library.dll").write_bytes(b"new library")
     return path
+
+
+def test_linux_application_default_is_separate_from_user_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(installer_gui.sys, "platform", "linux")
+    monkeypatch.setattr(
+        installer_gui.os.path,
+        "expanduser",
+        lambda value: str(tmp_path / value.removeprefix("~/")),
+    )
+
+    install_dir = Path(installer_gui._default_install_dir())
+    user_data = tmp_path / ".local" / "share" / "InfernuxHub"
+
+    assert install_dir == tmp_path / ".local" / "opt" / "InfernuxHub"
+    assert install_dir != user_data
 
 
 def test_transaction_replaces_executable_and_removes_stale_files(tmp_path: Path):

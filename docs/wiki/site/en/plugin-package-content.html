@@ -232,12 +232,16 @@
 </tr>
 <tr>
 <td>Models, scenes, prefabs, textures</td>
-<td><code>Assets/Plugins/&lt;name&gt;/</code></td>
+<td><code>Assets/Plugins/</code>, preserving package-relative paths</td>
 </tr>
 </tbody>
 </table>
 <p><code>Runtime</code>, <code>Editor</code>, and <code>InxPluginPages</code> are case-sensitive. If you just want a regular folder named Runtime, nest it, e.g. <code>Content/Runtime</code>.</p>
 <p>Names can have a namespace, like <code>studio/vfx-kit</code>. Nested folders are not dependencies.</p>
+<p>When authoring from Project view, every selected directory name is preserved.
+Importing several bare directories expands them directly below <code>Assets/Plugins/</code>;
+the engine does not invent a plugin-name or <code>selection</code> wrapper. Import fails
+explicitly if another GUID already owns a destination path.</p>
 <h2 id="inxpackagejson">InxPackage.json<a class="headerlink" href="#inxpackagejson" title="Permanent link">&para;</a></h2>
 <p>This is enough:</p>
 <div class="language-json highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
@@ -278,6 +282,7 @@
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        <span class="k">pass</span>
 </code></pre></div>
 <p>Disabled packages are skipped. If <code>unload</code> fails, the engine stops and asks you to restart. It will not pretend the plugin is gone.</p>
+<p>Use explicit relative imports for package-local Python code, for example <code>from .service import Service</code>. Every installed package has its own deterministic module namespace, so matching filenames in unrelated plugins never share module state. <code>Runtime/</code> participates in gameplay component loading and hot refresh; <code>Editor/</code> is loaded only by the plugin lifecycle.</p>
 <h2 id="dependencies">Dependencies<a class="headerlink" href="#dependencies" title="Permanent link">&para;</a></h2>
 <p>Names in <code>requirements.txt</code> are tried as plugins first, then pip. A pip package is just a Python dependency. It does not become an Infernux plugin. If pip fails, Infernux tries to remove what that install added. Local wheels and git installs may not come back exactly.</p>
 <h2 id="player-builds">Player builds<a class="headerlink" href="#player-builds" title="Permanent link">&para;</a></h2>

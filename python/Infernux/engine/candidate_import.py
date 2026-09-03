@@ -22,8 +22,11 @@ import types
 from dataclasses import dataclass
 from typing import Iterable
 
-from .path_utils import is_path_within, relative_path, resolved_path
-from .project_context import get_assets_root, get_project_root, get_script_import_paths
+from .path_utils import is_path_within, resolved_path
+from .project_context import (
+    get_script_import_paths,
+    get_script_module_name,
+)
 
 
 class CandidateImportError(ImportError):
@@ -63,27 +66,6 @@ def _is_trusted_module(name: str) -> bool:
         name == prefix or name.startswith(prefix + ".")
         for prefix in _TRUSTED_MODULE_PREFIXES
     )
-
-
-def _module_names_from_path(path: str, roots: Iterable[str]) -> tuple[str, ...]:
-    normalized = resolved_path(path)
-    names: list[str] = []
-    for root in roots:
-        try:
-            relative = relative_path(normalized, root)
-        except ValueError:
-            continue
-        stem, extension = os.path.splitext(relative)
-        if extension not in {".py", ".pyc"}:
-            continue
-        parts = stem.replace("\\", "/").split("/")
-        if parts and parts[-1] == "__init__":
-            parts.pop()
-        if parts and all(part.isidentifier() for part in parts):
-            name = ".".join(parts)
-            if name not in names:
-                names.append(name)
-    return tuple(names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,8 +247,8 @@ class CandidateImportTransaction:
         if not any(is_path_within(module_path, root) for root in project_roots):
             # Trusted interpreter/engine modules are not project LKG entries.
             return None
-        expected = _module_names_from_path(module_path, self._roots)
-        if name not in expected:
+        expected = get_script_module_name(module_path)
+        if name != expected:
             raise CandidateImportError(
                 f"preloaded project module '{name}' has a path/name mismatch"
             )

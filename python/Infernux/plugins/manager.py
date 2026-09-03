@@ -378,9 +378,7 @@ class PluginManager:
                 return path
         except ValueError:
             pass
-        content_root = os.path.join(
-            self.project_root, "Assets", "Plugins", *reference.split("/")
-        )
+        content_root = os.path.join(self.project_root, "Assets", "Plugins")
         try:
             return resolve_plugin_page_asset(
                 content_root, str(page.get("path", "")), source
@@ -526,6 +524,7 @@ class PluginManager:
             if threading.current_thread() is threading.main_thread():
                 _report_progress(progress, "refresh_assets", 0.90)
                 self._refresh_editor_assets()
+                self._publish_package_runtime_scripts(reference)
                 _report_progress(progress, "preload_plugin", 0.95)
                 state = self.reload(reference)
             else:
@@ -827,6 +826,7 @@ class PluginManager:
             raise RuntimeError("Plugin installation must be finalized on the editor thread")
         normalized = validate_reference(reference)
         self._refresh_editor_assets()
+        self._publish_package_runtime_scripts(normalized)
         self.preloads.catch_up()
         self._deferred_catalog_changes.clear()
         self._rebuild_states()
@@ -1128,7 +1128,10 @@ class PluginManager:
                 )
             try:
                 self.registry.set_enabled(reference, False)
+                self._retire_package_runtime_scripts(record)
             except BaseException:
+                self.registry.set_enabled(reference, True)
+                self._publish_package_runtime_scripts(reference)
                 self.preloads.reload_package(reference)
                 self._rebuild_states()
                 raise
@@ -1151,6 +1154,7 @@ class PluginManager:
                 + ", ".join(sorted(unavailable))
             )
         self.registry.set_enabled(reference, True)
+        self._publish_package_runtime_scripts(reference)
         return self.reload(reference)
 
     def uninstall(self, reference: str) -> dict[str, object]:
@@ -1206,6 +1210,7 @@ class PluginManager:
                 removed.append(path)
             registry_changed = True
             self.registry.remove_install(reference)
+            self._retire_package_runtime_scripts(record)
             transaction.commit()
         except BaseException as uninstall_error:
             transaction.rollback()
@@ -1218,6 +1223,7 @@ class PluginManager:
                 except Exception as python_error:
                     python_rollback_error = python_error
             try:
+                self._publish_package_runtime_scripts(reference)
                 self.reload(reference)
             except Exception as reload_error:
                 Debug.log_suppressed("PluginManager.uninstall.rollback_reload", reload_error)
@@ -1227,7 +1233,7 @@ class PluginManager:
                     f"was incomplete: {python_rollback_error}"
                 ) from uninstall_error
             raise
-        self._prune_package_directories(reference)
+        self._prune_package_directories(removed)
         self.preloads.forget_package(reference)
         self._rebuild_states()
         self._refresh_editor_assets()
@@ -1676,6 +1682,83 @@ class PluginManager:
         self.preloads.reload_path(file_path)
         self._rebuild_states()
 
+    def _publish_package_runtime_scripts(self, reference: str) -> None:
+        """Publish installed Runtime components through the resource authority."""
+
+        record = self.registry.installed_record(reference)
+        if record is None:
+            raise KeyError(f"Plugin is not installed: {reference}")
+        try:
+            from Infernux.engine.resources_manager import ResourcesManager
+
+            manager = ResourcesManager.instance()
+        except ImportError:
+            manager = None
+        if manager is None:
+            return
+        if not same_path(getattr(manager, "_project_path", ""), self.project_root):
+            raise RuntimeError(
+                "Active ResourcesManager belongs to a different project during plugin install"
+            )
+
+        runtime_paths: list[str] = []
+        for item in record.get("files", []):
+            if not isinstance(item, Mapping) or item.get("role") != "runtime":
+                continue
+            hint = portable_path(str(item.get("path_hint", ""))).strip("/")
+            if not hint.casefold().endswith(".py"):
+                continue
+            path = resolved_path(os.path.join(self.project_root, *hint.split("/")))
+            if not os.path.isfile(path):
+                raise FileNotFoundError(
+                    f"Installed Runtime script is missing before publication: {path}"
+                )
+            runtime_paths.append(path)
+        if not runtime_paths:
+            return
+
+        transaction_id = manager.begin_script_transaction(runtime_paths)
+        submitted = False
+        for path in runtime_paths:
+            change = manager.submit_script_change(
+                path,
+                origin="editor",
+                catalog_event="created",
+                change_kind="created",
+                transaction_id=transaction_id,
+                force=True,
+            )
+            submitted = submitted or change is not None
+        if submitted:
+            manager.process_pending_reloads(force=True)
+
+    def _retire_package_runtime_scripts(self, record: Mapping[str, object]) -> None:
+        """Remove package gameplay types and modules from the active runtime."""
+
+        try:
+            from Infernux.engine.resources_manager import ResourcesManager
+
+            manager = ResourcesManager.instance()
+        except ImportError:
+            manager = None
+        if manager is None:
+            return
+        if not same_path(getattr(manager, "_project_path", ""), self.project_root):
+            raise RuntimeError(
+                "Active ResourcesManager belongs to a different project during plugin retirement"
+            )
+        paths = []
+        for item in record.get("files", []):
+            if not isinstance(item, Mapping) or item.get("role") != "runtime":
+                continue
+            hint = portable_path(str(item.get("path_hint", ""))).strip("/")
+            if hint.casefold().endswith(".py"):
+                paths.append(
+                    resolved_path(os.path.join(self.project_root, *hint.split("/")))
+                )
+        if paths:
+            manager.retire_script_paths(paths)
+
     def _refresh_editor_assets(self) -> None:
         if threading.current_thread() is not threading.main_thread():
             return
@@ -1693,18 +1776,27 @@ class PluginManager:
             except Exception as exc:
                 Debug.log_suppressed("PluginManager.refresh_assets", exc)
 
-    def _prune_package_directories(self, reference: str) -> None:
-        roots = [
-            os.path.join(self.project_root, "Packages", *reference.split("/")),
-            os.path.join(
-                self.project_root, "Assets", "Plugins", *reference.split("/")
-            ),
-        ]
-        boundaries = [
+    def _prune_package_directories(self, removed_paths: Iterable[str]) -> None:
+        boundaries = (
             os.path.join(self.project_root, "Packages"),
             os.path.join(self.project_root, "Assets", "Plugins"),
-        ]
-        for root, boundary in zip(roots, boundaries):
+        )
+        roots = {
+            resolved_path(os.path.dirname(path))
+            for path in removed_paths
+            if path
+        }
+        for root in sorted(roots, key=lambda path: len(Path(path).parts), reverse=True):
+            boundary = next(
+                (
+                    candidate
+                    for candidate in boundaries
+                    if is_path_within(root, candidate, allow_root=False)
+                ),
+                "",
+            )
+            if not boundary:
+                continue
             current = root
             while is_path_within(current, boundary, allow_root=False):
                 try:
@@ -1844,7 +1936,7 @@ class _InstallTransaction:
         self.project_root = project_root
         self.id = uuid.uuid4().hex
         self.root = os.path.join(
-            project_root, "Library", "InxPackageStaging", self.id
+            project_root, "Cache", "Plugins", ".transactions", self.id
         )
         self.backups: list[tuple[str, str | None]] = []
         self.committed = False

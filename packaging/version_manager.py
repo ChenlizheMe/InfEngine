@@ -2,8 +2,8 @@
 
 Layout on disk::
 
-    ~/.infernux/
-        versions/
+    <Infernux data root>/
+        Engines/
             0.2.9/
                 infernux-0.4.0-cp313-cp313-win_amd64.whl
             0.3.0/
@@ -31,6 +31,7 @@ from packaging.tags import sys_tags
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME, PythonRuntimeId
+from hub_utils import get_hub_user_data_dir
 
 
 class DownloadCancelled(Exception):
@@ -42,7 +43,7 @@ class DownloadCancelled(Exception):
 GITHUB_OWNER = "ChenlizheMe"
 GITHUB_REPO = "Infernux"
 _API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-_VERSIONS_DIR = Path.home() / ".infernux" / "versions"
+_VERSIONS_DIR = Path(get_hub_user_data_dir()) / "Engines"
 _CACHE_TTL = 300  # seconds before re-fetching release list
 
 

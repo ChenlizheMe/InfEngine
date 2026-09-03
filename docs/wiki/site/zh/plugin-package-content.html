@@ -232,12 +232,15 @@
 </tr>
 <tr>
 <td>模型、场景、Prefab、贴图</td>
-<td><code>Assets/Plugins/&lt;插件名&gt;/</code></td>
+<td><code>Assets/Plugins/</code>，保持包内相对路径</td>
 </tr>
 </tbody>
 </table>
 <p><code>Runtime</code>、<code>Editor</code>、<code>InxPluginPages</code> 这三个名字大小写要写对。如果你只是想放一个普通文件夹也叫 Runtime，外面再包一层，比如 <code>Content/Runtime</code>。</p>
 <p>插件名可以带命名空间，例如 <code>studio/vfx-kit</code>。目录套在一起不代表有依赖关系。</p>
+<p>从项目窗口打包时，选中的目录名会原样保留。多选几个裸目录后导入，
+它们会直接在 <code>Assets/Plugins/</code> 下展开；引擎不会暗中增加插件名或
+<code>selection</code> 外层。若目标路径已经被另一个 GUID 占用，导入会明确失败。</p>
 <h2 id="inxpackagejson">InxPackage.json<a class="headerlink" href="#inxpackagejson" title="Permanent link">&para;</a></h2>
 <p>最少写这些：</p>
 <div class="language-json highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
@@ -278,6 +281,7 @@
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        <span class="k">pass</span>
 </code></pre></div>
 <p>禁用的包不会加载。<code>unload</code> 失败时引擎会停下来让你重启，不会假装卸干净了。</p>
+<p>包内 Python 代码必须使用显式相对导入，例如 <code>from .service import Service</code>。每个已安装包都有独立且确定的模块命名空间，互不相关的插件即使文件同名也不会共享模块状态。<code>Runtime/</code> 参与玩法组件加载和热刷新；<code>Editor/</code> 只由插件生命周期加载。</p>
 <h2 id="_5">依赖<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
 <p><code>requirements.txt</code> 里写别的插件名，会先当插件装；对不上再交给 pip。pip 装进来的只是 Python 包，不会变成 Infernux 插件。pip 失败时会尽量卸掉这次新装的东西，本地 wheel 或 git 装的不一定能原样恢复。</p>
 <h2 id="_6">打包游戏<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>

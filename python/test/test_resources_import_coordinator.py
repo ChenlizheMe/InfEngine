@@ -836,6 +836,70 @@ def test_background_asset_refresh_uses_native_transaction_result(tmp_path):
     manager.cleanup()
 
 
+def test_initial_script_scan_includes_assets_and_installed_packages(monkeypatch, tmp_path):
+    assets = tmp_path / "Assets"
+    package_root = tmp_path / "Packages" / "vendor" / "gameplay"
+    runtime = package_root / "Runtime"
+    assets.mkdir()
+    runtime.mkdir(parents=True)
+    asset_script = assets / "asset_component.py"
+    package_script = runtime / "package_component.py"
+    asset_script.write_text("value = 1\n", encoding="utf-8")
+    package_script.write_text("value = 2\n", encoding="utf-8")
+    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
+    handler = manager._ensure_event_handler()
+    submitted = []
+    monkeypatch.setattr(
+        handler,
+        "_check_script",
+        lambda path, **kwargs: submitted.append((path, kwargs)) or object(),
+    )
+
+    manager._initial_script_scan()
+
+    assert {Path(path) for path, _kwargs in submitted} == {
+        asset_script,
+        package_script,
+    }
+    transaction_ids = {kwargs["transaction_id"] for _path, kwargs in submitted}
+    assert len(transaction_ids) == 1
+    manager.cleanup()
+
+
+def test_package_runtime_script_publishes_with_isolated_graph_identity(
+    monkeypatch,
+    tmp_path,
+):
+    (tmp_path / "Assets").mkdir()
+    package_root = tmp_path / "Packages" / "vendor" / "gameplay"
+    runtime = package_root / "Runtime"
+    runtime.mkdir(parents=True)
+    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    script = runtime / "package_component.py"
+    script.write_text("value = 1\n", encoding="utf-8")
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
+    handler = manager._ensure_event_handler()
+    published = []
+    monkeypatch.setattr(
+        handler,
+        "_publish_valid_script",
+        lambda path, **kwargs: published.append((path, kwargs)) or True,
+    )
+
+    assert manager.submit_script_change(str(script), origin="editor") is not None
+    assert manager.process_pending_reloads(force=True) == 0
+    assert [Path(path) for path, _kwargs in published] == [script]
+    record = handler.dependency_graph.module_for_path(script)
+    assert record is not None
+    assert record.id.module_name == (
+        "_infernux_packages.vendor.gameplay.runtime.package_component"
+    )
+    manager.cleanup()
+
+
 def test_initial_scan_supersede_restarts_barrier_with_current_sources(
     monkeypatch, tmp_path
 ):

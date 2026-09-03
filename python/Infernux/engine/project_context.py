@@ -11,6 +11,7 @@ _project_root: Optional[str] = None
 _runtime_asset_resolver: Optional[Callable[[str], Optional[str]]] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
+_package_registry_cache: tuple[str, int, int, frozenset[str]] | None = None
 
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
@@ -73,33 +74,188 @@ def get_assets_root() -> Optional[str]:
     return None
 
 
+def get_project_script_roots(project_root: Optional[str] = None) -> tuple[str, ...]:
+    """Return the authoritative Editor source roots for one project."""
+
+    root = resolved_path(project_root or _project_root) if (project_root or _project_root) else ""
+    if not root:
+        return ()
+    return (
+        resolved_path(os.path.join(root, "Assets")),
+        resolved_path(os.path.join(root, "Packages")),
+    )
+
+
+def package_script_role(path: str, project_root: Optional[str] = None) -> str:
+    """Return ``runtime`` or ``editor`` for an installed package script.
+
+    The nearest package manifest owns the layout boundary.  This avoids
+    guessing where a namespaced package reference ends when a reference itself
+    contains a segment named ``Runtime`` or ``Editor``.
+    """
+
+    _, role, _ = _package_script_layout(path, project_root)
+    return role
+
+
+def _package_script_layout(
+    path: str,
+    project_root: Optional[str] = None,
+) -> tuple[str, str, str]:
+    """Return ``(package_root, role, role_relative_path)`` for package code."""
+
+    roots = get_project_script_roots(project_root)
+    if len(roots) != 2:
+        return "", "", ""
+    packages_root = roots[1]
+    candidate = resolved_path(path)
+    if not is_path_within(candidate, packages_root, allow_root=False):
+        return "", "", ""
+
+    current = os.path.dirname(candidate)
+    while is_path_within(current, packages_root, allow_root=False):
+        if os.path.isfile(os.path.join(current, "InxPackage.json")):
+            logical = portable_path(relative_path(candidate, current))
+            first, separator, remainder = logical.partition("/")
+            if separator and first in {"Runtime", "Editor"}:
+                return current, first.casefold(), remainder
+            return "", "", ""
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return "", "", ""
+
+
+def is_project_component_script(
+    path: str,
+    project_root: Optional[str] = None,
+) -> bool:
+    """Return whether *path* belongs to the project's gameplay script domain."""
+
+    roots = get_project_script_roots(project_root)
+    if not roots:
+        return False
+    root = resolved_path(project_root or _project_root)
+    candidate = resolved_path(path)
+    if is_path_within(candidate, roots[0], allow_root=False):
+        return True
+    package_root, role, _ = _package_script_layout(candidate, project_root)
+    if role != "runtime":
+        return False
+    reference = portable_path(relative_path(package_root, roots[1])).casefold()
+    return reference not in _disabled_package_references(root)
+
+
+def _disabled_package_references(project_root: str) -> frozenset[str]:
+    """Return explicitly disabled installed packages from the durable registry."""
+
+    global _package_registry_cache
+    registry = resolved_path(
+        os.path.join(project_root, "ProjectSettings", "InxPlugins.json")
+    )
+    try:
+        stat = os.stat(registry)
+    except FileNotFoundError:
+        return frozenset()
+    cache = _package_registry_cache
+    if (
+        cache is not None
+        and cache[0] == registry
+        and cache[1] == stat.st_mtime_ns
+        and cache[2] == stat.st_size
+    ):
+        return cache[3]
+    try:
+        with open(registry, "r", encoding="utf-8") as stream:
+            document = json.load(stream)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Plugin registry is unreadable: {registry}") from exc
+    installed = document.get("installed") if isinstance(document, dict) else None
+    if not isinstance(installed, list):
+        raise ValueError(f"Plugin registry has no installed package list: {registry}")
+    disabled = frozenset(
+        portable_path(str(item.get("reference", ""))).strip("/").casefold()
+        for item in installed
+        if isinstance(item, dict)
+        and not bool(item.get("enabled", True))
+        and str(item.get("reference", "")).strip()
+    )
+    _package_registry_cache = (registry, stat.st_mtime_ns, stat.st_size, disabled)
+    return disabled
+
+
 def _is_valid_module_segment(segment: str) -> bool:
     return bool(segment) and segment.isidentifier() and not keyword.iskeyword(segment)
 
 
-def get_script_module_name(path: Optional[str]) -> Optional[str]:
+def _package_reference_module_segment(segment: str) -> str:
+    """Encode one package-reference segment as a reversible Python identifier."""
+
+    encoded = []
+    for byte in segment.encode("utf-8"):
+        char = chr(byte)
+        if char.isascii() and char.isalnum():
+            encoded.append(char)
+        else:
+            encoded.append(f"_{byte:02x}")
+    value = "".join(encoded)
+    if not value or value[0].isdigit() or keyword.iskeyword(value):
+        value = "p_" + value
+    return value
+
+
+def get_script_module_name(
+    path: Optional[str],
+    project_root: Optional[str] = None,
+) -> Optional[str]:
     """Return the canonical Python module name for a user script.
 
     Scripts inside ``Assets/`` map to import names relative to that folder:
     - ``Assets/a2.py`` -> ``a2``
     - ``Assets/scripts/foo.py`` -> ``scripts.foo``
 
-    Returns ``None`` when the script is outside ``Assets/`` or its path cannot
-    be expressed as a valid Python module name.
+    Installed package code uses an isolated, deterministic namespace:
+    ``Packages/vendor/tool/Runtime/foo.py`` maps to
+    ``_infernux_packages.vendor.tool.runtime.foo``.  The package namespace
+    prevents two plugins with the same filenames from sharing ``sys.modules``.
+
+    Returns ``None`` when the script is outside the gameplay/editor script
+    domains or its code-relative path is not a valid Python module name.
     """
-    resolved = resolve_script_path(path) if path else None
+    active_root = resolved_path(project_root or _project_root) if (project_root or _project_root) else ""
+    if path and project_root and not os.path.isabs(path):
+        resolved = resolved_path(os.path.join(active_root, path))
+    else:
+        resolved = resolve_script_path(path) if path else None
     if not resolved:
         return None
 
-    assets_root = get_assets_root()
+    assets_root = resolved_path(os.path.join(active_root, "Assets")) if active_root else None
     resolved_abs = resolved_path(resolved)
-    if not assets_root:
-        return None
+    rel_path = ""
+    prefix: list[str] = []
+    if assets_root and is_path_within(resolved_abs, assets_root):
+        rel_path = relative_path(resolved_abs, assets_root)
+    else:
+        package_root, role, role_relative = _package_script_layout(
+            resolved_abs,
+            active_root,
+        )
+        roots = get_project_script_roots(active_root)
+        if not package_root or not role or len(roots) != 2:
+            return None
+        reference = portable_path(relative_path(package_root, roots[1]))
+        reference_parts = [
+            _package_reference_module_segment(part)
+            for part in reference.split("/")
+            if part
+        ]
+        if not reference_parts:
+            return None
+        prefix = ["_infernux_packages", *reference_parts, role]
+        rel_path = role_relative
 
-    if not is_path_within(resolved_abs, assets_root):
-        return None
-
-    rel_path = relative_path(resolved_abs, assets_root)
     module_path, ext = os.path.splitext(rel_path)
     if ext not in (".py", ".pyc"):
         return None
@@ -108,10 +264,10 @@ def get_script_module_name(path: Optional[str]) -> Optional[str]:
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     if not parts:
-        return None
+        return ".".join(prefix) if prefix else None
     if any(not _is_valid_module_segment(part) for part in parts):
         return None
-    return ".".join(parts)
+    return ".".join((*prefix, *parts))
 
 
 def get_script_import_paths(path: Optional[str] = None) -> list[str]:
@@ -136,6 +292,11 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
             if parent_dir and parent_dir not in roots:
                 roots.append(parent_dir)
             return roots
+
+    package_root, role, _ = _package_script_layout(resolved_abs, project_root)
+    if package_root and role:
+        roots.append(os.path.join(package_root, role.title()))
+        roots.append(package_root)
 
     if assets_root:
         roots.append(assets_root)

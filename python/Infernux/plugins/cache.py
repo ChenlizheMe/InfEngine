@@ -20,6 +20,7 @@ from .package import PACKAGE_EXTENSION
 
 _STAGING_NAME = re.compile(r"^[a-z0-9-]+-(\d+)-[a-z0-9_]+$")
 PACKAGE_CACHE_ROOT_ENV = "INFERNUX_PACKAGE_CACHE_ROOT"
+DATA_ROOT_ENV = "INFERNUX_DATA_ROOT"
 
 
 def package_cache_root() -> str:
@@ -28,6 +29,15 @@ def package_cache_root() -> str:
     configured = os.environ.get(PACKAGE_CACHE_ROOT_ENV, "").strip()
     if configured:
         return resolved_path(os.path.expandvars(os.path.expanduser(configured)))
+    data_root = os.environ.get(DATA_ROOT_ENV, "").strip()
+    if data_root:
+        return resolved_path(
+            os.path.join(
+                os.path.expandvars(os.path.expanduser(data_root)),
+                "Library",
+                "Plugins",
+            )
+        )
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
         if not local_app_data:

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+from hub_utils import get_hub_user_data_dir
 from project_paths import canonical_project_path, normalize_project_path
 
 
@@ -23,9 +24,9 @@ class ProjectDatabase:
 
     def __init__(self, db_path: Path | None = None) -> None:
         if db_path is None:
-            home_dir = Path.home() / ".infernux"
-            home_dir.mkdir(parents=True, exist_ok=True)
-            db_path = home_dir / "projects.db"
+            state_dir = Path(get_hub_user_data_dir()) / "State"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            db_path = state_dir / "projects.db"
 
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row

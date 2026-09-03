@@ -30,7 +30,7 @@ def test_inxpackage_import_waits_for_visible_progress_before_install(monkeypatch
     try:
         panel = InxPackageImportPanel()
         panel.package_path = "C:/Desktop/Materials.inxpkg"
-        panel._selected = {"Assets/Plugins/materials/Neon.mat": True}
+        panel._selected = {"Assets/Plugins/Materials/Neon.mat": True}
 
         assert panel._begin_import()
         progress = AssetImportProgressService.instance()
@@ -51,7 +51,7 @@ def test_inxpackage_import_waits_for_visible_progress_before_install(monkeypatch
         assert calls == [
             (
                 "C:/Desktop/Materials.inxpkg",
-                ("Assets/Plugins/materials/Neon.mat",),
+                ("Assets/Plugins/Materials/Neon.mat",),
             )
         ]
 

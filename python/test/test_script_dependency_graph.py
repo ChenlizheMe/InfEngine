@@ -44,6 +44,38 @@ def test_assets_paths_map_to_modules_and_packages(tmp_path):
     assert graph.module_for_path(worker).id.module_name == "pkg.worker"
 
 
+def test_package_runtime_is_namespaced_and_editor_is_excluded(tmp_path):
+    project, _assets = _project(tmp_path)
+    package = project / "Packages" / "studio" / "vfx-kit"
+    runtime = package / "Runtime"
+    editor = package / "Editor"
+    runtime.mkdir(parents=True)
+    editor.mkdir()
+    (package / "InxPackage.json").write_text("{}", encoding="utf-8")
+    helper = _write(runtime, "helpers/value.py", "VALUE = 1\n")
+    component = _write(
+        runtime,
+        "helpers/component.py",
+        "from .value import VALUE\n",
+    )
+    panel = _write(editor, "panel.py", "VALUE = 2\n")
+
+    graph = ScriptDependencyGraph(project)
+    graph.index_assets()
+
+    assert graph.module_for_path(helper).id.module_name == (
+        "_infernux_packages.studio.vfx_2dkit.runtime.helpers.value"
+    )
+    assert {
+        edge.target.module_name
+        for edge in graph.dependencies_of(component)
+        if edge.target is not None
+    } == {
+        "_infernux_packages.studio.vfx_2dkit.runtime.helpers.value"
+    }
+    assert graph.module_for_path(panel) is None
+
+
 def test_index_ignores_pyc_when_source_is_present(tmp_path):
     project, assets = _project(tmp_path)
     source = _write(assets, "worker.py", "value = 1\n")

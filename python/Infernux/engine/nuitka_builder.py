@@ -35,7 +35,7 @@ from typing import Callable, List, Optional
 from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
-from Infernux.engine.path_utils import path_key, resolved_path
+from Infernux.engine.path_utils import path_key, relative_path, resolved_path
 from Infernux.engine.player_package_native import extract_pack, read_manifest, write_pack
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
 from Infernux.engine.python_abi import (
@@ -2317,7 +2317,7 @@ print(json.dumps({{
 
         process_staging_dir = os.path.join(
             process_build_root,
-            os.path.relpath(self._staging_dir, self._build_cache_root),
+            *relative_path(self._staging_dir, self._build_cache_root).split("/"),
         )
         process_nuitka_cache_dir = os.path.join(process_build_root, "Nuitka")
         process_cmd = [

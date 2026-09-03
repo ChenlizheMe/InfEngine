@@ -60,8 +60,6 @@ wgpu::TextureFormat ToWebTextureFormat(TextureFormat format)
         return wgpu::TextureFormat::RGBA8Unorm;
     case TextureFormat::Rgba8Srgb:
         return wgpu::TextureFormat::RGBA8UnormSrgb;
-    case TextureFormat::Rgba16UNorm:
-        return wgpu::TextureFormat::RGBA16Unorm;
     case TextureFormat::Rgba16Float:
         return wgpu::TextureFormat::RGBA16Float;
     case TextureFormat::Rgba32Float:

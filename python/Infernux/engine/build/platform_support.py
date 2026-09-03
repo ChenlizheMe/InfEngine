@@ -39,6 +39,9 @@ def _cached_source_exists(
         )
         if os.path.isfile(path):
             return True
+    version = str(version).strip()
+    if not version:
+        return False
     return bool(cache.resolve(reference, version))
 
 

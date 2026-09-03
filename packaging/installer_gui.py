@@ -44,7 +44,7 @@ def _default_install_dir() -> str:
             os.environ.get("ProgramFiles", r"C:\Program Files"), "Infernux Hub"
         )
     if sys.platform == "linux":
-        return os.path.join(os.path.expanduser("~/.local/share"), "InfernuxHub")
+        return os.path.expanduser("~/.local/opt/InfernuxHub")
     raise RuntimeError(f"Infernux Hub has no installer contract for {sys.platform}")
 
 

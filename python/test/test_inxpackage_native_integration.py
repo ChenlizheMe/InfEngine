@@ -74,7 +74,7 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
     assert {item["reference"] for item in manager.registry.installed()} == {
         "native/parent"
     }
-    assert (project / "Assets/Plugins/native/parent/vendor/Child.inxpkg").is_file()
+    assert (project / "Assets/Plugins/vendor/Child.inxpkg").is_file()
     manager.uninstall("native/parent")
 
     (parent / "requirements.txt").write_text(
@@ -88,7 +88,7 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
         "native/parent",
     }
     assert (
-        project / "Assets/Plugins/native/child/child.txt"
+        project / "Assets/Plugins/child.txt"
     ).read_text(encoding="utf-8") == "child payload"
     with pytest.raises(RuntimeError, match="required by"):
         manager.uninstall("native/child")

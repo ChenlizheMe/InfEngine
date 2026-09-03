@@ -12,7 +12,13 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
-from hub_utils import get_bundle_dir, get_hub_data_dir, is_frozen, merge_child_env_utf8
+from hub_utils import (
+    get_bundle_dir,
+    get_hub_data_dir,
+    get_hub_user_data_dir,
+    is_frozen,
+    merge_child_env_utf8,
+)
 from private_python_runtime import (
     extract_runtime_archive,
     is_current_private_runtime_root,
@@ -30,8 +36,6 @@ import logging
 
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
-_RUNTIME_ROOT = Path.home() / ".infernux" / "runtime"
-_PUBLIC_RUNTIME_ROOT = Path("C:/Users/Public/InfernuxHub") if sys.platform == "win32" else _RUNTIME_ROOT
 _RUNTIME_PACKAGES = runtime_packages()
 _REQUIRED_RUNTIME_MODULES = runtime_modules()
 _RUNTIME_COPY_EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", "test", "tests"}
@@ -54,13 +58,7 @@ class PythonRuntimeError(RuntimeError):
 
 
 def _default_runtime_dir() -> str:
-    if is_frozen():
-        return str(_PUBLIC_RUNTIME_ROOT)
-
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return os.path.join(local_app_data, "InfernuxHub", "runtime")
-    return str(_RUNTIME_ROOT)
+    return os.path.join(get_hub_user_data_dir(), "Runtimes")
 
 
 def _emit_status(callback: Optional[Callable[[str], None]], message: str) -> None:
@@ -325,8 +323,8 @@ class PythonRuntimeManager:
         *,
         default_version: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
     ) -> None:
-        _RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
         self._runtime_dir = os.path.abspath(runtime_dir) if runtime_dir else _default_runtime_dir()
+        os.makedirs(self._runtime_dir, exist_ok=True)
         self._bundle_runtime_dir = os.path.abspath(bundle_runtime_dir) if bundle_runtime_dir else ""
         self._default_runtime = PythonRuntimeId.parse(default_version)
         runtime_release(self._default_runtime)

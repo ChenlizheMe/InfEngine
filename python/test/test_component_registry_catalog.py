@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -39,6 +40,67 @@ def test_project_component_source_is_registered_without_execution(tmp_path):
         assert player.component_type is None
     finally:
         unregister_component_script(str(script))
+
+
+def test_package_runtime_component_is_visible_but_editor_component_is_not(tmp_path):
+    package_root = tmp_path / "Packages" / "vendor" / "gameplay"
+    runtime = package_root / "Runtime" / "runtime_component.py"
+    editor = package_root / "Editor" / "editor_component.py"
+    runtime.parent.mkdir(parents=True)
+    editor.parent.mkdir(parents=True)
+    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    runtime.write_text(
+        "class PackageRuntimeComponent(InxComponent):\n    pass\n",
+        encoding="utf-8",
+    )
+    editor.write_text(
+        "class PackageEditorComponent(InxComponent):\n    pass\n",
+        encoding="utf-8",
+    )
+    try:
+        assert register_component_script(str(runtime))
+        assert register_component_script(str(editor))
+        names = {
+            entry.type_name
+            for entry in get_component_registrations(project_root=str(tmp_path))
+        }
+        assert "PackageRuntimeComponent" in names
+        assert "PackageEditorComponent" not in names
+    finally:
+        unregister_component_script(str(runtime))
+        unregister_component_script(str(editor))
+
+
+def test_disabled_package_runtime_component_is_not_visible(tmp_path):
+    package_root = tmp_path / "Packages" / "vendor" / "disabled"
+    runtime = package_root / "Runtime" / "component.py"
+    runtime.parent.mkdir(parents=True)
+    (package_root / "InxPackage.json").write_text("{}", encoding="utf-8")
+    runtime.write_text(
+        "class DisabledPackageComponent(InxComponent):\n    pass\n",
+        encoding="utf-8",
+    )
+    settings = tmp_path / "ProjectSettings"
+    settings.mkdir()
+    (settings / "InxPlugins.json").write_text(
+        json.dumps(
+            {
+                "installed": [
+                    {"reference": "vendor/disabled", "enabled": False}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        assert register_component_script(str(runtime))
+        names = {
+            entry.type_name
+            for entry in get_component_registrations(project_root=str(tmp_path))
+        }
+        assert "DisabledPackageComponent" not in names
+    finally:
+        unregister_component_script(str(runtime))
 
 
 def test_add_component_menu_reads_registry_without_filesystem_scan(tmp_path, monkeypatch):

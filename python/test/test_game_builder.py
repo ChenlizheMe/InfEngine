@@ -678,7 +678,7 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
     project = _make_project(tmp_path)
     runtime = project / "Packages/vendor/gameplay/Runtime/lifecycle.py"
     editor = project / "Packages/vendor/gameplay/Editor/panel.py"
-    content = project / "Assets/Plugins/vendor/gameplay/Scenes/Demo.scene"
+    content = project / "Assets/Plugins/Scenes/Demo.scene"
     control = project / "Packages/vendor/gameplay/InxPackage.json"
     files = (
         (runtime, "runtime-guid", "Runtime/lifecycle.py", "runtime", b"VALUE = 1\n"),

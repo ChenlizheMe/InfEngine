@@ -24,11 +24,15 @@ MyPlugin/
 | 你放的 | 落到项目里 |
 |---|---|
 | `Runtime/`、`Editor/`、README、许可证 | `Packages/<插件名>/` |
-| 模型、场景、Prefab、贴图 | `Assets/Plugins/<插件名>/` |
+| 模型、场景、Prefab、贴图 | `Assets/Plugins/`，保持包内相对路径 |
 
 `Runtime`、`Editor`、`InxPluginPages` 这三个名字大小写要写对。如果你只是想放一个普通文件夹也叫 Runtime，外面再包一层，比如 `Content/Runtime`。
 
 插件名可以带命名空间，例如 `studio/vfx-kit`。目录套在一起不代表有依赖关系。
+
+从项目窗口打包时，选中的目录名会原样保留。多选几个裸目录后导入，
+它们会直接在 `Assets/Plugins/` 下展开；引擎不会暗中增加插件名或
+`selection` 外层。若目标路径已经被另一个 GUID 占用，导入会明确失败。
 
 ## InxPackage.json
 
@@ -86,6 +90,8 @@ class Bootstrap(InxPreload):
 ```
 
 禁用的包不会加载。`unload` 失败时引擎会停下来让你重启，不会假装卸干净了。
+
+包内 Python 代码必须使用显式相对导入，例如 `from .service import Service`。每个已安装包都有独立且确定的模块命名空间，互不相关的插件即使文件同名也不会共享模块状态。`Runtime/` 参与玩法组件加载和热刷新；`Editor/` 只由插件生命周期加载。
 
 ## 依赖
 

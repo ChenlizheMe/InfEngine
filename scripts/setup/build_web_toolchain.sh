@@ -96,8 +96,18 @@ fetch_and_verify "$CPYTHON_URL" "$CPYTHON_SHA256" "$cpython_archive"
 if [[ ! -f "$cpython_root/Tools/wasm/wasm_build.py" ]]; then
     tar -xf "$cpython_archive" -C "$sources"
 fi
+cpython_wasm_config="$cpython_root/Tools/wasm/config.site-wasm32-emscripten"
+cpython_wasm_config_changed=0
+if ! grep -q '^ac_cv_func_pthread_kill=no$' "$cpython_wasm_config"; then
+    printf '\n# The browser runtime is single-threaded.\nac_cv_func_pthread_kill=no\n' \
+        >> "$cpython_wasm_config"
+    cpython_wasm_config_changed=1
+fi
 (
     cd "$cpython_root"
+    if [[ "$cpython_wasm_config_changed" == "1" ]]; then
+        python3 Tools/wasm/wasm_build.py emscripten-browser cleanall
+    fi
     python3 Tools/wasm/wasm_build.py emscripten-browser
 )
 

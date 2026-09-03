@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out\toolchains\windows-swiftshader
-          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025
+          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-runtime-only-v1
 
       - name: Install Vulkan SDK
         if: steps.cache-vulkan.outputs.cache-hit != 'true'
@@ -76,20 +76,11 @@ jobs:
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           cmake --preset windows-msvc-release
 
-      - name: Provide Vulkan loader for build and tests
+      - name: Provide pinned software Vulkan for build and tests
         shell: pwsh
         run: |
           conda activate infernux
-          $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
-          $runtimeRoot = Join-Path $env:RUNNER_TEMP "vulkan-runtime"
-          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan-runtime-components.zip"
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          Expand-Archive -LiteralPath $archive -DestinationPath $runtimeRoot -Force
-          $runtimeBin = Join-Path $runtimeRoot "VulkanRT-$env:VULKAN_SDK_VERSION-Components\x64"
-          $loader = Join-Path $runtimeBin "vulkan-1.dll"
-          if (-not (Test-Path $loader)) {
-            throw "Vulkan runtime archive does not contain the expected x64 loader."
-          }
+          $softwareVulkan = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader.dll"
           $destinations = @(
             "python\Infernux\lib\vulkan-1.dll",
             "out\build\windows-msvc-release\Release\vulkan-1.dll"
@@ -97,9 +88,9 @@ jobs:
           foreach ($destination in $destinations) {
             $parent = Split-Path -Parent $destination
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
-            Copy-Item -LiteralPath $loader -Destination $destination -Force
+            Copy-Item -LiteralPath $softwareVulkan -Destination $destination -Force
           }
-          $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\build\Windows\vk_swiftshader_icd.json"
+          $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader_icd.json"
           if (-not (Test-Path $swiftShaderManifest)) {
             throw "The pinned Windows SwiftShader Vulkan ICD is missing."
           }

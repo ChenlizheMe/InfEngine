@@ -15,6 +15,64 @@ if TYPE_CHECKING:
     from Infernux.engine.bootstrap import EditorBootstrap
 
 
+def _inxpackage_export_paths(context, project_root: str) -> tuple[str, ...]:
+    """Resolve one File Manager selection into the package export sources."""
+
+    from Infernux.engine.interaction import SelectionDomain
+    from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
+
+    root = resolved_path(project_root)
+
+    def resolve(value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return resolved_path(raw if os.path.isabs(raw) else os.path.join(root, raw))
+
+    selected = ()
+    if context.selection.domain is SelectionDomain.ASSET:
+        selected = tuple(
+            resolve(target.document_id or target.target_id)
+            for target in context.selection.targets
+        )
+
+    explicit = context.payload.get("paths", ())
+    if isinstance(explicit, str):
+        explicit = (explicit,)
+    explicit_paths = tuple(resolve(path) for path in explicit)
+    target = resolve(
+        context.payload.get("path", "")
+        or context.payload.get("target_id", "")
+    )
+
+    selected_keys = {path_key(path) for path in selected if path}
+    if explicit_paths:
+        candidates = explicit_paths
+    elif target and path_key(target) not in selected_keys:
+        candidates = (target,)
+    elif selected:
+        candidates = selected
+    elif target:
+        candidates = (target,)
+    else:
+        candidates = ()
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = path_key(path)
+        if (
+            not path
+            or key in seen
+            or not os.path.exists(path)
+            or not is_path_within(path, root, allow_root=False)
+        ):
+            continue
+        seen.add(key)
+        result.append(path)
+    return tuple(result)
+
+
 def wire_project_callbacks(bs: EditorBootstrap) -> None:
     """Wire C++ ProjectPanel callbacks to Python managers."""
     pp = bs.project_panel
@@ -390,7 +448,6 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     # InxPackage import/export are ordinary global commands so pointer menus,
     # shortcuts and automation all enter through the same command authority.
     from Infernux.engine.interaction import EditorCommand
-    from Infernux.engine.path_utils import is_path_within, resolved_path
 
     def _can_import_inxpackage(_context):
         return bool(bs.project_path and os.path.isdir(bs.project_path))
@@ -419,26 +476,31 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     )
 
     def _can_export_inxpackage(context):
-        path = resolved_path(str(context.payload.get("path", "") or ""))
-        return bool(path and os.path.exists(path) and is_path_within(path, bs.project_path, allow_root=False))
+        return bool(_inxpackage_export_paths(context, bs.project_path))
 
     def _export_inxpackage(context):
         from Infernux.engine.ui._dialogs import save_file_dialog
         from Infernux.plugins import InxPackage
 
-        source = resolved_path(str(context.payload.get("path", "") or ""))
-        default_name = os.path.basename(source.rstrip("\\/")) + ".inxpkg"
+        sources = _inxpackage_export_paths(context, bs.project_path)
+        if not sources:
+            return False
+        default_name = (
+            os.path.basename(sources[0].rstrip("\\/"))
+            if len(sources) == 1
+            else "Selection"
+        ) + ".inxpkg"
         destination = save_file_dialog(
             title=_t("project.export_inxpackage"),
             win32_filter="InxPackage (*.inxpkg)\0*.inxpkg\0All files (*.*)\0*.*\0\0",
-            initial_dir=os.path.dirname(source),
+            initial_dir=os.path.dirname(sources[0]),
             default_filename=default_name,
             default_ext="inxpkg",
             tk_filetypes=[("InxPackage", "*.inxpkg"), ("All Files", "*.*")],
         )
         if not destination:
             return False
-        InxPackage.export(bs.project_path, [source], destination)
+        InxPackage.export(bs.project_path, sources, destination)
         pp.invalidate_dir_cache()
         return True
 

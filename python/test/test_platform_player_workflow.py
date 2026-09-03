@@ -53,18 +53,19 @@ def test_linux_setup_installs_required_shader_reflection_dependency():
 
 def test_windows_native_build_can_load_the_vulkan_linked_module():
     text = _text()
-    loader_step = text.index("- name: Provide Vulkan loader to the build and Player closure")
+    loader_step = text.index(
+        "- name: Provide pinned software Vulkan to the build and Player closure"
+    )
     build_step = text.index("- name: Build Windows Player runtime")
 
     assert loader_step < build_step
-    assert '$runtimeBin | Out-File -FilePath $env:GITHUB_PATH' in text[loader_step:build_step]
-    assert 'Copy-Item -LiteralPath $loader -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
+    assert 'Copy-Item -LiteralPath $softwareVulkan -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
     assert (
-        'Copy-Item -LiteralPath $loader -Destination '
+        'Copy-Item -LiteralPath $softwareVulkan -Destination '
         '"out\\build\\windows-msvc-release\\Release\\vulkan-1.dll"'
         in text[loader_step:build_step]
     )
-    assert "vk_swiftshader_icd.json" in text[loader_step:build_step]
+    assert "runtime\\vk_swiftshader_icd.json" in text[loader_step:build_step]
     assert "VK_DRIVER_FILES=$swiftShaderManifest" in text[loader_step:build_step]
 
 
@@ -146,7 +147,7 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     assert "android-x64-emulator" in driver
     assert "gradle -p tests/android/input_instrumentation" in driver
     smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
-    assert driver.index("locksettings set-disabled true") < smoke
+    assert "locksettings" not in driver
     assert driver.index("KEYCODE_WAKEUP") < smoke
     assert driver.index("wm dismiss-keyguard") < smoke
     assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver

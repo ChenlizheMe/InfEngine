@@ -11,7 +11,11 @@ from Infernux.engine.candidate_import import (
     CandidateImportError,
     CandidateImportTransaction,
 )
-from Infernux.engine.project_context import get_project_root, set_project_root
+from Infernux.engine.project_context import (
+    get_project_root,
+    get_script_module_name,
+    set_project_root,
+)
 
 
 @pytest.fixture
@@ -195,6 +199,33 @@ def test_package_fromlist_and_relative_import_attach_private_submodule(candidate
     assert package_module.helper is helper_module
     assert "package_helper" not in sys.modules
     assert "package_helper.helper" not in sys.modules
+    broker.rollback()
+
+
+def test_installed_package_runtime_relative_import_uses_isolated_namespace(
+    candidate_project,
+):
+    project = candidate_project.parent
+    runtime = project / "Packages" / "studio" / "ai-tools" / "Runtime"
+    runtime.mkdir(parents=True)
+    (runtime.parent / "InxPackage.json").write_text("{}", encoding="utf-8")
+    helper = runtime / "helper.py"
+    component = runtime / "component.py"
+    helper.write_text("VALUE = 'package-runtime'\n", encoding="utf-8")
+    component.write_text("from .helper import VALUE\n", encoding="utf-8")
+    helper_name = get_script_module_name(str(helper))
+    component_name = get_script_module_name(str(component))
+    broker = CandidateImportTransaction()
+    broker.register(helper_name, str(helper))
+    broker.register(component_name, str(component))
+
+    module = broker.load(component_name)
+
+    assert module.VALUE == "package-runtime"
+    assert component_name == (
+        "_infernux_packages.studio.ai_2dtools.runtime.component"
+    )
+    assert helper_name not in sys.modules
     broker.rollback()
 
 

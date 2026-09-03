@@ -560,6 +560,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
 
     assert "libpython3.13.a" in cmake
     assert "--use-port=emdawnwebgpu" in cmake
+    assert "TextureFormat::RGBA16Unorm" not in rhi_backend
+    assert "TextureFormat::RGBA16Unorm" not in scene_renderer
+    assert "TextureFormat::RGBA16Unorm" not in screen_ui_renderer
     assert "infernux-webgpu-capabilities.json" in cmake
     assert "-sSTACK_SIZE=2097152" in cmake
     assert "set(CROSS_PLATFORM_DETERMINISTIC ON" in cmake

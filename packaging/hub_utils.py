@@ -65,6 +65,22 @@ def get_hub_data_dir() -> str:
     return os.path.join(get_app_dir(), "InfernuxHubData")
 
 
+def get_hub_user_data_dir() -> str:
+    """Return the per-user Hub data root shared by source and installed launches."""
+    configured = os.environ.get("INFERNUX_DATA_ROOT", "").strip()
+    if configured:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(configured)))
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if not local_app_data:
+            raise RuntimeError("Infernux Hub requires LOCALAPPDATA on Windows")
+        return os.path.join(local_app_data, "InfernuxHub")
+    xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data_home:
+        return os.path.join(os.path.expanduser(xdg_data_home), "InfernuxHub")
+    return os.path.expanduser("~/.local/share/InfernuxHub")
+
+
 def get_project_lock_path(project_path: str) -> str:
     """Return the lock-file path that marks a project as opened by the engine."""
     return os.path.join(project_path, "ProjectSettings", ".infernux-engine-lock.json")
@@ -162,9 +178,10 @@ def write_project_lock(project_path: str, pid: int, token: str, mode: str, state
 def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Environment for subprocesses: inherit current env and prefer UTF-8 on Windows."""
     merged = {**os.environ, **(extra or {})}
+    merged.setdefault("INFERNUX_DATA_ROOT", get_hub_user_data_dir())
     merged.setdefault(
         "INFERNUX_PACKAGE_CACHE_ROOT",
-        os.path.join(get_hub_data_dir(), "packages"),
+        os.path.join(merged["INFERNUX_DATA_ROOT"], "Library", "Plugins"),
     )
     if sys.platform == "win32":
         merged.setdefault("PYTHONUTF8", "1")

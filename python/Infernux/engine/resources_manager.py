@@ -14,6 +14,11 @@ from Infernux.engine.path_utils import (
     portable_path,
     resolved_path,
 )
+from Infernux.engine.project_context import (
+    get_project_script_roots,
+    is_project_component_script,
+    package_script_role,
+)
 from Infernux.engine.script_change_collector import (
     ScriptChangeCollector,
     ScriptChangeResult,
@@ -562,10 +567,22 @@ class ResourceChangeHandler(FileSystemEventHandler):
             or result.change.origin == "dependency"
         ):
             return
+        graph = self._dependency_graph
+        graph_upserts = {
+            result.path: result.source
+        } if graph.owns_path(result.path) else {}
+        graph_removals = tuple(
+            path
+            for path in state.retire_paths
+            if graph.module_for_path(path) is not None
+        )
+        if not graph_upserts and not graph_removals:
+            state.closure_seeded = True
+            return
         try:
-            stage = self._dependency_graph.stage_transaction(
-                {result.path: result.source},
-                removals=state.retire_paths,
+            stage = graph.stage_transaction(
+                graph_upserts,
+                removals=graph_removals,
             )
         except Exception as exc:
             state.failed = True
@@ -766,10 +783,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
         graph = self._dependency_graph
         ready_stage = None
         if graph is not None:
-            ready_stage = graph.stage_transaction(
-                {result.path: result.source for result in ready},
-                removals=state.retire_paths,
+            graph_upserts = {
+                result.path: result.source
+                for result in ready
+                if graph.owns_path(result.path)
+            }
+            graph_removals = tuple(
+                path
+                for path in state.retire_paths
+                if graph.module_for_path(path) is not None
             )
+            if graph_upserts or graph_removals:
+                ready_stage = graph.stage_transaction(
+                    graph_upserts,
+                    removals=graph_removals,
+                )
         registry_snapshot = snapshot_component_registry_state()
         play_mode = PlayModeManager.instance()
         play_batch = None
@@ -1074,7 +1102,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
         except RuntimeError as exc:
             raise _AssetImportNotReady(str(exc)) from exc
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
-            self._check_script(path, catalog_event="created")
+            if is_project_component_script(path, self._dependency_graph.project_root):
+                self._check_script(path, catalog_event="created")
+            elif package_script_role(path, self._dependency_graph.project_root) == "editor":
+                manager = ResourcesManager.instance()
+                if manager is not None:
+                    manager.notify_script_catalog_changed(path, "created")
         elif path.lower().endswith((".vert", ".frag")):
             # First import only writes metadata. Shader GPU modules are
             # published by reimport, the same edge effect dependencies use.
@@ -1154,7 +1187,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
             documents.fail_external_resource_change(path, message=str(exc))
             raise
         if script_change:
-            self._check_script(path, catalog_event="modified")
+            if is_project_component_script(path, self._dependency_graph.project_root):
+                self._check_script(path, catalog_event="modified")
+            elif package_script_role(path, self._dependency_graph.project_root) == "editor":
+                manager = ResourcesManager.instance()
+                if manager is not None:
+                    manager.notify_script_catalog_changed(path, "modified")
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
 
@@ -1190,12 +1228,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
-            from Infernux.components.script_loader import clear_deleted_script_errors
+            from Infernux.components.script_loader import (
+                clear_deleted_script_errors,
+                retire_script_module,
+            )
             from Infernux.components.registry import unregister_component_script
             clear_deleted_script_errors(path)
             Debug.clear_source_entries(path)
             unregister_component_script(path)
-            if self._dependency_graph is not None:
+            retire_script_module(path)
+            if (
+                self._dependency_graph is not None
+                and self._dependency_graph.module_for_path(path) is not None
+            ):
                 mutation = self._dependency_graph.remove(path)
                 self._last_dependency_affected = tuple(mutation.affected)
             manager = ResourcesManager.instance()
@@ -1215,7 +1260,28 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
         if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
-            self._submit_moved_script(old_path, new_path, origin="watchdog")
+            if is_project_component_script(
+                new_path,
+                self._dependency_graph.project_root,
+            ):
+                self._submit_moved_script(old_path, new_path, origin="watchdog")
+            else:
+                if is_project_component_script(
+                    old_path,
+                    self._dependency_graph.project_root,
+                ):
+                    from Infernux.components.registry import unregister_component_script
+                    from Infernux.components.script_loader import retire_script_module
+
+                    unregister_component_script(old_path)
+                    retire_script_module(old_path)
+                    if self._dependency_graph.module_for_path(old_path) is not None:
+                        mutation = self._dependency_graph.remove(old_path)
+                        self._last_dependency_affected = tuple(mutation.affected)
+                manager = ResourcesManager.instance()
+                if manager is not None:
+                    manager.notify_script_catalog_changed(old_path, "deleted")
+                    manager.notify_script_catalog_changed(new_path, "moved")
         elif new_path.lower().endswith((".vert", ".frag")):
             if not AssetManager.reimport_asset(
                 new_path,
@@ -1414,7 +1480,8 @@ class ResourcesManager:
         ResourcesManager._instance = self
         self._engine = engine
         self._project_path = resolved_path(project_path)
-        self._assets_path = resolved_path(os.path.join(self._project_path, "Assets"))
+        self._script_roots = get_project_script_roots(self._project_path)
+        self._assets_path = self._script_roots[0]
         self._observer = None
         self._observer_lock = threading.Lock()
         self._thread = None
@@ -1551,10 +1618,13 @@ class ResourcesManager:
 
     def _scan_resources(self):
         """
-        Use watchdog to monitor file changes in _assets_path.
+        Use watchdog to monitor project assets and installed package sources.
         """
-        if not os.path.exists(self._assets_path):
-            Debug.log_warning(f"Assets path not found: {self._assets_path}")
+        existing_roots = tuple(path for path in self._script_roots if os.path.isdir(path))
+        if not existing_roots:
+            Debug.log_warning(
+                f"Project script roots not found: {', '.join(self._script_roots)}"
+            )
             return
         if self._stop_event.is_set():
             return
@@ -1566,7 +1636,8 @@ class ResourcesManager:
         observer.daemon = False
 
         try:
-            observer.schedule(handler, self._assets_path, recursive=True)
+            for root in existing_roots:
+                observer.schedule(handler, root, recursive=True)
             with self._observer_lock:
                 if self._stop_event.is_set():
                     return
@@ -1594,7 +1665,7 @@ class ResourcesManager:
             self._shutdown_observer(join_timeout=5.0)
 
     def _initial_script_scan(self):
-        """Walk Assets/ and syntax-check every .py file.
+        """Walk project script roots and syntax-check every .py file.
 
         ``prepare_startup()`` runs this on the owner thread before the
         engine window is shown. The watcher thread only repeats it when
@@ -1602,17 +1673,22 @@ class ResourcesManager:
         """
         self._ensure_event_handler()
         script_paths = []
-        for root, dirs, files in os.walk(self._assets_path):
-            if self._stop_event.is_set():
-                return
-            dirs[:] = [d for d in dirs if d != '__pycache__']
-            for fname in files:
-                if not fname.endswith('.py') or _is_particle_script_path(fname):
-                    continue
-                fpath = os.path.join(root, fname)
-                if self._event_handler is None:
-                    continue
-                script_paths.append(fpath)
+        for script_root in self._script_roots:
+            if not os.path.isdir(script_root):
+                continue
+            for root, dirs, files in os.walk(script_root):
+                if self._stop_event.is_set():
+                    return
+                dirs[:] = [d for d in dirs if d != '__pycache__']
+                for fname in files:
+                    if not fname.endswith('.py') or _is_particle_script_path(fname):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    if not is_project_component_script(fpath, self._project_path):
+                        continue
+                    if self._event_handler is None:
+                        continue
+                    script_paths.append(fpath)
         transaction_id = None
         if script_paths and self._event_handler is not None:
             transaction_id = self._event_handler.begin_script_transaction(
@@ -1645,6 +1721,50 @@ class ResourcesManager:
         processed += self._event_handler.process_pending_reloads(force=force)
         return processed
 
+    def begin_script_transaction(
+        self,
+        paths,
+        *,
+        retire_paths=(),
+    ) -> str:
+        """Create one atomic publication barrier for internal script writes."""
+
+        members = tuple(resolved_path(path) for path in paths)
+        retired = tuple(resolved_path(path) for path in retire_paths)
+        if not members:
+            raise ValueError("script transaction requires at least one path")
+        for path in (*members, *retired):
+            if not any(
+                is_path_within(path, root, allow_root=False)
+                for root in self._script_roots
+            ):
+                raise ValueError(f"script transaction path is outside the project: {path}")
+        handler = self._ensure_event_handler()
+        return handler.begin_script_transaction(
+            members,
+            retire_paths=retired,
+        )
+
+    def retire_script_paths(self, paths) -> None:
+        """Retire package Runtime modules after a disable or uninstall commit."""
+
+        from Infernux.components.registry import unregister_component_script
+        from Infernux.components.script_loader import retire_script_module
+
+        handler = self._ensure_event_handler()
+        for raw_path in paths:
+            path = resolved_path(raw_path)
+            if not any(
+                is_path_within(path, root, allow_root=False)
+                for root in self._script_roots
+            ):
+                raise ValueError(f"retired script path is outside the project: {path}")
+            unregister_component_script(path)
+            retire_script_module(path)
+            if handler.dependency_graph.module_for_path(path) is not None:
+                mutation = handler.dependency_graph.remove(path)
+                handler._last_dependency_affected = tuple(mutation.affected)
+
     def submit_script_change(
         self,
         file_path: str,
@@ -1661,7 +1781,10 @@ class ResourcesManager:
         keeps callers from accidentally submitting a script outside Assets and
         preserves the same owner/worker split as watchdog changes.
         """
-        if not is_path_within(file_path, self._assets_path, allow_root=False):
+        if not any(
+            is_path_within(file_path, root, allow_root=False)
+            for root in self._script_roots
+        ):
             return None
         if self._event_handler is None:
             self._event_handler = ResourceChangeHandler(

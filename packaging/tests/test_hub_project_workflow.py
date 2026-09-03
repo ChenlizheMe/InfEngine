@@ -13,6 +13,7 @@ PACKAGING_DIR = Path(__file__).resolve().parents[1]
 if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
+import database as database_module
 from database import ProjectDatabase
 import model.project_model as project_model_module
 from model.project_model import ProjectModel
@@ -34,6 +35,21 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
     if version:
         (path / ".infernux-version").write_text(f"# pin\n{version}\n", encoding="utf-8")
     return path
+
+
+def test_default_project_database_lives_in_hub_state_root(tmp_path, monkeypatch):
+    root = tmp_path / "HubData"
+    monkeypatch.setattr(
+        database_module,
+        "get_hub_user_data_dir",
+        lambda: str(root),
+    )
+
+    database = ProjectDatabase()
+    database.close()
+
+    assert (root / "State" / "projects.db").is_file()
+    assert not (tmp_path / ".infernux").exists()
 
 
 def test_source_import_does_not_apply_installed_version_catalog_rules(

@@ -30,13 +30,17 @@ def test_is_frozen_is_false_for_source_python(monkeypatch):
 
 
 def test_child_environment_owns_the_shared_package_cache(monkeypatch, tmp_path):
-    monkeypatch.setattr(hub_utils, "get_hub_data_dir", lambda: str(tmp_path / "HubData"))
+    monkeypatch.setattr(
+        hub_utils,
+        "get_hub_user_data_dir",
+        lambda: str(tmp_path / "HubData"),
+    )
     monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
 
     merged = hub_utils.merge_child_env_utf8()
 
     assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(
-        str(tmp_path / "HubData"), "packages"
+        str(tmp_path / "HubData"), "Library", "Plugins"
     )
 
 
@@ -47,6 +51,37 @@ def test_explicit_package_cache_override_survives_hub_launch(monkeypatch, tmp_pa
     merged = hub_utils.merge_child_env_utf8()
 
     assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == explicit
+
+
+def test_windows_hub_user_data_uses_local_app_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(hub_utils.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+    assert hub_utils.get_hub_user_data_dir() == os.path.join(
+        str(tmp_path / "local"), "InfernuxHub"
+    )
+
+
+def test_linux_hub_user_data_uses_xdg_data_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(hub_utils.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    assert hub_utils.get_hub_user_data_dir() == os.path.join(
+        str(tmp_path / "xdg"), "InfernuxHub"
+    )
+
+
+def test_explicit_hub_data_root_owns_every_child_launch(monkeypatch, tmp_path):
+    root = tmp_path / "shared-data"
+    monkeypatch.setenv("INFERNUX_DATA_ROOT", str(root))
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+
+    assert hub_utils.get_hub_user_data_dir() == str(root.resolve())
+    merged = hub_utils.merge_child_env_utf8()
+    assert merged["INFERNUX_DATA_ROOT"] == str(root.resolve())
+    assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(
+        str(root.resolve()), "Library", "Plugins"
+    )
 
 
 def test_non_windows_pid_probe_distinguishes_missing_and_inaccessible_processes(

@@ -15,6 +15,7 @@ if str(PACKAGING_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGING_ROOT))
 
 import embed_runtime_manager
+import stage_bundled_python_runtime
 from private_python_runtime import (
     extract_runtime_archive,
     is_private_runtime_root,
@@ -34,6 +35,25 @@ def _write_runtime_archive(path: Path) -> None:
 
 def _archive_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_runtime_and_bootstrap_staging_share_the_hub_data_root(tmp_path, monkeypatch):
+    root = tmp_path / "HubData"
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "get_hub_user_data_dir",
+        lambda: str(root),
+    )
+    monkeypatch.setattr(
+        stage_bundled_python_runtime,
+        "get_hub_user_data_dir",
+        lambda: str(root),
+    )
+
+    assert embed_runtime_manager._default_runtime_dir() == str(root / "Runtimes")
+    assert stage_bundled_python_runtime._bootstrap_root() == str(
+        root / "Downloads" / "RuntimeBootstrap"
+    )
 
 
 def test_windows_runtime_uses_pinned_relocatable_archive() -> None:

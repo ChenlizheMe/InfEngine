@@ -90,7 +90,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out\toolchains\windows-swiftshader
-          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025
+          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-runtime-only-v1
 
       - name: Build pinned Windows software Vulkan driver
         if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
@@ -105,24 +105,14 @@ jobs:
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Provide Vulkan loader to the build and Player closure
+      - name: Provide pinned software Vulkan to the build and Player closure
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
-          $runtimeRoot = Join-Path $env:RUNNER_TEMP "vulkan-runtime"
-          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan-runtime-components.zip"
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          Expand-Archive -LiteralPath $archive -DestinationPath $runtimeRoot -Force
-          $runtimeBin = Join-Path $runtimeRoot "VulkanRT-$env:VULKAN_SDK_VERSION-Components\x64"
-          $loader = Join-Path $runtimeBin "vulkan-1.dll"
-          if (-not (Test-Path -LiteralPath $loader)) {
-            throw "Vulkan runtime archive does not contain the expected x64 loader."
-          }
-          $runtimeBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Copy-Item -LiteralPath $loader -Destination "python\Infernux\lib\vulkan-1.dll" -Force
+          $softwareVulkan = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader.dll"
+          Copy-Item -LiteralPath $softwareVulkan -Destination "python\Infernux\lib\vulkan-1.dll" -Force
           New-Item -ItemType Directory -Path "out\build\windows-msvc-release\Release" -Force | Out-Null
-          Copy-Item -LiteralPath $loader -Destination "out\build\windows-msvc-release\Release\vulkan-1.dll" -Force
-          $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\build\Windows\vk_swiftshader_icd.json"
+          Copy-Item -LiteralPath $softwareVulkan -Destination "out\build\windows-msvc-release\Release\vulkan-1.dll" -Force
+          $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader_icd.json"
           if (-not (Test-Path -LiteralPath $swiftShaderManifest)) {
             throw "The pinned Windows SwiftShader Vulkan ICD is missing."
           }
@@ -133,7 +123,7 @@ jobs:
         shell: pwsh
         run: |
           conda activate infernux
-          $env:VK_DRIVER_FILES = "${{ github.workspace }}\out\toolchains\windows-swiftshader\build\Windows\vk_swiftshader_icd.json"
+          $env:VK_DRIVER_FILES = "${{ github.workspace }}\out\toolchains\windows-swiftshader\runtime\vk_swiftshader_icd.json"
           $env:VK_ICD_FILENAMES = $env:VK_DRIVER_FILES
           python scripts\acceptance\validate_vulkan_extensions.py `
             --loader python\Infernux\lib\vulkan-1.dll `

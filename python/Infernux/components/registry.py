@@ -466,7 +466,7 @@ def unregister_component_script(
 
 def get_component_registrations(*, project_root: str = "") -> tuple[ComponentRegistration, ...]:
     """Return one stable Add Component snapshot without filesystem work."""
-    from Infernux.engine.path_utils import is_path_within
+    from Infernux.engine.project_context import is_project_component_script
 
     ensure_engine_component_catalog_loaded()
 
@@ -482,10 +482,10 @@ def get_component_registrations(*, project_root: str = "") -> tuple[ComponentReg
             if entry.user_addable and not entry.intrinsic
         ]
     if project_root:
-        assets_root = os.path.join(project_root, "Assets")
         project_entries = [
             entry for entry in project_entries
-            if entry.script_path and is_path_within(entry.script_path, assets_root)
+            if entry.script_path
+            and is_project_component_script(entry.script_path, project_root)
         ]
     merged = {entry.type_name: entry for entry in engine_entries}
     merged.update({entry.type_name: entry for entry in project_entries})

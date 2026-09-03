@@ -30,7 +30,7 @@ from ui_project_list import ProjectListPane
 from database import ProjectDatabase
 from style import StyleManager
 from hub_resources import ICON_PATH, FONT_PATH
-from hub_utils import HubLaunchContext, is_frozen
+from hub_utils import HubLaunchContext, get_app_dir, is_frozen
 from python_runtime import PythonRuntimeManager
 from version_manager import VersionManager
 
@@ -347,33 +347,35 @@ def _handle_uninstall_macos() -> int:
 
 
 def _handle_uninstall_linux() -> int:
-    """Remove Infernux Hub from Linux (desktop entry + user config)."""
+    """Remove the Linux application while preserving Hub user data."""
     import shutil as _shutil
 
     app = QApplication.instance() or QApplication(sys.argv)
 
     desktop_entry = os.path.expanduser("~/.local/share/applications/infernux-hub.desktop")
-    config_dir = os.path.expanduser("~/.config/Infernux")
-    data_dir = os.path.expanduser("~/.local/share/InfernuxHub")
-    targets = [p for p in (desktop_entry, config_dir, data_dir) if os.path.exists(p)]
+    install_dir = get_app_dir()
+    targets = [p for p in (desktop_entry, install_dir) if os.path.exists(p)]
 
     if targets:
         answer = QMessageBox.question(
             None,
             "Uninstall Infernux Hub",
-            "Do you want to remove Infernux Hub application files and configuration?\n\n"
+            "Do you want to remove the Infernux Hub application?\n\n"
             + "\n".join(targets)
-            + "\n\nProjects and downloaded engine versions under ~/.infernux are preserved.",
+            + "\n\nProjects, downloaded engines, Python runtimes, and the shared "
+            "plugin library are preserved.",
         )
         if answer == QMessageBox.Yes:
             for p in targets:
                 if os.path.isdir(p):
-                    _shutil.rmtree(p, ignore_errors=True)
+                    if p == install_dir and not can_remove_install_dir(p):
+                        raise RuntimeError(
+                            "The Hub application directory is not a recognized install: "
+                            f"{p}"
+                        )
+                    _shutil.rmtree(p)
                 else:
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
+                    os.remove(p)
 
     QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
     return 0

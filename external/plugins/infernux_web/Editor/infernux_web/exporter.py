@@ -864,27 +864,31 @@ def _configure_and_build_host(
     web_shell: Path,
     project_web_template: Path | None,
 ) -> tuple[str, ...]:
-    if os.name != "nt":
-        raise RuntimeError(
-            "The current Web Player build executor is configured for the WSL2 toolchain"
-        )
     distribution = str(details.get("distribution", "Ubuntu-22.04"))
     host_template_source = Path(__file__).resolve().parent / "templates" / "host"
     build_root = staging / "host-build"
-    wsl_source_root = _wsl_path(source_root, distribution)
-    wsl_host_template_source = _wsl_path(host_template_source, distribution)
-    wsl_web_shell = _wsl_path(web_shell, distribution)
-    wsl_build_root = _wsl_path(build_root, distribution)
-    wsl_player_assets = _wsl_path(player_assets, distribution)
-    wsl_branding = _wsl_path(player_assets / "web-branding", distribution)
-    wsl_shader_manifest = _wsl_path(
-        staging / "shader-cook" / "manifest.json", distribution
-    )
-    wsl_shader_output = _wsl_path(player_assets / "web-shaders", distribution)
     shader_pipeline = (
         Path(__file__).resolve().parent / "shader_pipeline.py"
     )
-    wsl_shader_pipeline = _wsl_path(shader_pipeline, distribution)
+    if os.name == "nt":
+        def build_path(path: Path) -> str:
+            return _wsl_path(path, distribution)
+
+        python_command = "python"
+    else:
+        def build_path(path: Path) -> str:
+            return str(path.resolve())
+
+        python_command = sys.executable
+    tool_source_root = build_path(source_root)
+    tool_host_template_source = build_path(host_template_source)
+    tool_web_shell = build_path(web_shell)
+    tool_build_root = build_path(build_root)
+    tool_player_assets = build_path(player_assets)
+    tool_branding = build_path(player_assets / "web-branding")
+    tool_shader_manifest = build_path(staging / "shader-cook" / "manifest.json")
+    tool_shader_output = build_path(player_assets / "web-shaders")
+    tool_shader_pipeline = build_path(shader_pipeline)
     emsdk_root = str(details["emsdk_root"])
     cpython_root = str(details["cpython_root"])
     tint_path = str(details["tint_path"])
@@ -901,7 +905,7 @@ def _configure_and_build_host(
     zstd_source = acquire_git_source(request, _WEB_ZSTD_SOURCE)
     zstd_argument = (
         " -DINFERNUX_WEB_ZSTD_SOURCE_DIR="
-        + shlex.quote(_wsl_path(zstd_source, distribution))
+        + shlex.quote(build_path(zstd_source))
     )
     configuration = (
         "Release"
@@ -910,16 +914,16 @@ def _configure_and_build_host(
     )
     configure = (
         "emcmake cmake "
-        f"-S {shlex.quote(wsl_host_template_source)} "
-        f"-B {shlex.quote(wsl_build_root)} -G Ninja "
+        f"-S {shlex.quote(tool_host_template_source)} "
+        f"-B {shlex.quote(tool_build_root)} -G Ninja "
         f"-DCMAKE_BUILD_TYPE={configuration} "
         f"-DINFERNUX_WEB_CPYTHON_SOURCE={shlex.quote(cpython_root)} "
         "-DINFERNUX_WEB_CPYTHON_BUILD="
         f"{shlex.quote(cpython_root + '/builddir/emscripten-browser')} "
-        f"-DINFERNUX_ENGINE_SOURCE_ROOT={shlex.quote(wsl_source_root)} "
-        f"-DINFERNUX_WEB_PLAYER_ASSETS={shlex.quote(wsl_player_assets)} "
-        f"-DINFERNUX_WEB_BRANDING_DIR={shlex.quote(wsl_branding)} "
-        f"-DINFERNUX_WEB_SHELL_FILE={shlex.quote(wsl_web_shell)} "
+        f"-DINFERNUX_ENGINE_SOURCE_ROOT={shlex.quote(tool_source_root)} "
+        f"-DINFERNUX_WEB_PLAYER_ASSETS={shlex.quote(tool_player_assets)} "
+        f"-DINFERNUX_WEB_BRANDING_DIR={shlex.quote(tool_branding)} "
+        f"-DINFERNUX_WEB_SHELL_FILE={shlex.quote(tool_web_shell)} "
         "-DINFERNUX_WEB_LINK_ENGINE_RUNTIME=ON "
         f"-DINFERNUX_WEB_ASSET_REVISION={asset_revision} "
         f"-DINFERNUX_WEB_DISPLAY_MODE={shlex.quote(display_mode)} "
@@ -927,23 +931,33 @@ def _configure_and_build_host(
         f"-DINFERNUX_WEB_CANVAS_HEIGHT={canvas_height}"
         f"{zstd_argument}"
     )
+    setup = ["set -e"]
+    if os.name == "nt":
+        setup.extend(
+            (
+                'source "$HOME/miniforge3/etc/profile.d/conda.sh"',
+                "conda activate infernux",
+            )
+        )
     script = "\n".join(
         (
-            "set -e",
-            'source "$HOME/miniforge3/etc/profile.d/conda.sh"',
-            "conda activate infernux",
+            *setup,
             f"source {shlex.quote(emsdk_root + '/emsdk_env.sh')} >/dev/null",
-            "python "
-            f"{shlex.quote(wsl_shader_pipeline)} "
-            f"--manifest {shlex.quote(wsl_shader_manifest)} "
-            f"--output {shlex.quote(wsl_shader_output)} "
+            f"{shlex.quote(python_command)} "
+            f"{shlex.quote(tool_shader_pipeline)} "
+            f"--manifest {shlex.quote(tool_shader_manifest)} "
+            f"--output {shlex.quote(tool_shader_output)} "
             f"--tint {shlex.quote(tint_path)}",
             configure,
-            f"cmake --build {shlex.quote(wsl_build_root)} --parallel 2",
+            f"cmake --build {shlex.quote(tool_build_root)} --parallel 2",
         )
     )
     request.report("compile", 0, 1, "Building cooked WebGPU Player host")
-    logs = _run_wsl_build(request, distribution, script)
+    logs = (
+        _run_wsl_build(request, distribution, script)
+        if os.name == "nt"
+        else _run_posix_build(request, script)
+    )
     request.report("shaders", 2, 2, "Validated WGSL shader catalog ready")
     required = (
         "infernux-player.html",
@@ -1037,6 +1051,41 @@ def _run_wsl_build(
         raise RuntimeError("WSL2 is required for the configured Web toolchain")
     process = subprocess.Popen(
         [launcher, "-d", distribution, "--", "bash", "-lc", script],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    logs: list[str] = []
+    try:
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                line = raw_line.replace("\x00", "").rstrip()
+                if not line:
+                    continue
+                logs.append(line)
+                request.report("compile", 0, 0, line[:500], source="web-toolchain")
+        return_code = process.wait()
+        if return_code != 0:
+            raise RuntimeError(
+                f"Web host build failed with exit code {return_code}: "
+                f"{logs[-1] if logs else 'no diagnostic output'}"
+            )
+        return tuple(logs)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def _run_posix_build(request: BuildRequest, script: str) -> tuple[str, ...]:
+    """Run the native Linux Web toolchain used by release CI."""
+
+    process = subprocess.Popen(
+        ["bash", "-lc", script],
         text=True,
         encoding="utf-8",
         errors="replace",

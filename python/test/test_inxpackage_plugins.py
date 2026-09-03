@@ -149,7 +149,7 @@ def _export(source: Path, package: Path) -> Path:
     return package
 
 
-def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path):
+def test_manifestless_folder_export_preserves_selected_directory(tmp_path):
     project = _project(tmp_path / "project")
     materials = project / "Assets" / "Materials"
     materials.mkdir()
@@ -162,8 +162,8 @@ def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path)
     preview = InxPackage.export(str(project), [str(materials)], str(package))
 
     assert preview.metadata["reference"] == "materials"
-    assert preview.logical_entries == ("Neon.mat",)
-    assert preview.project_entries == ("Assets/Plugins/materials/Neon.mat",)
+    assert preview.logical_entries == ("Materials/Neon.mat",)
+    assert preview.project_entries == ("Assets/Plugins/Materials/Neon.mat",)
     assert preview.file_records[0]["guid"] == guid
 
     archived_meta = json.loads(
@@ -175,6 +175,74 @@ def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path)
         "type": "string",
         "value": _fnv1a64(asset.read_bytes()),
     }
+
+
+def test_manifestless_multi_selection_expands_directly_under_plugins(tmp_path):
+    project = _project(tmp_path / "project")
+    first = project / "Assets" / "First"
+    second = project / "Assets" / "Second"
+    first.mkdir()
+    second.mkdir()
+    (first / "one.txt").write_text("one", encoding="utf-8")
+    (second / "two.txt").write_text("two", encoding="utf-8")
+
+    preview = InxPackage.export(
+        str(project),
+        [str(first), str(second)],
+        str(tmp_path / "Selection.inxpkg"),
+    )
+
+    assert preview.logical_entries == ("First/one.txt", "Second/two.txt")
+    assert preview.project_entries == (
+        "Assets/Plugins/First/one.txt",
+        "Assets/Plugins/Second/two.txt",
+    )
+
+
+def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
+    tmp_path,
+    monkeypatch,
+):
+    source = _source(tmp_path / "source", "vendor/runtime-component")
+    runtime = source / "Runtime"
+    runtime.mkdir()
+    (runtime / "component.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "RuntimeComponent.inxpkg")
+    project = _project(tmp_path / "project")
+    published = []
+
+    class _Resources:
+        _project_path = str(project.resolve())
+
+        def begin_script_transaction(self, paths):
+            published.append(("begin", tuple(Path(path) for path in paths)))
+            return "package-runtime"
+
+        def submit_script_change(self, path, **kwargs):
+            published.append((Path(path), kwargs))
+            return object()
+
+        def process_pending_reloads(self, *, force=False):
+            published.append(("drain", force))
+            return 0
+
+    monkeypatch.setattr(
+        "Infernux.engine.resources_manager.ResourcesManager.instance",
+        classmethod(lambda _cls: _Resources()),
+    )
+
+    PluginManager(str(project)).install_package(
+        str(package),
+        install_dependencies=False,
+    )
+
+    runtime_path = project / "Packages/vendor/runtime-component/Runtime/component.py"
+    assert published[0] == ("begin", (runtime_path,))
+    assert published[1][0] == runtime_path
+    assert published[1][1]["force"] is True
+    assert published[1][1]["transaction_id"] == "package-runtime"
+    assert published[2] == ("drain", True)
+    assert not (project / "Library" / "InxPackageStaging").exists()
 
 
 def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
@@ -221,14 +289,14 @@ def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path
     assert "Packages/aabbc/physics/jolt/Runtime/backend.py" in preview.project_entries
     assert "Packages/aabbc/physics/jolt/Editor/panel.py" in preview.project_entries
     assert "Packages/aabbc/physics/jolt/README.md" in preview.project_entries
-    assert "Assets/Plugins/aabbc/physics/jolt/Scenes/Demo.scene" in preview.project_entries
-    assert "Assets/Plugins/aabbc/physics/jolt/Variants/Alternative.inxpkg" in preview.project_entries
+    assert "Assets/Plugins/Scenes/Demo.scene" in preview.project_entries
+    assert "Assets/Plugins/Variants/Alternative.inxpkg" in preview.project_entries
 
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(tmp_path / "Jolt.inxpkg"), install_dependencies=False)
     assert (project / "Packages/aabbc/physics/jolt/Runtime/backend.py").is_file()
-    assert (project / "Assets/Plugins/aabbc/physics/jolt/Scenes/Demo.scene").is_file()
+    assert (project / "Assets/Plugins/Scenes/Demo.scene").is_file()
     assert {item["reference"] for item in manager.registry.installed()} == {
         "aabbc/physics/jolt"
     }
@@ -315,7 +383,7 @@ def test_engine_compatibility_is_validated_and_enforced_before_install(tmp_path)
     with pytest.raises(RuntimeError, match="current engine is 0.4.0"):
         manager.install_package(str(package), install_dependencies=False)
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/future-engine/Data.bin").exists()
+    assert not (project / "Assets/Plugins/Data.bin").exists()
 
 
 @pytest.mark.parametrize("directory", ["runtime", "RUNTIME", "editor"])
@@ -333,7 +401,7 @@ def test_docs_has_no_special_layout_role(tmp_path):
     (source / "Docs" / "Guide.md").write_text("ordinary asset", encoding="utf-8")
     package = _export(source, tmp_path / "docs.inxpkg")
     preview = InxPackage.inspect(str(package))
-    assert "Assets/Plugins/vendor/docs/Docs/Guide.md" in preview.project_entries
+    assert "Assets/Plugins/Docs/Guide.md" in preview.project_entries
     assert all(page["path"] != "Docs/Guide.md" for page in preview.metadata["pages"])
 
 
@@ -378,7 +446,7 @@ def test_guid_reuse_transfers_ownership_on_uninstall(tmp_path):
     manager = PluginManager(str(project))
     manager.install_package(str(packages[0]), install_dependencies=False)
     manager.install_package(str(packages[1]), install_dependencies=False)
-    original = project / "Assets/Plugins/aabbc/physics/Shared.bin"
+    original = project / "Assets/Plugins/Shared.bin"
     child_record = manager.registry.installed_record("aabbc/physics/jolt")
     shared = next(item for item in child_record["files"] if item["guid"] == guid)
     assert shared["owned"] is False
@@ -747,8 +815,7 @@ def test_shared_guid_reuses_existing_asset_without_duplicate_import(tmp_path):
     second_record = manager.registry.installed_record("vendor/second")
     assert second_record is not None
     assert second_record["files"][0]["owned"] is False
-    assert (project / "Assets/Plugins/vendor/first/Shared.bin").read_bytes() == b"one"
-    assert not (project / "Assets/Plugins/vendor/second/Shared.bin").exists()
+    assert (project / "Assets/Plugins/Shared.bin").read_bytes() == b"one"
 
 
 def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path):
@@ -760,7 +827,7 @@ def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path)
     )
     package = _export(source, tmp_path / "path-conflict.inxpkg")
     project = _project(tmp_path / "project")
-    occupied = project / "Assets/Plugins/vendor/path-conflict/Data.bin"
+    occupied = project / "Assets/Plugins/Data.bin"
     occupied.parent.mkdir(parents=True)
     occupied.write_bytes(b"user bytes")
     Path(str(occupied) + ".meta").write_text(
@@ -818,7 +885,7 @@ def test_install_rolls_back_files_and_registry_if_registration_fails(tmp_path, m
     with pytest.raises(RuntimeError, match="post-save"):
         manager.install_package(str(package), install_dependencies=False)
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/rollback/Data.bin").exists()
+    assert not (project / "Assets/Plugins/Data.bin").exists()
     assert not (project / "Packages/vendor/rollback/InxPackage.json").exists()
 
 
@@ -851,8 +918,8 @@ def test_rejected_parent_install_removes_new_plugin_dependencies(tmp_path, monke
         manager.install_package(str(parent_package))
 
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/child/Child.bin").exists()
-    assert not (project / "Assets/Plugins/vendor/parent/Parent.bin").exists()
+    assert not (project / "Assets/Plugins/Child.bin").exists()
+    assert not (project / "Assets/Plugins/Parent.bin").exists()
 
 
 def test_direct_package_uses_hub_library_for_offline_reinstall_and_lock(tmp_path):
@@ -979,6 +1046,16 @@ def test_plugin_staging_is_owned_by_shared_cache_and_reaps_dead_processes(
 def test_default_plugin_cache_is_owned_by_hub(tmp_path):
     assert plugin_cache_module.package_cache_root() == str(
         (tmp_path / "hub-package-cache").resolve()
+    )
+
+
+def test_explicit_data_root_owns_default_plugin_library(tmp_path, monkeypatch):
+    root = tmp_path / "HubData"
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    monkeypatch.setenv("INFERNUX_DATA_ROOT", str(root))
+
+    assert plugin_cache_module.package_cache_root() == str(
+        (root / "Library" / "Plugins").resolve()
     )
 
 
@@ -1743,7 +1820,7 @@ def test_uninstall_follows_guid_and_removes_plugin_owned_modification(tmp_path):
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    old = project / "Assets/Plugins/vendor/movable/Data.bin"
+    old = project / "Assets/Plugins/Data.bin"
     moved = project / "Assets/UserLayout/Moved.bin"
     moved.parent.mkdir(parents=True)
     old.replace(moved)
@@ -1765,7 +1842,7 @@ def test_uninstall_file_failure_rolls_back_payload_meta_and_registry(tmp_path, m
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    payload = project / "Assets/Plugins/vendor/uninstall-rollback/Data.bin"
+    payload = project / "Assets/Plugins/Data.bin"
     meta = Path(str(payload) + ".meta")
     original_remove = os.remove
     failed = False
@@ -1836,8 +1913,8 @@ def test_requirements_failure_rolls_back_new_plugin_dependencies(tmp_path, monke
         manager.install_package(str(parent_package))
 
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/requirement-child/Child.bin").exists()
-    assert not (project / "Assets/Plugins/vendor/requirement-parent/Parent.bin").exists()
+    assert not (project / "Assets/Plugins/Child.bin").exists()
+    assert not (project / "Assets/Plugins/Parent.bin").exists()
 
 
 def test_pip_side_effect_rolls_back_when_file_registry_transaction_fails(
@@ -1884,7 +1961,7 @@ def test_pip_side_effect_rolls_back_when_file_registry_transaction_fails(
     assert environment == {}
     assert manager.registry.installed() == ()
     assert any(command[2:4] == ["pip", "uninstall"] for command in commands)
-    assert not (project / "Assets/Plugins/vendor/pip-rollback/Data.bin").exists()
+    assert not (project / "Assets/Plugins/Data.bin").exists()
 
 
 def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(
@@ -2081,6 +2158,42 @@ def test_package_preload_supports_relative_imports(tmp_path):
     assert (project / "relative-preload.txt").read_text(encoding="utf-8") == (
         "relative-import-ready"
     )
+
+
+def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+
+    for reference, marker in (("vendor/first", "first"), ("vendor/second", "second")):
+        source = _source(tmp_path / marker, reference)
+        package_module = source / "Editor" / "shared_name"
+        package_module.mkdir(parents=True)
+        (package_module / "__init__.py").write_text("", encoding="utf-8")
+        (package_module / "service.py").write_text(
+            f"VALUE = {marker!r}\n", encoding="utf-8"
+        )
+        (package_module / "lifecycle.py").write_text(
+            "from pathlib import Path\n"
+            "from Infernux.lifecycle import InxPreload\n"
+            "from .service import VALUE\n"
+            "class SharedNamePreload(InxPreload):\n"
+            "    def preload(self, context):\n"
+            "        Path(context.project_root, VALUE + '.txt').write_text(VALUE)\n",
+            encoding="utf-8",
+        )
+        package = _export(source, tmp_path / f"{marker}.inxpkg")
+        state = manager.install_package(str(package), install_dependencies=False)
+        assert state.loaded
+
+    assert (project / "first.txt").read_text(encoding="utf-8") == "first"
+    assert (project / "second.txt").read_text(encoding="utf-8") == "second"
+    module_names = {
+        state.module_name
+        for state in manager.preloads.states.values()
+        if state.type_name == "SharedNamePreload"
+    }
+    assert len(module_names) == 2
+    assert all(name.startswith("_infernux_packages.") for name in module_names)
 
 
 def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
@@ -2422,7 +2535,7 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     )
     (runtime / "startup.py").write_text(
         "from pathlib import Path\n"
-        "from foundation import Foundation\n"
+            "from .foundation import Foundation\n"
         "class Startup(Foundation):\n"
         "    def configure(self): return None\n"
         "    def preload(self, context):\n"
@@ -2561,7 +2674,7 @@ def test_manifest_dependency_failure_rolls_back_new_dependencies(tmp_path, monke
         manager.install_package(str(parent_package))
 
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/rollback-child/Child.bin").exists()
+    assert not (project / "Assets/Plugins/Child.bin").exists()
 
 
 def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):

@@ -35,7 +35,6 @@ gradle -p tests/android/input_instrumentation \
     -PinfernuxTargetPackage=com.infernux.bootstrap \
     :app:assembleDebug
 
-adb -s emulator-5554 shell locksettings set-disabled true
 adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
 adb -s emulator-5554 shell wm dismiss-keyguard
 

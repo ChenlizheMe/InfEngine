@@ -29,6 +29,28 @@ def get_project_root() -> Optional[str]:
     """Return the current project root, or ``None`` if not set."""
     ...
 
+def get_project_script_roots(project_root: Optional[str] = ...) -> tuple[str, ...]:
+    """Return the project's Assets and Packages source roots."""
+    ...
+
+def package_script_role(path: str, project_root: Optional[str] = ...) -> str:
+    """Return the canonical role of an installed package script."""
+    ...
+
+def is_project_component_script(path: str, project_root: Optional[str] = ...) -> bool:
+    """Return whether a script belongs to Assets or package Runtime code."""
+    ...
+
+def get_script_module_name(
+    path: Optional[str], project_root: Optional[str] = ...
+) -> Optional[str]:
+    """Return the deterministic module identity for project-owned code."""
+    ...
+
+def get_script_import_paths(path: Optional[str] = ...) -> list[str]:
+    """Return explicit import roots for one project-owned script."""
+    ...
+
 def resolve_script_path(path: Optional[str]) -> Optional[str]:
     """Resolve a possibly-relative script path to an absolute path.
 

@@ -94,9 +94,9 @@ class InxPackage:
         """Export selected sources into a deterministic package-source tree.
 
         Selecting one directory that contains ``InxPackage.json`` treats that
-        directory as the package source root. A single ordinary directory
-        exports its contents directly under the generated plugin reference;
-        multi-selection keeps each selected basename.
+        directory as the package source root. File Manager selections preserve
+        every selected basename; import never invents or removes a content
+        directory layer.
         """
 
         project = resolved_path(project_root)
@@ -438,21 +438,12 @@ class InxPackage:
         sources: Sequence[str], source_root: str
     ) -> list[tuple[str, str]]:
         collected: dict[str, str] = {}
-        unwrap_single_directory = bool(
-            not source_root and len(sources) == 1 and os.path.isdir(sources[0])
-        )
         for source in sources:
             if os.path.isdir(source):
                 # A manifest-backed source owns an explicit package layout.
-                # For an ordinary folder exported from Project view, the
-                # generated reference already supplies the destination folder;
-                # wrapping the selection again would produce
-                # Assets/Plugins/materials/Materials/... style duplication.
-                root = (
-                    source
-                    if unwrap_single_directory
-                    else source_root or os.path.dirname(source)
-                )
+                # File Manager selections keep the directory the user chose;
+                # no generated package-reference folder may alter that layout.
+                root = source_root or os.path.dirname(source)
                 for walk_root, dirs, names in os.walk(source):
                     dirs[:] = sorted(
                         name
@@ -534,8 +525,9 @@ def package_destination(reference: str, logical_path: str) -> str:
     reference = validate_reference(reference)
     logical = _safe_relative(logical_path)
     role = package_role(logical)
-    root = "Packages" if role in {"runtime", "editor", "control"} else "Assets/Plugins"
-    return posixpath.join(root, reference, logical)
+    if role in {"runtime", "editor", "control"}:
+        return posixpath.join("Packages", reference, logical)
+    return posixpath.join("Assets/Plugins", logical)
 
 
 def package_control_root(project_root: str, reference: str) -> str:
@@ -638,7 +630,7 @@ def current_meta_bytes(
 
 
 def _atomic_write(path: str, payload: bytes, project_root: str) -> None:
-    staging = os.path.join(project_root, "Library", "InxPackageStaging")
+    staging = os.path.join(project_root, "Cache", "Plugins", ".transactions")
     os.makedirs(staging, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix="inxpackage-", dir=staging)
     try:

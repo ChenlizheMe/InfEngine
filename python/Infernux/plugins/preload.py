@@ -527,12 +527,6 @@ class PreloadManager:
             os.path.join(
                 self.project_root, "Packages", *str(reference).split("/")
             ),
-            os.path.join(
-                self.project_root,
-                "Assets",
-                "Plugins",
-                *str(reference).split("/"),
-            ),
         )
         return any(is_path_within(path, root, allow_root=False) for root in roots)
 
@@ -798,25 +792,11 @@ def _expression_name(node: ast.AST, aliases: Mapping[str, str]) -> str:
 
 
 def _module_name(path: str, project_root: str) -> str:
-    relative = portable_path(relative_path(path, project_root))
-    parts = relative.split("/")
-    if parts and parts[0] == "Assets":
-        relative = "/".join(parts[1:])
-    elif parts and parts[0] == "Packages":
-        boundary = next(
-            (
-                index
-                for index, part in enumerate(parts)
-                if part in {"Runtime", "Editor"}
-            ),
-            -1,
-        )
-        if boundary >= 0:
-            relative = "/".join(parts[boundary + 1 :])
-    stem = relative.rsplit(".", 1)[0]
-    parts = [part for part in stem.split("/") if part != "__init__"]
-    if parts and all(part.isidentifier() for part in parts):
-        return ".".join(parts)
+    from Infernux.engine.project_context import get_script_module_name
+
+    module_name = get_script_module_name(path, project_root)
+    if module_name:
+        return module_name
     return f"infernux_project_script_{_ensure_script_guid(path, project_root)}"
 
 
@@ -876,6 +856,29 @@ def _is_editor_source(
 def _load_module(
     module_name: str, path: str, project_root: str, package_reference: str
 ) -> types.ModuleType:
+    existing = sys.modules.get(module_name)
+    existing_path = str(getattr(existing, "__file__", "") or "")
+    if (
+        existing is not None
+        and module_name.startswith("_infernux_preload_")
+        and existing_path
+        and not is_path_within(existing_path, project_root, allow_root=False)
+    ):
+        # Only one project is active in an Editor process. A manager created
+        # for a new project must not inherit a loose-script module from the
+        # preceding project merely because the copied asset kept its GUID.
+        sys.modules.pop(module_name, None)
+        existing = None
+        existing_path = ""
+    if existing is not None and (
+        not existing_path or path_key(existing_path) != path_key(path)
+    ):
+        raise ImportError(
+            f"InxPreload module identity '{module_name}' is already owned by "
+            f"{existing_path or type(existing).__name__}"
+        )
+
+    created_parents = _ensure_module_parents(module_name, path)
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load InxPreload candidate: {path}")
@@ -888,8 +891,61 @@ def _load_module(
             exec(code, module.__dict__)
     except BaseException:
         sys.modules.pop(module_name, None)
+        for parent_name in reversed(created_parents):
+            if not any(
+                name.startswith(parent_name + ".")
+                for name in sys.modules
+            ):
+                sys.modules.pop(parent_name, None)
         raise
     return module
+
+
+def _ensure_module_parents(module_name: str, path: str) -> tuple[str, ...]:
+    """Create path-bound namespace parents required by isolated plugin names."""
+
+    parts = module_name.split(".")
+    parent_names = [".".join(parts[:index]) for index in range(1, len(parts))]
+    directory = os.path.dirname(path)
+    if os.path.basename(path) == "__init__.py":
+        directory = os.path.dirname(directory)
+    directories: dict[str, str] = {}
+    for name in reversed(parent_names):
+        directories[name] = resolved_path(directory)
+        directory = os.path.dirname(directory)
+
+    created: list[str] = []
+    for name in parent_names:
+        expected = directories[name]
+        existing = sys.modules.get(name)
+        if existing is not None:
+            search_path = getattr(existing, "__path__", None)
+            search_locations = tuple(str(item) for item in (search_path or ()))
+            if any(path_key(item) == path_key(expected) for item in search_locations):
+                continue
+            spec = getattr(existing, "__spec__", None)
+            if search_path is not None and getattr(spec, "loader", object()) is None:
+                search_path.append(expected)
+                continue
+            existing_path = str(getattr(existing, "__file__", "") or "")
+            if existing_path and is_path_within(existing_path, expected):
+                continue
+            raise ImportError(
+                f"InxPreload package identity '{name}' is already owned by "
+                f"{existing_path or type(existing).__name__}"
+            )
+        package = types.ModuleType(name)
+        package.__package__ = name
+        package.__path__ = [expected]
+        package.__file__ = os.path.join(expected, "__init__.py")
+        package.__spec__ = importlib.util.spec_from_loader(
+            name,
+            loader=None,
+            is_package=True,
+        )
+        sys.modules[name] = package
+        created.append(name)
+    return tuple(created)
 
 
 def _new_project_modules(
@@ -910,15 +966,7 @@ def _new_project_modules(
 def _package_module_names(
     project_root: str, package_reference: str
 ) -> tuple[str, ...]:
-    roots = (
-        os.path.join(project_root, "Packages", *package_reference.split("/")),
-        os.path.join(
-            project_root,
-            "Assets",
-            "Plugins",
-            *package_reference.split("/"),
-        ),
-    )
+    roots = (os.path.join(project_root, "Packages", *package_reference.split("/")),)
     root_keys = tuple(lexical_path_key(root) for root in roots)
     result: list[str] = []
     for name, module in tuple(sys.modules.items()):

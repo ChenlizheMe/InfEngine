@@ -121,8 +121,6 @@ wgpu::TextureFormat ToWebFormat(rhi::PixelFormat format)
         return wgpu::TextureFormat::RG16Float;
     case rhi::PixelFormat::RGBA16SFloat:
         return wgpu::TextureFormat::RGBA16Float;
-    case rhi::PixelFormat::RGBA16UNorm:
-        return wgpu::TextureFormat::RGBA16Unorm;
     case rhi::PixelFormat::R32SFloat:
         return wgpu::TextureFormat::R32Float;
     case rhi::PixelFormat::RG32UInt:
