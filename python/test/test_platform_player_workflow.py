@@ -149,6 +149,20 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     assert "--wait-milliseconds 20000" in driver
 
 
+def test_android_builds_host_modules_before_cross_platform_packaging():
+    workflow = _text()
+    android_job = workflow[workflow.index("  android-player:") :]
+
+    install_host = android_job.index("- name: Install Linux host dependencies")
+    build_host = android_job.index("- name: Build Linux host modules")
+    launch_emulator = android_job.index("ReactiveCircus/android-emulator-runner@")
+    assert install_host < build_host < launch_emulator
+    assert "scripts/setup/install_linux_dependencies.sh" in android_job
+    assert "cmake --preset linux-clang-headless" in android_job
+    assert "cmake --build --preset linux-clang-headless" in android_job
+    assert "out/build/linux-clang-headless" in android_job
+
+
 def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
         encoding="utf-8"
