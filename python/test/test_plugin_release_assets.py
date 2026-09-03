@@ -72,6 +72,7 @@ def _write_source(root: Path, name: str, reference: str, repository: str) -> dic
     return {
         "path": name,
         "repository": repository,
+        "revision": "040/multiplatform_build",
         "subdirectory": f"external/plugins/{name}",
         "category": "Platform",
         "targets": [reference.rsplit("/", 1)[-1]],
@@ -148,6 +149,55 @@ def test_stages_only_repository_owned_packages_without_hashes(tmp_path, monkeypa
     }
     assert "sha" not in json.dumps(document).casefold()
     assert not (output / "infernux.mcp.inxpkg").exists()
+
+
+def test_official_catalog_preserves_explicit_source_revision(tmp_path, monkeypatch):
+    module_path = (
+        Path(__file__).parents[2] / "external/plugins/build_official_plugins.py"
+    )
+    spec = importlib.util.spec_from_file_location("build_official_plugins", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "plugins"
+    source.mkdir()
+    entry = _write_source(
+        source,
+        "linux",
+        "infernux/platform-linux",
+        "https://github.com/ChenlizheMe/Infernux",
+    )
+    catalog = source / "plugins.json"
+    catalog.write_text(
+        json.dumps({"$schema": "infernux.official_plugin_sources", "plugins": [entry]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module.InxPackage,
+        "export_source",
+        lambda *_args, **_kwargs: _Preview(
+            {
+                "reference": "infernux/platform-linux",
+                "name": "Linux",
+                "version": "0.1.0",
+                "engine": ">=0.4,<0.5",
+                "dependencies": [],
+                "pages": [],
+            }
+        ),
+    )
+
+    module.build(source, tmp_path / "output", catalog)
+
+    registry = json.loads(
+        (tmp_path / "output/official-registry.json").read_text(encoding="utf-8")
+    )
+    assert registry["packages"][0]["source"] == {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/Infernux",
+        "subdirectory": "external/plugins/linux",
+        "revision": "040/multiplatform_build",
+    }
 
 
 def test_rejects_package_metadata_that_disagrees_with_source(tmp_path, monkeypatch):

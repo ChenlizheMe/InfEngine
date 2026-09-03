@@ -82,7 +82,8 @@
       "source": {
         "type": "github",
         "location": "https://github.com/ChenlizheMe/Infernux",
-        "subdirectory": "external/plugins/infernux_windows"
+        "subdirectory": "external/plugins/infernux_windows",
+        "revision": "040/multiplatform_build"
       },
       "category": "Platform",
       "targets": [
@@ -119,7 +120,8 @@
       "source": {
         "type": "github",
         "location": "https://github.com/ChenlizheMe/Infernux",
-        "subdirectory": "external/plugins/infernux_linux"
+        "subdirectory": "external/plugins/infernux_linux",
+        "revision": "040/multiplatform_build"
       },
       "category": "Platform",
       "targets": [
@@ -156,7 +158,8 @@
       "source": {
         "type": "github",
         "location": "https://github.com/ChenlizheMe/Infernux",
-        "subdirectory": "external/plugins/infernux_android"
+        "subdirectory": "external/plugins/infernux_android",
+        "revision": "040/multiplatform_build"
       },
       "category": "Platform",
       "targets": [
@@ -200,7 +203,8 @@
       "source": {
         "type": "github",
         "location": "https://github.com/ChenlizheMe/Infernux",
-        "subdirectory": "external/plugins/infernux_web"
+        "subdirectory": "external/plugins/infernux_web",
+        "revision": "040/multiplatform_build"
       },
       "category": "Platform",
       "targets": [

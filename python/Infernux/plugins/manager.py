@@ -1287,6 +1287,12 @@ class PluginManager:
         )
         if not is_path_within(root, checkout, allow_root=True):
             raise ValueError("Git plugin subdirectory escapes the checkout")
+        if not os.path.isdir(root):
+            source_revision = revision or "the repository default branch"
+            raise RuntimeError(
+                f"Git plugin source {location} at {source_revision} does not contain "
+                f"the package directory {subdirectory}"
+            )
         return self._materialize_local(root, descriptor, workspace, progress)
 
     def _materialize_local(

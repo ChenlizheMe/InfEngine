@@ -49,6 +49,7 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         relative = str(source_entry.get("path", "")).strip()
         repository = str(source_entry.get("repository", "")).strip()
         subdirectory = str(source_entry.get("subdirectory", "")).strip().strip("/")
+        revision = str(source_entry.get("revision", "")).strip()
         plugin_source = (source_root / relative).resolve()
         if plugin_source.parent != source_root.resolve() or not plugin_source.is_dir():
             raise RuntimeError(f"Official plugin source is missing or unsafe: {relative}")
@@ -72,6 +73,8 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
             }
             if subdirectory:
                 source["subdirectory"] = subdirectory
+            if revision:
+                source["revision"] = revision
         registry.append(
             {
                 "reference": reference,

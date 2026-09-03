@@ -268,22 +268,12 @@ install(
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 
-if(WIN32)
-    set(INFERNUX_HOST_PLATFORM_PACKAGE
-        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-windows.inxpkg")
-elseif(UNIX AND NOT APPLE)
-    set(INFERNUX_HOST_PLATFORM_PACKAGE
-        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-linux.inxpkg")
-endif()
-if(INFERNUX_HOST_PLATFORM_PACKAGE)
-    install(
-        FILES
-            "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-            "${INFERNUX_HOST_PLATFORM_PACKAGE}"
-        DESTINATION "python/Infernux/resources"
-        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    )
-endif()
+install(
+    FILES
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
+    DESTINATION "python/Infernux/resources"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
 
 if(TARGET InfernuxPlayerHost)
     install(

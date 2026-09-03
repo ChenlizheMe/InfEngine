@@ -11,6 +11,7 @@
     {
       "path": "infernux_windows",
       "repository": "https://github.com/ChenlizheMe/Infernux",
+      "revision": "040/multiplatform_build",
       "subdirectory": "external/plugins/infernux_windows",
       "category": "Platform",
       "targets": ["windows-x64"],
@@ -19,6 +20,7 @@
     {
       "path": "infernux_linux",
       "repository": "https://github.com/ChenlizheMe/Infernux",
+      "revision": "040/multiplatform_build",
       "subdirectory": "external/plugins/infernux_linux",
       "category": "Platform",
       "targets": ["linux-x64"],
@@ -27,6 +29,7 @@
     {
       "path": "infernux_android",
       "repository": "https://github.com/ChenlizheMe/Infernux",
+      "revision": "040/multiplatform_build",
       "subdirectory": "external/plugins/infernux_android",
       "category": "Platform",
       "targets": ["android-arm64", "android-x64-emulator"],
@@ -35,6 +38,7 @@
     {
       "path": "infernux_web",
       "repository": "https://github.com/ChenlizheMe/Infernux",
+      "revision": "040/multiplatform_build",
       "subdirectory": "external/plugins/infernux_web",
       "category": "Platform",
       "targets": ["web-wasm32"],

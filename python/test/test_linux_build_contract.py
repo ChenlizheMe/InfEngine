@@ -128,6 +128,7 @@ def test_wheel_build_requires_cmake_staging_and_a_native_extension() -> None:
 
 def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs() -> None:
     plugins = (ROOT / "external/plugins/CMakeLists.txt").read_text(encoding="utf-8")
+    installer = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
     packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(
         encoding="utf-8"
     )
@@ -140,3 +141,9 @@ def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs
     )[0]
     assert "prebuild_player_runtime" in stage
     assert "infernux_official_plugins" in stage
+    wheel_package_install = installer.split(
+        '"${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"', 1
+    )[1].split("if(TARGET InfernuxPlayerHost)", 1)[0]
+    assert "infernux.mcp.inxpkg" in wheel_package_install
+    assert "infernux.platform-" not in wheel_package_install
+    assert "INFERNUX_HOST_PLATFORM_PACKAGE" not in installer
