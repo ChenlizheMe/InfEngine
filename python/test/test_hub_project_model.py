@@ -175,26 +175,9 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     assert dependency_dir.is_dir()
 
 
-def test_dev_wheel_selection_matches_current_python_tag(tmp_path, monkeypatch):
-    project_model = _load_project_model(monkeypatch)
-    monkeypatch.setattr(project_model, "_engine_root", lambda: str(tmp_path))
-    dist_dir = tmp_path / "dist" / "releases" / "test"
-    dist_dir.mkdir(parents=True)
-    old_wheel = dist_dir / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
-    new_wheel = dist_dir / "infernux-0.1.6-cp313-cp313-win_amd64.whl"
-    old_wheel.write_bytes(b"old")
-    new_wheel.write_bytes(b"new")
-    monkeypatch.setattr(project_model, "_python_cp_tag", lambda _python="": "cp313")
-    monkeypatch.setattr(project_model.sysconfig, "get_platform", lambda: "win-amd64")
-    assert Path(project_model._find_dev_wheel()).name == new_wheel.name
-
-
-def test_dev_project_runtime_uses_selected_python_and_system_site_packages(tmp_path, monkeypatch):
+def test_dev_project_runtime_uses_active_python_and_system_site_packages(tmp_path, monkeypatch):
     project_model = _load_project_model(monkeypatch)
     monkeypatch.setattr(project_model, "is_frozen", lambda: False)
-    source_python = tmp_path / "python.exe"
-    source_python.write_text("", encoding="utf-8")
-    monkeypatch.setattr(project_model, "_select_dev_project_python", lambda: str(source_python))
 
     captured_args: list[list[str]] = []
 
@@ -207,18 +190,13 @@ def test_dev_project_runtime_uses_selected_python_and_system_site_packages(tmp_p
     model._create_project_runtime(str(tmp_path / "project"))
 
     assert captured_args == [
-        [str(source_python), "-m", "venv", "--copies", "--system-site-packages", str(tmp_path / "project" / ".venv")]
+        [project_model.sys.executable, "-m", "venv", "--copies", "--system-site-packages", str(tmp_path / "project" / ".venv")]
     ]
 
 
-def test_dev_project_install_uses_local_wheel_without_dependency_resolution(tmp_path, monkeypatch):
+def test_dev_project_install_validates_inherited_current_environment(tmp_path, monkeypatch):
     project_model = _load_project_model(monkeypatch)
     monkeypatch.setattr(project_model, "is_frozen", lambda: False)
-    monkeypatch.setattr(project_model, "_distribution_files_present", lambda _site_packages, _name: False)
-    monkeypatch.setattr(project_model.ProjectModel, "validate_python_runtime", staticmethod(lambda _python: None))
-    wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
-    wheel_path.write_bytes(b"wheel")
-    monkeypatch.setattr(project_model, "_find_dev_wheel", lambda _python, strict=False: str(wheel_path))
 
     project_dir = tmp_path / "project"
     python_exe = Path(
@@ -227,20 +205,17 @@ def test_dev_project_install_uses_local_wheel_without_dependency_resolution(tmp_
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text("", encoding="utf-8")
 
-    captured_args: list[list[str]] = []
-
-    def fake_run_hidden(args: list[str], *, timeout: int):
-        captured_args.append(args)
-
-    monkeypatch.setattr(project_model, "_run_hidden", fake_run_hidden)
+    validated: list[str] = []
+    monkeypatch.setattr(
+        project_model.ProjectModel,
+        "validate_python_runtime",
+        staticmethod(validated.append),
+    )
 
     model = project_model.ProjectModel(None)
     model._install_infernux_in_runtime(str(project_dir))
 
-    assert len(captured_args) == 1
-    assert captured_args[0][:4] == [str(python_exe), "-m", "pip", "install"]
-    assert "--no-deps" in captured_args[0]
-    assert captured_args[0][-1] == str(wheel_path)
+    assert validated == [str(python_exe)]
 
 
 def test_project_runtime_copy_skips_cache_and_test_artifacts(tmp_path, monkeypatch):

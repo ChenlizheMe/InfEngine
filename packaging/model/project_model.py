@@ -4,8 +4,6 @@ import sys
 import json
 import subprocess
 import shutil
-import glob
-import re
 import zipfile
 import sysconfig
 import uuid
@@ -388,144 +386,6 @@ _NATIVE_IMPORT_SMOKE_TEST = (
 )
 
 
-def _python_cp_tag(python_exe: str = "") -> str:
-    if not python_exe:
-        return f"cp{sys.version_info.major}{sys.version_info.minor}"
-    completed = subprocess.run(
-        [python_exe, "-c", "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')"],
-        timeout=30,
-        **_popen_kwargs(capture_output=True),
-    )
-    tag = (completed.stdout or "").strip()
-    if completed.returncode != 0 or not re.fullmatch(r"cp\d+", tag):
-        details = _summarize_output(completed.stderr or completed.stdout)
-        raise RuntimeError(
-            f"Unable to determine the Python ABI tag for {python_exe}.\n{details}"
-        )
-    return tag
-
-
-def _engine_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-def _iter_cmake_python_cache_entries() -> list[str]:
-    cache_path = os.path.join(_engine_root(), "out", "build", "CMakeCache.txt")
-    if not os.path.isfile(cache_path):
-        return []
-
-    keys = (
-        "Python3_EXECUTABLE",
-        "_Python3_EXECUTABLE",
-        "PYBIND11_PYTHON_EXECUTABLE_LAST",
-    )
-    out: list[str] = []
-    with open(cache_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if "=" not in line:
-                continue
-            key_part, value = line.rstrip("\n").split("=", 1)
-            key = key_part.split(":", 1)[0]
-            if key in keys and value:
-                out.append(os.path.normpath(value.strip()))
-    return out
-
-
-def _iter_dev_project_python_candidates() -> list[str]:
-    candidates: list[str] = []
-
-    override = os.environ.get("INFERNUX_PROJECT_PYTHON", "").strip()
-    if override:
-        candidates.append(os.path.normpath(override))
-
-    candidates.extend(_iter_cmake_python_cache_entries())
-    candidates.append(sys.executable)
-
-    seen: set[str] = set()
-    unique: list[str] = []
-    for candidate in candidates:
-        if not candidate:
-            continue
-        norm = os.path.normcase(os.path.abspath(candidate))
-        if norm in seen:
-            continue
-        seen.add(norm)
-        unique.append(candidate)
-    return unique
-
-
-def _select_dev_project_python() -> str:
-    """Choose the interpreter used to create project .venv in dev mode.
-
-    Prefer the Python that CMake used to build the native wheel.  Launching the
-    Hub from a different Python should not silently create an incompatible
-    project virtual environment.
-    """
-    fallback = sys.executable
-    for candidate in _iter_dev_project_python_candidates():
-        if not os.path.isfile(candidate):
-            continue
-        if _find_dev_wheel(candidate):
-            return candidate
-        if os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(os.path.abspath(sys.executable)):
-            fallback = candidate
-    return fallback
-
-
-def _wheel_tag_parts(wheel_path: str) -> tuple[set[str], set[str], set[str]]:
-    name = os.path.basename(wheel_path or "")
-    if not name.lower().endswith(".whl"):
-        return set(), set(), set()
-    parts = name[:-4].split("-")
-    if len(parts) < 5:
-        return set(), set(), set()
-    return set(parts[-3].split(".")), set(parts[-2].split(".")), set(parts[-1].split("."))
-
-
-def _wheel_matches_python(wheel_path: str, python_tag: str) -> bool:
-    python_tags, abi_tags, platform_tags = _wheel_tag_parts(wheel_path)
-    if not python_tags or not abi_tags or not platform_tags:
-        return False
-
-    major_tag = f"py{python_tag[2]}" if python_tag.startswith("cp") and len(python_tag) >= 3 else "py3"
-    platform_tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")
-    return (
-        (python_tag in python_tags or major_tag in python_tags or "py3" in python_tags)
-        and (python_tag in abi_tags or "abi3" in abi_tags or "none" in abi_tags)
-        and (platform_tag in platform_tags or "any" in platform_tags)
-    )
-
-
-def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
-    """Find the newest compatible wheel produced by the local source tree.
-
-    Only used in dev mode (non-frozen).
-    """
-    engine_root = _engine_root()
-    wheel_dirs = [
-        *glob.glob(os.path.join(engine_root, "out", "build", "*", "python_wheel")),
-        *glob.glob(os.path.join(engine_root, "dist", "releases", "*")),
-    ]
-    wheels = [
-        wheel
-        for wheel_dir in wheel_dirs
-        for wheel in glob.glob(os.path.join(wheel_dir, "infernux-*.whl"))
-    ]
-    if wheels:
-        python_tag = _python_cp_tag(python_exe)
-        compatible = [wheel for wheel in wheels if _wheel_matches_python(wheel, python_tag)]
-        if compatible:
-            compatible.sort(key=os.path.getmtime, reverse=True)
-            return compatible[0]
-        if strict:
-            available = ", ".join(os.path.basename(wheel) for wheel in sorted(wheels))
-            raise RuntimeError(
-                f"No prebuilt Infernux wheel compatible with Python {python_tag} was found in the canonical build or release directories.\n"
-                f"Available wheels: {available}"
-            )
-    return ""
-
-
 def _wheel_install_fingerprint(wheel_path: str) -> str:
     try:
         stat = os.stat(wheel_path)
@@ -847,8 +707,6 @@ class ProjectModel:
         wheel = ""
         if engine_version and self.version_manager is not None:
             wheel = self.version_manager.get_wheel_path(engine_version) or ""
-        if not wheel and not is_frozen():
-            wheel = _find_dev_wheel()
         if wheel and os.path.isfile(wheel):
             with zipfile.ZipFile(wheel) as zf:
                 archive_suffix = f"resources/project_templates/{source_name}"
@@ -928,7 +786,7 @@ class ProjectModel:
         venv_path = os.path.join(project_dir, ".venv")
         if os.path.exists(venv_path):
             _remove_tree(venv_path)
-        source_python = _select_dev_project_python()
+        source_python = sys.executable
         if on_status:
             on_status(f"Creating project virtual environment with {os.path.basename(source_python)}...")
         _run_hidden([source_python, "-m", "venv", "--copies", "--system-site-packages", venv_path], timeout=600)
@@ -941,14 +799,13 @@ class ProjectModel:
         on_status=None,
         validate_current: bool = True,
     ):
-        """Install the Infernux wheel into the project's Python environment.
+        """Provide Infernux to the project's Python environment.
 
         In frozen (packaged Hub) mode, the wheel is installed into the project's
         full Python copy at the project's version-bound .runtime/pythonXY/.
-        In dev mode, the wheel is installed into the classic .venv.
-
-        Source builds are intentionally blocked here so project creation never
-        falls back to a local C++ compile.
+        A source-launched Hub creates its project environment from the active
+        interpreter with system site-packages, so no wheel lookup or install is
+        part of that development workflow.
         """
         project_python = ProjectModel._get_project_python(project_dir)
         if not os.path.isfile(project_python):
@@ -957,25 +814,25 @@ class ProjectModel:
                 "The project runtime may not have been created correctly."
             )
 
-        wheel = ""
-
         if not is_frozen():
-            wheel = _find_dev_wheel(project_python, strict=True)
-        elif engine_version and self.version_manager is not None:
+            if not validate_current:
+                return
+            if on_status:
+                on_status("Validating the current development environment...")
+            ProjectModel.validate_python_runtime(project_python)
+            return
+
+        wheel = ""
+        if engine_version and self.version_manager is not None:
             project_python_version = _project_python_version(project_dir)
             wheel = self.version_manager.get_wheel_path(
                 engine_version, project_python_version
             ) or ""
 
         if not wheel:
-            if is_frozen():
-                raise RuntimeError(
-                    f"No downloaded Infernux wheel was found for version {engine_version or '(unknown)'}.\n"
-                    "Open the Installs page and install that engine version first."
-                )
             raise RuntimeError(
-                "No prebuilt Infernux wheel was found in out/build or dist/releases.\n"
-                "Build a wheel first; project creation will not fall back to a source build."
+                f"No downloaded Infernux wheel was found for version {engine_version or '(unknown)'}.\n"
+                "Open the Installs page and install that engine version first."
             )
 
         target_version = _wheel_version_from_path(wheel)
@@ -1007,7 +864,7 @@ class ProjectModel:
         if distribution_present:
             installed_version = _installed_distribution_version(project_python, "Infernux")
         version_is_current = bool(target_version and installed_version == target_version)
-        if version_is_current and (is_frozen() or wheel_is_current):
+        if version_is_current:
             if not validate_current:
                 return
             try:
@@ -1016,40 +873,15 @@ class ProjectModel:
             except RuntimeError:
                 pass
 
-        if is_frozen():
-            if on_status:
-                on_status("Installing Infernux engine files...")
-            _install_wheel_direct(wheel, site_packages, "Infernux")
-            if on_status:
-                on_status("Validating project runtime...")
-            ProjectModel.validate_python_runtime(project_python)
-            os.makedirs(os.path.dirname(marker_path), exist_ok=True)
-            with open(marker_path, "w", encoding="utf-8", newline="\n") as marker:
-                marker.write(expected_fingerprint)
-            return
-
-        _PIP_FLAGS = [
-            "--no-input",
-            "--disable-pip-version-check",
-            "--prefer-binary",
-            "--only-binary=:all:",
-            "--no-cache-dir",
-            "--no-deps",
-        ]
-
-        pip_args = [project_python, "-m", "pip", "install", *_PIP_FLAGS]
-        pip_args.append("--force-reinstall")
-        pip_args.append(wheel)
-
         if on_status:
-            on_status("Installing Infernux into the project runtime...")
-        _run_hidden(pip_args, timeout=600)
-        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
-        with open(marker_path, "w", encoding="utf-8", newline="\n") as marker:
-            marker.write(expected_fingerprint)
+            on_status("Installing Infernux engine files...")
+        _install_wheel_direct(wheel, site_packages, "Infernux")
         if on_status:
             on_status("Validating project runtime...")
         ProjectModel.validate_python_runtime(project_python)
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(marker_path, "w", encoding="utf-8", newline="\n") as marker:
+            marker.write(expected_fingerprint)
 
     @staticmethod
     def validate_python_runtime(project_python: str) -> None:
