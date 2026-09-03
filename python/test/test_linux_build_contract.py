@@ -45,6 +45,8 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
     for dependency in (
         "clang-format",
         "glslang-tools",
+        "libegl1",
+        "libgl1",
         "lld",
         "llvm",
         "mesa-vulkan-drivers",
@@ -67,6 +69,7 @@ def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
 
     assert "run: scripts/setup/install_linux_dependencies.sh" in linux_job
     assert "sudo apt-get install" not in linux_job
+    assert "QT_QPA_PLATFORM: offscreen" in linux_job
     assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in linux_job
     assert "xvfb-run --auto-servernum python -m pytest python/test" in linux_job
 

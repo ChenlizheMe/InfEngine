@@ -5,7 +5,6 @@ import json
 import subprocess
 import shutil
 import zipfile
-import sysconfig
 import uuid
 
 from hub_utils import is_frozen, merge_child_env_utf8

@@ -17,8 +17,10 @@ sudo apt-get install --yes --no-install-recommends \
     libasound2-dev \
     libdecor-0-dev \
     libdrm-dev \
+    libegl1 \
     libffi-dev \
     libgbm-dev \
+    libgl1 \
     libpipewire-0.3-dev \
     libpulse-dev \
     libudev-dev \
