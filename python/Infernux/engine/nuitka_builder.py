@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -151,6 +152,44 @@ _AUTO_INSTALLABLE_PACKAGES = {
 
 
 _BuildCancelled = BuildCancelled
+
+
+def _windows_ascii_build_alias(build_cache_root: str) -> str:
+    """Create an ASCII-only junction to one project-owned build cache."""
+
+    if sys.platform != "win32" or build_cache_root.isascii():
+        return ""
+
+    os.makedirs(build_cache_root, exist_ok=True)
+    program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    alias_parent = os.path.join(program_data, "Infernux", "BuildLinks")
+    os.makedirs(alias_parent, exist_ok=True)
+    alias = os.path.join(
+        alias_parent,
+        f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex}",
+    )
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", alias, build_cache_root],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 or not os.path.isdir(alias):
+        raise RuntimeError(
+            "Windows game builds require an ASCII compiler path, but the "
+            f"build-cache junction could not be created: {result.stdout.strip()}"
+        )
+    return alias
+
+
+def _remove_windows_build_alias(alias: str) -> None:
+    if alias and os.path.lexists(alias):
+        os.rmdir(alias)
 
 
 def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 1.0) -> None:
@@ -2254,16 +2293,48 @@ print(json.dumps({{
         if cancel_event is not None and cancel_event.is_set():
             raise BuildCancelled()
 
+        alias = _windows_ascii_build_alias(self._build_cache_root)
+        process_build_root = alias or self._build_cache_root
+        try:
+            return self._run_nuitka_process(
+                cmd,
+                on_progress,
+                cancel_event,
+                process_build_root=process_build_root,
+            )
+        finally:
+            _remove_windows_build_alias(alias)
+
+    def _run_nuitka_process(
+        self,
+        cmd: List[str],
+        on_progress: Optional[Callable[[str, float], None]],
+        cancel_event: Optional[threading.Event],
+        *,
+        process_build_root: str,
+    ) -> str:
+        """Execute Nuitka through the compiler-visible build-cache path."""
+
+        process_staging_dir = os.path.join(
+            process_build_root,
+            os.path.relpath(self._staging_dir, self._build_cache_root),
+        )
+        process_nuitka_cache_dir = os.path.join(process_build_root, "Nuitka")
+        process_cmd = [
+            str(argument).replace(self._build_cache_root, process_build_root)
+            for argument in cmd
+        ]
+
         env = os.environ.copy()
 
         # Redirect TEMP / TMP to an ASCII-safe location so MinGW's
         # std::filesystem never encounters non-ASCII characters.
-        safe_tmp = os.path.join(self._staging_dir, "_tmp")
+        safe_tmp = os.path.join(process_staging_dir, "_tmp")
         os.makedirs(safe_tmp, exist_ok=True)
         env["TEMP"] = safe_tmp
         env["TMP"] = safe_tmp
 
-        safe_profile = os.path.join(self._staging_dir, "_profile")
+        safe_profile = os.path.join(process_staging_dir, "_profile")
         safe_local_appdata = os.path.join(safe_profile, "AppData", "Local")
         safe_roaming_appdata = os.path.join(safe_profile, "AppData", "Roaming")
         for path in (safe_profile, safe_local_appdata, safe_roaming_appdata):
@@ -2280,8 +2351,8 @@ print(json.dumps({{
 
         # Use a persistent cache directory so Nuitka can reuse compiled C
         # code across builds — this is the single biggest speed win.
-        os.makedirs(self._nuitka_cache_dir, exist_ok=True)
-        env["NUITKA_CACHE_DIR"] = self._nuitka_cache_dir
+        os.makedirs(process_nuitka_cache_dir, exist_ok=True)
+        env["NUITKA_CACHE_DIR"] = process_nuitka_cache_dir
 
         # If we switch away from the current interpreter to a reusable build
         # venv, preserve the current import roots so Nuitka can still resolve
@@ -2312,14 +2383,14 @@ print(json.dumps({{
             else {"start_new_session": True}
         )
         proc = subprocess.Popen(
-            cmd,
+            process_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=env,
-            cwd=self._staging_dir,
+            cwd=process_staging_dir,
             **process_group_args,
         )
 

@@ -1103,6 +1103,7 @@ def test_successful_build_log_is_not_created_in_project_or_kept_in_output(tmp_pa
 def test_nuitka_cancellation_does_not_wait_for_the_next_stdout_line(tmp_path, monkeypatch):
     monkeypatch.setattr(nuitka_builder_module, "_ensure_windows_msvc_environment", lambda env: env)
     builder = object.__new__(NuitkaBuilder)
+    builder._build_cache_root = str(tmp_path)
     builder._staging_dir = str(tmp_path)
     cancelled = threading.Event()
     cancelled.set()
@@ -1116,6 +1117,22 @@ def test_nuitka_cancellation_does_not_wait_for_the_next_stdout_line(tmp_path, mo
         )
 
     assert time.perf_counter() - started < 2.5
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction contract")
+def test_nuitka_unicode_build_cache_uses_temporary_ascii_junction(tmp_path):
+    cache_root = tmp_path / "项目" / "Cache" / "Build" / "Desktop"
+    alias = nuitka_builder_module._windows_ascii_build_alias(str(cache_root))
+    try:
+        assert alias
+        assert alias.isascii()
+        Path(alias, "probe.txt").write_text("project-owned", encoding="utf-8")
+        assert (cache_root / "probe.txt").read_text(encoding="utf-8") == "project-owned"
+    finally:
+        nuitka_builder_module._remove_windows_build_alias(alias)
+
+    assert not Path(alias).exists()
+    assert cache_root.is_dir()
 
 
 def test_nuitka_build_artifacts_are_scoped_to_the_requested_cache_root(
