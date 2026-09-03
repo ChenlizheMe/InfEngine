@@ -855,7 +855,7 @@ def test_rejected_parent_install_removes_new_plugin_dependencies(tmp_path, monke
     assert not (project / "Assets/Plugins/vendor/parent/Parent.bin").exists()
 
 
-def test_direct_package_uses_project_cache_for_offline_reinstall_and_lock(tmp_path):
+def test_direct_package_uses_hub_library_for_offline_reinstall_and_lock(tmp_path):
     source = _source(tmp_path / "source", "vendor/offline")
     (source / "Data.bin").write_bytes(b"offline payload")
     package = _export(source, tmp_path / "offline.inxpkg")
@@ -863,7 +863,7 @@ def test_direct_package_uses_project_cache_for_offline_reinstall_and_lock(tmp_pa
     manager = PluginManager(str(project))
     first = manager.install_package(str(package), install_dependencies=False)
     record = manager.registry.installed_record("vendor/offline")
-    package_cache = SharedPackageCache(project / "Cache/Plugins")
+    package_cache = SharedPackageCache()
     cache = Path(package_cache.path("vendor/offline", str(record["version"])))
     assert first.loaded is True
     assert cache.is_file()
@@ -890,10 +890,10 @@ def test_direct_package_uses_project_cache_for_offline_reinstall_and_lock(tmp_pa
     ] == package_cache.relative_path("vendor/offline", str(record["version"]))
     assert manager.registry.installed_record("vendor/offline")["source"][
         "cache_scope"
-    ] == "project"
+    ] == "hub"
 
 
-def test_each_project_owns_its_downloaded_package_cache(tmp_path):
+def test_projects_share_one_downloaded_package_in_the_hub_library(tmp_path):
     source = _source(tmp_path / "source", "vendor/shared")
     (source / "Data.bin").write_bytes(b"shared payload")
     package = _export(source, tmp_path / "shared.inxpkg")
@@ -907,14 +907,16 @@ def test_each_project_owns_its_downloaded_package_cache(tmp_path):
 
     first_source = first.registry.installed_record("vendor/shared")["source"]
     second_source = second.registry.installed_record("vendor/shared")["source"]
-    assert first_source["cache_scope"] == "project"
-    assert second_source["cache_scope"] == "project"
+    assert first_source["cache_scope"] == "hub"
+    assert second_source["cache_scope"] == "hub"
     assert first_source["cache_location"] == second_source["cache_location"]
-    assert len(list((first_project / "Cache/Plugins/packages").rglob("*.inxpkg"))) == 1
-    assert len(list((second_project / "Cache/Plugins/packages").rglob("*.inxpkg"))) == 1
+    hub_library = Path(plugin_cache_module.package_cache_root())
+    assert len(list((hub_library / "packages").rglob("*.inxpkg"))) == 1
+    assert not (first_project / "Cache/Plugins/packages").exists()
+    assert not (second_project / "Cache/Plugins/packages").exists()
 
     first.uninstall("vendor/shared")
-    assert Path(first_project / "Cache/Plugins" / first_source["cache_location"]).is_file()
+    assert Path(hub_library / first_source["cache_location"]).is_file()
     assert second.registry.installed_record("vendor/shared") is not None
 
 
@@ -925,7 +927,7 @@ def test_project_cache_cleanup_preserves_registered_reference(tmp_path):
     first_project = _project(tmp_path / "first-project")
     first = PluginManager(str(first_project))
     first.install_package(str(package), install_dependencies=False)
-    cache = SharedPackageCache(first_project / "Cache/Plugins")
+    cache = SharedPackageCache()
     version = str(first.registry.installed_record("vendor/shared-cleanup")["version"])
     cache_path = cache.path("vendor/shared-cleanup", version)
 
@@ -974,15 +976,43 @@ def test_plugin_staging_is_owned_by_shared_cache_and_reaps_dead_processes(
     assert not active.exists()
 
 
-def test_default_plugin_cache_is_owned_by_active_project(tmp_path, monkeypatch):
-    project = tmp_path / "project"
-    monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root",
-        lambda: str(project),
+def test_default_plugin_cache_is_owned_by_hub(tmp_path):
+    assert plugin_cache_module.package_cache_root() == str(
+        (tmp_path / "hub-package-cache").resolve()
     )
 
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Hub data layout")
+def test_windows_default_plugin_library_lives_under_local_hub_data(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
     assert plugin_cache_module.package_cache_root() == str(
-        (project / "Cache/Plugins").resolve()
+        (tmp_path / "local/InfernuxHub/Library/Plugins").resolve()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="XDG Hub data layout")
+def test_linux_default_plugin_library_lives_under_xdg_hub_data(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+
+    assert plugin_cache_module.package_cache_root() == str(
+        (tmp_path / "xdg-data/InfernuxHub/Library/Plugins").resolve()
+    )
+
+
+def test_plugin_manager_separates_hub_packages_from_project_staging(tmp_path):
+    project = _project(tmp_path / "project")
+    cache = PluginManager(str(project))._package_cache()
+
+    assert cache.root == str((tmp_path / "hub-package-cache").resolve())
+    assert cache.staging_root == str(
+        (project / "Cache/Plugins/.staging").resolve()
     )
 
 
@@ -1013,6 +1043,37 @@ def test_download_and_import_are_separate_registry_actions(tmp_path):
     )
     assert installed.reference == "vendor/preloaded"
     assert manager.registry.installed_record("vendor/preloaded") is not None
+
+
+def test_second_project_reuses_downloaded_hub_package_without_source_access(tmp_path):
+    source = _source(tmp_path / "source", "vendor/shared-download")
+    (source / "Data.bin").write_bytes(b"shared download")
+    package = _export(source, tmp_path / "shared-download.inxpkg")
+    archive = dict(_FakeInxPack.archives[str(package.resolve())])
+    first = PluginManager(str(_project(tmp_path / "first")))
+    first.registry.add_package(
+        "vendor/shared-download",
+        source={"type": "local", "location": str(package)},
+        version="1.0.0",
+    )
+    first_result = first.download_reference("vendor/shared-download")
+    cached = Path(first_result["path"])
+    _FakeInxPack.archives[str(cached.resolve())] = archive
+    package.unlink()
+
+    second = PluginManager(str(_project(tmp_path / "second")))
+    second.registry.add_package(
+        "vendor/shared-download",
+        source={"type": "local", "location": str(package)},
+        version="1.0.0",
+    )
+    second_result = second.download_reference("vendor/shared-download")
+
+    assert second_result == {
+        "reference": "vendor/shared-download",
+        "path": str(cached),
+        "cached": True,
+    }
 
 
 def test_github_source_prefers_highest_compatible_protocol_release(
@@ -1392,7 +1453,7 @@ def test_official_release_downloads_to_project_cache_then_imports(
         registry_entry = manager.registry.find("vendor/released-platform")
         assert registry_entry["source"]["acquisition"] == "github-release"
         assert registry_entry["source"]["release_tag"] == "v0.4.0"
-        assert registry_entry["source"]["cache_scope"] == "project"
+        assert registry_entry["source"]["cache_scope"] == "hub"
 
         installed = manager.install_reference(
             "vendor/released-platform",

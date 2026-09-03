@@ -19,19 +19,28 @@ from .package import PACKAGE_EXTENSION
 
 
 _STAGING_NAME = re.compile(r"^[a-z0-9-]+-(\d+)-[a-z0-9_]+$")
+PACKAGE_CACHE_ROOT_ENV = "INFERNUX_PACKAGE_CACHE_ROOT"
 
 
-def package_cache_root(project_root: str | os.PathLike[str] | None = None) -> str:
-    """Return the active project's explicit plugin cache directory."""
+def package_cache_root() -> str:
+    """Return the Hub library shared by every Editor project."""
 
-    root = resolved_path(project_root) if project_root is not None else ""
-    if not root:
-        from Infernux.engine.project_context import get_project_root
-
-        root = resolved_path(get_project_root())
-    if not root:
-        raise RuntimeError("The plugin cache requires an active project")
-    return resolved_path(Path(root) / "Cache" / "Plugins")
+    configured = os.environ.get(PACKAGE_CACHE_ROOT_ENV, "").strip()
+    if configured:
+        return resolved_path(os.path.expandvars(os.path.expanduser(configured)))
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if not local_app_data:
+            raise RuntimeError("The Hub plugin library requires LOCALAPPDATA")
+        data_root = Path(local_app_data)
+    else:
+        xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+        data_root = (
+            Path(xdg_data_home).expanduser()
+            if xdg_data_home
+            else Path.home() / ".local" / "share"
+        )
+    return resolved_path(data_root / "InfernuxHub" / "Library" / "Plugins")
 
 
 def _process_is_alive(pid: int) -> bool:
@@ -62,10 +71,17 @@ def _encoded_segment(value: str, label: str) -> str:
 class SharedPackageCache:
     """Store one package per reference/version without hashing the whole archive."""
 
-    def __init__(self, root: str | os.PathLike[str] | None = None) -> None:
+    def __init__(
+        self,
+        root: str | os.PathLike[str] | None = None,
+        *,
+        staging_root: str | os.PathLike[str] | None = None,
+    ) -> None:
         self.root = resolved_path(root or package_cache_root())
         self.package_root = resolved_path(os.path.join(self.root, "packages"))
-        self.staging_root = resolved_path(os.path.join(self.root, ".staging"))
+        self.staging_root = resolved_path(
+            staging_root or os.path.join(self.root, ".staging")
+        )
 
     def _prune_staging(self) -> None:
         if not os.path.isdir(self.staging_root):
@@ -189,7 +205,7 @@ class SharedPackageCache:
             source = raw.get("source")
             if not isinstance(source, Mapping):
                 continue
-            if str(source.get("cache_scope", "")).casefold() != "project":
+            if str(source.get("cache_scope", "")).casefold() != "hub":
                 continue
             try:
                 locations.add(

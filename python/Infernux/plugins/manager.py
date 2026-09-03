@@ -208,7 +208,9 @@ class PluginManager:
 
     def _package_cache(self) -> SharedPackageCache:
         return SharedPackageCache(
-            os.path.join(self.project_root, "Cache", "Plugins")
+            staging_root=os.path.join(
+                self.project_root, "Cache", "Plugins", ".staging"
+            )
         )
 
     @classmethod
@@ -431,7 +433,7 @@ class PluginManager:
             resolved_source.setdefault("type", "local")
             resolved_source.setdefault("location", package_path)
             resolved_source["cache_location"] = cache_relative
-            resolved_source["cache_scope"] = "project"
+            resolved_source["cache_scope"] = "hub"
             dependencies: list[str] = []
             if install_dependencies:
                 _report_progress(progress, "resolve_dependencies", 0.48)
@@ -619,22 +621,16 @@ class PluginManager:
         if not isinstance(source, Mapping):
             raise ValueError(f"Plugin registry source is invalid: {reference}")
         descriptor = dict(source)
-        cache_location = portable_path(
-            str(descriptor.get("cache_location", ""))
-        ).strip("/")
-        if cache_location:
-            cache_path = resolved_path(
-                os.path.join(self._package_cache().root, *cache_location.split("/"))
+        cache_path = self.cached_reference_path(reference)
+        if cache_path:
+            cached = dict(descriptor)
+            cached["type"] = "local"
+            cached["location"] = cache_path
+            return self.install_source(
+                cached,
+                install_dependencies=install_dependencies,
+                progress=progress,
             )
-            if os.path.isfile(cache_path):
-                cached = dict(descriptor)
-                cached["type"] = "local"
-                cached["location"] = cache_path
-                return self.install_source(
-                    cached,
-                    install_dependencies=install_dependencies,
-                    progress=progress,
-                )
         return self.install_source(
             descriptor,
             install_dependencies=install_dependencies,
@@ -643,18 +639,22 @@ class PluginManager:
 
     def cached_reference_path(self, reference: str) -> str:
         record = self.registry.find(reference)
-        if record is None or not isinstance(record.get("source"), Mapping):
+        if record is None:
             return ""
-        source = record["source"]
-        location = portable_path(str(source.get("cache_location", ""))).strip("/")
-        if not location:
-            return ""
-        candidate = resolved_path(
-            os.path.join(self._package_cache().root, *location.split("/"))
-        )
-        if not os.path.isfile(candidate):
-            return ""
-        return candidate
+        cache = self._package_cache()
+        source = record.get("source")
+        if isinstance(source, Mapping):
+            location = portable_path(
+                str(source.get("cache_location", ""))
+            ).strip("/")
+            if location:
+                candidate = resolved_path(
+                    os.path.join(cache.root, *location.split("/"))
+                )
+                if os.path.isfile(candidate):
+                    return candidate
+        version = str(record.get("version", "")).strip()
+        return cache.resolve(reference, version) if version else ""
 
     def download_reference(
         self,
@@ -663,7 +663,7 @@ class PluginManager:
         force: bool = False,
         progress: _InstallProgress | None = None,
     ) -> dict[str, object]:
-        """Download one registry package into the project's Cache directory."""
+        """Download one registry package into the shared Hub library."""
 
         record = self.registry.find(reference)
         if record is None:
@@ -715,7 +715,7 @@ class PluginManager:
             cached_source = dict(acquired_source)
             cached_source.update(
                 {
-                    "cache_scope": "project",
+                    "cache_scope": "hub",
                     "cache_location": cache.relative_path(actual_reference, version),
                 }
             )

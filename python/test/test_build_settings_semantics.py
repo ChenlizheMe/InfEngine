@@ -752,7 +752,7 @@ def test_plugin_panel_reads_the_current_shared_cache_contract():
     assert cache_queries == ["infernux/platform-web"]
 
 
-def test_plugin_panel_distinguishes_downloadable_from_cached_available():
+def test_plugin_panel_distinguishes_downloadable_downloaded_and_local_available():
     from Infernux.engine.i18n import t
     from Infernux.engine.ui.plugin_panel import PluginPanel
 
@@ -760,8 +760,12 @@ def test_plugin_panel_distinguishes_downloadable_from_cached_available():
         "plugins.downloadable"
     )
     assert PluginPanel._state_visual(None, {"_cached": True})[0] == t(
-        "plugins.available"
+        "plugins.downloaded"
     )
+    assert PluginPanel._state_visual(
+        None,
+        {"_cached": False, "source": {"type": "local"}},
+    )[0] == t("plugins.available")
 
 
 def test_build_settings_balances_child_and_style_stacks_when_body_raises():

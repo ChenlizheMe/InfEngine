@@ -131,6 +131,7 @@ class PluginPanel(EditorPanel):
             t("plugins.scope.all"),
             t("plugins.scope.project"),
             t("plugins.scope.registry"),
+            t("plugins.scope.downloaded"),
         ]
         ctx.set_next_item_width(_metric(ctx, 160.0))
         self._scope_index = ctx.combo("##plugins_scope", self._scope_index, scopes)
@@ -243,6 +244,8 @@ class PluginPanel(EditorPanel):
             if self._scope_index == 1 and not row.get("_installed"):
                 continue
             if self._scope_index == 2 and not row.get("_registry"):
+                continue
+            if self._scope_index == 3 and not row.get("_cached"):
                 continue
             localized_intros = row.get("intros", {})
             intro_values = (
@@ -744,8 +747,9 @@ class PluginPanel(EditorPanel):
             t("plugins.loaded"): 1,
             t("plugins.disabled"): 2,
             t("plugins.installed"): 3,
-            t("plugins.available"): 4,
-            t("plugins.downloadable"): 5,
+            t("plugins.downloaded"): 4,
+            t("plugins.available"): 5,
+            t("plugins.downloadable"): 6,
         }.get(label, 6)
 
     @staticmethod
@@ -759,6 +763,9 @@ class PluginPanel(EditorPanel):
         if row.get("_installed"):
             return t("plugins.installed"), Theme.SUCCESS_TEXT
         if row.get("_cached"):
+            return t("plugins.downloaded"), Theme.SUCCESS_TEXT
+        source = row.get("source")
+        if isinstance(source, Mapping) and str(source.get("type", "")).casefold() == "local":
             return t("plugins.available"), Theme.SUCCESS_TEXT
         return t("plugins.downloadable"), Theme.TEXT_DIM
 
