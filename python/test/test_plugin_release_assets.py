@@ -269,10 +269,22 @@ def test_release_workflow_uses_the_versioned_assets_without_hash_manifest():
 @pytest.mark.parametrize(
     ("source_directory", "reference", "target_ids"),
     [
-        (
+        pytest.param(
             "infernux_windows",
             "infernux/platform-windows",
             ("windows-x64",),
+            marks=pytest.mark.skipif(
+                sys.platform != "win32", reason="Windows exporter requires Windows"
+            ),
+        ),
+        pytest.param(
+            "infernux_linux",
+            "infernux/platform-linux",
+            ("linux-x64",),
+            marks=pytest.mark.skipif(
+                not sys.platform.startswith("linux"),
+                reason="Linux exporter requires Linux",
+            ),
         ),
         (
             "infernux_android",

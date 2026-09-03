@@ -109,7 +109,9 @@ def _run_editor_without_mcp(project: Path, port: int) -> None:
             list(publish_player_asset_catalog(str(project), database)["entries"])
         )
         built = Path(builder.build())
-        executable = built / "NoMCPPlayer.exe"
+        executable = built / (
+            "NoMCPPlayer.exe" if sys.platform == "win32" else "NoMCPPlayer"
+        )
         assert executable.is_file()
         assert not (project / "Packages" / "infernux" / "mcp").exists()
         assert not any(
@@ -167,6 +169,21 @@ def test_full_editor_bootstrap_remains_functional_without_mcp():
     short_root = Path(tempfile.mkdtemp(prefix="inx-no-mcp-"))
     project = short_root / "Project"
     try:
+        resources = short_root / "resources"
+        shutil.copytree(
+            repository / "python" / "Infernux" / "resources",
+            resources,
+            ignore=shutil.ignore_patterns("*.inxpkg"),
+        )
+        (resources / "official_packages" / "default-libraries.json").write_text(
+            json.dumps(
+                {
+                    "$schema": "infernux.default_libraries",
+                    "libraries": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
@@ -174,6 +191,7 @@ def test_full_editor_bootstrap_remains_functional_without_mcp():
         # Deliberately exclude the MCP source checkout. Production may only import
         # it after the package has been installed under the project Packages root.
         environment["PYTHONPATH"] = str(repository / "python")
+        environment["_INFERNUX_PACKAGED_RESOURCE_ROOT"] = str(resources)
         result = subprocess.run(
             [
                 sys.executable,

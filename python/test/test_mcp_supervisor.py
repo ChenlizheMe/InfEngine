@@ -851,7 +851,11 @@ def test_supervisor_player_scene_override_is_limited_to_manifest_scene(tmp_path,
         return _PlayerProcess()
 
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
-    status = supervisor.launch_player(str(executable), start_scene="Assets/racetrack.scene", timeout_seconds=1.0)
+    status = supervisor.launch_player(
+        str(executable),
+        start_scene="Assets/RaceTrack.scene",
+        timeout_seconds=1.0,
+    )
 
     assert status["player_start_scene"] == "Assets/RaceTrack.scene"
     assert captured["env"]["_INFERNUX_PLAYER_START_SCENE"] == "Assets/RaceTrack.scene"

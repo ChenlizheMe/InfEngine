@@ -543,12 +543,13 @@ def test_asset_field_clear_only_mutates_a_nonempty_reference():
     assert cleared == ["assigned"]
 
 
-def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch):
+def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch, tmp_path):
     from Infernux.core.assets import AssetManager
     from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
     from Infernux.engine import project_context
 
-    monkeypatch.setattr(project_context, "_project_root", "C:/Project")
+    project = tmp_path / "Project"
+    monkeypatch.setattr(project_context, "_project_root", str(project))
 
     class Database:
         query_generation = 7
@@ -556,9 +557,9 @@ def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch):
         def __init__(self):
             self.catalog_queries = 0
             self.paths = {
-                "a": "C:/Project/Assets/Art/smoke.png",
-                "b": "C:/Project/Assets/Materials/smoke.mat",
-                "c": "C:/Engine/Resources/default.png",
+                "a": str(project / "Assets" / "Art" / "smoke.png"),
+                "b": str(project / "Assets" / "Materials" / "smoke.mat"),
+                "c": str(tmp_path / "Engine" / "Resources" / "default.png"),
             }
 
         def get_all_asset_paths(self):
@@ -570,41 +571,49 @@ def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch):
     catalog = AssetReferenceCatalog()
 
     assert catalog.items("Texture", "smoke") == (
-        ("smoke.png", "C:/Project/Assets/Art/smoke.png"),
+        ("smoke.png", str(project / "Assets" / "Art" / "smoke.png")),
     )
     assert catalog.items("Material", "smoke") == (
-        ("smoke.mat", "C:/Project/Assets/Materials/smoke.mat"),
+        ("smoke.mat", str(project / "Assets" / "Materials" / "smoke.mat")),
     )
     assert database.catalog_queries == 1
 
     database.query_generation = 8
-    database.paths["d"] = "C:/Project/Assets/Art/cloud.tga"
+    database.paths["d"] = str(project / "Assets" / "Art" / "cloud.tga")
     assert catalog.items("Texture", "cloud") == (
-        ("cloud.tga", "C:/Project/Assets/Art/cloud.tga"),
+        ("cloud.tga", str(project / "Assets" / "Art" / "cloud.tga")),
     )
     assert database.catalog_queries == 2
 
 
-def test_asset_reference_catalog_uses_assets_except_for_visible_shaders(monkeypatch):
+def test_asset_reference_catalog_uses_assets_except_for_visible_shaders(
+    monkeypatch, tmp_path
+):
     from Infernux.core.assets import AssetManager
     from Infernux.engine import project_context
     from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
     from Infernux.engine.ui import inspector_shader_utils
 
+    project = tmp_path / "Project"
+
     class Database:
         query_generation = 1
         paths = {
-            "asset_mat": "C:/Project/Assets/Materials/visible.mat",
-            "library_mat": "C:/Project/Library/Generated/internal.mat",
-            "asset_shader": "C:/Project/Assets/Shaders/custom.vert",
-            "builtin_shader": "C:/Project/Library/Resources/shaders/standard.vert",
-            "hidden_shader": "C:/Project/Library/Resources/shaders/internal.vert",
+            "asset_mat": str(project / "Assets" / "Materials" / "visible.mat"),
+            "library_mat": str(project / "Library" / "Generated" / "internal.mat"),
+            "asset_shader": str(project / "Assets" / "Shaders" / "custom.vert"),
+            "builtin_shader": str(
+                project / "Library" / "Resources" / "shaders" / "standard.vert"
+            ),
+            "hidden_shader": str(
+                project / "Library" / "Resources" / "shaders" / "internal.vert"
+            ),
         }
 
         def get_all_asset_paths(self):
             return tuple(self.paths.values())
 
-    monkeypatch.setattr(project_context, "_project_root", "C:/Project")
+    monkeypatch.setattr(project_context, "_project_root", str(project))
     monkeypatch.setattr(AssetManager, "_asset_database", Database())
     hidden_queries = []
     monkeypatch.setattr(
@@ -616,16 +625,22 @@ def test_asset_reference_catalog_uses_assets_except_for_visible_shaders(monkeypa
     catalog = AssetReferenceCatalog()
 
     assert catalog.items("Material", "") == (
-        ("visible.mat", "C:/Project/Assets/Materials/visible.mat"),
+        ("visible.mat", str(project / "Assets" / "Materials" / "visible.mat")),
     )
     assert catalog.items("Shader.Vertex", "") == (
-        ("custom.vert", "C:/Project/Assets/Shaders/custom.vert"),
-        ("standard.vert", "C:/Project/Library/Resources/shaders/standard.vert"),
+        ("custom.vert", str(project / "Assets" / "Shaders" / "custom.vert")),
+        (
+            "standard.vert",
+            str(project / "Library" / "Resources" / "shaders" / "standard.vert"),
+        ),
     )
     assert len(hidden_queries) == 3
 
     assert catalog.items("Shader.Vertex", "standard") == (
-        ("standard.vert", "C:/Project/Library/Resources/shaders/standard.vert"),
+        (
+            "standard.vert",
+            str(project / "Library" / "Resources" / "shaders" / "standard.vert"),
+        ),
     )
     assert len(hidden_queries) == 3
 

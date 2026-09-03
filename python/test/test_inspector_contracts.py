@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -939,18 +940,21 @@ def test_scene_reference_fields_use_hierarchy_ping_contract(monkeypatch):
     assert pinged == [41, 52]
 
 
-def test_builtin_asset_reference_field_records_native_property(monkeypatch):
+def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_path):
     import Infernux.engine.ui._inspector_references as module
     from Infernux.components.fields import FieldType
     from Infernux.core.asset_ref import PhysicMaterialRef
     from Infernux.core.assets import AssetManager
+    from Infernux.engine import project_context
 
-    material_path = "C:/project/Assets/Bouncy.physicMaterial"
+    project_root = tmp_path / "project"
+    material_path = str(project_root / "Assets" / "Bouncy.physicMaterial")
+    monkeypatch.setattr(project_context, "_project_root", str(project_root))
 
     class _AssetDatabase:
         @staticmethod
         def get_guid_from_path(path):
-            return "bouncy-guid" if path.replace("\\", "/") == material_path else ""
+            return "bouncy-guid" if Path(path) == Path(material_path) else ""
 
         @staticmethod
         def get_path_from_guid(guid):
@@ -983,7 +987,9 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch):
             builtin_attr="physic_material",
         )
         transaction = captured["transaction"]
-        assert transaction.commit(material_path).value == "applied"
+        errors = []
+        transaction.on_rejected = errors.append
+        assert transaction.commit(material_path).value == "applied", errors
 
         assert isinstance(component.physic_material, PhysicMaterialRef)
         assert component.physic_material.guid == "bouncy-guid"

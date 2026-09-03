@@ -20,3 +20,4 @@ PySide6>=6.5.0
 
 # Development / Testing
 pytest>=7.0.0
+-r external/plugins/infernux_mcp/requirements.txt

@@ -78,6 +78,15 @@ def vm(tmp_path, monkeypatch):
     return manager
 
 
+@pytest.fixture(autouse=True)
+def _windows_wheel_fixtures(monkeypatch):
+    monkeypatch.setattr(
+        vm_mod,
+        "supported_wheel_platforms",
+        lambda: frozenset({"win_amd64"}),
+    )
+
+
 class TestDownload:
     def test_successful_download_is_valid_wheel(self, vm, monkeypatch):
         payload = _make_wheel_bytes()

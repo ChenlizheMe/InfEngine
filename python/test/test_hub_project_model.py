@@ -44,8 +44,8 @@ def test_vscode_workspace_uses_current_pyright_interpreter_settings(
     pyright = json.loads(
         (project_dir / "pyrightconfig.json").read_text(encoding="utf-8")
     )
-    assert settings["python.defaultInterpreterPath"].endswith(
-        ".venv/Scripts/python.exe"
+    assert settings["python.defaultInterpreterPath"] == (
+        project_model.ProjectModel._vscode_python_path(str(project_dir))
     )
     assert "python.pythonPath" not in settings
     assert pyright["venvPath"] == "."
@@ -81,9 +81,15 @@ def test_frozen_project_runtime_installs_infernux_by_extracting_wheel(tmp_path, 
     project_dir = tmp_path / "project"
     runtime_dir = project_dir / ".runtime" / "python312"
     runtime_dir.mkdir(parents=True)
-    site_packages = runtime_dir / "Lib" / "site-packages"
+    project_python = Path(
+        project_model.ProjectModel._get_project_python(str(project_dir))
+    )
+    site_packages = Path(
+        project_model.ProjectModel._get_site_packages(str(project_dir))
+    )
     (site_packages / "numpy").mkdir(parents=True)
-    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    project_python.parent.mkdir(parents=True, exist_ok=True)
+    project_python.write_text("", encoding="utf-8")
 
     captured_args: list[list[str]] = []
 
@@ -113,9 +119,15 @@ def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_vali
     project_dir = tmp_path / "project"
     runtime_dir = project_dir / ".runtime" / "python312"
     runtime_dir.mkdir(parents=True)
-    site_packages = runtime_dir / "Lib" / "site-packages"
+    project_python = Path(
+        project_model.ProjectModel._get_project_python(str(project_dir))
+    )
+    site_packages = Path(
+        project_model.ProjectModel._get_site_packages(str(project_dir))
+    )
     (site_packages / "infernux-0.1.6.dist-info").mkdir(parents=True)
-    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    project_python.parent.mkdir(parents=True, exist_ok=True)
+    project_python.write_text("", encoding="utf-8")
 
     def fail_run_hidden(_args: list[str], *, timeout: int):
         raise AssertionError("pip should not run for a valid matching runtime")
@@ -136,7 +148,13 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     _write_infernux_wheel(wheel_path)
     project_dir = tmp_path / "project"
     runtime_dir = project_dir / ".runtime" / "python312"
-    site_packages = runtime_dir / "Lib" / "site-packages"
+    runtime_dir.mkdir(parents=True)
+    project_python = Path(
+        project_model.ProjectModel._get_project_python(str(project_dir))
+    )
+    site_packages = Path(
+        project_model.ProjectModel._get_site_packages(str(project_dir))
+    )
     old_package = site_packages / "Infernux"
     old_dist_info = site_packages / "infernux-0.1.5.dist-info"
     dependency_dir = site_packages / "numba"
@@ -144,7 +162,8 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     old_dist_info.mkdir()
     dependency_dir.mkdir()
     (old_package / "old.py").write_text("old = True\n", encoding="utf-8")
-    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    project_python.parent.mkdir(parents=True, exist_ok=True)
+    project_python.write_text("", encoding="utf-8")
 
     model = project_model.ProjectModel(None, version_manager=_FakeVersionManager(str(wheel_path)))
     model._install_infernux_in_runtime(str(project_dir), "0.1.6")
@@ -202,7 +221,9 @@ def test_dev_project_install_uses_local_wheel_without_dependency_resolution(tmp_
     monkeypatch.setattr(project_model, "_find_dev_wheel", lambda _python, strict=False: str(wheel_path))
 
     project_dir = tmp_path / "project"
-    python_exe = project_dir / ".venv" / "Scripts" / "python.exe"
+    python_exe = Path(
+        project_model.ProjectModel._get_project_python(str(project_dir))
+    )
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text("", encoding="utf-8")
 

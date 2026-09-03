@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 
 from Infernux.engine.interaction import (
     BUILD_SETTINGS_DEFAULTS,
@@ -364,7 +365,7 @@ def test_project_settings_async_persistence_owns_saved_revision(tmp_path):
         submitter.complete_all()
         assert registry.process_pending_saves() == 1
         assert not document.is_dirty
-        assert {path.rsplit("\\", 1)[-1] for path, _, _ in submitter.calls} == {
+        assert {Path(path).name for path, _, _ in submitter.calls} == {
             "BuildSettings.json",
             "TagLayerSettings.json",
             "PhysicsSettings.json",

@@ -449,7 +449,8 @@ def build_audit(
             ],
         },
         "source_state": {
-            "branch": _git(repository, "branch", "--show-current").strip(),
+            "branch": _git(repository, "branch", "--show-current").strip()
+            or "detached",
             "commit": _git(repository, "rev-parse", "HEAD").strip(),
             "commit_time": _git(repository, "show", "-s", "--format=%cI", "HEAD").strip(),
             "dirty": bool(status.strip()),
