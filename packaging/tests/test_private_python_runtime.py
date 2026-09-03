@@ -80,6 +80,30 @@ def test_python_312_runtime_remains_addressable() -> None:
     assert artifact.sha256 == "d731ce7dddcfad4a9521aac48626ca06326003fe4771a366e0fce6eb58709451"
 
 
+@pytest.mark.parametrize(
+    ("platform_name", "library_directory", "library_name"),
+    (
+        ("win32", "libs", "python313.lib"),
+        ("linux", "lib", "libpython3.13.so.1.0"),
+        ("darwin", "lib", "libpython3.13.dylib"),
+    ),
+)
+def test_staged_runtime_dev_support_uses_the_target_platform_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform_name: str,
+    library_directory: str,
+    library_name: str,
+) -> None:
+    monkeypatch.setattr(stage_bundled_python_runtime.sys, "platform", platform_name)
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "Python.h").write_bytes(b"")
+    (tmp_path / library_directory).mkdir()
+    (tmp_path / library_directory / library_name).write_bytes(b"")
+
+    assert stage_bundled_python_runtime._has_dev_support(str(tmp_path))
+
+
 def test_runtime_archive_is_extracted_into_an_owned_private_root(tmp_path: Path) -> None:
     archive = tmp_path / "runtime.tar.gz"
     destination = tmp_path / "hub-runtime" / "python313"
