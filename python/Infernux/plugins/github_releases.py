@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tarfile
 import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -20,13 +22,19 @@ from .package import InxPackage, PACKAGE_EXTENSION, validate_reference
 RELEASE_MANIFEST_NAME = "infernux-plugin-release.json"
 RELEASE_MANIFEST_SCHEMA = "infernux.plugin_release"
 _CHUNK_BYTES = 1024 * 1024
-_Progress = Callable[[str, float], None]
+_Progress = Callable[[str, float, str], None]
 
 
 @dataclass(frozen=True, slots=True)
 class GitHubReleasePackage:
     path: str
     source: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubSourceSnapshot:
+    root: str
+    commit: str
 
 
 def release_manifest_name(reference: str = "") -> str:
@@ -159,13 +167,144 @@ def _download_asset(
                 received += len(chunk)
                 fraction = min(1.0, received / total) if total else 0.0
                 if progress is not None:
-                    progress("download_package", 0.08 + 0.22 * fraction)
+                    progress(
+                        "download_package",
+                        0.08 + 0.22 * fraction,
+                        _download_size_text(received, total),
+                    )
         os.replace(partial, destination)
     finally:
         try:
             os.remove(partial)
         except FileNotFoundError:
             pass
+
+
+def _download_size_text(received: int, total: int) -> str:
+    def size(value: int) -> str:
+        amount = float(value)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if amount < 1024.0 or unit == "GiB":
+                return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+            amount /= 1024.0
+        raise AssertionError("unreachable")
+
+    return f"{size(received)} / {size(total)}" if total else size(received)
+
+
+def _download_file(
+    url: str,
+    destination: str,
+    *,
+    progress: _Progress | None,
+    start: float,
+    end: float,
+) -> None:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": f"Infernux/{ENGINE_VERSION}"},
+    )
+    partial = destination + f".{uuid.uuid4().hex}.part"
+    try:
+        with urllib.request.urlopen(request) as response, open(partial, "wb") as stream:
+            total = int(response.headers.get("Content-Length", "0") or 0)
+            received = 0
+            while True:
+                chunk = response.read(_CHUNK_BYTES)
+                if not chunk:
+                    break
+                stream.write(chunk)
+                received += len(chunk)
+                fraction = min(1.0, received / total) if total else 0.0
+                if progress is not None:
+                    progress(
+                        "download_source",
+                        start + (end - start) * fraction,
+                        _download_size_text(received, total),
+                    )
+        os.replace(partial, destination)
+    finally:
+        try:
+            os.remove(partial)
+        except FileNotFoundError:
+            pass
+
+
+def download_github_source(
+    location: str,
+    destination_root: str,
+    *,
+    revision: str = "",
+    subdirectory: str = "",
+    progress: _Progress | None = None,
+) -> GitHubSourceSnapshot:
+    """Download one exact GitHub source snapshot after Release resolution fails."""
+
+    owner, repository = _repository_coordinates(location)
+    requested_revision = str(revision).strip() or "HEAD"
+    commit_url = (
+        f"https://api.github.com/repos/{owner}/{repository}/commits/"
+        f"{quote(requested_revision, safe='')}"
+    )
+    commit_payload = _request_bytes(commit_url, accept="application/vnd.github+json")
+    try:
+        commit_document = json.loads(commit_payload.decode("utf-8"))
+        commit = str(commit_document["sha"]).casefold()
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError("GitHub source revision response is invalid") from exc
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise RuntimeError("GitHub source revision did not resolve to a commit SHA")
+
+    destination = Path(destination_root)
+    destination.mkdir(parents=True, exist_ok=True)
+    archive_path = str(destination / "source.tar.gz")
+    _download_file(
+        f"https://codeload.github.com/{owner}/{repository}/tar.gz/{commit}",
+        archive_path,
+        progress=progress,
+        start=0.08,
+        end=0.24,
+    )
+
+    checkout = destination / "checkout"
+    checkout.mkdir(parents=False, exist_ok=False)
+    selected = tuple(part for part in str(subdirectory).replace("\\", "/").strip("/").split("/") if part)
+    extracted = 0
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive:
+            parts = tuple(part for part in Path(member.name).parts if part not in {"", "."})
+            if len(parts) < 2 or any(part == ".." for part in parts):
+                continue
+            relative_parts = parts[1:]
+            if selected:
+                if relative_parts[: len(selected)] != selected:
+                    continue
+                relative_parts = relative_parts[len(selected) :]
+            if not relative_parts:
+                continue
+            target = checkout.joinpath(*relative_parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise RuntimeError(
+                    f"GitHub source snapshot contains an unsupported entry: {member.name}"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise RuntimeError(f"GitHub source snapshot entry is unreadable: {member.name}")
+            with stream, target.open("wb") as output:
+                shutil.copyfileobj(stream, output, length=_CHUNK_BYTES)
+            os.chmod(target, member.mode & 0o777)
+            extracted += 1
+    os.remove(archive_path)
+    if not extracted:
+        suffix = f"/{'/'.join(selected)}" if selected else ""
+        raise RuntimeError(f"GitHub source snapshot contains no files at {repository}{suffix}")
+    if progress is not None:
+        progress("read_repository", 0.28, f"{extracted} files")
+    return GitHubSourceSnapshot(str(checkout), commit)
 
 
 def resolve_github_release(
@@ -282,7 +421,9 @@ def resolve_github_release(
 
 
 __all__ = [
+    "download_github_source",
     "GitHubReleasePackage",
+    "GitHubSourceSnapshot",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_MANIFEST_SCHEMA",
     "release_manifest_name",

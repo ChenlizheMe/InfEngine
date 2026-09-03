@@ -745,6 +745,7 @@ class PluginPanel(EditorPanel):
             t("plugins.disabled"): 2,
             t("plugins.installed"): 3,
             t("plugins.available"): 4,
+            t("plugins.downloadable"): 5,
         }.get(label, 6)
 
     @staticmethod
@@ -757,7 +758,9 @@ class PluginPanel(EditorPanel):
             return t("plugins.loaded"), Theme.SUCCESS_TEXT
         if row.get("_installed"):
             return t("plugins.installed"), Theme.SUCCESS_TEXT
-        return t("plugins.available"), Theme.TEXT_DIM
+        if row.get("_cached"):
+            return t("plugins.available"), Theme.SUCCESS_TEXT
+        return t("plugins.downloadable"), Theme.TEXT_DIM
 
     def _begin_reload(self, manager: PluginManager, references: tuple[str, ...]) -> None:
         if not references:
@@ -809,6 +812,11 @@ class PluginPanel(EditorPanel):
                 return
             reference = str(getattr(result, "reference", ""))
             if reference:
+                try:
+                    result = manager.finalize_background_install(reference)
+                except Exception as exc:
+                    self._message = f"{type(exc).__name__}: {exc}"
+                    return
                 self._selected_reference = reference
             self._message = t("plugins.action_ok").format(
                 action=action,

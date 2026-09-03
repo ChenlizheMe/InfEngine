@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import subprocess
@@ -59,7 +60,8 @@ from .registry import PluginRegistry
 
 
 _URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
-_InstallProgress = Callable[[str, float], None]
+_InstallProgress = Callable[[str, float, str], None]
+_GIT_PROGRESS_PERCENT = re.compile(r"(?<!\d)(\d{1,3})%(?!\d)")
 _SOURCE_DESCRIPTOR_FIELDS = frozenset(
     {
         "type",
@@ -86,9 +88,14 @@ def _report_progress(
     callback: _InstallProgress | None,
     stage: str,
     progress: float,
+    detail: str = "",
 ) -> None:
     if callback is not None:
-        callback(str(stage), max(0.0, min(1.0, float(progress))))
+        callback(
+            str(stage),
+            max(0.0, min(1.0, float(progress))),
+            str(detail or ""),
+        )
 
 
 def _scaled_progress(
@@ -99,7 +106,11 @@ def _scaled_progress(
     if callback is None:
         return None
     span = float(end) - float(start)
-    return lambda stage, value: callback(stage, float(start) + span * float(value))
+    return lambda stage, value, detail="": callback(
+        stage,
+        float(start) + span * float(value),
+        detail,
+    )
 
 
 class PackageConflictError(RuntimeError):
@@ -193,6 +204,12 @@ class PluginManager:
         self.states: dict[str, PluginState] = {}
         self._resource_manager = None
         self._installing: set[str] = set()
+        self._deferred_catalog_changes: set[str] = set()
+
+    def _package_cache(self) -> SharedPackageCache:
+        return SharedPackageCache(
+            os.path.join(self.project_root, "Cache", "Plugins")
+        )
 
     @classmethod
     def instance(cls) -> "PluginManager | None":
@@ -414,7 +431,7 @@ class PluginManager:
             resolved_source.setdefault("type", "local")
             resolved_source.setdefault("location", package_path)
             resolved_source["cache_location"] = cache_relative
-            resolved_source["cache_scope"] = "hub"
+            resolved_source["cache_scope"] = "project"
             dependencies: list[str] = []
             if install_dependencies:
                 _report_progress(progress, "resolve_dependencies", 0.48)
@@ -504,10 +521,16 @@ class PluginManager:
                     self.registry.save(registry_before)
                 self._rollback_pip_effect(pip_effect)
                 raise
-            _report_progress(progress, "refresh_assets", 0.90)
-            self._refresh_editor_assets()
-            _report_progress(progress, "preload_plugin", 0.95)
-            state = self.reload(reference)
+            if threading.current_thread() is threading.main_thread():
+                _report_progress(progress, "refresh_assets", 0.90)
+                self._refresh_editor_assets()
+                _report_progress(progress, "preload_plugin", 0.95)
+                state = self.reload(reference)
+            else:
+                state = PluginState(
+                    reference=reference,
+                    root=package_control_root(self.project_root, reference),
+                )
             _report_progress(progress, "complete", 1.0)
             return state
         except BaseException as install_error:
@@ -600,17 +623,9 @@ class PluginManager:
             str(descriptor.get("cache_location", ""))
         ).strip("/")
         if cache_location:
-            if str(descriptor.get("cache_scope", "")).casefold() == "hub":
-                cache_path = resolved_path(
-                    os.path.join(
-                        SharedPackageCache().root,
-                        *cache_location.split("/"),
-                    )
-                )
-            else:
-                cache_path = resolved_path(
-                    os.path.join(self.project_root, *cache_location.split("/"))
-                )
+            cache_path = resolved_path(
+                os.path.join(self._package_cache().root, *cache_location.split("/"))
+            )
             if os.path.isfile(cache_path):
                 cached = dict(descriptor)
                 cached["type"] = "local"
@@ -634,14 +649,9 @@ class PluginManager:
         location = portable_path(str(source.get("cache_location", ""))).strip("/")
         if not location:
             return ""
-        if str(source.get("cache_scope", "")).casefold() == "hub":
-            candidate = resolved_path(
-                os.path.join(SharedPackageCache().root, *location.split("/"))
-            )
-        else:
-            candidate = resolved_path(
-                os.path.join(self.project_root, *location.split("/"))
-            )
+        candidate = resolved_path(
+            os.path.join(self._package_cache().root, *location.split("/"))
+        )
         if not os.path.isfile(candidate):
             return ""
         return candidate
@@ -653,7 +663,7 @@ class PluginManager:
         force: bool = False,
         progress: _InstallProgress | None = None,
     ) -> dict[str, object]:
-        """Download one registry package into the shared Hub cache only."""
+        """Download one registry package into the project's Cache directory."""
 
         record = self.registry.find(reference)
         if record is None:
@@ -672,7 +682,7 @@ class PluginManager:
                 if key not in {"cache_location", "cache_scope"}
             }
         )
-        with tempfile.TemporaryDirectory(prefix="infernux-plugin-download-") as workspace:
+        with self._package_cache().workspace("download") as workspace:
             package_path, acquired_source = self._materialize_source(
                 descriptor,
                 workspace,
@@ -696,7 +706,7 @@ class PluginManager:
                     f"is {ENGINE_VERSION}"
                 )
             version = str(preview.metadata.get("version", ""))
-            cache = SharedPackageCache()
+            cache = self._package_cache()
             destination = cache.store(
                 package_path,
                 reference=actual_reference,
@@ -705,7 +715,7 @@ class PluginManager:
             cached_source = dict(acquired_source)
             cached_source.update(
                 {
-                    "cache_scope": "hub",
+                    "cache_scope": "project",
                     "cache_location": cache.relative_path(actual_reference, version),
                 }
             )
@@ -739,7 +749,7 @@ class PluginManager:
         _report_progress(progress, "resolve_source", 0.04)
         descriptor = self._source_descriptor(source)
         descriptor.update(dict(source) if isinstance(source, Mapping) else {})
-        with tempfile.TemporaryDirectory(prefix="infernux-plugin-source-") as workspace:
+        with self._package_cache().workspace("source") as workspace:
             package_path, acquired_source = self._materialize_source(
                 descriptor,
                 workspace,
@@ -809,6 +819,18 @@ class PluginManager:
             "command": command,
             "output": result.stdout[-4000:],
         }
+
+    def finalize_background_install(self, reference: str) -> PluginState:
+        """Publish worker-written plugin assets and preload them on the editor thread."""
+
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("Plugin installation must be finalized on the editor thread")
+        normalized = validate_reference(reference)
+        self._refresh_editor_assets()
+        self.preloads.catch_up()
+        self._deferred_catalog_changes.clear()
+        self._rebuild_states()
+        return self.states[normalized.casefold()]
 
     def _reconcile_python_requirements_for_startup(self) -> tuple[str, ...]:
         """Restore enabled plugin requirements before any plugin preload runs.
@@ -1237,8 +1259,12 @@ class PluginManager:
             else:
                 _download_url_package(location, target, progress=progress)
             return target, descriptor
+        revision = str(descriptor.get("revision", "")).strip()
         if source_type == "github":
-            from .github_releases import resolve_github_release
+            from .github_releases import (
+                download_github_source,
+                resolve_github_release,
+            )
 
             _report_progress(progress, "resolve_releases", 0.06)
             released = resolve_github_release(
@@ -1259,14 +1285,47 @@ class PluginManager:
                 released_source["acquisition"] = "github-release"
                 return released.path, released_source
 
+        subdirectory = portable_path(
+            str(descriptor.get("subdirectory", ""))
+        ).strip("/")
+        if source_type == "github":
+            _report_progress(progress, "download_source", 0.08)
+            snapshot = download_github_source(
+                location,
+                workspace,
+                revision=revision,
+                subdirectory=subdirectory,
+                progress=progress,
+            )
+            descriptor["commit"] = snapshot.commit
+            descriptor["source_snapshot"] = True
+            return self._materialize_local(
+                snapshot.root,
+                descriptor,
+                workspace,
+                progress,
+            )
+
         checkout = os.path.join(workspace, "checkout")
-        command = ["git", "clone", "--depth", "1"]
-        revision = str(descriptor.get("revision", "")).strip()
+        command = ["git", "clone", "--depth", "1", "--progress"]
+        if subdirectory:
+            command.extend(["--filter=blob:none", "--sparse"])
         if revision:
             command.extend(["--branch", revision])
         command.extend([location, checkout])
         _report_progress(progress, "clone_repository", 0.08)
-        self._run_process(command)
+        self._run_process_with_progress(
+            command,
+            stage="clone_repository",
+            progress=progress,
+            start=0.08,
+            end=0.24,
+        )
+        if subdirectory:
+            self._run_process(
+                ["git", "sparse-checkout", "set", subdirectory],
+                cwd=checkout,
+            )
         commit = self._run_process(
             ["git", "rev-parse", "HEAD"], cwd=checkout
         ).stdout.strip()
@@ -1277,9 +1336,6 @@ class PluginManager:
         descriptor["commit"] = commit.casefold()
         descriptor["source_snapshot"] = True
         _report_progress(progress, "read_repository", 0.28)
-        subdirectory = portable_path(
-            str(descriptor.get("subdirectory", ""))
-        ).strip("/")
         root = (
             resolved_path(os.path.join(checkout, *subdirectory.split("/")))
             if subdirectory
@@ -1359,7 +1415,7 @@ class PluginManager:
                 continue
             nested = self._nested_requirement(preview, requirement_name, stripped)
             if nested is not None:
-                with tempfile.TemporaryDirectory(prefix="infernux-nested-package-") as workspace:
+                with self._package_cache().workspace("nested") as workspace:
                     path = os.path.join(workspace, "nested.inxpkg")
                     Path(path).write_bytes(nested)
                     state = self.install_package(path, progress=progress)
@@ -1614,6 +1670,9 @@ class PluginManager:
     def _on_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         if not str(file_path).lower().endswith(".py"):
             return
+        if self._installing:
+            self._deferred_catalog_changes.add(resolved_path(file_path))
+            return
         self.preloads.reload_path(file_path)
         self._rebuild_states()
 
@@ -1676,7 +1735,7 @@ class PluginManager:
         reference: str,
         version: str,
     ) -> tuple[str, str]:
-        cache = SharedPackageCache()
+        cache = self._package_cache()
         destination = cache.store(
             package_path,
             reference=reference,
@@ -1735,6 +1794,49 @@ class PluginManager:
                 f"Command failed ({result.returncode}): {detail[-4000:]}"
             )
         return result
+
+    def _run_process_with_progress(
+        self,
+        command: list[str],
+        *,
+        stage: str,
+        progress: _InstallProgress | None,
+        start: float,
+        end: float,
+        cwd: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if progress is None:
+            return self._run_process(command, cwd=cwd)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        output: list[str] = []
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            output.append(line)
+            matches = _GIT_PROGRESS_PERCENT.findall(line)
+            fraction = int(matches[-1]) / 100.0 if matches else 0.0
+            _report_progress(
+                progress,
+                stage,
+                start + (end - start) * fraction,
+                line,
+            )
+        return_code = process.wait()
+        combined = "\n".join(output)
+        if return_code:
+            raise RuntimeError(f"Command failed ({return_code}): {combined[-4000:]}")
+        return subprocess.CompletedProcess(command, return_code, combined, "")
 
 
 class _InstallTransaction:
@@ -1829,6 +1931,7 @@ def _download_url_package(
                         progress,
                         "download_package",
                         0.08 + 0.22 * fraction,
+                        _download_size_text(received, total),
                     )
         os.replace(partial, destination)
     finally:
@@ -1836,6 +1939,18 @@ def _download_url_package(
             os.remove(partial)
         except FileNotFoundError:
             pass
+
+
+def _download_size_text(received: int, total: int) -> str:
+    def size(value: int) -> str:
+        amount = float(value)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if amount < 1024.0 or unit == "GiB":
+                return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+            amount /= 1024.0
+        raise AssertionError("unreachable")
+
+    return f"{size(received)} / {size(total)}" if total else size(received)
 
 
 def _pip_requirement_targets(

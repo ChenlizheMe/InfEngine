@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import threading
+from queue import Empty, SimpleQueue
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -15,15 +17,20 @@ from .editor_modal import begin_editor_modal, end_editor_modal
 @dataclass(slots=True)
 class _PluginInstallTransaction:
     label: str
-    work: Callable[[Callable[[str, float], None]], object]
+    work: Callable[[Callable[[str, float, str], None]], object]
     complete: Callable[[bool, object | None, str], None]
     phase: str = "opening"
     stage: str = "preparing"
     progress: float = 0.02
+    detail: str = ""
     presented_phase: str = ""
     result: object | None = None
     history: list[str] = field(default_factory=list)
     completed_at: float = 0.0
+    events: SimpleQueue = field(default_factory=SimpleQueue)
+    worker: threading.Thread | None = None
+    worker_done: threading.Event = field(default_factory=threading.Event)
+    worker_error: BaseException | None = None
 
 
 class PluginInstallProgressService:
@@ -69,7 +76,7 @@ class PluginInstallProgressService:
         self,
         *,
         label: str,
-        work: Callable[[Callable[[str, float], None]], object],
+        work: Callable[[Callable[[str, float, str], None]], object],
         complete: Callable[[bool, object | None, str], None],
     ) -> bool:
         if self._transaction is not None:
@@ -87,18 +94,48 @@ class PluginInstallProgressService:
             return False
         return True
 
-    def _report(self, stage: str, progress: float) -> None:
-        transaction = self._transaction
-        if transaction is None:
-            return
+    @staticmethod
+    def _apply_report(
+        transaction: _PluginInstallTransaction,
+        stage: str,
+        progress: float,
+        detail: str,
+    ) -> None:
         key = f"plugins.install_progress.{stage}"
         message = t(key)
         if message == key:
             message = str(stage).replace("_", " ")
         transaction.stage = str(stage)
         transaction.progress = max(0.02, min(1.0, float(progress)))
+        transaction.detail = str(detail or "").strip()
         if not transaction.history or transaction.history[-1] != message:
             transaction.history.append(message)
+
+    @staticmethod
+    def _run_worker(transaction: _PluginInstallTransaction) -> None:
+        def report(stage: str, progress: float, detail: str = "") -> None:
+            transaction.events.put((str(stage), float(progress), str(detail or "")))
+
+        try:
+            transaction.result = transaction.work(report)
+        except BaseException as exc:
+            transaction.worker_error = exc
+        finally:
+            transaction.worker_done.set()
+
+    @staticmethod
+    def _drain_reports(transaction: _PluginInstallTransaction) -> None:
+        while True:
+            try:
+                stage, progress, detail = transaction.events.get_nowait()
+            except Empty:
+                return
+            PluginInstallProgressService._apply_report(
+                transaction,
+                stage,
+                progress,
+                detail,
+            )
 
     def post_present_tick(self) -> None:
         transaction = self._transaction
@@ -109,12 +146,27 @@ class PluginInstallProgressService:
                 transaction.phase = "running"
                 transaction.stage = "resolve_source"
                 transaction.progress = 0.04
+                transaction.worker = threading.Thread(
+                    target=self._run_worker,
+                    args=(transaction,),
+                    name="InfernuxPluginInstall",
+                    daemon=True,
+                )
+                transaction.worker.start()
                 return
             if transaction.phase == "running":
-                transaction.result = transaction.work(self._report)
+                self._drain_reports(transaction)
+                if not transaction.worker_done.is_set():
+                    return
+                if transaction.worker is not None:
+                    transaction.worker.join()
+                self._drain_reports(transaction)
+                if transaction.worker_error is not None:
+                    raise transaction.worker_error
                 transaction.phase = "complete"
                 transaction.stage = "complete"
                 transaction.progress = 1.0
+                transaction.detail = ""
                 transaction.completed_at = time.monotonic()
                 if transaction.history[-1] != t("plugins.install_progress.complete"):
                     transaction.history.append(t("plugins.install_progress.complete"))
@@ -162,6 +214,9 @@ class PluginInstallProgressService:
         ctx.text_wrapped(current)
         ctx.spacing()
         ctx.progress_bar(float(transaction.progress), -1.0, 22.0, "")
+        if transaction.detail:
+            ctx.spacing()
+            ctx.text_wrapped(transaction.detail)
         ctx.spacing()
         ctx.text_wrapped(transaction.label)
         ctx.spacing()

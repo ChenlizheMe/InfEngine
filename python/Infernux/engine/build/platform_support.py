@@ -26,14 +26,17 @@ class PlatformSupport:
     source: Mapping[str, object]
 
 
-def _cached_source_exists(source: Mapping[str, object]) -> bool:
+def _cached_source_exists(project_root: str, source: Mapping[str, object]) -> bool:
     location = portable_path(str(source.get("cache_location", ""))).strip("/")
     if not location:
         return False
-    if str(source.get("cache_scope", "")).casefold() != "hub":
+    if str(source.get("cache_scope", "")).casefold() != "project":
         return False
     path = resolved_path(
-        os.path.join(SharedPackageCache().root, *location.split("/"))
+        os.path.join(
+            SharedPackageCache(os.path.join(project_root, "Cache", "Plugins")).root,
+            *location.split("/"),
+        )
     )
     return os.path.isfile(path)
 
@@ -85,7 +88,7 @@ def platform_support_catalog(
                     installed=record is not None,
                     enabled=enabled,
                     registered=identifier in registered,
-                    cached=_cached_source_exists(source),
+                    cached=_cached_source_exists(registry.project_root, source),
                     source=source,
                 )
             )

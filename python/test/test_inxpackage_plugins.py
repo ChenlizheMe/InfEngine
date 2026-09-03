@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
+import tarfile
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ import pytest
 import Infernux.plugins.manager as plugin_manager_module
 import Infernux.plugins.preload as preload_module
 import Infernux.plugins.github_releases as github_releases_module
+import Infernux.plugins.cache as plugin_cache_module
 from Infernux.engine import player_package_native
 from Infernux.plugins import (
     InxPackage,
@@ -35,6 +38,7 @@ from Infernux.plugins.content import normalize_page_descriptor
 from Infernux.plugins.project_index import project_guid_paths
 from Infernux.plugins.github_releases import (
     RELEASE_MANIFEST_NAME,
+    download_github_source,
     release_manifest_name,
     resolve_github_release,
 )
@@ -851,7 +855,7 @@ def test_rejected_parent_install_removes_new_plugin_dependencies(tmp_path, monke
     assert not (project / "Assets/Plugins/vendor/parent/Parent.bin").exists()
 
 
-def test_direct_package_uses_shared_cache_for_offline_reinstall_and_lock(tmp_path):
+def test_direct_package_uses_project_cache_for_offline_reinstall_and_lock(tmp_path):
     source = _source(tmp_path / "source", "vendor/offline")
     (source / "Data.bin").write_bytes(b"offline payload")
     package = _export(source, tmp_path / "offline.inxpkg")
@@ -859,7 +863,7 @@ def test_direct_package_uses_shared_cache_for_offline_reinstall_and_lock(tmp_pat
     manager = PluginManager(str(project))
     first = manager.install_package(str(package), install_dependencies=False)
     record = manager.registry.installed_record("vendor/offline")
-    package_cache = SharedPackageCache()
+    package_cache = SharedPackageCache(project / "Cache/Plugins")
     cache = Path(package_cache.path("vendor/offline", str(record["version"])))
     assert first.loaded is True
     assert cache.is_file()
@@ -886,10 +890,10 @@ def test_direct_package_uses_shared_cache_for_offline_reinstall_and_lock(tmp_pat
     ] == package_cache.relative_path("vendor/offline", str(record["version"]))
     assert manager.registry.installed_record("vendor/offline")["source"][
         "cache_scope"
-    ] == "hub"
+    ] == "project"
 
 
-def test_projects_share_one_hub_package_version(tmp_path):
+def test_each_project_owns_its_downloaded_package_cache(tmp_path):
     source = _source(tmp_path / "source", "vendor/shared")
     (source / "Data.bin").write_bytes(b"shared payload")
     package = _export(source, tmp_path / "shared.inxpkg")
@@ -903,46 +907,42 @@ def test_projects_share_one_hub_package_version(tmp_path):
 
     first_source = first.registry.installed_record("vendor/shared")["source"]
     second_source = second.registry.installed_record("vendor/shared")["source"]
-    assert first_source["cache_scope"] == "hub"
-    assert second_source["cache_scope"] == "hub"
+    assert first_source["cache_scope"] == "project"
+    assert second_source["cache_scope"] == "project"
     assert first_source["cache_location"] == second_source["cache_location"]
-    assert len(list((tmp_path / "hub-package-cache/packages").rglob("*.inxpkg"))) == 1
+    assert len(list((first_project / "Cache/Plugins/packages").rglob("*.inxpkg"))) == 1
+    assert len(list((second_project / "Cache/Plugins/packages").rglob("*.inxpkg"))) == 1
 
     first.uninstall("vendor/shared")
-    assert Path(tmp_path / "hub-package-cache" / first_source["cache_location"]).is_file()
+    assert Path(first_project / "Cache/Plugins" / first_source["cache_location"]).is_file()
     assert second.registry.installed_record("vendor/shared") is not None
 
 
-def test_cache_cleanup_preserves_every_registered_project_reference(tmp_path):
+def test_project_cache_cleanup_preserves_registered_reference(tmp_path):
     source = _source(tmp_path / "source", "vendor/shared-cleanup")
     (source / "Data.bin").write_bytes(b"shared cleanup payload")
     package = _export(source, tmp_path / "shared-cleanup.inxpkg")
     first_project = _project(tmp_path / "first-project")
-    second_project = _project(tmp_path / "second-project")
     first = PluginManager(str(first_project))
-    second = PluginManager(str(second_project))
     first.install_package(str(package), install_dependencies=False)
-    second.install_package(str(package), install_dependencies=False)
-    cache = SharedPackageCache()
+    cache = SharedPackageCache(first_project / "Cache/Plugins")
     version = str(first.registry.installed_record("vendor/shared-cleanup")["version"])
     cache_path = cache.path("vendor/shared-cleanup", version)
 
     first.uninstall("vendor/shared-cleanup")
-    assert cache.prune_unreferenced((first_project, second_project)) == ()
+    assert cache.prune_unreferenced((first_project,)) == ()
     assert Path(cache_path).is_file()
 
-    second.uninstall("vendor/shared-cleanup")
-    for manager in (first, second):
-        document = manager.registry.load()
-        document["packages"] = []
-        manager.registry.save(document)
-    removed = cache.prune_unreferenced((first_project, second_project))
+    document = first.registry.load()
+    document["packages"] = []
+    first.registry.save(document)
+    removed = cache.prune_unreferenced((first_project,))
     assert removed == (cache_path,)
     assert not Path(cache_path).exists()
 
 
 def test_cache_cleanup_fails_closed_when_registered_project_is_unavailable(tmp_path):
-    cache = SharedPackageCache()
+    cache = SharedPackageCache(tmp_path / "project/Cache/Plugins")
     blob = tmp_path / "unused.inxpkg"
     blob.write_bytes(b"unused")
     destination = Path(
@@ -953,6 +953,37 @@ def test_cache_cleanup_fails_closed_when_registered_project_is_unavailable(tmp_p
         cache.prune_unreferenced((tmp_path / "missing-project",))
 
     assert destination.is_file()
+
+
+def test_plugin_staging_is_owned_by_shared_cache_and_reaps_dead_processes(
+    tmp_path,
+    monkeypatch,
+):
+    cache = SharedPackageCache(tmp_path / "packages")
+    stale = Path(cache.staging_root) / "download-41-dead"
+    stale.mkdir(parents=True)
+    (stale / "partial.inxpkg").write_bytes(b"partial")
+    monkeypatch.setattr(plugin_cache_module, "_process_is_alive", lambda _pid: False)
+
+    with cache.workspace("download") as workspace:
+        active = Path(workspace)
+        assert active.parent == Path(cache.staging_root)
+        assert not stale.exists()
+        (active / "package.inxpkg").write_bytes(b"package")
+
+    assert not active.exists()
+
+
+def test_default_plugin_cache_is_owned_by_active_project(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    monkeypatch.setattr(
+        "Infernux.engine.project_context.get_project_root",
+        lambda: str(project),
+    )
+
+    assert plugin_cache_module.package_cache_root() == str(
+        (project / "Cache/Plugins").resolve()
+    )
 
 
 def test_download_and_import_are_separate_registry_actions(tmp_path):
@@ -1075,6 +1106,75 @@ def test_release_protocol_names_support_multiple_plugins_in_one_repository():
     assert release_manifest_name() == RELEASE_MANIFEST_NAME
 
 
+def test_github_source_snapshot_downloads_only_selected_subdirectory(
+    tmp_path,
+    monkeypatch,
+):
+    commit = "a" * 40
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        for name, payload in (
+            (
+                "Infernux-a/external/plugins/infernux_linux/InxPackage.json",
+                b"{}",
+            ),
+            (
+                "Infernux-a/external/plugins/infernux_linux/README.md",
+                b"Linux plugin",
+            ),
+            ("Infernux-a/README.md", b"repository root"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    archive_payload = archive_buffer.getvalue()
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+            self.offset = 0
+            self.headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            if size < 0:
+                return self.payload
+            chunk = self.payload[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def open_request(request):
+        if request.full_url.startswith("https://api.github.com/"):
+            return Response(json.dumps({"sha": commit}).encode("utf-8"))
+        if request.full_url.startswith("https://codeload.github.com/"):
+            return Response(archive_payload)
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    progress = []
+    result = download_github_source(
+        "https://github.com/vendor/Infernux",
+        str(tmp_path / "download"),
+        revision="040/multiplatform_build",
+        subdirectory="external/plugins/infernux_linux",
+        progress=lambda stage, value, detail: progress.append(
+            (stage, value, detail)
+        ),
+    )
+
+    root = Path(result.root)
+    assert result.commit == commit
+    assert (root / "InxPackage.json").read_bytes() == b"{}"
+    assert (root / "README.md").read_bytes() == b"Linux plugin"
+    assert not (root / "external").exists()
+    assert any(stage == "download_source" and detail for stage, _, detail in progress)
+
+
 def test_github_source_selects_reference_scoped_manifest_from_shared_release(
     tmp_path, monkeypatch
 ):
@@ -1165,7 +1265,7 @@ def test_github_source_selects_reference_scoped_manifest_from_shared_release(
     assert Path(result.path).read_bytes() == artifact
 
 
-def test_official_shared_release_downloads_to_hub_cache_then_imports(
+def test_official_release_downloads_to_project_cache_then_imports(
     tmp_path,
     monkeypatch,
 ):
@@ -1209,6 +1309,7 @@ def test_official_shared_release_downloads_to_hub_cache_then_imports(
                             "source": {
                                 "type": "github",
                                 "location": "https://github.com/vendor/engine",
+                                "revision": "040/multiplatform_build",
                             },
                             "category": "Platform",
                             "targets": ["released-test"],
@@ -1291,7 +1392,7 @@ def test_official_shared_release_downloads_to_hub_cache_then_imports(
         registry_entry = manager.registry.find("vendor/released-platform")
         assert registry_entry["source"]["acquisition"] == "github-release"
         assert registry_entry["source"]["release_tag"] == "v0.4.0"
-        assert registry_entry["source"]["cache_scope"] == "hub"
+        assert registry_entry["source"]["cache_scope"] == "project"
 
         installed = manager.install_reference(
             "vendor/released-platform",
@@ -1487,6 +1588,16 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
         monkeypatch.setattr(
             "Infernux.plugins.github_releases.resolve_github_release",
             lambda *_args, **_kwargs: None,
+        )
+
+        def download_source(_location, destination, **_kwargs):
+            checkout = Path(destination) / "checkout"
+            shutil.copytree(source, checkout, dirs_exist_ok=True)
+            return SimpleNamespace(root=str(checkout), commit="a" * 40)
+
+        monkeypatch.setattr(
+            "Infernux.plugins.github_releases.download_github_source",
+            download_source,
         )
 
         def retrieve(_url, destination):

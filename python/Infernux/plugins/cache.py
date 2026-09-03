@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import tempfile
 import uuid
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 from urllib.parse import quote
@@ -15,16 +18,38 @@ from Infernux.engine.path_utils import resolved_path, same_path
 from .package import PACKAGE_EXTENSION
 
 
-PACKAGE_CACHE_ROOT_ENV = "INFERNUX_PACKAGE_CACHE_ROOT"
+_STAGING_NAME = re.compile(r"^[a-z0-9-]+-(\d+)-[a-z0-9_]+$")
 
 
-def package_cache_root() -> str:
-    """Return the global cache shared by Hub, Editors, and projects."""
+def package_cache_root(project_root: str | os.PathLike[str] | None = None) -> str:
+    """Return the active project's explicit plugin cache directory."""
 
-    configured = os.environ.get(PACKAGE_CACHE_ROOT_ENV, "").strip()
-    if configured:
-        return resolved_path(os.path.expandvars(os.path.expanduser(configured)))
-    return resolved_path(Path.home() / ".infernux" / "packages")
+    root = resolved_path(project_root) if project_root is not None else ""
+    if not root:
+        from Infernux.engine.project_context import get_project_root
+
+        root = resolved_path(get_project_root())
+    if not root:
+        raise RuntimeError("The plugin cache requires an active project")
+    return resolved_path(Path(root) / "Cache" / "Plugins")
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _encoded_segment(value: str, label: str) -> str:
@@ -40,6 +65,44 @@ class SharedPackageCache:
     def __init__(self, root: str | os.PathLike[str] | None = None) -> None:
         self.root = resolved_path(root or package_cache_root())
         self.package_root = resolved_path(os.path.join(self.root, "packages"))
+        self.staging_root = resolved_path(os.path.join(self.root, ".staging"))
+
+    def _prune_staging(self) -> None:
+        if not os.path.isdir(self.staging_root):
+            return
+        current_pid = os.getpid()
+        for entry in Path(self.staging_root).iterdir():
+            match = _STAGING_NAME.fullmatch(entry.name)
+            if not match:
+                continue
+            owner_pid = int(match.group(1))
+            if owner_pid == current_pid or _process_is_alive(owner_pid):
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+
+    @contextmanager
+    def workspace(self, label: str):
+        """Create one process-owned staging directory inside the shared cache."""
+
+        normalized = str(label).strip().casefold().replace("_", "-")
+        if not normalized or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+            for character in normalized
+        ):
+            raise ValueError(f"Invalid package staging label: {label!r}")
+        os.makedirs(self.staging_root, exist_ok=True)
+        self._prune_staging()
+        workspace = tempfile.mkdtemp(
+            prefix=f"{normalized}-{os.getpid()}-",
+            dir=self.staging_root,
+        )
+        try:
+            yield workspace
+        finally:
+            shutil.rmtree(workspace)
 
     @staticmethod
     def validate_location(location: str) -> str:
@@ -126,7 +189,7 @@ class SharedPackageCache:
             source = raw.get("source")
             if not isinstance(source, Mapping):
                 continue
-            if str(source.get("cache_scope", "")).casefold() != "hub":
+            if str(source.get("cache_scope", "")).casefold() != "project":
                 continue
             try:
                 locations.add(
@@ -165,7 +228,6 @@ class SharedPackageCache:
 
 
 __all__ = [
-    "PACKAGE_CACHE_ROOT_ENV",
     "SharedPackageCache",
     "package_cache_root",
 ]
