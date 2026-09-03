@@ -192,6 +192,8 @@ class GameEngineLauncher(QMainWindow):
         # Refresh installs when switching to that page
         if index == 1:
             self.installs_view.refresh()
+        elif index == 2:
+            self.settings_view.refresh()
 
     def _remove_project_from_card(self, project_id: str):
         self.project_list.select_project(project_id)

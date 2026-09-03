@@ -1,11 +1,21 @@
 """Early Hub settings page."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from about_content import ABOUT_DESCRIPTION, ABOUT_TITLE
 from hub_updater import current_hub_version
 from i18n import current_language, detect_system_locale, tr
+from plugin_library import inspect_plugin_library, prune_unreferenced_packages
 from view.sidebar_view import ToggleSwitch, apply_theme
 from view.hover_widgets import AnimatedSurfaceFrame
 
@@ -83,6 +93,30 @@ class SettingsView(QWidget):
         appearance_layout.addWidget(self.theme_toggle)
         layout.addWidget(appearance_card)
 
+        storage_card = AnimatedSurfaceFrame("settingsCard")
+        storage_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        storage_layout = QHBoxLayout(storage_card)
+        storage_layout.setContentsMargins(20, 18, 20, 18)
+        storage_text = QVBoxLayout()
+        storage_label = QLabel(tr("Plugin Library"))
+        storage_label.setObjectName("settingsLabel")
+        storage_text.addWidget(storage_label)
+        self.storage_description = QLabel()
+        self.storage_description.setObjectName("settingsDescription")
+        self.storage_description.setWordWrap(True)
+        self.storage_description.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        storage_text.addWidget(self.storage_description)
+        storage_layout.addLayout(storage_text, 1)
+        self.clean_plugins_button = QPushButton(tr("Clean Unused Packages"))
+        self.clean_plugins_button.setObjectName("normalBtn")
+        self.clean_plugins_button.setFixedHeight(34)
+        self.clean_plugins_button.clicked.connect(self._clean_plugin_library)
+        storage_layout.addWidget(self.clean_plugins_button)
+        layout.addWidget(storage_card)
+        self._refresh_plugin_library()
+
         update_card = AnimatedSurfaceFrame("settingsCard")
         update_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         update_layout = QHBoxLayout(update_card)
@@ -132,10 +166,86 @@ class SettingsView(QWidget):
         configure_language(mode)
         self.language_changed.emit(mode)
 
+    def refresh(self):
+        """Refresh state owned outside the Hub process."""
+
+        self._refresh_plugin_library()
+
     def _toggle_theme(self, state: int):
         if self._db:
             self._db.set_setting("theme", "dark" if state else "light")
         apply_theme(self.window(), bool(state))
+
+    def _project_roots(self) -> tuple[str, ...]:
+        if not self._db:
+            return ()
+        return tuple(record.path for record in self._db.all_projects())
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        amount = float(max(0, int(value)))
+        units = ("B", "KiB", "MiB", "GiB", "TiB")
+        unit = units[0]
+        for unit in units:
+            if amount < 1024.0 or unit == units[-1]:
+                break
+            amount /= 1024.0
+        return f"{int(amount)} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+
+    def _refresh_plugin_library(self):
+        try:
+            stats = inspect_plugin_library(self._project_roots())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.storage_description.setText(
+                tr("Plugin library cleanup is unavailable: {message}", message=str(exc))
+            )
+            self.clean_plugins_button.setEnabled(False)
+            return
+        self.storage_description.setText(
+            tr(
+                "{count} packages · {size} · {path}",
+                count=stats.package_count,
+                size=self._format_bytes(stats.total_bytes),
+                path=str(stats.root),
+            )
+        )
+        self.clean_plugins_button.setEnabled(bool(stats.removable))
+        self.clean_plugins_button.setToolTip(
+            tr(
+                "{count} unused packages can release {size}.",
+                count=len(stats.removable),
+                size=self._format_bytes(stats.removable_bytes),
+            )
+            if stats.removable
+            else tr("Every downloaded package is still referenced by a Hub project.")
+        )
+
+    def _clean_plugin_library(self):
+        try:
+            before = inspect_plugin_library(self._project_roots())
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+            self._refresh_plugin_library()
+            return
+        if not before.removable:
+            self._refresh_plugin_library()
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("Clean Unused Packages"),
+            tr(
+                "Delete {count} unreferenced plugin packages and release {size}?",
+                count=len(before.removable),
+                size=self._format_bytes(before.removable_bytes),
+            ),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            prune_unreferenced_packages(self._project_roots())
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+        self._refresh_plugin_library()
 
 
 __all__ = ["SettingsView"]
