@@ -145,6 +145,9 @@ jobs:
   linux-desktop:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    env:
+      SDL_AUDIODRIVER: dummy
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
     defaults:
       run:
         shell: bash -el {0}

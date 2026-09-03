@@ -42,7 +42,17 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
         encoding="utf-8"
     )
 
-    for dependency in ("clang-format", "glslang-tools", "lld", "llvm", "pkg-config"):
+    for dependency in (
+        "clang-format",
+        "glslang-tools",
+        "lld",
+        "llvm",
+        "mesa-vulkan-drivers",
+        "pkg-config",
+        "vulkan-validationlayers",
+        "xauth",
+        "xvfb",
+    ):
         assert dependency in installer
     for executable in ("clang", "clang++", "ld.lld", "ninja", "glslangValidator"):
         assert executable in configurator
@@ -53,10 +63,12 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
 
 def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    linux_job = workflow.split("  linux-headless:", 1)[1]
+    linux_job = workflow.split("  linux-desktop:", 1)[1]
 
     assert "run: scripts/setup/install_linux_dependencies.sh" in linux_job
     assert "sudo apt-get install" not in linux_job
+    assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in linux_job
+    assert "xvfb-run --auto-servernum python -m pytest python/test" in linux_job
 
 
 def test_clang_format_is_an_explicit_developer_target_dependency() -> None:

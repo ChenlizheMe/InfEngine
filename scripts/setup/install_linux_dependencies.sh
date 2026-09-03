@@ -37,10 +37,12 @@ sudo apt-get install --yes --no-install-recommends \
     libxtst-dev \
     lld \
     llvm \
+    mesa-vulkan-drivers \
     ninja-build \
     pkg-config \
     libspirv-cross-c-shared-dev \
     spirv-tools \
+    vulkan-validationlayers \
     vulkan-tools \
     xauth \
     xvfb \
