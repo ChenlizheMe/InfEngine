@@ -17,7 +17,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from Infernux.engine.platform_player_bootstrap import read_player_build_manifest
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_PYTHON_ROOT = _REPOSITORY_ROOT / "python"
+if str(_PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PYTHON_ROOT))
+
+from Infernux.engine.platform_player_bootstrap import (  # noqa: E402
+    read_player_build_manifest,
+)
 
 
 _FATAL_PATTERNS = (

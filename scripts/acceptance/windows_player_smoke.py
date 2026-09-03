@@ -14,9 +14,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from Infernux.engine.platform_player_bootstrap import read_player_build_manifest
 
-from linux_player_smoke import (
+_SCRIPT_ROOT = Path(__file__).resolve().parent
+_REPOSITORY_ROOT = _SCRIPT_ROOT.parents[1]
+_PYTHON_ROOT = _REPOSITORY_ROOT / "python"
+if str(_SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_ROOT))
+if str(_PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PYTHON_ROOT))
+
+from Infernux.engine.platform_player_bootstrap import (  # noqa: E402
+    read_player_build_manifest,
+)
+
+from linux_player_smoke import (  # noqa: E402
     _assert_component_probes,
     ControlClient,
     _axis_delta,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from Infernux.engine.player_package_native import read_manifest, write_pack
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "acceptance" / "linux_player_smoke.py"
+WINDOWS_SCRIPT = ROOT / "scripts" / "acceptance" / "windows_player_smoke.py"
 
 
 def _module():
@@ -21,6 +24,27 @@ def _module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("script", (SCRIPT, WINDOWS_SCRIPT))
+def test_player_smoke_cli_bootstraps_repository_python_from_any_working_directory(
+    script: Path, tmp_path: Path
+):
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(script), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
 
 
 def test_gameplay_control_ready_requires_started_runtime_and_unpaused_input():
