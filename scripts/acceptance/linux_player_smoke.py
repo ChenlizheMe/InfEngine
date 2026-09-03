@@ -282,10 +282,17 @@ def _assert_component_probes(
 
 
 class ControlClient:
-    def __init__(self, request: Path, response: Path, token: str) -> None:
+    def __init__(
+        self,
+        request: Path,
+        response: Path,
+        token: str,
+        platform_name: str = "Linux",
+    ) -> None:
         self.request = request
         self.response = response
         self._token = token
+        self._platform_name = platform_name
 
     def call(
         self,
@@ -295,7 +302,7 @@ class ControlClient:
         timeout: float,
         process: subprocess.Popen[str],
     ) -> dict[str, Any]:
-        command_id = f"linux-smoke-{uuid.uuid4().hex}"
+        command_id = f"{self._platform_name.casefold()}-smoke-{uuid.uuid4().hex}"
         self.response.unlink(missing_ok=True)
         _write_json_atomic(
             self.request,
@@ -325,11 +332,13 @@ class ControlClient:
                 return dict(response.get("data", {}))
             if process.poll() is not None:
                 raise RuntimeError(
-                    f"Linux Player exited before '{action}' completed "
+                    f"{self._platform_name} Player exited before '{action}' completed "
                     f"(code {process.returncode})"
                 )
             time.sleep(0.05)
-        raise TimeoutError(f"Linux Player control action '{action}' timed out")
+        raise TimeoutError(
+            f"{self._platform_name} Player control action '{action}' timed out"
+        )
 
 
 def _terminate(process: subprocess.Popen[str] | None, timeout: float = 5.0) -> None:

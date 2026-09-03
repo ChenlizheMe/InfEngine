@@ -220,7 +220,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                     subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
                 ),
             )
-        control = ControlClient(request, response, token)
+        control = ControlClient(request, response, token, "Windows")
         deadline = time.monotonic() + args.startup_timeout
         observation: dict[str, Any] = {}
         while time.monotonic() < deadline:

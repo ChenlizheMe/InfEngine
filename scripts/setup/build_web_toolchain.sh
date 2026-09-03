@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EMSCRIPTEN_VERSION="6.0.8"
+EMSCRIPTEN_VERSION="4.0.10"
 EMSDK_REVISION="e5bd3d0874e302a18f13c5b41f5bacf9a40c8e59"
 CPYTHON_VERSION="3.13.15"
 CPYTHON_SHA256="1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76"
@@ -181,7 +181,7 @@ files = {
 payload = {
     "schema": "infernux.web_toolchain",
     "kind": "infernux-web-toolchain",
-    "emscripten": {"version": "6.0.8", "revision": "e5bd3d0874e302a18f13c5b41f5bacf9a40c8e59"},
+    "emscripten": {"version": "4.0.10", "revision": "e5bd3d0874e302a18f13c5b41f5bacf9a40c8e59"},
     "cpython": {
         "version": "3.13.15",
         "source_url": "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",

@@ -1409,14 +1409,19 @@ def _stage_engine_native_libraries(
         "libJolt.so",
     }
     for path in (build_root / "python-sync").glob("*.so"):
-        engine_names.add(path.name)
+        if path.name != "libSDL3.so":
+            engine_names.add(path.name)
     for stale in native_root.glob("*.so"):
         if stale.name in engine_names or stale.name.startswith("libInfernux"):
             stale.unlink()
 
     candidates: dict[str, Path] = {}
     for path in (build_root / "python-sync").glob("*.so"):
-        candidates[path.name] = path
+        # The Android host owns SDL and links the exact same source target into
+        # libmain.so. Staging the engine build's SDL beside that target gives
+        # AGP two producers for one JNI library and must fail the package.
+        if path.name != "libSDL3.so":
+            candidates[path.name] = path
     for name in ("libassimp.so", "libJolt.so"):
         matches = tuple(build_root.rglob(name))
         if matches:

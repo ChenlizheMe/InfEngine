@@ -1106,6 +1106,7 @@ def test_android_engine_native_staging_is_exact(monkeypatch, tmp_path):
     (sync / "_Infernux.so").write_bytes(b"engine")
     (sync / "_InfernuxBootstrap.so").write_bytes(b"bootstrap")
     (sync / "libInfernuxFoundation.so").write_bytes(b"foundation")
+    (sync / "libSDL3.so").write_bytes(b"host-owned")
     assimp = build / "external" / "assimp" / "libassimp.so"
     jolt = build / "external" / "Jolt" / "libJolt.so"
     assimp.parent.mkdir(parents=True)
@@ -1131,6 +1132,7 @@ def test_android_engine_native_staging_is_exact(monkeypatch, tmp_path):
         "libJolt.so",
     }
     assert not (native / "libInfernuxOld.so").exists()
+    assert not (native / "libSDL3.so").exists()
     assert (native / "libpython3.13.so").is_file()
 
 

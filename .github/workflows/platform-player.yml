@@ -115,6 +115,7 @@ jobs:
             throw "The Windows runner does not provide the expected Edge SwiftShader Vulkan ICD."
           }
           "VK_DRIVER_FILES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_ICD_FILENAMES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build Windows Player runtime
         shell: pwsh
