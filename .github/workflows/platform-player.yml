@@ -108,6 +108,13 @@ jobs:
           Copy-Item -LiteralPath $loader -Destination "python\Infernux\lib\vulkan-1.dll" -Force
           New-Item -ItemType Directory -Path "out\build\windows-msvc-release\Release" -Force | Out-Null
           Copy-Item -LiteralPath $loader -Destination "out\build\windows-msvc-release\Release\vulkan-1.dll" -Force
+          $edge = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe").'(default)'
+          $edgeVersion = (Get-Item -LiteralPath $edge).VersionInfo.ProductVersion
+          $swiftShaderManifest = Join-Path (Join-Path (Split-Path $edge) $edgeVersion) "vk_swiftshader_icd.json"
+          if (-not (Test-Path -LiteralPath $swiftShaderManifest)) {
+            throw "The Windows runner does not provide the expected Edge SwiftShader Vulkan ICD."
+          }
+          "VK_DRIVER_FILES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build Windows Player runtime
         shell: pwsh

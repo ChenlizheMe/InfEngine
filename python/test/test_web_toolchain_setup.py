@@ -28,6 +28,7 @@ def test_web_toolchain_setup_builds_webgpu_tools_without_gl_fallbacks():
     assert "Tools/wasm/wasm_build.py emscripten-browser" in source
     assert 'cpython_em_config="$builds/cpython-emscripten-config.py"' in source
     assert 'f"EMSCRIPTEN_ROOT = {str(emscripten_root)!r}\\n"' in source
+    assert 'f"BINARYEN_ROOT = {str(binaryen_root)!r}\\n"' in source
     assert 'f"NODE_JS = {str(node_path)!r}\\n"' in source
     assert 'export EM_CONFIG="$cpython_em_config"' in source
     assert "--target tint" in source

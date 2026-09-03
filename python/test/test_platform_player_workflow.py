@@ -64,6 +64,8 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
         '"out\\build\\windows-msvc-release\\Release\\vulkan-1.dll"'
         in text[loader_step:build_step]
     )
+    assert "vk_swiftshader_icd.json" in text[loader_step:build_step]
+    assert "VK_DRIVER_FILES=$swiftShaderManifest" in text[loader_step:build_step]
 
 
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():

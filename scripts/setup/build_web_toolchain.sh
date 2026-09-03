@@ -69,19 +69,21 @@ export EMSDK_QUIET=1
 # shellcheck disable=SC1091
 source "$emsdk_root/emsdk_env.sh"
 emscripten_root="$emsdk_root/upstream/emscripten"
+binaryen_root="$emsdk_root/upstream"
 node_path="$(command -v node)"
-if [[ ! -x "$emscripten_root/emconfigure" || ! -x "$node_path" ]]; then
+if [[ ! -x "$emscripten_root/emconfigure" || ! -x "$binaryen_root/bin/wasm-opt" || ! -x "$node_path" ]]; then
     echo "The activated Emscripten SDK is incomplete: $emsdk_root" >&2
     exit 1
 fi
 cpython_em_config="$builds/cpython-emscripten-config.py"
-python3 - "$cpython_em_config" "$emscripten_root" "$node_path" <<'PY'
+python3 - "$cpython_em_config" "$emscripten_root" "$binaryen_root" "$node_path" <<'PY'
 import sys
 from pathlib import Path
 
-config_path, emscripten_root, node_path = map(Path, sys.argv[1:])
+config_path, emscripten_root, binaryen_root, node_path = map(Path, sys.argv[1:])
 config_path.write_text(
     f"EMSCRIPTEN_ROOT = {str(emscripten_root)!r}\n"
+    f"BINARYEN_ROOT = {str(binaryen_root)!r}\n"
     f"NODE_JS = {str(node_path)!r}\n",
     encoding="utf-8",
 )
