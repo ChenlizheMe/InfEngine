@@ -441,29 +441,19 @@ def _prepare_web_staging(staging: Path) -> None:
         shutil.rmtree(staging / name, ignore_errors=True)
 
 
-def _web_staging_directory(request: BuildRequest) -> Path:
+def _web_build_cache_root(request: BuildRequest) -> Path:
     configured = str(
         request.profile.options.get("build_cache_root", "") or ""
     ).strip()
     if not configured:
         configured = os.environ.get("INFERNUX_BUILD_CACHE_ROOT", "").strip()
     if configured:
-        root = Path(configured).expanduser().resolve()
-    elif os.name == "nt":
-        root = (
-            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
-            / "Infernux"
-            / "BuildCache"
-        )
-    else:
-        root = Path(
-            os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
-        ) / "infernux"
-    project_identity = str(Path(request.project_root).resolve())
-    if os.name == "nt":
-        project_identity = project_identity.casefold()
-    project_key = hashlib.sha256(project_identity.encode("utf-8")).hexdigest()[:16]
-    return root / "WebHost" / project_key / str(request.target)
+        return Path(configured).expanduser().resolve()
+    return Path(request.project_root).resolve() / "Cache" / "Build"
+
+
+def _web_staging_directory(request: BuildRequest) -> Path:
+    return _web_build_cache_root(request) / "WebHost" / str(request.target)
 
 
 def _cook_web_player_assets(

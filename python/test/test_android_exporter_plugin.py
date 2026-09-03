@@ -140,6 +140,41 @@ def test_android_exporter_contributes_only_vulkan_targets(monkeypatch):
     assert all(not target.capabilities.numba for target in targets)
 
 
+def test_android_build_cache_is_project_owned_by_default(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter = importlib.import_module("infernux_android.exporter")
+    project = tmp_path / "project"
+    request = BuildRequest(
+        str(project),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={}),
+    )
+
+    assert exporter._android_staging_directory(request) == (
+        project.resolve() / "Cache/Build/AndroidHost/android-arm64"
+    )
+    assert exporter._android_build_cache_root(request) / "AndroidEngine" == (
+        project.resolve() / "Cache/Build/AndroidEngine"
+    )
+
+
+def test_android_build_cache_accepts_an_explicit_shared_root(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter = importlib.import_module("infernux_android.exporter")
+    shared = tmp_path / "fast-build-disk"
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"build_cache_root": str(shared)}),
+    )
+
+    assert exporter._android_staging_directory(request) == (
+        shared.resolve() / "AndroidHost/android-arm64"
+    )
+
+
 def test_android_doctor_accepts_the_pinned_local_toolchain(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     report = module.inspect_android_toolchain(

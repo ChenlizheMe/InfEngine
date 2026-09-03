@@ -75,6 +75,32 @@ def test_web_exporter_contributes_only_webgpu_target(monkeypatch):
     } <= capabilities.features
 
 
+def test_web_build_cache_is_project_owned_by_default(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    request = _request(tmp_path)
+
+    assert exporter._web_staging_directory(request) == (
+        (tmp_path / "project").resolve() / "Cache/Build/WebHost/web-wasm32"
+    )
+
+
+def test_web_build_cache_accepts_an_explicit_shared_root(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    shared = tmp_path / "fast-build-disk"
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "web-wasm32",
+        str(tmp_path / "output"),
+        BuildProfile(options={"build_cache_root": str(shared)}),
+    )
+
+    assert exporter._web_staging_directory(request) == (
+        shared.resolve() / "WebHost/web-wasm32"
+    )
+
+
 def test_webgpu_capability_inventory_is_explicit_and_fire_forced(monkeypatch):
     _web_module(monkeypatch)
     capability_module = importlib.import_module("infernux_web.capabilities")

@@ -1006,23 +1006,17 @@ def _python_prefix(request: BuildRequest, abi: str) -> Path | None:
     return prefix if prefix.is_dir() else None
 
 
-def _android_staging_directory(request: BuildRequest) -> Path:
+def _android_build_cache_root(request: BuildRequest) -> Path:
     configured = str(request.profile.options.get("build_cache_root", "") or "").strip()
     if not configured:
         configured = os.environ.get("INFERNUX_BUILD_CACHE_ROOT", "").strip()
     if configured:
-        root = Path(configured).expanduser().resolve()
-    elif os.name == "nt":
-        root = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Infernux" / "BuildCache"
-    else:
-        root = Path(
-            os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
-        ) / "infernux"
-    project_identity = str(Path(request.project_root).resolve())
-    if os.name == "nt":
-        project_identity = project_identity.casefold()
-    project_key = hashlib.sha256(project_identity.encode("utf-8")).hexdigest()[:16]
-    return root / "AndroidHost" / project_key / str(request.target)
+        return Path(configured).expanduser().resolve()
+    return Path(request.project_root).resolve() / "Cache" / "Build"
+
+
+def _android_staging_directory(request: BuildRequest) -> Path:
+    return _android_build_cache_root(request) / "AndroidHost" / str(request.target)
 
 
 def _stage_python_runtime(
@@ -1290,7 +1284,7 @@ def _build_engine_runtime(
     )
     pybind11_dir = _host_pybind11_cmake_dir()
     build_type = _native_build_type(request.profile.configuration)
-    build_root = staging.parents[2] / "AndroidEngine" / abi / build_type
+    build_root = _android_build_cache_root(request) / "AndroidEngine" / abi / build_type
     configure_command = [
         str(cmake),
         "-S",
