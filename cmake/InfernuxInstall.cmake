@@ -58,6 +58,24 @@ add_custom_command(TARGET _Infernux POST_BUILD
     COMMENT "Stage _Infernux binding module in the build tree"
 )
 
+# CMake may restore _Infernux from a compiler cache without rerunning its
+# POST_BUILD command. Refresh the small runtime-linkage contract explicitly
+# before packaging so a cached Release binary can never inherit a missing or
+# development-only marker.
+add_custom_target(refresh_player_native_contract
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+    DEPENDS _Infernux
+    COMMENT "Refreshing Player native runtime contract"
+    VERBATIM
+)
+
 if(WIN32)
     # Windows: copy all DLL dependencies automatically
     add_custom_command(TARGET _Infernux POST_BUILD
@@ -155,6 +173,7 @@ add_custom_target(prebuild_player_runtime
     COMMENT "Preparing wheel-distributed Release Player Runtime Pack and parallel module"
     VERBATIM
 )
+add_dependencies(prebuild_player_runtime refresh_player_native_contract)
 if(TARGET InfernuxPlayerHost)
     add_dependencies(prebuild_player_runtime InfernuxPlayerHost)
 endif()

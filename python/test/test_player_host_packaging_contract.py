@@ -62,6 +62,19 @@ def test_player_host_loads_the_built_runtime_without_a_cache():
     assert "PrepareCache" not in host
 
 
+def test_wheel_refreshes_player_native_contract_after_cache_restore():
+    install = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+
+    refresh = install.split(
+        "add_custom_target(refresh_player_native_contract", 1
+    )[1].split(")\n", 1)[0]
+    assert "stage_player_native_contract.cmake" in refresh
+    assert '"-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"' in refresh
+    assert '"-DTARGET_DIR=${PYTHON_TARGET_DIR}"' in refresh
+    assert "DEPENDS _Infernux" in refresh
+    assert "add_dependencies(prebuild_player_runtime refresh_player_native_contract)" in install
+
+
 def test_player_package_contract_has_bootstrap_archive_and_no_root_bootstrap_files():
     audit = (ROOT / "python/Infernux/engine/player_package_audit.py").read_text(encoding="utf-8")
     builder = (ROOT / "python/Infernux/engine/game_builder.py").read_text(encoding="utf-8")
