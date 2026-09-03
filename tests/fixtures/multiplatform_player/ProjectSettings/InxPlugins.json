@@ -1,0 +1,48 @@
+{
+  "$schema": "infernux.plugin_registry",
+  "packages": [],
+  "installed": [
+    {
+      "reference": "infernux/multiplatform_probe",
+      "name": "Multiplatform Resource Probe",
+      "version": "0.4.0",
+      "intro": "Verbatim package resource acceptance fixture.",
+      "intros": {},
+      "engine": ">=0.4.0",
+      "pages": [],
+      "package_path": "",
+      "source": {},
+      "dependencies": [],
+      "transaction_id": "040-multiplatform-resource-probe",
+      "installed_at": 0,
+      "enabled": true,
+      "python_requirements": [],
+      "python_changes": [],
+      "files": [
+        {
+          "logical_path": "runtime/lifecycle.py",
+          "path_hint": "Packages/infernux/multiplatform_probe/runtime/lifecycle.py",
+          "guid": "04000000000000000000000000000011",
+          "role": "runtime",
+          "owned": true
+        },
+        {
+          "logical_path": "runtime/message.txt",
+          "path_hint": "Packages/infernux/multiplatform_probe/runtime/message.txt",
+          "guid": "04000000000000000000000000000012",
+          "role": "runtime",
+          "owned": true
+        }
+      ],
+      "control": {
+        "logical_path": "inx_package.json",
+        "path_hint": "Packages/infernux/multiplatform_probe/inx_package.json",
+        "guid": "04000000000000000000000000000010",
+        "role": "control",
+        "owned": true
+      }
+    }
+  ],
+  "python_installs": [],
+  "python_dependencies": []
+}

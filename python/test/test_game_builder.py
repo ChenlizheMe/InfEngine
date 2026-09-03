@@ -44,7 +44,9 @@ from Infernux.engine.player_package_native import (
     write_pack,
 )
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
+from Infernux.lifecycle import PreloadContext
 from Infernux.particle.asset import ParticleGraphAsset
+from Infernux.plugins.preload import PreloadManager
 from Infernux.plugins.registry import PluginRegistry
 
 
@@ -677,11 +679,25 @@ def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
 def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_path):
     project = _make_project(tmp_path)
     runtime = project / "Packages/vendor/gameplay/runtime/lifecycle.py"
+    resource = project / "Packages/vendor/gameplay/runtime/message.txt"
     editor = project / "Packages/vendor/gameplay/editor/panel.py"
     content = project / "Assets/Plugins/Scenes/Demo.scene"
     control = project / "Packages/vendor/gameplay/inx_package.json"
+    lifecycle_source = (
+        b"from Infernux.lifecycle import InxPreload\n"
+        b"class RuntimeLifecycle(InxPreload):\n"
+        b"    def preload(self, context):\n"
+        b"        self.message = context.package_path('runtime/message.txt')\n"
+    )
     files = (
-        (runtime, "runtime-guid", "runtime/lifecycle.py", "runtime", b"VALUE = 1\n"),
+        (runtime, "runtime-guid", "runtime/lifecycle.py", "runtime", lifecycle_source),
+        (
+            resource,
+            "resource-guid",
+            "runtime/message.txt",
+            "runtime",
+            "Player package resource ready\n".encode("utf-8"),
+        ),
         (editor, "editor-guid", "editor/panel.py", "editor", b"PANEL = True\n"),
         (content, "content-guid", "Scenes/Demo.scene", "content", b"{}\n"),
     )
@@ -740,19 +756,88 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
     builder._stage_player_plugins(str(data))
 
     staged_runtime = data / "Packages/vendor/gameplay/runtime/lifecycle.py"
-    assert staged_runtime.read_bytes() == b"VALUE = 1\n"
+    assert staged_runtime.read_bytes() == lifecycle_source
+    staged_resource = data / "Packages/vendor/gameplay/runtime/message.txt"
+    assert staged_resource.read_text(encoding="utf-8") == "Player package resource ready\n"
     assert not (data / "Packages/vendor/gameplay/editor/panel.py").exists()
     shipped = json.loads(
         (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
     )
     assert [item["logical_path"] for item in shipped["installed"][0]["files"]] == [
         "runtime/lifecycle.py",
+        "runtime/message.txt",
         "Scenes/Demo.scene",
     ]
+
+    context = PreloadContext(
+        project_root=str(data),
+        source_path=str(staged_runtime),
+        script_guid="runtime-guid",
+        type_id="fixture-preload",
+        package_reference="vendor/gameplay",
+        runtime=True,
+    )
+    assert context.package_path("runtime/message.txt") == str(staged_resource.resolve())
+    assert Path(context.package_path("runtime/message.txt")).read_text(
+        encoding="utf-8"
+    ) == "Player package resource ready\n"
+    assert not builder._runtime_catalog_payload_required(
+        "ProjectSettings/InxPlugins.json"
+    )
 
     builder._compile_player_plugin_scripts(str(output))
     assert not staged_runtime.exists()
     assert staged_runtime.with_suffix(".pyc").is_file()
+    assert staged_resource.is_file()
+    runtime_registry = json.loads(
+        (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
+    )
+    lifecycle_record = runtime_registry["installed"][0]["files"][0]
+    assert lifecycle_record["compiled_path_hint"].endswith("runtime/lifecycle.pyc")
+    assert lifecycle_record["preload_declarations"] == [
+        {
+            "name": "RuntimeLifecycle",
+            "bases": ["Infernux.lifecycle.InxPreload"],
+        }
+    ]
+
+    manager = PreloadManager(str(data), runtime=True)
+    states = manager.reload_all()
+    assert len(states) == 1
+    assert states[0].loaded is True
+    assert states[0].error == ""
+    assert states[0].instance is not None
+    assert states[0].instance.message == str(staged_resource.resolve())
+    assert manager.unload_all() == ()
+
+
+def test_preload_context_package_path_fails_closed(tmp_path):
+    project = tmp_path / "Project"
+    resource = project / "Packages/vendor/gameplay/runtime/server.jar"
+    resource.parent.mkdir(parents=True)
+    resource.write_bytes(b"jar")
+
+    context = PreloadContext(
+        project_root=str(project),
+        source_path=str(resource.parent / "lifecycle.py"),
+        script_guid="runtime-guid",
+        type_id="fixture-preload",
+        package_reference="vendor/gameplay",
+    )
+    assert context.package_path("runtime/server.jar") == str(resource.resolve())
+    with pytest.raises(ValueError, match="escapes"):
+        context.package_path("../outside.jar")
+    with pytest.raises(FileNotFoundError, match="not available"):
+        context.package_path("runtime/missing.json")
+
+    loose = PreloadContext(
+        project_root=str(project),
+        source_path=str(project / "Assets/lifecycle.py"),
+        script_guid="loose-guid",
+        type_id="loose-preload",
+    )
+    with pytest.raises(RuntimeError, match="installed package"):
+        loose.package_path("runtime/server.jar")
 
 
 def _write_texture_asset_index(project_root: Path, source: Path, guid: str, artifact_path: str):

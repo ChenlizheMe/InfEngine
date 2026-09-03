@@ -1514,6 +1514,7 @@ finally:
         registry = PluginRegistry(self.project_path)
         document = registry.load()
         runtime_records: list[dict[str, object]] = []
+        staged_plugin_guids: set[str] = set()
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
         packages_root = resolved_path(os.path.join(self.project_path, "Packages"))
         indexed = {
@@ -1551,6 +1552,16 @@ finally:
                 file_record = dict(raw_file)
                 file_record["path_hint"] = current_relative
                 runtime_files.append(file_record)
+                staged_plugin_guids.add(guid)
+                # Package payloads are selected by the enabled plugin ledger,
+                # not by scene dependency traversal.  Bind them into the same
+                # cooked GUID closure so RuntimeAssetCatalog can prove their
+                # identity and dependencies after Content.inxpkg is sealed.
+                cooked_entries = getattr(self, "_cooked_asset_entries", None)
+                if cooked_entries is None:
+                    cooked_entries = {}
+                    self._cooked_asset_entries = cooked_entries
+                cooked_entries[guid] = entry
                 if is_path_within(source, packages_root, allow_root=False):
                     destination = os.path.join(data_dir, *current_relative.split("/"))
                     os.makedirs(os.path.dirname(destination), exist_ok=True)
@@ -1577,32 +1588,67 @@ finally:
             os.path.join(data_dir, "ProjectSettings", "InxPlugins.json"),
             runtime_registry,
         )
+        self._staged_player_plugin_guids = staged_plugin_guids
 
     @staticmethod
     def _compile_player_plugin_scripts(final_dir: str) -> None:
         """Compile exported package scripts without exposing source."""
 
-        root = os.path.join(final_dir, "Data", "Packages")
+        data_root = os.path.join(final_dir, "Data")
+        root = os.path.join(data_root, "Packages")
         if not os.path.isdir(root):
             return
+        registry_path = os.path.join(data_root, "ProjectSettings", "InxPlugins.json")
+        try:
+            with open(registry_path, "r", encoding="utf-8") as stream:
+                registry = json.load(stream)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Player plugin registry is unreadable before script compilation: {registry_path}"
+            ) from exc
+        file_records = {
+            portable_path(str(item.get("path_hint", ""))).casefold(): item
+            for package in registry.get("installed", [])
+            if isinstance(package, dict)
+            for item in package.get("files", [])
+            if isinstance(item, dict)
+        }
+        registry_changed = False
         for directory, _folders, filenames in os.walk(root):
             for filename in filenames:
                 if not filename.endswith(".py"):
                     continue
                 source = os.path.join(directory, filename)
+                relative_source = portable_path(relative_path(source, data_root))
+                record = file_records.get(relative_source.casefold())
                 try:
+                    if record is not None:
+                        from Infernux.plugins.preload import _read_declarations
+
+                        declarations = _read_declarations(source, data_root)
+                        record["compiled_path_hint"] = relative_source + "c"
+                        record["preload_declarations"] = [
+                            {
+                                "name": declaration.name,
+                                "bases": list(declaration.bases),
+                            }
+                            for declaration in declarations
+                        ]
+                        registry_changed = True
                     py_compile.compile(
                         source,
                         cfile=source + "c",
-                        dfile=relative_path(source, os.path.join(final_dir, "Data")),
+                        dfile=relative_path(source, data_root),
                         optimize=2,
                         doraise=True,
                     )
                     os.remove(source)
-                except py_compile.PyCompileError as exc:
+                except (OSError, SyntaxError, ValueError, py_compile.PyCompileError) as exc:
                     raise RuntimeError(
                         f"Player plugin script compilation failed: {source}: {exc}"
                     ) from exc
+        if registry_changed:
+            _write_json_atomic(registry_path, registry)
 
     def _copy_cooked_assets(
         self,
@@ -2654,6 +2700,11 @@ finally:
 
         data_dir = os.path.join(final_dir, "Data")
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        packages_root = resolved_path(os.path.join(self.project_path, "Packages"))
+        staged_plugin_guids = {
+            str(guid).casefold()
+            for guid in getattr(self, "_staged_player_plugin_guids", set())
+        }
         project_prefix = portable_path(resolved_path(self.project_path)).rstrip("/") + "/"
 
         def portable_metadata(value):
@@ -2688,17 +2739,21 @@ finally:
             is_project_asset = is_path_within(
                 source_path, assets_root, allow_root=False
             )
+            is_package_asset = (
+                str(guid).casefold() in staged_plugin_guids
+                and is_path_within(source_path, packages_root, allow_root=False)
+            )
             builtin_relative = (
                 self._builtin_resource_relative_path(source_path)
                 if bool(entry.get("read_only", False))
                 else ""
             )
             is_builtin_resource = bool(builtin_relative)
-            if not is_project_asset and not is_builtin_resource:
+            if not is_project_asset and not is_package_asset and not is_builtin_resource:
                 continue
             runtime_path = (
                 relative_path(source_path, self.project_path).replace("\\", "/")
-                if is_project_asset
+                if is_project_asset or is_package_asset
                 else f"Library/Resources/{builtin_relative}"
             )
             if runtime_path.casefold().endswith(".py"):
@@ -4063,6 +4118,12 @@ finally:
         """Return whether dependency discovery needs this entry's JSON bytes."""
 
         normalized = str(entry_path).replace("\\", "/")
+        if normalized.casefold() == "projectsettings/inxplugins.json":
+            # The runtime registry contains package ownership GUIDs, including
+            # its deliberately unshipped control manifest.  They are lifecycle
+            # records rather than serialized asset references and must not be
+            # interpreted as content dependency edges.
+            return False
         logical_type = logical_type_for_path(normalized)
         payload_kind = payload_kind_for(logical_type)
         cooked_json_document = (

@@ -84,3 +84,31 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
     assert 'add_component("LineRenderer")' in source
     assert "self._body.add_force" in source
     assert "self._trail.set_positions" in source
+    assert "Application.package_path" in source
+    assert "add_component(inx.ui.UIText)" in source
+    package_message = (
+        FIXTURE
+        / "Packages"
+        / "infernux"
+        / "multiplatform_probe"
+        / "runtime"
+        / "message.txt"
+    )
+    assert package_message.read_text(encoding="utf-8").strip() == (
+        "Package resource reached UIText on every Player target."
+    )
+    registry = json.loads(
+        (FIXTURE / "ProjectSettings" / "InxPlugins.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    package = registry["installed"][0]
+    assert package["reference"] == "infernux/multiplatform_probe"
+    assert [item["logical_path"] for item in package["files"]] == [
+        "runtime/lifecycle.py",
+        "runtime/message.txt",
+    ]
+    lifecycle = package_message.with_name("lifecycle.py")
+    lifecycle_source = lifecycle.read_text(encoding="utf-8")
+    compile(lifecycle_source, str(lifecycle), "exec")
+    assert 'context.package_path("runtime/message.txt")' in lifecycle_source

@@ -5,7 +5,9 @@ input-bridge, physics, LineRenderer, Screen UI, and lifecycle fixture for all
 Player jobs. It keeps a camera, light, and authored material in a real
 serialized scene while avoiding external assets. The bootstrap component uses
 the standard gameplay ActionMap to apply force to a rendered Rigidbody and
-records its world-space motion with a LineRenderer.
+records its world-space motion with a LineRenderer. It also resolves a verbatim
+TXT payload from an installed package through ``Application.package_path()``,
+reads it after Player export, and presents the exact value through ``UIText``.
 
 The interactive Balance project remains the functional acceptance project for
 physics, animation, particles, LineRenderer, authored materials, and shared

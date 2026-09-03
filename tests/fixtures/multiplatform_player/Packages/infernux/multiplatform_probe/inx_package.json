@@ -1,0 +1,10 @@
+{
+  "$schema": "infernux.inxpackage",
+  "reference": "infernux/multiplatform_probe",
+  "name": "Multiplatform Resource Probe",
+  "version": "0.4.0",
+  "intro": "Verbatim package resource acceptance fixture.",
+  "intros": {},
+  "engine": ">=0.4.0",
+  "pages": []
+}

@@ -124,6 +124,35 @@ def _package_script_layout(
         if parent == current:
             break
         current = parent
+    # Player builds intentionally omit package control manifests.  The staged
+    # runtime registry is then the authoritative package boundary, especially
+    # for namespaced references such as ``vendor/tool``.
+    registry_path = os.path.join(
+        resolved_path(project_root or _project_root),
+        "ProjectSettings",
+        "InxPlugins.json",
+    )
+    try:
+        with open(registry_path, "r", encoding="utf-8") as stream:
+            installed = json.load(stream).get("installed", [])
+    except (OSError, json.JSONDecodeError, AttributeError):
+        installed = []
+    registered_roots: list[tuple[int, str]] = []
+    for package in installed:
+        if not isinstance(package, dict):
+            continue
+        reference = str(package.get("reference", "")).strip("/")
+        parts = reference.split("/")
+        if not reference or any(part in {"", ".", ".."} for part in parts):
+            continue
+        package_root = resolved_path(os.path.join(packages_root, *parts))
+        if is_path_within(candidate, package_root, allow_root=False):
+            registered_roots.append((len(parts), package_root))
+    for _depth, package_root in sorted(registered_roots, reverse=True):
+        logical = portable_path(relative_path(candidate, package_root))
+        first, separator, remainder = logical.partition("/")
+        if separator and first in {"runtime", "editor"}:
+            return package_root, first, remainder
     # A local author may develop a simple package directly as
     # Packages/<name>/{runtime,editor}/... without writing a manifest.  The
     # first directory is then the package identity boundary; namespaced
@@ -304,7 +333,7 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
 
     package_root, role, _ = _package_script_layout(resolved_abs, project_root)
     if package_root and role:
-        roots.append(os.path.join(package_root, role.title()))
+        roots.append(os.path.join(package_root, role))
         roots.append(package_root)
 
     if assets_root:

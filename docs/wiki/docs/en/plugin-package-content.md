@@ -71,3 +71,11 @@ Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root
 Subclass `InxPreload` for lifecycle work. Use explicit relative imports for package-local Python code. Every installed package receives an isolated deterministic module namespace. `runtime/` participates in gameplay component loading and hot refresh; `editor/` is loaded only by the Editor lifecycle.
 
 No include/exclude fallback list exists. A `.pyd` or `.wasm` under `runtime/` is runtime-owned; the same file under `editor/` is Editor-only. Materials, shaders, HTML, and other ordinary assets are imported under `Assets/Plugins` and included in the Player through the normal asset pipeline.
+
+## Raw runtime resources
+
+Place content that must remain a raw file for an external runtime or library under `runtime/`, such as JARs, JSON, Wasm, vocabularies, or a complete directory tree with relative `include` statements. Player builds preserve this tree byte-for-byte and keep its relative layout. Do not depend on the process working directory or infer the installed location from a lifecycle script's `__file__`.
+
+Gameplay code resolves a real read-only path with `inx.Application.package_path("studio/server", "runtime/server.jar")`. Inside `InxPreload.preload(context)`, use `context.package_path("runtime/server.jar")` without repeating the package reference. Windows and Linux return a path under the Player data directory, Android returns the validated path extracted into the app-private content directory, and Web returns a path in the Emscripten virtual filesystem. Libraries that accept a filesystem path can therefore continue to resolve sibling imports against the preserved directory.
+
+`package_path` resolves only installed package content that was included in the current Player. It rejects absolute paths, drive-qualified paths, and `..` traversal, and fails explicitly when content is missing. Treat the result as immutable release content; write generated or mutable state under `inx.Application.persistent_data_path()`.

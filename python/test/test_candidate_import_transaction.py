@@ -13,6 +13,7 @@ from Infernux.engine.candidate_import import (
 )
 from Infernux.engine.project_context import (
     get_project_root,
+    get_script_import_paths,
     get_script_module_name,
     set_project_root,
 )
@@ -225,6 +226,10 @@ def test_installed_package_runtime_relative_import_uses_isolated_namespace(
     assert component_name == (
         "_infernux_packages.studio.ai_2dtools.runtime.component"
     )
+    assert get_script_import_paths(str(component))[:2] == [
+        str(runtime.resolve()),
+        str(runtime.parent.resolve()),
+    ]
     assert helper_name not in sys.modules
     broker.rollback()
 

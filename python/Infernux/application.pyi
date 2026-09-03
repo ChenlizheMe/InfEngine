@@ -1,3 +1,4 @@
+from os import PathLike
 from typing import Any
 
 class Application:
@@ -11,6 +12,8 @@ class Application:
     def persistent_data_path() -> str: ...
     @staticmethod
     def asset_path(path: str) -> str: ...
+    @staticmethod
+    def package_path(package_reference: str, relative_path: str | PathLike[str]) -> str: ...
     @staticmethod
     def open_url(target: str) -> bool: ...
     @staticmethod

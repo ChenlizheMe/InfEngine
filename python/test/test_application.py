@@ -158,6 +158,29 @@ def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
         set_project_root(None)
 
 
+def test_package_path_resolves_verbatim_payload_and_rejects_escape(tmp_path):
+    from Infernux.engine.project_context import set_project_root
+
+    payload = tmp_path / "Packages" / "vendor" / "server" / "runtime" / "config.json"
+    payload.parent.mkdir(parents=True)
+    payload.write_text('{"port": 8080}\n', encoding="utf-8")
+    set_project_root(str(tmp_path))
+    try:
+        assert Application.package_path(
+            "vendor/server", "runtime/config.json"
+        ) == str(payload.resolve())
+        with pytest.raises(ValueError, match="escapes"):
+            Application.package_path("vendor/server", "../outside.json")
+        with pytest.raises(ValueError, match="relative"):
+            Application.package_path("vendor/server", "C:/outside.json")
+        with pytest.raises(ValueError, match="reference is invalid"):
+            Application.package_path("vendor\\server", "runtime/config.json")
+        with pytest.raises(FileNotFoundError, match="not available"):
+            Application.package_path("vendor/server", "runtime/missing.json")
+    finally:
+        set_project_root(None)
+
+
 def test_open_url_observes_one_canonical_asset_url(tmp_path):
     asset = tmp_path / "Assets" / "Plugins" / "abc" / "web" / "index.html"
     asset.parent.mkdir(parents=True)

@@ -1,5 +1,8 @@
 """Compiled-script sentinel for the multiplatform Player fixture."""
 
+from pathlib import Path
+import os
+
 import infernux as inx
 
 
@@ -9,6 +12,9 @@ class PlatformFixtureBootstrap(inx.InxComponent):
     MOVE_FORCE = 24.0
     TRAIL_MAX_POINTS = 96
     TEXT_INPUT_VALUE = "输入测试中文🙂"
+    PACKAGE_REFERENCE = "infernux/multiplatform_probe"
+    PACKAGE_MESSAGE_PATH = "runtime/message.txt"
+    PACKAGE_MESSAGE = "Package resource reached UIText on every Player target."
 
     def awake(self):
         self._probe = None
@@ -87,6 +93,37 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._text_input_status.text = "Text input idle"
         self._text_input_status.font_size = 24.0
         self._text_input_status.color = [0.92, 0.95, 1.0, 1.0]
+
+        package_message_path = inx.Application.package_path(
+            self.PACKAGE_REFERENCE,
+            self.PACKAGE_MESSAGE_PATH,
+        )
+        package_message = Path(package_message_path).read_text(encoding="utf-8").strip()
+        if package_message != self.PACKAGE_MESSAGE:
+            raise RuntimeError(
+                f"Unexpected package resource payload: {package_message!r}"
+            )
+        preloaded_message = os.environ.get("_INFERNUX_FIXTURE_PACKAGE_MESSAGE", "")
+        if preloaded_message != package_message:
+            raise RuntimeError(
+                "InxPreload did not publish the packaged resource before scene startup"
+            )
+        package_status_owner = scene.create_game_object(
+            "Platform Fixture Package Resource"
+        )
+        package_status_owner.set_parent(canvas_owner, world_position_stays=False)
+        package_status = package_status_owner.add_component(inx.ui.UIText)
+        package_status.x = 256.0
+        package_status.y = 168.0
+        package_status.width = 768.0
+        package_status.height = 48.0
+        package_status.text = package_message
+        package_status.font_size = 20.0
+        package_status.color = [0.25, 1.0, 0.68, 1.0]
+        inx.Debug.log(
+            "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY "
+            f"value={package_message}"
+        )
 
         inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_GAMEPLAY_READY")
 

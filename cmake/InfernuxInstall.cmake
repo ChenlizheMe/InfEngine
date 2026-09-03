@@ -154,7 +154,11 @@ add_custom_target(prebuild_player_runtime
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
         "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
         "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
-        "-DNATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        # python-sync is the atomic staged native payload on every host.  On
+        # Linux the extension target directory does not contain the shared
+        # runtime siblings, so handing that directory to the Player builder
+        # incorrectly identifies a Release build as an Editor-only payload.
+        "-DNATIVE_MODULE_DIR=${PYTHON_TARGET_DIR}"
         "-DPLAYER_HOST_PATH=${INFERNUX_PLAYER_HOST_BUILD_PATH}"
         "-DOUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_DIR}"
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"

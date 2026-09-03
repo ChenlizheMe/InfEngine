@@ -154,6 +154,7 @@ jobs:
         run: |
           conda activate infernux
           $probe = '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}'
+          $packageProbe = '{"object_name":"Platform Fixture Package Resource","component_type":"UIText","fields":["text"],"assertions":[{"field":"text","operator":"equal","value":"Package resource reached UIText on every Player target."}]}'
           python scripts\acceptance\windows_player_smoke.py `
             out\acceptance\windows\InfernuxPlatformFixture.exe `
             --report out\test-results\windows-player-smoke.json `
@@ -162,7 +163,8 @@ jobs:
             --axis z `
             --minimum-axis-delta 0.5 `
             --minimum-final-y 0.0 `
-            --component-probe $probe
+            --component-probe $probe `
+            --component-probe $packageProbe
 
       - name: Upload Windows Player evidence
         if: always()
@@ -243,7 +245,8 @@ jobs:
             --axis z \
             --minimum-axis-delta 0.5 \
             --minimum-final-y 0.0 \
-            --component-probe '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}'
+            --component-probe '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}' \
+            --component-probe '{"object_name":"Platform Fixture Package Resource","component_type":"UIText","fields":["text"],"assertions":[{"field":"text","operator":"equal","value":"Package resource reached UIText on every Player target."}]}'
 
       - name: Upload Linux Player evidence
         if: always()
@@ -347,6 +350,8 @@ jobs:
             http://127.0.0.1:8765/infernux-player.html \
             --startup-timeout-ms 360000 \
             --verify-native-multitouch \
+            --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." \
+            --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." \
             | tee out/test-results/web-player-smoke.json
 
       - name: Upload Web Player evidence

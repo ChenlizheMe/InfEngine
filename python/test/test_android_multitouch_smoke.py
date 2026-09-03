@@ -107,6 +107,10 @@ def test_parser_uses_current_android_fixture_contract():
     assert arguments.wait_milliseconds == 7000
     assert module._DEFAULT_REQUIRED_LOGS == (
         "INFERNUX_PLATFORM_FIXTURE_SCREEN_STATE",
+        "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY "
+        "value=Package resource reached UIText on every Player target.",
+        "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY "
+        "value=Package resource reached UIText on every Player target.",
         "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
         "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
         "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",

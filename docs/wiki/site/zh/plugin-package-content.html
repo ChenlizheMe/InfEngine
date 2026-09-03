@@ -282,6 +282,10 @@
 <h2 id="player">代码与 Player<a class="headerlink" href="#player" title="Permanent link">&para;</a></h2>
 <p>生命周期代码继承 <code>InxPreload</code>。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。<code>runtime/</code> 参与玩法组件加载和热刷新；<code>editor/</code> 只由 Editor 生命周期加载。</p>
 <p>这里没有 include/exclude fallback 清单。<code>.pyd</code> 或 <code>.wasm</code> 放在 <code>runtime/</code> 就属于运行时，放在 <code>editor/</code> 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 <code>Assets/Plugins</code>，再通过正常资产管线进入 Player。</p>
+<h2 id="_5">运行时原始资源<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p>需要以原始文件形式交给外部运行时或库的内容放在 <code>runtime/</code>，例如 JAR、JSON、Wasm、词表或一整棵带相对 <code>include</code> 的目录。构建 Player 时会逐字节保留这棵目录及其相对结构；不要依赖当前工作目录，也不要从生命周期脚本的 <code>__file__</code> 推断安装位置。</p>
+<p>普通玩法脚本通过 <code>inx.Application.package_path("studio/server", "runtime/server.jar")</code> 取得当前目标上的真实只读路径。<code>InxPreload.preload(context)</code> 内可用 <code>context.package_path("runtime/server.jar")</code>，不必重复 package reference。Windows/Linux 返回 Player 数据目录中的路径，Android 返回校验后解包到应用私有内容目录的路径，Web 返回 Emscripten 虚拟文件系统中的路径；因此接收文件路径并自行解析相对导入的库可以继续使用同一目录结构。</p>
+<p><code>package_path</code> 只解析当前已安装且已进入 Player 的包内容，并拒绝绝对路径、盘符和 <code>..</code> 越界；资源缺失会明确失败。该路径是只读发布内容，运行时生成或修改的数据应写入 <code>inx.Application.persistent_data_path()</code>。</p>
                 
     <nav class="doc-trail" data-doc-trail aria-label="文档连续阅读与反馈">
         <a class="doc-trail-fallback" href="/wiki/site/zh/api/index.html">返回 API 目录</a>

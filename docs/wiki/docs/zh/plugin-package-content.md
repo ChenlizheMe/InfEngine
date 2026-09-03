@@ -71,3 +71,11 @@ vfx-kit/
 生命周期代码继承 `InxPreload`。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。`runtime/` 参与玩法组件加载和热刷新；`editor/` 只由 Editor 生命周期加载。
 
 这里没有 include/exclude fallback 清单。`.pyd` 或 `.wasm` 放在 `runtime/` 就属于运行时，放在 `editor/` 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 `Assets/Plugins`，再通过正常资产管线进入 Player。
+
+## 运行时原始资源
+
+需要以原始文件形式交给外部运行时或库的内容放在 `runtime/`，例如 JAR、JSON、Wasm、词表或一整棵带相对 `include` 的目录。构建 Player 时会逐字节保留这棵目录及其相对结构；不要依赖当前工作目录，也不要从生命周期脚本的 `__file__` 推断安装位置。
+
+普通玩法脚本通过 `inx.Application.package_path("studio/server", "runtime/server.jar")` 取得当前目标上的真实只读路径。`InxPreload.preload(context)` 内可用 `context.package_path("runtime/server.jar")`，不必重复 package reference。Windows/Linux 返回 Player 数据目录中的路径，Android 返回校验后解包到应用私有内容目录的路径，Web 返回 Emscripten 虚拟文件系统中的路径；因此接收文件路径并自行解析相对导入的库可以继续使用同一目录结构。
+
+`package_path` 只解析当前已安装且已进入 Player 的包内容，并拒绝绝对路径、盘符和 `..` 越界；资源缺失会明确失败。该路径是只读发布内容，运行时生成或修改的数据应写入 `inx.Application.persistent_data_path()`。

@@ -89,6 +89,23 @@ class Application:
         return resolved
 
     @staticmethod
+    def package_path(package_reference: str, relative_path: str | os.PathLike[str]) -> str:
+        """Resolve a read-only, verbatim package payload in Editor or Player.
+
+        This is the package-scoped counterpart of :meth:`asset_path`.  Files
+        keep their relative directory structure in every Player target, which
+        allows sibling includes and external runtimes to receive a real path.
+        """
+
+        from Infernux.lifecycle import _resolve_package_path
+
+        return _resolve_package_path(
+            Application.data_path(),
+            str(package_reference),
+            relative_path,
+        )
+
+    @staticmethod
     def open_url(target: str) -> bool:
         """Open one absolute local file or HTTP(S) URL with the platform handler.
 
