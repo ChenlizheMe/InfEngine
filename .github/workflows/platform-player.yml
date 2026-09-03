@@ -17,7 +17,7 @@ on:
       - "scripts/setup/**"
       - "tests/fixtures/multiplatform_player/**"
   push:
-    branches: [master, main, "040/multiplatform_build"]
+    branches: [master, main]
     paths:
       - ".github/workflows/platform-player.yml"
       - "CMakeLists.txt"
