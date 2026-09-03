@@ -1020,7 +1020,11 @@ def _temporary_import_paths(
             project_root, "Packages", *package_reference.split("/")
         )
         candidates.extend(
-            [package_root, os.path.join(package_root, "Runtime"), os.path.join(package_root, "Editor")]
+            [
+                package_root,
+                os.path.join(package_root, "runtime"),
+                os.path.join(package_root, "editor"),
+            ]
         )
     before = list(sys.path)
     try:
