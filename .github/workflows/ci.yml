@@ -1,9 +1,9 @@
-name: Preset Build And Headless Tests
+name: Desktop Release And Tests
 
 on:
   pull_request:
   push:
-    branches: [master, main]
+    branches: [master, main, "040/multiplatform_build"]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows-headless:
+  windows-desktop:
     runs-on: windows-2022
     timeout-minutes: 120
     env:
@@ -55,21 +55,21 @@ jobs:
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Configure native test preset
+      - name: Configure Windows release preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-headless
+          cmake --preset windows-msvc-release
 
-      - name: Build native test preset
+      - name: Build Windows editor and native tests
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --build --preset windows-msvc-headless
+          cmake --build --preset windows-msvc-release
 
-      - name: Provide Vulkan loader for headless tests
+      - name: Provide Vulkan loader for native tests
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
@@ -83,7 +83,7 @@ jobs:
           }
           $loader = Join-Path $runtimeBin "vulkan-1.dll"
           $destinations = @("python\Infernux\lib\vulkan-1.dll")
-          Get-ChildItem "out\build\windows-msvc-headless" -Recurse -Filter "InfernuxRuntime.dll" |
+          Get-ChildItem "out\build\windows-msvc-release" -Recurse -Filter "InfernuxRuntime.dll" |
             ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
           foreach ($destination in ($destinations | Select-Object -Unique)) {
             $parent = Split-Path -Parent $destination
@@ -97,7 +97,7 @@ jobs:
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           New-Item -ItemType Directory -Path out\test-results -Force | Out-Null
-          ctest --preset windows-msvc-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out\test-results\ctest-windows.xml
+          ctest --preset windows-msvc-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out\test-results\ctest-windows.xml
 
       - name: Run Python and platform contract tests
         shell: pwsh
@@ -105,6 +105,32 @@ jobs:
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           python -m pytest python\test -q --junitxml out\test-results\pytest-windows.xml
+
+      - name: Run Hub tests
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:PYTHONPATH = 'packaging'
+          python -m pytest packaging\tests -q --junitxml out\test-results\pytest-hub-windows.xml
+
+      - name: Build Windows editor wheel and Hub distribution
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          cmake --build --preset windows-msvc-wheel
+          cmake --build --preset windows-hub-installer
+
+      - name: Upload Windows desktop distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/build/windows-msvc-release/python-wheel/*.whl
+            out/package/installer/InfernuxHubInstaller.exe
+            out/package/hub-release/InfernuxHub-*-windows-x64-full.zip
+            out/package/hub-release/InfernuxHub-windows-x64-manifest.json
+          if-no-files-found: error
 
       - name: Upload Windows test evidence
         if: always()
@@ -114,7 +140,7 @@ jobs:
           path: out/test-results/*.xml
           if-no-files-found: warn
 
-  linux-headless:
+  linux-desktop:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     defaults:
@@ -139,26 +165,48 @@ jobs:
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Configure Linux headless preset
+      - name: Configure Linux release preset
         run: |
           conda activate infernux
-          cmake --preset linux-clang-headless
+          cmake --preset linux-clang-release
 
-      - name: Build Linux headless preset
+      - name: Build Linux editor and native tests
         run: |
           conda activate infernux
-          cmake --build --preset linux-clang-headless
+          cmake --build --preset linux-clang-release
 
       - name: Run Linux preset tests
         run: |
           conda activate infernux
           mkdir -p out/test-results
-          ctest --preset linux-clang-headless -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out/test-results/ctest-linux.xml
+          ctest --preset linux-clang-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out/test-results/ctest-linux.xml
 
       - name: Run Python and platform contract tests
         run: |
           conda activate infernux
           python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
+
+      - name: Run Hub tests
+        run: |
+          conda activate infernux
+          PYTHONPATH=packaging python -m pytest packaging/tests -q --junitxml out/test-results/pytest-hub-linux.xml
+
+      - name: Build Linux editor wheel and Hub distribution
+        run: |
+          conda activate infernux
+          cmake --build --preset linux-clang-wheel
+          cmake --build --preset linux-hub-installer
+
+      - name: Upload Linux desktop distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/build/linux-clang-release/python-wheel/*.whl
+            out/package/installer/InfernuxHubInstaller
+            out/package/hub-release/InfernuxHub-*-linux-x64-full.zip
+            out/package/hub-release/InfernuxHub-linux-x64-manifest.json
+          if-no-files-found: error
 
       - name: Upload Linux test evidence
         if: always()

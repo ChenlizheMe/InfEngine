@@ -86,6 +86,18 @@
       "configurePreset": "linux-clang-release",
       "jobs": 8,
       "targets": ["install_python_wheel"]
+    },
+    {
+      "name": "linux-hub",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["infernux_hub"]
+    },
+    {
+      "name": "linux-hub-installer",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["infernux_hub_installer"]
     }
   ],
   "testPresets": [

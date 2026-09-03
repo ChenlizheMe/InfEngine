@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -12,6 +13,15 @@ from pathlib import Path, PurePosixPath
 MANIFEST_SCHEMA = "infernux.hub_update"
 PRODUCT_NAME = "InfernuxHub"
 SUPPORTED_PLATFORMS = frozenset({"windows-x64", "linux-x64"})
+
+
+def project_version(source_root: str | Path | None = None) -> str:
+    root = Path(source_root).resolve() if source_root else Path(__file__).resolve().parents[1]
+    document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    version = document.get("project", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError("pyproject.toml does not declare project.version")
+    return version
 
 
 def host_platform_id(
@@ -164,7 +174,7 @@ def build_release_artifacts(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hub-dir", required=True)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version", default=project_version())
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--platform", choices=sorted(SUPPORTED_PLATFORMS))
     arguments = parser.parse_args()

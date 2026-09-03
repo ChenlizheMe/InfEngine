@@ -18,6 +18,7 @@ def _write_notifications(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
+                "$schema": "infernux.hub_notifications",
                 "notifications": [
                     {
                         "id": "runtime-repair",
@@ -71,12 +72,22 @@ def test_notification_uses_current_hub_language(tmp_path: Path):
     configure_language("system")
 
 
-def test_notification_queue_ignores_missing_or_invalid_documents(tmp_path: Path):
+def test_notification_queue_rejects_missing_or_invalid_documents(tmp_path: Path):
     database = ProjectDatabase(tmp_path / "projects.db")
     missing = HubNotificationQueue(database, tmp_path / "missing.json")
-    assert missing.pending("0.2.9") == []
+    try:
+        missing.pending("0.2.9")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("missing notification document was accepted")
 
     invalid_path = tmp_path / "invalid.json"
     invalid_path.write_text('{"notifications": {}}', encoding="utf-8")
-    assert HubNotificationQueue(database, invalid_path).pending("0.2.9") == []
+    try:
+        HubNotificationQueue(database, invalid_path).pending("0.2.9")
+    except ValueError as exc:
+        assert "current contract" in str(exc)
+    else:
+        raise AssertionError("invalid notification document was accepted")
     database.close()

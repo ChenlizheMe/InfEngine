@@ -6,11 +6,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from hub_utils import get_hub_data_dir, is_frozen
 from i18n import current_language
 
 
-_NOTIFICATION_FILE = "hub_notifications.json"
+HUB_NOTIFICATIONS_URL = "https://infernux-engine.com/hub-notifications.json"
+HUB_NOTIFICATIONS_SCHEMA = "infernux.hub_notifications"
 _SEEN_KEY_PREFIX = "hub_notification_seen"
 
 
@@ -34,28 +34,35 @@ def _localized_text(value: object, language: str) -> str:
     return str(selected).strip()
 
 
-def default_notification_path() -> Path:
-    if is_frozen():
-        return Path(get_hub_data_dir()) / _NOTIFICATION_FILE
-    return Path(__file__).resolve().parent / "resources" / _NOTIFICATION_FILE
-
-
 class HubNotificationQueue:
     def __init__(self, database, source_path: str | Path | None = None) -> None:
         self._database = database
-        self._source_path = Path(source_path) if source_path else default_notification_path()
+        self._source_path = Path(source_path) if source_path else None
+
+    @property
+    def source_path(self) -> Path | None:
+        return self._source_path
 
     @staticmethod
     def _seen_key(hub_version: str, notification_id: str) -> str:
         return f"{_SEEN_KEY_PREFIX}:{hub_version}:{notification_id}"
 
     def pending(self, hub_version: str) -> list[HubNotification]:
-        try:
-            document = json.loads(self._source_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        if not isinstance(document.get("notifications"), list):
-            return []
+        if self._source_path is None:
+            raise RuntimeError("The remote notification document has not been supplied")
+        return self.pending_bytes(
+            hub_version, self._source_path.read_bytes()
+        )
+
+    def pending_bytes(self, hub_version: str, payload: bytes) -> list[HubNotification]:
+        document = json.loads(payload.decode("utf-8"))
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"$schema", "notifications"}
+            or document["$schema"] != HUB_NOTIFICATIONS_SCHEMA
+            or not isinstance(document["notifications"], list)
+        ):
+            raise ValueError("Hub notifications do not match the current contract")
 
         language = current_language()
         pending: list[HubNotification] = []
@@ -108,4 +115,9 @@ class HubNotificationQueue:
         )
 
 
-__all__ = ["HubNotification", "HubNotificationQueue", "default_notification_path"]
+__all__ = [
+    "HUB_NOTIFICATIONS_SCHEMA",
+    "HUB_NOTIFICATIONS_URL",
+    "HubNotification",
+    "HubNotificationQueue",
+]

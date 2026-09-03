@@ -99,6 +99,10 @@ def apply_update(
             if target.is_file():
                 target.unlink()
             applied.append(relative)
+
+        executable = install_dir / "Infernux Hub"
+        if not executable.is_file():
+            raise FileNotFoundError(f"Updated Hub executable is missing: {executable}")
     except Exception:
         for relative in reversed(applied):
             live = install_dir.joinpath(*relative.parts)
@@ -110,9 +114,6 @@ def apply_update(
                 live.unlink()
         raise
 
-    executable = install_dir / "Infernux Hub"
-    if not executable.is_file():
-        raise FileNotFoundError(f"Updated Hub executable is missing: {executable}")
     subprocess.Popen(
         [os.fspath(executable)],
         cwd=install_dir,

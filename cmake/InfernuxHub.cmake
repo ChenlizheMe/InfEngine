@@ -27,6 +27,16 @@ add_custom_target(infernux_hub
     COMMENT "Build native Infernux Hub → out/package/hub/"
 )
 
+add_custom_target(infernux_hub_release_assets
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_SOURCE_DIR}/packaging/hub_release.py"
+        --hub-dir "${CMAKE_SOURCE_DIR}/out/package/hub"
+        --output-dir "${CMAKE_SOURCE_DIR}/out/package/hub-release"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    DEPENDS infernux_hub
+    COMMENT "Build the platform Hub update archive and installed manifest"
+)
+
 add_custom_target(infernux_hub_installer
     COMMAND ${CMAKE_COMMAND} -E echo "Building the native graphical Infernux Hub installer..."
     COMMAND ${Python3_EXECUTABLE}
@@ -37,6 +47,6 @@ add_custom_target(infernux_hub_installer
         --package-dir "${CMAKE_SOURCE_DIR}/out/package"
         --cmake-generator "${CMAKE_GENERATOR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
-    DEPENDS infernux_hub
+    DEPENDS infernux_hub_release_assets
     COMMENT "Build native graphical Infernux Hub installer → out/package/installer/"
 )

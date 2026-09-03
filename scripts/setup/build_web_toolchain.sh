@@ -82,6 +82,7 @@ from pathlib import Path
 
 config_path, emscripten_root, binaryen_root, node_path = map(Path, sys.argv[1:])
 config_path.write_text(
+    f"LLVM_ROOT = {str(binaryen_root / 'bin')!r}\n"
     f"EMSCRIPTEN_ROOT = {str(emscripten_root)!r}\n"
     f"BINARYEN_ROOT = {str(binaryen_root)!r}\n"
     f"NODE_JS = {str(node_path)!r}\n",

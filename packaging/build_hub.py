@@ -467,7 +467,6 @@ def _build_hub(
 ) -> None:
     packaging_dir = source_root / "packaging"
     runtime_bundle = package_dir / "runtime" / "runtime_bundle.zip"
-    notification_file = packaging_dir / "resources" / "hub_notifications.json"
     linux_updater = packaging_dir / "hub_update_apply.py"
     if not runtime_bundle.is_file():
         raise RuntimeError(
@@ -475,11 +474,6 @@ def _build_hub(
             "prepare_bundled_python_runtime target before packaging Infernux Hub."
         )
     _validate_runtime_bundle(runtime_bundle)
-    if not notification_file.is_file():
-        raise RuntimeError(
-            "The version-scoped Hub notification resource is missing: "
-            f"{notification_file}"
-        )
     output_dir = build_dir / "nuitka"
     shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -499,10 +493,6 @@ def _build_hub(
         (
             f"--include-data-file={runtime_bundle}="
             "InfernuxHubData/runtime/runtime_bundle.zip"
-        ),
-        (
-            f"--include-data-file={notification_file}="
-            "InfernuxHubData/hub_notifications.json"
         ),
         (
             f"--include-data-file={linux_updater}="

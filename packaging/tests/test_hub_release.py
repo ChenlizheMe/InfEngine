@@ -10,8 +10,17 @@ from hub_release import (
     host_platform_id,
     load_manifest,
     manifest_asset_name,
+    project_version,
     write_manifest,
 )
+
+
+def test_project_version_uses_current_project_metadata(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nversion = "0.4.0"\n', encoding="utf-8"
+    )
+
+    assert project_version(tmp_path) == "0.4.0"
 
 
 def test_release_contains_one_archive_and_current_manifest(tmp_path: Path):

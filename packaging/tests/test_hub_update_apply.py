@@ -79,3 +79,36 @@ def test_linux_applier_rejects_paths_outside_the_installation(tmp_path: Path):
         assert "Unsafe Hub update path" in str(exc)
     else:
         raise AssertionError("unsafe update path was accepted")
+
+
+def test_linux_applier_rolls_back_when_update_omits_the_executable(
+    tmp_path: Path, monkeypatch
+):
+    install = tmp_path / "installed"
+    stage = tmp_path / "stage"
+    install.mkdir()
+    stage.mkdir()
+    (install / "Infernux Hub").write_bytes(b"old")
+    (install / "library.so").write_bytes(b"old-library")
+    (stage / "library.so").write_bytes(b"new-library")
+    metadata = _metadata(
+        tmp_path / "hub-update.json",
+        files=["library.so"],
+        delete=["Infernux Hub"],
+    )
+    monkeypatch.setattr(hub_update_apply, "_wait_for_exit", lambda _pid: None)
+
+    try:
+        hub_update_apply.apply_update(
+            parent_pid=12,
+            install_dir=install,
+            stage_dir=stage,
+            metadata_path=metadata,
+        )
+    except FileNotFoundError as exc:
+        assert "Updated Hub executable is missing" in str(exc)
+    else:
+        raise AssertionError("update without the Hub executable was accepted")
+
+    assert (install / "Infernux Hub").read_bytes() == b"old"
+    assert (install / "library.so").read_bytes() == b"old-library"
