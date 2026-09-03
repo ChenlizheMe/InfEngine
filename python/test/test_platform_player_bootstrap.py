@@ -85,7 +85,7 @@ def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path)
     assert os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"
 
 
-def test_platform_player_prunes_only_complete_stale_content_generations(tmp_path):
+def test_platform_player_keeps_only_the_active_content_generation(tmp_path):
     data_root = _platform_package(tmp_path)
     cache_root = tmp_path / "cache"
     active = Path(prepare_platform_player(str(data_root), str(cache_root)))
@@ -106,10 +106,10 @@ def test_platform_player_prunes_only_complete_stale_content_generations(tmp_path
     assert Path(prepare_platform_player(str(data_root), str(cache_root))) == active
 
     assert active.is_dir()
-    assert stale_generations[0].is_dir()
+    assert not stale_generations[0].exists()
     assert not stale_generations[1].exists()
     assert not stale_generations[2].exists()
-    assert incomplete.is_dir()
+    assert not incomplete.exists()
     assert unrelated.is_dir()
 
 
