@@ -915,3 +915,44 @@ def test_supervisor_stops_player_through_authenticated_control_without_force(tmp
     assert result["stopped"] is True
     assert result["player_running"] is False
     assert "forced" not in result
+
+
+def test_supervisor_reaps_the_player_process_it_owns(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "OwnedPlayer"
+    supervisor = SupervisorSession(str(project), session_id="owned-player")
+    supervisor.prepare_project()
+    waited = []
+
+    class OwnedPlayerProcess:
+        pid = 9560
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*, timeout):
+            waited.append(timeout)
+            return 0
+
+    supervisor._player_process = OwnedPlayerProcess()
+    supervisor._player_control_token = "private-player-control-token"
+    supervisor._player_ready = True
+    monkeypatch.setattr(
+        supervisor,
+        "_call_player_control",
+        lambda *_args, **_kwargs: {"close_requested": True},
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "_wait_for_pid_exit",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an owned Player must be reaped through its Popen handle"
+        ),
+    )
+
+    result = supervisor.stop_player(timeout_seconds=1.5)
+
+    assert waited == [1.5]
+    assert result["stopped"] is True
+    assert result["player_running"] is False

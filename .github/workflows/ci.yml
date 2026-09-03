@@ -39,6 +39,13 @@ jobs:
           path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
           key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-windows
 
+      - name: Cache pinned Windows software Vulkan driver
+        id: cache-windows-swiftshader
+        uses: actions/cache@v4
+        with:
+          path: out\toolchains\windows-swiftshader
+          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025
+
       - name: Install Vulkan SDK
         if: steps.cache-vulkan.outputs.cache-hit != 'true'
         shell: pwsh
@@ -54,6 +61,13 @@ jobs:
         run: |
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Build pinned Windows software Vulkan driver
+        if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          conda activate infernux
+          scripts\setup\build_windows_swiftshader.ps1 out\toolchains\windows-swiftshader
 
       - name: Configure Windows release preset
         shell: pwsh
@@ -85,6 +99,12 @@ jobs:
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
             Copy-Item -LiteralPath $loader -Destination $destination -Force
           }
+          $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\build\Windows\vk_swiftshader_icd.json"
+          if (-not (Test-Path $swiftShaderManifest)) {
+            throw "The pinned Windows SwiftShader Vulkan ICD is missing."
+          }
+          "VK_DRIVER_FILES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_ICD_FILENAMES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build Windows editor and native tests
         shell: pwsh
