@@ -370,6 +370,11 @@ def install_default_libraries(
     manager = manager or PluginManager(project, runtime=False)
     if manager.project_root != project:
         raise ValueError("Default library manager belongs to another project")
+    install_bundled_packages(
+        project,
+        resources_root=resources_root,
+        manager=manager,
+    )
     installed = {
         str(item.get("reference", "")).casefold()
         for item in manager.registry.installed()

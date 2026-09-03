@@ -97,7 +97,7 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
 
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
-def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
+def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     tmp_path, monkeypatch
 ):
     repository = Path(__file__).parents[2]
@@ -113,7 +113,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
                 sys.executable,
                 "-m",
                 "pytest",
-                f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls.__name__}",
+                f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_reinstalls_on_restart.__name__}",
                 "-q",
             ],
             cwd=repository,
@@ -129,7 +129,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         return
 
     resources = repository / "python" / "Infernux" / "resources"
-    artifact = resources / "official_packages" / "infernux.mcp.inxpkg"
+    artifact = resources / "infernux.mcp.inxpkg"
     preview = InxPackage.inspect(str(artifact))
     assert preview.metadata["reference"] == "infernux/mcp"
     assert "format_version" not in preview.metadata
@@ -160,9 +160,6 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     (project / "Assets").mkdir(parents=True)
     (project / "Assets" / "protocol-probe.txt").write_text("probe", encoding="utf-8")
     (project / "ProjectSettings").mkdir()
-    mirrored = project / "Library" / "Resources" / "official_packages"
-    mirrored.mkdir(parents=True)
-    shutil.copy2(artifact, mirrored / artifact.name)
 
     monkeypatch.setattr(
         PluginManager,
@@ -355,10 +352,10 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     }
     assert not remaining_mcp_modules, remaining_mcp_modules
     manager = PluginManager.startup(str(project), runtime=False)
-    assert manager.registry.installed() == ()
-
-    reinstalled = manager.install_reference("infernux/mcp")
-    assert reinstalled.loaded is True
+    assert {
+        item["reference"] for item in manager.registry.installed()
+    } == {"infernux/mcp"}
+    assert manager.states["infernux/mcp"].loaded is True
     manager.uninstall("infernux/mcp")
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

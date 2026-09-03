@@ -107,6 +107,24 @@ foreach(_bootstrap_source_file IN LISTS _bootstrap_source_files)
     endif()
 endforeach()
 
+file(GLOB_RECURSE _bundled_plugins LIST_DIRECTORIES false
+    "${_verify_root}/*.inxpkg"
+)
+list(LENGTH _bundled_plugins _bundled_plugin_count)
+if(NOT _bundled_plugin_count EQUAL 1)
+    message(FATAL_ERROR
+        "Wheel must contain exactly the default MCP plugin, found "
+        "${_bundled_plugin_count} InxPackages"
+    )
+endif()
+list(GET _bundled_plugins 0 _bundled_plugin)
+get_filename_component(_bundled_plugin_name "${_bundled_plugin}" NAME)
+if(NOT _bundled_plugin_name STREQUAL "infernux.mcp.inxpkg")
+    message(FATAL_ERROR
+        "Wheel contains an unexpected built-in plugin: ${_bundled_plugin_name}"
+    )
+endif()
+
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     find_program(_infernux_readelf NAMES readelf llvm-readelf REQUIRED)
     file(GLOB _linux_binding_modules

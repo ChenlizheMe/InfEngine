@@ -1,10 +1,10 @@
-# Generated into the source resources tree so a source-checkout editor and
-# tests can resolve official packages without a wheel install. The archives
-# themselves are gitignored; this target (ALL) rebuilds them after _Infernux.
-# Wheel staging (stage_python_package) depends on this target so the order is
-# always: native module → official plugins → wheel.
+# All official archives are generated in the build tree. Only the default MCP
+# package is copied into the source-checkout resources used by the editor; the
+# platform packages remain release artifacts and are downloaded on demand.
+# Wheel staging depends on this target, preserving the order native module →
+# official plugins → wheel.
 set(INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR
-    "${CMAKE_SOURCE_DIR}/python/Infernux/resources/official_packages"
+    "${CMAKE_BINARY_DIR}/official-plugins"
 )
 set(INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}"
@@ -24,6 +24,7 @@ set(INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-linux.inxpkg"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-android.inxpkg"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-web.inxpkg"
+    "${CMAKE_SOURCE_DIR}/python/Infernux/resources/infernux.mcp.inxpkg"
 )
 
 add_custom_target(infernux_official_plugins ALL
@@ -35,6 +36,9 @@ add_custom_target(infernux_official_plugins ALL
         --source-root "${CMAKE_CURRENT_SOURCE_DIR}"
         --output-root "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}"
         --catalog "${CMAKE_CURRENT_SOURCE_DIR}/plugins.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
+        "${CMAKE_SOURCE_DIR}/python/Infernux/resources/infernux.mcp.inxpkg"
     DEPENDS
         _Infernux
         "${CMAKE_CURRENT_SOURCE_DIR}/build_official_plugins.py"

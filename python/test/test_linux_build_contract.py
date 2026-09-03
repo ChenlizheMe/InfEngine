@@ -136,6 +136,13 @@ def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs
     assert "add_custom_target(infernux_official_plugins ALL" in plugins
     assert "BYPRODUCTS ${INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS}" in plugins
     assert "file(GLOB_RECURSE INFERNUX_OFFICIAL_PLUGIN_SOURCES" not in plugins
+    assert '"${CMAKE_BINARY_DIR}/official-plugins"' in plugins
+    assert (
+        '"${CMAKE_SOURCE_DIR}/python/Infernux/resources/official_packages"'
+        not in plugins
+    )
+    assert "copy_if_different" in plugins
+    assert "python/Infernux/resources/infernux.mcp.inxpkg" in plugins
     stage = packaging.split("add_custom_target(stage_python_package", 1)[1].split(
         "add_custom_target(package_python", 1
     )[0]
@@ -147,3 +154,6 @@ def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs
     assert "infernux.mcp.inxpkg" in wheel_package_install
     assert "infernux.platform-" not in wheel_package_install
     assert "INFERNUX_HOST_PLATFORM_PACKAGE" not in installer
+    assert "Wheel must contain exactly the default MCP plugin" in (
+        ROOT / "cmake/verify_python_wheel.cmake"
+    ).read_text(encoding="utf-8")
