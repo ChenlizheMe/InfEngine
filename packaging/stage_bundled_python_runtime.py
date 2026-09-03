@@ -136,12 +136,15 @@ def _is_embedded_root(root: str) -> bool:
 
 
 def _has_dev_support(root: str) -> bool:
-    include_dir = os.path.join(root, "include")
     if sys.platform == "win32":
+        header_paths = [os.path.join(root, "include", "Python.h")]
         libs_dir = os.path.join(root, "libs")
     else:
+        header_paths = [
+            os.path.join(root, "include", f"python{_TARGET_VERSION}", "Python.h"),
+        ]
         libs_dir = os.path.join(root, "lib")
-    if not os.path.isfile(os.path.join(include_dir, "Python.h")):
+    if not any(os.path.isfile(path) for path in header_paths):
         return False
     return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
 

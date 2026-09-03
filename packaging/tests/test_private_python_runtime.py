@@ -81,23 +81,34 @@ def test_python_312_runtime_remains_addressable() -> None:
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "library_directory", "library_name"),
+    ("platform_name", "header_path", "library_directory", "library_name"),
     (
-        ("win32", "libs", "python313.lib"),
-        ("linux", "lib", "libpython3.13.so.1.0"),
-        ("darwin", "lib", "libpython3.13.dylib"),
+        ("win32", Path("include/Python.h"), "libs", "python313.lib"),
+        (
+            "linux",
+            Path("include/python3.13/Python.h"),
+            "lib",
+            "libpython3.13.so.1.0",
+        ),
+        (
+            "darwin",
+            Path("include/python3.13/Python.h"),
+            "lib",
+            "libpython3.13.dylib",
+        ),
     ),
 )
 def test_staged_runtime_dev_support_uses_the_target_platform_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     platform_name: str,
+    header_path: Path,
     library_directory: str,
     library_name: str,
 ) -> None:
     monkeypatch.setattr(stage_bundled_python_runtime.sys, "platform", platform_name)
-    (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "Python.h").write_bytes(b"")
+    (tmp_path / header_path).parent.mkdir(parents=True)
+    (tmp_path / header_path).write_bytes(b"")
     (tmp_path / library_directory).mkdir()
     (tmp_path / library_directory / library_name).write_bytes(b"")
 
