@@ -1118,6 +1118,25 @@ def test_nuitka_cancellation_does_not_wait_for_the_next_stdout_line(tmp_path, mo
     assert time.perf_counter() - started < 2.5
 
 
+def test_nuitka_build_artifacts_are_scoped_to_the_requested_cache_root(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("INFERNUX_NUITKA_ROOT", raising=False)
+    cache_root = tmp_path / "project" / "Cache" / "Build" / "Desktop"
+    builder = NuitkaBuilder(
+        entry_script=str(tmp_path / "boot.py"),
+        output_dir=str(tmp_path / "output"),
+        build_cache_root=str(cache_root),
+    )
+
+    assert Path(builder._build_cache_root) == cache_root.resolve()
+    assert Path(builder._staging_root) == cache_root.resolve() / "Staging"
+    assert Path(builder._nuitka_cache_dir) == cache_root.resolve() / "Nuitka"
+    assert Path(builder._runtime_pack_dir) == cache_root.resolve() / "RuntimePacks"
+    assert Path(builder._requirements_state_dir) == cache_root.resolve() / "Requirements"
+
+
 @pytest.mark.parametrize(
     ("player_module", "expected_name"),
     ((False, "boot.py"), (True, "_InfernuxPlayer.py")),
@@ -1446,6 +1465,9 @@ def test_player_always_raw_copies_numpy_when_jit_is_disabled(tmp_path, monkeypat
     assert captured["raw_copy_packages"] == ["numpy", "packaging"]
     assert captured["runtime_support_packages"] == ["numba", "llvmlite"]
     assert captured["runtime_pack_cache"] is True
+    assert Path(captured["build_cache_root"]) == (
+        Path(builder.project_path) / "Cache" / "Build" / "Desktop"
+    )
     assert captured["output_filename"] == ("_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so")
     assert captured["player_module"] is True
     assert captured["product_name"] == "Infernux Player"
@@ -1691,8 +1713,8 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
 
 def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder._staging_dir = str(tmp_path / "staging")
     builder.console_mode = "disable"
     builder.lto = True
@@ -1737,8 +1759,8 @@ def test_runtime_pack_keeps_one_engine_native_module_name(
     tmp_path, monkeypatch, short_name, alias_name
 ):
     cache_root = tmp_path / "runtime-packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder.console_mode = "disable"
     builder.lto = True
     builder._player_compile_input_fingerprint = lambda: "current-player-runtime"
@@ -1759,9 +1781,9 @@ def test_runtime_pack_keeps_one_engine_native_module_name(
 def test_packaged_runtime_pack_restores_without_local_cache(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
     packaged_root = tmp_path / "wheel" / "_runtime_packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     monkeypatch.setenv("INFERNUX_PREBUILT_RUNTIME_PACK_DIR", str(packaged_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder._staging_dir = str(tmp_path / "staging")
     builder._engine_fingerprint_cache = "engine-content"
     builder.console_mode = "disable"
@@ -1794,8 +1816,8 @@ def test_packaged_runtime_pack_restores_without_local_cache(tmp_path, monkeypatc
 
 def test_runtime_pack_rejects_unsafe_archive_paths(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder._staging_dir = str(tmp_path / "staging")
     builder._engine_fingerprint_cache = "engine-content"
     builder.console_mode = "disable"
@@ -1932,17 +1954,13 @@ def test_runtime_engine_fingerprint_ignores_generated_meta(tmp_path, monkeypatch
     package_lib.mkdir()
     monkeypatch.setattr(Infernux, "__file__", str(package_init))
     monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
-    )
-    monkeypatch.setattr(
         NuitkaBuilder,
         "_native_payload_dir",
         staticmethod(lambda: package_lib),
     )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
     first = builder._player_compile_input_fingerprint()
     metadata.write_text("changed", encoding="utf-8")
@@ -1962,17 +1980,13 @@ def test_runtime_engine_fingerprint_ignores_editor_backups(tmp_path, monkeypatch
     fake_package = SimpleNamespace(__file__=str(package_root / "__init__.py"))
     monkeypatch.setitem(sys.modules, "Infernux", fake_package)
     monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
-    )
-    monkeypatch.setattr(
         NuitkaBuilder,
         "_native_payload_dir",
         staticmethod(lambda: package_lib),
     )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
     first = builder._player_compile_input_fingerprint()
     backup.write_text("changed", encoding="utf-8")
@@ -1996,13 +2010,9 @@ def test_player_compile_fingerprint_ignores_post_build_packaging_code(tmp_path, 
     compile_builder_source.write_text("COMPILE_RULE = 1\n", encoding="utf-8")
     fake_package = SimpleNamespace(__file__=str(package_init))
     monkeypatch.setitem(sys.modules, "Infernux", fake_package)
-    monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
-    )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
     native_dir = package_root / "lib"
     native_dir.mkdir()
@@ -2082,13 +2092,9 @@ def test_runtime_engine_fingerprint_tracks_loaded_native_payload(tmp_path, monke
     companion.write_bytes(b"first")
     monkeypatch.setattr(Infernux, "__file__", str(package_init))
     monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
-    monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
-    )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
     first = builder._player_compile_input_fingerprint()
     companion.write_bytes(b"second")
@@ -2646,14 +2652,21 @@ def test_build_branding_reuses_identical_icon_for_splash(tmp_path):
 
 def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, monkeypatch):
     state_root = tmp_path / "requirements-state"
-    monkeypatch.setattr(nuitka_builder_module, "_REQUIREMENTS_STATE_DIR", str(state_root))
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("requests==2.32.0\n", encoding="utf-8")
     calls: list[list[str]] = []
     monkeypatch.setattr(nuitka_builder_module.subprocess, "check_call", lambda command: calls.append(command))
 
-    nuitka_builder_module._install_requirements_files(sys.executable, [str(requirements)])
-    nuitka_builder_module._install_requirements_files(sys.executable, [str(requirements)])
+    nuitka_builder_module._install_requirements_files(
+        sys.executable,
+        [str(requirements)],
+        str(state_root),
+    )
+    nuitka_builder_module._install_requirements_files(
+        sys.executable,
+        [str(requirements)],
+        str(state_root),
+    )
 
     assert len(calls) == 1
 

@@ -4,6 +4,7 @@ foreach(_required IN ITEMS
     NATIVE_MODULE_DIR
     OUTPUT_ROOT
     MODULE_OUTPUT_ROOT
+    BUILD_CACHE_ROOT
 )
     if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
         message(FATAL_ERROR "prebuild_player_runtime.cmake requires ${_required}")
@@ -32,6 +33,7 @@ execute_process(
         "${PYTHON_EXECUTABLE}" -m Infernux.engine.prebuilt_runtime
         --profile release
         --output-root "${OUTPUT_ROOT}"
+        --build-cache-root "${BUILD_CACHE_ROOT}"
     WORKING_DIRECTORY "${INFERNUX_SOURCE_DIR}"
     COMMAND_ECHO STDOUT
     RESULT_VARIABLE _runtime_pack_result

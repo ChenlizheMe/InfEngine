@@ -1284,6 +1284,12 @@ finally:
         nk = NuitkaBuilder(
             entry_script=boot_script,
             output_dir=self.output_dir,
+            build_cache_root=os.path.join(
+                self.project_path,
+                "Cache",
+                "Build",
+                "Desktop",
+            ),
             output_filename=(
                 "_InfernuxPlayer.pyd"
                 if sys.platform == "win32"
@@ -1356,9 +1362,9 @@ finally:
     def _organize_output(self, dist_dir: str) -> str:
         """Move Nuitka dist contents from staging into self.output_dir.
 
-        The dist_dir lives in an ASCII-safe staging area (e.g.
-        ``C:\\_InxBuild\\<hash>\\boot.dist``).  We move every item
-        into the user's chosen output directory.
+        The dist_dir lives under the project's ``Cache/Build/Desktop``
+        staging tree. We move every item into the user's chosen output
+        directory.
         Returns the final directory path.
         """
         final_dir = self.output_dir

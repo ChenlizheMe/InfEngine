@@ -140,6 +140,7 @@ add_custom_target(prebuild_player_runtime
         "-DPLAYER_HOST_PATH=${INFERNUX_PLAYER_HOST_BUILD_PATH}"
         "-DOUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_DIR}"
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
+        "-DBUILD_CACHE_ROOT=${CMAKE_BINARY_DIR}/build-cache/player-runtime"
         -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"

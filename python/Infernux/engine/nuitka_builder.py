@@ -5,7 +5,7 @@ directory containing the EXE, all required native libraries and the embedded
 Python runtime.
 
 On Windows, Infernux requires an MSVC toolchain for game builds.
-All intermediate compilation is done in an ASCII-safe staging directory and
+Intermediate compilation is kept in the owning project's build cache and
 moved to the final destination afterwards.
 """
 
@@ -49,19 +49,6 @@ from Infernux.engine.python_abi import (
     stdlib_extension_module_sources,
 )
 
-# ASCII-safe root for Nuitka staging and temporary build artifacts.
-_STAGING_ROOT = os.environ.get(
-    "INFERNUX_NUITKA_ROOT",
-    "C:\\_InxBuild"
-    if sys.platform == "win32"
-    else os.path.join(tempfile.gettempdir(), "infernux-build"),
-)
-
-# Persistent Nuitka compilation cache — lives outside the per-build staging
-# directory so it survives across builds, dramatically speeding up rebuilds.
-_NUITKA_CACHE_DIR = os.path.join(_STAGING_ROOT, "_nuitka_cache")
-_RUNTIME_PACK_DIR = os.path.join(_STAGING_ROOT, "_runtime_packs")
-_REQUIREMENTS_STATE_DIR = os.path.join(_STAGING_ROOT, "_requirements_state")
 _MAX_RUNTIME_PACKS = 4
 _RUNTIME_HASH_STATE_FILENAME = "content-hashes.json"
 _RUNTIME_HASH_CACHE_MIN_BYTES = 1024 * 1024
@@ -912,10 +899,14 @@ def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
     )
 
 
-def _install_requirements_files(python_exe: str, requirement_files: List[str]) -> None:
-    os.makedirs(_REQUIREMENTS_STATE_DIR, exist_ok=True)
+def _install_requirements_files(
+    python_exe: str,
+    requirement_files: List[str],
+    state_dir: str,
+) -> None:
+    os.makedirs(state_dir, exist_ok=True)
     interpreter_key = hashlib.sha256(path_key(python_exe).encode("utf-8")).hexdigest()[:24]
-    state_path = os.path.join(_REQUIREMENTS_STATE_DIR, f"{interpreter_key}.json")
+    state_path = os.path.join(state_dir, f"{interpreter_key}.json")
     try:
         with open(state_path, "r", encoding="utf-8") as state_file:
             state = json.load(state_file)
@@ -1092,6 +1083,7 @@ class NuitkaBuilder:
         entry_script: str,
         output_dir: str,
         *,
+        build_cache_root: str,
         output_filename: str = "Game.exe",
         product_name: str = "Infernux Game",
         file_version: str = "1.0.0.0",
@@ -1109,6 +1101,19 @@ class NuitkaBuilder:
     ):
         self.entry_script = resolved_path(entry_script)
         self.output_dir = resolved_path(output_dir)
+        configured_cache_root = os.environ.get("INFERNUX_NUITKA_ROOT", "").strip()
+        self._build_cache_root = resolved_path(
+            os.path.expanduser(configured_cache_root)
+            if configured_cache_root
+            else build_cache_root
+        )
+        self._staging_root = os.path.join(self._build_cache_root, "Staging")
+        self._nuitka_cache_dir = os.path.join(self._build_cache_root, "Nuitka")
+        self._runtime_pack_dir = os.path.join(self._build_cache_root, "RuntimePacks")
+        self._requirements_state_dir = os.path.join(
+            self._build_cache_root,
+            "Requirements",
+        )
         # Platform-normalized executable name: the Windows-style ".exe"
         # default is stripped on Linux/macOS so callers don't need to care.
         if sys.platform != "win32" and output_filename.lower().endswith(".exe"):
@@ -1140,7 +1145,7 @@ class NuitkaBuilder:
 
         # Staging directory — unique per build to allow parallel builds
         tag = hashlib.md5(self.output_dir.encode()).hexdigest()[:8]
-        self._staging_dir = os.path.join(_STAGING_ROOT, tag)
+        self._staging_dir = os.path.join(self._staging_root, tag)
         self._builder_python = _resolve_builder_python()
 
     @classmethod
@@ -1423,9 +1428,8 @@ print(json.dumps({{
             f"{self._builder_python}\0{sys.version}\0{sys.platform}"
         ).encode("utf-8")
 
-    @staticmethod
-    def _runtime_hash_state_path() -> str:
-        return os.path.join(_RUNTIME_PACK_DIR, _RUNTIME_HASH_STATE_FILENAME)
+    def _runtime_hash_state_path(self) -> str:
+        return os.path.join(self._runtime_pack_dir, _RUNTIME_HASH_STATE_FILENAME)
 
     def _load_runtime_hash_state(self) -> dict[str, dict]:
         try:
@@ -1463,7 +1467,7 @@ print(json.dumps({{
         return value, key
 
     def _store_runtime_hash_state(self, state: dict[str, dict]) -> None:
-        os.makedirs(_RUNTIME_PACK_DIR, exist_ok=True)
+        os.makedirs(self._runtime_pack_dir, exist_ok=True)
         state_path = self._runtime_hash_state_path()
         temporary = state_path + f".{os.getpid()}.tmp"
         try:
@@ -1477,7 +1481,7 @@ print(json.dumps({{
                 pass
 
     def _runtime_pack_path(self, runtime_pack_key: str) -> str:
-        return os.path.join(_RUNTIME_PACK_DIR, runtime_pack_key)
+        return os.path.join(self._runtime_pack_dir, runtime_pack_key)
 
     def _restore_runtime_pack(
         self,
@@ -1596,7 +1600,7 @@ print(json.dumps({{
     ) -> None:
         """Cache the compiled runtime through the native InxPack writer."""
 
-        os.makedirs(_RUNTIME_PACK_DIR, exist_ok=True)
+        os.makedirs(self._runtime_pack_dir, exist_ok=True)
         pack_root = self._runtime_pack_path(runtime_pack_key)
         metadata = {
             "kind": "runtime-cache",
@@ -1931,11 +1935,10 @@ print(json.dumps({{
         self._inject_jit_packages(dist_dir, packages=selected_packages)
         return all((Path(dist_dir) / package).is_dir() for package in selected_packages)
 
-    @staticmethod
-    def _prune_runtime_packs() -> None:
+    def _prune_runtime_packs(self) -> None:
         try:
             packs = [
-                path for path in Path(_RUNTIME_PACK_DIR).iterdir()
+                path for path in Path(self._runtime_pack_dir).iterdir()
                 if path.is_dir() and not path.name.endswith(".tmp")
             ]
         except OSError:
@@ -1968,6 +1971,7 @@ print(json.dumps({{
             _install_requirements_files(
                 self._builder_python,
                 self.extra_requirements_files,
+                self._requirements_state_dir,
             )
             Debug.log_internal(
                 f"  _install_requirements_files in {_time.perf_counter() - _t1:.2f}s"
@@ -2276,8 +2280,8 @@ print(json.dumps({{
 
         # Use a persistent cache directory so Nuitka can reuse compiled C
         # code across builds — this is the single biggest speed win.
-        os.makedirs(_NUITKA_CACHE_DIR, exist_ok=True)
-        env["NUITKA_CACHE_DIR"] = _NUITKA_CACHE_DIR
+        os.makedirs(self._nuitka_cache_dir, exist_ok=True)
+        env["NUITKA_CACHE_DIR"] = self._nuitka_cache_dir
 
         # If we switch away from the current interpreter to a reusable build
         # venv, preserve the current import roots so Nuitka can still resolve

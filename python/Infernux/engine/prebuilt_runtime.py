@@ -54,6 +54,7 @@ def _clean_generated_python_package_artifacts() -> None:
 def build_prebuilt_runtime(
     output_root: str,
     *,
+    build_cache_root: str,
     profile: str = "release",
     force: bool = False,
     lto: bool = True,
@@ -82,6 +83,7 @@ def build_prebuilt_runtime(
         builder = NuitkaBuilder(
             entry_script=boot_script,
             output_dir=build_root,
+            build_cache_root=build_cache_root,
             output_filename=(
                 "_InfernuxPlayer.pyd"
                 if sys.platform == "win32"
@@ -189,6 +191,16 @@ def main(argv: list[str] | None = None) -> int:
         default=str(Path(resolved_path(__file__)).parents[1] / "_runtime_packs"),
         help="Directory embedded into the platform wheel as Infernux package data.",
     )
+    parser.add_argument(
+        "--build-cache-root",
+        default=str(
+            Path(resolved_path(__file__)).parents[3]
+            / "out"
+            / "build"
+            / "PrebuiltRuntime"
+        ),
+        help="Repository-owned Nuitka staging and incremental build cache.",
+    )
     parser.add_argument("--profile", choices=("release", "debug", "all"), default="release")
     parser.add_argument("--force", action="store_true", help="Ignore the local compiled Runtime Pack cache.")
     parser.add_argument("--no-lto", action="store_true", help="Build a non-LTO compatibility variant.")
@@ -198,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     results = [
         build_prebuilt_runtime(
             args.output_root,
+            build_cache_root=args.build_cache_root,
             profile=profile,
             force=args.force,
             lto=not args.no_lto,
