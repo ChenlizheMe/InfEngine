@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -615,6 +614,15 @@ class PluginManager:
         if not isinstance(source, Mapping):
             raise ValueError(f"Plugin registry source is invalid: {reference}")
         descriptor = dict(source)
+        if (
+            str(descriptor.get("type", "")).strip().casefold() == "local"
+            and descriptor.get("builtin") is True
+        ):
+            return self.install_source(
+                descriptor,
+                install_dependencies=install_dependencies,
+                progress=progress,
+            )
         cache_path = self.cached_reference_path(reference)
         if cache_path:
             cached = dict(descriptor)
@@ -1974,6 +1982,11 @@ def _download_url_package(
     *,
     progress: _InstallProgress | None = None,
 ) -> None:
+    # Repository acquisition is an Editor/package-manager concern.  Keep the
+    # HTTP client out of the module import closure so cooked runtimes can use
+    # PluginManager startup/preload without shipping urllib.request.
+    import urllib.request
+
     request = urllib.request.Request(
         str(location),
         headers={"User-Agent": f"Infernux/{ENGINE_VERSION}"},

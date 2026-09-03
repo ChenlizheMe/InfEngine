@@ -14,6 +14,7 @@ from Infernux.engine.player_package_native import read_manifest, write_pack
 _PLAYER_ENVIRONMENT = (
     "_INFERNUX_PLAYER_MODE",
     "_INFERNUX_PLAYER_DATA_ROOT",
+    "_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT",
     "_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256",
     "_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES",
     "_INFERNUX_PLAYER_DEBUG_BUILD",
@@ -49,17 +50,41 @@ def _platform_package(tmp_path: Path) -> Path:
         archive,
     )
     manifest = read_manifest(archive)
+    catalog_source = tmp_path / "RuntimeAssetCatalog.json"
+    catalog_source.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_catalog",
+                "player_host": {},
+                "packages": [],
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_manifest_source = tmp_path / "BuildManifest.json"
+    build_manifest_source.write_text(
+        json.dumps({"game_name": "Game"}), encoding="utf-8"
+    )
+    catalog_archive = data_root / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", catalog_source),
+            ("BuildManifest.json", build_manifest_source),
+        ),
+        catalog_archive,
+    )
+    catalog_manifest = read_manifest(catalog_archive)
     (data_root / "PackageIndex.inxmanifest").write_text(
         "INFERNUX_PLAYER_PACKAGE_INDEX\n"
-        f"content\t{manifest['archive_sha256']}\t{manifest['archive_bytes']}\n",
+        f"content\t{manifest['archive_sha256']}\t{manifest['archive_bytes']}\n"
+        f"catalog\t{catalog_manifest['archive_sha256']}\t"
+        f"{catalog_manifest['archive_bytes']}\n",
         encoding="ascii",
     )
     (data_root / "Player.inxmanifest").write_text(
         json.dumps({"product": {"flavor": "PlayerDebug"}}) + "\n",
         encoding="utf-8",
-    )
-    (data_root / "BuildManifest.json").write_text(
-        json.dumps({"game_name": "Game"}), encoding="utf-8"
     )
     return data_root
 
@@ -82,6 +107,8 @@ def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path)
     ] == "Game"
     assert Path(prepare_platform_player(str(data_root), str(cache_root))) == project_root
     assert Path(os.environ["_INFERNUX_PLAYER_LOG"]) == cache_root / "Logs/player.log"
+    assert Path(os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"]) == tmp_path / "Data"
+    assert (tmp_path / "Data").is_dir()
     assert os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"
 
 

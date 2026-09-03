@@ -825,7 +825,7 @@ async function main() {
         const canceledDiagnostics = await page.evaluate(() => JSON.parse(
           document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
         ).filter((item) => (
-          item.includes("BALANCE // TOUCH END") && item.includes("phase=canceled")
+          item.includes("INFERNUX_WEB_TOUCH_END") && item.includes("phase=canceled")
         )));
         const canceledIdsObserved = startedIds.every((id) => (
           canceledDiagnostics.some((item) => item.includes(`finger=${id} phase=canceled`))

@@ -19,9 +19,11 @@ _seen_event_kinds: set[str] = set()
 _frame_count = 0
 _player_session: Any = None
 _player_scene_manager: Any = None
+_player_plugin_manager: Any = None
 _player_initial_scene_path = ""
 _player_runtime_manifest: Any = None
 _player_runtime_catalog: Any = None
+_player_build_manifest: dict[str, Any] | None = None
 _player_asset_database: Any = None
 _player_asset_count = 0
 _player_type_count = 0
@@ -60,11 +62,14 @@ def _prepare_cooked_player_content() -> str:
             f"found {len(data_roots)}"
         )
     data_root = data_roots[0]
-    catalog_path = os.path.join(data_root, "Library", "RuntimeAssetCatalog.json")
-    with open(catalog_path, encoding="utf-8") as stream:
-        catalog = json.load(stream)
-
     from _InfernuxWebHost import extract_package, read_entry
+
+    catalog = json.loads(
+        bytes(read_entry(
+            os.path.join(data_root, "AssetCatalog.inxcat"),
+            "RuntimeAssetCatalog.json",
+        )).decode("utf-8")
+    )
 
     packages = catalog.get("packages")
     if not isinstance(packages, list) or not packages:
@@ -337,6 +342,8 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     timing_module = importlib.import_module("Infernux.timing")
     mathf_module = importlib.import_module("Infernux.mathf")
     scene_module = importlib.import_module("Infernux.scene")
+    application_module = importlib.import_module("Infernux.application")
+    lifecycle_public_module = importlib.import_module("Infernux.lifecycle")
     coroutine_module = importlib.import_module("Infernux.coroutine")
     batch_module = importlib.import_module("Infernux.batch")
     instantiate_module = importlib.import_module("Infernux.instantiate")
@@ -353,6 +360,9 @@ def _install_platform_runtime_api(native_module: Any) -> None:
     for name in screen_module.__all__:
         setattr(package, name, getattr(screen_module, name))
     gameplay_exports = {
+        "Application": application_module.Application,
+        "InxPreload": lifecycle_public_module.InxPreload,
+        "PreloadContext": lifecycle_public_module.PreloadContext,
         "Time": timing_module.Time,
         "Mathf": mathf_module.Mathf,
         "GameObjectQuery": scene_module.GameObjectQuery,
@@ -449,7 +459,7 @@ def _install_runtime_lifecycle_bridge(scene_manager: Any, scheduler: Any) -> Non
 
 def _prepare_player_asset_contract() -> None:
     global _player_initial_scene_path, _player_runtime_manifest
-    global _player_runtime_catalog, _player_asset_database
+    global _player_runtime_catalog, _player_build_manifest, _player_asset_database
     global _player_asset_count, _player_type_count, _player_initial_scene_name
 
     if _player_runtime_catalog is not None:
@@ -458,6 +468,9 @@ def _prepare_player_asset_contract() -> None:
         raise RuntimeError("Web Player has no extracted runtime data root")
     os.environ["_INFERNUX_PLAYER_MODE"] = "1"
     os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = _runtime_data_root
+    _persistent_root = "/infernux-player-data"
+    os.makedirs(_persistent_root, exist_ok=True)
+    os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"] = _persistent_root
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     sys.dont_write_bytecode = True
 
@@ -477,9 +490,22 @@ def _prepare_player_asset_contract() -> None:
     manifest_document = _read_json(
         os.path.join(_runtime_data_root, "Player.inxmanifest")
     )
-    catalog_document = _read_json(
-        os.path.join(_runtime_data_root, "Library", "RuntimeAssetCatalog.json")
+    from _InfernuxWebHost import read_entry
+
+    catalog_document = json.loads(
+        bytes(read_entry(
+            os.path.join(_runtime_data_root, "AssetCatalog.inxcat"),
+            "RuntimeAssetCatalog.json",
+        )).decode("utf-8")
     )
+    build_manifest_document = json.loads(
+        bytes(read_entry(
+            os.path.join(_runtime_data_root, "AssetCatalog.inxcat"),
+            "BuildManifest.json",
+        )).decode("utf-8")
+    )
+    if not isinstance(build_manifest_document, dict):
+        raise RuntimeError("Web Player sealed BuildManifest root is invalid")
     records_path = os.path.join(
         _runtime_data_root, "Library", "RuntimeAssetRecords.json"
     )
@@ -525,6 +551,7 @@ def _prepare_player_asset_contract() -> None:
     _player_initial_scene_path = scene_path
     _player_runtime_manifest = runtime_manifest
     _player_runtime_catalog = runtime_catalog
+    _player_build_manifest = build_manifest_document
     _player_asset_database = database
     _player_asset_count = asset_count
     _player_type_count = type_count
@@ -532,14 +559,19 @@ def _prepare_player_asset_contract() -> None:
 
 
 def _prepare_player_runtime() -> None:
-    global _player_session, _player_scene_manager
+    global _player_session, _player_scene_manager, _player_plugin_manager
 
     if _player_session is not None:
         return
     _prepare_player_asset_contract()
     from Infernux.engine.player_runtime import PlayerRuntimeSession
     from Infernux.lib import SceneManager
+    from Infernux.plugins import PluginManager
 
+    _player_plugin_manager = PluginManager.startup(
+        _runtime_data_root,
+        runtime=True,
+    )
     session = PlayerRuntimeSession(asset_database=_player_asset_database)
     session.configure_runtime_contract(
         _player_runtime_manifest, _player_runtime_catalog
@@ -785,7 +817,9 @@ def _activate_web_player_session() -> None:
 
 
 def _create_web_splash() -> _WebSplashPlayer | None:
-    manifest = _read_json(os.path.join(_runtime_data_root, "BuildManifest.json"))
+    manifest = _player_build_manifest
+    if not isinstance(manifest, dict):
+        raise RuntimeError("Web Player sealed BuildManifest is unavailable")
     items = manifest.get("splash_items", [])
     if not isinstance(items, list):
         raise RuntimeError("Web Player splash_items must be an array")
@@ -842,7 +876,13 @@ def infernux_web_render_settings() -> dict[str, Any]:
     }
     stack = _web_render_stack_document()
     if stack is None:
-        raise RuntimeError("Web Player initial scene requires an authored RenderStack")
+        print(
+            "INFERNUX_WEB_RENDER_STACK_READY "
+            "source=default-forward "
+            f"msaa={settings['msaa_samples']} bloom=0 "
+            f"iterations={settings['bloom_iterations']} tonemapping=0"
+        )
+        return settings
     pipeline_name = str(stack.get("pipeline_class_name", ""))
     if pipeline_name != "Default Forward":
         raise RuntimeError(
@@ -890,6 +930,7 @@ def infernux_web_render_settings() -> dict[str, Any]:
                 settings["tonemapping_exposure"] = float(parameters.get("exposure", 1.0))
     print(
         "INFERNUX_WEB_RENDER_STACK_READY "
+        "source=authored "
         f"msaa={settings['msaa_samples']} "
         f"bloom={int(bool(settings['bloom_enabled']))} "
         f"iterations={settings['bloom_iterations']} "

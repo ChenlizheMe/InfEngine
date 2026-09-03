@@ -73,14 +73,19 @@ class Application:
         with _lock:
             is_player = _runtime_kind == "player"
         if is_player:
-            packaged_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
-            if packaged_root:
-                return resolved_path(packaged_root)
+            persistent_root = os.environ.get(
+                "_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", ""
+            ).strip()
+            if not persistent_root:
+                raise RuntimeError(
+                    "The Player host did not provide a writable persistent data root"
+                )
+            return resolved_path(persistent_root)
         return Application.data_path()
 
     @staticmethod
     def asset_path(path: str) -> str:
-        """Resolve an ``Assets/...`` reference in Editor or packaged Player."""
+        """Resolve an ``Assets/...`` or ``Packages/...`` asset in Editor/Player."""
         from Infernux.engine.project_context import resolve_asset_path
 
         resolved = resolve_asset_path(path)

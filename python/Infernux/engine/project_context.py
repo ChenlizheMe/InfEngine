@@ -42,8 +42,11 @@ def resolve_asset_path(path: str) -> Optional[str]:
     candidate = resolved_path(
         raw if os.path.isabs(raw) else os.path.join(_project_root, raw)
     )
-    assets_root = resolved_path(os.path.join(_project_root, "Assets"))
-    if not is_path_within(candidate, assets_root, allow_root=False):
+    asset_roots = get_project_script_roots(_project_root)
+    if not any(
+        is_path_within(candidate, root, allow_root=False)
+        for root in asset_roots
+    ):
         return None
     return candidate if os.path.isfile(candidate) else None
 

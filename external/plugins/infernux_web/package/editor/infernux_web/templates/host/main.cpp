@@ -691,6 +691,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void InfernuxWebPointerEvent(int eventKind, int 
                                 deltaX, deltaY, static_cast<float>(std::clamp(pressure, 0.0, 1.0)), phase,
                                 static_cast<float>(contactWidthPixels / g_cssWidth),
                                 static_cast<float>(contactHeightPixels / g_cssHeight), isPrimary != 0);
+        if (terminal) {
+            const char *phaseName = eventKind == 3 ? "canceled" : "ended";
+            std::printf("INFERNUX_WEB_TOUCH_END finger=%d phase=%s\n", pointerId, phaseName);
+        }
     }
 
     if (terminal)

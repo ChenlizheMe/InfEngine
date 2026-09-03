@@ -318,6 +318,35 @@ def test_web_staging_refresh_preserves_native_build_cache(monkeypatch, tmp_path)
     assert not (staging / "shader-cook").exists()
 
 
+def test_web_cmake_cache_is_discarded_only_when_plugin_source_moves(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    build_root = tmp_path / "host-build"
+    build_root.mkdir()
+    cache = build_root / "CMakeCache.txt"
+    cache.write_text(
+        "CMAKE_HOME_DIRECTORY:INTERNAL=/old/plugin/Editor/templates/host\n",
+        encoding="utf-8",
+    )
+
+    exporter._discard_mismatched_cmake_source(
+        build_root, "/repo/plugin/package/editor/templates/host"
+    )
+
+    assert not build_root.exists()
+
+    build_root.mkdir()
+    cache = build_root / "CMakeCache.txt"
+    cache.write_text(
+        "CMAKE_HOME_DIRECTORY:INTERNAL=/repo/plugin/package/editor/templates/host\n",
+        encoding="utf-8",
+    )
+    exporter._discard_mismatched_cmake_source(
+        build_root, "/repo/plugin/package/editor/templates/host"
+    )
+    assert cache.is_file()
+
+
 def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     module = _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
@@ -490,15 +519,43 @@ def test_web_branding_uses_cooked_project_icon_and_game_name(monkeypatch, tmp_pa
     icon = data_root / "Branding" / "project-icon.png"
     icon.parent.mkdir(parents=True)
     Image.new("RGBA", (96, 48), (240, 96, 48, 255)).save(icon)
-    from Infernux.engine.player_package_native import write_pack
+    from Infernux.engine.player_package_native import read_manifest, write_pack
 
     write_pack(
         (("Branding/project-icon.png", icon),),
         data_root / "Content.inxpkg",
     )
-    (data_root / "BuildManifest.json").write_text(
+    build_manifest = tmp_path / "BuildManifest.json"
+    build_manifest.write_text(
         json.dumps({"icon_path": "Branding/project-icon.png"}),
         encoding="utf-8",
+    )
+    runtime_catalog = tmp_path / "RuntimeAssetCatalog.json"
+    runtime_catalog.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_catalog",
+                "player_host": {},
+                "packages": [],
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalog = data_root / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", runtime_catalog),
+            ("BuildManifest.json", build_manifest),
+        ),
+        catalog,
+    )
+    catalog_manifest = read_manifest(catalog)
+    (data_root / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
+        f"catalog\t{catalog_manifest['archive_sha256']}\t"
+        f"{catalog_manifest['archive_bytes']}\n",
+        encoding="ascii",
     )
 
     branding = exporter_module._stage_web_branding(
@@ -750,6 +807,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "document.createElement" not in bootstrap
     assert "!g_splashActive && !g_webGpuValidationFailed" in main
     assert 'importlib.import_module("Infernux.screen")' in bootstrap
+    assert '"Application": application_module.Application' in bootstrap
+    assert '"InxPreload": lifecycle_public_module.InxPreload' in bootstrap
+    assert '"PreloadContext": lifecycle_public_module.PreloadContext' in bootstrap
     assert '"begin_text_input"' in host_module
     assert "viewport-fit=cover" in shell
     assert 'rel="icon" type="image/png"' in shell
@@ -844,6 +904,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "_player_initial_scene_path = scene_path" in asset_contract
     assert "_prepare_player_asset_contract()" in player_runtime
     assert "session.load_scene(scene_path)" in player_runtime
+    assert "PluginManager.startup(" in player_runtime
+    assert player_runtime.index("PluginManager.startup(") < player_runtime.index(
+        "session.load_scene(scene_path)"
+    )
     assert player_runtime.index("_install_runtime_lifecycle_bridge(") < player_runtime.index(
         "session.load_scene(scene_path)"
     )
@@ -873,7 +937,12 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert 'PrintPythonError("ready-contract")' in ready_contract
     assert 'PrintPythonError("ready")' in ready_contract
     assert ready_contract.count("return;") == 2
-    assert 'raise RuntimeError("Web Player initial scene requires an authored RenderStack")' in render_settings
+    assert '"source=default-forward "' in render_settings
+    assert "if stack is None:" in render_settings
+    assert render_settings.index("if stack is None:") < render_settings.index(
+        'pipeline_name = str(stack.get("pipeline_class_name", ""))'
+    )
+    assert '"source=authored "' in render_settings
     render_effect_path = bootstrap[
         bootstrap.index("def _web_render_effect_path(") : bootstrap.index(
             "def infernux_web_activate("

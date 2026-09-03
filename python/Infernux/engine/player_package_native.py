@@ -23,6 +23,10 @@ from typing import Any, Callable
 
 _test_backend: Any | None = None
 
+ASSET_CATALOG_ARCHIVE_FILENAME = "AssetCatalog.inxcat"
+ASSET_CATALOG_ENTRY_PATH = "RuntimeAssetCatalog.json"
+BUILD_MANIFEST_ENTRY_PATH = "BuildManifest.json"
+
 
 def set_test_backend(backend: Any | None) -> None:
     """Install a fake native backend for contract tests only."""
@@ -213,6 +217,9 @@ def read_entry(path: str | os.PathLike[str], entry_path: str) -> bytes:
 
 
 __all__ = [
+    "ASSET_CATALOG_ARCHIVE_FILENAME",
+    "ASSET_CATALOG_ENTRY_PATH",
+    "BUILD_MANIFEST_ENTRY_PATH",
     "extract_pack",
     "read_entry",
     "read_manifest",

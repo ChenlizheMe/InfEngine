@@ -543,7 +543,7 @@ def _valid_player(tmp_path: Path) -> Path:
         RuntimeFlavor.PLAYER_RELEASE,
         features,
     )
-    (data / "BuildManifest.json").write_text(
+    (source / "BuildManifest.json").write_text(
         json.dumps(
             {
                 "debug_build": False,
@@ -620,7 +620,12 @@ def _valid_player(tmp_path: Path) -> Path:
     return root
 
 
-def _write_catalog(root: Path) -> None:
+def _write_catalog(
+    root: Path,
+    *,
+    catalog_override: dict[str, object] | None = None,
+    build_manifest_override: dict[str, object] | None = None,
+) -> None:
     data = root / "Balance_Data"
     package_entries = []
     package_records = []
@@ -659,7 +664,7 @@ def _write_catalog(root: Path) -> None:
                     ),
                 }
             package_entries.append(record)
-    catalog = build_catalog(
+    catalog = catalog_override or build_catalog(
         package_entries,
         player_host={
             "executable": _PLAYER_EXECUTABLE,
@@ -667,8 +672,44 @@ def _write_catalog(root: Path) -> None:
         },
         package_records=package_records,
     )
-    (data / "Library" / "RuntimeAssetCatalog.json").write_text(
-        json.dumps(catalog, sort_keys=True), encoding="utf-8"
+    catalog_source = root.parent / "sealed-RuntimeAssetCatalog.json"
+    catalog_source.write_text(json.dumps(catalog, sort_keys=True), encoding="utf-8")
+    if build_manifest_override is None:
+        build_manifest_source = root.parent / "source" / "BuildManifest.json"
+        if not build_manifest_source.is_file():
+            build_manifest_override = json.loads(
+                read_entry(data / "AssetCatalog.inxcat", "BuildManifest.json")
+            )
+    if build_manifest_override is not None:
+        build_manifest_source = root.parent / "sealed-BuildManifest.json"
+        build_manifest_source.write_text(
+            json.dumps(build_manifest_override, sort_keys=True), encoding="utf-8"
+        )
+    catalog_archive = data / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", catalog_source),
+            ("BuildManifest.json", build_manifest_source),
+        ),
+        catalog_archive,
+    )
+    catalog_manifest = read_manifest(catalog_archive)
+    package_index = data / "PackageIndex.inxmanifest"
+    lines = [
+        line
+        for line in package_index.read_text(encoding="ascii").splitlines()
+        if line and not line.startswith("catalog\t")
+    ]
+    lines.append(
+        f"catalog\t{catalog_manifest['archive_sha256']}\t"
+        f"{catalog_manifest['archive_bytes']}"
+    )
+    package_index.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
+def _read_sealed_document(root: Path, entry_path: str) -> dict[str, object]:
+    return json.loads(
+        read_entry(root / "Balance_Data" / "AssetCatalog.inxcat", entry_path)
     )
 
 
@@ -715,15 +756,11 @@ def test_audit_writes_current_player_manifest(tmp_path: Path):
 
 def test_audit_rejects_runtime_contract_service_graph_drift(tmp_path: Path):
     root = _valid_player(tmp_path)
-    build_manifest_path = root / "Balance_Data" / "BuildManifest.json"
-    build_manifest = json.loads(build_manifest_path.read_text(encoding="utf-8"))
+    build_manifest = _read_sealed_document(root, "BuildManifest.json")
     build_manifest["runtime_contract"]["services"]["graph"][0]["module"] = (
         "Infernux/engine/undo/_manager.pyc"
     )
-    build_manifest_path.write_text(
-        json.dumps(build_manifest, sort_keys=True),
-        encoding="utf-8",
-    )
+    _write_catalog(root, build_manifest_override=build_manifest)
 
     with pytest.raises(RuntimeError, match="authoritative service graph"):
         audit_player_package(root)
@@ -855,11 +892,7 @@ def test_audit_accepts_minimal_bootstrap_native_closure(tmp_path: Path):
     conditional_native = next(iter(RUNTIME_CONDITIONAL_NATIVE_FILES))
     assert conditional_native not in manifest["runtime_native_surface"]["required"]
     assert manifest["audit"]["duplicate_payload_groups"] == []
-    catalog = json.loads(
-        (
-            root / "Balance_Data" / "Library" / "RuntimeAssetCatalog.json"
-        ).read_text(encoding="utf-8")
-    )
+    catalog = _read_sealed_document(root, "RuntimeAssetCatalog.json")
     assert {item["path"] for item in catalog["packages"]} == {
         "Balance_Data/Runtime.inxrt",
         "Balance_Data/Content.inxpkg",
@@ -989,7 +1022,7 @@ def test_audit_rejects_meta_and_author_source(tmp_path: Path):
 
 def test_audit_rejects_missing_runtime_catalog(tmp_path: Path):
     root = _valid_player(tmp_path)
-    (root / "Balance_Data" / "Library" / "RuntimeAssetCatalog.json").unlink()
+    (root / "Balance_Data" / "AssetCatalog.inxcat").unlink()
 
     with pytest.raises(RuntimeError, match="library_artifact_gap"):
         audit_player_package(root, write_manifest=False)
@@ -997,10 +1030,9 @@ def test_audit_rejects_missing_runtime_catalog(tmp_path: Path):
 
 def test_audit_rejects_unknown_runtime_catalog_artifact_field(tmp_path: Path):
     root = _valid_player(tmp_path)
-    catalog_path = root / "Balance_Data" / "Library" / "RuntimeAssetCatalog.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog = _read_sealed_document(root, "RuntimeAssetCatalog.json")
     catalog["artifacts"][0]["unexpected"] = True
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    _write_catalog(root, catalog_override=catalog)
 
     with pytest.raises(RuntimeError, match="library_artifact_gap"):
         audit_player_package(root, write_manifest=False)
@@ -1008,10 +1040,9 @@ def test_audit_rejects_unknown_runtime_catalog_artifact_field(tmp_path: Path):
 
 def test_audit_rejects_unknown_runtime_catalog_package_field(tmp_path: Path):
     root = _valid_player(tmp_path)
-    catalog_path = root / "Balance_Data" / "Library" / "RuntimeAssetCatalog.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog = _read_sealed_document(root, "RuntimeAssetCatalog.json")
     catalog["packages"][0]["unexpected"] = True
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    _write_catalog(root, catalog_override=catalog)
 
     with pytest.raises(RuntimeError, match="library_artifact_gap"):
         audit_player_package(root, write_manifest=False)

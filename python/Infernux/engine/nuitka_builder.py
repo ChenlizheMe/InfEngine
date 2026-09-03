@@ -1709,11 +1709,7 @@ print(json.dumps({{
             ) as manifest_file:
                 json.dump(metadata, manifest_file, indent=2, sort_keys=True)
                 manifest_file.write("\n")
-            try:
-                os.replace(temporary, pack_root)
-            except OSError:
-                if not os.path.isdir(pack_root):
-                    raise
+            _publish_runtime_directory(Path(temporary), Path(pack_root))
             self._prune_runtime_packs()
             ratio = native_manifest["archive_bytes"] / max(1, native_manifest["raw_bytes"])
             Debug.log_internal(

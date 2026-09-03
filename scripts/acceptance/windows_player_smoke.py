@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from Infernux.engine.platform_player_bootstrap import read_player_build_manifest
+
 from linux_player_smoke import (
     _assert_component_probes,
     ControlClient,
@@ -71,10 +73,8 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _load_manifest(player: Path) -> dict[str, Any]:
-    manifest_path = player.with_name(f"{player.stem}_Data") / "BuildManifest.json"
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"Windows Player manifest was not found: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data_root = player.with_name(f"{player.stem}_Data")
+    manifest = read_player_build_manifest(data_root)
     policy = manifest.get("runtime_contract", {}).get("runtime_policy", {})
     if policy.get("player_control") != "token_authenticated":
         raise RuntimeError(

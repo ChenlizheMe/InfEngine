@@ -161,7 +161,12 @@ class PlayerBootstrap:
         layout = str(product.get("layout", ""))
         required_artifacts = {
             "direct_native_runtime": ("Runtime",),
-            "platform_native_packages": ("Content.inxpkg",),
+            "single_executable_native_packages": (
+                "Runtime",
+                "Content.inxpkg",
+                "AssetCatalog.inxcat",
+            ),
+            "platform_native_packages": ("Content.inxpkg", "AssetCatalog.inxcat"),
         }.get(layout)
         if required_artifacts is None:
             raise RuntimeError(f"Player package layout is unsupported: {layout or '<missing>'}")
@@ -189,12 +194,9 @@ class PlayerBootstrap:
             raise RuntimeError("Player runtime manifest is unavailable")
         required_root = self._runtime_package_root or self.project_path
 
-        catalog_path = os.path.join(required_root, "Library", "RuntimeAssetCatalog.json")
-        try:
-            with open(catalog_path, "r", encoding="utf-8") as stream:
-                catalog = json.load(stream)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Runtime asset catalog is unreadable: {catalog_path}") from exc
+        from Infernux.engine.platform_player_bootstrap import read_player_asset_catalog
+
+        catalog = read_player_asset_catalog(required_root)
         if (
             not isinstance(catalog, dict)
             or catalog.get("$schema") != CATALOG_SCHEMA

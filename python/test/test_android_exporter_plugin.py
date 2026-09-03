@@ -177,6 +177,59 @@ def test_android_build_cache_accepts_an_explicit_shared_root(monkeypatch, tmp_pa
     )
 
 
+def test_android_native_source_path_keeps_ascii_source(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter = importlib.import_module("infernux_android.exporter")
+    source = ROOT / "external"
+    assert source.is_dir()
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"build_cache_root": str(tmp_path / "cache")}),
+    )
+
+    assert exporter._android_native_source_path(request, "volk", source) == source
+
+
+def test_android_cmake_cache_is_reused_only_for_identical_sources(
+    monkeypatch, tmp_path
+):
+    _android_module(monkeypatch)
+    exporter = importlib.import_module("infernux_android.exporter")
+    cache = tmp_path / "cache"
+    request = BuildRequest(
+        str(tmp_path / "project"),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"build_cache_root": str(cache)}),
+    )
+    build_root = cache / "AndroidEngine/arm64-v8a/RelWithDebInfo"
+    first_source = tmp_path / "sources" / "volk-a"
+    second_source = tmp_path / "sources" / "volk-b"
+    first_source.mkdir(parents=True)
+    second_source.mkdir(parents=True)
+
+    exporter._prepare_android_cmake_build_root(
+        request, build_root, {"volk": first_source}
+    )
+    retained = build_root / "ninja-object.o"
+    retained.write_bytes(b"compiled")
+    exporter._prepare_android_cmake_build_root(
+        request, build_root, {"volk": first_source}
+    )
+    assert retained.read_bytes() == b"compiled"
+
+    exporter._prepare_android_cmake_build_root(
+        request, build_root, {"volk": second_source}
+    )
+    assert not retained.exists()
+    identity = json.loads(
+        (build_root / ".infernux-cmake-inputs.json").read_text(encoding="utf-8")
+    )
+    assert identity["sources"] == {"volk": str(second_source.resolve())}
+
+
 def test_android_doctor_accepts_the_pinned_local_toolchain(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     report = module.inspect_android_toolchain(

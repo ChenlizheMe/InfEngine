@@ -38,12 +38,15 @@ def read_cooked_player_icon(
     """
 
     data_root = Path(resolved_path(data_directory))
-    manifest_path = data_root / "BuildManifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        from Infernux.engine.platform_player_bootstrap import (
+            read_player_build_manifest,
+        )
+
+        manifest = read_player_build_manifest(data_root)
+    except (OSError, RuntimeError, ValueError) as error:
         raise ValueError(
-            f"Player branding manifest is unreadable: {manifest_path}"
+            f"Player branding manifest is unreadable in sealed catalog: {data_root}"
         ) from error
     if not isinstance(manifest, dict):
         raise ValueError("Player branding manifest must be a JSON object")

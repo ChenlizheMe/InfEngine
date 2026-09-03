@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -1040,6 +1042,94 @@ def _android_staging_directory(request: BuildRequest) -> Path:
     return _android_build_cache_root(request) / "AndroidHost" / str(request.target)
 
 
+def _android_native_source_path(
+    request: BuildRequest,
+    source_name: str,
+    source: Path,
+) -> Path:
+    """Expose Unicode Hub sources through one build-cache junction for Ninja."""
+
+    if os.name != "nt":
+        return source
+    try:
+        os.fspath(source).encode("ascii")
+        return source
+    except UnicodeEncodeError:
+        pass
+    alias = (
+        _android_build_cache_root(request)
+        / "SourceAliases"
+        / source_name
+        / source.name
+    )
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    if alias.exists():
+        try:
+            if os.path.samefile(alias, source):
+                return alias
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"Android source alias does not target the canonical Hub source: {alias}"
+        )
+    command = subprocess.list2cmdline(("mklink", "/J", str(alias), str(source)))
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", command],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 or not alias.is_dir():
+        raise RuntimeError(
+            "Android Ninja requires an ASCII build alias for the canonical Hub "
+            f"source ({source_name}): {result.stdout.strip()}"
+        )
+    return alias
+
+
+def _prepare_android_cmake_build_root(
+    request: BuildRequest,
+    build_root: Path,
+    native_sources: dict[str, Path],
+) -> Path:
+    """Keep Ninja state only while every canonical CMake source input is stable."""
+
+    cache_root = _android_build_cache_root(request).resolve()
+    resolved_build = build_root.resolve()
+    if not resolved_build.is_relative_to(cache_root) or resolved_build == cache_root:
+        raise RuntimeError(f"Android build root escapes its cache: {resolved_build}")
+    identity = {
+        "engine": str(Path(__file__).resolve().parents[6]),
+        "sources": {
+            name: str(path.resolve()) for name, path in sorted(native_sources.items())
+        },
+    }
+    stamp = build_root / ".infernux-cmake-inputs.json"
+    try:
+        current = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        current = None
+    if build_root.exists() and current != identity:
+        def remove_read_only(function, entry, _error) -> None:
+            os.chmod(entry, stat.S_IWRITE)
+            function(entry)
+
+        shutil.rmtree(build_root, onexc=remove_read_only)
+    build_root.mkdir(parents=True, exist_ok=True)
+    temporary = stamp.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, stamp)
+    return build_root
+
+
 def _stage_python_runtime(
     request: BuildRequest,
     staging: Path,
@@ -1307,9 +1397,14 @@ def _build_engine_runtime(
     build_type = _native_build_type(request.profile.configuration)
     build_root = _android_build_cache_root(request) / "AndroidEngine" / abi / build_type
     native_sources = {
-        source.name: acquire_git_source(request, source)
+        source.name: _android_native_source_path(
+            request,
+            source.name,
+            acquire_git_source(request, source),
+        )
         for source in _ANDROID_NATIVE_SOURCES
     }
+    _prepare_android_cmake_build_root(request, build_root, native_sources)
     configure_command = [
         str(cmake),
         "-S",

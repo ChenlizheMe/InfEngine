@@ -287,6 +287,15 @@ def _make_builder(tmp_path, output_dir):
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
 
 
+def _read_runtime_catalog(data_root: Path, builder: GameBuilder) -> dict:
+    return json.loads(
+        read_entry(
+            data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME,
+            "RuntimeAssetCatalog.json",
+        ).decode("utf-8")
+    )
+
+
 def _player_executable_name(game_name: str = "TestGame") -> str:
     return f"{game_name}.exe" if sys.platform == "win32" else game_name
 
@@ -349,6 +358,10 @@ def _prepare_runtime_catalog_inputs(
         executable.write_bytes(b"Infernux Player")
         if sys.platform != "win32":
             executable.chmod(executable.stat().st_mode | 0o111)
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"game_name": builder.project_name, "scenes": ["Assets/Main.scene"]}),
+        encoding="utf-8",
+    )
     return data_root
 
 
@@ -736,6 +749,11 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
             "role": "control",
             "owned": True,
         },
+        package_path="C:/Users/Author/.cache/private.inxpkg",
+        source={
+            "type": "local",
+            "location": "C:/Users/Author/source/plugin.inxpkg",
+        },
     )
     scene = project / "Assets/Main.scene"
     _write_asset_index(
@@ -768,6 +786,10 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
         "runtime/message.txt",
         "Scenes/Demo.scene",
     ]
+    assert "package_path" not in shipped["installed"][0]
+    assert "source" not in shipped["installed"][0]
+    assert "installed_at" not in shipped["installed"][0]
+    assert "C:/Users/Author" not in json.dumps(shipped)
 
     context = PreloadContext(
         project_root=str(data),
@@ -1848,6 +1870,41 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
         "InfernuxPlayer.exe"
     }
     assert not (tmp_path / "staging" / "boot.dist" / "_infernux_runtime_pack.json").exists()
+
+
+def test_runtime_pack_cache_publish_retries_transient_windows_file_lock(
+    tmp_path, monkeypatch
+):
+    cache_root = tmp_path / "runtime-packs"
+    builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
+    builder.console_mode = "disable"
+    builder.lto = True
+    builder._player_compile_input_fingerprint = lambda: "current-player-runtime"
+    dist = tmp_path / "original.dist"
+    dist.mkdir()
+    (dist / "InfernuxPlayer.exe").write_bytes(b"runtime")
+    fingerprint = "a" * 64
+    destination = cache_root / fingerprint
+    native_replace = nuitka_builder_module.os.replace
+    attempts = 0
+
+    def locked_then_publish(source, target):
+        nonlocal attempts
+        if Path(target) == destination and attempts < 2:
+            attempts += 1
+            raise PermissionError("scanner retained the generated directory")
+        if Path(target) == destination:
+            attempts += 1
+        return native_replace(source, target)
+
+    monkeypatch.setattr(nuitka_builder_module.os, "replace", locked_then_publish)
+
+    builder._store_runtime_pack(fingerprint, str(dist))
+
+    assert attempts == 3
+    assert (destination / "Runtime.inxrt").is_file()
+    assert (destination / "Player.inxmanifest").is_file()
 
 
 @pytest.mark.parametrize(
@@ -4867,6 +4924,10 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
         data_root / builder._RUNTIME_ARCHIVE_FILENAME,
     )
     builder._pack_content_archive(str(final_dir))
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"game_name": builder.project_name, "scenes": ["Assets/Main.scene"]}),
+        encoding="utf-8",
+    )
 
     def reject_reopen(_package_path, entry_path):
         raise AssertionError(f"current-build catalog payload reopened from package: {entry_path}")
@@ -4888,12 +4949,8 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     assert "Assets/Audio/Wing.wav" not in content_names
     assert "Assets/Unused.mat" not in content_names
     assert "Assets/Dynamic/Runtime.bin" not in content_names
-    assert (data_root / "Library" / "RuntimeAssetCatalog.json").is_file()
-    catalog = json.loads(
-        (data_root / "Library" / "RuntimeAssetCatalog.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    assert (data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME).is_file()
+    catalog = _read_runtime_catalog(data_root, builder)
     assert not {
         artifact["payload_kind"]
         for artifact in catalog["artifacts"]
@@ -5249,6 +5306,7 @@ def test_generated_player_boot_requires_build_manifest_in_the_data_tree(tmp_path
 
     required = 'if not os.path.isfile(_BUILD_MANIFEST_PATH):'
     assert required in source
+    assert '_BUILD_MANIFEST_PATH = os.path.join(_DATA_DIR, "BuildManifest.json")' in source
     assert "_copy_player_file_atomic" not in source
     assert 'if os.path.isfile(_BUILD_MANIFEST_PATH):' not in source
 
@@ -5300,11 +5358,7 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
 
     builder._write_payload_manifest(str(final_dir))
 
-    catalog = json.loads(
-        (data_root / "Library" / "RuntimeAssetCatalog.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    catalog = _read_runtime_catalog(data_root, builder)
     assert catalog["$schema"] == "infernux.runtime_asset_catalog"
     assert catalog["player_host"]["executable"] == _player_executable_name()
     assert {package["path"] for package in catalog["packages"]} == {
@@ -5323,6 +5377,7 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
     assert {line.split("\t", 1)[0] for line in package_index[1:]} == {
         "runtime",
         "content",
+        "catalog",
     }
     assert all(len(line.split("\t")) == 3 for line in package_index[1:])
     assert len(catalog["artifacts"]) == 2
@@ -5344,7 +5399,7 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
     )
 
 
-def test_desktop_player_materializes_one_direct_runtime_tree(tmp_path):
+def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
     data_root = _prepare_runtime_catalog_inputs(builder, final_dir)
@@ -5359,7 +5414,9 @@ def test_desktop_player_materializes_one_direct_runtime_tree(tmp_path):
         ),
         data_root / "Bootstrap.inxrt",
     )
-    (data_root / "BuildManifest.json").write_text("{}", encoding="utf-8")
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+    )
     builder._write_payload_manifest(str(final_dir))
 
     builder._materialize_desktop_player_layout(str(final_dir))
@@ -5368,20 +5425,34 @@ def test_desktop_player_materializes_one_direct_runtime_tree(tmp_path):
     assert (data_root / "Runtime" / "_InfernuxBootstrap.pyd").read_bytes() == b"bootstrap"
     assert (data_root / "Runtime" / "python313.dll").read_bytes() == b"python"
     assert (data_root / "Runtime" / "Infernux" / "resources" / "runtime.bin").read_bytes() == b"runtime"
-    assert (data_root / "RuntimeAssets" / "content.bin").read_bytes() == b"content"
     assert not (data_root / "Bootstrap.inxrt").exists()
     assert not (data_root / builder._RUNTIME_ARCHIVE_FILENAME).exists()
-    assert not (data_root / builder._CONTENT_ARCHIVE_FILENAME).exists()
-    assert not (data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME).exists()
+    assert (data_root / builder._CONTENT_ARCHIVE_FILENAME).is_file()
+    assert (data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME).is_file()
+    assert (data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME).is_file()
+    assert not (data_root / "Library").exists()
+    assert not (data_root / "BuildManifest.json").exists()
+    assert not (data_root / "RuntimeAssets").exists()
     assert not (data_root / "Cache").exists()
-    catalog = json.loads(
-        (data_root / "Library" / "RuntimeAssetCatalog.json").read_text(encoding="utf-8")
-    )
-    assert catalog["packages"] == []
+    catalog = _read_runtime_catalog(data_root, builder)
+    assert json.loads(
+        read_entry(
+            data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME,
+            "BuildManifest.json",
+        ).decode("utf-8")
+    )["scenes"] == ["Assets/Main.scene"]
+    assert len(catalog["packages"]) == 1
+    assert Path(catalog["packages"][0]["path"]).name == "Content.inxpkg"
     manifest = json.loads(
         (data_root / builder._PLAYER_MANIFEST_FILENAME).read_text(encoding="utf-8")
     )
-    assert manifest["product"]["layout"] == "direct_native_runtime"
+    assert manifest["product"]["layout"] == "single_executable_native_packages"
+    package_index = (data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME).read_text(
+        encoding="ascii"
+    )
+    assert "content\t" in package_index
+    assert "catalog\t" in package_index
+    assert "runtime\t" not in package_index
 
 
 def test_payload_manifest_supports_platform_native_player_host(tmp_path):
@@ -5406,9 +5477,7 @@ def test_payload_manifest_supports_platform_native_player_host(tmp_path):
         include_runtime_archive=False,
     )
 
-    catalog = json.loads(
-        (data_root / "Library/RuntimeAssetCatalog.json").read_text(encoding="utf-8")
-    )
+    catalog = _read_runtime_catalog(data_root, builder)
     manifest = json.loads(
         (data_root / "Player.inxmanifest").read_text(encoding="utf-8")
     )
@@ -5422,6 +5491,7 @@ def test_payload_manifest_supports_platform_native_player_host(tmp_path):
     assert manifest["product"]["layout"] == "platform_native_packages"
     assert manifest["product"]["entry_points"] == [host["entry_point"]]
     assert "content\t" in package_index
+    assert "catalog\t" in package_index
     assert "runtime\t" not in package_index
 
 
@@ -5588,6 +5658,10 @@ class TestGameBuilderOutputSafety:
         assert 'os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = "1" if _DEBUG_MODE else "0"' in boot_source
         assert 'os.environ["PYTHONDONTWRITEBYTECODE"] = "1"' in boot_source
         assert 'os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = _DATA_ROOT' in boot_source
+        assert (
+            'os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"] = '
+            '_PLAYER_PERSISTENT_DATA_ROOT'
+        ) in boot_source
         assert "sys.dont_write_bytecode = True" in boot_source
         assert 'os.environ["_INFERNUX_PACKAGED_RESOURCE_ROOT"]' in boot_source
         assert "_CORE_RUNTIME_DIR = _RUNTIME_ROOT" in boot_source
@@ -5595,7 +5669,8 @@ class TestGameBuilderOutputSafety:
         assert '"stdlib"' in boot_source
         assert '_STDLIB_RUNTIME_DIR' in boot_source
         assert 'os.add_dll_directory(_dll_dir)' in boot_source
-        assert "_DATA_DIR = _DATA_ROOT" in boot_source
+        assert "from Infernux.engine.platform_player_bootstrap import prepare_platform_player" in boot_source
+        assert "_DATA_DIR = prepare_platform_player(" in boot_source
         assert '_RUNTIME_MODULE_DIR = os.path.join(_DATA_ROOT, "Modules", "Parallel")' in boot_source
         assert 'if os.path.isdir(_RUNTIME_MODULE_DIR):' in boot_source
         assert '_mark_boot_phase("parallel_ready")' in boot_source

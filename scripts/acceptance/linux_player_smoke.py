@@ -17,6 +17,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from Infernux.engine.platform_player_bootstrap import read_player_build_manifest
+
 
 _FATAL_PATTERNS = (
     "Validation Error",
@@ -70,10 +72,7 @@ def _player_data_directory(player: Path) -> Path:
 
 
 def _load_debug_manifest(player: Path) -> dict[str, Any]:
-    manifest_path = _player_data_directory(player) / "BuildManifest.json"
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"Linux Player manifest was not found: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = read_player_build_manifest(_player_data_directory(player))
     runtime_policy = manifest.get("runtime_contract", {}).get("runtime_policy", {})
     if runtime_policy.get("player_control") != "token_authenticated":
         raise RuntimeError(

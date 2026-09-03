@@ -662,7 +662,18 @@ def normalize_player_rules(value: object = None) -> dict[str, object]:
 def player_file_exported(metadata: Mapping[str, object], relative_path: str) -> bool:
     """Standard Unity-like Player policy used until dependency stripping lands."""
 
-    role = package_role(relative_path)
+    # Installed records persist the validated role that owned the file at
+    # installation time.  That record is the migration authority for projects
+    # created before the lowercase package layout; reinterpreting an old
+    # ``Editor/...`` path with today's authoring rules makes an otherwise valid
+    # project impossible to build.  New package manifests are still validated
+    # against ``package_role`` before they can create this record.
+    persisted_role = str(metadata.get("role", "")).strip()
+    role = (
+        persisted_role
+        if persisted_role in {"runtime", "editor", "control", "nested_package", "content"}
+        else package_role(relative_path)
+    )
     return role not in {"editor", "control"}
 
 

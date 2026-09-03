@@ -12,7 +12,38 @@ from Infernux.engine.platform_content_cook import (
     cook_platform_content,
     read_cooked_player_icon,
 )
-from Infernux.engine.player_package_native import write_pack
+from Infernux.engine.player_package_native import read_manifest, write_pack
+
+
+def _seal_build_manifest(data: Path, source_root: Path, document: dict) -> None:
+    manifest_source = source_root / "BuildManifest.json"
+    manifest_source.write_text(json.dumps(document), encoding="utf-8")
+    catalog_source = source_root / "RuntimeAssetCatalog.json"
+    catalog_source.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_catalog",
+                "player_host": {},
+                "packages": [],
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalog = data / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", catalog_source),
+            ("BuildManifest.json", manifest_source),
+        ),
+        catalog,
+    )
+    identity = read_manifest(catalog)
+    (data / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
+        f"catalog\t{identity['archive_sha256']}\t{identity['archive_bytes']}\n",
+        encoding="ascii",
+    )
 
 
 def test_cooked_player_icon_is_read_from_the_sealed_content_package(tmp_path):
@@ -21,9 +52,7 @@ def test_cooked_player_icon_is_read_from_the_sealed_content_package(tmp_path):
     icon = tmp_path / "icon.png"
     icon.write_bytes(b"configured-icon")
     write_pack((("Branding/icon.png", icon),), data / "Content.inxpkg")
-    (data / "BuildManifest.json").write_text(
-        json.dumps({"icon_path": "Branding/icon.png"}), encoding="utf-8"
-    )
+    _seal_build_manifest(data, tmp_path, {"icon_path": "Branding/icon.png"})
 
     assert read_cooked_player_icon(data, default_icon=tmp_path / "unused.png") == b"configured-icon"
 
@@ -33,9 +62,7 @@ def test_cooked_player_icon_uses_explicit_default_only_when_manifest_is_empty(tm
     data.mkdir()
     default = tmp_path / "default.png"
     default.write_bytes(b"default-icon")
-    (data / "BuildManifest.json").write_text(
-        json.dumps({"icon_path": ""}), encoding="utf-8"
-    )
+    _seal_build_manifest(data, tmp_path, {"icon_path": ""})
 
     assert read_cooked_player_icon(data, default_icon=default) == b"default-icon"
 
@@ -45,9 +72,7 @@ def test_cooked_player_icon_rejects_manifest_path_escape(tmp_path):
     data.mkdir()
     default = tmp_path / "default.png"
     default.write_bytes(b"default-icon")
-    (data / "BuildManifest.json").write_text(
-        json.dumps({"icon_path": "../icon.png"}), encoding="utf-8"
-    )
+    _seal_build_manifest(data, tmp_path, {"icon_path": "../icon.png"})
 
     with pytest.raises(ValueError, match="escapes"):
         read_cooked_player_icon(data, default_icon=default)

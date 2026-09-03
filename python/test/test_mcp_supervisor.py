@@ -9,6 +9,7 @@ import pytest
 
 from infernux_mcp import supervisor as supervisor_module
 from infernux_mcp.supervisor import SupervisorSession
+from Infernux.engine.player_package_native import read_manifest, write_pack
 
 
 class _RunningProcess:
@@ -616,7 +617,8 @@ def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scen
     executable = output / "Pilot.exe"
     executable.write_bytes(b"direct-native-player")
     control = "token_authenticated" if debug_build else "disabled"
-    (data / "BuildManifest.json").write_text(json.dumps({
+    build_manifest = tmp_path / "Pilot-BuildManifest.json"
+    build_manifest.write_text(json.dumps({
         "game_name": "Pilot",
         "debug_build": debug_build,
         "scenes": scenes or [],
@@ -626,10 +628,37 @@ def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scen
         },
         "runtime_contract": {"runtime_policy": {"player_control": control}},
     }), encoding="utf-8")
+    runtime_catalog = tmp_path / "Pilot-RuntimeAssetCatalog.json"
+    runtime_catalog.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_catalog",
+                "player_host": {},
+                "packages": [],
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalog = data / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", runtime_catalog),
+            ("BuildManifest.json", build_manifest),
+        ),
+        catalog,
+    )
+    catalog_manifest = read_manifest(catalog)
+    (data / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
+        f"catalog\t{catalog_manifest['archive_sha256']}\t"
+        f"{catalog_manifest['archive_bytes']}\n",
+        encoding="ascii",
+    )
     (data / "Player.inxmanifest").write_text(json.dumps({
         "audit": {"passed": True},
         "product": {
-            "layout": "direct_native_runtime",
+            "layout": "single_executable_native_packages",
             "single_entry_point": True,
             "entry_points": ["Pilot.exe"],
         },

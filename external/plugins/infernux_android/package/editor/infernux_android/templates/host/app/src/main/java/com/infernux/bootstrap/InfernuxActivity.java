@@ -60,6 +60,10 @@ public final class InfernuxActivity extends SDLActivity {
                     "INFERNUX_PLAYER_CACHE_ROOT",
                     new File(getCacheDir(), "player").getAbsolutePath(),
                     true);
+            Os.setenv(
+                    "_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT",
+                    new File(getFilesDir(), "player").getAbsolutePath(),
+                    true);
             Os.setenv("INFERNUX_RENDER_PROFILE", "mobile", true);
             Os.setenv("INFERNUX_PRESENT_MODE", "fifo", true);
             Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2", true);

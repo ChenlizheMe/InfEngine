@@ -11,11 +11,9 @@ Desktop output layout::
     <OutputDir>/
         <GameName>[.exe]       ← native Player entry point
         <GameName>_Data/
-            BuildManifest.json
             Runtime/           ← the one CPython/native engine runtime tree
-            Assets/
-            Packages/
-            Library/RuntimeAssetCatalog.json
+            Content.inxpkg     ← sealed compiled project/plugin content
+            AssetCatalog.inxcat ← catalog + build presentation contract
             Modules/Parallel/  ← optional native Numba/LLVM module
 """
 
@@ -46,6 +44,9 @@ from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
 from Infernux.engine.player_package_native import (
+    ASSET_CATALOG_ARCHIVE_FILENAME,
+    ASSET_CATALOG_ENTRY_PATH,
+    BUILD_MANIFEST_ENTRY_PATH,
     extract_pack,
     read_entry,
     read_manifest,
@@ -97,7 +98,9 @@ from Infernux.engine.runtime_type_registry import (
 )
 
 
-_NATIVE_PLAYER_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod"})
+_NATIVE_PLAYER_ARCHIVE_SUFFIXES = frozenset(
+    {".inxrt", ".inxpkg", ".inxmod", ".inxcat"}
+)
 
 
 def _load_bootstrap_native_sources(final_dir: str) -> dict[str, str]:
@@ -360,6 +363,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     _PARALLEL_ARCHIVE_FILENAME = "Parallel.inxmod"
     _PLAYER_MANIFEST_FILENAME = "Player.inxmanifest"
     _PLAYER_PACKAGE_INDEX_FILENAME = "PackageIndex.inxmanifest"
+    _ASSET_CATALOG_ARCHIVE_FILENAME = ASSET_CATALOG_ARCHIVE_FILENAME
     _RUNTIME_ASSET_RECORDS_FILENAME = "RuntimeAssetRecords.json"
     _RUNTIME_TYPE_REGISTRY_FILENAME = "RuntimeTypeRegistry.json"
     _PLAYER_CONTENT_CONTROL_RELATIVE_PATHS = frozenset(
@@ -1122,9 +1126,24 @@ os.environ["_INFERNUX_PACKAGED_RESOURCE_ROOT"] = os.path.join(
     _CORE_RUNTIME_DIR, "Infernux", "resources"
 )
 
-_DATA_DIR = _DATA_ROOT
+_STATE_HOME = (
+    os.environ.get("LOCALAPPDATA", "").strip()
+    or os.environ.get("XDG_STATE_HOME", "").strip()
+    or os.path.join(os.path.expanduser("~"), ".local", "state")
+)
+_PLAYER_STATE_ROOT = os.path.join(
+    _STATE_HOME, "Infernux", "Players", _SAFE_GAME_NAME
+)
+_PLAYER_PERSISTENT_DATA_ROOT = os.path.join(_PLAYER_STATE_ROOT, "Data")
+os.makedirs(_PLAYER_PERSISTENT_DATA_ROOT, exist_ok=True)
+os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"] = _PLAYER_PERSISTENT_DATA_ROOT
+from Infernux.engine.platform_player_bootstrap import prepare_platform_player
+_DATA_DIR = prepare_platform_player(
+    _DATA_ROOT,
+    os.path.join(_PLAYER_STATE_ROOT, "Cache"),
+)
 _mark_boot_phase("content_ready")
-_BUILD_MANIFEST_PATH = os.path.join(_DATA_ROOT, "BuildManifest.json")
+_BUILD_MANIFEST_PATH = os.path.join(_DATA_DIR, "BuildManifest.json")
 if not os.path.isfile(_BUILD_MANIFEST_PATH):
     raise RuntimeError(
         "Player package has no BuildManifest.json: " + _BUILD_MANIFEST_PATH
@@ -1161,14 +1180,6 @@ if sys.platform == "win32":
     ):
         _register_player_dll_directory(_dll_dir)
 
-_STATE_HOME = (
-    os.environ.get("LOCALAPPDATA", "").strip()
-    or os.environ.get("XDG_STATE_HOME", "").strip()
-    or os.path.join(os.path.expanduser("~"), ".local", "state")
-)
-_PLAYER_STATE_ROOT = os.path.join(
-    _STATE_HOME, "Infernux", "Players", _SAFE_GAME_NAME
-)
 _LOGS_DIR = os.path.join(_PLAYER_STATE_ROOT, "Logs")
 _LOG = os.path.join(_LOGS_DIR, "player.log")
 os.environ["_INFERNUX_PLAYER_LOG"] = _LOG
@@ -1531,7 +1542,7 @@ finally:
                 if not isinstance(raw_file, dict):
                     continue
                 logical = portable_path(str(raw_file.get("logical_path", ""))).strip("/")
-                if not logical or not player_file_exported(record, logical):
+                if not logical or not player_file_exported(raw_file, logical):
                     continue
                 guid = str(raw_file.get("guid", "")).casefold()
                 entry = indexed.get(guid)
@@ -1572,8 +1583,34 @@ finally:
                     shutil.copy2(meta, destination + ".meta")
             if not runtime_files:
                 continue
-            record["files"] = runtime_files
-            runtime_records.append(record)
+            control = record.get("control")
+            if not isinstance(control, dict):
+                raise RuntimeError(
+                    f"Installed plugin has no ownership control record: "
+                    f"{record.get('reference', '')}"
+                )
+            # Player lifecycle discovery needs identity, ordering and the
+            # cooked runtime file ledger only. Installation sources, cache
+            # paths, timestamps, package pages and Python transaction history
+            # are authoring state and may contain machine/user paths.
+            runtime_records.append(
+                {
+                    "reference": str(record.get("reference", "")),
+                    "name": str(record.get("name", "")),
+                    "version": str(record.get("version", "")),
+                    "engine": str(record.get("engine", "")),
+                    "dependencies": list(record.get("dependencies", [])),
+                    "enabled": True,
+                    "files": runtime_files,
+                    "control": {
+                        "logical_path": str(control.get("logical_path", "")),
+                        "path_hint": str(control.get("path_hint", "")),
+                        "guid": str(control.get("guid", "")),
+                        "role": "control",
+                        "owned": bool(control.get("owned", True)),
+                    },
+                }
+            )
 
         runtime_registry = {
             "$schema": document.get("$schema", "infernux.plugin_registry"),
@@ -3442,7 +3479,7 @@ finally:
             os.replace(path, target)
 
     def _materialize_desktop_player_layout(self, final_dir: str) -> None:
-        """Replace desktop transport archives with the one runnable Data tree."""
+        """Materialize OS-loadable runtime files while keeping game content sealed."""
 
         data_root = Path(final_dir) / f"{self.project_name}_Data"
         runtime_archive = data_root / self._RUNTIME_ARCHIVE_FILENAME
@@ -3459,10 +3496,8 @@ finally:
         try:
             bootstrap_root = staging / "bootstrap"
             runtime_root = staging / "runtime"
-            content_root = staging / "content"
             extract_pack(bootstrap_archive, bootstrap_root)
             extract_pack(runtime_archive, runtime_root)
-            extract_pack(content_archive, content_root)
             duplicated_foundation = (
                 bootstrap_root / "Infernux" / "lib" / "InfernuxFoundation.dll"
             )
@@ -3471,7 +3506,6 @@ finally:
             final_runtime = data_root / "Runtime"
             self._publish_extracted_tree(str(bootstrap_root), str(final_runtime))
             self._publish_extracted_tree(str(runtime_root), str(final_runtime))
-            self._publish_extracted_tree(str(content_root), str(data_root))
 
             parallel_archive = data_root / "Modules" / self._PARALLEL_ARCHIVE_FILENAME
             if parallel_archive.is_file():
@@ -3488,32 +3522,104 @@ finally:
         for obsolete in (
             bootstrap_archive,
             runtime_archive,
-            content_archive,
-            data_root / self._PLAYER_PACKAGE_INDEX_FILENAME,
         ):
             try:
                 obsolete.unlink()
             except FileNotFoundError:
                 pass
 
-        catalog_path = data_root / "Library" / "RuntimeAssetCatalog.json"
-        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog_archive = data_root / self._ASSET_CATALOG_ARCHIVE_FILENAME
+        try:
+            catalog = json.loads(
+                read_entry(catalog_archive, ASSET_CATALOG_ENTRY_PATH).decode("utf-8")
+            )
+            build_manifest_payload = read_entry(
+                catalog_archive,
+                BUILD_MANIFEST_ENTRY_PATH,
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Desktop Player catalog contract is unreadable") from exc
         if not isinstance(catalog.get("packages"), list):
             raise RuntimeError("Runtime asset catalog has no package list")
-        catalog["packages"] = []
-        _write_json_atomic(str(catalog_path), catalog)
+        catalog["packages"] = [
+            package
+            for package in catalog["packages"]
+            if Path(str(package.get("path", "")).replace("\\", "/")).name
+            == self._CONTENT_ARCHIVE_FILENAME
+        ]
+        if len(catalog["packages"]) != 1:
+            raise RuntimeError("Desktop Player runtime catalog must retain Content.inxpkg")
 
-        manifest_path = data_root / self._PLAYER_MANIFEST_FILENAME
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        product = manifest.get("product")
-        if not isinstance(product, dict):
-            raise RuntimeError("Player runtime manifest has no product declaration")
-        product["layout"] = "direct_native_runtime"
-        runtime_manifest = {
-            key: manifest[key]
-            for key in ("$schema", "product", "features", "runtime_policy", "services")
-        }
-        _write_json_atomic(str(manifest_path), runtime_manifest)
+        catalog_source = data_root / (
+            f".RuntimeAssetCatalog.{os.getpid()}.{time.time_ns()}.json"
+        )
+        build_manifest_source = data_root / (
+            f".BuildManifest.{os.getpid()}.{time.time_ns()}.json"
+        )
+        try:
+            _write_json_atomic(str(catalog_source), catalog)
+            build_manifest_source.write_bytes(build_manifest_payload)
+            self._write_finalize_pack(
+                (
+                    (ASSET_CATALOG_ENTRY_PATH, str(catalog_source)),
+                    (BUILD_MANIFEST_ENTRY_PATH, str(build_manifest_source)),
+                ),
+                str(catalog_archive),
+                message="Finalizing Player asset catalog",
+                fraction=0.995,
+                on_progress=None,
+                cancel_event=None,
+            )
+        finally:
+            try:
+                catalog_source.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                build_manifest_source.unlink()
+            except FileNotFoundError:
+                pass
+
+        # The build presentation contract contains authored scene aliases.
+        # Keep it inside AssetCatalog.inxcat and materialize it only in the
+        # per-game private runtime cache.
+        try:
+            (data_root / "BuildManifest.json").unlink()
+        except FileNotFoundError:
+            pass
+
+        index_records = []
+        for kind, archive in (
+            ("content", content_archive),
+            ("catalog", catalog_archive),
+        ):
+            package_manifest = read_manifest(archive)
+            index_records.append(
+                "\t".join(
+                    (
+                        kind,
+                        str(package_manifest["archive_sha256"]),
+                        str(int(package_manifest["archive_bytes"])),
+                    )
+                )
+            )
+        package_index = data_root / self._PLAYER_PACKAGE_INDEX_FILENAME
+        index_temporary = package_index.with_name(
+            f".{package_index.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
+        try:
+            with open(index_temporary, "x", encoding="ascii", newline="\n") as stream:
+                stream.write(
+                    "\n".join(["INFERNUX_PLAYER_PACKAGE_INDEX", *index_records]) + "\n"
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(index_temporary, package_index)
+        finally:
+            try:
+                index_temporary.unlink()
+            except FileNotFoundError:
+                pass
 
     def _audit_direct_player_layout(self, final_dir: str) -> None:
         """Validate the runnable desktop layout after transport archives are gone."""
@@ -3535,34 +3641,76 @@ finally:
         forbidden = [
             data_root / "Bootstrap.inxrt",
             data_root / self._RUNTIME_ARCHIVE_FILENAME,
-            data_root / self._CONTENT_ARCHIVE_FILENAME,
-            data_root / self._PLAYER_PACKAGE_INDEX_FILENAME,
             data_root / "Cache",
+            data_root / "Assets",
+            data_root / "Library",
+            data_root / "Packages",
+            data_root / "ProjectSettings",
+            data_root / "BuildManifest.json",
         ]
         leaked = [path.name for path in forbidden if path.exists()]
         if leaked:
             raise RuntimeError(
-                "Direct Player layout contains runtime cache or transport archives: "
+                "Desktop Player layout exposes an authoring tree or transient runtime data: "
                 + ", ".join(leaked)
             )
+
+        content_archive = data_root / self._CONTENT_ARCHIVE_FILENAME
+        package_index = data_root / self._PLAYER_PACKAGE_INDEX_FILENAME
+        if not content_archive.is_file() or not package_index.is_file():
+            raise RuntimeError("Desktop Player is missing its sealed content package")
+        package_index_kinds = {
+            line.split("\t", 1)[0]
+            for line in package_index.read_text(encoding="ascii").splitlines()[1:]
+        }
+        if package_index_kinds != {"content", "catalog"}:
+            raise RuntimeError("Desktop Player package index exposes stale archives")
+        content_entries = {
+            str(entry["path"])
+            for entry in read_manifest(content_archive).get("files", [])
+        }
+        if not content_entries:
+            raise RuntimeError("Desktop Player Content.inxpkg is empty")
 
         manifest_path = data_root / self._PLAYER_MANIFEST_FILENAME
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         RuntimeProductManifest.from_document(manifest)
-        if manifest.get("product", {}).get("layout") != "direct_native_runtime":
-            raise RuntimeError("Desktop Player does not declare the direct runtime layout")
+        if manifest.get("product", {}).get("layout") != "single_executable_native_packages":
+            raise RuntimeError("Desktop Player does not declare the sealed content layout")
 
-        catalog_path = data_root / "Library" / "RuntimeAssetCatalog.json"
-        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-        if catalog.get("packages") != []:
-            raise RuntimeError("Direct Player runtime catalog contains transport packages")
+        catalog_archive = data_root / self._ASSET_CATALOG_ARCHIVE_FILENAME
+        if not catalog_archive.is_file():
+            raise RuntimeError("Desktop Player is missing its sealed asset catalog")
+        try:
+            catalog = json.loads(
+                read_entry(catalog_archive, ASSET_CATALOG_ENTRY_PATH).decode("utf-8")
+            )
+            build_manifest = json.loads(
+                read_entry(catalog_archive, BUILD_MANIFEST_ENTRY_PATH).decode("utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Desktop Player catalog contract is unreadable") from exc
+        if not isinstance(build_manifest, dict) or not build_manifest.get("scenes"):
+            raise RuntimeError("Desktop Player catalog has no build presentation contract")
+        packages = catalog.get("packages")
+        if (
+            not isinstance(packages, list)
+            or len(packages) != 1
+            or Path(str(packages[0].get("path", "")).replace("\\", "/")).name
+            != self._CONTENT_ARCHIVE_FILENAME
+        ):
+            raise RuntimeError("Desktop Player catalog must retain only Content.inxpkg")
         for artifact in catalog.get("artifacts", []):
             package = Path(str(artifact.get("package", "")).replace("\\", "/")).name
             runtime_path = str(artifact.get("runtime_path", "")).replace("\\", "/")
             if not runtime_path:
                 raise RuntimeError("Direct Player catalog contains an empty runtime path")
             if package == self._CONTENT_ARCHIVE_FILENAME:
-                payload = data_root.joinpath(*runtime_path.split("/"))
+                if runtime_path not in content_entries:
+                    raise RuntimeError(
+                        f"Sealed Player content payload is missing: {runtime_path}"
+                    )
+                continue
             elif package == self._RUNTIME_ARCHIVE_FILENAME and runtime_path.startswith(
                 "Infernux/resources/"
             ):
@@ -3907,8 +4055,6 @@ finally:
         """
 
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
-        library_root = os.path.join(data_root, "Library")
-        os.makedirs(library_root, exist_ok=True)
         stale_marker = os.path.join(final_dir, "_infernux_runtime_pack.json")
         try:
             os.remove(stale_marker)
@@ -4035,21 +4181,62 @@ finally:
             player_host=player_host,
             package_records=catalog_packages,
         )
-        catalog_path = os.path.join(library_root, "RuntimeAssetCatalog.json")
-        _write_json_atomic(catalog_path, catalog)
+        catalog_archive_path = os.path.join(
+            data_root, self._ASSET_CATALOG_ARCHIVE_FILENAME
+        )
+        build_manifest_path = os.path.join(data_root, "BuildManifest.json")
+        if not os.path.isfile(build_manifest_path):
+            raise RuntimeError("Player build manifest is missing before catalog packing")
+        catalog_source = os.path.join(
+            data_root,
+            f".RuntimeAssetCatalog.{os.getpid()}.{time.time_ns()}.json",
+        )
+        try:
+            _write_json_atomic(catalog_source, catalog)
+            self._write_finalize_pack(
+                (
+                    (ASSET_CATALOG_ENTRY_PATH, catalog_source),
+                    (BUILD_MANIFEST_ENTRY_PATH, build_manifest_path),
+                ),
+                catalog_archive_path,
+                message="Packing Player asset catalog",
+                fraction=0.9845,
+                on_progress=None,
+                cancel_event=None,
+            )
+        finally:
+            try:
+                os.remove(catalog_source)
+            except FileNotFoundError:
+                pass
+
+        # The build presentation contract is a Player input, not a public
+        # distribution file.  AssetCatalog.inxcat is now its sole shipped
+        # owner on every target; platform hosts materialize it only inside
+        # their private runtime cache when a filesystem path is required.
+        try:
+            os.remove(build_manifest_path)
+        except FileNotFoundError:
+            pass
 
         # The native boot stub intentionally avoids importing the full Python
         # stdlib before Runtime.inxrt is mounted. Keep a tiny ASCII identity
         # index beside the packages so an already verified cache can be opened
         # without hashing every large archive twice on every launch.
+        catalog_manifest = read_manifest(catalog_archive_path)
         package_by_name = {
             os.path.basename(str(record["path"])).casefold(): record
             for record in packages
+        }
+        package_by_name[self._ASSET_CATALOG_ARCHIVE_FILENAME.casefold()] = {
+            "archive_sha256": catalog_manifest["archive_sha256"],
+            "archive_bytes": catalog_manifest["archive_bytes"],
         }
         package_index_lines = ["INFERNUX_PLAYER_PACKAGE_INDEX"]
         for kind, filename in (
             ("runtime", self._RUNTIME_ARCHIVE_FILENAME),
             ("content", self._CONTENT_ARCHIVE_FILENAME),
+            ("catalog", self._ASSET_CATALOG_ARCHIVE_FILENAME),
             ("parallel", self._PARALLEL_ARCHIVE_FILENAME),
         ):
             record = package_by_name.get(filename.casefold())

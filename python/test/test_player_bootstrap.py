@@ -225,6 +225,7 @@ def test_player_bootstrap_accepts_platform_native_package_without_runtime_archiv
         json.dumps(document), encoding="utf-8"
     )
     (tmp_path / "Content.inxpkg").write_bytes(b"content")
+    (tmp_path / "AssetCatalog.inxcat").write_bytes(b"catalog")
     monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(tmp_path))
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.project_path = str(tmp_path / "project")

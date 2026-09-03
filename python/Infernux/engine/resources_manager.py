@@ -1481,6 +1481,12 @@ class ResourcesManager:
         self._engine = engine
         self._project_path = resolved_path(project_path)
         self._script_roots = get_project_script_roots(self._project_path)
+        # Assets and Packages are equally authoritative Editor source roots.
+        # Create both before the watcher is scheduled: projects created before
+        # the package system existed may have no Packages directory, and a
+        # watcher cannot observe a tree that did not exist at startup.
+        for script_root in self._script_roots:
+            os.makedirs(script_root, exist_ok=True)
         self._assets_path = self._script_roots[0]
         self._observer = None
         self._observer_lock = threading.Lock()

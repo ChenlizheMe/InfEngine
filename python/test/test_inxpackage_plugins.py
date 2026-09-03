@@ -394,6 +394,18 @@ def test_repository_export_archives_only_pythonic_package_tree_and_any_payload(t
         set_project_root(None)
 
 
+def test_player_export_uses_persisted_role_for_pre_pythonic_installed_record():
+    assert not player_file_exported(
+        {"role": "editor"}, "Editor/legacy_plugin/compiler.py"
+    )
+    assert not player_file_exported(
+        {"role": "control"}, "InxPluginPages/README.md"
+    )
+    assert player_file_exported(
+        {"role": "runtime"}, "Runtime/legacy_plugin/server.jar"
+    )
+
+
 def test_package_metadata_schema_rejects_unknown_fields(tmp_path):
     source = _source(tmp_path / "source", "vendor/current-format")
     (source / "Data.bin").write_bytes(b"payload")
@@ -742,6 +754,46 @@ def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     assert record["source"]["location"] == str(package.resolve())
     assert record["source"]["builtin"] is True
     assert (project / "Packages/infernux/platform-fixture/runtime/fixture.py").is_file()
+
+
+def test_resources_root_package_ignores_an_older_shared_cache_entry(tmp_path):
+    stale_source = _source(tmp_path / "stale", "infernux/platform-fixture")
+    (stale_source / "runtime").mkdir()
+    (stale_source / "runtime" / "fixture.py").write_text(
+        "RELEASE = 'stale-cache'\n", encoding="utf-8"
+    )
+    stale_package = _export(stale_source, tmp_path / "stale.inxpkg")
+    SharedPackageCache().store(
+        str(stale_package),
+        reference="infernux/platform-fixture",
+        version="1.0.0",
+    )
+
+    bundled_source = _source(tmp_path / "bundled", "infernux/platform-fixture")
+    (bundled_source / "runtime").mkdir()
+    (bundled_source / "runtime" / "fixture.py").write_text(
+        "RELEASE = 'bundled'\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    bundled_package = _export(
+        bundled_source, resources / "infernux.platform-fixture.inxpkg"
+    )
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    states = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert (
+        project / "Packages/infernux/platform-fixture/runtime/fixture.py"
+    ).read_text(encoding="utf-8") == "RELEASE = 'bundled'\n"
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    assert record["source"]["location"] == str(bundled_package.resolve())
+    assert record["source"]["builtin"] is True
 
 
 def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
@@ -1875,7 +1927,7 @@ def test_http_package_download_streams_without_forced_time_or_size_limits(
         observed["url"] = request.full_url
         return Response((b"1234", b"5678", b"9"), content_length="999999999999")
 
-    monkeypatch.setattr(plugin_manager_module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     destination = tmp_path / "download.inxpkg"
     plugin_manager_module._download_url_package(
         "https://packages.example/plugin.inxpkg",
@@ -1895,7 +1947,7 @@ def test_http_package_download_streams_without_forced_time_or_size_limits(
         return FailedResponse((b"partial",))
 
     monkeypatch.setattr(
-        plugin_manager_module.urllib.request,
+        urllib.request,
         "urlopen",
         interrupted,
     )

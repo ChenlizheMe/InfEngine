@@ -22,7 +22,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .path_utils import resolved_path
-from .player_package_native import extract_pack, read_entry, read_manifest
+from .player_package_native import (
+    ASSET_CATALOG_ARCHIVE_FILENAME,
+    ASSET_CATALOG_ENTRY_PATH,
+    BUILD_MANIFEST_ENTRY_PATH,
+    extract_pack,
+    read_entry,
+    read_manifest,
+)
 from .player_service_graph import (
     PLAYER_MANIFEST_SCHEMA,
     RuntimeFeatureSet,
@@ -161,7 +168,7 @@ TEXT_SUFFIXES = AUTHOR_SOURCE_SUFFIXES | RUNTIME_DOCUMENT_SUFFIXES | frozenset(
     {".json", ".yaml", ".yml", ".txt"}
 )
 NATIVE_SUFFIXES = frozenset({".exe", ".dll", ".pyd", ".so", ".dylib"})
-NATIVE_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod"})
+NATIVE_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod", ".inxcat"})
 ABSOLUTE_PATH_RE = re.compile(
     r"(?:(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]|\\\\|/(?:Users|home|workspace|mnt|var|tmp)/)"
 )
@@ -531,12 +538,11 @@ def audit_player_package(
     data_relative = data_root.name
     expected = {
         f"{data_relative}/{MANIFEST_FILENAME}",
-        f"{data_relative}/BuildManifest.json",
         f"{data_relative}/Bootstrap.inxrt",
         f"{data_relative}/Runtime.inxrt",
         f"{data_relative}/Content.inxpkg",
+        f"{data_relative}/{ASSET_CATALOG_ARCHIVE_FILENAME}",
         f"{data_relative}/PackageIndex.inxmanifest",
-        f"{data_relative}/Library/RuntimeAssetCatalog.json",
     }
     optional = {f"{data_relative}/Modules/Parallel.inxmod"}
 
@@ -808,17 +814,19 @@ def audit_player_package(
         if str(entry["path"]).startswith(runtime_prefix)
     }
     runtime_entries_by_casefold = {path.casefold(): path for path in runtime_entry_paths}
-    build_manifest_path = f"{data_relative}/BuildManifest.json"
     build_manifest_document: dict[str, object] = {}
     runtime_contract_gaps: list[str] = []
     try:
         build_manifest_document = json.loads(
-            (root / build_manifest_path).read_text(encoding="utf-8")
+            read_entry(
+                data_root / ASSET_CATALOG_ARCHIVE_FILENAME,
+                BUILD_MANIFEST_ENTRY_PATH,
+            ).decode("utf-8")
         )
         if not isinstance(build_manifest_document, dict):
             raise RuntimeError("BuildManifest root is not an object")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError) as exc:
-        runtime_contract_gaps.append(f"BuildManifest is unreadable: {exc}")
+        runtime_contract_gaps.append(f"sealed BuildManifest is unreadable: {exc}")
         build_manifest_document = {}
 
     declared_contract = build_manifest_document.get("runtime_contract")
@@ -1005,45 +1013,55 @@ def audit_player_package(
         player_host_gap.append("root executable is unavailable for PlayerHost identity validation")
 
     library_artifact_gap: list[str] = []
-    catalog_path = data_root / "Library" / "RuntimeAssetCatalog.json"
+    catalog_path = data_root / ASSET_CATALOG_ARCHIVE_FILENAME
     catalog: dict[str, object] = {}
     catalog_artifacts: list[dict[str, object]] = []
     catalog_packages: list[dict[str, object]] = []
     if not catalog_path.is_file():
-        library_artifact_gap.append("Library/RuntimeAssetCatalog.json is missing")
+        library_artifact_gap.append(f"{ASSET_CATALOG_ARCHIVE_FILENAME} is missing")
     else:
         try:
-            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            catalog = json.loads(
+                read_entry(catalog_path, ASSET_CATALOG_ENTRY_PATH).decode("utf-8")
+            )
+            sealed_build_manifest = json.loads(
+                read_entry(catalog_path, BUILD_MANIFEST_ENTRY_PATH).decode("utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError):
             catalog = {}
+            sealed_build_manifest = None
+        if sealed_build_manifest != build_manifest_document:
+            library_artifact_gap.append(
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} build manifest is unstable"
+            )
         if (
             catalog.get("$schema") != CATALOG_SCHEMA
             or set(catalog) != {"$schema", "player_host", "packages", "artifacts"}
         ):
             library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no current catalog schema"
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} has no current catalog schema"
             )
         raw_packages = catalog.get("packages", [])
         if not isinstance(raw_packages, list):
             library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no package entry list"
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} has no package entry list"
             )
         else:
             catalog_packages = [item for item in raw_packages if isinstance(item, dict)]
             if len(catalog_packages) != len(raw_packages):
                 library_artifact_gap.append(
-                    "Library/RuntimeAssetCatalog.json contains malformed package entries"
+                    f"{ASSET_CATALOG_ARCHIVE_FILENAME} contains malformed package entries"
                 )
         raw_artifacts = catalog.get("artifacts", [])
         if not isinstance(raw_artifacts, list):
             library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no artifact entry list"
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} has no artifact entry list"
             )
         else:
             catalog_artifacts = [item for item in raw_artifacts if isinstance(item, dict)]
             if len(catalog_artifacts) != len(raw_artifacts):
                 library_artifact_gap.append(
-                    "Library/RuntimeAssetCatalog.json contains malformed artifact entries"
+                    f"{ASSET_CATALOG_ARCHIVE_FILENAME} contains malformed artifact entries"
                 )
 
     # Bootstrap.inxrt is a host startup closure, not a game runtime asset
@@ -1438,7 +1456,10 @@ def audit_player_package(
         "services": runtime_contract["services"],
         "runtime_policy": runtime_policy,
         "reachability": {
-            "build_manifest": build_manifest_path,
+            "build_manifest": (
+                f"{data_relative}/{ASSET_CATALOG_ARCHIVE_FILENAME}::"
+                f"{BUILD_MANIFEST_ENTRY_PATH}"
+            ),
             "runtime_artifacts": sorted(archive_manifests),
             "content_entries": sorted(
                 entry["path"] for entry in archive_entries
@@ -1504,7 +1525,22 @@ def audit_player_package(
         )
     if write_manifest:
         manifest_path = data_root / MANIFEST_FILENAME
-        _write_json_atomic(manifest_path, result)
+        # The detailed audit enumerates package entries, including author-side
+        # logical aliases.  It is build evidence, not runtime content.  Ship
+        # only the small product contract required by PlayerBootstrap.
+        _write_json_atomic(
+            manifest_path,
+            {
+                key: result[key]
+                for key in (
+                    "$schema",
+                    "product",
+                    "features",
+                    "services",
+                    "runtime_policy",
+                )
+            },
+        )
     return result
 
 

@@ -146,12 +146,18 @@ def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
     asset = tmp_path / "Assets" / "Data" / "cache.npy"
     asset.parent.mkdir(parents=True)
     asset.write_bytes(b"cache")
+    package_asset = tmp_path / "Packages" / "vendor" / "tool" / "runtime" / "server.exe"
+    package_asset.parent.mkdir(parents=True)
+    package_asset.write_bytes(b"server")
     outside = tmp_path / "Library" / "cache.npy"
     outside.parent.mkdir()
     outside.write_bytes(b"cache")
     set_project_root(str(tmp_path))
     try:
         assert Application.asset_path("Assets/Data/cache.npy") == str(asset.resolve())
+        assert Application.asset_path(
+            "Packages/vendor/tool/runtime/server.exe"
+        ) == str(package_asset.resolve())
         with pytest.raises(FileNotFoundError, match="not available"):
             Application.asset_path(str(outside))
     finally:
@@ -217,13 +223,26 @@ def test_persistent_data_path_uses_project_root_in_editor(monkeypatch, tmp_path)
     Application._unbind_engine(engine)
 
 
-def test_persistent_data_path_uses_packaged_player_data_root(monkeypatch, tmp_path):
+def test_persistent_data_path_uses_separate_writable_player_root(monkeypatch, tmp_path):
     engine = _Engine()
     Application._bind_engine(engine, "player")
     packaged_root = tmp_path / "PlayerData"
     monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(packaged_root))
+    writable_root = tmp_path / "WritableData"
+    monkeypatch.setenv("_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", str(writable_root))
 
-    assert Application.persistent_data_path() == str(packaged_root.resolve())
+    assert Application.persistent_data_path() == str(writable_root.resolve())
+
+    Application._unbind_engine(engine)
+
+
+def test_persistent_data_path_rejects_player_without_writable_root(monkeypatch):
+    engine = _Engine()
+    Application._bind_engine(engine, "player")
+    monkeypatch.delenv("_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", raising=False)
+
+    with pytest.raises(RuntimeError, match="writable persistent data root"):
+        Application.persistent_data_path()
 
     Application._unbind_engine(engine)
 
@@ -233,7 +252,7 @@ def test_render_target_capture_uses_engine_and_stays_under_persistent_data(
 ):
     engine = _Engine()
     Application._bind_engine(engine, "player")
-    monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", str(tmp_path))
     output = tmp_path / "Logs" / "ribbon.png"
 
     capture_id = Application.request_render_target_capture("GAME", str(output))

@@ -4,6 +4,7 @@
 /build/
 /out/
 /dev/
+/tests/fixtures/*/Cache/
 /packaging/runtime/
 /mcp_captures/
 /python/_mcp_*.py

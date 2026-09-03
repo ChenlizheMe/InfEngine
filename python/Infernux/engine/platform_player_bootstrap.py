@@ -10,7 +10,14 @@ import tempfile
 from pathlib import Path
 
 from Infernux.engine.path_utils import resolved_path
-from Infernux.engine.player_package_native import extract_pack, read_manifest
+from Infernux.engine.player_package_native import (
+    ASSET_CATALOG_ARCHIVE_FILENAME,
+    ASSET_CATALOG_ENTRY_PATH,
+    BUILD_MANIFEST_ENTRY_PATH,
+    extract_pack,
+    read_entry,
+    read_manifest,
+)
 
 
 _PACKAGE_INDEX_HEADER = "INFERNUX_PLAYER_PACKAGE_INDEX"
@@ -43,7 +50,7 @@ def _package_index(data_root: Path) -> dict[str, tuple[str, int]]:
             raise RuntimeError("Player package index contains an invalid record")
         kind, digest, raw_size = parts
         if (
-            kind not in {"runtime", "content", "parallel"}
+            kind not in {"runtime", "content", "catalog", "parallel"}
             or len(digest) != 64
             or any(character not in "0123456789abcdef" for character in digest)
         ):
@@ -58,26 +65,79 @@ def _package_index(data_root: Path) -> dict[str, tuple[str, int]]:
     return records
 
 
-def _content_cache(data_root: Path, cache_root: Path) -> Path:
-    records = _package_index(data_root)
-    expected = records.get("content")
+def _validate_indexed_archive(
+    data_root: Path,
+    kind: str,
+    filename: str,
+) -> tuple[Path, dict[str, object]]:
+    expected = _package_index(data_root).get(kind)
     if expected is None:
-        raise RuntimeError("Player package index does not declare Content.inxpkg")
+        raise RuntimeError(f"Player package index does not declare {filename}")
     expected_hash, expected_size = expected
-    archive = data_root / "Content.inxpkg"
+    archive = data_root / filename
     try:
         archive_size = archive.stat().st_size
     except OSError as exc:
-        raise RuntimeError(f"Player content package is missing: {archive}") from exc
+        raise RuntimeError(f"Player package is missing: {archive}") from exc
     if archive_size != expected_size:
-        raise RuntimeError("Player content package size disagrees with its package index")
-
+        raise RuntimeError(f"Player {filename} size disagrees with its package index")
     manifest = read_manifest(archive)
     if (
         str(manifest.get("archive_sha256", "")).casefold() != expected_hash
         or int(manifest.get("archive_bytes", -1)) != expected_size
     ):
-        raise RuntimeError("Player content package identity disagrees with its package index")
+        raise RuntimeError(f"Player {filename} identity disagrees with its package index")
+    return archive, manifest
+
+
+def read_player_asset_catalog(data_root: str | Path) -> dict[str, object]:
+    """Read the boot-validated catalog without exposing a Library directory."""
+
+    root = Path(resolved_path(data_root))
+    archive, _manifest = _validate_indexed_archive(
+        root,
+        "catalog",
+        ASSET_CATALOG_ARCHIVE_FILENAME,
+    )
+    try:
+        document = json.loads(
+            read_entry(archive, ASSET_CATALOG_ENTRY_PATH).decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Player asset catalog is unreadable") from exc
+    if not isinstance(document, dict):
+        raise RuntimeError("Player asset catalog root must be an object")
+    return document
+
+
+def read_player_build_manifest(data_root: str | Path) -> dict[str, object]:
+    """Read the build presentation contract from the sealed catalog."""
+
+    root = Path(resolved_path(data_root))
+    archive, _manifest = _validate_indexed_archive(
+        root,
+        "catalog",
+        ASSET_CATALOG_ARCHIVE_FILENAME,
+    )
+    try:
+        document = json.loads(
+            read_entry(archive, BUILD_MANIFEST_ENTRY_PATH).decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Player build manifest is unreadable") from exc
+    if not isinstance(document, dict):
+        raise RuntimeError("Player build manifest root must be an object")
+    return document
+
+
+def _content_cache(data_root: Path, cache_root: Path) -> Path:
+    archive, manifest = _validate_indexed_archive(
+        data_root,
+        "content",
+        "Content.inxpkg",
+    )
+    expected_hash = str(manifest["archive_sha256"])
+    expected_size = int(manifest["archive_bytes"])
 
     os.environ["_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256"] = expected_hash
     os.environ["_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES"] = str(expected_size)
@@ -160,12 +220,19 @@ def prepare_platform_player(package_root: str, cache_root: str) -> str:
         raise RuntimeError("Platform Player runtime manifest is unreadable") from exc
     if flavor not in {"PlayerDebug", "PlayerRelease"}:
         raise RuntimeError("Platform Player runtime manifest has an invalid flavor")
+    read_player_asset_catalog(package)
+    build_manifest_document = read_player_build_manifest(package)
     project_root = _content_cache(package, cache)
-    build_manifest = package / "BuildManifest.json"
-    if not build_manifest.is_file():
-        raise RuntimeError("Platform Player package has no BuildManifest.json")
     target_manifest = project_root / "BuildManifest.json"
-    payload = build_manifest.read_bytes()
+    payload = (
+        json.dumps(
+            build_manifest_document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
     if not target_manifest.is_file() or target_manifest.read_bytes() != payload:
         temporary = target_manifest.with_name(target_manifest.name + ".tmp")
         temporary.write_bytes(payload)
@@ -173,6 +240,13 @@ def prepare_platform_player(package_root: str, cache_root: str) -> str:
 
     os.environ["_INFERNUX_PLAYER_MODE"] = "1"
     os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = str(package)
+    persistent_root = os.environ.get(
+        "_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", ""
+    ).strip()
+    if not persistent_root:
+        persistent_root = str(cache.parent / "Data")
+        os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"] = persistent_root
+    Path(persistent_root).mkdir(parents=True, exist_ok=True)
     os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = (
         "1" if flavor == "PlayerDebug" else "0"
     )
@@ -194,4 +268,9 @@ def run_platform_player(package_root: str, cache_root: str) -> None:
     run_player(project_root, engine_log_level=LogLevel.Debug)
 
 
-__all__ = ["prepare_platform_player", "run_platform_player"]
+__all__ = [
+    "prepare_platform_player",
+    "read_player_asset_catalog",
+    "read_player_build_manifest",
+    "run_platform_player",
+]

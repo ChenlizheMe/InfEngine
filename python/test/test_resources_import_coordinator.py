@@ -868,6 +868,53 @@ def test_initial_script_scan_includes_assets_and_installed_packages(monkeypatch,
     manager.cleanup()
 
 
+def test_resources_manager_materializes_both_script_watch_roots(tmp_path):
+    database = _AssetDatabaseProbe()
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(database))
+
+    assert (tmp_path / "Assets").is_dir()
+    assert (tmp_path / "Packages").is_dir()
+    assert manager._script_roots == (
+        str((tmp_path / "Assets").resolve()),
+        str((tmp_path / "Packages").resolve()),
+    )
+    manager.cleanup()
+
+
+def test_new_manifestless_package_component_publishes_without_editor_restart(
+    monkeypatch,
+    tmp_path,
+):
+    database = _AssetDatabaseProbe()
+    engine = _EngineProbe(database)
+    manager = ResourcesManager(str(tmp_path), engine)
+    handler = manager._ensure_event_handler()
+    asset_calls = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    published = []
+    monkeypatch.setattr(
+        handler,
+        "_publish_valid_script",
+        lambda path, **kwargs: published.append((Path(path), kwargs)) or True,
+    )
+
+    script = tmp_path / "Packages" / "abc" / "runtime" / "component.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("from Infernux import InxComponent\nclass Live(InxComponent):\n    pass\n")
+
+    handler.on_created(_event(script))
+    assert manager.process_pending_reloads(force=True) > 0
+
+    assert [entry[0] for entry in database.mutations] == ["import"]
+    assert published and published[0][0] == script
+    assert published[0][1]["catalog_event"] == "created"
+    record = handler.dependency_graph.module_for_path(script)
+    assert record is not None
+    assert record.id.module_name == "_infernux_packages.abc.runtime.component"
+    manager.cleanup()
+
+
 def test_package_runtime_script_publishes_with_isolated_graph_identity(
     monkeypatch,
     tmp_path,

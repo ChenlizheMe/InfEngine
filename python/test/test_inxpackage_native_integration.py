@@ -52,6 +52,54 @@ def _source(path: Path, reference: str) -> Path:
 
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
+def test_repository_package_script_is_standalone_deterministic_and_native_compatible(
+    tmp_path,
+):
+    repository = Path(__file__).parents[2]
+    plugin_roots = tuple(
+        repository / "external" / "plugins" / name
+        for name in (
+            "infernux_android",
+            "infernux_linux",
+            "infernux_web",
+            "infernux_windows",
+        )
+    )
+    scripts = [(root / "package.py").read_bytes() for root in plugin_roots]
+    assert len({script.rstrip(b"\r\n") for script in scripts}) == 1
+    assert b"from Infernux" not in scripts[0]
+    assert b"import Infernux" not in scripts[0]
+
+    outputs = (tmp_path / "first.inxpkg", tmp_path / "second.inxpkg")
+    for destination in outputs:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(plugin_roots[-1] / "package.py"),
+                str(destination),
+            ],
+            cwd=tmp_path,
+            env={"PATH": os.environ.get("PATH", "")},
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + "\n" + result.stderr
+        assert destination.is_file()
+
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+    preview = InxPackage.inspect(str(outputs[0]))
+    assert preview.metadata["reference"] == "infernux/platform-windows"
+    assert preview.logical_entries
+    assert all(not path.startswith("README") for path in preview.logical_entries)
+    assert "package.py" not in preview.logical_entries
+
+
+@pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
 def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
     child = _source(tmp_path / "child", "native/child")
     (child / "child.txt").write_text("child payload", encoding="utf-8")

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from Infernux.engine.player_package_native import read_manifest, write_pack
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "acceptance" / "linux_player_smoke.py"
@@ -43,7 +45,8 @@ def test_linux_smoke_requires_debug_player_control(tmp_path: Path):
     player.write_bytes(b"")
     data = tmp_path / "Balance_Data"
     data.mkdir()
-    (data / "BuildManifest.json").write_text(
+    build_manifest = tmp_path / "BuildManifest.json"
+    build_manifest.write_text(
         json.dumps(
             {
                 "game": "Balance",
@@ -53,6 +56,33 @@ def test_linux_smoke_requires_debug_player_control(tmp_path: Path):
             }
         ),
         encoding="utf-8",
+    )
+    runtime_catalog = tmp_path / "RuntimeAssetCatalog.json"
+    runtime_catalog.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_catalog",
+                "player_host": {},
+                "packages": [],
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalog = data / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", runtime_catalog),
+            ("BuildManifest.json", build_manifest),
+        ),
+        catalog,
+    )
+    catalog_manifest = read_manifest(catalog)
+    (data / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
+        f"catalog\t{catalog_manifest['archive_sha256']}\t"
+        f"{catalog_manifest['archive_bytes']}\n",
+        encoding="ascii",
     )
 
     with pytest.raises(RuntimeError, match="development build"):

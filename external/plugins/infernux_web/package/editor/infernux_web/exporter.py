@@ -884,6 +884,7 @@ def _configure_and_build_host(
     tool_host_template_source = build_path(host_template_source)
     tool_web_shell = build_path(web_shell)
     tool_build_root = build_path(build_root)
+    _discard_mismatched_cmake_source(build_root, tool_host_template_source)
     tool_player_assets = build_path(player_assets)
     tool_branding = build_path(player_assets / "web-branding")
     tool_shader_manifest = build_path(staging / "shader-cook" / "manifest.json")
@@ -982,6 +983,23 @@ def _configure_and_build_host(
         )
     request.report("compile", 1, 1, "Cooked WebGPU Player host compiled")
     return logs
+
+
+def _discard_mismatched_cmake_source(build_root: Path, expected_source: str) -> None:
+    """Invalidate only a CMake tree tied to an obsolete plugin source path."""
+
+    cache = build_root / "CMakeCache.txt"
+    try:
+        lines = cache.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    prefix = "CMAKE_HOME_DIRECTORY:INTERNAL="
+    configured = next(
+        (line[len(prefix) :] for line in lines if line.startswith(prefix)),
+        "",
+    )
+    if configured and configured.replace("\\", "/") != expected_source.replace("\\", "/"):
+        shutil.rmtree(build_root)
 
 
 def _web_asset_revision(

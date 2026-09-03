@@ -50,6 +50,8 @@ vfx-kit/
 
 The outer repository is unrestricted. CMake, Cargo, Gradle, npm, or another build may place its final outputs into `package/`. The packer treats known and unknown extensions as bytes; location, not extension guessing, defines ownership and Player export.
 
+Run `python package.py [destination.inxpkg]` from any working directory. The script depends only on the Python standard library and writes the native InxPack format directly, so neither Infernux nor a C++ toolchain is required on the author's packaging machine. When the destination is omitted, the archive is written beside the script using the repository directory name. Two builds from identical bytes and metadata produce an identical archive.
+
 ## Installation routes
 
 | Package path | Project destination | Player |
