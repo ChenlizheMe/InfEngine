@@ -460,7 +460,7 @@ class ControlPaneViewModel:
         if not project_path:
             QMessageBox.warning(parent, tr("Missing Location"), tr("Please choose a project location."))
             return
-        if is_frozen() and not engine_version:
+        if self.launch_context.uses_installed_versions and not engine_version:
             QMessageBox.warning(parent, tr("Missing Version"), tr("Please select an installed engine version."))
             return
         progress_dialog = CustomProgressDialog(parent)

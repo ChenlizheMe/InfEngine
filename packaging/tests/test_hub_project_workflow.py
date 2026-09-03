@@ -108,6 +108,40 @@ def test_installed_import_keeps_version_catalog_warning(tmp_path: Path, monkeypa
     database.close()
 
 
+def test_source_project_creation_accepts_current_environment_without_version(
+    monkeypatch,
+):
+    class NewProjectDialog:
+        def __init__(self, *_args):
+            pass
+
+        @staticmethod
+        def exec():
+            return 1
+
+        @staticmethod
+        def get_data():
+            return "SourceProject", "C:/Projects", ""
+
+    class InitializationReached(RuntimeError):
+        pass
+
+    monkeypatch.setattr("view.new_project_view.NewProjectView", NewProjectDialog)
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.CustomProgressDialog",
+        lambda _parent: (_ for _ in ()).throw(InitializationReached()),
+    )
+
+    viewmodel = ControlPaneViewModel(
+        model=object(),
+        project_list=object(),
+        launch_context=HubLaunchContext.SOURCE,
+    )
+
+    with pytest.raises(InitializationReached):
+        viewmodel.create_project(None)
+
+
 def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path, monkeypatch):
     output = tmp_path / "out" / "build" / "release" / "python_wheel"
     dist = tmp_path / "dist" / "releases" / "0.2.9"
