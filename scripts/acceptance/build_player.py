@@ -16,10 +16,10 @@ from typing import MutableMapping, Sequence
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_EDITORS = {
-    "windows": REPOSITORY_ROOT / "external" / "plugins" / "infernux_windows" / "Editor",
-    "linux": REPOSITORY_ROOT / "external" / "plugins" / "infernux_linux" / "Editor",
-    "android": REPOSITORY_ROOT / "external" / "plugins" / "infernux_android" / "Editor",
-    "web": REPOSITORY_ROOT / "external" / "plugins" / "infernux_web" / "Editor",
+    "windows": REPOSITORY_ROOT / "external" / "plugins" / "infernux_windows" / "package" / "editor",
+    "linux": REPOSITORY_ROOT / "external" / "plugins" / "infernux_linux" / "package" / "editor",
+    "android": REPOSITORY_ROOT / "external" / "plugins" / "infernux_android" / "package" / "editor",
+    "web": REPOSITORY_ROOT / "external" / "plugins" / "infernux_web" / "package" / "editor",
 }
 EXPORTERS = {
     "android-arm64": ("android", "infernux_android", "AndroidPlatformExporter"),

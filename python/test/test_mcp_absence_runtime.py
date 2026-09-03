@@ -135,7 +135,8 @@ def _run_editor_without_mcp(project: Path, port: int) -> None:
         / "external"
         / "plugins"
         / "infernux_mcp"
-        / "Editor"
+        / "package"
+        / "editor"
     )
     sys.path.insert(0, str(plugin_source))
     try:

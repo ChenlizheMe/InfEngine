@@ -14,7 +14,9 @@ from Infernux.plugins import player_file_exported
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_EDITOR = ROOT / "external" / "plugins" / "infernux_web" / "Editor"
+PLUGIN_EDITOR = (
+    ROOT / "external" / "plugins" / "infernux_web" / "package" / "editor"
+)
 
 
 def _web_module(monkeypatch):
@@ -532,7 +534,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
         / "external"
         / "plugins"
         / "infernux_web"
-        / "Editor"
+        / "package"
+        / "editor"
         / "infernux_web"
         / "templates"
         / "host"
@@ -922,15 +925,20 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
 def test_web_host_build_templates_are_editor_only():
     plugin_root = ROOT / "external" / "plugins" / "infernux_web"
     host_templates = (
-        plugin_root / "Editor" / "infernux_web" / "templates" / "host"
+        plugin_root
+        / "package"
+        / "editor"
+        / "infernux_web"
+        / "templates"
+        / "host"
     )
-    assert not (plugin_root / "Runtime" / "web").exists()
+    assert not (plugin_root / "package" / "runtime" / "web").exists()
     assert (host_templates / "CMakeLists.txt").is_file()
     assert (host_templates / "main.cpp").is_file()
     assert (host_templates / "shell.html").is_file()
     for path in host_templates.rglob("*"):
         if path.is_file():
-            relative = path.relative_to(plugin_root).as_posix()
+            relative = path.relative_to(plugin_root / "package").as_posix()
             assert player_file_exported({}, relative) is False
 
 

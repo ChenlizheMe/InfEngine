@@ -9,7 +9,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_EDITOR = ROOT / "external" / "plugins" / "infernux_web" / "Editor"
+PLUGIN_EDITOR = (
+    ROOT / "external" / "plugins" / "infernux_web" / "package" / "editor"
+)
 
 
 @pytest.fixture

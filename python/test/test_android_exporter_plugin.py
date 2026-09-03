@@ -18,7 +18,9 @@ from Infernux.engine.build import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_EDITOR = ROOT / "external" / "plugins" / "infernux_android" / "Editor"
+PLUGIN_EDITOR = (
+    ROOT / "external" / "plugins" / "infernux_android" / "package" / "editor"
+)
 
 
 def _write_android_numpy_wheel(prefix: Path, *, abi: str = "x86_64") -> Path:

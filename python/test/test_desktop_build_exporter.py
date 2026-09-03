@@ -17,12 +17,12 @@ from Infernux.plugins import InxPackage, PluginManager
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "external" / "plugins"
 if sys.platform == "win32":
-    EDITOR_ROOT = PLUGIN_ROOT / "infernux_windows" / "Editor"
+    EDITOR_ROOT = PLUGIN_ROOT / "infernux_windows" / "package" / "editor"
     sys.path.insert(0, str(EDITOR_ROOT))
     from infernux_windows import WindowsPlatformExporter as HostPlatformExporter
     from infernux_windows.exporter import windows_target as host_target
 else:
-    EDITOR_ROOT = PLUGIN_ROOT / "infernux_linux" / "Editor"
+    EDITOR_ROOT = PLUGIN_ROOT / "infernux_linux" / "package" / "editor"
     sys.path.insert(0, str(EDITOR_ROOT))
     from infernux_linux import LinuxPlatformExporter as HostPlatformExporter
     from infernux_linux.exporter import linux_target as host_target

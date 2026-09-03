@@ -18,13 +18,14 @@ import pytest
 
 # MCP is a real external InxPackage in 0.3.7. Unit tests import its source
 # checkout explicitly; production discovers the same code only after package
-# installation adds Packages/<reference>/Runtime to the preload import path.
+# installation adds Packages/<reference>/editor to the preload import path.
 _MCP_PLUGIN_RUNTIME = (
     Path(__file__).resolve().parents[2]
     / "external"
     / "plugins"
     / "infernux_mcp"
-    / "Editor"
+    / "package"
+    / "editor"
 )
 if str(_MCP_PLUGIN_RUNTIME) not in sys.path:
     sys.path.insert(0, str(_MCP_PLUGIN_RUNTIME))

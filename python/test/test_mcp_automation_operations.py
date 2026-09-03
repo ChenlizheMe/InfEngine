@@ -200,7 +200,8 @@ def test_operation_handlers_depend_on_host_api_not_editor_implementation():
         / "external"
         / "plugins"
         / "infernux_mcp"
-        / "Editor"
+        / "package"
+        / "editor"
         / "infernux_mcp"
     )
     forbidden = (
@@ -284,7 +285,8 @@ def test_capture_surface_cannot_fall_back_to_operating_system_pixels():
         / "external"
         / "plugins"
         / "infernux_mcp"
-        / "Editor"
+        / "package"
+        / "editor"
         / "infernux_mcp"
         / "capture_operations.py"
     )
@@ -310,7 +312,8 @@ def test_mcp_automation_cannot_control_operating_system_window_activation():
         / "external"
         / "plugins"
         / "infernux_mcp"
-        / "Editor"
+        / "package"
+        / "editor"
         / "infernux_mcp"
     )
     python_sources = list(plugin_root.rglob("*.py"))
