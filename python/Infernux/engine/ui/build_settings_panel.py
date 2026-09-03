@@ -381,22 +381,27 @@ class BuildSettingsPanel(EditorPanel):
     def _render_wrapped_message(self, ctx, message: str, *, color=None, height: Optional[float] = None) -> None:
         if color is not None:
             ctx.push_style_color(ImGuiCol.Text, *color)
-        writer = getattr(ctx, "text_wrapped", None)
-        if height is not None:
-            if ctx.begin_child(
-                "##build_status_message", 0, _metric(ctx, height), True
-            ):
-                if callable(writer):
-                    writer(str(message))
-                else:
-                    ctx.label(str(message))
-            ctx.end_child()
-        elif callable(writer):
-            writer(str(message))
-        else:
-            ctx.label(str(message))
-        if color is not None:
-            ctx.pop_style_color(1)
+        try:
+            writer = getattr(ctx, "text_wrapped", None)
+            if height is not None:
+                visible = ctx.begin_child(
+                    "##build_status_message", 0, _metric(ctx, height), True
+                )
+                try:
+                    if visible:
+                        if callable(writer):
+                            writer(str(message))
+                        else:
+                            ctx.label(str(message))
+                finally:
+                    ctx.end_child()
+            elif callable(writer):
+                writer(str(message))
+            else:
+                ctx.label(str(message))
+        finally:
+            if color is not None:
+                ctx.pop_style_color(1)
 
     def _render_action_row(self, ctx, buttons) -> None:
         gap = _metric(ctx, 8.0)
@@ -437,23 +442,30 @@ class BuildSettingsPanel(EditorPanel):
          
         ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
         ctx.push_style_var_float(ImGuiStyleVar.ChildBorderSize, 0.0)
-        if building_this_frame:
-            ctx.begin_disabled(True)
-        if ctx.begin_child("##build_body", 0, child_h, False):
-            self._render_target_section(ctx)
-            ctx.separator()
-            self._render_output_section(ctx)
-            ctx.separator()
-            self._render_display_section(ctx)
-            ctx.separator()
-            self._render_splash_section(ctx)
-            ctx.separator()
-            self._render_scene_section(ctx)
-        ctx.end_child()
-        if building_this_frame:
-            ctx.end_disabled()
-        ctx.pop_style_var(1)
-        ctx.pop_style_color(1)
+        disabled = False
+        try:
+            if building_this_frame:
+                ctx.begin_disabled(True)
+                disabled = True
+            visible = ctx.begin_child("##build_body", 0, child_h, False)
+            try:
+                if visible:
+                    self._render_target_section(ctx)
+                    ctx.separator()
+                    self._render_output_section(ctx)
+                    ctx.separator()
+                    self._render_display_section(ctx)
+                    ctx.separator()
+                    self._render_splash_section(ctx)
+                    ctx.separator()
+                    self._render_scene_section(ctx)
+            finally:
+                ctx.end_child()
+        finally:
+            if disabled:
+                ctx.end_disabled()
+            ctx.pop_style_var(1)
+            ctx.pop_style_color(1)
 
         ctx.separator()
         self._render_build_controls(ctx)
@@ -885,12 +897,6 @@ class BuildSettingsPanel(EditorPanel):
         remove_idx: Optional[int] = None
 
         for i, item in enumerate(self._splash_items):
-            ctx.push_id(i + 10000)
-            ctx.push_style_var_vec2(
-                ImGuiStyleVar.ItemSpacing,
-                *_metric_pair(ctx, Theme.BUILD_SETTINGS_ROW_SPC),
-            )
-
             source_path = self._asset_path_for_guid(item.get("asset_guid", ""))
             fname = os.path.basename(source_path) if source_path else "<missing>"
             item_type = item.get("type", "image")
@@ -980,9 +986,6 @@ class BuildSettingsPanel(EditorPanel):
 
             ctx.separator()
 
-            ctx.pop_style_var(1)
-            ctx.pop_id()
-
         if remove_idx is not None:
             del self._splash_items[remove_idx]
             self._save()
@@ -1053,8 +1056,6 @@ class BuildSettingsPanel(EditorPanel):
         swap_pair: Optional[tuple] = None
 
         for i, scene_path in enumerate(self._scenes):
-            ctx.push_id(i)
-
             name = os.path.splitext(os.path.basename(scene_path))[0]
             root = get_project_root() or ""
             absolute_scene = resolved_path(
@@ -1068,11 +1069,6 @@ class BuildSettingsPanel(EditorPanel):
                 # Windows cannot compute a relative path across drive letters.
                 rel = absolute_scene
 
-            ctx.push_style_var_vec2(
-                ImGuiStyleVar.ItemSpacing,
-                *_metric_pair(ctx, Theme.BUILD_SETTINGS_ROW_SPC),
-            )
-            
             # Use a fixed row height so selectable and buttons align
             row_h = _metric(ctx, 24.0)
             ctx.selectable(f"  {i}    {name}    ({rel})##row", False, 16, 0, row_h)
@@ -1139,9 +1135,6 @@ class BuildSettingsPanel(EditorPanel):
             ctx.record_semantic_item(
                 "button", t("build.remove"), True, f"build_settings.scene.{i}.remove"
             )
-
-            ctx.pop_style_var(1)
-            ctx.pop_id()
 
         if remove_idx is not None:
             del self._scenes[remove_idx]

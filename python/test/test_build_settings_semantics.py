@@ -752,6 +752,71 @@ def test_plugin_panel_reads_the_current_shared_cache_contract():
     assert cache_queries == ["infernux/platform-web"]
 
 
+def test_plugin_panel_distinguishes_downloadable_from_cached_available():
+    from Infernux.engine.i18n import t
+    from Infernux.engine.ui.plugin_panel import PluginPanel
+
+    assert PluginPanel._state_visual(None, {"_cached": False})[0] == t(
+        "plugins.downloadable"
+    )
+    assert PluginPanel._state_visual(None, {"_cached": True})[0] == t(
+        "plugins.available"
+    )
+
+
+def test_build_settings_balances_child_and_style_stacks_when_body_raises():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._build_error = None
+    panel._build_cancelled = False
+    panel._build_output_dir = None
+    panel._render_target_section = lambda _ctx: (_ for _ in ()).throw(
+        RuntimeError("render failure")
+    )
+    events = []
+
+    class Context:
+        def get_dpi_scale(self):
+            return 1.0
+
+        def dummy(self, *_args):
+            pass
+
+        def get_content_region_avail_height(self):
+            return 500.0
+
+        def push_style_color(self, *_args):
+            events.append("push_color")
+
+        def push_style_var_float(self, *_args):
+            events.append("push_var")
+
+        def begin_child(self, *_args):
+            events.append("begin_child")
+            return True
+
+        def end_child(self):
+            events.append("end_child")
+
+        def pop_style_var(self, *_args):
+            events.append("pop_var")
+
+        def pop_style_color(self, *_args):
+            events.append("pop_color")
+
+    with pytest.raises(RuntimeError, match="render failure"):
+        panel._render_body(Context())
+
+    assert events == [
+        "push_color",
+        "push_var",
+        "begin_child",
+        "end_child",
+        "pop_var",
+        "pop_color",
+    ]
+
+
 def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatch):
     from Infernux.engine.build import BuildTarget, PlatformCapabilities
 
