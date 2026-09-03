@@ -13,6 +13,9 @@ from pathlib import Path, PurePosixPath
 MANIFEST_SCHEMA = "infernux.hub_update"
 PRODUCT_NAME = "InfernuxHub"
 SUPPORTED_PLATFORMS = frozenset({"windows-x64", "linux-x64"})
+INSTALLER_ONLY_PATHS = frozenset(
+    {PurePosixPath("InfernuxHubData/runtime/runtime_bundle.zip")}
+)
 
 
 def project_version(source_root: str | Path | None = None) -> str:
@@ -53,6 +56,7 @@ def _payload_files(root: Path) -> list[Path]:
         path
         for path in root.rglob("*")
         if path.is_file()
+        and PurePosixPath(path.relative_to(root).as_posix()) not in INSTALLER_ONLY_PATHS
         and not (
             path.parent == root
             and path.name.startswith("InfernuxHub-")

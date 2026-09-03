@@ -62,34 +62,36 @@ jobs:
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           cmake --preset windows-msvc-release
 
-      - name: Build Windows editor and native tests
+      - name: Provide Vulkan loader for build and tests
         shell: pwsh
         run: |
           conda activate infernux
-          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --build --preset windows-msvc-release
-
-      - name: Provide Vulkan loader for native tests
-        shell: pwsh
-        run: |
           $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
           $runtimeRoot = Join-Path $env:RUNNER_TEMP "vulkan-runtime"
           $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan-runtime-components.zip"
           Invoke-WebRequest -Uri $url -OutFile $archive
           Expand-Archive -LiteralPath $archive -DestinationPath $runtimeRoot -Force
           $runtimeBin = Join-Path $runtimeRoot "VulkanRT-$env:VULKAN_SDK_VERSION-Components\x64"
-          if (-not (Test-Path (Join-Path $runtimeBin "vulkan-1.dll"))) {
+          $loader = Join-Path $runtimeBin "vulkan-1.dll"
+          if (-not (Test-Path $loader)) {
             throw "Vulkan runtime archive does not contain the expected x64 loader."
           }
-          $loader = Join-Path $runtimeBin "vulkan-1.dll"
-          $destinations = @("python\Infernux\lib\vulkan-1.dll")
-          Get-ChildItem "out\build\windows-msvc-release" -Recurse -Filter "InfernuxRuntime.dll" |
-            ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
-          foreach ($destination in ($destinations | Select-Object -Unique)) {
+          $destinations = @(
+            "python\Infernux\lib\vulkan-1.dll",
+            "out\build\windows-msvc-release\Release\vulkan-1.dll"
+          )
+          foreach ($destination in $destinations) {
             $parent = Split-Path -Parent $destination
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
             Copy-Item -LiteralPath $loader -Destination $destination -Force
           }
+
+      - name: Build Windows editor and native tests
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          cmake --build --preset windows-msvc-release
 
       - name: Run preset tests
         shell: pwsh
@@ -184,7 +186,7 @@ jobs:
       - name: Run Python and platform contract tests
         run: |
           conda activate infernux
-          python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
+          xvfb-run --auto-servernum python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
 
       - name: Run Hub tests
         run: |

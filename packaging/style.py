@@ -342,7 +342,7 @@ class StyleManager:
             }}
             QPushButton#dangerBtn:pressed {{
                 background-color: {accent_pressed};
-                color: #ffffff;
+                color: {accent_text};
             }}
             QPushButton#iconBtn {{
                 background: transparent;

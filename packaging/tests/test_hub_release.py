@@ -29,6 +29,9 @@ def test_release_contains_one_archive_and_current_manifest(tmp_path: Path):
     (hub / "runtime").mkdir(parents=True)
     (hub / "Infernux Hub.exe").write_bytes(b"executable")
     (hub / "runtime" / "library.dll").write_bytes(b"library")
+    bundled_runtime = hub / "InfernuxHubData" / "runtime" / "runtime_bundle.zip"
+    bundled_runtime.parent.mkdir(parents=True)
+    bundled_runtime.write_bytes(b"installer-only-python")
 
     archive_path, manifest_path = build_release_artifacts(
         hub, "0.4.0", output, "windows-x64"
@@ -44,6 +47,7 @@ def test_release_contains_one_archive_and_current_manifest(tmp_path: Path):
             "runtime/library.dll",
         }
         assert "InfernuxHub-windows-x64-manifest.json" not in archive.namelist()
+        assert "InfernuxHubData/runtime/runtime_bundle.zip" not in archive.namelist()
     assert load_manifest(manifest_path) == {
         "$schema": "infernux.hub_update",
         "product": "InfernuxHub",
@@ -54,6 +58,19 @@ def test_release_contains_one_archive_and_current_manifest(tmp_path: Path):
             {"path": "runtime/library.dll"},
         ],
     }
+
+
+def test_bundled_python_runtime_is_installer_only(tmp_path: Path):
+    hub = tmp_path / "hub"
+    runtime = hub / "InfernuxHubData" / "runtime" / "runtime_bundle.zip"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"python")
+    (hub / "Infernux Hub").write_bytes(b"executable")
+
+    manifest = create_manifest(hub, "0.4.0", "linux-x64")
+
+    assert manifest["files"] == [{"path": "Infernux Hub"}]
+    assert runtime.is_file()
 
 
 def test_manifest_entries_are_paths(tmp_path: Path):

@@ -576,10 +576,7 @@ def _build_installer(
         f"--include-data-file={payload_archive}=payload/{HUB_PAYLOAD_ARCHIVE}",
     ]
     if os.name == "nt":
-        # Avoid adding a second opaque compression layer around the already zipped
-        # payload. The larger but lower-entropy executable is easier for endpoint
-        # security products to inspect and is less packer-like.
-        command.extend(["--windows-uac-admin", "--onefile-no-compression"])
+        command.append("--windows-uac-admin")
     command.append(str(packaging_dir / "installer_gui.py"))
     process_env = _nuitka_build_environment(build_env, build_dir)
     _run(command, cwd=packaging_dir, env=process_env)

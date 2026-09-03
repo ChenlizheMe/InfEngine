@@ -42,6 +42,8 @@ sudo apt-get install --yes --no-install-recommends \
     libspirv-cross-c-shared-dev \
     spirv-tools \
     vulkan-tools \
+    xauth \
+    xvfb \
     zlib1g-dev
 
 echo "Linux native build dependencies are installed. No reboot is required."
