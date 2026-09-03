@@ -181,7 +181,7 @@ def test_source_project_runtime_uses_active_environment_without_wheel_lookup(
     monkeypatch,
 ):
     project = tmp_path / "Project"
-    project_python = project / ".venv" / "Scripts" / "python.exe"
+    project_python = Path(ProjectModel._get_project_python(str(project)))
     project_python.parent.mkdir(parents=True)
     project_python.write_bytes(b"")
     validated = []

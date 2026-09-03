@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -26,6 +28,21 @@ if "Infernux.engine" not in sys.modules:
     _engine_stub.__path__ = [str(SOURCE_PYTHON / "Infernux" / "engine")]
     sys.modules["Infernux.engine"] = _engine_stub
     setattr(sys.modules["Infernux"], "engine", _engine_stub)
+if "Infernux.core" not in sys.modules:
+    _core_stub = types.ModuleType("Infernux.core")
+    _core_stub.__path__ = [str(SOURCE_PYTHON / "Infernux" / "core")]
+    sys.modules["Infernux.core"] = _core_stub
+    setattr(sys.modules["Infernux"], "core", _core_stub)
+if "Infernux.core.asset_types" not in sys.modules:
+    _asset_types_spec = importlib.util.spec_from_file_location(
+        "Infernux.core.asset_types",
+        SOURCE_PYTHON / "Infernux" / "core" / "asset_types.py",
+    )
+    if _asset_types_spec is None or _asset_types_spec.loader is None:
+        raise RuntimeError("Unable to load the asset type contracts for package tests")
+    _asset_types_module = importlib.util.module_from_spec(_asset_types_spec)
+    sys.modules["Infernux.core.asset_types"] = _asset_types_module
+    _asset_types_spec.loader.exec_module(_asset_types_module)
 
 from Infernux.engine.player_package_audit import (
     BOOTSTRAP_NATIVE_ROOT_ALLOWLIST,
@@ -53,6 +70,51 @@ from Infernux.engine.runtime_artifact_catalog import (
     unix_ns_to_filetime_ticks,
     validate_artifact,
 )
+
+
+_PLAYER_EXECUTABLE = "Balance.exe" if sys.platform == "win32" else "Balance"
+_EXTENSION_SUFFIX = importlib.machinery.EXTENSION_SUFFIXES[0]
+
+
+def _bootstrap_native_fixture() -> (
+    tuple[tuple[str, ...], tuple[tuple[str, bytes], ...]]
+):
+    if sys.platform == "win32":
+        native_files = (
+            "python313.dll",
+            "_ctypes.pyd",
+            "ffi.dll",
+            "_InfernuxBootstrap.pyd",
+            "_InfernuxPlayer.cp313-win_amd64.pyd",
+        )
+        payloads = (
+            ("python313.dll", b"python"),
+            ("_ctypes.pyd", b"ctypes ABI"),
+            ("ffi.dll", b"libffi ABI"),
+            ("_InfernuxBootstrap.pyd", b"bootstrap"),
+            ("_InfernuxPlayer.cp313-win_amd64.pyd", b"player module"),
+            ("Infernux/lib/InfernuxFoundation.dll", b"foundation"),
+        )
+    else:
+        ctypes_name = f"_ctypes{_EXTENSION_SUFFIX}"
+        bootstrap_name = f"_InfernuxBootstrap{_EXTENSION_SUFFIX}"
+        player_name = f"_InfernuxPlayer{_EXTENSION_SUFFIX}"
+        native_files = (
+            "libpython3.13.so.1.0",
+            ctypes_name,
+            "libffi.so.8",
+            bootstrap_name,
+            player_name,
+        )
+        payloads = (
+            ("libpython3.13.so.1.0", b"python"),
+            (ctypes_name, b"ctypes ABI"),
+            ("libffi.so.8", b"libffi ABI"),
+            (bootstrap_name, b"bootstrap"),
+            (player_name, b"player module"),
+            ("libInfernuxFoundation.so", b"foundation"),
+        )
+    return native_files, payloads
 
 
 def _texture_artifact(source_hash: str) -> bytes:
@@ -433,39 +495,31 @@ def _valid_player(tmp_path: Path) -> Path:
     source = tmp_path / "source"
     data.mkdir(parents=True)
     source.mkdir()
-    player_exe = bytearray(0x80 + 4 + 20 + 240)
-    player_exe[0:2] = b"MZ"
-    struct.pack_into("<I", player_exe, 0x3C, 0x80)
-    player_exe[0x80:0x84] = b"PE\0\0"
-    struct.pack_into(
-        "<HHIIIHH",
-        player_exe,
-        0x84,
-        0x8664,
-        1,
-        0,
-        0,
-        0,
-        240,
-        0x0002,
-    )
-    struct.pack_into("<H", player_exe, 0x98, 0x020B)
-    (root / "Balance.exe").write_bytes(player_exe)
+    if sys.platform == "win32":
+        player_exe = bytearray(0x80 + 4 + 20 + 240)
+        player_exe[0:2] = b"MZ"
+        struct.pack_into("<I", player_exe, 0x3C, 0x80)
+        player_exe[0x80:0x84] = b"PE\0\0"
+        struct.pack_into(
+            "<HHIIIHH",
+            player_exe,
+            0x84,
+            0x8664,
+            1,
+            0,
+            0,
+            0,
+            240,
+            0x0002,
+        )
+        struct.pack_into("<H", player_exe, 0x98, 0x020B)
+    else:
+        player_exe = bytearray(b"\x7fELF" + bytes(60))
+    (root / _PLAYER_EXECUTABLE).write_bytes(player_exe)
     bootstrap_sources = []
-    bootstrap_native_files = (
-        "python313.dll",
-        "_ctypes.pyd",
-        "ffi.dll",
-        "_InfernuxBootstrap.pyd",
-        "_InfernuxPlayer.cp313-win_amd64.pyd",
-    )
+    bootstrap_native_files, bootstrap_native_payloads = _bootstrap_native_fixture()
     bootstrap_payloads = (
-        ("python313.dll", b"python"),
-        ("_ctypes.pyd", b"ctypes ABI"),
-        ("ffi.dll", b"libffi ABI"),
-        ("_InfernuxBootstrap.pyd", b"bootstrap"),
-        ("_InfernuxPlayer.cp313-win_amd64.pyd", b"player module"),
-        ("Infernux/lib/InfernuxFoundation.dll", b"foundation"),
+        *bootstrap_native_payloads,
         ("stdlib/encodings/__init__.pyc", b"encodings package"),
         ("stdlib/encodings/aliases.pyc", b"encoding aliases"),
         ("stdlib/encodings/utf_8.pyc", b"utf8 codec"),
@@ -507,7 +561,8 @@ def _valid_player(tmp_path: Path) -> Path:
         native_source = source / f"native-{index}.bin"
         native_source.write_bytes(
             b"foundation"
-            if relative == "Infernux/lib/InfernuxFoundation.dll"
+            if Path(relative).name
+            in {"InfernuxFoundation.dll", "libInfernuxFoundation.so"}
             else f"native-{relative}".encode("ascii")
         )
         runtime_sources.append((relative, native_source))
@@ -607,7 +662,7 @@ def _write_catalog(root: Path) -> None:
     catalog = build_catalog(
         package_entries,
         player_host={
-            "executable": "Balance.exe",
+            "executable": _PLAYER_EXECUTABLE,
             "identity": "nuitka-player-host",
         },
         package_records=package_records,
@@ -797,7 +852,8 @@ def test_audit_accepts_minimal_bootstrap_native_closure(tmp_path: Path):
     assert set(BOOTSTRAP_NATIVE_ROOT_ALLOWLIST) == set()
     assert manifest["audit"]["bootstrap_payload_gaps"] == []
     assert manifest["runtime_native_surface"]["gaps"] == []
-    assert "Infernux/lib/zlib.dll" not in manifest["runtime_native_surface"]["required"]
+    conditional_native = next(iter(RUNTIME_CONDITIONAL_NATIVE_FILES))
+    assert conditional_native not in manifest["runtime_native_surface"]["required"]
     assert manifest["audit"]["duplicate_payload_groups"] == []
     catalog = json.loads(
         (
@@ -826,7 +882,14 @@ def test_audit_rejects_removed_bootstrap_dependencies(tmp_path: Path, removed_na
         audit_player_package(root, write_manifest=False)
 
 
-@pytest.mark.parametrize("required_name", ("_ctypes.pyd", "ffi.dll"))
+@pytest.mark.parametrize(
+    "required_name",
+    (
+        ("_ctypes.pyd", "ffi.dll")
+        if sys.platform == "win32"
+        else (f"_ctypes{_EXTENSION_SUFFIX}", "libffi.so.8")
+    ),
+)
 def test_audit_requires_ctypes_abi_startup_closure(tmp_path: Path, required_name: str):
     root = _valid_player(tmp_path)
     bootstrap = root / "Balance_Data" / "Bootstrap.inxrt"
@@ -846,18 +909,18 @@ def test_audit_requires_ctypes_abi_startup_closure(tmp_path: Path, required_name
 
 def test_audit_tracks_zlib_only_when_present_in_runtime_closure(tmp_path: Path):
     root = _valid_player(tmp_path)
-    zlib_source = tmp_path / "zlib.dll"
+    conditional_native = next(iter(RUNTIME_CONDITIONAL_NATIVE_FILES))
+    zlib_source = tmp_path / Path(conditional_native).name
     zlib_source.write_bytes(b"runtime zlib")
     _append_package_entries(
         root,
         "Runtime.inxrt",
-        (("Infernux/lib/zlib.dll", zlib_source.read_bytes()),),
+        ((conditional_native, zlib_source.read_bytes()),),
     )
 
     manifest = audit_player_package(root, write_manifest=False)
 
-    assert RUNTIME_CONDITIONAL_NATIVE_FILES == frozenset({"Infernux/lib/zlib.dll"})
-    assert "Infernux/lib/zlib.dll" in manifest["runtime_native_surface"]["required"]
+    assert conditional_native in manifest["runtime_native_surface"]["required"]
     assert manifest["runtime_native_surface"]["gaps"] == []
 
 
@@ -1004,7 +1067,7 @@ def test_audit_rejects_unknown_file_in_player_data(tmp_path: Path):
 
 def test_audit_rejects_unverified_player_host(tmp_path: Path):
     root = _valid_player(tmp_path)
-    (root / "Balance.exe").write_bytes(b"placeholder executable")
+    (root / _PLAYER_EXECUTABLE).write_bytes(b"placeholder executable")
 
     with pytest.raises(RuntimeError, match="player_host_gap"):
         audit_player_package(root, write_manifest=False)

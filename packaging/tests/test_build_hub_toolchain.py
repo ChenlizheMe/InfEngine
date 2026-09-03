@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import json
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -216,7 +216,9 @@ def test_nuitka_build_uses_an_ascii_temporary_directory():
     result = build_hub._nuitka_temp_directory(build_env, build_dir)
 
     str(result).encode("ascii")
-    assert result.is_relative_to(Path(r"C:\ProgramData\Infernux\BuildTemp"))
+    assert PureWindowsPath(result).is_relative_to(
+        PureWindowsPath(r"C:\ProgramData\Infernux\BuildTemp")
+    )
 
 
 @pytest.mark.parametrize(
