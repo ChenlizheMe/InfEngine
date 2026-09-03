@@ -150,20 +150,21 @@ def _export(source: Path, package: Path) -> Path:
 
 def test_manifestless_folder_is_the_package_root_and_uses_output_name(tmp_path):
     project = _project(tmp_path / "project")
-    materials = project / "Assets" / "Materials"
-    materials.mkdir()
+    plugin_root = project / "Packages" / "abc"
+    materials = plugin_root / "materials"
+    materials.mkdir(parents=True)
     asset = materials / "Neon.mat"
     asset.write_text("material", encoding="utf-8")
     guid = "0123456789abcdef0123456789abcdef"
     (materials / "Neon.mat.meta").write_text(_meta(guid), encoding="utf-8")
 
-    package = tmp_path / "material_tools.inxpkg"
-    preview = InxPackage.export(str(project), [str(materials)], str(package))
+    package = tmp_path / "abc.inxpkg"
+    preview = InxPackage.export(str(project), [str(plugin_root)], str(package))
 
-    assert preview.metadata["reference"] == "material_tools"
-    assert preview.metadata["name"] == "material_tools"
-    assert preview.logical_entries == ("Neon.mat",)
-    assert preview.project_entries == ("Assets/Plugins/Neon.mat",)
+    assert preview.metadata["reference"] == "abc"
+    assert preview.metadata["name"] == "abc"
+    assert preview.logical_entries == ("materials/Neon.mat",)
+    assert preview.project_entries == ("Assets/Plugins/materials/Neon.mat",)
     assert preview.file_records[0]["guid"] == guid
 
     archived_meta = json.loads(
@@ -175,6 +176,27 @@ def test_manifestless_folder_is_the_package_root_and_uses_output_name(tmp_path):
         "type": "string",
         "value": _fnv1a64(asset.read_bytes()),
     }
+
+
+def test_local_folder_never_guesses_a_nested_repository_wrapper(tmp_path):
+    project = _project(tmp_path / "project")
+    plugin_root = project / "Packages" / "abc"
+    nested = plugin_root / "package"
+    nested.mkdir(parents=True)
+    (nested / "inx_package.json").write_text("{}", encoding="utf-8")
+    (nested / "payload.bin").write_bytes(b"payload")
+
+    preview = InxPackage.export(
+        str(project),
+        [str(plugin_root)],
+        str(tmp_path / "abc.inxpkg"),
+    )
+
+    assert preview.metadata["reference"] == "abc"
+    assert preview.logical_entries == (
+        "package/inx_package.json",
+        "package/payload.bin",
+    )
 
 
 def test_manifestless_multi_selection_expands_directly_under_plugins(tmp_path):

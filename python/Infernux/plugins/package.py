@@ -107,9 +107,14 @@ class InxPackage:
         if not destination.casefold().endswith(PACKAGE_EXTENSION):
             destination += PACKAGE_EXTENSION
         sources = InxPackage._resolve_sources(project, source_paths)
-        source_root = InxPackage._package_source_root(sources)
-        if source_root and len(sources) == 1 and sources[0] != source_root:
-            sources = (source_root,)
+        # File Manager authoring has no repository wrapper.  The directory the
+        # user selected is the package root, even if one of its payload
+        # directories happens to be named ``package``.
+        source_root = (
+            sources[0]
+            if len(sources) == 1 and os.path.isdir(sources[0])
+            else ""
+        )
         source_document = InxPackage._source_document(source_root, metadata)
         reference = validate_reference(
             str(source_document.get("reference") or InxPackage._default_reference(destination))
@@ -192,10 +197,13 @@ class InxPackage:
         metadata: Mapping[str, object] | None = None,
         profile: str = "development",
     ) -> InxPackagePreview:
+        """Build one authored source tree, recognizing a repository wrapper."""
+
         root = resolved_path(source_root)
+        selected_root = InxPackage._package_source_root((root,))
         return InxPackage.export(
-            root,
-            [root],
+            selected_root,
+            [selected_root],
             destination,
             metadata=metadata,
             profile=profile,
@@ -450,14 +458,12 @@ class InxPackage:
                         if name not in _IGNORED_PARTS
                     )
                     for name in sorted(names):
-                        if (
-                            name == SOURCE_MANIFEST
-                            or name in _IGNORED_PARTS
-                            or name.endswith(".meta")
-                        ):
+                        if name in _IGNORED_PARTS or name.endswith(".meta"):
                             continue
                         path = os.path.join(walk_root, name)
                         logical = portable_path(relative_path(path, root))
+                        if logical == SOURCE_MANIFEST:
+                            continue
                         _validate_canonical_layout(logical)
                         collected.setdefault(_safe_relative(logical), path)
             else:
