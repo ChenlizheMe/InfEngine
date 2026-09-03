@@ -1529,8 +1529,11 @@ def test_engine_exit_drains_resources_before_native_cleanup():
     order = []
     engine = Engine.__new__(Engine)
     engine._mode = RuntimeMode.Headless
+    engine._process_owned_exit = False
     engine._before_exit_callback = None
     engine._play_mode_manager = None
+    engine._runtime_scene_manager = None
+    engine._runtime_scheduler = SimpleNamespace(clear=lambda: None)
     engine._resources_manager = SimpleNamespace(cleanup=lambda: order.append("resources"))
     engine._engine = SimpleNamespace(cleanup=lambda: order.append("native"))
     engine._gui_objects = {}

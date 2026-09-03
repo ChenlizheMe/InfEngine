@@ -26,24 +26,23 @@ Movement begins with three small contracts: `Input` reports state for the curren
 ```python
 from math import sqrt
 
-from Infernux import InxComponent, Vector3, serialized_field
-from Infernux.input import Input, KeyCode
+import infernux as inx
 
 
-class KeyboardMover(InxComponent):
-    speed: float = serialized_field(default=4.0, range=(0.0, 20.0))
+class KeyboardMover(inx.InxComponent):
+    speed: float = inx.serialized_field(default=4.0, range=(0.0, 20.0))
 
     def update(self, delta_time: float):
         x = 0.0
         z = 0.0
 
-        if Input.get_key(KeyCode.A) or Input.get_key(KeyCode.LEFT_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.A) or inx.input.Input.get_key(inx.input.KeyCode.LEFT_ARROW):
             x -= 1.0
-        if Input.get_key(KeyCode.D) or Input.get_key(KeyCode.RIGHT_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.D) or inx.input.Input.get_key(inx.input.KeyCode.RIGHT_ARROW):
             x += 1.0
-        if Input.get_key(KeyCode.S) or Input.get_key(KeyCode.DOWN_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.S) or inx.input.Input.get_key(inx.input.KeyCode.DOWN_ARROW):
             z -= 1.0
-        if Input.get_key(KeyCode.W) or Input.get_key(KeyCode.UP_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.W) or inx.input.Input.get_key(inx.input.KeyCode.UP_ARROW):
             z += 1.0
 
         length_squared = x * x + z * z
@@ -54,7 +53,7 @@ class KeyboardMover(InxComponent):
 
         frame_distance = self.speed * delta_time
         position = self.transform.position
-        self.transform.position = Vector3(
+        self.transform.position = inx.Vector3(
             position.x + x * frame_distance,
             position.y,
             position.z + z * frame_distance,
@@ -78,15 +77,14 @@ The built-in virtual axes are also current public API. `Input.get_axis("Horizont
 Mouse state follows the same frame model. This component logs the Game-viewport position on the first frame of each left click:
 
 ```python
-from Infernux import Debug, InxComponent
-from Infernux.input import Input
+import infernux as inx
 
 
-class ClickProbe(InxComponent):
+class ClickProbe(inx.InxComponent):
     def update(self, delta_time: float):
-        if Input.get_mouse_button_down(0):
-            x, y = Input.game_mouse_position
-            Debug.log(f"Game click: ({x:.0f}, {y:.0f})")
+        if inx.input.Input.get_mouse_button_down(0):
+            x, y = inx.input.Input.game_mouse_position
+            inx.Debug.log(f"Game click: ({x:.0f}, {y:.0f})")
 ```
 
 Button indices are `0` for left, `1` for right, and `2` for middle. `Input.mouse_position` uses window pixels; `Input.game_mouse_position` is relative to the top-left of the rendered Game image. Both are class properties, so they have no parentheses.
@@ -108,12 +106,12 @@ The current lifecycle contract distinguishes two time values:
 - The `delta_time` argument passed to `update()` and `late_update()` is the raw, unscaled frame delta from the engine.
 - `Time.delta_time` is the clamped, scaled delta and follows `Time.time_scale`.
 
-The mover above uses the callback argument, so it continues to use unscaled frame time. For movement that should pause when `Time.time_scale` becomes `0`, import `Time` from `Infernux` and use `Time.delta_time` for `frame_distance`:
+The mover above uses the callback argument, so it continues to use unscaled frame time. For movement that should pause when `inx.Time.time_scale` becomes `0`, use `inx.Time.delta_time` for `frame_distance`:
 
 ```python
-from Infernux import Time
+import infernux as inx
 
-frame_distance = self.speed * Time.delta_time
+frame_distance = self.speed * inx.Time.delta_time
 ```
 
 Use one time source for one calculation. Multiplying by both values applies frame duration twice.
@@ -183,24 +181,23 @@ You now have a frame-rate-independent control loop and a clear choice between wo
 ```python
 from math import sqrt
 
-from Infernux import InxComponent, Vector3, serialized_field
-from Infernux.input import Input, KeyCode
+import infernux as inx
 
 
-class KeyboardMover(InxComponent):
-    speed: float = serialized_field(default=4.0, range=(0.0, 20.0))
+class KeyboardMover(inx.InxComponent):
+    speed: float = inx.serialized_field(default=4.0, range=(0.0, 20.0))
 
     def update(self, delta_time: float):
         x = 0.0
         z = 0.0
 
-        if Input.get_key(KeyCode.A) or Input.get_key(KeyCode.LEFT_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.A) or inx.input.Input.get_key(inx.input.KeyCode.LEFT_ARROW):
             x -= 1.0
-        if Input.get_key(KeyCode.D) or Input.get_key(KeyCode.RIGHT_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.D) or inx.input.Input.get_key(inx.input.KeyCode.RIGHT_ARROW):
             x += 1.0
-        if Input.get_key(KeyCode.S) or Input.get_key(KeyCode.DOWN_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.S) or inx.input.Input.get_key(inx.input.KeyCode.DOWN_ARROW):
             z -= 1.0
-        if Input.get_key(KeyCode.W) or Input.get_key(KeyCode.UP_ARROW):
+        if inx.input.Input.get_key(inx.input.KeyCode.W) or inx.input.Input.get_key(inx.input.KeyCode.UP_ARROW):
             z += 1.0
 
         length_squared = x * x + z * z
@@ -211,7 +208,7 @@ class KeyboardMover(InxComponent):
 
         frame_distance = self.speed * delta_time
         position = self.transform.position
-        self.transform.position = Vector3(
+        self.transform.position = inx.Vector3(
             position.x + x * frame_distance,
             position.y,
             position.z + z * frame_distance,
@@ -235,15 +232,14 @@ class KeyboardMover(InxComponent):
 鼠标状态也遵循逐帧模型。下面的组件会在每次按下鼠标左键的第一帧记录 Game 视口坐标：
 
 ```python
-from Infernux import Debug, InxComponent
-from Infernux.input import Input
+import infernux as inx
 
 
-class ClickProbe(InxComponent):
+class ClickProbe(inx.InxComponent):
     def update(self, delta_time: float):
-        if Input.get_mouse_button_down(0):
-            x, y = Input.game_mouse_position
-            Debug.log(f"Game click: ({x:.0f}, {y:.0f})")
+        if inx.input.Input.get_mouse_button_down(0):
+            x, y = inx.input.Input.game_mouse_position
+            inx.Debug.log(f"Game click: ({x:.0f}, {y:.0f})")
 ```
 
 鼠标按键编号 `0`、`1`、`2` 依次代表左键、右键与中键。`Input.mouse_position` 使用窗口像素坐标；`Input.game_mouse_position` 以 Game 图像左上角为原点。两者都是类属性，访问时不加括号。
@@ -265,12 +261,12 @@ class ClickProbe(InxComponent):
 - 传给 `update()` 与 `late_update()` 的 `delta_time` 参数，是引擎提供的原始、未缩放帧间隔。
 - `Time.delta_time` 是经过上限约束和时间缩放的帧间隔，会跟随 `Time.time_scale`。
 
-上面的移动组件使用回调参数，所以它采用未缩放帧时间。移动需要在 `Time.time_scale` 变为 `0` 时暂停时，从 `Infernux` 导入 `Time`，并用 `Time.delta_time` 计算 `frame_distance`：
+上面的移动组件使用回调参数，所以它采用未缩放帧时间。移动需要在 `inx.Time.time_scale` 变为 `0` 时暂停时，用 `inx.Time.delta_time` 计算 `frame_distance`：
 
 ```python
-from Infernux import Time
+import infernux as inx
 
-frame_distance = self.speed * Time.delta_time
+frame_distance = self.speed * inx.Time.delta_time
 ```
 
 一次计算只选一种时间来源。同时乘上两个值会重复应用帧时长。

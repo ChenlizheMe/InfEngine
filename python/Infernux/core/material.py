@@ -286,17 +286,27 @@ class Material:
     # Render State Convenience Properties
     # ==========================================================================
 
-    def _set_render_state_field(self, field: str, value, override_name: str) -> None:
-        """Set one render-state field, commit it back, and mark the override.
+    def _commit_render_state(self, state, *override_names: str) -> None:
+        """Write back a mutated RenderState, claiming only the given overrides.
 
-        This eliminates the repeated get→mutate→set→mark boilerplate from
-        each individual render-state property setter.
+        The native set_render_state marks *every* field as authored (a full
+        explicit assignment). A single-field Inspector/Python edit must only
+        claim its own field so the untouched ones keep following the shader's
+        annotation defaults, so restore the previous override mask and add
+        just the edited bits.
         """
         from Infernux.lib import RenderStateOverride
+        overrides = self._native.render_state_overrides
+        self._native.set_render_state(state)
+        for name in override_names:
+            overrides |= int(getattr(RenderStateOverride, name))
+        self._native.render_state_overrides = overrides
+
+    def _set_render_state_field(self, field: str, value, override_name: str) -> None:
+        """Set one render-state field, commit it back, and mark the override."""
         state = self._native.get_render_state()
         setattr(state, field, value)
-        self._native.set_render_state(state)
-        self._native.mark_override(getattr(RenderStateOverride, override_name))
+        self._commit_render_state(state, override_name)
 
     @property
     def render_state_overrides(self) -> int:
@@ -356,7 +366,6 @@ class Material:
 
     @surface_type.setter
     def surface_type(self, value: str):
-        from Infernux.lib import RenderStateOverride
         state = self._native.get_render_state()
         if value == "transparent":
             state.blend_enable = True
@@ -369,11 +378,9 @@ class Material:
             state.blend_enable = False
             state.depth_write_enable = True
             state.render_queue = _RENDER_QUEUE_OPAQUE
-        self._native.set_render_state(state)
-        self._native.mark_override(RenderStateOverride.SURFACE_TYPE)
-        self._native.mark_override(RenderStateOverride.BLEND_ENABLE)
-        self._native.mark_override(RenderStateOverride.DEPTH_WRITE)
-        self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
+        self._commit_render_state(
+            state, "SURFACE_TYPE", "BLEND_ENABLE", "BLEND_MODE", "DEPTH_WRITE", "RENDER_QUEUE"
+        )
         # Older tooling could accidentally create shader properties with the
         # same names as render-state fields. Keep a single source of truth.
         self._native.remove_property("blend_enable")
@@ -386,14 +393,12 @@ class Material:
 
     @alpha_clip_enabled.setter
     def alpha_clip_enabled(self, value: bool):
-        from Infernux.lib import RenderStateOverride
         state = self._native.get_render_state()
         state.alpha_clip_enabled = value
         if value and state.alpha_clip_threshold <= 0.0:
             state.alpha_clip_threshold = _DEFAULT_ALPHA_CLIP_THRESHOLD
-        self._native.set_render_state(state)
+        self._commit_render_state(state, "ALPHA_CLIP")
         self._native.sync_alpha_clip_property()
-        self._native.mark_override(RenderStateOverride.ALPHA_CLIP)
 
     @property
     def alpha_clip_threshold(self) -> float:
@@ -402,13 +407,11 @@ class Material:
 
     @alpha_clip_threshold.setter
     def alpha_clip_threshold(self, value: float):
-        from Infernux.lib import RenderStateOverride
         state = self._native.get_render_state()
         state.alpha_clip_threshold = max(0.0, min(1.0, value))
         state.alpha_clip_enabled = True
-        self._native.set_render_state(state)
+        self._commit_render_state(state, "ALPHA_CLIP")
         self._native.sync_alpha_clip_property()
-        self._native.mark_override(RenderStateOverride.ALPHA_CLIP)
 
     # ==========================================================================
     # Auto-save (Unity-like dirty-flag persistence)

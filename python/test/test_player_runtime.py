@@ -15,7 +15,6 @@ def _runtime_contract(tmp_path):
     features = RuntimeFeatureSet()
     document = {
         "$schema": "infernux.player_runtime_manifest",
-        "manifest_version": 1,
         "product": {"flavor": flavor.value},
         "features": features.to_manifest(),
         "runtime_policy": runtime_policy_for(flavor).to_manifest(),
@@ -122,7 +121,6 @@ def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path
         "_scene_backup",
         "_scene_dirty_backup",
         "_resources_manager",
-        "_script_compiler",
         "_selection_manager",
         "_undo_manager",
         "_preview_service",

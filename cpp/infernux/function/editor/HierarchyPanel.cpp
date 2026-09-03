@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 // ImGui key constants (must match imgui.h ImGuiKey enum)
@@ -813,7 +814,8 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
         availW = (std::max)(1.0f, availW - indentPx);
     }
     ctx->SetNextItemAllowOverlap();
-    ctx->InvisibleButton(sepId, availW, EditorTheme::DND_REORDER_SEPARATOR_H);
+    const float dpi = ctx->GetDpiScale();
+    ctx->InvisibleButton(sepId, availW, EditorTheme::DND_REORDER_SEPARATOR_H * dpi);
     ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
     if (ctx->BeginDragDropTarget()) {
         // Draw separator line at midpoint
@@ -824,7 +826,7 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
         float x2 = x1 + availW;
         ctx->DrawLine(x1, midY, x2, midY, EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
                       EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w,
-                      EditorTheme::DND_REORDER_LINE_THICKNESS);
+                      EditorTheme::DND_REORDER_LINE_THICKNESS * dpi);
         uint64_t payload = 0;
         if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
             if (onDrop)
@@ -852,7 +854,7 @@ void HierarchyPanel::RenderMultiDropTarget(InxGUIContext *ctx, uint64_t parentId
         ctx->DrawRect(ctx->GetItemRectMinX(), ctx->GetItemRectMinY(), ctx->GetItemRectMaxX(), ctx->GetItemRectMaxY(),
                       EditorTheme::DND_PARENT_OUTLINE.x, EditorTheme::DND_PARENT_OUTLINE.y,
                       EditorTheme::DND_PARENT_OUTLINE.z, EditorTheme::DND_PARENT_OUTLINE.w,
-                      EditorTheme::DND_PARENT_OUTLINE_THICKNESS);
+                      EditorTheme::DND_PARENT_OUTLINE_THICKNESS * ctx->GetDpiScale());
         // Accept HIERARCHY_GAMEOBJECT (uint64_t payload)
         uint64_t payload = 0;
         if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
@@ -1149,6 +1151,12 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     auto msSince = [](const Clock::time_point &start) {
         return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     };
+    const float dpi = ctx->GetDpiScale();
+    if (std::abs(dpi - m_lastDpiScale) >= 0.01f) {
+        m_lastDpiScale = dpi;
+        m_cachedItemHeight = 18.0f * dpi;
+        m_itemHeightMeasured = false;
+    }
 
     // ── Header: scene name / prefab mode ────────────────────────
     auto headerStart = Clock::now();
@@ -1190,9 +1198,11 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     // ── Scene tree ──────────────────────────────────────────────
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (scene) {
-        ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorTheme::TREE_ITEM_SPC.x, EditorTheme::TREE_ITEM_SPC.y);
-        ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::TREE_FRAME_PAD.x, EditorTheme::TREE_FRAME_PAD.y);
-        ctx->PushStyleVarFloat(ImGuiStyleVar_IndentSpacing, EditorTheme::TREE_INDENT);
+        ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorTheme::TREE_ITEM_SPC.x * dpi,
+                              EditorTheme::TREE_ITEM_SPC.y * dpi);
+        ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::TREE_FRAME_PAD.x * dpi,
+                              EditorTheme::TREE_FRAME_PAD.y * dpi);
+        ctx->PushStyleVarFloat(ImGuiStyleVar_IndentSpacing, EditorTheme::TREE_INDENT * dpi);
 
         bool allowStale =
             !m_forceRootRefresh && !ctx->IsWindowFocused(0) && !ctx->IsWindowHovered() && !m_cachedRoots.empty();
@@ -1214,19 +1224,11 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             m_flatListDirty = true;
         }
 
-        // Transfer legacy pending-expand IDs into the new expand tracking
+        // Apply the pending expansion requested by the latest hierarchy action.
         if (m_pendingExpandId) {
             m_treeProjection.SetExpanded(m_pendingExpandId, true);
             m_forceExpandIds.insert(m_pendingExpandId);
             m_pendingExpandId = 0;
-            m_flatListDirty = true;
-        }
-        if (!m_pendingExpandIds.empty()) {
-            for (uint64_t eid : m_pendingExpandIds) {
-                m_treeProjection.SetExpanded(eid, true);
-                m_forceExpandIds.insert(eid);
-            }
-            m_pendingExpandIds.clear();
             m_flatListDirty = true;
         }
 
@@ -1290,10 +1292,10 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             float scrollY = ctx->GetScrollY();
             float viewportH = ctx->GetContentRegionAvailHeight();
             if (viewportH <= 0)
-                viewportH = 400.0f;
+                viewportH = 400.0f * dpi;
             float startY = ctx->GetCursorPosY();
             float itemH = m_cachedItemHeight;
-            float indentStep = EditorTheme::TREE_INDENT;
+            float indentStep = EditorTheme::TREE_INDENT * dpi;
 
             // Selection can be changed by creation services, undo/redo, scene
             // picking, or another panel. Ensure a newly selected row is not
@@ -1416,7 +1418,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     BuildFlatListRecurse(root, 0, persistentItems);
                 const float baseIndentX = ctx->GetCursorPosX();
                 for (const FlatItem &item : persistentItems)
-                    RenderFlatItem(ctx, item, baseIndentX, EditorTheme::TREE_INDENT);
+                    RenderFlatItem(ctx, item, baseIndentX, EditorTheme::TREE_INDENT * dpi);
             }
         }
 
@@ -1437,7 +1439,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         auto tailDropStart = Clock::now();
         bool tailContextMenuRequested = false;
         float remainingH = ctx->GetContentRegionAvailHeight();
-        if (remainingH > 4.0f) {
+        if (remainingH > 4.0f * dpi) {
             float tailW = ctx->GetContentRegionAvailWidth();
             ctx->InvisibleButton("##drop_to_root_tail", tailW, remainingH);
             if (InxGUISemantics::IsCaptureEnabled())
@@ -1458,7 +1460,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 float lineX2 = lineX1 + tailW;
                 ctx->DrawLine(lineX1, lineY, lineX2, lineY, EditorTheme::DND_REORDER_LINE.x,
                               EditorTheme::DND_REORDER_LINE.y, EditorTheme::DND_REORDER_LINE.z,
-                              EditorTheme::DND_REORDER_LINE.w, EditorTheme::DND_REORDER_LINE_THICKNESS);
+                              EditorTheme::DND_REORDER_LINE.w, EditorTheme::DND_REORDER_LINE_THICKNESS * dpi);
                 // Accept uint64_t payload
                 uint64_t payload = 0;
                 bool accepted = false;

@@ -1,9 +1,4 @@
-"""Implementation package for the public Infernux runtime API.
-
-New game scripts use ``import infernux as inx``.  This package retains the
-engine implementation and the compatibility surface required by existing
-projects while that public namespace is adopted throughout the toolchain.
-"""
+"""Implementation package behind the public ``import infernux as inx`` API."""
 
 import importlib
 
@@ -52,6 +47,7 @@ from Infernux.coroutine import (
 )
 from Infernux.batch import batch_read, batch_write, create_batch_handle
 from Infernux.instantiate import Instantiate, Destroy
+from Infernux.lifecycle import InxPreload, PreloadContext
 
 
 def __getattr__(name: str):
@@ -70,7 +66,16 @@ def __getattr__(name: str):
     }:
         jit_module = importlib.import_module("Infernux.jit")
         return getattr(jit_module, name)
-    if name in {"input", "rendergraph", "renderstack", "ui"}:
+    if name in {
+        "components",
+        "input",
+        "lifecycle",
+        "physics",
+        "rendergraph",
+        "renderstack",
+        "resources",
+        "ui",
+    }:
         module = importlib.import_module(f"Infernux.{name}")
         globals()[name] = module
         return module
@@ -127,6 +132,10 @@ __all__ = [
     "InspectorSpace",
     "FieldType",
     "Color",
+    "AnimationCurve",
+    "Keyframe",
+    "Gradient",
+    "GradientKey",
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",
@@ -154,6 +163,9 @@ __all__ = [
     "SpiritAnimator",
     "SkeletalAnimator",
     "RuntimeAcceptanceRunner",
+    # Explicit early-import lifecycle used by project and plugin scripts
+    "InxPreload",
+    "PreloadContext",
     # Decorators
     "require_component",
     "disallow_multiple",
@@ -190,8 +202,12 @@ __all__ = [
     "Debug",
     # Submodules
     "core",
+    "components",
+    "lifecycle",
+    "physics",
     "rendergraph",
     "renderstack",
+    "resources",
     "scene",
     "input",
     "ui",

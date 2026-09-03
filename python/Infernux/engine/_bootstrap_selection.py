@@ -81,13 +81,13 @@ class BootstrapSelectionMixin:
             None,
         )
         if previous_asset_bus is not None and callable(previous_asset_listener):
-            previous_asset_bus.remove_listener(previous_asset_listener)
+            previous_asset_bus.remove_observer(previous_asset_listener)
         asset_bus = self.interaction_core.asset_mutations
         self._selection_asset_mutations = asset_bus
         self._selection_asset_event_listener = (
             self._on_asset_selection_source_changed
         )
-        asset_bus.add_listener(self._selection_asset_event_listener)
+        asset_bus.add_observer(self._selection_asset_event_listener)
         self._prev_selection_snapshot = selection.snapshot
         self._present_selection_snapshot(selection.snapshot)
         focus = self.interaction_core.focus

@@ -90,7 +90,6 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
         required = {
             "$schema",
             "id",
-            "version",
             "kind",
             "input_schema",
             "output_schema",
@@ -147,6 +146,80 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
         shutdown_adapter()
     assert OperationRegistry.instance().list() == ()
     assert adapter_status()["active"] is False
+
+
+def test_capability_grants_are_explicit_and_diff_is_machine_readable(tmp_path):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {})
+
+        # The default grant is an explicit whitelist, never a wildcard.
+        config = capabilities.current_config()
+        assert "*" not in config["granted_capabilities"]
+        assert config["granted_capabilities"] == list(
+            capabilities.DEFAULT_GRANTED_CAPABILITIES
+        )
+
+        # Drift guard: every capability referenced by a registered operation
+        # must be covered by the default enumeration.
+        documents = OperationRegistry.instance().list()
+        used = {
+            str(name)
+            for document in documents
+            for name in document["capabilities"]
+        }
+        assert used <= set(capabilities.DEFAULT_GRANTED_CAPABILITIES)
+
+        snapshot = mcp.tools["host_capabilities"]()
+        assert snapshot["ok"] is True
+        data = snapshot["data"]
+        assert data["blocked_operation_count"] == 0
+        assert data["blocked_operations"] == []
+        assert data["capabilities"]
+        assert all(row["granted"] for row in data["capabilities"])
+        assert str(data["config_path"]).endswith("mcp_capabilities.json")
+    finally:
+        shutdown_adapter()
+
+
+def test_read_only_grants_block_writes_with_grant_remediation(tmp_path):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": ["*.read"]})
+
+        snapshot = mcp.tools["host_capabilities"]()
+        assert snapshot["ok"] is True
+        data = snapshot["data"]
+        assert data["blocked_operation_count"] > 0
+        blocked_ids = {entry["operation"] for entry in data["blocked_operations"]}
+        assert "infernux.scene.object.create" in blocked_ids
+        rows = {row["capability"]: row for row in data["capabilities"]}
+        assert rows["scene.read"]["granted"] is True
+        assert rows["scene.write"]["granted"] is False
+
+        # Pattern grants keep read operations available.
+        allowed = mcp.tools["operation_query_execute"](
+            "infernux.mcp.checkpoint.list", {}
+        )
+        assert allowed["ok"] is True
+
+        denied = mcp.tools["operation_command_execute"](
+            "infernux.scene.object.create", {"kind": "empty", "name": "Blocked"}
+        )
+        assert denied["ok"] is False
+        assert denied["error"]["code"] == "operation.permission_denied"
+        details = denied["error"]["details"]
+        assert details["required"] == ["scene.write"]
+        assert "*.read" in details["granted"]
+        remediation = details["grant_remediation"]
+        assert remediation["config_pointer"] == "/granted_capabilities"
+        assert str(remediation["config_path"]).endswith("mcp_capabilities.json")
+    finally:
+        shutdown_adapter()
 
 
 def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):

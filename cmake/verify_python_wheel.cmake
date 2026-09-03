@@ -35,15 +35,15 @@ if(_forbidden_files)
     )
 endif()
 
-file(GLOB_RECURSE _legacy_runtime_archives LIST_DIRECTORIES false
+file(GLOB_RECURSE _unsupported_runtime_archives LIST_DIRECTORIES false
     "${_verify_root}/*.zip"
     "${_verify_root}/*.inxpack"
 )
-if(_legacy_runtime_archives)
-    list(JOIN _legacy_runtime_archives "\n  " _legacy_runtime_report)
+if(_unsupported_runtime_archives)
+    list(JOIN _unsupported_runtime_archives "\n  " _unsupported_runtime_report)
     message(FATAL_ERROR
-        "Wheel contains a legacy ZIP/InxPack runtime payload; native Runtime.inxrt/"
-        "Parallel.inxmod is required:\n  ${_legacy_runtime_report}"
+        "Wheel contains unsupported runtime containers; Runtime.inxrt/"
+        "Parallel.inxmod is required:\n  ${_unsupported_runtime_report}"
     )
 endif()
 
@@ -89,13 +89,13 @@ foreach(_source_file IN LISTS _native_files)
         message(FATAL_ERROR "Wheel is missing native package file: ${_relative_path}")
     endif()
 
-    file(SHA256 "${_source_file}" _source_hash)
-    file(SHA256 "${_wheel_file}" _wheel_hash)
-    if(NOT _source_hash STREQUAL _wheel_hash)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E compare_files "${_source_file}" "${_wheel_file}"
+        RESULT_VARIABLE _compare_result
+    )
+    if(NOT _compare_result EQUAL 0)
         message(FATAL_ERROR
-            "Wheel contains a stale native package file: ${_relative_path}\n"
-            "  current: ${_source_hash}\n"
-            "  wheel:   ${_wheel_hash}"
+            "Wheel contains a stale native package file: ${_relative_path}"
         )
     endif()
 endforeach()

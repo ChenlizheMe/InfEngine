@@ -294,6 +294,10 @@ class _AnimClipSaveAsContext:
         self.events.append(("open_popup", popup_id))
 
     @staticmethod
+    def get_dpi_scale() -> float:
+        return 1.0
+
+    @staticmethod
     def get_main_viewport_bounds():
         return 0.0, 0.0, 1280.0, 720.0
 

@@ -146,3 +146,18 @@ def test_theme_helpers_are_exposed():
     assert callable(Theme.list_themes)
     assert callable(Theme.active_theme)
     assert callable(Theme.refresh)
+
+
+def test_native_theme_failures_are_not_replaced_with_empty_values(monkeypatch):
+    import Infernux.lib as native
+
+    def fail():
+        raise RuntimeError("native theme registry unavailable")
+
+    monkeypatch.setattr(native, "list_editor_themes", fail)
+    monkeypatch.setattr(native, "get_editor_theme", fail)
+
+    with pytest.raises(RuntimeError, match="native theme registry unavailable"):
+        list_editor_themes()
+    with pytest.raises(RuntimeError, match="native theme registry unavailable"):
+        active_editor_theme()

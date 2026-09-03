@@ -156,10 +156,10 @@ class TestTextureImportSettings:
         s = TextureImportSettings(aniso_level=-1)
         assert TextureImportSettings.from_dict(s.to_dict()).aniso_level == -1
 
-    def test_legacy_default_anisotropy_migrates_to_device_maximum(self):
+    def test_explicit_anisotropy_level_is_preserved(self):
         document = TextureImportSettings().to_dict()
         document["aniso_level"] = 1
-        assert TextureImportSettings.from_dict(document).aniso_level == -1
+        assert TextureImportSettings.from_dict(document).aniso_level == 1
 
     def test_copy(self):
         s = TextureImportSettings(max_size=512)

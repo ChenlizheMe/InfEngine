@@ -20,34 +20,33 @@ Open a project with the **Project**, **Hierarchy**, **Inspector**, **Game**, and
 Open `HelloComponent.py` and replace its contents with this complete component:
 
 ```python
-from Infernux import Debug
-from Infernux.components import InxComponent
+import infernux as inx
 
 
-class HelloComponent(InxComponent):
+class HelloComponent(inx.InxComponent):
     _elapsed_seconds = 0.0
     _reported_first_second = False
 
     def awake(self) -> None:
-        Debug.log(f"Awake: {self.game_object.name}", self)
+        inx.Debug.log(f"Awake: {self.game_object.name}", self)
 
     def on_enable(self) -> None:
-        Debug.log("OnEnable", self)
+        inx.Debug.log("OnEnable", self)
 
     def start(self) -> None:
-        Debug.log("Start", self)
+        inx.Debug.log("Start", self)
 
     def update(self, delta_time: float) -> None:
         self._elapsed_seconds += delta_time
         if not self._reported_first_second and self._elapsed_seconds >= 1.0:
             self._reported_first_second = True
-            Debug.log("Update has run for one second", self)
+            inx.Debug.log("Update has run for one second", self)
 
     def on_disable(self) -> None:
-        Debug.log("OnDisable", self)
+        inx.Debug.log("OnDisable", self)
 
     def on_destroy(self) -> None:
-        Debug.log("OnDestroy", self)
+        inx.Debug.log("OnDestroy", self)
 ```
 
 Private names beginning with `_` stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an `__init__` method: `InxComponent` owns construction and raises `TypeError` when a subclass overrides it. Use `awake` or `start` for setup.
@@ -129,34 +128,33 @@ Infernux 的玩法代码写在继承 `InxComponent` 的 Python 类中。组件�
 打开 `HelloComponent.py`，把内容替换为下面这份完整组件：
 
 ```python
-from Infernux import Debug
-from Infernux.components import InxComponent
+import infernux as inx
 
 
-class HelloComponent(InxComponent):
+class HelloComponent(inx.InxComponent):
     _elapsed_seconds = 0.0
     _reported_first_second = False
 
     def awake(self) -> None:
-        Debug.log(f"Awake: {self.game_object.name}", self)
+        inx.Debug.log(f"Awake: {self.game_object.name}", self)
 
     def on_enable(self) -> None:
-        Debug.log("OnEnable", self)
+        inx.Debug.log("OnEnable", self)
 
     def start(self) -> None:
-        Debug.log("Start", self)
+        inx.Debug.log("Start", self)
 
     def update(self, delta_time: float) -> None:
         self._elapsed_seconds += delta_time
         if not self._reported_first_second and self._elapsed_seconds >= 1.0:
             self._reported_first_second = True
-            Debug.log("Update has run for one second", self)
+            inx.Debug.log("Update has run for one second", self)
 
     def on_disable(self) -> None:
-        Debug.log("OnDisable", self)
+        inx.Debug.log("OnDisable", self)
 
     def on_destroy(self) -> None:
-        Debug.log("OnDestroy", self)
+        inx.Debug.log("OnDestroy", self)
 ```
 
 以 `_` 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 `__init__`：组件构造由 `InxComponent` 管理，子类覆写它时会抛出 `TypeError`。初始化工作放进 `awake` 或 `start`。

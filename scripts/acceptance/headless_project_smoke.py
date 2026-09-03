@@ -10,6 +10,7 @@ import sys
 import time
 from typing import Any
 
+import infernux as inx
 from Infernux import run_headless
 from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.engine.scene_manager import SceneFileManager
@@ -26,6 +27,7 @@ class _State:
     error: str = ""
     object_names: list[str] | None = None
     component_names: list[str] | None = None
+    renderer_materials: dict[str, list[dict[str, Any]]] | None = None
     trajectory: list[dict[str, Any]] | None = None
 
 
@@ -53,6 +55,39 @@ def _component_name(component: Any) -> str:
 
 def _vector3(value: Any) -> list[float]:
     return [round(float(getattr(value, axis)), 6) for axis in ("x", "y", "z")]
+
+
+def _capture_renderer_materials(objects: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    captured: dict[str, list[dict[str, Any]]] = {}
+    for obj in objects:
+        slots: list[dict[str, Any]] = []
+        # Native GameObject.get_component is intentionally string-based.  The
+        # public Python wrapper accepts component classes, but this acceptance
+        # path walks the native scene directly so it must use native type names.
+        renderer = obj.get_component("SkinnedMeshRenderer")
+        if renderer is None:
+            renderer = obj.get_component("MeshRenderer")
+        if renderer is not None:
+            renderer = getattr(renderer, "_cpp_component", renderer)
+            get_material = getattr(renderer, "get_effective_material", None)
+            if callable(get_material):
+                material_count = max(1, int(getattr(renderer, "material_count", 0)))
+                for slot in range(material_count):
+                    material = get_material(slot)
+                    if material is None:
+                        continue
+                    color = material.get_color("baseColor")
+                    slots.append(
+                        {
+                            "component": _component_name(renderer),
+                            "slot": slot,
+                            "name": str(getattr(material, "name", "")),
+                            "base_color": [round(float(value), 6) for value in color],
+                        }
+                    )
+        if slots:
+            captured[str(obj.name)] = slots
+    return captured
 
 
 def _capture_trajectory_sample(
@@ -197,6 +232,7 @@ def main() -> int:
             for obj in objects
             for component in obj.get_components()
         ]
+        state.renderer_materials = _capture_renderer_materials(objects)
         return False
 
     run_headless(
@@ -227,6 +263,7 @@ def main() -> int:
         "component_count": len(component_names),
         "objects": object_names,
         "components": sorted(set(component_names)),
+        "renderer_materials": state.renderer_materials or {},
         "missing_objects": missing_objects,
         "missing_components": missing_components,
         "trajectory": state.trajectory,

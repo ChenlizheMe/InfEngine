@@ -58,7 +58,7 @@ def test_content_mutations_are_typed_ordered_and_never_create_undo(tmp_path):
     selection = SelectionService()
     service = AssetMutationService(documents, selection)
     published = []
-    service.add_listener(published.append)
+    service.add_observer(published.append)
     path = tmp_path / "Smoke.png"
 
     created = service.publish_content_change(
@@ -437,7 +437,7 @@ def test_relocation_batch_publishes_once_and_keeps_one_operation_id(tmp_path):
     selection = SelectionService()
     service = AssetMutationService(documents, selection)
     published = []
-    service.add_listener(published.append)
+    service.add_observer(published.append)
     operation_id = "directory-move"
     plan = service.prepare_relocation(
         (

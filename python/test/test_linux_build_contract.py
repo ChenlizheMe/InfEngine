@@ -100,9 +100,31 @@ def test_linux_wheel_native_modules_are_relocatable_across_virtual_environments(
 def test_wheel_build_requires_cmake_staging_and_a_native_extension() -> None:
     setup_script = (ROOT / "setup.py").read_text(encoding="utf-8")
     packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(encoding="utf-8")
+    installer = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
     assert 'os.environ.get("INFERNUX_STAGED_WHEEL_BUILD") != "1"' in setup_script
     assert 'native_source = Path.cwd() / "python" / "Infernux" / "lib"' in setup_script
     assert 'native_source.glob("_Infernux*.pyd")' in setup_script
     assert 'native_source.glob("_Infernux*.so")' in setup_script
     assert '"INFERNUX_STAGED_WHEEL_BUILD=1"' in packaging
+    assert '"${CMAKE_SOURCE_DIR}/python/infernux.pyi"' in installer
+    assert 'public_stub = Path.cwd() / "python" / "infernux.pyi"' in setup_script
+    assert 'shutil.copy2(public_stub, Path(self.build_lib) / "infernux.pyi")' in setup_script
+    assert "include python/infernux.pyi" in manifest
+
+
+def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs() -> None:
+    plugins = (ROOT / "external/plugins/CMakeLists.txt").read_text(encoding="utf-8")
+    packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(
+        encoding="utf-8"
+    )
+
+    assert "add_custom_target(infernux_official_plugins ALL" in plugins
+    assert "BYPRODUCTS ${INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS}" in plugins
+    assert "file(GLOB_RECURSE INFERNUX_OFFICIAL_PLUGIN_SOURCES" not in plugins
+    stage = packaging.split("add_custom_target(stage_python_package", 1)[1].split(
+        "add_custom_target(package_python", 1
+    )[0]
+    assert "prebuild_player_runtime" in stage
+    assert "infernux_official_plugins" in stage

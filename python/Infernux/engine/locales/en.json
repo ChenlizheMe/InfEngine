@@ -591,6 +591,7 @@
   "build.target_unavailable_short": "Unavailable",
   "build.plugin_required": "Install or import {reference} from Extensions > Plugins to enable this build target.",
   "build.plugin_disabled": "Enable {reference} in Extensions > Plugins to use this build target.",
+  "build.open_plugins": "Open Plugins",
   "build.android_artifact": "Package",
   "build.game_name_hint": "(default: {name})",
   "build.debug_mode": "Debug Mode",

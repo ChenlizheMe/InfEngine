@@ -751,7 +751,9 @@ void RegisterResourceBindings(py::module_ &m)
             "Get a copy of the material's render state")
         .def(
             "set_render_state", [](InxMaterial &mat, const RenderState &state) { mat.SetRenderState(state); },
-            py::arg("state"), "Set the material's render state")
+            py::arg("state"),
+            "Explicitly author the full render state; every field becomes an override so shader "
+            "annotation defaults can never replace it (switching shaders resets authorship)")
         // RenderState override mechanism
         .def_property("render_state_overrides", &InxMaterial::GetRenderStateOverrides,
                       &InxMaterial::SetRenderStateOverrides,
@@ -762,6 +764,10 @@ void RegisterResourceBindings(py::module_ &m)
              "Clear a RenderState field override (revert to shader default)")
         .def("has_override", &InxMaterial::HasOverride, py::arg("flag"),
              "Check if a RenderState field is user-overridden")
+        .def("apply_shader_render_meta", &InxMaterial::ApplyShaderRenderMeta, py::arg("cull_mode"),
+             py::arg("depth_write"), py::arg("depth_test"), py::arg("blend"), py::arg("queue"),
+             py::arg("pass_tag") = "", py::arg("stencil") = "", py::arg("alpha_clip") = "",
+             "Apply shader annotation defaults to render-state fields the material has not authored")
         .def("sync_alpha_clip_property", &InxMaterial::SyncAlphaClipProperty,
              "Sync internal _AlphaClipThreshold material property from RenderState")
         // Clone / Instantiate (Unity-style Object.Instantiate for materials)

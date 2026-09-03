@@ -1,6 +1,7 @@
 #include <platform/input/InputManager.h>
 
 #include <SDL3/SDL.h>
+#include <array>
 #include <cassert>
 #include <stdexcept>
 
@@ -208,6 +209,43 @@ int main()
     assert(screen.keyboardInset == 700);
     assert(input.GetTouch(0).phase == TouchPhase::Canceled);
     assert(input.GetTouch(0).cancelReason == "viewport_changed");
+
+    // Crossing monitors at 150/200/250% changes framebuffer density without
+    // changing the logical viewport. The screen revision must advance while
+    // an active touch remains valid in the same logical coordinate system.
+    input.BeginFrame();
+    input.ProcessTouchEvent(8, 42, 1000, 0, 0.2f, 0.3f, 0.0f, 0.0f, 0.75f, TouchPhase::Began);
+    struct DpiCase
+    {
+        float scale;
+        int framebufferWidth;
+        int framebufferHeight;
+    };
+    const std::array<DpiCase, 3> dpiCases{{
+        {1.5f, 1620, 3600},
+        {2.0f, 2160, 4800},
+        {2.5f, 2700, 6000},
+    }};
+    uint64_t previousScreenRevision = input.GetScreenState().revision;
+    for (const DpiCase &dpiCase : dpiCases) {
+        input.ProcessScreenMetrics(1080, 2400, dpiCase.framebufferWidth, dpiCase.framebufferHeight, dpiCase.scale, 0,
+                                   80, 1080, 2240, true, 700);
+        const auto &dpiScreen = input.GetScreenState();
+        assert(dpiScreen.pixelRatio == dpiCase.scale);
+        assert(dpiScreen.framebufferWidth == dpiCase.framebufferWidth);
+        assert(dpiScreen.framebufferHeight == dpiCase.framebufferHeight);
+        assert(dpiScreen.revision == previousScreenRevision + 1);
+        assert(input.GetTouch(0).phase != TouchPhase::Canceled);
+        previousScreenRevision = dpiScreen.revision;
+    }
+
+    bool invalidPixelRatioRejected = false;
+    try {
+        input.ProcessScreenMetrics(1080, 2400, 1080, 2400, 0.0f, 0, 80, 1080, 2240, true, 700);
+    } catch (const std::invalid_argument &) {
+        invalidPixelRatioRejected = true;
+    }
+    assert(invalidPixelRatioRejected);
 
     input.BeginFrame();
     input.ProcessKeyEvent(SDL_SCANCODE_A, false);

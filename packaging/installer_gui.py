@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import sys
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -31,6 +32,20 @@ if sys.platform == "win32":
 
 
 _BUNDLED_PYTHON_VERSION = DEFAULT_PYTHON_RUNTIME.series
+
+
+def _hub_executable_name() -> str:
+    return "Infernux Hub.exe" if sys.platform == "win32" else "Infernux Hub"
+
+
+def _default_install_dir() -> str:
+    if sys.platform == "win32":
+        return os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "Infernux Hub"
+        )
+    if sys.platform == "linux":
+        return os.path.join(os.path.expanduser("~/.local/share"), "InfernuxHub")
+    raise RuntimeError(f"Infernux Hub has no installer contract for {sys.platform}")
 
 
 def _resource_dir() -> str:
@@ -79,19 +94,26 @@ def _write_registry(install_dir: str) -> None:
 
 
 def _create_start_menu_shortcut(install_dir: str) -> None:
-    """Create a Start Menu shortcut (Windows) or Applications symlink (macOS)."""
-    if sys.platform == "darwin":
-        # macOS: create a symlink in ~/Applications
-        try:
-            apps_dir = os.path.expanduser("~/Applications")
-            os.makedirs(apps_dir, exist_ok=True)
-            link_path = os.path.join(apps_dir, "Infernux Hub")
-            if os.path.lexists(link_path):
-                os.remove(link_path)
-            os.symlink(install_dir, link_path)
-        except Exception as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            pass
+    """Register the installed Hub in the host desktop application menu."""
+    if sys.platform == "linux":
+        applications_dir = os.path.expanduser("~/.local/share/applications")
+        os.makedirs(applications_dir, exist_ok=True)
+        executable = os.path.join(install_dir, _hub_executable_name())
+        icon = os.path.join(install_dir, "resources", "icon.png")
+        escape = lambda value: value.replace("\\", "\\\\").replace('"', '\\"')
+        desktop_entry = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Infernux Hub\n"
+            f'Exec="{escape(executable)}"\n'
+            f'Icon={escape(icon)}\n'
+            "Terminal=false\n"
+            "Categories=Development;Game;\n"
+        )
+        destination = os.path.join(applications_dir, "infernux-hub.desktop")
+        with open(destination, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(desktop_entry)
+        os.chmod(destination, 0o755)
         return
     if sys.platform != "win32":
         return
@@ -190,7 +212,7 @@ class InstallerWindow(QWidget):
         if os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        default_dir = os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Infernux Hub")
+        default_dir = _default_install_dir()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
@@ -319,11 +341,22 @@ class InstallerWindow(QWidget):
     def _launch_hub(self) -> None:
         if not self._installed_dir:
             return
-        exe_path = os.path.join(self._installed_dir, "Infernux Hub.exe")
+        exe_path = os.path.join(self._installed_dir, _hub_executable_name())
         if not os.path.isfile(exe_path):
             QMessageBox.warning(self, tr("Launch Failed"), tr("Hub executable not found: {path}", path=exe_path))
             return
-        os.startfile(exe_path)
+        if sys.platform == "win32":
+            os.startfile(exe_path)
+        elif sys.platform == "linux":
+            subprocess.Popen(
+                [exe_path],
+                cwd=self._installed_dir,
+                start_new_session=True,
+            )
+        else:
+            raise RuntimeError(
+                f"Infernux Hub has no launch contract for {sys.platform}"
+            )
 
 
 def main() -> int:

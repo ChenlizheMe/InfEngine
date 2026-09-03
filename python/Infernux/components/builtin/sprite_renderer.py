@@ -41,19 +41,10 @@ def _list_to_sprite_color(lst):
 
 
 def _get_asset_database():
-    """Match the Material Inspector's asset database lookup order."""
-    try:
-        from Infernux.engine.ui.editor_services import EditorServices
-        adb = EditorServices.instance()._asset_database
-        if adb:
-            return adb
-    except Exception:
-        pass
-    try:
-        from Infernux.lib import AssetRegistry
-        return AssetRegistry.instance().get_asset_database()
-    except Exception:
-        return None
+    """Return the AssetManager-owned database for this engine lifetime."""
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
 class SpriteRenderer(BuiltinComponent):
@@ -139,8 +130,6 @@ class SpriteRenderer(BuiltinComponent):
     _last_color: tuple = None
     _last_sprite: str = ""
     _material_ready: bool = False
-    _instance_counter: int = 0  # fallback counter before a stable component_id exists
-
     # ── Binding hook ────────────────────────────────────────────────
 
     def _bind_cpp(self, cpp_component, game_object):
@@ -165,28 +154,22 @@ class SpriteRenderer(BuiltinComponent):
 
     def _subscribe_asset_events(self):
         """Subscribe to typed asset mutations so texture reimport refreshes this renderer."""
-        try:
-            from Infernux.engine.interaction import AssetMutationService
+        from Infernux.engine.interaction import AssetMutationService
 
-            previous = getattr(self, "_asset_mutation_service", None)
-            if previous is not None:
-                previous.remove_component_listener(self._on_asset_changed)
-            service = AssetMutationService.instance()
-            self._asset_mutation_service = service
-            if service is not None:
-                service.add_component_listener(self._on_asset_changed)
-        except (AttributeError, ImportError, RuntimeError, TypeError):
-            pass
+        previous = getattr(self, "_asset_mutation_service", None)
+        if previous is not None:
+            previous.remove_component_listener(self._on_asset_changed)
+        service = AssetMutationService.instance()
+        self._asset_mutation_service = service
+        if service is not None:
+            service.add_component_listener(self._on_asset_changed)
 
     def _unsubscribe_asset_events(self):
         """Release the mutation-service reference while this wrapper is live."""
-        try:
-            service = getattr(self, "_asset_mutation_service", None)
-            if service is not None:
-                service.remove_component_listener(self._on_asset_changed)
-            self._asset_mutation_service = None
-        except (AttributeError, ImportError, RuntimeError, TypeError):
-            pass
+        service = getattr(self, "_asset_mutation_service", None)
+        if service is not None:
+            service.remove_component_listener(self._on_asset_changed)
+        self._asset_mutation_service = None
 
     def _invalidate_native_binding(self):
         """Release wrapper-owned resources before a scene rebuild invalidates C++."""
@@ -204,22 +187,17 @@ class SpriteRenderer(BuiltinComponent):
         guid = self.sprite
         if not guid:
             return
-        try:
-            adb = _get_asset_database()
-            if not adb:
-                return
-            asset_path = adb.get_path_from_guid(guid)
-            if not asset_path:
-                return
-            for mutation in iter_asset_mutations(change):
-                file_path = mutation.path
-                if same_path(file_path, asset_path) or same_path(file_path, asset_path + ".meta"):
-                    self._load_sprite_data()
-                    self._apply_uv_rect()
-                    self._apply_color()
-                    break
-        except Exception:
-            pass
+        adb = _get_asset_database()
+        asset_path = adb.get_path_from_guid(guid)
+        if not asset_path:
+            return
+        for mutation in iter_asset_mutations(change):
+            file_path = mutation.path
+            if same_path(file_path, asset_path) or same_path(file_path, asset_path + ".meta"):
+                self._load_sprite_data()
+                self._apply_uv_rect()
+                self._apply_color()
+                break
 
     # ── Scene-wide initialization ───────────────────────────────────
 
@@ -395,15 +373,12 @@ class SpriteRenderer(BuiltinComponent):
         display = "None (Texture)"
         sprite_path = ""
         if guid:
-            try:
-                adb = _get_asset_database()
-                path = adb.get_path_from_guid(guid) if adb else ""
-                if path:
-                    import os
-                    sprite_path = str(path)
-                    display = os.path.basename(path)
-            except Exception:
-                display = guid[:8] + "…" if len(guid) > 8 else guid
+            adb = _get_asset_database()
+            path = adb.get_path_from_guid(guid)
+            if path:
+                import os
+                sprite_path = str(path)
+                display = os.path.basename(path)
 
         field_label(ctx, "Sprite", lw)
         from Infernux.engine.interaction import SnapshotPropertyTransaction
@@ -577,15 +552,10 @@ class SpriteRenderer(BuiltinComponent):
 
     def _is_default_material(self, mat):
         """Check if a material is the auto-created sprite_unlit default."""
-        try:
-            frag = getattr(mat, 'frag_shader_name', None)
-            # Material wrapper has no 'path' property — check native file_path
-            native = getattr(mat, '_native', None) or getattr(mat, 'native', mat)
-            path = getattr(native, 'file_path', '') or ''
-            # Default material has no saved path and uses sprite_unlit
-            return frag == 'Sprite Unlit' and not path
-        except Exception:
-            return False
+        frag = getattr(mat, 'frag_shader_name', None)
+        native = getattr(mat, '_native', None) or getattr(mat, 'native', mat)
+        path = getattr(native, 'file_path', '') or ''
+        return frag == 'Sprite Unlit' and not path
 
     # ── Internals ───────────────────────────────────────────────────
 
@@ -606,36 +576,27 @@ class SpriteRenderer(BuiltinComponent):
         """Resolve a file path to an asset GUID using the editor-aware asset DB."""
         if not path_str:
             return ""
-        try:
-            adb = _get_asset_database()
-            if not adb:
-                return ""
+        adb = _get_asset_database()
+        existing_path = str(adb.get_path_from_guid(path_str) or "").strip()
+        if existing_path:
+            return path_str
 
-            existing_path = str(adb.get_path_from_guid(path_str) or "").strip()
-            if existing_path:
-                return path_str
+        candidates = [path_str]
+        normalized = portable_path(path_str)
+        if normalized not in candidates:
+            candidates.append(normalized)
 
-            candidates = [path_str]
-            normalized = portable_path(path_str)
-            if normalized not in candidates:
-                candidates.append(normalized)
+        normpath = lexical_path(path_str)
+        if normpath not in candidates:
+            candidates.append(normpath)
+        slash_norm = portable_path(normpath)
+        if slash_norm not in candidates:
+            candidates.append(slash_norm)
 
-            try:
-                normpath = lexical_path(path_str)
-                if normpath not in candidates:
-                    candidates.append(normpath)
-                slash_norm = portable_path(normpath)
-                if slash_norm not in candidates:
-                    candidates.append(slash_norm)
-            except Exception:
-                pass
-
-            for candidate in candidates:
-                guid = adb.get_guid_from_path(candidate)
-                if guid:
-                    return guid
-        except Exception:
-            pass
+        for candidate in candidates:
+            guid = adb.get_guid_from_path(candidate)
+            if guid:
+                return guid
         return ""
 
     def sync_visual(self):
@@ -646,14 +607,11 @@ class SpriteRenderer(BuiltinComponent):
 
     def _is_driven_by_animator(self) -> bool:
         """Return True if a SpiritAnimator is attached to this GameObject."""
-        try:
-            go = self.game_object
-            if go is None:
-                return False
-            from Infernux.components.spirit_animator import SpiritAnimator
-            return go.get_component(SpiritAnimator) is not None
-        except Exception:
+        go = self.game_object
+        if go is None:
             return False
+        from Infernux.components.spirit_animator import SpiritAnimator
+        return go.get_component(SpiritAnimator) is not None
 
     def _sync_material_if_dirty(self):
         """Push changed CppProperty values to the material (called per Inspector frame)."""
@@ -665,10 +623,7 @@ class SpriteRenderer(BuiltinComponent):
         frame_id = cpp.frame_id
         fx = cpp.flip_x
         fy = cpp.flip_y
-        try:
-            c = tuple(cpp.sprite_color)
-        except Exception:
-            c = (1, 1, 1, 1)
+        c = tuple(cpp.sprite_color)
 
         uv_dirty = (
             frame_id != self._last_frame_id
@@ -702,27 +657,19 @@ class SpriteRenderer(BuiltinComponent):
     def _stable_default_material_name(self) -> str:
         """Return a stable runtime material key for this SpriteRenderer."""
         comp_id = int(getattr(self, "component_id", 0) or 0)
-        if comp_id > 0:
-            return f"SpriteUnlit_Default_{comp_id}"
-        return ""
-
-    @classmethod
-    def _next_temp_material_name(cls) -> str:
-        cls._instance_counter += 1
-        return f"SpriteUnlit_Temp{cls._instance_counter}"
+        if comp_id <= 0:
+            raise RuntimeError("SpriteRenderer requires a stable component_id")
+        return f"SpriteUnlit_Default_{comp_id}"
 
     def _stabilize_default_material_name(self, native_mat) -> None:
         """Keep auto-created default sprite materials stable across scene reloads."""
         desired_name = self._stable_default_material_name()
         if not desired_name or native_mat is None:
             return
-        try:
-            frag = getattr(native_mat, "frag_shader_name", None)
-            path = getattr(native_mat, "file_path", "") or ""
-            if frag == "Sprite Unlit" and not path and getattr(native_mat, "name", "") != desired_name:
-                native_mat.name = desired_name
-        except Exception:
-            pass
+        frag = getattr(native_mat, "frag_shader_name", None)
+        path = getattr(native_mat, "file_path", "") or ""
+        if frag == "Sprite Unlit" and not path and getattr(native_mat, "name", "") != desired_name:
+            native_mat.name = desired_name
 
     def _ensure_material(self):
         """Create the default sprite_unlit material if none is assigned."""
@@ -739,32 +686,21 @@ class SpriteRenderer(BuiltinComponent):
             self._apply_uv_rect()
             self._apply_color()
             return
-        try:
-            from Infernux.core.material import Material
-            mat = Material.create_unlit()
-            mat.frag_shader_name = "Sprite Unlit"
-            # Opaque + alpha clipping: sprites are rendered in the opaque
-            # queue with hard-edge alpha test (no blending artefacts).
-            mat.surface_type = "opaque"
-            mat.alpha_clip_enabled = True
-            mat.alpha_clip_threshold = 0.5
-            # Runtime sprite materials still need a unique renderer key, but it
-            # must stay stable across Play/Stop for the same component.
-            mat._native.name = self._stable_default_material_name() or self._next_temp_material_name()
-            mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
-            mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
-            self._sprite_material = mat._native
-            self._material_ready = True
-            cpp.set_material(0, mat._native)
-            # _load_sprite_data / _apply_uv_rect / _apply_color all use _get_material(),
-            # which reads cpp.get_material(0). Running them *before* set_material is a
-            # no-op (mat stays None), which caused invisible sprites until Inspector
-            # selection ran _sync_material_if_dirty(). Apply after the slot is assigned.
-            self._load_sprite_data()
-            self._apply_uv_rect()
-            self._apply_color()
-        except Exception as e:
-            Debug.log_warning(f"SpriteRenderer: failed to create material: {e}")
+        from Infernux.core.material import Material
+        mat = Material.create_unlit()
+        mat.frag_shader_name = "Sprite Unlit"
+        mat.surface_type = "opaque"
+        mat.alpha_clip_enabled = True
+        mat.alpha_clip_threshold = 0.5
+        mat._native.name = self._stable_default_material_name()
+        mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
+        mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
+        self._sprite_material = mat._native
+        self._material_ready = True
+        cpp.set_material(0, mat._native)
+        self._load_sprite_data()
+        self._apply_uv_rect()
+        self._apply_color()
 
     def _load_sprite_data(self):
         """Load sprite frame list and texture dimensions from the asset .meta."""
@@ -780,50 +716,36 @@ class SpriteRenderer(BuiltinComponent):
             self._apply_texture_to_material()
             return
 
-        try:
-            adb = _get_asset_database()
-            if not adb:
-                self._apply_texture_to_material()
-                return
-            asset_path = adb.get_path_from_guid(guid)
-            if not asset_path:
-                self._apply_texture_to_material()
-                return
-
-            # Runtime packages publish authoring metadata through the native
-            # AssetDatabase and deliberately contain no .meta files. Prefer
-            # that immutable snapshot; the sidecar remains an editor fallback.
-            from Infernux.core.asset_types import read_asset_metadata
-            meta = read_asset_metadata(asset_path, guid=guid)
-            if meta is None:
-                self._apply_texture_to_material()
-                return
-
-            self._tex_w = int(meta.get("width", 0))
-            self._tex_h = int(meta.get("height", 0))
-
-            # Only load sprite frames if texture_type is "sprite"
-            tex_type = meta.get("texture_type", "default")
-            if tex_type == "sprite":
-                raw_frames = meta.get("sprite_frames", [])
-                if type(raw_frames) is not list:
-                    raise TypeError("texture sprite_frames must be an array")
-
-                from Infernux.core.asset_types import SpriteFrame
-                self._sprite_frames = [
-                    SpriteFrame.from_dict(f)
-                    for f in raw_frames
-                ]
-                self._sprite_frames_by_id = {
-                    frame.stable_id: frame for frame in self._sprite_frames
-                }
-                if len(self._sprite_frames_by_id) != len(self._sprite_frames):
-                    raise ValueError("texture sprite frame stable_id values must be unique")
-
-            # Assign the texture to the material (if it supports texSampler)
+        adb = _get_asset_database()
+        asset_path = adb.get_path_from_guid(guid)
+        if not asset_path:
             self._apply_texture_to_material()
-        except Exception as e:
-            Debug.log_warning(f"SpriteRenderer: failed to load sprite data: {e}")
+            return
+
+        from Infernux.core.asset_types import read_asset_metadata
+        meta = read_asset_metadata(asset_path, guid=guid)
+        if meta is None:
+            self._apply_texture_to_material()
+            return
+
+        self._tex_w = int(meta.get("width", 0))
+        self._tex_h = int(meta.get("height", 0))
+
+        tex_type = meta.get("texture_type", "default")
+        if tex_type == "sprite":
+            raw_frames = meta.get("sprite_frames", [])
+            if type(raw_frames) is not list:
+                raise TypeError("texture sprite_frames must be an array")
+
+            from Infernux.core.asset_types import SpriteFrame
+            self._sprite_frames = [SpriteFrame.from_dict(f) for f in raw_frames]
+            self._sprite_frames_by_id = {
+                frame.stable_id: frame for frame in self._sprite_frames
+            }
+            if len(self._sprite_frames_by_id) != len(self._sprite_frames):
+                raise ValueError("texture sprite frame stable_id values must be unique")
+
+        self._apply_texture_to_material()
 
     def _apply_texture_to_material(self):
         """Pass the sprite texture to texSampler (sprite_unlit shader slot)."""
@@ -831,16 +753,10 @@ class SpriteRenderer(BuiltinComponent):
         mat = self._get_material()
         if mat is None:
             return
-        try:
-            # sprite_unlit.frag uses "texSampler" — set it directly without
-            # has_property() since programmatic materials may not have the
-            # property registered in m_properties until first set_texture call.
-            if guid:
-                mat.set_texture("texSampler", guid)
-            else:
-                mat.clear_texture("texSampler")
-        except Exception as e:
-            Debug.log_warning(f"SpriteRenderer: _apply_texture_to_material failed: {e}")
+        if guid:
+            mat.set_texture("texSampler", guid)
+        else:
+            mat.clear_texture("texSampler")
 
     def _apply_uv_rect(self):
         """Compute and apply UV rect and display scale from the current frame."""
@@ -905,17 +821,11 @@ class SpriteRenderer(BuiltinComponent):
             v = v + sv
             sv = -sv
 
-        try:
-            mat.set_vector4("uvRect", u, v, su, sv)
-        except Exception:
-            pass
+        mat.set_vector4("uvRect", u, v, su, sv)
 
         # displayScale tells the shader what fraction of the quad the sprite
         # occupies.  The shader centers the image and discards outside pixels.
-        try:
-            mat.set_vector4("displayScale", ds_x, ds_y, 0.0, 0.0)
-        except Exception:
-            pass
+        mat.set_vector4("displayScale", ds_x, ds_y, 0.0, 0.0)
 
     def _apply_color(self):
         """Apply tint color to the material."""
@@ -923,18 +833,12 @@ class SpriteRenderer(BuiltinComponent):
         if cpp is None:
             return
 
-        try:
-            c = cpp.sprite_color
-            c = (c[0], c[1], c[2], c[3])
-        except Exception:
-            c = (1, 1, 1, 1)
+        c = cpp.sprite_color
+        c = (c[0], c[1], c[2], c[3])
 
         self._last_color = c
         mat = self._get_material()
         if mat is None:
             return
 
-        try:
-            mat.set_color("baseColor", c[0], c[1], c[2], c[3])
-        except Exception:
-            pass
+        mat.set_color("baseColor", c[0], c[1], c[2], c[3])

@@ -446,10 +446,6 @@ class ControlPaneViewModel:
         self._migration_thread.finished.connect(self._migration_timer.start)
         self._migration_thread.start()
 
-    def delete_project(self, parent):
-        """Compatibility alias for older views."""
-        self.remove_project(parent)
-
     def create_project(self, parent):
         from view.new_project_view import NewProjectView
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -14,7 +13,7 @@ from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.player_package_native import extract_pack, read_manifest
 
 
-_PACKAGE_INDEX_HEADER = "INFERNUX_PLAYER_PACKAGE_INDEX_V1"
+_PACKAGE_INDEX_HEADER = "INFERNUX_PLAYER_PACKAGE_INDEX"
 _CONTENT_ROOTS = {
     "Assets",
     "Branding",
@@ -167,16 +166,9 @@ def prepare_platform_player(package_root: str, cache_root: str) -> str:
     if not package.is_dir():
         raise RuntimeError(f"Platform Player package root is missing: {package}")
     if not (package / "Player.inxmanifest").is_file():
-        candidates = sorted(
-            child
-            for child in package.iterdir()
-            if child.is_dir() and (child / "Player.inxmanifest").is_file()
+        raise RuntimeError(
+            "Platform Player package root must be the cooked Data directory"
         )
-        if len(candidates) != 1:
-            raise RuntimeError(
-                "Platform Player asset root must contain exactly one cooked Data directory"
-            )
-        package = candidates[0]
     manifest_path = package / "Player.inxmanifest"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -191,9 +183,7 @@ def prepare_platform_player(package_root: str, cache_root: str) -> str:
         raise RuntimeError("Platform Player package has no BuildManifest.json")
     target_manifest = project_root / "BuildManifest.json"
     payload = build_manifest.read_bytes()
-    if not target_manifest.is_file() or hashlib.sha256(
-        target_manifest.read_bytes()
-    ).digest() != hashlib.sha256(payload).digest():
+    if not target_manifest.is_file() or target_manifest.read_bytes() != payload:
         temporary = target_manifest.with_name(target_manifest.name + ".tmp")
         temporary.write_bytes(payload)
         os.replace(temporary, target_manifest)

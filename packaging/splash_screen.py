@@ -16,6 +16,7 @@ from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QPen, QBrush, QDeskt
 
 from hub_utils import get_project_lock_path, merge_child_env_utf8, remove_project_lock, write_project_lock
 from i18n import tr
+from style import StyleManager
 
 
 _WIN_CRASH_CODES = {
@@ -108,6 +109,8 @@ class EngineSplashScreen(QWidget):
         self._terminal_handled = False
         self._launch_started_at = 0.0
         self._launch_args = None
+        app = QApplication.instance()
+        self._palette = StyleManager.palette(bool(getattr(app, "is_dark_theme", True)))
 
         # Center on screen
         screen = QApplication.primaryScreen()
@@ -137,14 +140,14 @@ class EngineSplashScreen(QWidget):
         title = QLabel("Infernux Engine", self)
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont("Segoe UI", 22, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0; background: transparent;")
+        title.setStyleSheet(f"color: {self._palette.text_primary}; background: transparent;")
         layout.addWidget(title)
 
         # Project name
         proj = QLabel(project_name, self)
         proj.setAlignment(Qt.AlignCenter)
         proj.setFont(QFont("Segoe UI", 11))
-        proj.setStyleSheet("color: #888888; background: transparent;")
+        proj.setStyleSheet(f"color: {self._palette.text_muted}; background: transparent;")
         layout.addWidget(proj)
 
         # Spacer
@@ -154,7 +157,7 @@ class EngineSplashScreen(QWidget):
         self._status = QLabel(tr("Initializing engine..."), self)
         self._status.setAlignment(Qt.AlignCenter)
         self._status.setFont(QFont("Segoe UI", 10))
-        self._status.setStyleSheet("color: #666666; background: transparent;")
+        self._status.setStyleSheet(f"color: {self._palette.text_secondary}; background: transparent;")
         layout.addWidget(self._status)
         # Progress bar
         self._progress_bar = QProgressBar(self)
@@ -163,8 +166,8 @@ class EngineSplashScreen(QWidget):
         self._progress_bar.setTextVisible(False)
         self._progress_bar.setFixedHeight(4)
         self._progress_bar.setStyleSheet(
-            "QProgressBar { background: #292929; border: none; border-radius: 2px; }"
-            "QProgressBar::chunk { background: #eb5757; border-radius: 2px; }"
+            f"QProgressBar {{ background: {self._palette.button_surface}; border: none; border-radius: 2px; }}"
+            f"QProgressBar::chunk {{ background: {self._palette.accent}; border-radius: 2px; }}"
         )
         layout.addWidget(self._progress_bar)
         # Spinner animation timer
@@ -195,11 +198,15 @@ class EngineSplashScreen(QWidget):
 
         # Dark rounded-rect background
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(QColor(25, 25, 25, 248)))
+        background = QColor(self._palette.bg_base)
+        background.setAlpha(248)
+        p.setBrush(QBrush(background))
         p.drawRoundedRect(self.rect(), 18, 18)
 
         # Subtle border
-        p.setPen(QPen(QColor(58, 58, 58, 210), 1))
+        border = QColor(self._palette.border)
+        border.setAlpha(210)
+        p.setPen(QPen(border, 1))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 18, 18)
 
@@ -207,7 +214,7 @@ class EngineSplashScreen(QWidget):
         spinner_size = 28
         sx = (self.width() - spinner_size) // 2
         sy = self.height() - 52
-        pen = QPen(QColor(235, 87, 87), 3)
+        pen = QPen(QColor(self._palette.accent), 3)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawArc(sx, sy, spinner_size, spinner_size, self._angle * 16, 270 * 16)

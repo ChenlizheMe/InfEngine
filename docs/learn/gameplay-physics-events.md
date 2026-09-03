@@ -47,33 +47,30 @@ The floor and sensor do not need a Rigidbody for this setup. The moving `Probe` 
 Create `Assets/Scripts/physics_probe.py` with the following complete component:
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.components.builtin import Rigidbody
-from Infernux.debug import Debug
-from Infernux.math import Vector3
+import infernux as inx
 
 
-class PhysicsProbe(InxComponent):
+class PhysicsProbe(inx.InxComponent):
     def awake(self):
         self._body = None
         self._collision_stay_steps = 0
         self._trigger_stay_steps = 0
 
     def start(self):
-        self._body = self.game_object.get_component(Rigidbody)
+        self._body = self.game_object.get_component(inx.Rigidbody)
         if self._body is None:
-            Debug.log_error("PhysicsProbe requires a Rigidbody.", self.game_object)
+            inx.Debug.log_error("PhysicsProbe requires a Rigidbody.", self.game_object)
 
     def fixed_update(self, fixed_delta_time):
         if self._body is None:
             return
 
         # add_force defaults to ForceMode.Force.
-        self._body.add_force(Vector3(3.0, 0.0, 0.0))
+        self._body.add_force(inx.Vector3(3.0, 0.0, 0.0))
 
     def on_collision_enter(self, collision):
         self._collision_stay_steps = 0
-        Debug.log(
+        inx.Debug.log(
             f"collision enter: {collision.game_object.name} "
             f"at {collision.contact_point}"
         )
@@ -81,26 +78,26 @@ class PhysicsProbe(InxComponent):
     def on_collision_stay(self, collision):
         self._collision_stay_steps += 1
         if self._collision_stay_steps == 1:
-            Debug.log(
+            inx.Debug.log(
                 f"collision stay: {collision.game_object.name}; "
                 f"normal={collision.contact_normal}; "
                 f"relative velocity={collision.relative_velocity}"
             )
 
     def on_collision_exit(self, collision):
-        Debug.log(f"collision exit: {collision.game_object.name}")
+        inx.Debug.log(f"collision exit: {collision.game_object.name}")
 
     def on_trigger_enter(self, other):
         self._trigger_stay_steps = 0
-        Debug.log(f"trigger enter: {other.game_object.name}")
+        inx.Debug.log(f"trigger enter: {other.game_object.name}")
 
     def on_trigger_stay(self, other):
         self._trigger_stay_steps += 1
         if self._trigger_stay_steps == 1:
-            Debug.log(f"trigger stay: {other.game_object.name}")
+            inx.Debug.log(f"trigger stay: {other.game_object.name}")
 
     def on_trigger_exit(self, other):
-        Debug.log(f"trigger exit: {other.game_object.name}")
+        inx.Debug.log(f"trigger exit: {other.game_object.name}")
 ```
 
 Return to the editor, select `Probe`, choose **Add Component**, and attach `PhysicsProbe`. The component stores its Rigidbody reference in `start`; Infernux components manage their own initialization, so gameplay scripts use `awake` or `start` instead of defining `__init__`.
@@ -207,33 +204,30 @@ The Probe now turns low-level physics transitions into clean gameplay events. In
 创建 `Assets/Scripts/physics_probe.py`，写入以下完整组件：
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.components.builtin import Rigidbody
-from Infernux.debug import Debug
-from Infernux.math import Vector3
+import infernux as inx
 
 
-class PhysicsProbe(InxComponent):
+class PhysicsProbe(inx.InxComponent):
     def awake(self):
         self._body = None
         self._collision_stay_steps = 0
         self._trigger_stay_steps = 0
 
     def start(self):
-        self._body = self.game_object.get_component(Rigidbody)
+        self._body = self.game_object.get_component(inx.Rigidbody)
         if self._body is None:
-            Debug.log_error("PhysicsProbe requires a Rigidbody.", self.game_object)
+            inx.Debug.log_error("PhysicsProbe requires a Rigidbody.", self.game_object)
 
     def fixed_update(self, fixed_delta_time):
         if self._body is None:
             return
 
         # add_force 默认使用 ForceMode.Force。
-        self._body.add_force(Vector3(3.0, 0.0, 0.0))
+        self._body.add_force(inx.Vector3(3.0, 0.0, 0.0))
 
     def on_collision_enter(self, collision):
         self._collision_stay_steps = 0
-        Debug.log(
+        inx.Debug.log(
             f"collision enter: {collision.game_object.name} "
             f"at {collision.contact_point}"
         )
@@ -241,26 +235,26 @@ class PhysicsProbe(InxComponent):
     def on_collision_stay(self, collision):
         self._collision_stay_steps += 1
         if self._collision_stay_steps == 1:
-            Debug.log(
+            inx.Debug.log(
                 f"collision stay: {collision.game_object.name}; "
                 f"normal={collision.contact_normal}; "
                 f"relative velocity={collision.relative_velocity}"
             )
 
     def on_collision_exit(self, collision):
-        Debug.log(f"collision exit: {collision.game_object.name}")
+        inx.Debug.log(f"collision exit: {collision.game_object.name}")
 
     def on_trigger_enter(self, other):
         self._trigger_stay_steps = 0
-        Debug.log(f"trigger enter: {other.game_object.name}")
+        inx.Debug.log(f"trigger enter: {other.game_object.name}")
 
     def on_trigger_stay(self, other):
         self._trigger_stay_steps += 1
         if self._trigger_stay_steps == 1:
-            Debug.log(f"trigger stay: {other.game_object.name}")
+            inx.Debug.log(f"trigger stay: {other.game_object.name}")
 
     def on_trigger_exit(self, other):
-        Debug.log(f"trigger exit: {other.game_object.name}")
+        inx.Debug.log(f"trigger exit: {other.game_object.name}")
 ```
 
 回到编辑器，选中 `Probe`，通过 **Add Component** 挂载 `PhysicsProbe`。组件在 `start` 中保存 Rigidbody 引用。Infernux 会管理组件初始化，因此玩法组件应使用 `awake` 或 `start`，不要定义 `__init__`。

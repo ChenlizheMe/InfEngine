@@ -1501,7 +1501,6 @@ void RegisterGUIBindings(py::module_ &m)
         // Selection callbacks
         .def_readwrite("is_multi_selection", &InspectorPanel::isMultiSelection)
         .def_readwrite("get_selected_ids", &InspectorPanel::getSelectedIds)
-        .def_readwrite("get_value_generation", &InspectorPanel::getValueGeneration)
         .def_readwrite("get_revision_snapshot", &InspectorPanel::getRevisionSnapshot)
         // Object info callbacks
         .def_readwrite("get_object_info", &InspectorPanel::getObjectInfo)

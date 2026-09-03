@@ -1,10 +1,8 @@
 """
-NuitkaBuilder — compiles a Python entry script into a standalone native EXE
-using Nuitka (Python → C → native binary).
-
-This replaces the old RuntimeBuilder cache-copy approach with true native
-compilation.  The output is a self-contained directory containing the EXE,
-all required DLLs, and the embedded Python runtime.
+NuitkaBuilder compiles a Python entry script into a standalone native EXE
+using Nuitka (Python → C → native binary). The output is a self-contained
+directory containing the EXE, all required native libraries and the embedded
+Python runtime.
 
 On Windows, Infernux requires an MSVC toolchain for game builds.
 All intermediate compilation is done in an ASCII-safe staging directory and
@@ -47,6 +45,7 @@ from Infernux.engine.python_abi import (
     PYTHON_VERSION,
     WINDOWS_LIBFFI_DLL_PATTERNS,
     WINDOWS_PYTHON_DLL,
+    player_native_library_filenames,
     stdlib_extension_module_sources,
 )
 
@@ -988,24 +987,11 @@ class NuitkaBuilder:
     _ENGINE_MANAGED_RUNTIME_PACKAGES = frozenset(
         {"infernux", "numba", "llvmlite", "numpy", "packaging"}
     )
-    # glslang and SPIRV-Tools are linked into InfernuxShaderCompiler, while the
-    # former monolithic InfernuxRuntime DLL is now a private static archive.
-    # Historical copies may survive an older wheel and must never enter a new
-    # Player pack or its cache fingerprint.
-    _FORBIDDEN_LEGACY_NATIVE_FILES = frozenset(
-        {
-            "infernuxruntime.dll",
-            "libinfernuxruntime.so",
-            "spirv.dll",
-            "libspirv.so",
-            "spvremapper.dll",
-            "libspvremapper.so",
-            "glslang-default-resource-limits.dll",
-            "libglslang-default-resource-limits.so",
-            "glslang.dll",
-            "libglslang.so",
-        }
-    )
+    _PLAYER_NATIVE_CONTRACT_FILENAME = "PlayerNativeContract.json"
+    _PLAYER_NATIVE_CONTRACT = {
+        "contract": "infernux.player-native",
+        "runtime_linkage": "static",
+    }
     _GAME_BUILD_NOFOLLOW_MODULES = frozenset()
     # Keep the Player import graph explicit. PlayerGUI legitimately uses the
     # small viewport utility module, but none of the authoring panels,
@@ -1366,7 +1352,6 @@ class NuitkaBuilder:
                 or path.suffix.lower()
                 in {".pyc", ".pdb", ".lib", ".exp", ".meta", ".bak"}
                 or relative.endswith(".pyi")
-                or path.name.casefold() in self._FORBIDDEN_LEGACY_NATIVE_FILES
             ):
                 continue
             digest.update(relative.encode("utf-8"))
@@ -1394,11 +1379,6 @@ class NuitkaBuilder:
         )
         self._engine_fingerprint_cache = digest.hexdigest()
         return self._engine_fingerprint_cache
-
-    def _engine_content_fingerprint(self) -> str:
-        """Compatibility alias for the Player compile-input fingerprint."""
-
-        return self._player_compile_input_fingerprint()
 
     def _builder_environment_fingerprint(self) -> bytes:
         package_names = sorted({
@@ -2452,8 +2432,6 @@ print(json.dumps({{
         for path in lib_dir.iterdir():
             if not path.is_file() or path in {module_file, bootstrap_module}:
                 continue
-            if path.name.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_FILES:
-                continue
             # Never mix a stale short-name extension with the selected
             # ABI-tagged module. Nuitka creates the short name itself.
             if path.name.startswith("_Infernux"):
@@ -2472,13 +2450,20 @@ print(json.dumps({{
 
         try:
             cls._native_payload_files(lib_dir)
-        except (OSError, RuntimeError):
+            contract = json.loads(
+                (lib_dir / cls._PLAYER_NATIVE_CONTRACT_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
             return False
-        forbidden = cls._FORBIDDEN_LEGACY_NATIVE_FILES
-        return not any(
-            path.is_file() and path.name.casefold() in forbidden
-            for path in lib_dir.iterdir()
-        )
+        present = {
+            path.name.casefold() for path in cls._native_payload_files(lib_dir)
+        }
+        required = {
+            name.casefold() for name in player_native_library_filenames()
+        }
+        return contract == cls._PLAYER_NATIVE_CONTRACT and required <= present
 
     @classmethod
     def _source_build_player_native_dirs(cls, loaded_dir: Path) -> list[Path]:
@@ -2582,15 +2567,6 @@ print(json.dumps({{
         target_dir.mkdir(parents=True, exist_ok=True)
 
         dist_root = Path(dist_dir)
-
-        # Remove stale copies left by older installed wheels or Nuitka output
-        # before injecting the current native closure.
-        for legacy_name in self._FORBIDDEN_LEGACY_NATIVE_FILES:
-            for stale_path in (dist_root / legacy_name, target_dir / legacy_name):
-                try:
-                    stale_path.unlink()
-                except FileNotFoundError:
-                    pass
 
         native_files = self._native_payload_files(lib_dir)
         native_module = self._native_module_file(lib_dir)
@@ -3091,16 +3067,11 @@ print(json.dumps({{
                 site_packages = cand
                 break
         if not site_packages:
-            # Fallback: pick the last entry (usually Lib/site-packages)
-            for cand in reversed(candidates):
-                if os.path.isdir(cand):
-                    site_packages = cand
-                    break
-        if not site_packages:
-            Debug.log_warning(
-                f"Builder site-packages not found in {candidates}"
+            raise RuntimeError(
+                "Builder environment does not contain every raw runtime package "
+                f"{selected_packages!r} in one site-packages directory; "
+                f"searched {candidates!r}"
             )
-            return
 
         Debug.log_internal(
             f"  site-packages resolved: {site_packages}  "
@@ -3113,10 +3084,10 @@ print(json.dumps({{
         for pkg in selected_packages:
             src = os.path.join(site_packages, pkg)
             if not os.path.isdir(src):
-                Debug.log_warning(
-                    f"JIT package '{pkg}' not found in {site_packages} — skipping"
+                raise RuntimeError(
+                    f"Raw runtime package '{pkg}' disappeared from "
+                    f"'{site_packages}' during Player construction"
                 )
-                continue
 
             _pkg_t0 = _time.perf_counter()
             dst = dist_root / pkg
@@ -3149,13 +3120,10 @@ print(json.dumps({{
                     creationflags=0x08000000,
                 )
                 if rc >= 8:
-                    Debug.log_warning(
-                        f"robocopy failed for '{pkg}' (exit {rc}), "
-                        f"falling back to shutil.copytree"
+                    raise RuntimeError(
+                        f"Unable to copy raw runtime package '{pkg}' with "
+                        f"robocopy (exit {rc})"
                     )
-                    if dst.exists():
-                        shutil.rmtree(dst)
-                    shutil.copytree(src, dst)
             else:
                 shutil.copytree(src, dst)
                 # Strip on non-Windows too
@@ -3166,7 +3134,7 @@ print(json.dumps({{
 
             # Raw JIT packages are runtime dependencies, not authoring
             # sources. Keep the bytecode Python needs for lazy imports, but
-            # never ship the package's plaintext .py files. Legacy adjacent
+            # never ship the package's plaintext .py files. Source-less adjacent
             # .pyc files are intentional: Python can import them without a
             # source file, whereas __pycache__ entries alone cannot be
             # discovered by SourcelessFileLoader.
@@ -3191,7 +3159,7 @@ print(json.dumps({{
                     else:
                         shutil.rmtree(libs_dst)
                 if sys.platform == "win32":
-                    subprocess.call(
+                    rc = subprocess.call(
                         ["robocopy", libs_src, str(libs_dst), "/E",
                          "/MT:16", "/R:1", "/W:1", "/XJ",
                          "/COPY:DAT", "/DCOPY:DAT",
@@ -3200,6 +3168,11 @@ print(json.dumps({{
                         stderr=subprocess.DEVNULL,
                         creationflags=0x08000000,
                     )
+                    if rc >= 8:
+                        raise RuntimeError(
+                            f"Unable to copy raw runtime companion '{libs_name}' "
+                            f"with robocopy (exit {rc})"
+                        )
                 else:
                     shutil.copytree(libs_src, libs_dst)
                 copied.append(f"{libs_name}")
@@ -3261,8 +3234,7 @@ print(json.dumps({{
         b'  <application xmlns="urn:schemas-microsoft-com:asm.v3">\r\n'
         b'    <windowsSettings>\r\n'
         b'      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>\r\n'
-        b'      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>\r\n'
-        b'      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness>\r\n'
+        b'      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>\r\n'
         b'    </windowsSettings>\r\n'
         b'  </application>\r\n'
         b'</assembly>\r\n'

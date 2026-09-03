@@ -6,10 +6,11 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QMessageBox, QProgressBar, QVBoxLayout
+from PySide6.QtCore import QObject, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QVBoxLayout
 
-from hub_updater import check_for_update, launch_external_updater, stage_update
+from hub_updater import HubUpdateStatus, check_for_update, launch_external_updater, stage_update
 from i18n import tr
 
 
@@ -32,17 +33,18 @@ class _CheckWorker(QObject):
 
     def run(self):
         try:
-            update = check_for_update()
+            result = check_for_update()
+            update = result.update
             _write_update_trace(
                 {
-                    "status": "update_available" if update is not None else "up_to_date",
-                    "current_version": update.current_version if update is not None else "",
-                    "target_version": update.target_version if update is not None else "",
+                    "status": result.status.value,
+                    "current_version": result.current_version,
+                    "target_version": result.latest_version,
                     "asset_name": update.asset_name if update is not None else "",
-                    "required": bool(update.required) if update is not None else False,
+                    "detail": result.detail,
                 }
             )
-            self.finished.emit(update)
+            self.finished.emit(result)
         except Exception as exc:
             _write_update_trace({"status": "failed", "error": str(exc)})
             self.failed.emit(str(exc))
@@ -79,7 +81,7 @@ class UpdateProgressDialog(QDialog):
         title = QLabel(tr("INSTALLING HUB UPDATE {version}", version=update.target_version))
         title.setObjectName("settingsLabel")
         layout.addWidget(title)
-        self.status = QLabel(tr("Downloading and verifying update..."))
+        self.status = QLabel(tr("Downloading the Hub update..."))
         self.status.setObjectName("settingsDescription")
         layout.addWidget(self.status)
         self.progress = QProgressBar()
@@ -107,9 +109,13 @@ class UpdateProgressDialog(QDialog):
         self.thread.quit()
         self.thread.wait(2000)
         self.progress.setValue(100)
-        self.status.setText(tr("Closing Hub and installing verified files..."))
+        self.status.setText(tr("Closing Hub and installing the update..."))
         try:
-            launch_external_updater(staged_root)
+            application = QApplication.instance()
+            launch_external_updater(
+                staged_root,
+                is_dark=bool(getattr(application, "is_dark_theme", True)),
+            )
         except Exception as exc:
             self._failed(str(exc))
             return
@@ -158,43 +164,63 @@ class UpdateController(QObject):
         self.thread.finished.connect(self.worker.deleteLater)
         self.thread.start()
 
-    def _checked(self, update):
-        if update is None:
+    def _checked(self, result):
+        if result.status is HubUpdateStatus.UP_TO_DATE:
             if not self._silent_check:
                 QMessageBox.information(
                     self.main_window, tr("Hub Update"), tr("Infernux Hub is up to date."),
                 )
             self._finish_check()
             return
-        if update.required:
-            QMessageBox.information(
-                self.main_window,
-                tr("Hub Update Required"),
-                tr(
-                    "Infernux Hub must be updated to {version} before this version of "
-                    "the engine can be installed.\n\nThe verified update will be "
-                    "downloaded now. Hub will then restart automatically.",
-                    version=update.target_version,
-                ),
-            )
-        else:
+        if result.status is HubUpdateStatus.NETWORK_UNAVAILABLE:
+            if not self._silent_check:
+                QMessageBox.warning(
+                    self.main_window,
+                    tr("Update Check Unavailable"),
+                    tr("The Hub update catalog could not be reached.\n\n{message}", message=result.detail),
+                )
+            self._finish_check()
+            return
+        if result.status is HubUpdateStatus.CATALOG_INVALID:
+            if not self._silent_check:
+                QMessageBox.warning(
+                    self.main_window,
+                    tr("Update Catalog Invalid"),
+                    tr("The Hub update catalog is invalid.\n\n{message}", message=result.detail),
+                )
+            self._finish_check()
+            return
+        if result.status is HubUpdateStatus.UNSUPPORTED_CURRENT_VERSION:
             answer = QMessageBox.question(
                 self.main_window,
-                tr("Hub Update Available"),
+                tr("Full Hub Install Required"),
                 tr(
-                    "Infernux Hub {version} is available. Update now?\n\n"
-                    "Hub will close, install the verified update, and restart automatically.",
-                    version=update.target_version,
+                    "This Hub is too old for the current in-app update path. "
+                    "Open the {version} installer download now?",
+                    version=result.latest_version,
                 ),
             )
-            if answer != QMessageBox.Yes:
-                self._finish_check()
-                return
+            if answer == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl(result.installer_url))
+            self._finish_check()
+            return
+        update = result.update
+        if result.status is not HubUpdateStatus.UPDATE_AVAILABLE or update is None:
+            raise RuntimeError(f"Unhandled Hub update status: {result.status}")
+        answer = QMessageBox.question(
+            self.main_window,
+            tr("Hub Update Available"),
+            tr(
+                "Infernux Hub {version} is available. Update now?\n\n"
+                "Hub will close, install the update, and restart automatically.",
+                version=update.target_version,
+            ),
+        )
+        if answer != QMessageBox.Yes:
+            self._finish_check()
+            return
         dialog = UpdateProgressDialog(update, self.main_window)
         result = dialog.exec()
-        # A required update removes the user's decline path, but a failed
-        # download must leave Hub open so the user can retry. Engine/runtime
-        # installation remains independently gated by VersionManager.
         if result == QDialog.Accepted:
             self.main_window.hide()
             self.main_window.app.quit()

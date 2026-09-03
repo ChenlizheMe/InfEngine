@@ -468,6 +468,7 @@ def _build_hub(
     packaging_dir = source_root / "packaging"
     runtime_bundle = package_dir / "runtime" / "runtime_bundle.zip"
     notification_file = packaging_dir / "resources" / "hub_notifications.json"
+    linux_updater = packaging_dir / "hub_update_apply.py"
     if not runtime_bundle.is_file():
         raise RuntimeError(
             "The private Python runtime bundle is missing. Build the "
@@ -502,6 +503,10 @@ def _build_hub(
         (
             f"--include-data-file={notification_file}="
             "InfernuxHubData/hub_notifications.json"
+        ),
+        (
+            f"--include-data-file={linux_updater}="
+            "InfernuxHubData/updater/hub_update_apply.py"
         ),
         "--nofollow-import-to=Infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
     ]

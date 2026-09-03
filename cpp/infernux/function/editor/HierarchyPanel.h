@@ -155,6 +155,7 @@ class HierarchyPanel : public EditorPanel
     // ── Virtual scrolling ────────────────────────────────────────────
     float m_cachedItemHeight = 18.0f;
     bool m_itemHeightMeasured = false;
+    float m_lastDpiScale = 0.0f;
 
     // ── Flat virtual scrolling ───────────────────────────────────────
     struct FlatItem
@@ -184,7 +185,6 @@ class HierarchyPanel : public EditorPanel
 
     // ── Pending auto-expand ──────────────────────────────────────────
     uint64_t m_pendingExpandId = 0;
-    std::unordered_set<uint64_t> m_pendingExpandIds;
 
     // ── Inline rename ────────────────────────────────────────────────
     uint64_t m_renameId = 0;

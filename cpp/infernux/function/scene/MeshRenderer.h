@@ -356,6 +356,11 @@ class MeshRenderer : public Component
     void SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices);
 
   private:
+    /// Populate otherwise-empty renderer slots from material data embedded in
+    /// the imported mesh. This is a renderer invariant rather than a Python
+    /// binding convenience so scene restore, Player and Web builds agree.
+    void ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh);
+
     MeshRef m_mesh;
 
     // Material slots — one per submesh, GUID-based, resolved via AssetRegistry

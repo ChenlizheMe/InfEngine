@@ -44,6 +44,14 @@ EditorDpiState &GetEditorDpiState()
     return state;
 }
 
+float RequireDisplayScale(SDL_Window *window)
+{
+    const float scale = SDL_GetWindowDisplayScale(window);
+    if (!std::isfinite(scale) || scale <= 0.0f)
+        throw std::runtime_error("SDL reported an invalid display scale");
+    return scale;
+}
+
 class ImGuiBuildFrameGuard
 {
   public:
@@ -140,9 +148,7 @@ void InxGUI::Init(SDL_Window *window)
     GetEditorDpiState() = {};
 
     // Detect display DPI scale (e.g. 2.0 for 200% Windows scaling)
-    m_dpiScale = SDL_GetWindowDisplayScale(window);
-    if (m_dpiScale <= 0.0f)
-        m_dpiScale = 1.0f;
+    m_dpiScale = RequireDisplayScale(window);
     InxGUIContext::s_dpiScale = m_dpiScale;
     INXLOG_DEBUG("Display scale: ", m_dpiScale);
 
@@ -307,9 +313,7 @@ void InxGUI::RefreshDisplayScale()
     if (m_window_ptr == nullptr || ImGui::GetCurrentContext() == nullptr)
         return;
 
-    float nextScale = SDL_GetWindowDisplayScale(m_window_ptr);
-    if (nextScale <= 0.0f)
-        nextScale = 1.0f;
+    const float nextScale = RequireDisplayScale(m_window_ptr);
     if (std::abs(nextScale - m_dpiScale) < 0.01f)
         return;
 

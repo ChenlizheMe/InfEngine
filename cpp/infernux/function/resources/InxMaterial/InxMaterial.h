@@ -42,12 +42,15 @@ enum class ShaderStageType
 };
 
 /**
- * @brief Bitmask flags indicating which RenderState fields have been
- *        manually overridden by the user via the Material Inspector.
+ * @brief Bitmask flags indicating which RenderState fields the material has
+ *        explicitly authored (Inspector edit, Python setter, or a full
+ *        SetRenderState() call).
  *
- * When ApplyShaderRenderMeta() is called (shader annotation defaults),
- * only fields whose corresponding override bit is NOT set will be updated.
- * This allows per-material customization that survives shader reloads.
+ * Shader annotations only provide *defaults*: when ApplyShaderRenderMeta()
+ * is called, only fields whose corresponding override bit is NOT set will be
+ * updated. Authored fields always win. Switching the material to a different
+ * shader clears all bits so the new shader's annotation defaults become the
+ * baseline, after which explicit material edits take over again.
  */
 enum class RenderStateOverride : uint32_t
 {
@@ -62,6 +65,15 @@ enum class RenderStateOverride : uint32_t
     SurfaceType = 1 << 7,
     AlphaClip = 1 << 8,
 };
+
+/// Every authorable RenderState override bit. Used by SetRenderState() to
+/// claim full authorship of the render state in one call.
+inline constexpr uint32_t kAllRenderStateOverrides =
+    static_cast<uint32_t>(RenderStateOverride::CullMode) | static_cast<uint32_t>(RenderStateOverride::DepthWrite) |
+    static_cast<uint32_t>(RenderStateOverride::DepthTest) | static_cast<uint32_t>(RenderStateOverride::DepthCompareOp) |
+    static_cast<uint32_t>(RenderStateOverride::BlendEnable) | static_cast<uint32_t>(RenderStateOverride::BlendMode) |
+    static_cast<uint32_t>(RenderStateOverride::RenderQueue) | static_cast<uint32_t>(RenderStateOverride::SurfaceType) |
+    static_cast<uint32_t>(RenderStateOverride::AlphaClip);
 
 // Material documents are shared by Vulkan, WebGPU, and future renderer
 // backends. Keep their persisted values independent from backend headers while
@@ -346,14 +358,23 @@ class InxMaterial
     // Shader identity
     // ========================================================================
 
+    /// Switching to another shader hands render-state authorship back to that
+    /// shader's defaults. Declared before the inline shader setters so every
+    /// supported compiler resolves the call consistently.
+    void ResetRenderStateAuthorship();
+
     /// @brief Set both vertex and fragment shader to the same name (convenience).
     void SetShader(const std::string &shaderName)
     {
         const ShaderAssetReference reference{"", shaderName, ""};
         if (m_vertexShader == reference && m_fragmentShader == reference)
             return;
+        const bool switched =
+            !ReferencesSameShader(m_vertexShader, reference) || !ReferencesSameShader(m_fragmentShader, reference);
         m_vertexShader = reference;
         m_fragmentShader = reference;
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -364,7 +385,10 @@ class InxMaterial
         const ShaderAssetReference reference{"", name, ""};
         if (m_vertexShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = reference;
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -375,7 +399,10 @@ class InxMaterial
         const ShaderAssetReference reference{"", name, ""};
         if (m_fragmentShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = reference;
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -384,7 +411,10 @@ class InxMaterial
     {
         if (m_vertexShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = std::move(reference);
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -393,7 +423,10 @@ class InxMaterial
     {
         if (m_fragmentShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = std::move(reference);
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -434,11 +467,16 @@ class InxMaterial
     {
         return m_renderState;
     }
+    /// @brief Explicitly author the full render state. Every field becomes an
+    /// override, so shader annotation defaults can never replace it — the
+    /// shader only supplies defaults for fields the material has not authored
+    /// (at creation, or again after a shader switch clears authorship).
     void SetRenderState(const RenderState &state)
     {
-        if (m_renderState == state)
+        if (m_renderState == state && (m_renderStateOverrides & kAllRenderStateOverrides) == kAllRenderStateOverrides)
             return;
         m_renderState = state;
+        m_renderStateOverrides |= kAllRenderStateOverrides;
         m_pipelineDirty = true;
         ++m_version;
     }

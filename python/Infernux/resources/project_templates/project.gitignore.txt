@@ -56,5 +56,5 @@ $RECYCLE.BIN/
 *.dmp
 *.stackdump
 
-# Legacy project-local ImGui state
+# Project-local ImGui state
 imgui.ini

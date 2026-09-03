@@ -14,7 +14,7 @@ add_custom_target(prepare_bundled_python_runtime
 )
 
 add_custom_target(infernux_hub
-    COMMAND ${CMAKE_COMMAND} -E echo "Compiling Infernux Hub with the MSBuild/MSVC release toolchain..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Compiling the native Infernux Hub application..."
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_SOURCE_DIR}/packaging/build_hub.py"
         --target hub
@@ -24,11 +24,11 @@ add_custom_target(infernux_hub
         --cmake-generator "${CMAKE_GENERATOR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
     DEPENDS prepare_bundled_python_runtime
-    COMMENT "Build MSVC-compiled Infernux Hub via MSBuild → out/package/hub/"
+    COMMENT "Build native Infernux Hub → out/package/hub/"
 )
 
 add_custom_target(infernux_hub_installer
-    COMMAND ${CMAKE_COMMAND} -E echo "Building graphical Infernux Hub installer with MSBuild/MSVC..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Building the native graphical Infernux Hub installer..."
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_SOURCE_DIR}/packaging/build_hub.py"
         --target installer
@@ -38,5 +38,5 @@ add_custom_target(infernux_hub_installer
         --cmake-generator "${CMAKE_GENERATOR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
     DEPENDS infernux_hub
-    COMMENT "Build MSVC graphical Infernux Hub installer via MSBuild → out/package/installer/"
+    COMMENT "Build native graphical Infernux Hub installer → out/package/installer/"
 )

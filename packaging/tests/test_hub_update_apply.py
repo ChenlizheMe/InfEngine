@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import hub_update_apply
+
+
+def _metadata(path: Path, *, files: list[str], delete: list[str]) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.hub_update",
+                "product": "InfernuxHub",
+                "base_version": "0.4.0",
+                "target_version": "0.4.1",
+                "files": [{"path": value} for value in files],
+                "delete": delete,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_linux_applier_replaces_owned_files_and_restarts(tmp_path: Path, monkeypatch):
+    install = tmp_path / "installed"
+    stage = tmp_path / "stage"
+    install.mkdir()
+    stage.mkdir()
+    (install / "Infernux Hub").write_bytes(b"old")
+    (install / "removed.so").write_bytes(b"remove")
+    (stage / "Infernux Hub").write_bytes(b"new")
+    metadata = _metadata(
+        tmp_path / "hub-update.json",
+        files=["Infernux Hub"],
+        delete=["removed.so"],
+    )
+    launches: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr(hub_update_apply, "_wait_for_exit", lambda _pid: None)
+    monkeypatch.setattr(
+        hub_update_apply.subprocess,
+        "Popen",
+        lambda args, **kwargs: launches.append((args, kwargs)),
+    )
+
+    hub_update_apply.apply_update(
+        parent_pid=12,
+        install_dir=install,
+        stage_dir=stage,
+        metadata_path=metadata,
+    )
+
+    assert (install / "Infernux Hub").read_bytes() == b"new"
+    assert not (install / "removed.so").exists()
+    assert launches == [
+        (
+            [str(install / "Infernux Hub")],
+            {"cwd": install, "start_new_session": True},
+        )
+    ]
+
+
+def test_linux_applier_rejects_paths_outside_the_installation(tmp_path: Path):
+    metadata = _metadata(
+        tmp_path / "hub-update.json",
+        files=["../outside"],
+        delete=[],
+    )
+
+    try:
+        hub_update_apply.apply_update(
+            parent_pid=1,
+            install_dir=tmp_path / "installed",
+            stage_dir=tmp_path / "stage",
+            metadata_path=metadata,
+        )
+    except ValueError as exc:
+        assert "Unsafe Hub update path" in str(exc)
+    else:
+        raise AssertionError("unsafe update path was accepted")

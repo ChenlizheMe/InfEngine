@@ -571,26 +571,29 @@ class GameViewPanel(EditorPanel):
         # switches can temporarily interrupt panel visibility for a frame.
         self._set_game_render_active(True)
 
-        self._render_resolution_toolbar(ctx)
-        target_w, target_h, fit_scale = self._render_scale_toolbar(ctx)
+        from .dpi import editor_dpi_scale
+
+        dpi = editor_dpi_scale(ctx)
+        self._render_resolution_toolbar(ctx, dpi)
+        target_w, target_h, fit_scale = self._render_scale_toolbar(ctx, dpi)
         self._render_fps_counter(ctx)
 
         ctx.new_line()
 
         self._render_game_viewport(ctx, target_w, target_h, fit_scale)
 
-    def _render_resolution_toolbar(self, ctx):
+    def _render_resolution_toolbar(self, ctx, dpi: float):
         """Resolution preset combo and optional custom width/height inputs."""
         old_idx = self._selected_resolution_idx
-        ctx.set_next_item_width(140)
+        ctx.set_next_item_width(140.0 * dpi)
         selected_idx = ctx.combo("##Resolution", old_idx, self._PRESET_NAMES, -1)
         if selected_idx != old_idx:
             self._set_resolution_preset(selected_idx)
 
         if self._selected_resolution_idx == len(self._RESOLUTION_PRESETS) - 1:
-            ctx.same_line(0, 8)
+            ctx.same_line(0, 8.0 * dpi)
             width_before = self._capture_view_state()
-            ctx.set_next_item_width(56)
+            ctx.set_next_item_width(56.0 * dpi)
             new_width = int(ctx.drag_int("##CW", self._custom_width, 1.0, 64, 8192))
             width_changed = new_width != self._custom_width
             self._custom_width = new_width
@@ -601,11 +604,11 @@ class GameViewPanel(EditorPanel):
                 changed=width_changed,
                 description="Change Game View Width",
             )
-            ctx.same_line(0, 2)
+            ctx.same_line(0, 2.0 * dpi)
             ctx.label(Theme.ICON_REMOVE)
-            ctx.same_line(0, 2)
+            ctx.same_line(0, 2.0 * dpi)
             height_before = self._capture_view_state()
-            ctx.set_next_item_width(56)
+            ctx.set_next_item_width(56.0 * dpi)
             new_height = int(ctx.drag_int("##CH", self._custom_height, 1.0, 64, 8192))
             height_changed = new_height != self._custom_height
             self._custom_height = new_height
@@ -617,7 +620,7 @@ class GameViewPanel(EditorPanel):
                 description="Change Game View Height",
             )
 
-    def _render_scale_toolbar(self, ctx):
+    def _render_scale_toolbar(self, ctx, dpi: float):
         """Scale slider, percentage label, and Fit button.
 
         Returns ``(target_w, target_h, fit_scale)``.
@@ -634,13 +637,13 @@ class GameViewPanel(EditorPanel):
         if self._fit_mode:
             self._display_scale = fit_scale
 
-        ctx.same_line(0, 12)
+        ctx.same_line(0, 12.0 * dpi)
         pct = int(round(self._display_scale * 100))
         scale_label_x = ctx.get_cursor_pos_x()
         scale_label_w, _ = ctx.calc_text_size("200%")
         ctx.label(f"{pct}%")
-        ctx.same_line(scale_label_x + scale_label_w + 4.0)
-        ctx.set_next_item_width(230)
+        ctx.same_line(scale_label_x + scale_label_w + 4.0 * dpi)
+        ctx.set_next_item_width(230.0 * dpi)
         scale_before = self._capture_view_state()
         old_scale = self._display_scale
         new_scale = round(ctx.float_slider("##Scale", old_scale, 0.10, 2.0), 3)
@@ -655,10 +658,10 @@ class GameViewPanel(EditorPanel):
             changed=scale_changed,
             description="Change Game View Scale",
         )
-        ctx.same_line(0, 6)
+        ctx.same_line(0, 6.0 * dpi)
         ctx.align_text_to_frame_padding()
         fit_label = t("game_view.fit")
-        fit_w = max(44.0, ctx.calc_text_width(fit_label) + 12.0)
+        fit_w = max(44.0 * dpi, ctx.calc_text_width(fit_label) + 12.0 * dpi)
         color_count = Theme.push_inline_button_style(ctx, active=self._fit_mode)
         ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
         ctx.button(f"{fit_label}##game_view_fit", self._fit_scale, width=fit_w, height=0)

@@ -5,6 +5,10 @@
 /out/
 /dev/
 /packaging/runtime/
+/mcp_captures/
+/python/_mcp_*.py
+/python/_repro_*.py
+/python/_sim_*.py
 /packaging/_vendor/
 cmake-build-*/
 CMakeFiles/
@@ -108,7 +112,9 @@ $RECYCLE.BIN/
 *.log
 *.bak
 *.orig
-/.infernux-*.inxpkg
+# Official plugin archives are produced by infernux_official_plugins after
+# the native module builds. Player Content.inxpkg files are also generated.
+*.inxpkg
 
 # ============================================================================
 # Vulkan / GPU

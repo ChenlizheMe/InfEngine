@@ -1,3 +1,5 @@
+include python/infernux.py
+include python/infernux.pyi
 recursive-include python/Infernux *
 recursive-exclude python/Infernux/_runtime_packs *
 recursive-exclude python/Infernux/_runtime_modules *
@@ -6,9 +8,4 @@ recursive-include python/Infernux/_runtime_modules Player.inxmanifest Parallel.i
 recursive-exclude python/Infernux/test *
 recursive-exclude python/test *
 recursive-exclude python *.meta
-exclude python/Infernux/lib/InfernuxRuntime.dll
-exclude python/Infernux/lib/SPIRV.dll
-exclude python/Infernux/lib/SPVRemapper.dll
-exclude python/Infernux/lib/glslang-default-resource-limits.dll
-exclude python/Infernux/lib/glslang.dll
 global-exclude __pycache__ *.pyc *.pyo *.bak *.pdb *.lib *.exp

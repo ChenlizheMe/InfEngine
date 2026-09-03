@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
 
-HUB_EXECUTABLE = "Infernux Hub.exe"
+HUB_EXECUTABLE = "Infernux Hub.exe" if sys.platform == "win32" else "Infernux Hub"
 HUB_PAYLOAD_ARCHIVE = "infernux-hub-payload.zip"
 
 
@@ -93,6 +94,9 @@ def extract_payload_archive(
                     target.open("wb") as destination_file,
                 ):
                     shutil.copyfileobj(source, destination_file, length=1024 * 1024)
+                archived_mode = mode & 0o777
+                if archived_mode:
+                    target.chmod(archived_mode)
     except zipfile.BadZipFile as exc:
         raise RuntimeError(f"Invalid Hub payload archive: {archive_file}") from exc
 

@@ -959,6 +959,14 @@ void InxRenderer::DrawFrame()
     if (m_deltaTime > 1.0f / 3.0f)
         m_deltaTime = 1.0f / 3.0f;
 
+    // Deterministic stepping (Infernux::Tick in graphical mode) supplies the
+    // exact simulation delta; the wall clock only reset m_lastFrameTime above
+    // so a later free-running frame does not observe a stale timestamp.
+    if (m_nextFrameDeltaTimeOverride >= 0.0f) {
+        m_deltaTime = m_nextFrameDeltaTimeOverride;
+        m_nextFrameDeltaTimeOverride = -1.0f;
+    }
+
     // ========================================================================
     // Frame Profiler - aggregates per-phase timings and reports at a bounded cadence.
     // Controlled by INFERNUX_FRAME_PROFILE in ProfileConfig.h (0 = off, 1 = on).
@@ -2572,10 +2580,9 @@ void InxRenderer::SetGUIFont(const char *fontPath, float fontSize)
 
 float InxRenderer::GetDisplayScale() const
 {
-    if (m_gui) {
-        return m_gui->GetDisplayScale();
-    }
-    return 1.0f;
+    if (!m_gui)
+        throw std::logic_error("Cannot query display scale before the GUI is initialized");
+    return m_gui->GetDisplayScale();
 }
 
 void InxRenderer::RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority)

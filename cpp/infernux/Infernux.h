@@ -578,6 +578,8 @@ class Infernux
     bool m_isInitialized = false;
     std::unordered_map<std::string, double> m_startupPhaseTimingsMs;
     std::atomic<bool> m_exitRequested{false};
+    /// True while Run() owns the graphical frame loop; blocks manual Tick().
+    std::atomic<bool> m_runLoopActive{false};
     std::mutex m_runMutex;
     std::condition_variable m_runCv;
     std::function<void(float)> m_preSceneUpdateCallback;
@@ -589,6 +591,7 @@ class Infernux
     // ImGui ini file path — stored as std::filesystem::path so that
     // wide-char paths (e.g. Chinese usernames) work correctly on Windows.
     std::filesystem::path m_imguiIniPath;
+    std::filesystem::path m_imguiLayoutMetadataPath;
 
     std::queue<std::function<void()>> m_previewJobs;
     JobHandle m_previewDispatcherJob;

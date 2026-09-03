@@ -538,6 +538,14 @@ InxMaterial::InxMaterial(const InxMaterial &other)
     // GPU-transient state must never be copied across logical material instances.
 }
 
+void InxMaterial::ResetRenderStateAuthorship()
+{
+    if (m_renderStateOverrides == 0)
+        return;
+    m_renderStateOverrides = 0;
+    m_pipelineDirty = true;
+}
+
 InxMaterial &InxMaterial::operator=(const InxMaterial &other)
 {
     if (this == &other) {
@@ -1319,6 +1327,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
     state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
     state.alphaBlendOp = MaterialBlendOp::Add;
     state.renderQueue = 3000;
+    // SetRenderState claims authorship of every field, so the "Unlit" surface
+    // shader's annotation defaults (Cull Back, Queue 2000) can never replace
+    // this state. Back-face culling in particular would delete every section
+    // of a trail that folds back on itself (reversed winding) and flicker the
+    // live tip as its winding flips frame to frame.
     material->SetRenderState(state);
     material->SetColor("baseColor", glm::vec4(1.0f));
     material->SetBuiltin(true);

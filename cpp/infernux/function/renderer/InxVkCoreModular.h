@@ -1521,6 +1521,11 @@ class InxVkCoreModular
         VkBuffer indexBuf;
         const std::shared_ptr<InxMaterial> *materialOwner;
         InxMaterial *material; // Resolved once in the filter loop; materialOwner keeps it alive.
+        // Non-zero when the leased buffer still holds the previous published
+        // geometry of an every-frame dynamic mesh (fresh upload not ready):
+        // draw the complete previous range instead of dropping the object for
+        // a frame, which flickers moving LineRenderer trails.
+        uint32_t indexCountClamp = 0;
     };
     std::vector<SortableDrawCall> m_eligibleScratch;
 

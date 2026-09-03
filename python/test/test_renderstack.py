@@ -157,6 +157,49 @@ def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
     assert stack.pipeline_class_name == "Missing Packaged Pipeline"
 
 
+def test_editor_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
+    from Infernux.renderstack.render_stack import RenderStack
+
+    stack = RenderStack()
+    stack.pipeline_class_name = "Missing Editor Pipeline"
+    monkeypatch.delenv("_INFERNUX_PLAYER_MODE", raising=False)
+    monkeypatch.setattr(stack, "discover_pipelines", lambda: {})
+
+    with pytest.raises(RuntimeError, match="Missing Editor Pipeline"):
+        stack._create_pipeline()
+
+    assert stack.pipeline_class_name == "Missing Editor Pipeline"
+
+
+def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebuild():
+    from Infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
+
+    class Subject(PipelineReloadMixin):
+        DEFAULT_PIPELINE_NAME = "Default Forward"
+
+        def __init__(self):
+            self.pipeline_class_name = "Authored Pipeline"
+            self._pipeline_catalog_signature = ("Authored Pipeline",)
+            self._pipeline = object()
+            self._cached_ips = object()
+            self.invalidations = 0
+
+        def discover_pipelines(self):
+            return {}
+
+        def invalidate_graph(self):
+            self.invalidations += 1
+
+    subject = Subject()
+    with pytest.warns(RuntimeWarning, match="Authored Pipeline"):
+        subject._sync_pipeline_catalog()
+
+    assert subject.pipeline_class_name == "Authored Pipeline"
+    assert subject._pipeline is None
+    assert subject._cached_ips is None
+    assert subject.invalidations == 1
+
+
 def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monkeypatch):
     from Infernux.renderstack.render_stack import RenderStack
 

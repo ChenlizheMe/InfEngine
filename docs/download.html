@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="Download InfernuxHub for Windows 10/11 x64 and install the Infernux engine version your project needs. The Python runtime comes with it.">
+    <meta name="description" content="Download InfernuxHub for Windows or Linux and install the Infernux engine version your project needs.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/download.html">
@@ -59,7 +59,7 @@
         <div class="container">
             <div data-page-language="en">
                 <header class="download-heading">
-                    <span class="mini-tag">Windows 10/11 · x64</span>
+                    <span class="mini-tag">Windows · Linux · x64</span>
                     <h1>Download Infernux</h1>
                     <p>Start with InfernuxHub. It keeps your projects and your installed engine versions in one place, and gets out of the way after that.</p>
                 </header>
@@ -70,8 +70,16 @@
                         <span class="mini-tag">Recommended</span>
                         <h2 id="hub-title-en">InfernuxHub</h2>
                         <p>Install or switch Infernux versions, create projects, reopen old ones. The Python runtime comes with it, so there is nothing to prepare by hand.</p>
-                        <a class="btn btn-primary" data-latest-hub href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"><i class="fas fa-download" aria-hidden="true"></i> Download InfernuxHub</a>
-                        <span class="download-meta" data-hub-meta>Windows x64 · latest public release 0.3.7</span>
+                        <div class="hub-platform-actions">
+                            <div>
+                                <a class="btn btn-primary" data-hub-link="windows-x64" href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"><i class="fas fa-download" aria-hidden="true"></i> Download for Windows</a>
+                                <span class="download-meta" data-hub-meta="windows-x64">Windows x64 · latest public release 0.3.7</span>
+                            </div>
+                            <div>
+                                <a class="btn btn-secondary is-disabled" data-hub-link="linux-x64" aria-disabled="true"><i class="fas fa-download" aria-hidden="true"></i> Download for Linux</a>
+                                <span class="download-meta" data-hub-meta="linux-x64">Linux x64 · not publicly released yet</span>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
@@ -117,7 +125,7 @@
 
             <div data-page-language="zh" lang="zh-CN" hidden>
                 <header class="download-heading">
-                    <span class="mini-tag">Windows 10/11 · x64</span>
+                    <span class="mini-tag">Windows · Linux · x64</span>
                     <h1>下载熔炉</h1>
                     <p>先装 InfernuxHub。项目和装好的引擎版本都归它管，管完就退到一边去。</p>
                 </header>
@@ -128,8 +136,16 @@
                         <span class="mini-tag">推荐</span>
                         <h2 id="hub-title-zh">InfernuxHub</h2>
                         <p>安装或切换 Infernux 版本、新建项目、打开旧项目。Python 运行环境跟着一起来，不需要你自己准备。</p>
-                        <a class="btn btn-primary" data-latest-hub href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"><i class="fas fa-download" aria-hidden="true"></i> 下载 InfernuxHub</a>
-                        <span class="download-meta" data-hub-meta>Windows x64 · GitHub 最新公开版本 0.3.7</span>
+                        <div class="hub-platform-actions">
+                            <div>
+                                <a class="btn btn-primary" data-hub-link="windows-x64" href="https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"><i class="fas fa-download" aria-hidden="true"></i> 下载 Windows 版</a>
+                                <span class="download-meta" data-hub-meta="windows-x64">Windows x64 · 最新公开版本 0.3.7</span>
+                            </div>
+                            <div>
+                                <a class="btn btn-secondary is-disabled" data-hub-link="linux-x64" aria-disabled="true"><i class="fas fa-download" aria-hidden="true"></i> 下载 Linux 版</a>
+                                <span class="download-meta" data-hub-meta="linux-x64">Linux x64 · 尚未公开发布</span>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
@@ -181,6 +197,6 @@
     <script src="js/main.js?v=15"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script src="js/bilingual-page.js?v=1"></script>
-    <script src="js/download.js?v=5"></script>
+    <script src="js/download.js?v=6"></script>
 </body>
 </html>

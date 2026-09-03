@@ -1,4 +1,6 @@
 #include "InxView.h"
+#include "WindowSizingPolicy.h"
+#include "WindowsDpiPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -873,6 +875,10 @@ void InxView::SetWindowResizable(bool resizable)
 void InxView::SDLInit()
 {
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
+    // The Editor and Windows Player are Per-Monitor V2 applications. Make the
+    // process contract explicit before SDL initializes video; silently using
+    // system DPI awareness would make monitor transitions geometrically wrong.
+    ConfigureRequiredWindowsDpiPolicy();
     // Touch is a first-class input stream. Compatibility mouse synthesis would
     // otherwise deliver one physical contact through both APIs and cause
     // duplicate gameplay/UI actions on Android and mobile Web.
@@ -883,12 +889,32 @@ void InxView::SDLInit()
         INXLOG_ERROR("SDL_Init failed: ", error);
         throw std::runtime_error("SDL initialization failed: " + error);
     }
+    VerifyRequiredWindowsDpiPolicy();
     InputManager::Instance().InitializeMotionSensors();
     INXLOG_DEBUG("SDL_Init succeeded.");
     if (!SDL_AddEventWatch(&InxView::WatchApplicationEvents, this)) {
         INXLOG_WARN("Could not install SDL application lifecycle watch: ", SDL_GetError());
     } else {
         m_eventWatchInstalled = true;
+    }
+
+    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+    if (!playerMode) {
+        const SDL_DisplayID primaryDisplay = SDL_GetPrimaryDisplay();
+        if (primaryDisplay == 0)
+            throw std::runtime_error(std::string("Cannot resolve the primary display: ") + SDL_GetError());
+
+        SDL_Rect usableBounds{};
+        if (!SDL_GetDisplayUsableBounds(primaryDisplay, &usableBounds))
+            throw std::runtime_error(std::string("Cannot resolve primary display usable bounds: ") + SDL_GetError());
+
+        const WindowSize initialSize =
+            ResolveEditorInitialWindowSize(m_windowWidth, m_windowHeight, usableBounds.w, usableBounds.h);
+        m_windowWidth = initialSize.width;
+        m_windowHeight = initialSize.height;
+        INXLOG_INFO("Editor initial window constrained to ", m_windowWidth, "x", m_windowHeight, " for usable display ",
+                    usableBounds.w, "x", usableBounds.h);
     }
 
     INXLOG_DEBUG("Window engine: SDL Vulkan");
@@ -902,10 +928,13 @@ void InxView::SDLInit()
     }
     INXLOG_DEBUG("Window created successfully.");
 
-    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
-    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
-    if (!playerMode)
-        SDL_MaximizeWindow(m_window);
+    if (!playerMode) {
+        if (!SDL_MaximizeWindow(m_window))
+            throw std::runtime_error(std::string("Cannot maximize the Editor window: ") + SDL_GetError());
+        if (!SDL_SyncWindow(m_window))
+            throw std::runtime_error(std::string("Cannot commit the maximized Editor window: ") + SDL_GetError());
+        SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
+    }
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)

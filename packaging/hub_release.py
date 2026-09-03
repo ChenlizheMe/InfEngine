@@ -4,12 +4,51 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import zipfile
 from pathlib import Path, PurePosixPath
 
 
 MANIFEST_SCHEMA = "infernux.hub_update"
 PRODUCT_NAME = "InfernuxHub"
+SUPPORTED_PLATFORMS = frozenset({"windows-x64", "linux-x64"})
+
+
+def host_platform_id(
+    *, system: str | None = None, machine: str | None = None
+) -> str:
+    system_name = (system or platform.system()).casefold()
+    architecture = (machine or platform.machine()).casefold()
+    if architecture not in {"amd64", "x86_64"}:
+        raise RuntimeError(
+            f"Infernux Hub has no x64 release contract for architecture {architecture!r}"
+        )
+    if system_name == "windows":
+        return "windows-x64"
+    if system_name == "linux":
+        return "linux-x64"
+    raise RuntimeError(
+        f"Infernux Hub has no release contract for host system {system_name!r}"
+    )
+
+
+def manifest_asset_name(platform_id: str) -> str:
+    if platform_id not in SUPPORTED_PLATFORMS:
+        raise ValueError(f"Unsupported Infernux Hub platform: {platform_id!r}")
+    return f"InfernuxHub-{platform_id}-manifest.json"
+
+
+def _payload_files(root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and not (
+            path.parent == root
+            and path.name.startswith("InfernuxHub-")
+            and path.name.endswith("-manifest.json")
+        )
+    )
 
 
 def _safe_relative_path(value: str) -> PurePosixPath:
@@ -21,7 +60,11 @@ def _safe_relative_path(value: str) -> PurePosixPath:
     return path
 
 
-def create_manifest(root: str | Path, version: str) -> dict[str, object]:
+def create_manifest(
+    root: str | Path,
+    version: str,
+    platform_id: str | None = None,
+) -> dict[str, object]:
     root_path = Path(root).resolve()
     if not root_path.is_dir():
         raise FileNotFoundError(f"Hub directory does not exist: {root_path}")
@@ -29,10 +72,10 @@ def create_manifest(root: str | Path, version: str) -> dict[str, object]:
         "$schema": MANIFEST_SCHEMA,
         "product": PRODUCT_NAME,
         "version": version,
-        "platform": "windows-x64",
+        "platform": platform_id or host_platform_id(),
         "files": [
             {"path": path.relative_to(root_path).as_posix()}
-            for path in sorted(item for item in root_path.rglob("*") if item.is_file())
+            for path in _payload_files(root_path)
         ],
     }
 
@@ -49,7 +92,7 @@ def validate_manifest(document: object) -> dict[str, object]:
     if (
         document["$schema"] != MANIFEST_SCHEMA
         or document["product"] != PRODUCT_NAME
-        or document["platform"] != "windows-x64"
+        or document["platform"] not in SUPPORTED_PLATFORMS
         or not isinstance(document["version"], str)
         or not isinstance(document["files"], list)
     ):
@@ -90,7 +133,7 @@ def create_full_zip(root: str | Path, destination: str | Path) -> Path:
     with zipfile.ZipFile(
         output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
     ) as archive:
-        for path in sorted(item for item in root_path.rglob("*") if item.is_file()):
+        for path in _payload_files(root_path):
             archive.write(path, path.relative_to(root_path).as_posix())
     return output
 
@@ -99,14 +142,21 @@ def build_release_artifacts(
     hub_dir: str | Path,
     version: str,
     output_dir: str | Path,
+    platform_id: str | None = None,
 ) -> tuple[Path, Path]:
+    release_platform = platform_id or host_platform_id()
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    hub_root = Path(hub_dir).resolve()
+    manifest_document = create_manifest(hub_root, version, release_platform)
     manifest = write_manifest(
-        create_manifest(hub_dir, version), output / "InfernuxHub-manifest.json"
+        manifest_document, output / manifest_asset_name(release_platform)
+    )
+    write_manifest(
+        manifest_document, hub_root / manifest_asset_name(release_platform)
     )
     archive = create_full_zip(
-        hub_dir, output / f"InfernuxHub-{version}-windows-x64-full.zip"
+        hub_root, output / f"InfernuxHub-{version}-{release_platform}-full.zip"
     )
     return archive, manifest
 
@@ -116,9 +166,13 @@ def main() -> int:
     parser.add_argument("--hub-dir", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--platform", choices=sorted(SUPPORTED_PLATFORMS))
     arguments = parser.parse_args()
     for artifact in build_release_artifacts(
-        arguments.hub_dir, arguments.version, arguments.output_dir
+        arguments.hub_dir,
+        arguments.version,
+        arguments.output_dir,
+        arguments.platform,
     ):
         print(artifact)
     return 0

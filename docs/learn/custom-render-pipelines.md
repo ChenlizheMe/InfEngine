@@ -22,17 +22,17 @@ Create `Assets/Rendering/simple_forward_pipeline.py` in the project. No registry
 The class needs a non-empty `name` that does not start with `_`:
 
 ```python
-from Infernux.renderstack import RenderPipeline
+import infernux as inx
 
 
-class SimpleForwardPipeline(RenderPipeline):
+class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
     name = "Simple Forward"
 
     def define(self, pipeline):
         ...
 ```
 
-The file imports the public base directly from `Infernux.renderstack`; do not import it through another project script solely to trigger registration. After saving the file, wait for the asset refresh to finish, select the GameObject that owns the scene's `RenderStack` component, then choose **Simple Forward** from **Pipeline** in the RenderStack Inspector. Save the scene after the topology appears. The list shows `name`; the Python class name stays in code.
+The file uses the public `inx.renderstack.RenderPipeline` base; do not import it through another project script solely to trigger registration. After saving the file, wait for the asset refresh to finish, select the GameObject that owns the scene's `RenderStack` component, then choose **Simple Forward** from **Pipeline** in the RenderStack Inspector. Save the scene after the topology appears. The list shows `name`; the Python class name stays in code.
 
 These names have different jobs:
 
@@ -47,13 +47,10 @@ If a candidate module fails to import, Editor discovery keeps the rest of the ca
 Use the Editor Console to separate import failures from catalog problems. This diagnostic reads the same discovery functions used by RenderStack:
 
 ```python
-from Infernux.renderstack.discovery import (
-    discover_pipelines,
-    discovery_import_failures,
-)
+import infernux as inx
 
-print(sorted(discover_pipelines()))
-print(discovery_import_failures())
+print(sorted(inx.renderstack.discover_pipelines()))
+print(inx.renderstack.discovery_import_failures())
 ```
 
 An import failure entry is keyed by source path and includes the exception type and message. An empty failure map plus a missing name usually means the file was skipped, the class inheritance was not recognized, or `name` is empty or begins with `_`.
@@ -62,9 +59,9 @@ Duplicate pipeline names have a narrower current diagnostic boundary. Discovery 
 
 ```python
 import inspect
-from Infernux.renderstack.discovery import discover_pipelines
+import infernux as inx
 
-pipeline_type = discover_pipelines()["Simple Forward"]
+pipeline_type = inx.renderstack.discover_pipelines()["Simple Forward"]
 print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
 ```
 
@@ -73,10 +70,10 @@ Give every project pipeline a unique, stable `name`. After a rename, select the 
 ## A minimal pipeline {#minimal-pipeline}
 
 ```python
-from Infernux.renderstack import RenderPipeline
+import infernux as inx
 
 
-class SimpleForwardPipeline(RenderPipeline):
+class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
     name = "Simple Forward"
 
     def define(self, pipeline):
@@ -115,10 +112,10 @@ The recovery result depends on when failure occurs. A rejected script import doe
 ## Mix Forward, Forward+, and Deferred {#mixed-pipeline}
 
 ```python
-from Infernux.renderstack import Path, Queue, RenderPipeline
+import infernux as inx
 
 
-class MixedArtPipeline(RenderPipeline):
+class MixedArtPipeline(inx.renderstack.RenderPipeline):
     name = "Mixed Art Pipeline"
 
     def define(self, pipeline):
@@ -129,12 +126,12 @@ class MixedArtPipeline(RenderPipeline):
         with pipeline.opaque() as opaque:
             with opaque.layer("Stylized Objects") as layer:
                 layer.forward(
-                    Queue(1, 100),
+                    inx.renderstack.Queue(1, 100),
                 ).effects("low_queue", label="Stylized Forward")
 
                 layer.deferred(
-                    Queue(101, 200),
-                    fallback=Path.FORWARD_PLUS,
+                    inx.renderstack.Queue(101, 200),
+                    fallback=inx.renderstack.Path.FORWARD_PLUS,
                 ).effects("middle_queue", label="Deferred Objects")
 
                 layer.effects("stylized_combined", label="Stylized Combined")
@@ -180,15 +177,15 @@ Two failure probes make the edge behavior reproducible:
 
 ```python
 with pipeline.opaque() as opaque:
-    opaque.forward(Queue(1, 100))
-    opaque.forward_plus(Queue(100, 200))  # ValueError: routes overlap
+    opaque.forward(inx.renderstack.Queue(1, 100))
+    opaque.forward_plus(inx.renderstack.Queue(100, 200))  # ValueError: routes overlap
 ```
 
 The shared endpoint `100` is enough to overlap because ranges are inclusive. `Queue(20, 10)` is rejected when the selector is created because its minimum exceeds its maximum.
 
 ```python
 with pipeline.opaque() as opaque:
-    opaque.forward(Queue(0, 2500))
+    opaque.forward(inx.renderstack.Queue(0, 2500))
     opaque.otherwise().forward_plus()  # accepted, complement is empty
 ```
 
@@ -201,8 +198,7 @@ Pipeline policy can be edited below the selected pipeline in the RenderStack Ins
 ```python
 from enum import IntEnum
 
-from Infernux.components.fields import serialized_field
-from Infernux.renderstack import RenderPipeline
+import infernux as inx
 
 
 class Samples(IntEnum):
@@ -212,10 +208,10 @@ class Samples(IntEnum):
     X8 = 8
 
 
-class AdjustablePipeline(RenderPipeline):
+class AdjustablePipeline(inx.renderstack.RenderPipeline):
     name = "Adjustable Pipeline"
 
-    msaa: Samples = serialized_field(
+    msaa: Samples = inx.serialized_field(
         default=Samples.X4,
         enum_labels=["Off", "2x", "4x", "8x"],
         header="Anti-Aliasing",
@@ -256,17 +252,17 @@ RenderStack saves parameter values under the pipeline `name`. A parameter edit i
 类必须提供非空且不以下划线开头的 `name`：
 
 ```python
-from Infernux.renderstack import RenderPipeline
+import infernux as inx
 
 
-class SimpleForwardPipeline(RenderPipeline):
+class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
     name = "Simple Forward"
 
     def define(self, pipeline):
         ...
 ```
 
-文件应直接从 `Infernux.renderstack` 导入公开基类；不要仅为触发注册而经由另一个项目脚本转接导入。保存后等待资产刷新完成，选中场景中挂有 `RenderStack` 组件的 GameObject，在 RenderStack Inspector 的 **Pipeline** 下拉框中选择 **Simple Forward**。拓扑显示后保存场景。列表显示 `name`；Python 类名留在代码中。
+文件应通过 `inx.renderstack.RenderPipeline` 使用公开基类；不要仅为触发注册而经由另一个项目脚本转接导入。保存后等待资产刷新完成，选中场景中挂有 `RenderStack` 组件的 GameObject，在 RenderStack Inspector 的 **Pipeline** 下拉框中选择 **Simple Forward**。拓扑显示后保存场景。列表显示 `name`；Python 类名留在代码中。
 
 这三个名字各有用途：
 
@@ -281,13 +277,10 @@ class SimpleForwardPipeline(RenderPipeline):
 可以在 Editor Console 中运行下列代码，把导入失败与目录问题分开检查。这些函数也由 RenderStack 的发现流程使用：
 
 ```python
-from Infernux.renderstack.discovery import (
-    discover_pipelines,
-    discovery_import_failures,
-)
+import infernux as inx
 
-print(sorted(discover_pipelines()))
-print(discovery_import_failures())
+print(sorted(inx.renderstack.discover_pipelines()))
+print(inx.renderstack.discovery_import_failures())
 ```
 
 导入失败表以源码路径为键，值中包含异常类型和消息。失败表为空且名称缺失时，应检查文件是否被跳过、类继承能否被识别，以及 `name` 是否为空或以下划线开头。
@@ -296,9 +289,9 @@ print(discovery_import_failures())
 
 ```python
 import inspect
-from Infernux.renderstack.discovery import discover_pipelines
+import infernux as inx
 
-pipeline_type = discover_pipelines()["Simple Forward"]
+pipeline_type = inx.renderstack.discover_pipelines()["Simple Forward"]
 print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
 ```
 
@@ -307,10 +300,10 @@ print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
 ## 最小管线 {#minimal-pipeline_1}
 
 ```python
-from Infernux.renderstack import RenderPipeline
+import infernux as inx
 
 
-class SimpleForwardPipeline(RenderPipeline):
+class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
     name = "Simple Forward"
 
     def define(self, pipeline):
@@ -349,10 +342,10 @@ class SimpleForwardPipeline(RenderPipeline):
 ## 混合 Forward、Forward+ 与 Deferred {#mixed-pipeline_1}
 
 ```python
-from Infernux.renderstack import Path, Queue, RenderPipeline
+import infernux as inx
 
 
-class MixedArtPipeline(RenderPipeline):
+class MixedArtPipeline(inx.renderstack.RenderPipeline):
     name = "Mixed Art Pipeline"
 
     def define(self, pipeline):
@@ -363,12 +356,12 @@ class MixedArtPipeline(RenderPipeline):
         with pipeline.opaque() as opaque:
             with opaque.layer("Stylized Objects") as layer:
                 layer.forward(
-                    Queue(1, 100),
+                    inx.renderstack.Queue(1, 100),
                 ).effects("low_queue", label="Stylized Forward")
 
                 layer.deferred(
-                    Queue(101, 200),
-                    fallback=Path.FORWARD_PLUS,
+                    inx.renderstack.Queue(101, 200),
+                    fallback=inx.renderstack.Path.FORWARD_PLUS,
                 ).effects("middle_queue", label="Deferred Objects")
 
                 layer.effects("stylized_combined", label="Stylized Combined")
@@ -414,15 +407,15 @@ Material Queue 的合法值是 `0..9999` 的闭区间整数；高层 DSL 当前�
 
 ```python
 with pipeline.opaque() as opaque:
-    opaque.forward(Queue(1, 100))
-    opaque.forward_plus(Queue(100, 200))  # ValueError: routes overlap
+    opaque.forward(inx.renderstack.Queue(1, 100))
+    opaque.forward_plus(inx.renderstack.Queue(100, 200))  # ValueError: routes overlap
 ```
 
 区间采用闭区间，公共端点 `100` 已构成重叠。`Queue(20, 10)` 会在创建 Selector 时被拒绝，因为最小值大于最大值。
 
 ```python
 with pipeline.opaque() as opaque:
-    opaque.forward(Queue(0, 2500))
+    opaque.forward(inx.renderstack.Queue(0, 2500))
     opaque.otherwise().forward_plus()  # 合法，但补集为空
 ```
 
@@ -435,8 +428,7 @@ with pipeline.opaque() as opaque:
 ```python
 from enum import IntEnum
 
-from Infernux.components.fields import serialized_field
-from Infernux.renderstack import RenderPipeline
+import infernux as inx
 
 
 class Samples(IntEnum):
@@ -446,10 +438,10 @@ class Samples(IntEnum):
     X8 = 8
 
 
-class AdjustablePipeline(RenderPipeline):
+class AdjustablePipeline(inx.renderstack.RenderPipeline):
     name = "Adjustable Pipeline"
 
-    msaa: Samples = serialized_field(
+    msaa: Samples = inx.serialized_field(
         default=Samples.X4,
         enum_labels=["Off", "2x", "4x", "8x"],
         header="Anti-Aliasing",

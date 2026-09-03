@@ -126,6 +126,10 @@ class _SemanticContext:
         self.opened.append(popup_id)
 
     @staticmethod
+    def get_dpi_scale() -> float:
+        return 1.0
+
+    @staticmethod
     def get_main_viewport_bounds():
         return 100.0, 50.0, 1200.0, 800.0
 
@@ -641,6 +645,10 @@ class _ProjectDeleteSemanticContext:
 
     def open_popup(self, popup_id: str) -> None:
         self.opened.append(popup_id)
+
+    @staticmethod
+    def get_dpi_scale() -> float:
+        return 1.0
 
     @staticmethod
     def get_main_viewport_bounds():

@@ -131,6 +131,25 @@ def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path,
     assert project_model_module._find_dev_wheel("python.exe") == str(new_wheel)
 
 
+def test_project_creation_requires_the_current_bundled_support_template(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        project_model_module,
+        "__file__",
+        str(tmp_path / "packaging" / "model" / "project_model.py"),
+    )
+    monkeypatch.setattr(project_model_module, "_find_dev_wheel", lambda *_args: "")
+    destination = tmp_path / "project.gitignore"
+
+    with pytest.raises(RuntimeError, match="Required Infernux project template"):
+        ProjectModel(None)._copy_bundled_support_file(
+            "project.gitignore.txt", str(destination), ""
+        )
+
+    assert not destination.exists()
+
+
 def test_dev_runtime_reinstalls_same_version_only_when_wheel_fingerprint_changes(
     tmp_path: Path,
     monkeypatch,
@@ -256,10 +275,10 @@ def test_database_allows_same_name_but_deduplicates_canonical_path(tmp_path: Pat
         assert len(db.all_projects()) == 2
 
 
-def test_database_migrates_legacy_parent_paths(tmp_path: Path):
+def test_database_rejects_noncurrent_schema(tmp_path: Path):
     db_path = tmp_path / "legacy.db"
     parent = tmp_path / "projects"
-    project = _make_project(parent / "Legacy")
+    _make_project(parent / "Legacy")
     connection = sqlite3.connect(db_path)
     connection.execute(
         "CREATE TABLE projects ("
@@ -273,11 +292,8 @@ def test_database_migrates_legacy_parent_paths(tmp_path: Path):
     connection.commit()
     connection.close()
 
-    with ProjectDatabase(db_path) as db:
-        records = db.all_projects()
-        assert len(records) == 1
-        assert Path(records[0].path) == project.resolve()
-        assert db.find_project_by_path(str(project)).project_id == records[0].project_id
+    with pytest.raises(RuntimeError, match="current schema"):
+        ProjectDatabase(db_path)
 
 
 def test_register_existing_project_rejects_duplicate_path(tmp_path: Path):

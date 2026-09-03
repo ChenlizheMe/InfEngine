@@ -192,6 +192,9 @@ def test_scene_particle_preview_controls_use_current_semantic_value_contract():
             self._button_results = iter((True, False, True))
             self.current_item = ""
 
+        def get_dpi_scale(self):
+            return 1.0
+
         def set_cursor_pos_x(self, _value):
             pass
 
@@ -632,6 +635,9 @@ def test_prefab_exit_overlay_is_semantic_and_clickable(monkeypatch):
     semantics = []
 
     class Context:
+        def get_dpi_scale(self):
+            return 1.0
+
         def set_cursor_pos_x(self, _value):
             pass
 

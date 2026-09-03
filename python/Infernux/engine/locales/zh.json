@@ -591,6 +591,7 @@
   "build.target_unavailable_short": "不可用",
   "build.plugin_required": "请在“扩展 > 插件”中下载或导入 {reference}，以启用此构建目标。",
   "build.plugin_disabled": "请在“扩展 > 插件”中启用 {reference}，以使用此构建目标。",
+  "build.open_plugins": "打开插件",
   "build.android_artifact": "安装包",
   "build.game_name_hint": "(默认: {name})",
   "build.debug_mode": "调试模式",

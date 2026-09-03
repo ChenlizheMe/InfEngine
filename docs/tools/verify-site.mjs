@@ -196,7 +196,7 @@ for (const asset of await readdir(path.join(docsRoot, "assets", "learn"))) {
 }
 
 const download = await readFile(path.join(docsRoot, "download.html"), "utf8");
-for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", ".whl", currentVersion, "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=5"]) {
+for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", "data-hub-link=\"windows-x64\"", "data-hub-link=\"linux-x64\"", ".whl", currentVersion, "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=6"]) {
     if (!download.includes(contract)) fail(`download.html: missing '${contract}'`);
 }
 if (!download.includes(`/download/v${currentVersion}/InfernuxHubInstaller-${currentVersion}.exe`)) {

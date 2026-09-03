@@ -58,27 +58,25 @@
 </ol>
 <p>The AudioSource Inspector exposes source settings first, followed by a <strong>Tracks</strong> section. Each track has a Clip reference and Volume slider. During Play mode it also shows a Play/Stop control and status. This tutorial assigns the clips in code so the complete example has one reproducible setup path.</p>
 <h2 id="complete-component">Build the complete component</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioSource</span><span class="p">,</span> <span class="n">InxComponent</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioClip</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">GameplayAudio</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">GameplayAudio</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">AudioSource</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"GameplayAudio requires an AudioSource."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"GameplayAudio requires an AudioSource."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not load the gameplay WAV files."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not load the gameplay WAV files."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_source</span><span class="o">.</span><span class="n">track_count</span> <span class="o">=</span> <span class="mi">1</span>
@@ -286,27 +284,25 @@
 </ol>
 <p>AudioSource Inspector 先显示音源级设置，后面是 <strong>Tracks</strong> 区域。每条轨道都有 Clip 引用和 Volume 滑块；Play 模式下还会显示 Play/Stop 控件与状态。本教程在代码中分配音频，便于完整复现。</p>
 <h2 id="zh-complete-component">编写完整组件</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioSource</span><span class="p">,</span> <span class="n">InxComponent</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioClip</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">GameplayAudio</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">GameplayAudio</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">AudioSource</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_source</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"GameplayAudio requires an AudioSource."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"GameplayAudio requires an AudioSource."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not load the gameplay WAV files."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not load the gameplay WAV files."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_source</span><span class="o">.</span><span class="n">track_count</span> <span class="o">=</span> <span class="mi">1</span>

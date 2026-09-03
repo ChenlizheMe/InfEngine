@@ -77,7 +77,6 @@ class InspectorPanel : public EditorPanel
 
     std::function<bool()> isMultiSelection;
     std::function<std::vector<uint64_t>()> getSelectedIds;
-    std::function<uint64_t()> getValueGeneration;
 
     struct RevisionSnapshot
     {
@@ -87,7 +86,7 @@ class InspectorPanel : public EditorPanel
         uint64_t preview = 0;
     };
     /// One immutable revision packet is captured at the start of a visible
-    /// Inspector frame. The fallback generation remains for older hosts.
+    /// Inspector frame.
     std::function<RevisionSnapshot()> getRevisionSnapshot;
 
     // ── Object info callbacks ────────────────────────────────────────
@@ -280,6 +279,7 @@ class InspectorPanel : public EditorPanel
     // ── Cached icon IDs ──────────────────────────────────────────────
     uint64_t m_cachedTransformIconId = 0;
     float m_cachedTransformBodyHeight = 0.0f;
+    float m_lastDpiScale = 0.0f;
 
     // ── Render helpers ───────────────────────────────────────────────
     void RenderPropertiesModule(InxGUIContext *ctx, float height);

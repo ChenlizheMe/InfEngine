@@ -7,7 +7,6 @@ import uuid
 from dataclasses import dataclass
 
 from .contracts import (
-    BUILD_EXPORTER_CONTRACT_VERSION,
     BuildTarget,
     BuildTargetId,
     PlatformExporter,
@@ -48,11 +47,6 @@ class BuildExporterRegistry:
             raise ValueError("Exporter registration requires an owner")
         if not isinstance(exporter, PlatformExporter):
             raise TypeError("exporter must implement PlatformExporter")
-        if int(exporter.contract_version) != BUILD_EXPORTER_CONTRACT_VERSION:
-            raise RuntimeError(
-                "Unsupported build exporter contract version: "
-                f"{exporter.contract_version}"
-            )
         exporter_id = str(exporter.exporter_id or "").strip()
         if not exporter_id:
             raise ValueError("PlatformExporter.exporter_id is required")

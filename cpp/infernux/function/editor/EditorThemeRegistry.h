@@ -33,9 +33,11 @@ class EditorThemeRegistry
     static const std::unordered_map<std::string, ImVec2> &Vec2s();
     static const std::unordered_map<std::string, float> &Floats();
 
-    /// Look up an active-theme color by token name, returning *fallback* when absent.
-    static ImVec4 Color(const std::string &name, const ImVec4 &fallback);
-    static float Float(const std::string &name, float fallback);
+    /// Look up a required active-theme token. Missing tokens are programming
+    /// errors and throw instead of allowing each consumer to invent a value.
+    static ImVec4 Color(const std::string &name);
+    static ImVec2 Vec2(const std::string &name);
+    static float Float(const std::string &name);
 
     // ── Theme switching ────────────────────────────────────────────────
     static std::vector<std::string> ThemeNames();

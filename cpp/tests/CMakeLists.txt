@@ -91,6 +91,20 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.editor_collection_model COMMAND infernux_editor_collection_model_tests)
 
+    add_executable(infernux_editor_theme_registry_tests
+        cpp/tests/EditorThemeRegistryTests.cpp
+        cpp/infernux/function/editor/EditorThemeRegistry.cpp
+    )
+    target_include_directories(infernux_editor_theme_registry_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external/imgui
+    )
+    target_link_libraries(infernux_editor_theme_registry_tests PRIVATE imgui)
+    if(MSVC)
+        target_compile_options(infernux_editor_theme_registry_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_theme_registry COMMAND infernux_editor_theme_registry_tests)
+
     add_executable(infernux_job_system_tests
         cpp/tests/JobSystemTests.cpp
         cpp/infernux/core/log/InxLog.cpp
@@ -174,6 +188,32 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_input_manager_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.input_manager COMMAND infernux_input_manager_tests)
+
+    add_executable(infernux_window_sizing_policy_tests
+        cpp/tests/WindowSizingPolicyTests.cpp
+    )
+    target_include_directories(infernux_window_sizing_policy_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_window_sizing_policy_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.window_sizing_policy COMMAND infernux_window_sizing_policy_tests)
+
+    if(WIN32)
+        add_executable(infernux_windows_dpi_policy_tests
+            cpp/tests/WindowsDpiPolicyTests.cpp
+            cpp/infernux/platform/window/WindowsDpiPolicy.cpp
+        )
+        target_include_directories(infernux_windows_dpi_policy_tests PRIVATE
+            ${CMAKE_SOURCE_DIR}/cpp/infernux
+        )
+        target_link_libraries(infernux_windows_dpi_policy_tests PRIVATE SDL3::SDL3)
+        if(MSVC)
+            target_compile_options(infernux_windows_dpi_policy_tests PRIVATE /utf-8)
+        endif()
+        add_test(NAME infernux.windows_dpi_policy COMMAND infernux_windows_dpi_policy_tests)
+    endif()
 
     add_executable(infernux_atomic_file_tests
         cpp/tests/AtomicFileTests.cpp

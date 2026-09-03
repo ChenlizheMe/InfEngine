@@ -180,7 +180,7 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             pp.set_current_path(remapped)
             return
 
-    bs.interaction_core.asset_mutations.add_listener(_remap_project_directory)
+    bs.interaction_core.asset_mutations.add_observer(_remap_project_directory)
 
     pp.get_guid_from_path = lambda path: (
         adb.get_guid_from_path(path) if adb else ""

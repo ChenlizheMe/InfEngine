@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -74,6 +75,47 @@ namespace
 {
 
 using json = nlohmann::json;
+
+struct AcceptanceClock
+{
+    bool enabled = false;
+    float fixedDeltaSeconds = 0.0f;
+    uint64_t pauseAfterFrame = 0;
+};
+
+AcceptanceClock ReadPlayerAcceptanceClock()
+{
+    const char *fixedDeltaText = std::getenv("_INFERNUX_PLAYER_FIXED_DELTA");
+    const char *pauseFrameText = std::getenv("_INFERNUX_PLAYER_PAUSE_AFTER_FRAME");
+    const bool hasFixedDelta = fixedDeltaText != nullptr && fixedDeltaText[0] != '\0';
+    const bool hasPauseFrame = pauseFrameText != nullptr && pauseFrameText[0] != '\0';
+    if (!hasFixedDelta && !hasPauseFrame)
+        return {};
+    if (std::getenv("_INFERNUX_PLAYER_DEBUG_BUILD") == nullptr ||
+        std::string_view(std::getenv("_INFERNUX_PLAYER_DEBUG_BUILD")) != "1") {
+        throw std::logic_error("Player acceptance clock is available only in a PlayerDebug build");
+    }
+    if (!hasFixedDelta || !hasPauseFrame) {
+        throw std::invalid_argument("Player acceptance clock requires both _INFERNUX_PLAYER_FIXED_DELTA and "
+                                    "_INFERNUX_PLAYER_PAUSE_AFTER_FRAME");
+    }
+
+    errno = 0;
+    char *fixedDeltaEnd = nullptr;
+    const float fixedDelta = std::strtof(fixedDeltaText, &fixedDeltaEnd);
+    if (errno != 0 || fixedDeltaEnd == fixedDeltaText || *fixedDeltaEnd != '\0' || !std::isfinite(fixedDelta) ||
+        fixedDelta <= 0.0f || fixedDelta > 0.25f) {
+        throw std::invalid_argument("_INFERNUX_PLAYER_FIXED_DELTA must be finite and in (0, 0.25]");
+    }
+
+    uint64_t pauseAfterFrame = 0;
+    const char *pauseFrameEnd = pauseFrameText + std::strlen(pauseFrameText);
+    const auto [parsedEnd, parseError] = std::from_chars(pauseFrameText, pauseFrameEnd, pauseAfterFrame, 10);
+    if (parseError != std::errc{} || parsedEnd != pauseFrameEnd || pauseAfterFrame == 0) {
+        throw std::invalid_argument("_INFERNUX_PLAYER_PAUSE_AFTER_FRAME must be a positive integer");
+    }
+    return {true, fixedDelta, pauseAfterFrame};
+}
 
 bool IsDirectStructuredStage(const ShaderDescriptor &descriptor)
 {
@@ -902,7 +944,6 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
 
 Infernux::~Infernux()
 {
-    INXLOG_DEBUG("Infernux destructor called.");
     Cleanup();
 }
 
@@ -914,6 +955,7 @@ void Infernux::Run()
 
     m_exitRequested.store(false, std::memory_order_release);
     INXLOG_DEBUG("Run Infernux.");
+    const AcceptanceClock acceptanceClock = ReadPlayerAcceptanceClock();
     if (m_runtimeMode == RuntimeMode::Headless) {
         auto previous = std::chrono::steady_clock::now();
         while (!m_exitRequested.load(std::memory_order_acquire)) {
@@ -930,8 +972,34 @@ void Infernux::Run()
         return;
     }
 
+    m_runLoopActive.store(true, std::memory_order_release);
+    struct RunLoopGuard
+    {
+        std::atomic<bool> &flag;
+        ~RunLoopGuard()
+        {
+            flag.store(false, std::memory_order_release);
+        }
+    } runLoopGuard{m_runLoopActive};
+
+    bool acceptancePauseApplied = false;
     while (!m_exitRequested.load(std::memory_order_acquire) && m_renderer->GetUserEvent()) {
+        if (acceptanceClock.enabled) {
+            const auto &sceneManager = SceneManager::Instance();
+            m_renderer->OverrideNextFrameDeltaTime(sceneManager.IsPaused() ? 0.0f : acceptanceClock.fixedDeltaSeconds);
+        }
         m_renderer->DrawFrame();
+        auto &sceneManager = SceneManager::Instance();
+        if (acceptanceClock.enabled && !acceptancePauseApplied && sceneManager.IsPlaying() &&
+            !sceneManager.IsPaused() && sceneManager.GetRuntimeFrameCount() >= acceptanceClock.pauseAfterFrame) {
+            if (sceneManager.GetRuntimeFrameCount() != acceptanceClock.pauseAfterFrame) {
+                throw std::logic_error("Player acceptance clock advanced past its requested capture frame");
+            }
+            sceneManager.Pause();
+            acceptancePauseApplied = true;
+            INXLOG_INFO("INFERNUX_PLAYER_ACCEPTANCE_PAUSED frame=", sceneManager.GetRuntimeFrameCount(),
+                        " fixed_delta=", acceptanceClock.fixedDeltaSeconds);
+        }
 
         // Periodically save layout when ImGui marks it dirty
         ImGuiIO &io = ImGui::GetIO();
@@ -949,14 +1017,28 @@ void Infernux::Run()
 
 void Infernux::Tick(float deltaTime)
 {
-    if (m_runtimeMode != RuntimeMode::Headless) {
-        throw std::logic_error("Tick is only available in headless mode");
-    }
     if (!CheckEngineValid("tick") || !m_isInitialized) {
         throw std::logic_error("Cannot tick an uninitialized engine");
     }
     if (!std::isfinite(deltaTime) || deltaTime < 0.0f) {
         throw std::invalid_argument("delta_time must be finite and non-negative");
+    }
+
+    if (m_runtimeMode == RuntimeMode::Graphical) {
+        // Headless-style manual stepping must stay usable with a window open:
+        // one Tick = one fully simulated AND rendered frame with an exact
+        // delta time. The only exclusion is the free-running Run() loop,
+        // which would otherwise double-step the simulation.
+        if (m_runLoopActive.load(std::memory_order_acquire)) {
+            throw std::logic_error("tick cannot be called while run() is driving frames");
+        }
+        if (!m_renderer->GetUserEvent()) {
+            Exit();
+            return;
+        }
+        m_renderer->OverrideNextFrameDeltaTime(deltaTime);
+        m_renderer->DrawFrame();
+        return;
     }
 
     auto &sceneManager = SceneManager::Instance();
@@ -966,17 +1048,41 @@ void Infernux::Tick(float deltaTime)
     TransformECSStore::Instance().BeginFrameCache(sceneManager.GetActiveScene());
     sceneManager.Update(sceneDeltaTime);
     sceneManager.LateUpdate(sceneDeltaTime);
+    // Mirror the graphical DrawFrame simulation segment exactly (see
+    // InxRenderer::DrawFrame). Headless previously skipped the world-matrix
+    // sync and the FinalTransformResolve/AnimationTimeline barriers, so
+    // transform reads between frames and Python systems registered on those
+    // barriers observed a different world than the graphical runtime.
+    // Graphics-only barriers (RenderExtraction, RenderGraph,
+    // SnapshotPublication) stay renderer-owned by design.
     if (TransformECSStore::Instance().EndFrameCache())
         sceneManager.PublishPhysicsTransformsToRenderer();
+    if (Scene *activeScene = sceneManager.GetActiveScene())
+        TransformECSStore::Instance().SyncSceneWorldMatrices(activeScene);
     sceneManager.PublishAuthoredTransformsToPhysics();
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::FinalTransformResolve);
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::AnimationTimeline);
     sceneManager.EndFrame();
 }
 
 void Infernux::SetPreSceneUpdateCallback(std::function<void(float)> callback)
 {
     m_preSceneUpdateCallback = std::move(callback);
-    if (m_renderer)
-        m_renderer->SetPreSceneUpdateCallback(m_preSceneUpdateCallback);
+    if (!m_renderer)
+        return;
+
+    // Keep the Python-owning callable in one place. Copying it into the
+    // renderer gives two independent py::function lifetimes and makes native
+    // renderer teardown responsible for releasing a Python object. The
+    // renderer only needs a native forwarding edge while the engine is live.
+    if (m_preSceneUpdateCallback) {
+        m_renderer->SetPreSceneUpdateCallback([this](float deltaTime) {
+            if (m_preSceneUpdateCallback)
+                m_preSceneUpdateCallback(deltaTime);
+        });
+    } else {
+        m_renderer->SetPreSceneUpdateCallback(nullptr);
+    }
 }
 
 void Infernux::Exit()
@@ -988,15 +1094,11 @@ void Infernux::Exit()
 
 void Infernux::Cleanup()
 {
-    if (m_isCleanedUp) {
-        INXLOG_DEBUG("Already cleaned up, skipping.");
+    if (m_isCleanedUp)
         return;
-    }
 
     m_isCleaningUp = true;
     m_preSceneUpdateCallback = nullptr;
-    if (m_renderer)
-        m_renderer->SetPreSceneUpdateCallback(nullptr);
 
     if (m_runtimeMode == RuntimeMode::Graphical) {
         if (m_isInitialized) {
@@ -1012,7 +1114,7 @@ void Infernux::Cleanup()
     SceneManager::Instance().Shutdown();
 
     if (auto *assetDatabase = AssetRegistry::Instance().GetAssetDatabase())
-        assetDatabase->FlushDerivedIndex();
+        assetDatabase->FlushDerivedIndex(/*waitForPendingScan=*/false);
 
     // Event callbacks may capture this engine lifetime. Drop them together
     // with all runtime dependency edges before another engine is initialized.
@@ -1041,15 +1143,14 @@ void Infernux::Cleanup()
     m_assetDatabase.reset();
     m_extLoader.reset();
 
+    m_isCleanedUp = true;
+    m_isInitialized = false;
+    m_isCleaningUp = false;
     INXLOG_DEBUG("Cleanup completed.");
 #if INFERNUX_FILE_LOGGING
     INXLOG_FLUSH_FILE();
     INXLOG_SHUTDOWN();
 #endif
-
-    m_isCleanedUp = true;
-    m_isInitialized = false;
-    m_isCleaningUp = false;
 }
 
 void Infernux::DrainPreviewJobs()
@@ -1066,8 +1167,17 @@ void Infernux::DrainPreviewJobs()
 
     {
         std::lock_guard<std::mutex> lock(m_previewJobMutex);
-        if (!m_previewJobs.empty() || m_previewDispatcherScheduled)
-            throw std::logic_error("preview dispatcher did not drain all accepted jobs");
+        if (!m_previewJobs.empty() || m_previewDispatcherScheduled) {
+            // This runs on the shutdown path: an incompletely drained preview
+            // queue is a diagnostic, not a reason to abort Cleanup halfway
+            // (throwing here used to leave the renderer and DocumentStore
+            // alive until the exit watchdog hard-killed the process).
+            INXLOG_ERROR("Preview dispatcher did not drain all accepted jobs (", m_previewJobs.size(),
+                         " left); discarding them for shutdown");
+            std::queue<std::function<void()>> emptyJobs;
+            m_previewJobs.swap(emptyJobs);
+            m_previewDispatcherScheduled = false;
+        }
         m_previewDispatcherJob = {};
     }
 
@@ -3186,6 +3296,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         }
         std::filesystem::create_directories(layoutDir);
         m_imguiIniPath = layoutDir / "imgui.ini";
+        m_imguiLayoutMetadataPath = layoutDir / "imgui-layout.json";
     }
     // Disable ImGui auto-save (it uses fopen which can't handle Unicode
     // paths on Windows). We manually load/save with std::fstream instead.
@@ -3260,7 +3371,27 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
         registry.GetAssetDatabase()->AddReadOnlyScanRoot(builtinResourcePath);
     }
     registry.GetAssetDatabase()->AddScanRoot(JoinPath({projectPath, "Packages"}));
-    registry.GetAssetDatabase()->Refresh();
+
+    // Asset catalog resolution must match the graphical runtime so a cooked
+    // project simulates against the same GUID catalog in both modes. Headless
+    // keeps the synchronous full Refresh in the non-player path because
+    // deterministic batch runs must not race a background catalog validation.
+    {
+        const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+        const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+        const std::string runtimeAssetCatalog = JoinPath({projectPath, "Library", "RuntimeAssetRecords.json"});
+        std::error_code runtimeCatalogError;
+        const bool hasRuntimeCatalog =
+            std::filesystem::is_regular_file(ToFsPath(runtimeAssetCatalog), runtimeCatalogError) &&
+            !runtimeCatalogError;
+        if (playerMode && hasRuntimeCatalog) {
+            registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog, true);
+        } else {
+            registry.GetAssetDatabase()->Refresh();
+            if (hasRuntimeCatalog)
+                registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog);
+        }
+    }
 
     RegisterPhysicMaterialAssetCallback();
 
@@ -4236,6 +4367,9 @@ void Infernux::ResetImGuiLayout()
     if (!m_imguiIniPath.empty() && std::filesystem::exists(m_imguiIniPath)) {
         std::filesystem::remove(m_imguiIniPath);
     }
+    if (!m_imguiLayoutMetadataPath.empty() && std::filesystem::exists(m_imguiLayoutMetadataPath)) {
+        std::filesystem::remove(m_imguiLayoutMetadataPath);
+    }
 }
 
 void Infernux::SelectDockedWindow(const std::string &windowId, bool allowDuringModal)
@@ -4299,14 +4433,53 @@ void Infernux::LoadImGuiLayout()
 {
     if (!std::filesystem::exists(m_imguiIniPath))
         return;
+    if (!std::filesystem::exists(m_imguiLayoutMetadataPath)) {
+        INXLOG_INFO("Ignoring unversioned ImGui layout; a current DPI-aware layout will be written on save");
+        return;
+    }
+
+    std::ifstream metadataStream(m_imguiLayoutMetadataPath, std::ios::binary);
+    if (!metadataStream.is_open())
+        throw std::runtime_error("Cannot read ImGui layout metadata");
+
+    json metadata;
+    try {
+        metadataStream >> metadata;
+    } catch (const json::exception &error) {
+        INXLOG_WARN("Ignoring invalid ImGui layout metadata: ", error.what());
+        return;
+    }
+    if (!metadata.is_object() || metadata.value("schema", 0) != 1 || !metadata.contains("display_scale") ||
+        !metadata["display_scale"].is_number()) {
+        INXLOG_WARN("Ignoring ImGui layout with an unsupported metadata contract");
+        return;
+    }
+
+    const float storedScale = metadata["display_scale"].get<float>();
+    if (!std::isfinite(storedScale) || storedScale <= 0.0f) {
+        INXLOG_WARN("Ignoring ImGui layout with an invalid display scale");
+        return;
+    }
+    auto *renderer = GetRenderer();
+    if (renderer == nullptr)
+        throw std::logic_error("Cannot load ImGui layout without an initialized renderer");
+    const float currentScale = renderer->GetDisplayScale();
+    if (std::abs(storedScale - currentScale) >= 0.01f) {
+        INXLOG_INFO("Ignoring ImGui layout authored at display scale ", storedScale, "; current display scale is ",
+                    currentScale);
+        return;
+    }
+
     // std::ifstream(std::filesystem::path) uses wchar_t on Windows,
     // so paths with Chinese / non-ASCII characters are handled properly.
     std::ifstream ifs(m_imguiIniPath, std::ios::binary | std::ios::ate);
     if (!ifs.is_open())
-        return;
+        throw std::runtime_error("Cannot read persisted ImGui layout");
     auto size = ifs.tellg();
-    if (size <= 0)
+    if (size <= 0) {
+        INXLOG_WARN("Ignoring empty ImGui layout");
         return;
+    }
     ifs.seekg(0);
     std::string data(static_cast<size_t>(size), '\0');
     ifs.read(data.data(), size);
@@ -4315,16 +4488,30 @@ void Infernux::LoadImGuiLayout()
 
 void Infernux::SaveImGuiLayout()
 {
-    if (m_imguiIniPath.empty())
-        return;
+    if (m_imguiIniPath.empty() || m_imguiLayoutMetadataPath.empty())
+        throw std::logic_error("Cannot save ImGui layout before layout storage is initialized");
     size_t dataSize = 0;
     const char *data = ImGui::SaveIniSettingsToMemory(&dataSize);
     if (!data || dataSize == 0)
         return;
+    auto *renderer = GetRenderer();
+    if (renderer == nullptr)
+        throw std::logic_error("Cannot save ImGui layout without an initialized renderer");
+    const float displayScale = renderer->GetDisplayScale();
     std::filesystem::create_directories(m_imguiIniPath.parent_path());
     std::ofstream ofs(m_imguiIniPath, std::ios::binary);
-    if (ofs.is_open())
-        ofs.write(data, static_cast<std::streamsize>(dataSize));
+    if (!ofs.is_open())
+        throw std::runtime_error("Cannot write persisted ImGui layout");
+    ofs.write(data, static_cast<std::streamsize>(dataSize));
+    if (!ofs.good())
+        throw std::runtime_error("Failed while writing persisted ImGui layout");
+
+    std::ofstream metadataStream(m_imguiLayoutMetadataPath, std::ios::binary);
+    if (!metadataStream.is_open())
+        throw std::runtime_error("Cannot write ImGui layout metadata");
+    metadataStream << json{{"schema", 1}, {"display_scale", displayScale}}.dump(2) << '\n';
+    if (!metadataStream.good())
+        throw std::runtime_error("Failed while writing ImGui layout metadata");
 }
 
 } // namespace infernux

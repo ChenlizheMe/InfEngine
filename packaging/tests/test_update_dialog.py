@@ -5,6 +5,7 @@ from PySide6.QtCore import QEventLoop, QThread, QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 
 import view.update_dialog as update_dialog
+from hub_updater import HubUpdateCheck, HubUpdateStatus
 
 
 def test_opt_in_update_trace_records_result(tmp_path, monkeypatch):
@@ -12,17 +13,21 @@ def test_opt_in_update_trace_records_result(tmp_path, monkeypatch):
     monkeypatch.setenv("INFERNUX_HUB_UPDATE_TRACE", str(trace))
 
     update_dialog._write_update_trace(
-        {"status": "update_available", "target_version": "1.2.3"}
+        {"status": "update-available", "target_version": "1.2.3"}
     )
 
     assert json.loads(trace.read_text(encoding="utf-8")) == {
-        "status": "update_available",
+        "status": "update-available",
         "target_version": "1.2.3",
     }
 
 
 def _app():
     return QApplication.instance() or QApplication([])
+
+
+def _up_to_date() -> HubUpdateCheck:
+    return HubUpdateCheck(HubUpdateStatus.UP_TO_DATE, "0.4.0", "0.4.0")
 
 
 def test_manual_update_check_returns_to_the_main_thread(monkeypatch):
@@ -33,7 +38,7 @@ def test_manual_update_check_returns_to_the_main_thread(monkeypatch):
     observed = {}
     loop = QEventLoop()
 
-    monkeypatch.setattr(update_dialog, "check_for_update", lambda: None)
+    monkeypatch.setattr(update_dialog, "check_for_update", _up_to_date)
 
     def show_information(*_args):
         observed["main_thread"] = QThread.currentThread() == app.thread()
@@ -57,7 +62,7 @@ def test_update_check_completion_is_emitted_after_no_update(monkeypatch):
     controller.check_finished.connect(lambda: completed.append(True))
     loop = QEventLoop()
 
-    monkeypatch.setattr(update_dialog, "check_for_update", lambda: None)
+    monkeypatch.setattr(update_dialog, "check_for_update", _up_to_date)
     controller.check_finished.connect(loop.quit)
     QTimer.singleShot(3000, loop.quit)
     controller.check(silent=True)
@@ -67,56 +72,45 @@ def test_update_check_completion_is_emitted_after_no_update(monkeypatch):
     assert completed == [True]
 
 
-def test_required_runtime_catalog_update_starts_without_confirmation(monkeypatch):
+def test_unsupported_hub_offers_the_platform_installer(monkeypatch):
     _app()
     window = QWidget()
     window.show()
-    observed = {
-        "quit": False,
-        "information": False,
-        "question": False,
-        "finished": False,
-    }
+    observed = {"quit": False, "question": False, "opened": "", "finished": False}
     window.app = SimpleNamespace(quit=lambda: observed.__setitem__("quit", True))
     controller = update_dialog.UpdateController(window)
     controller._completion_pending = True
-    controller.check_finished.connect(
-        lambda: observed.__setitem__("finished", True)
+    controller.check_finished.connect(lambda: observed.__setitem__("finished", True))
+    result = HubUpdateCheck(
+        HubUpdateStatus.UNSUPPORTED_CURRENT_VERSION,
+        "0.3.7",
+        "0.4.0",
+        installer_url="https://example.invalid/InfernuxHubInstaller-0.4.0-windows-x64.exe",
     )
-    update = SimpleNamespace(target_version="0.4.0", required=True)
 
-    monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        lambda *_args: observed.__setitem__("information", True),
-    )
     monkeypatch.setattr(
         QMessageBox,
         "question",
-        lambda *_args: observed.__setitem__("question", True),
+        lambda *_args: observed.__setitem__("question", True) or QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        update_dialog.QDesktopServices,
+        "openUrl",
+        lambda url: observed.__setitem__("opened", url.toString()),
     )
 
-    class _RejectedUpdateDialog:
-        def __init__(self, *_args):
-            pass
-
-        def exec(self):
-            return QDialog.Rejected
-
-    monkeypatch.setattr(update_dialog, "UpdateProgressDialog", _RejectedUpdateDialog)
-
-    controller._checked(update)
+    controller._checked(result)
 
     assert observed == {
         "quit": False,
-        "information": True,
-        "question": False,
+        "question": True,
+        "opened": "https://example.invalid/InfernuxHubInstaller-0.4.0-windows-x64.exe",
         "finished": True,
     }
     assert not window.isHidden()
 
 
-def test_required_runtime_catalog_update_quits_after_success(monkeypatch):
+def test_available_update_quits_after_success(monkeypatch):
     _app()
     window = QWidget()
     window.show()
@@ -126,13 +120,18 @@ def test_required_runtime_catalog_update_quits_after_success(monkeypatch):
     controller._completion_pending = True
     finished = []
     controller.check_finished.connect(lambda: finished.append(True))
-    update = SimpleNamespace(target_version="0.4.0", required=True)
+    update = SimpleNamespace(target_version="0.4.0")
+    result = HubUpdateCheck(
+        HubUpdateStatus.UPDATE_AVAILABLE,
+        "0.3.7",
+        "0.4.0",
+        update=update,
+    )
 
-    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
     monkeypatch.setattr(
         QMessageBox,
         "question",
-        lambda *_args: observed.__setitem__("question", True),
+        lambda *_args: observed.__setitem__("question", True) or QMessageBox.Yes,
     )
 
     class _AcceptedUpdateDialog:
@@ -144,8 +143,8 @@ def test_required_runtime_catalog_update_quits_after_success(monkeypatch):
 
     monkeypatch.setattr(update_dialog, "UpdateProgressDialog", _AcceptedUpdateDialog)
 
-    controller._checked(update)
+    controller._checked(result)
 
-    assert observed == {"quit": True, "question": False}
+    assert observed == {"quit": True, "question": True}
     assert finished == []
     assert window.isHidden()

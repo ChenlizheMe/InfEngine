@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import ctypes
-import hashlib
 import logging
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -41,14 +41,6 @@ def _is_within(path: str | os.PathLike[str], directory: str | os.PathLike[str]) 
         )
     except ValueError:
         return False
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _directory_has_files(path: Path) -> bool:
@@ -132,6 +124,32 @@ def _windows_pids_for_executable(executable_path: Path) -> list[int]:
     return result
 
 
+def _linux_pids_for_executable(executable_path: Path) -> list[int]:
+    if sys.platform != "linux":
+        return []
+    expected = _normalized_path(executable_path)
+    result: list[int] = []
+    for process_dir in Path("/proc").iterdir():
+        if not process_dir.name.isdigit() or int(process_dir.name) == os.getpid():
+            continue
+        executable = process_dir / "exe"
+        try:
+            resolved = os.readlink(executable)
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if _normalized_path(resolved.removesuffix(" (deleted)")) == expected:
+            result.append(int(process_dir.name))
+    return result
+
+
+def _pids_for_executable(executable_path: Path) -> list[int]:
+    if sys.platform == "win32":
+        return _windows_pids_for_executable(executable_path)
+    if sys.platform == "linux":
+        return _linux_pids_for_executable(executable_path)
+    raise RuntimeError(f"Infernux Hub has no process contract for {sys.platform}")
+
+
 def _request_windows_close(process_ids: list[int]) -> None:
     if sys.platform != "win32" or not process_ids:
         return
@@ -202,10 +220,10 @@ def _terminate_windows_processes(process_ids: list[int]) -> None:
 def _wait_for_hub_exit(executable_path: Path, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _windows_pids_for_executable(executable_path):
+        if not _pids_for_executable(executable_path):
             return True
         time.sleep(0.1)
-    return not _windows_pids_for_executable(executable_path)
+    return not _pids_for_executable(executable_path)
 
 
 def close_running_hub(
@@ -213,18 +231,26 @@ def close_running_hub(
     progress: Callable[[str], None] | None = None,
 ) -> None:
     executable = Path(executable_path)
-    process_ids = _windows_pids_for_executable(executable)
+    process_ids = _pids_for_executable(executable)
     if not process_ids:
         return
 
     if progress:
         progress("Closing the running Infernux Hub...")
-    _request_windows_close(process_ids)
+    if sys.platform == "win32":
+        _request_windows_close(process_ids)
+    else:
+        for process_id in process_ids:
+            os.kill(process_id, signal.SIGTERM)
     if _wait_for_hub_exit(executable, 8.0):
         return
 
-    remaining = _windows_pids_for_executable(executable)
-    _terminate_windows_processes(remaining)
+    remaining = _pids_for_executable(executable)
+    if sys.platform == "win32":
+        _terminate_windows_processes(remaining)
+    else:
+        for process_id in remaining:
+            os.kill(process_id, signal.SIGKILL)
     if not _wait_for_hub_exit(executable, 5.0):
         raise RuntimeError(
             "The running Infernux Hub could not be closed. Close it manually, then run the installer again."
@@ -246,7 +272,6 @@ class HubInstallTransaction:
         self.progress = progress
         self._stage_dir: Path | None = None
         self._backup_dir: Path | None = None
-        self._payload_executable_sha256 = ""
         self._activated = False
         self._committed = False
 
@@ -311,7 +336,6 @@ class HubInstallTransaction:
         )
         self._stage_dir = Path(stage_path)
         if source_executable.is_file():
-            self._payload_executable_sha256 = _sha256(source_executable)
             shutil.copytree(self.payload_dir, self._stage_dir, dirs_exist_ok=True)
         else:
             extract_payload_archive(payload_archive, self._stage_dir)
@@ -320,15 +344,6 @@ class HubInstallTransaction:
         staged_executable = self._stage_dir / HUB_EXECUTABLE
         if not staged_executable.is_file():
             raise RuntimeError(f"The staged Hub payload is missing {HUB_EXECUTABLE}.")
-        staged_sha256 = _sha256(staged_executable)
-        if (
-            self._payload_executable_sha256
-            and staged_sha256 != self._payload_executable_sha256
-        ):
-            raise RuntimeError(
-                "The staged Infernux Hub executable failed integrity verification."
-            )
-        self._payload_executable_sha256 = staged_sha256
 
     def activate(self) -> None:
         if self._stage_dir is None:
@@ -360,12 +375,9 @@ class HubInstallTransaction:
             raise
 
         installed_executable = self.install_dir / HUB_EXECUTABLE
-        if (
-            not installed_executable.is_file()
-            or _sha256(installed_executable) != self._payload_executable_sha256
-        ):
+        if not installed_executable.is_file():
             raise RuntimeError(
-                "The installed Infernux Hub executable does not match the packaged version."
+                "The installed Infernux Hub executable is missing after activation."
             )
 
     def commit(self) -> None:

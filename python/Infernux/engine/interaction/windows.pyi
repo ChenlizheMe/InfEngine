@@ -18,12 +18,10 @@ class PanelViewStateField:
 class PanelViewStateSchema:
     schema_id: str
     fields: tuple[PanelViewStateField, ...]
-    version: int
     def __init__(
         self,
         schema_id: str,
         fields: tuple[PanelViewStateField, ...] = ...,
-        version: int = ...,
     ) -> None: ...
     def capture(self, panel: object) -> dict[str, Any]: ...
     def restore(self, panel: object, data: dict[str, Any]) -> None: ...

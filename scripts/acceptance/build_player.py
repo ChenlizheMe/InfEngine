@@ -88,18 +88,26 @@ def _load_exporter(target: str):
 
 def _configure_source_player_host(
     environment: MutableMapping[str, str] | None = None,
+    repository_root: Path = REPOSITORY_ROOT,
 ) -> Path | None:
-    """Bind a preset-built desktop host when this CLI runs from a source tree."""
+    """Bind the host owned by this source tree's canonical release preset."""
     accepted_environment = os.environ if environment is None else environment
     configured = accepted_environment.get("INFERNUX_PLAYER_HOST_PATH", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    native_root = accepted_environment.get("INFERNUX_NATIVE_MODULE_DIR", "").strip()
-    if not native_root:
-        return None
-    host_name = "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
+    host_name = (
+        "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
+    )
+    preset = (
+        "windows-msvc-release"
+        if sys.platform == "win32"
+        else "linux-clang-release"
+    )
     candidate = (
-        Path(native_root).expanduser().resolve().parent
+        repository_root.expanduser().resolve()
+        / "out"
+        / "build"
+        / preset
         / "player-runtime"
         / host_name
     )
@@ -289,7 +297,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "path": item.path,
                 "kind": item.kind,
-                "sha256": item.sha256,
                 "size": item.size,
             }
             for item in result.artifacts

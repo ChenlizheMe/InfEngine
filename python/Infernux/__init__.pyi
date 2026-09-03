@@ -46,6 +46,10 @@ from Infernux.components import component_list_field as component_list_field
 from Infernux.components import hide_field as hide_field
 from Infernux.components import InspectorSpace as InspectorSpace
 from Infernux.components import FieldType as FieldType
+from Infernux.components import AnimationCurve as AnimationCurve
+from Infernux.components import Keyframe as Keyframe
+from Infernux.components import Gradient as Gradient
+from Infernux.components import GradientKey as GradientKey
 from Infernux.components import GameObjectRef as GameObjectRef
 from Infernux.components import MaterialRef as MaterialRef
 from Infernux.components import ComponentRef as ComponentRef
@@ -76,6 +80,7 @@ def serialized_field(
     required_component: Optional[str] = ...,
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
+    curve_non_negative: bool = ...,
     hidden: bool = ...,
 ) -> _SerializedValue: ...
 # Builtin components
@@ -100,6 +105,8 @@ from Infernux.components import SpriteRenderer as SpriteRenderer
 from Infernux.components import SpiritAnimator as SpiritAnimator
 from Infernux.components import SkeletalAnimator as SkeletalAnimator
 from Infernux.components import RuntimeAcceptanceRunner as RuntimeAcceptanceRunner
+from Infernux.lifecycle import InxPreload as InxPreload
+from Infernux.lifecycle import PreloadContext as PreloadContext
 # Decorators
 from Infernux.components import require_component as require_component
 from Infernux.components import disallow_multiple as disallow_multiple
@@ -136,8 +143,12 @@ from Infernux.core import RenderEffectRef as RenderEffectRef
 from Infernux.debug import Debug as Debug
 # Submodules
 from Infernux import core as core
+from Infernux import components as components
+from Infernux import lifecycle as lifecycle
+from Infernux import physics as physics
 from Infernux import rendergraph as rendergraph
 from Infernux import renderstack as renderstack
+from Infernux import resources as resources
 from Infernux import scene as scene
 from Infernux import input as input
 from Infernux import ui as ui

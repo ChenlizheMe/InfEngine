@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import ast
 import threading
 from pathlib import Path
@@ -174,7 +173,8 @@ def test_capture_returns_review_artifact_metadata_without_pixels(tmp_path):
         assert requested["pixel_access"] is False
         status = operations["infernux.capture.status"](17)
         assert status["terminal"] is True
-        assert status["sha256"] == hashlib.sha256(b"engine-render-target").hexdigest()
+        assert status["byte_size"] == len(b"engine-render-target")
+        assert "sha256" not in status
         assert "output_path" not in status
         assert "pixels" not in status
         assert host.capture_path.name == "review.png"

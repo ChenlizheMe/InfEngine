@@ -46,20 +46,17 @@ add_custom_command(TARGET _Infernux POST_BUILD
         "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
         "-DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>"
         -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
 
     COMMENT "Stage _Infernux binding module in the build tree"
 )
-
-if(INFERNUX_RUNTIME_STATIC)
-    # A shipping build has no composition DLL. Remove stale shared-test or
-    # pre-refactor copies before dependency scans and wheel staging.
-    add_custom_command(TARGET _Infernux POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E rm -f
-            "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
-            "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
-        VERBATIM
-    )
-endif()
 
 if(WIN32)
     # Windows: copy all DLL dependencies automatically
@@ -135,17 +132,6 @@ endif()
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_BINARY_DIR}/runtime-packs")
 set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_BINARY_DIR}/runtime-modules")
 add_custom_target(prebuild_player_runtime
-    COMMAND ${CMAKE_COMMAND} -E rm -f
-        "${PYTHON_TARGET_DIR}/InfernuxRuntime.dll"
-        "${PYTHON_TARGET_DIR}/SPIRV.dll"
-        "${PYTHON_TARGET_DIR}/SPVRemapper.dll"
-        "${PYTHON_TARGET_DIR}/glslang-default-resource-limits.dll"
-        "${PYTHON_TARGET_DIR}/glslang.dll"
-        "$<TARGET_FILE_DIR:_Infernux>/InfernuxRuntime.dll"
-        "$<TARGET_FILE_DIR:_Infernux>/SPIRV.dll"
-        "$<TARGET_FILE_DIR:_Infernux>/SPVRemapper.dll"
-        "$<TARGET_FILE_DIR:_Infernux>/glslang-default-resource-limits.dll"
-        "$<TARGET_FILE_DIR:_Infernux>/glslang.dll"
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
         "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
@@ -216,7 +202,9 @@ install(
 )
 
 install(
-    FILES "${CMAKE_SOURCE_DIR}/python/infernux.py"
+    FILES
+        "${CMAKE_SOURCE_DIR}/python/infernux.py"
+        "${CMAKE_SOURCE_DIR}/python/infernux.pyi"
     DESTINATION "python"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
@@ -239,6 +227,11 @@ install(
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
     LIBRARY DESTINATION "python/Infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+install(
+    FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
+    DESTINATION "python/Infernux/lib"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 
 install(

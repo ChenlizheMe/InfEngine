@@ -248,6 +248,14 @@ class InxRenderer
     void PreparePipeline();
     void DrawFrame();
 
+    /// @brief Force the next DrawFrame() to simulate with an exact delta time
+    /// instead of the wall clock. Used by Infernux::Tick so graphical frames
+    /// can be stepped deterministically with the same contract as headless.
+    void OverrideNextFrameDeltaTime(float seconds)
+    {
+        m_nextFrameDeltaTimeOverride = seconds;
+    }
+
     /// @brief Drain GPU work before destructive scene/resource replacement.
     void WaitForGpuIdle();
     [[nodiscard]] size_t GetPendingMeshUploadCount() const;
@@ -655,6 +663,8 @@ class InxRenderer
     // Delta time tracking
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
     float m_deltaTime = 0.016f;
+    /// Negative = no override. Consumed by the next DrawFrame().
+    float m_nextFrameDeltaTimeOverride = -1.0f;
     float m_totalTime = 0.0f;
     float m_smoothDeltaTime = 0.016f;
     uint64_t m_frameCount = 0;

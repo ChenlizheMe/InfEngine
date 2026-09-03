@@ -2,11 +2,11 @@
     "metadata": {
         "character_count": {
             "type": "size_t",
-            "value": 7041
+            "value": 6973
         },
         "content_hash": {
             "type": "string",
-            "value": "22d35211815c0417"
+            "value": "16000c7c4ba7d590"
         },
         "encoding": {
             "type": "string",
@@ -22,7 +22,7 @@
         },
         "file_size": {
             "type": "size_t",
-            "value": 7041
+            "value": 6973
         },
         "file_type": {
             "type": "string",
@@ -38,11 +38,11 @@
         },
         "last_modified": {
             "type": "string",
-            "value": "1788225950"
+            "value": "1788264744"
         },
         "line_count": {
             "type": "size_t",
-            "value": 261
+            "value": 259
         },
         "resource_type": {
             "type": "enum infernux::ResourceType",

@@ -95,21 +95,76 @@ def test_desktop_target_loads_the_core_exporter():
     assert [target.id for target in exporter.targets()] == [module.DESKTOP_TARGET]
 
 
-def test_source_player_host_is_discovered_from_the_preset_build(tmp_path):
+def test_native_module_override_does_not_redirect_the_source_player_host(tmp_path):
     module = _module()
-    native_root = tmp_path / "python-sync"
-    native_root.mkdir()
+    native_root = tmp_path / "installed-wheel" / "Infernux" / "lib"
+    native_root.mkdir(parents=True)
+    preset = (
+        "windows-msvc-release"
+        if module.sys.platform == "win32"
+        else "linux-clang-release"
+    )
     host_name = (
         "InfernuxPlayerHost.exe"
         if module.sys.platform == "win32"
         else "InfernuxPlayerHost"
     )
-    host = tmp_path / "player-runtime" / host_name
-    host.parent.mkdir()
+    host = tmp_path / "out" / "build" / preset / "player-runtime" / host_name
+    host.parent.mkdir(parents=True)
     host.write_bytes(b"host")
     environment = {"INFERNUX_NATIVE_MODULE_DIR": str(native_root)}
 
-    discovered = module._configure_source_player_host(environment)
+    discovered = module._configure_source_player_host(environment, tmp_path)
+
+    assert discovered == host.resolve()
+    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())
+
+
+def test_source_player_host_uses_current_repository_preset_without_native_override(
+    tmp_path,
+):
+    module = _module()
+    preset = (
+        "windows-msvc-release"
+        if module.sys.platform == "win32"
+        else "linux-clang-release"
+    )
+    host_name = (
+        "InfernuxPlayerHost.exe"
+        if module.sys.platform == "win32"
+        else "InfernuxPlayerHost"
+    )
+    host = tmp_path / "out" / "build" / preset / "player-runtime" / host_name
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"host")
+    environment = {}
+
+    discovered = module._configure_source_player_host(environment, tmp_path)
+
+    assert discovered == host.resolve()
+    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())
+
+
+def test_source_player_host_uses_linux_single_config_preset_root(
+    tmp_path, monkeypatch
+):
+    module = _module()
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
+    host = (
+        tmp_path
+        / "out"
+        / "build"
+        / "linux-clang-release"
+        / "player-runtime"
+        / "InfernuxPlayerHost"
+    )
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"host")
+    environment = {
+        "INFERNUX_NATIVE_MODULE_DIR": str(tmp_path / "wheel" / "Infernux" / "lib")
+    }
+
+    discovered = module._configure_source_player_host(environment, tmp_path)
 
     assert discovered == host.resolve()
     assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())

@@ -13,7 +13,6 @@ from typing import Callable, Mapping, Sequence
 from Infernux.engine.build_cancellation import BuildCancelled
 
 
-BUILD_EXPORTER_CONTRACT_VERSION = 1
 _TARGET_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
@@ -261,7 +260,6 @@ class BuildPlan:
 class BuildArtifact:
     path: str
     kind: str
-    sha256: str = ""
     size: int = 0
 
     def __post_init__(self) -> None:
@@ -271,7 +269,6 @@ class BuildArtifact:
             raise ValueError("Build artifact path, kind, and size are invalid")
         object.__setattr__(self, "path", path)
         object.__setattr__(self, "kind", kind)
-        object.__setattr__(self, "sha256", str(self.sha256 or "").strip())
         object.__setattr__(self, "size", int(self.size))
 
 
@@ -297,9 +294,7 @@ class BuildResult:
 
 
 class PlatformExporter(ABC):
-    """Versioned interface implemented by core and InxPackage exporters."""
-
-    contract_version = BUILD_EXPORTER_CONTRACT_VERSION
+    """Current interface implemented by core and InxPackage exporters."""
 
     @property
     @abstractmethod
@@ -338,7 +333,6 @@ def _frozen_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
 
 
 __all__ = [
-    "BUILD_EXPORTER_CONTRACT_VERSION",
     "BuildArtifact",
     "BuildCancellationToken",
     "BuildConfiguration",

@@ -511,6 +511,7 @@ void MeshRenderer::SyncMaterialSlotsToMesh()
     if (m_submeshIndex >= 0) {
         if (m_materials.size() < 1)
             m_materials.resize(1);
+        ApplyEmbeddedMaterialsFromMesh(mesh);
         return;
     }
 
@@ -524,12 +525,72 @@ void MeshRenderer::SyncMaterialSlotsToMesh()
         uint32_t needed = std::max(static_cast<uint32_t>(uniqueSlots.size()), 1u);
         if (m_materials.size() != needed)
             SetMaterialSlotCount(needed);
+        ApplyEmbeddedMaterialsFromMesh(mesh);
         return;
     }
 
     uint32_t needed = std::max(mesh->GetMaterialSlotCount(), 1u);
     if (m_materials.size() != needed)
         SetMaterialSlotCount(needed);
+    ApplyEmbeddedMaterialsFromMesh(mesh);
+}
+
+void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh)
+{
+    if (!mesh || m_materials.empty())
+        return;
+    const auto &slotData = mesh->GetMaterialSlotData();
+    if (slotData.empty())
+        return;
+    auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+    if (!defaultMaterial)
+        defaultMaterial = InxMaterial::CreateDefaultLit();
+
+    std::vector<uint32_t> sourceSlots;
+    if (m_submeshIndex >= 0) {
+        const auto &subMeshes = mesh->GetSubMeshes();
+        if (static_cast<size_t>(m_submeshIndex) < subMeshes.size())
+            sourceSlots.push_back(subMeshes[static_cast<size_t>(m_submeshIndex)].materialSlot);
+    } else if (m_nodeGroup >= 0) {
+        std::set<uint32_t> uniqueSlots;
+        for (const auto &subMesh : mesh->GetSubMeshes()) {
+            if (static_cast<int32_t>(subMesh.nodeGroup) == m_nodeGroup &&
+                uniqueSlots.insert(subMesh.materialSlot).second)
+                sourceSlots.push_back(subMesh.materialSlot);
+        }
+    } else {
+        sourceSlots.resize(m_materials.size());
+        for (uint32_t slot = 0; slot < sourceSlots.size(); ++slot)
+            sourceSlots[slot] = slot;
+    }
+    if (sourceSlots.empty())
+        sourceSlots.push_back(0);
+
+    const auto &slotNames = mesh->GetMaterialSlotNames();
+    const size_t count = std::min(m_materials.size(), sourceSlots.size());
+    for (size_t rendererSlot = 0; rendererSlot < count; ++rendererSlot) {
+        auto &reference = m_materials[rendererSlot];
+        if (reference.HasGuid() || reference.Get())
+            continue;
+        const uint32_t sourceSlot = sourceSlots[rendererSlot];
+        if (sourceSlot >= slotData.size())
+            continue;
+        auto material = defaultMaterial->Clone();
+        if (!material)
+            continue;
+        const MaterialSlotData &data = slotData[sourceSlot];
+        material->SetColor("baseColor", data.baseColor);
+        material->SetColor("emissionColor", data.emissionColor);
+        material->SetFloat("metallic", data.metallic);
+        material->SetFloat("smoothness", data.smoothness);
+        if (sourceSlot < slotNames.size() && !slotNames[sourceSlot].empty())
+            material->SetName(slotNames[sourceSlot]);
+        else
+            material->SetName("EmbeddedMaterial_" + std::to_string(sourceSlot));
+        if (!mesh->GetFilePath().empty())
+            material->SetFilePath(mesh->GetFilePath() + "::submat:" + std::to_string(sourceSlot));
+        SetMaterial(static_cast<uint32_t>(rendererSlot), std::move(material));
+    }
 }
 
 void MeshRenderer::ComputeLocalBoundsFromInlineVertices()
@@ -1024,10 +1085,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         else
             ClearMeshAsset();
 
-        // ================================================================
-        // Materials
-        // v5: GUID strings, null slots, or typed runtime material documents.
-        // ================================================================
+        // Materials are GUID strings, null slots, or typed runtime documents.
         auto &graph = AssetDependencyGraph::Instance();
         for (auto &ref : m_materials) {
             if (ref.HasGuid())
@@ -1043,37 +1101,24 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         SyncMaterialSlotsToMesh();
 
         // Rendering flags
-        if (j.contains("castShadows")) {
-            m_castShadows = j["castShadows"].get<bool>();
-        }
-        if (j.contains("receivesShadows")) {
-            m_receiveShadows = j["receivesShadows"].get<bool>();
-        }
-        if (j.contains("submeshIndex")) {
-            m_submeshIndex = j["submeshIndex"].get<int32_t>();
-        }
-        if (j.contains("meshPivotOffset") && j["meshPivotOffset"].is_array() && j["meshPivotOffset"].size() == 3) {
+        m_castShadows = j["castShadows"].get<bool>();
+        m_receiveShadows = j["receivesShadows"].get<bool>();
+        m_submeshIndex = j.contains("submeshIndex") ? j["submeshIndex"].get<int32_t>() : -1;
+        if (j.contains("meshPivotOffset")) {
             m_meshPivotOffset.x = j["meshPivotOffset"][0].get<float>();
             m_meshPivotOffset.y = j["meshPivotOffset"][1].get<float>();
             m_meshPivotOffset.z = j["meshPivotOffset"][2].get<float>();
+        } else {
+            m_meshPivotOffset = glm::vec3(0.0f);
         }
 
-        // Persisted bounds are only a fallback for an unavailable external
-        // asset. Once the mesh is resident, its imported geometry is the
-        // authoritative source. Restoring an old cache here used to overwrite
-        // SetMeshAsset()'s exact bounds and could make a model selectable from
-        // almost anywhere in the Scene view.
+        // A resident external mesh owns its imported bounds. Documents without
+        // one (including inline geometry) use their required serialized bounds.
         if (!meshAssetResolved) {
-            if (j.contains("boundsMin") && j["boundsMin"].is_array() && j["boundsMin"].size() == 3) {
-                m_localBoundsMin.x = j["boundsMin"][0].get<float>();
-                m_localBoundsMin.y = j["boundsMin"][1].get<float>();
-                m_localBoundsMin.z = j["boundsMin"][2].get<float>();
-            }
-            if (j.contains("boundsMax") && j["boundsMax"].is_array() && j["boundsMax"].size() == 3) {
-                m_localBoundsMax.x = j["boundsMax"][0].get<float>();
-                m_localBoundsMax.y = j["boundsMax"][1].get<float>();
-                m_localBoundsMax.z = j["boundsMax"][2].get<float>();
-            }
+            m_localBoundsMin = glm::vec3(j["boundsMin"][0].get<float>(), j["boundsMin"][1].get<float>(),
+                                         j["boundsMin"][2].get<float>());
+            m_localBoundsMax = glm::vec3(j["boundsMax"][0].get<float>(), j["boundsMax"][1].get<float>(),
+                                         j["boundsMax"][2].get<float>());
         }
 
         // Inline mesh data (for primitives like cubes)

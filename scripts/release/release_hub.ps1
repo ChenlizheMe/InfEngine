@@ -106,11 +106,11 @@ if ($UploadOnly) {
     }
     New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
-Write-Host "[1/5] Configuring the release preset..." -ForegroundColor Cyan
+Write-Host "[1/6] Configuring the release preset..." -ForegroundColor Cyan
 & cmake --preset windows-msvc-release
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 
-Write-Host "[2/5] Building the staged Release wheel..." -ForegroundColor Cyan
+Write-Host "[2/6] Building the staged Release wheel..." -ForegroundColor Cyan
 & cmake --build --preset windows-msvc-wheel --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Release wheel build failed.' }
 $WheelDir = Join-Path $Root 'out\build\windows-msvc-release\python-wheel'
@@ -118,18 +118,13 @@ $Wheels = @(Get-ChildItem -LiteralPath $WheelDir -Filter '*.whl' -File)
 if ($Wheels.Count -ne 1) { throw "Expected one wheel in $WheelDir, found $($Wheels.Count)." }
 Copy-Item -LiteralPath $Wheels[0].FullName -Destination $ReleaseDir
 
-Write-Host "[3/5] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
-& cmake --build --preset windows-hub-installer
-if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
+Write-Host "[3/6] Building the Hub through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
+& cmake --build --preset windows-hub
+if ($LASTEXITCODE -ne 0) { throw 'Hub build failed.' }
 $HubDir = Join-Path $Root 'out\package\hub'
-$Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
 if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub output not found: $HubDir" }
-if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
-Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe")
 
-Write-Host "[4/5] Using the standalone Hub update package..." -ForegroundColor Cyan
-
-Write-Host "[5/5] Generating standalone Hub assets..." -ForegroundColor Cyan
+Write-Host "[4/6] Generating the platform update archive and installed manifest..." -ForegroundColor Cyan
 $Arguments = @(
     (Join-Path $Root 'packaging\hub_release.py'),
     '--hub-dir', $HubDir,
@@ -139,7 +134,14 @@ $Arguments = @(
 & python @Arguments
 if ($LASTEXITCODE -ne 0) { throw 'Hub update artifact generation failed.' }
 
-Write-Host "Release assets are ready:" -ForegroundColor Green
+Write-Host "[5/6] Building the installer from the manifested Hub payload..." -ForegroundColor Cyan
+& cmake --build --preset windows-hub-installer
+if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
+$Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
+if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
+Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version-windows-x64.exe")
+
+Write-Host "[6/6] Release assets are ready:" -ForegroundColor Green
 Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object {
     Write-Host ("  {0,-72} {1,10:N1} MB" -f $_.Name, ($_.Length / 1MB))
 }
@@ -147,9 +149,9 @@ Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object
 
 $RequiredAssets = @(
     "infernux-$Version-cp313-cp313-win_amd64.whl",
-    "InfernuxHubInstaller-$Version.exe",
+    "InfernuxHubInstaller-$Version-windows-x64.exe",
     "InfernuxHub-$Version-windows-x64-full.zip",
-    'InfernuxHub-manifest.json'
+    'InfernuxHub-windows-x64-manifest.json'
 )
 foreach ($AssetName in $RequiredAssets) {
     $AssetPath = Join-Path $ReleaseDir $AssetName
@@ -158,7 +160,7 @@ foreach ($AssetName in $RequiredAssets) {
     }
 }
 
-$SignatureTargets = @((Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe"))
+$SignatureTargets = @((Join-Path $ReleaseDir "InfernuxHubInstaller-$Version-windows-x64.exe"))
 if (-not $UploadOnly) {
     $SignatureTargets += (Join-Path $HubDir 'Infernux Hub.exe')
 }

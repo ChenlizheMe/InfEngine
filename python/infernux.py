@@ -15,8 +15,11 @@ _SUBMODULES = (
     "components",
     "core",
     "input",
+    "lifecycle",
+    "physics",
     "rendergraph",
     "renderstack",
+    "resources",
     "scene",
     "ui",
 )

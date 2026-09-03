@@ -33,7 +33,6 @@ from .scene_manager import (
     SCENE_EXTENSION,
     DEFAULT_SCENE_FILE_BASE,
     LAST_OPENED_SCENE_GUID_KEY,
-    LEGACY_LAST_OPENED_SCENE_PATH_KEY,
     _effective_project_root,
     _load_editor_settings,
     _save_editor_settings,
@@ -861,7 +860,6 @@ class SceneSaveMixin:
             Debug.log_warning(f"Cannot remember scene without an AssetDatabase GUID: {path}")
             return
         settings = _load_editor_settings()
-        settings.pop(LEGACY_LAST_OPENED_SCENE_PATH_KEY, None)
         settings[LAST_OPENED_SCENE_GUID_KEY] = guid
         _save_editor_settings(settings)
 

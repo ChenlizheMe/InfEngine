@@ -13,6 +13,7 @@ from Infernux.engine.interaction import (
     PanelInteractionDescriptor,
     submit_preferences_command,
 )
+from .dpi import editor_dpi_scale
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .project_utils import detect_available_ides
@@ -49,11 +50,11 @@ class PreferencesPanel(EditorPanel):
     # ------------------------------------------------------------------
 
     def on_render_content(self, ctx) -> None:
-        self._render_body(ctx)
+        self._render_body(ctx, editor_dpi_scale(ctx))
 
-    def _render_body(self, ctx) -> None:
+    def _render_body(self, ctx, dpi: float) -> None:
         ctx.label(t("prefs.language"))
-        ctx.same_line(150)
+        ctx.same_line(150.0 * dpi)
         avail = ctx.get_content_region_avail_width()
         ctx.set_next_item_width(avail)
 
@@ -67,7 +68,7 @@ class PreferencesPanel(EditorPanel):
             )
 
         ctx.label(t("prefs.ide"))
-        ctx.same_line(150)
+        ctx.same_line(150.0 * dpi)
         avail = ctx.get_content_region_avail_width()
         ctx.set_next_item_width(avail)
 
@@ -101,9 +102,9 @@ class PreferencesPanel(EditorPanel):
             ctx.text_wrapped(t("prefs.ide.none_available"))
 
         ctx.separator()
-        self._render_shortcuts(ctx)
+        self._render_shortcuts(ctx, dpi)
 
-    def _render_shortcuts(self, ctx) -> None:
+    def _render_shortcuts(self, ctx, dpi: float) -> None:
         core = EditorInteractionCore.instance()
         if core is None:
             return
@@ -125,8 +126,8 @@ class PreferencesPanel(EditorPanel):
 
         ctx.label(t("prefs.shortcuts"))
         ctx.label(t("prefs.shortcuts.profile"))
-        ctx.same_line(150)
-        ctx.set_next_item_width(260.0)
+        ctx.same_line(150.0 * dpi)
+        ctx.set_next_item_width(260.0 * dpi)
         selected_index = ctx.combo(
             "##shortcut_profile",
             active_index,
@@ -142,15 +143,15 @@ class PreferencesPanel(EditorPanel):
         active = snapshot.profile(snapshot.active_profile_id)
         if active.is_default:
             ctx.text_wrapped(t("prefs.shortcuts.default_read_only"))
-            self._render_shortcut_profile_creation(ctx)
+            self._render_shortcut_profile_creation(ctx, dpi)
         else:
             name_buffer = self._shortcut_profile_name_buffers.setdefault(
                 active.profile_id,
                 active.name,
             )
             ctx.label(t("prefs.shortcuts.profile_name"))
-            ctx.same_line(150)
-            ctx.set_next_item_width(260.0)
+            ctx.same_line(150.0 * dpi)
+            ctx.set_next_item_width(260.0 * dpi)
             name_buffer = ctx.text_input(
                 "##shortcut_profile_name",
                 name_buffer,
@@ -178,10 +179,10 @@ class PreferencesPanel(EditorPanel):
                     "preferences.shortcut.reset_profile",
                     {},
                 )
-            self._render_shortcut_profile_creation(ctx)
+            self._render_shortcut_profile_creation(ctx, dpi)
 
         ctx.label(t("prefs.shortcuts.search"))
-        ctx.same_line(150)
+        ctx.same_line(150.0 * dpi)
         ctx.set_next_item_width(-1.0)
         self._shortcut_search = ctx.text_input(
             "##shortcut_search",
@@ -191,15 +192,15 @@ class PreferencesPanel(EditorPanel):
         if self._shortcut_error:
             ctx.text_wrapped(self._shortcut_error)
 
-        available_height = max(180.0, ctx.get_content_region_avail_height())
+        available_height = max(180.0 * dpi, ctx.get_content_region_avail_height())
         if ctx.begin_child("##shortcut_bindings", 0.0, available_height, True):
-            self._render_shortcut_bindings(ctx, core, model)
+            self._render_shortcut_bindings(ctx, core, model, dpi)
         ctx.end_child()
 
-    def _render_shortcut_profile_creation(self, ctx) -> None:
+    def _render_shortcut_profile_creation(self, ctx, dpi: float) -> None:
         ctx.label(t("prefs.shortcuts.new_profile"))
-        ctx.same_line(150)
-        ctx.set_next_item_width(260.0)
+        ctx.same_line(150.0 * dpi)
+        ctx.set_next_item_width(260.0 * dpi)
         self._shortcut_new_profile_name = ctx.text_input(
             "##shortcut_new_profile_name",
             self._shortcut_new_profile_name,
@@ -213,7 +214,7 @@ class PreferencesPanel(EditorPanel):
             ):
                 self._shortcut_new_profile_name = ""
 
-    def _render_shortcut_bindings(self, ctx, core, model) -> None:
+    def _render_shortcut_bindings(self, ctx, core, model, dpi: float) -> None:
         query = self._shortcut_search.strip().casefold()
         active_is_default = model.profile(model.active_profile_id).is_default
         for binding in model.snapshot.bindings:
@@ -232,7 +233,7 @@ class PreferencesPanel(EditorPanel):
 
             ctx.label(display_name)
             if category:
-                ctx.same_line(290.0)
+                ctx.same_line(290.0 * dpi)
                 ctx.label(category)
             current_chord = (
                 ""
@@ -243,7 +244,7 @@ class PreferencesPanel(EditorPanel):
                 binding.binding_id,
                 current_chord,
             )
-            ctx.set_next_item_width(220.0)
+            ctx.set_next_item_width(220.0 * dpi)
             buffer = ctx.text_input(
                 f"##shortcut_binding_{binding.binding_id}",
                 buffer,

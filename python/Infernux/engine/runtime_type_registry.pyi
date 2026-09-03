@@ -1,7 +1,6 @@
 from typing import Any, Optional
 
 RUNTIME_TYPE_REGISTRY_SCHEMA: str
-RUNTIME_TYPE_REGISTRY_VERSION: int
 
 def install_runtime_type_registry(path: str) -> int: ...
 def runtime_type_contract(type_guid: str) -> Optional[dict[str, Any]]: ...

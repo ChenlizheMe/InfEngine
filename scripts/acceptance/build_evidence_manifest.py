@@ -15,7 +15,6 @@ from typing import Iterable
 
 
 SCHEMA = "infernux.release_evidence"
-SCHEMA_VERSION = 1
 
 
 def sha256_file(path: Path) -> str:
@@ -153,7 +152,6 @@ def build_manifest(
         raise ValueError("Artifact and result identifiers must be globally unique")
     return {
         "$schema": SCHEMA,
-        "schema_version": SCHEMA_VERSION,
         "release": release,
         "source": repository_record(repository.resolve(), require_clean=require_clean),
         "environment": {

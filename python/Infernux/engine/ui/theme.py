@@ -866,47 +866,37 @@ class Theme:
 # ║  (cpp/infernux/function/editor/EditorThemeTable.inl). At import time we  ║
 # ║  overwrite every matching class attribute above with the native value,   ║
 # ║  so editing this Python file cannot change the engine's look — restyle   ║
-# ║  in EditorThemeTable.inl instead. The Python literals above remain only  ║
-# ║  as documented fallbacks for tooling that imports this module without    ║
-# ║  the native engine (docs generation, pure-logic tests).                  ║
+# ║  in EditorThemeTable.inl instead. Native registry availability is an     ║
+# ║  Editor startup contract; this module does not provide a second theme.    ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 def _apply_native_theme_overrides() -> None:
-    try:
-        from Infernux.lib import (
-            get_editor_theme_colors,
-            get_editor_theme_floats,
-            get_editor_theme_vec2s,
-        )
-    except Exception:
-        return  # native module unavailable — keep Python fallbacks
+    from Infernux.lib import (
+        get_editor_theme_colors,
+        get_editor_theme_floats,
+        get_editor_theme_vec2s,
+    )
 
-    try:
-        applied = 0
-        for name, value in get_editor_theme_colors().items():
-            if hasattr(Theme, name):
-                setattr(Theme, name, tuple(value))
-                applied += 1
-        for name, value in get_editor_theme_vec2s().items():
-            if hasattr(Theme, name):
-                setattr(Theme, name, tuple(value))
-                applied += 1
-        for name, value in get_editor_theme_floats().items():
-            if hasattr(Theme, name):
-                setattr(Theme, name, float(value))
-                applied += 1
-        Theme._NATIVE_OVERRIDES_APPLIED = applied
-    except Exception:
-        # Defensive: a registry mismatch must never break editor startup.
-        Theme._NATIVE_OVERRIDES_APPLIED = -1
+    applied = 0
+    for name, value in get_editor_theme_colors().items():
+        if hasattr(Theme, name):
+            setattr(Theme, name, tuple(value))
+            applied += 1
+    for name, value in get_editor_theme_vec2s().items():
+        if hasattr(Theme, name):
+            setattr(Theme, name, tuple(value))
+            applied += 1
+    for name, value in get_editor_theme_floats().items():
+        if hasattr(Theme, name):
+            setattr(Theme, name, float(value))
+            applied += 1
+    Theme._NATIVE_OVERRIDES_APPLIED = applied
 
 
 def _native_theme_generation() -> int:
-    try:
-        from Infernux.lib import editor_theme_generation
-        return int(editor_theme_generation())
-    except Exception:
-        return 0
+    from Infernux.lib import editor_theme_generation
+
+    return int(editor_theme_generation())
 
 
 def set_editor_theme(name: str) -> bool:
@@ -916,10 +906,8 @@ def set_editor_theme(name: str) -> bool:
     panels) in one call; we then refresh the Python-side ``Theme`` tokens used
     by custom drawing. Returns ``True`` on success.
     """
-    try:
-        from Infernux.lib import set_editor_theme as _native_set
-    except Exception:
-        return False
+    from Infernux.lib import set_editor_theme as _native_set
+
     ok = bool(_native_set(name))
     if ok:
         _apply_native_theme_overrides()
@@ -929,20 +917,16 @@ def set_editor_theme(name: str) -> bool:
 
 def list_editor_themes() -> list:
     """Return the names of all registered editor themes."""
-    try:
-        from Infernux.lib import list_editor_themes as _native_list
-        return list(_native_list())
-    except Exception:
-        return []
+    from Infernux.lib import list_editor_themes as _native_list
+
+    return list(_native_list())
 
 
 def active_editor_theme() -> str:
     """Return the active editor theme name."""
-    try:
-        from Infernux.lib import get_editor_theme as _native_get
-        return str(_native_get())
-    except Exception:
-        return ""
+    from Infernux.lib import get_editor_theme as _native_get
+
+    return str(_native_get())
 
 
 # Convenience API on the Theme class: Theme.set_theme("amber") / Theme.list_themes()

@@ -237,6 +237,7 @@ class ProjectPanel : public EditorPanel
     };
     std::unordered_map<LabelCacheKey, LabelEntry, LabelCacheKeyHash> m_labelCache;
     float m_gridTextLineHeight = 0.0f;
+    float m_lastDpiScale = 0.0f;
 
     // ── Thumbnail system ─────────────────────────────────────────────
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;

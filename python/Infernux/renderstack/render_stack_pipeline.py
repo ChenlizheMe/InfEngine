@@ -8,7 +8,7 @@ render loop and the RenderStack system.
 When the engine calls ``RenderPipeline.render()``, this class:
 1. Finds the scene's RenderStack component
 2. If found → delegates to ``RenderStack.render()``
-3. If not found → falls back to plain pipeline rendering (no pass injection)
+3. If not found → executes the engine's default forward pipeline
 
 Usage::
 
@@ -21,7 +21,6 @@ interacts with the standard ``RenderPipeline`` interface.
 from __future__ import annotations
 
 from Infernux.renderstack.render_pipeline import RenderPipeline
-from Infernux.renderstack.resource_bus import ResourceBus
 
 
 def _scene_cache_key(scene) -> tuple[int, str]:
@@ -34,7 +33,7 @@ class RenderStackPipeline(RenderPipeline):
     """Bridge between the engine render entry point and RenderStack.
 
     Each scene can have only one active RenderStack. When no RenderStack is
-    present, the pipeline falls back to the default forward path.
+    present, the default forward path is the authoritative pipeline.
     """
 
     # Leading '_' keeps discover_pipelines() from listing this internal class.
@@ -42,10 +41,10 @@ class RenderStackPipeline(RenderPipeline):
 
     def __init__(self) -> None:
         super().__init__()
-        # Cached fallback graph (built lazily, invalidated never since
-        # the fallback pipeline has no user passes to change).
-        self._fallback_desc = None
-        self._fallback_pipeline = None
+        # The no-RenderStack case has one explicit default graph. It is not a
+        # recovery path for a broken authored RenderStack.
+        self._default_desc = None
+        self._default_pipeline = None
         # Cache for _find_render_stack to avoid O(N) scene scan every frame.
         self._cached_stack = None
         self._cached_stack_version: int = -1
@@ -58,7 +57,7 @@ class RenderStackPipeline(RenderPipeline):
         if render_stack is not None:
             render_stack.render(context, camera)
         else:
-            self._render_fallback(context, camera)
+            self._render_default(context, camera)
 
     # ------------------------------------------------------------------
     # Private
@@ -71,7 +70,7 @@ class RenderStackPipeline(RenderPipeline):
         1. ``RenderStack._active_instance`` singleton fast path
         2. Cached scan result, invalidated by ``structure_version``
         3. Full scene scan across Python components
-        4. ``None`` to trigger the fallback renderer
+        4. ``None`` to select the engine default renderer
         """
         from Infernux.renderstack.render_stack import RenderStack
 
@@ -123,27 +122,38 @@ class RenderStackPipeline(RenderPipeline):
             RenderStack._active_instance = found
         return found
 
-    def _render_fallback(self, context, camera) -> None:
-        """Fallback rendering path used when no RenderStack exists.
+    def _render_default(self, context, camera) -> None:
+        """Authoritative rendering path used when no RenderStack exists.
 
         This builds a graph directly from ``DefaultForwardPipeline`` without
         injecting any user passes.
         """
-        if self._fallback_desc is None:
+        if self._default_desc is None:
             from Infernux.rendergraph.graph import RenderGraph
             from Infernux.renderstack.default_forward_pipeline import (
                 DefaultForwardPipeline,
             )
 
-            if self._fallback_pipeline is None:
-                self._fallback_pipeline = DefaultForwardPipeline()
+            if self._default_pipeline is None:
+                self._default_pipeline = DefaultForwardPipeline()
 
-            graph = RenderGraph("Fallback")
-            bus = ResourceBus()
+            graph = RenderGraph("Default Forward")
             # Define topology (DefaultForwardPipeline inserts screen_ui_section)
-            self._fallback_pipeline.define_topology(graph)
+            self._default_pipeline.define_topology(graph)
             graph.set_output("color")
-            self._fallback_desc = graph.build()
+            self._default_desc = graph.build()
+            from Infernux.debug import Debug
 
-        if not context.render_compiled(camera, self._fallback_desc.source_revision):
-            context.render_with_graph(camera, self._fallback_desc)
+            screen_ui_passes = tuple(
+                render_pass.name
+                for render_pass in self._default_desc.passes
+                if "ScreenUI" in render_pass.name
+            )
+            Debug.log(
+                "INFERNUX_RENDER_GRAPH_READY pipeline='Default Forward' "
+                f"passes={len(self._default_desc.passes)} "
+                f"screen_ui={','.join(screen_ui_passes) or 'none'}"
+            )
+
+        if not context.render_compiled(camera, self._default_desc.source_revision):
+            context.render_with_graph(camera, self._default_desc)

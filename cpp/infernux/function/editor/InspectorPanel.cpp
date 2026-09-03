@@ -310,13 +310,16 @@ void InspectorPanel::VisiblePreRender(InxGUIContext * /*ctx*/)
 
 void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
 {
+    const float dpi = ctx->GetDpiScale();
+    if (std::abs(dpi - m_lastDpiScale) >= 0.01f) {
+        m_lastDpiScale = dpi;
+        m_cachedTransformBodyHeight = 0.0f;
+        m_cachedComponentBodyHeights.clear();
+    }
+    if (!getRevisionSnapshot)
+        throw std::runtime_error("Inspector revision snapshot callback is required");
     try {
-        if (getRevisionSnapshot) {
-            m_frameRevisions = getRevisionSnapshot();
-        } else {
-            const uint64_t generation = getValueGeneration ? getValueGeneration() : 0;
-            m_frameRevisions = {generation, generation, generation, generation};
-        }
+        m_frameRevisions = getRevisionSnapshot();
         m_revisionSnapshotErrorReported = false;
     } catch (const std::exception &error) {
         // Keep the preceding immutable packet.  A transient Python retirement
@@ -338,17 +341,18 @@ void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
         RenderRawDataModule(ctx, 0.0f);
     } else if (hasDetailContent &&
                totalHeight > (EditorTheme::INSPECTOR_MIN_PROPS_H + EditorTheme::INSPECTOR_MIN_RAWDATA_H +
-                              EditorTheme::INSPECTOR_SPLITTER_H)) {
-        float usableHeight = totalHeight - EditorTheme::INSPECTOR_SPLITTER_H;
+                              EditorTheme::INSPECTOR_SPLITTER_H) *
+                                 dpi) {
+        float usableHeight = totalHeight - EditorTheme::INSPECTOR_SPLITTER_H * dpi;
         float propsHeight = usableHeight * m_propertiesRatio;
         float rawDataHeight = usableHeight - propsHeight;
 
-        if (propsHeight < EditorTheme::INSPECTOR_MIN_PROPS_H) {
-            propsHeight = EditorTheme::INSPECTOR_MIN_PROPS_H;
+        if (propsHeight < EditorTheme::INSPECTOR_MIN_PROPS_H * dpi) {
+            propsHeight = EditorTheme::INSPECTOR_MIN_PROPS_H * dpi;
             rawDataHeight = usableHeight - propsHeight;
         }
-        if (rawDataHeight < EditorTheme::INSPECTOR_MIN_RAWDATA_H) {
-            rawDataHeight = EditorTheme::INSPECTOR_MIN_RAWDATA_H;
+        if (rawDataHeight < EditorTheme::INSPECTOR_MIN_RAWDATA_H * dpi) {
+            rawDataHeight = EditorTheme::INSPECTOR_MIN_RAWDATA_H * dpi;
             propsHeight = usableHeight - rawDataHeight;
         }
 
@@ -366,13 +370,16 @@ void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
 
 void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
 {
+    const float dpi = ctx->GetDpiScale();
     {
         bool childVisible = ImGui::BeginChild("PropertiesModule", ImVec2(0, height), ImGuiChildFlags_Borders,
                                               ImGuiWindowFlags_AlwaysVerticalScrollbar);
         auto childGuard = MakeInspectorScopeExit([] { ImGui::EndChild(); });
         if (childVisible) {
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_FRAME_PAD);
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_ITEM_SPC);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorTheme::INSPECTOR_FRAME_PAD.x * dpi,
+                                                                   EditorTheme::INSPECTOR_FRAME_PAD.y * dpi));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorTheme::INSPECTOR_ITEM_SPC.x * dpi,
+                                                                  EditorTheme::INSPECTOR_ITEM_SPC.y * dpi));
             auto styleGuard = MakeInspectorScopeExit([] { ImGui::PopStyleVar(2); });
 
             bool multi = isMultiSelection && isMultiSelection();
@@ -439,12 +446,13 @@ void InspectorPanel::RenderRawDataModule(InxGUIContext *ctx, float height)
 // Splitter
 // ============================================================================
 
-float InspectorPanel::RenderSplitter(InxGUIContext * /*ctx*/, float totalHeight)
+float InspectorPanel::RenderSplitter(InxGUIContext *ctx, float totalHeight)
 {
+    const float dpi = ctx->GetDpiScale();
     ImGui::Separator();
 
     float availWidth = ImGui::GetContentRegionAvail().x;
-    ImGui::InvisibleButton("##InspectorSplitter", ImVec2(availWidth, EditorTheme::INSPECTOR_SPLITTER_H));
+    ImGui::InvisibleButton("##InspectorSplitter", ImVec2(availWidth, EditorTheme::INSPECTOR_SPLITTER_H * dpi));
 
     bool hovered = ImGui::IsItemHovered();
     bool active = ImGui::IsItemActive();
@@ -455,12 +463,12 @@ float InspectorPanel::RenderSplitter(InxGUIContext * /*ctx*/, float totalHeight)
     if (active) {
         float deltaY = ImGui::GetMouseDragDelta(0).y;
         if (std::abs(deltaY) > 1.0f) {
-            float usableHeight = totalHeight - EditorTheme::INSPECTOR_SPLITTER_H;
+            float usableHeight = totalHeight - EditorTheme::INSPECTOR_SPLITTER_H * dpi;
             if (usableHeight > 0.0f) {
                 float newPropsHeight = m_propertiesRatio * usableHeight + deltaY;
                 float newRatio = newPropsHeight / usableHeight;
-                float minRatio = EditorTheme::INSPECTOR_MIN_PROPS_H / usableHeight;
-                float maxRatio = 1.0f - (EditorTheme::INSPECTOR_MIN_RAWDATA_H / usableHeight);
+                float minRatio = EditorTheme::INSPECTOR_MIN_PROPS_H * dpi / usableHeight;
+                float maxRatio = 1.0f - (EditorTheme::INSPECTOR_MIN_RAWDATA_H * dpi / usableHeight);
                 m_propertiesRatio = std::clamp(newRatio, minRatio, maxRatio);
             }
             ImGui::ResetMouseDragDelta(0);
@@ -536,12 +544,13 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     RenderObjectHeader(ctx, objId, info);
 
     // Tag & Layer
-    ImGui::Dummy(ImVec2(0.0f, 3.0f));
+    const float dpi = ctx->GetDpiScale();
+    ImGui::Dummy(ImVec2(0.0f, 3.0f * dpi));
     RenderTagLayerRow(ctx, objId, info);
 
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP));
+    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP * dpi));
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
+    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
 
     // ── Sub-timing: Transform ────────────────────────────────────────
 #if INFERNUX_FRAME_PROFILE
@@ -690,9 +699,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
     // Add Component button + popup
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
+    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
     RenderAddComponentButton(ctx);
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
+    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
     RenderAddComponentPopup(ctx);
 
 #if INFERNUX_FRAME_PROFILE
@@ -843,15 +852,16 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
     using clock = std::chrono::high_resolution_clock;
 #endif
 
+    const float dpi = ctx->GetDpiScale();
     int n = static_cast<int>(ids.size());
     ImGui::PushID("multi_edit");
 
     ImGui::Text("%d objects selected", n);
 
     if (!ids.empty()) {
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP));
+        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP * dpi));
         ImGui::Separator();
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
+        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
 
         // Transform header
         uint64_t transformIcon = getComponentIconId ? getComponentIconId("Transform", false) : 0;
@@ -948,9 +958,9 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
         // Add Component
         ImGui::Separator();
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
+        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
         RenderAddComponentButton(ctx);
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
+        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
         RenderAddComponentPopup(ctx);
     }
 
@@ -976,7 +986,7 @@ void InspectorPanel::RenderObjectHeader(InxGUIContext *ctx, uint64_t objId, cons
         m_cachedObjInfo.active = newActive;
     }
 
-    ImGui::SameLine(0, 6);
+    ImGui::SameLine(0, 6.0f * ctx->GetDpiScale());
 
     // Editable name
     ImGui::SetNextItemWidth(-1);
@@ -1028,19 +1038,20 @@ void InspectorPanel::RefreshTagLayerCache()
 
 void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info)
 {
+    const float dpi = ctx->GetDpiScale();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     RefreshTagLayerCache();
 
     const float rowStartX = ImGui::GetCursorPosX();
     const float availW = ImGui::GetContentRegionAvail().x;
-    constexpr float outerInset = 3.0f;
-    constexpr float columnGap = 10.0f;
-    const float columnW = (std::max)(40.0f, (availW - outerInset * 2.0f - columnGap) * 0.5f);
+    const float outerInset = 3.0f * dpi;
+    const float columnGap = 10.0f * dpi;
+    const float columnW = (std::max)(40.0f * dpi, (availW - outerInset * 2.0f - columnGap) * 0.5f);
 
     // --- Tag (left column) ---
     ImGui::SetCursorPosX(rowStartX + outerInset);
     ImGui::TextUnformatted(Tr("inspector.tag").c_str());
-    ImGui::SameLine(0, 4.0f);
+    ImGui::SameLine(0, 4.0f * dpi);
 
     int tagIdx = 0;
     for (size_t i = 0; i < m_cachedTags.size(); ++i) {
@@ -1051,7 +1062,7 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     }
 
     const float tagLabelW = ImGui::CalcTextSize(Tr("inspector.tag").c_str()).x;
-    const float tagComboW = (std::max)(40.0f, columnW - tagLabelW - 4.0f);
+    const float tagComboW = (std::max)(40.0f * dpi, columnW - tagLabelW - 4.0f * dpi);
     int newTagIdx = ctx->SearchableCombo("Inspector.Tag", tagIdx, m_cachedTagItems, tagComboW, 8,
                                          Tr("igui.search_hint").c_str(), Tr("igui.no_results").c_str());
     if (captureSemantics)
@@ -1072,9 +1083,9 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     // --- Layer (right column) ---
     ImGui::SameLine(rowStartX + outerInset + columnW + columnGap);
     ImGui::TextUnformatted(Tr("inspector.layer").c_str());
-    ImGui::SameLine(0, 4.0f);
+    ImGui::SameLine(0, 4.0f * dpi);
     const float layerLabelW = ImGui::CalcTextSize(Tr("inspector.layer").c_str()).x;
-    const float layerComboW = (std::max)(40.0f, columnW - layerLabelW - 4.0f);
+    const float layerComboW = (std::max)(40.0f * dpi, columnW - layerLabelW - 4.0f * dpi);
 
     int newLayer = ctx->SearchableCombo("Inspector.Layer", info.layer, m_cachedLayerItems, layerComboW, 8,
                                         Tr("igui.search_hint").c_str(), Tr("igui.no_results").c_str());
@@ -1128,7 +1139,7 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId)
         m_cachedTransformValueRevision = m_frameRevisions.value;
     }
     TransformData td = m_cachedTransformData;
-    float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH;
+    float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH * ctx->GetDpiScale();
 
     // Vector3Control modifies the array in-place
     float pos[3] = {td.px, td.py, td.pz};
@@ -1200,7 +1211,8 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
     for (size_t axisIndex = 0; axisIndex < snapshot.mixed.size(); ++axisIndex)
         mixed[axisIndex] = snapshot.mixed[axisIndex];
 
-    float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH;
+    const float dpi = ctx->GetDpiScale();
+    float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH * dpi;
     float pos[3] = {first.px, first.py, first.pz};
     float rot[3] = {first.rx, first.ry, first.rz};
     float scl[3] = {first.sx, first.sy, first.sz};
@@ -1213,8 +1225,8 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
         ImGui::SameLine(labelW);
 
         const ImGuiStyle &style = ImGui::GetStyle();
-        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-        const float cellWidth = std::max(24.0f, (avail - style.ItemSpacing.x * 2.0f) / 3.0f);
+        const float avail = std::max(1.0f * dpi, ImGui::GetContentRegionAvail().x);
+        const float cellWidth = std::max(24.0f * dpi, (avail - style.ItemSpacing.x * 2.0f) / 3.0f);
 
         ImGui::PushID(rowId);
         for (int axisIndex = 0; axisIndex < 3; ++axisIndex) {
@@ -1319,13 +1331,14 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
 
 void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, const PrefabInfo &pinfo)
 {
+    const float dpi = ctx->GetDpiScale();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     const std::string semanticBase =
         captureSemantics ? "inspector.object." + std::to_string(objId) + ".prefab" : std::string{};
-    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::Dummy(ImVec2(0, 4.0f * dpi));
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, EditorTheme::PREFAB_HEADER_BG);
-    ImGui::BeginChild("##prefab_header_bar", ImVec2(0, EditorTheme::PREFAB_HEADER_H), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##prefab_header_bar", ImVec2(0, EditorTheme::PREFAB_HEADER_H * dpi), ImGuiChildFlags_Borders);
 
     ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT);
     ImGui::TextUnformatted(Tr("inspector.prefab_label").c_str());
@@ -1334,7 +1347,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
                                 static_cast<double>(pinfo.overrideCount));
     ImGui::PopStyleColor();
 
-    float gap = EditorTheme::PREFAB_HEADER_BTN_GAP;
+    float gap = EditorTheme::PREFAB_HEADER_BTN_GAP * dpi;
 
     ImGui::SameLine(0, gap * 2);
     EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
@@ -1409,6 +1422,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     const std::string &contextPopupId, bool selected, const std::vector<uint64_t> &dragObjectIds,
     const std::vector<uint64_t> &dragComponentIds, bool allowComponentReorder)
 {
+    const float dpi = ctx->GetDpiScale();
     bool newEnabled = isEnabled;
 
     // Build display name: insert spaces before uppercase chars
@@ -1431,9 +1445,11 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
                                                            : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
                                                           : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.x * dpi,
+                                                           EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
+                                                          EditorTheme::INSPECTOR_HEADER_ITEM_SPC.y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE * dpi);
     ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
 
     // Full-width collapsing header
@@ -1444,7 +1460,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     std::string headerKey = "##comp_" + headerId;
     {
         float clipMaxX = ImGui::GetWindowPos().x + ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x -
-                         EditorTheme::INSPECTOR_HEADER_RIGHT_MARGIN;
+                         EditorTheme::INSPECTOR_HEADER_RIGHT_MARGIN * dpi;
         ImGui::GetWindowDrawList()->PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(clipMaxX, 1e7f), true);
     }
     bool headerOpen = ImGui::CollapsingHeader(headerKey.c_str());
@@ -1506,7 +1522,8 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
                             const bool insertAfter = ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
                             const float lineY = insertAfter ? headerMax.y : headerMin.y;
                             ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
-                                                                ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                                                                ImGui::GetColorU32(ImGuiCol_DragDropTarget),
+                                                                2.0f * dpi);
                             if (payload->IsDelivery())
                                 ExecuteEditorCommand("component.reorder",
                                                      MakeComponentReorderCommandArgument(dragObjectIds,
@@ -1525,7 +1542,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
                     !allowComponentReorder || ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
                 const float lineY = insertAfter ? headerMax.y : headerMin.y;
                 ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
-                                                    ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                                                    ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f * dpi);
                 if (payload->IsDelivery()) {
                     std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
                     if (!path.empty() && path.back() == '\0')
@@ -1550,12 +1567,12 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     // Overlay: icon + checkbox + label on the same row. The header rectangle
     // already contains ImGui's scrolling transform, so keep every overlay item
     // in that same screen-space coordinate system.
-    const float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT;
+    const float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT * dpi;
     const float overlayX = ImGui::GetWindowPos().x + indent;
     ImGui::SetCursorScreenPos(ImVec2(overlayX, headerMin.y));
 
     if (iconId != 0) {
-        float iconSize = EditorTheme::COMPONENT_ICON_SIZE;
+        float iconSize = EditorTheme::COMPONENT_ICON_SIZE * dpi;
         ImGui::Dummy(ImVec2(iconSize, (std::max)(headerHeight, iconSize)));
         ImVec2 slotMin = ImGui::GetItemRectMin();
         ImVec2 slotMax = ImGui::GetItemRectMax();
@@ -1571,19 +1588,20 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
         ImTextureRef texRef(static_cast<ImTextureID>(iconId));
         drawList->AddImage(texRef, ImVec2(drawX, drawY), ImVec2(drawX + drawSize, drawY + drawSize));
 
-        ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
+        ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi);
     }
 
     bool enabledClicked = false;
     if (showEnabled) {
-        const float checkboxRowHeight = (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX, ImGui::GetTextLineHeight());
+        const float checkboxRowHeight =
+            (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX * dpi, ImGui::GetTextLineHeight());
         ImGui::SetCursorScreenPos(
             ImVec2(ImGui::GetCursorScreenPos().x, headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f));
         ctx->CheckboxInspector("##hdr_en", &newEnabled);
         enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         if (ctx && captureSemantics)
             ctx->RecordSemanticItem("component_enabled", displayName, true, semanticBase + ".enabled");
-        ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
+        ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi);
         // Center the component name on the checkbox's center line so the text
         // always lines up with the square regardless of header-row height.
         const ImVec2 cbMin = ImGui::GetItemRectMin();
@@ -1598,7 +1616,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
 
     bool optionsClicked = false;
     if (!contextPopupId.empty()) {
-        constexpr float optionsWidth = 24.0f;
+        const float optionsWidth = 24.0f * dpi;
         ImGui::SameLine();
         const float rightEdge = ImGui::GetWindowContentRegionMax().x;
         ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), rightEdge - optionsWidth));
@@ -1653,8 +1671,10 @@ bool InspectorPanel::RenderInspectorCheckbox(InxGUIContext *ctx, const char *lab
 
 void InspectorPanel::RenderAddComponentButton(InxGUIContext *ctx)
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::ADD_COMP_FRAME_PAD);
-    ImGui::SetCursorPosX(EditorTheme::INSPECTOR_ACTION_ALIGN_X);
+    const float dpi = ctx->GetDpiScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(EditorTheme::ADD_COMP_FRAME_PAD.x * dpi, EditorTheme::ADD_COMP_FRAME_PAD.y * dpi));
+    ImGui::SetCursorPosX(EditorTheme::INSPECTOR_ACTION_ALIGN_X * dpi);
     const std::string label = Tr("inspector.add_component");
     const bool clicked = ImGui::Button(label.c_str(), ImVec2(-1, 0));
     if (ctx && InxGUISemantics::IsCaptureEnabled())
@@ -1674,6 +1694,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 {
     // Unity-style component browser: generous bleed, full-width search and
     // tall rows with a clear hover band (shared popup chrome below).
+    const float dpi = ctx->GetDpiScale();
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowSizeConstraints(ImVec2(em * 18.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
 
@@ -1692,7 +1713,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
         // Search field
         if (m_addCompNeedsFocus)
             ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(std::max(EditorTheme::ADD_COMP_SEARCH_W, ImGui::GetContentRegionAvail().x));
+        ImGui::SetNextItemWidth(std::max(EditorTheme::ADD_COMP_SEARCH_W * dpi, ImGui::GetContentRegionAvail().x));
         const bool submitFirst =
             ImGui::InputTextWithHint("##comp_search", Tr("inspector.search_components").c_str(), m_addCompSearch,
                                      sizeof(m_addCompSearch), ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1712,7 +1733,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
         ImGui::Separator();
 
         // Scrollable region (transparent bg inside popup via BeginChild)
-        if (ctx->BeginChild("##comp_list", 0, 350, false, 0)) {
+        if (ctx->BeginChild("##comp_list", 0, 350.0f * dpi, false, 0)) {
             std::string searchLower(m_addCompSearch);
             std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -1783,7 +1804,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
                         handledKeyboardSelection = true;
                     }
                 }
-                ImGui::Dummy(ImVec2(0, 4));
+                ImGui::Dummy(ImVec2(0, 4.0f * dpi));
             }
 
             if (!foundAny) {

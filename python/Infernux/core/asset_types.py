@@ -337,9 +337,7 @@ class TextureImportSettings:
             wrap_mode=WrapMode.from_string(d["wrap_mode"]),
             filter_mode=FilterMode.from_string(d["filter_mode"]),
             generate_mipmaps=d["generate_mipmaps"], srgb=d["srgb"],
-            # Level 1 was the old, non-editable importer default.  Migrate it
-            # to the current automatic quality policy when the asset is read.
-            max_size=d["max_size"], aniso_level=-1 if d["aniso_level"] == 1 else d["aniso_level"],
+            max_size=d["max_size"], aniso_level=d["aniso_level"],
             format=TextureFormat.from_string(d["texture_format"]),
             compression=TextureCompression.from_string(d["texture_compression"]),
             compression_quality=TextureCompressionQuality.from_string(d["texture_compression_quality"]),

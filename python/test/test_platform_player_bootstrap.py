@@ -11,6 +11,25 @@ from Infernux.engine.platform_player_bootstrap import prepare_platform_player
 from Infernux.engine.player_package_native import read_manifest, write_pack
 
 
+_PLAYER_ENVIRONMENT = (
+    "_INFERNUX_PLAYER_MODE",
+    "_INFERNUX_PLAYER_DATA_ROOT",
+    "_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256",
+    "_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES",
+    "_INFERNUX_PLAYER_DEBUG_BUILD",
+    "_INFERNUX_PLAYER_LOG",
+    "PYTHONDONTWRITEBYTECODE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_player_environment(monkeypatch):
+    """Keep platform bootstrap environment writes inside each test."""
+    for name in _PLAYER_ENVIRONMENT:
+        monkeypatch.setenv(name, "__pytest_restore__")
+        monkeypatch.delenv(name)
+
+
 def _platform_package(tmp_path: Path) -> Path:
     data_root = tmp_path / "Game_Data"
     data_root.mkdir(parents=True)
@@ -31,7 +50,7 @@ def _platform_package(tmp_path: Path) -> Path:
     )
     manifest = read_manifest(archive)
     (data_root / "PackageIndex.inxmanifest").write_text(
-        "INFERNUX_PLAYER_PACKAGE_INDEX_V1\n"
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
         f"content\t{manifest['archive_sha256']}\t{manifest['archive_bytes']}\n",
         encoding="ascii",
     )
@@ -48,19 +67,9 @@ def _platform_package(tmp_path: Path) -> Path:
 def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path):
     data_root = _platform_package(tmp_path)
     cache_root = tmp_path / "cache"
-    for name in (
-        "_INFERNUX_PLAYER_MODE",
-        "_INFERNUX_PLAYER_DATA_ROOT",
-        "_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256",
-        "_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES",
-        "_INFERNUX_PLAYER_DEBUG_BUILD",
-        "_INFERNUX_PLAYER_LOG",
-        "PYTHONDONTWRITEBYTECODE",
-    ):
-        monkeypatch.setenv(name, "__pytest_restore__")
 
     project_root = Path(
-        prepare_platform_player(str(data_root.parent), str(cache_root))
+        prepare_platform_player(str(data_root), str(cache_root))
     )
 
     assert (project_root / "ProjectSettings/BuildSettings.json").is_file()
@@ -104,11 +113,11 @@ def test_platform_player_prunes_only_complete_stale_content_generations(tmp_path
     assert unrelated.is_dir()
 
 
-def test_platform_player_asset_root_requires_one_cooked_data_directory(tmp_path):
+def test_platform_player_asset_root_must_be_the_cooked_data_directory(tmp_path):
     first = _platform_package(tmp_path / "first")
     second = tmp_path / "first" / "Other_Data"
     second.mkdir()
     (second / "Player.inxmanifest").write_text("{}\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="exactly one cooked Data directory"):
+    with pytest.raises(RuntimeError, match="must be the cooked Data directory"):
         prepare_platform_player(str(first.parent), str(tmp_path / "cache"))

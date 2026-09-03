@@ -11,18 +11,33 @@ import sys
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from hub_utils import get_app_dir, is_frozen
-from hub_release import MANIFEST_SCHEMA, PRODUCT_NAME, load_manifest, validate_manifest
+from hub_release import (
+    MANIFEST_SCHEMA,
+    PRODUCT_NAME,
+    host_platform_id,
+    load_manifest,
+    manifest_asset_name,
+    validate_manifest,
+)
+from style import StyleManager
 
 
-GITHUB_LATEST_RELEASE = "https://api.github.com/repos/ChenlizheMe/Infernux/releases/latest"
+HUB_CATALOG_URL = "https://infernux-engine.com/hub-catalog.json"
+HUB_CATALOG_SCHEMA = "infernux.hub_catalog"
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
-# Hub 0.4 introduces the versioned Python runtime catalog. Earlier Hub builds
-# can discover the release, but cannot provision its cp313 runtime.
-_VERSIONED_RUNTIME_HUB_VERSION = "0.4.0"
+
+
+class HubUpdateStatus(str, Enum):
+    UP_TO_DATE = "up-to-date"
+    UPDATE_AVAILABLE = "update-available"
+    UNSUPPORTED_CURRENT_VERSION = "unsupported-current-version"
+    NETWORK_UNAVAILABLE = "network-unavailable"
+    CATALOG_INVALID = "catalog-invalid"
 
 
 @dataclass(frozen=True)
@@ -34,17 +49,22 @@ class HubUpdate:
     asset_url: str
     size: int
     manifest_url: str
-    required: bool = False
+    platform: str
+
+
+@dataclass(frozen=True)
+class HubUpdateCheck:
+    status: HubUpdateStatus
+    current_version: str
+    latest_version: str = ""
+    update: HubUpdate | None = None
+    installer_url: str = ""
+    detail: str = ""
 
 
 def _version_key(value: str) -> tuple[int, int, int]:
     match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
     return tuple(map(int, match.groups())) if match else (0, 0, 0)
-
-
-def _update_is_required(current_version: str, target_version: str) -> bool:
-    boundary = _version_key(_VERSIONED_RUNTIME_HUB_VERSION)
-    return _version_key(current_version) < boundary <= _version_key(target_version)
 
 
 def current_hub_version() -> str:
@@ -69,42 +89,170 @@ def current_hub_version() -> str:
     return version
 
 
-def _request_bytes(url: str, timeout: int = 20) -> bytes:
+def _request_bytes(url: str) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
-            "Accept": "application/vnd.github+json",
+            "Accept": "application/json",
             "User-Agent": "InfernuxHub-Updater",
-            "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request) as response:
         return response.read()
 
 
-def check_for_update(current_version: str | None = None) -> HubUpdate | None:
-    current = current_version or current_hub_version()
-    release = json.loads(_request_bytes(GITHUB_LATEST_RELEASE).decode("utf-8"))
-    target = str(release.get("tag_name", "")).removeprefix("v")
-    if not _VERSION_PATTERN.match(target) or _version_key(target) <= _version_key(current):
-        return None
+def _catalog_release(document: object) -> dict[str, object]:
+    if not isinstance(document, dict) or set(document) != {
+        "$schema",
+        "stable",
+        "releases",
+    }:
+        raise ValueError("Hub release catalog does not match the current contract")
+    stable = document["stable"]
+    releases = document["releases"]
+    if (
+        document["$schema"] != HUB_CATALOG_SCHEMA
+        or not isinstance(stable, str)
+        or not _VERSION_PATTERN.fullmatch(stable)
+        or not isinstance(releases, list)
+    ):
+        raise ValueError("Hub release catalog does not match the current contract")
+    matching = [
+        item
+        for item in releases
+        if isinstance(item, dict) and item.get("version") == stable
+    ]
+    if len(matching) != 1:
+        raise ValueError("Hub release catalog must contain its stable release exactly once")
+    release = matching[0]
+    if set(release) != {
+        "version",
+        "channel",
+        "published_at",
+        "release_url",
+        "minimum_updatable_version",
+        "platforms",
+    } or release["channel"] != "stable":
+        raise ValueError("Stable Hub release does not match the current contract")
+    if (
+        not isinstance(release["published_at"], str)
+        or not release["published_at"]
+        or not isinstance(release["release_url"], str)
+        or not release["release_url"]
+        or not isinstance(release["minimum_updatable_version"], str)
+        or not _VERSION_PATTERN.fullmatch(release["minimum_updatable_version"])
+        or not isinstance(release["platforms"], dict)
+    ):
+        raise ValueError("Stable Hub release platforms must be an object")
+    return release
 
-    assets = {asset["name"]: asset for asset in release.get("assets", [])}
-    manifest_name = "InfernuxHub-manifest.json"
-    manifest_asset = assets.get(manifest_name)
-    full_name = f"InfernuxHub-{target}-windows-x64-full.zip"
-    asset = assets.get(full_name)
-    if not manifest_asset or not asset:
-        return None
-    return HubUpdate(
+
+def check_for_update(
+    current_version: str | None = None,
+    *,
+    platform_id: str | None = None,
+) -> HubUpdateCheck:
+    current = current_version or current_hub_version()
+    try:
+        catalog_bytes = _request_bytes(HUB_CATALOG_URL)
+    except OSError as exc:
+        return HubUpdateCheck(
+            HubUpdateStatus.NETWORK_UNAVAILABLE,
+            current,
+            detail=str(exc),
+        )
+    try:
+        release = _catalog_release(json.loads(catalog_bytes.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        return HubUpdateCheck(
+            HubUpdateStatus.CATALOG_INVALID,
+            current,
+            detail=str(exc),
+        )
+    target = str(release["version"])
+    if _version_key(target) <= _version_key(current):
+        return HubUpdateCheck(HubUpdateStatus.UP_TO_DATE, current, target)
+    target_platform = platform_id or host_platform_id()
+    platform_release = release["platforms"].get(target_platform)
+    if not isinstance(platform_release, dict) or set(platform_release) != {
+        "installer",
+        "update",
+        "manifest",
+    }:
+        return HubUpdateCheck(
+            HubUpdateStatus.CATALOG_INVALID,
+            current,
+            target,
+            detail=f"Infernux Hub {target} has no {target_platform} release",
+        )
+    full_name = f"InfernuxHub-{target}-{target_platform}-full.zip"
+    manifest_name = manifest_asset_name(target_platform)
+    installer_name = (
+        f"InfernuxHubInstaller-{target}-windows-x64.exe"
+        if target_platform == "windows-x64"
+        else f"InfernuxHubInstaller-{target}-linux-x64"
+    )
+    installer_asset = platform_release["installer"]
+    if (
+        not isinstance(installer_asset, dict)
+        or set(installer_asset) != {"name", "url"}
+        or not isinstance(installer_asset.get("url"), str)
+        or not installer_asset["url"]
+    ):
+        return HubUpdateCheck(
+            HubUpdateStatus.CATALOG_INVALID,
+            current,
+            target,
+            detail=f"Hub release catalog has an invalid {target_platform} installer",
+        )
+    minimum = str(release["minimum_updatable_version"])
+    if _version_key(current) < _version_key(minimum):
+        return HubUpdateCheck(
+            HubUpdateStatus.UNSUPPORTED_CURRENT_VERSION,
+            current,
+            target,
+            installer_url=installer_asset["url"],
+            detail=f"Infernux Hub {minimum} or newer is required for in-app update",
+        )
+    update_asset = platform_release["update"]
+    manifest_asset = platform_release["manifest"]
+    if (
+        installer_asset.get("name") != installer_name
+        or not isinstance(update_asset, dict)
+        or set(update_asset) != {"name", "url", "size"}
+        or update_asset.get("name") != full_name
+        or not isinstance(update_asset.get("url"), str)
+        or not update_asset["url"]
+        or not isinstance(update_asset.get("size"), int)
+        or update_asset["size"] <= 0
+        or not isinstance(manifest_asset, dict)
+        or set(manifest_asset) != {"name", "url"}
+        or manifest_asset.get("name") != manifest_name
+        or not isinstance(manifest_asset.get("url"), str)
+        or not manifest_asset["url"]
+    ):
+        return HubUpdateCheck(
+            HubUpdateStatus.CATALOG_INVALID,
+            current,
+            target,
+            detail=f"Hub release catalog has an invalid {target_platform} update pair",
+        )
+    update = HubUpdate(
         current_version=current,
         target_version=target,
-        release_url=release.get("html_url", ""),
+        release_url=str(release["release_url"]),
         asset_name=full_name,
-        asset_url=asset["browser_download_url"],
-        size=int(asset.get("size", 0)),
-        manifest_url=manifest_asset["browser_download_url"],
-        required=_update_is_required(current, target),
+        asset_url=update_asset["url"],
+        size=update_asset["size"],
+        manifest_url=manifest_asset["url"],
+        platform=target_platform,
+    )
+    return HubUpdateCheck(
+        HubUpdateStatus.UPDATE_AVAILABLE,
+        current,
+        target,
+        update=update,
+        installer_url=installer_asset["url"],
     )
 
 
@@ -122,7 +270,7 @@ def _download(
 ) -> None:
     request = urllib.request.Request(update.asset_url, headers={"User-Agent": "InfernuxHub-Updater"})
     received = 0
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as stream:
+    with urllib.request.urlopen(request) as response, destination.open("wb") as stream:
         total = int(response.headers.get("Content-Length", update.size or 0))
         while True:
             chunk = response.read(1024 * 512)
@@ -151,16 +299,21 @@ def stage_update(
     archive_path = base / update.asset_name
     _download(update, archive_path, progress)
 
-    manifest_path = base / "InfernuxHub-manifest.json"
-    manifest_bytes = _request_bytes(update.manifest_url, timeout=60)
+    manifest_name = manifest_asset_name(update.platform)
+    manifest_path = base / manifest_name
+    manifest_bytes = _request_bytes(update.manifest_url)
     manifest_path.write_bytes(manifest_bytes)
     target_manifest = validate_manifest(json.loads(manifest_bytes.decode("utf-8")))
     if target_manifest["version"] != update.target_version:
         raise ValueError("Hub update manifest does not match the target release")
+    if target_manifest["platform"] != update.platform:
+        raise ValueError("Hub update manifest does not match the target platform")
 
-    local_manifest = load_manifest(Path(get_app_dir()) / "InfernuxHub-manifest.json")
+    local_manifest = load_manifest(Path(get_app_dir()) / manifest_name)
     if local_manifest["version"] != update.current_version:
         raise ValueError("Installed Hub manifest does not match the running version")
+    if local_manifest["platform"] != update.platform:
+        raise ValueError("Installed Hub manifest does not match the running platform")
     old_paths = {entry["path"] for entry in local_manifest["files"]}
     target_entries = list(target_manifest["files"])
     target_paths = {entry["path"] for entry in target_entries}
@@ -186,35 +339,68 @@ def stage_update(
             relative = _safe_path(entry["path"])
             destination = stage.joinpath(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(relative.as_posix()) as source, destination.open("wb") as target:
+            archive_entry = archive.getinfo(relative.as_posix())
+            with archive.open(archive_entry) as source, destination.open("wb") as target:
                 shutil.copyfileobj(source, target)
+            archived_mode = (archive_entry.external_attr >> 16) & 0o777
+            if archived_mode:
+                destination.chmod(archived_mode)
         for relative in metadata["delete"]:
             _safe_path(relative)
 
-    shutil.copy2(manifest_path, stage / "InfernuxHub-manifest.json")
-    metadata["files"] = target_entries + [{"path": "InfernuxHub-manifest.json"}]
+    shutil.copy2(manifest_path, stage / manifest_name)
+    metadata["files"] = target_entries + [{"path": manifest_name}]
 
     metadata_path = base / "hub-update.json"
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     return base
 
 
-def launch_external_updater(staged_root: str | Path) -> None:
-    if sys.platform != "win32" or not is_frozen():
-        raise RuntimeError("Automatic replacement is only available in the packaged Windows Hub")
+def launch_external_updater(staged_root: str | Path, *, is_dark: bool) -> None:
+    if not is_frozen():
+        raise RuntimeError("Automatic replacement requires a packaged Infernux Hub")
     root = Path(staged_root).resolve()
-    script = root / "apply-update.ps1"
-    script.write_text(_POWERSHELL_UPDATER, encoding="utf-8-sig")
-    _launch_elevated_powershell(
-        script,
-        [
-            "-ParentPid", str(os.getpid()),
-            "-InstallDir", str(Path(get_app_dir()).resolve()),
-            "-StageDir", str((root / "stage").resolve()),
-            "-MetadataPath", str((root / "hub-update.json").resolve()),
-        ],
-        root,
-    )
+    if sys.platform == "win32":
+        script = root / "apply-update.ps1"
+        script.write_text(_powershell_updater_script(is_dark), encoding="utf-8-sig")
+        _launch_elevated_powershell(
+            script,
+            [
+                "-ParentPid", str(os.getpid()),
+                "-InstallDir", str(Path(get_app_dir()).resolve()),
+                "-StageDir", str((root / "stage").resolve()),
+                "-MetadataPath", str((root / "hub-update.json").resolve()),
+            ],
+            root,
+        )
+        return
+    if sys.platform == "linux":
+        from python_runtime import PythonRuntimeManager
+
+        python_executable = PythonRuntimeManager().get_runtime_path()
+        if not python_executable:
+            raise RuntimeError("The managed Python runtime required by the Hub updater is missing")
+        script = Path(get_app_dir()) / "InfernuxHubData" / "updater" / "hub_update_apply.py"
+        if not script.is_file():
+            raise RuntimeError(f"The packaged Linux Hub updater is missing: {script}")
+        subprocess.Popen(
+            [
+                python_executable,
+                os.fspath(script),
+                "--parent-pid",
+                str(os.getpid()),
+                "--install-dir",
+                os.fspath(Path(get_app_dir()).resolve()),
+                "--stage-dir",
+                os.fspath((root / "stage").resolve()),
+                "--metadata",
+                os.fspath((root / "hub-update.json").resolve()),
+            ],
+            cwd=root,
+            start_new_session=True,
+        )
+        return
+    raise RuntimeError(f"Infernux Hub has no updater contract for {sys.platform}")
 
 
 def _launch_elevated_powershell(
@@ -249,7 +435,18 @@ def _launch_elevated_powershell(
         raise OSError(int(result), "Could not start the elevated Hub updater")
 
 
-_POWERSHELL_UPDATER = r'''param(
+def _powershell_updater_script(is_dark: bool) -> str:
+    palette = StyleManager.palette(is_dark)
+    return (
+        _POWERSHELL_UPDATER_TEMPLATE.replace("@BG_BASE@", palette.bg_base)
+        .replace("@TEXT_PRIMARY@", palette.text_primary)
+        .replace("@TEXT_SECONDARY@", palette.text_secondary)
+        .replace("@ACCENT@", palette.accent)
+        .replace("@DANGER@", palette.danger)
+    )
+
+
+_POWERSHELL_UPDATER_TEMPLATE = r'''param(
     [int]$ParentPid,
     [string]$InstallDir,
     [string]$StageDir,
@@ -263,20 +460,20 @@ $form.Size = New-Object Drawing.Size(460,170)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
-$form.BackColor = [Drawing.Color]::FromArgb(10,12,17)
+$form.BackColor = [Drawing.ColorTranslator]::FromHtml("@BG_BASE@")
 $label = New-Object Windows.Forms.Label
 $label.Text = "INSTALLING INFERNUX HUB UPDATE"
-$label.ForeColor = [Drawing.Color]::FromArgb(243,238,226)
+$label.ForeColor = [Drawing.ColorTranslator]::FromHtml("@TEXT_PRIMARY@")
 $label.Location = New-Object Drawing.Point(24,24)
 $label.Size = New-Object Drawing.Size(400,24)
 $label.Font = New-Object Drawing.Font("Segoe UI",11,[Drawing.FontStyle]::Bold)
 $bar = New-Object Windows.Forms.Panel
 $bar.Location = New-Object Drawing.Point(24,68)
 $bar.Size = New-Object Drawing.Size(396,4)
-$bar.BackColor = [Drawing.Color]::FromArgb(235,87,87)
+$bar.BackColor = [Drawing.ColorTranslator]::FromHtml("@ACCENT@")
 $status = New-Object Windows.Forms.Label
 $status.Text = "Waiting for Infernux Hub to close..."
-$status.ForeColor = [Drawing.Color]::FromArgb(170,177,188)
+$status.ForeColor = [Drawing.ColorTranslator]::FromHtml("@TEXT_SECONDARY@")
 $status.Location = New-Object Drawing.Point(24,92)
 $status.Size = New-Object Drawing.Size(396,24)
 $form.Controls.AddRange(@($label,$bar,$status))
@@ -335,7 +532,7 @@ try {
             Remove-Item -LiteralPath $live -Force
         }
     }
-    $bar.BackColor = [Drawing.Color]::FromArgb(184,49,59)
+    $bar.BackColor = [Drawing.ColorTranslator]::FromHtml("@DANGER@")
     $status.Text = "Update failed: $($_.Exception.Message)"
     [Windows.Forms.MessageBox]::Show($status.Text,"Infernux Hub Update") | Out-Null
     Start-Sleep -Seconds 2
@@ -346,6 +543,8 @@ $form.Close()
 
 __all__ = [
     "HubUpdate",
+    "HubUpdateCheck",
+    "HubUpdateStatus",
     "check_for_update",
     "current_hub_version",
     "launch_external_updater",

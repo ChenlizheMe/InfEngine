@@ -46,49 +46,37 @@
 <p>Create <code>TargetReporter.py</code> under <code>Assets</code> and use this complete script:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span><span class="p">,</span> <span class="n">GameObject</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">Header</span><span class="p">,</span>
-    <span class="n">InxComponent</span><span class="p">,</span>
-    <span class="n">MeshRenderer</span><span class="p">,</span>
-    <span class="n">Range</span><span class="p">,</span>
-    <span class="n">RequiredComponent</span><span class="p">,</span>
-    <span class="n">Rigidbody</span><span class="p">,</span>
-    <span class="n">Tooltip</span><span class="p">,</span>
-    <span class="n">component_field</span><span class="p">,</span>
-    <span class="n">disallow_multiple</span><span class="p">,</span>
-    <span class="n">require_component</span><span class="p">,</span>
-<span class="p">)</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="nd">@disallow_multiple</span>
-<span class="nd">@require_component</span><span class="p">(</span><span class="n">Rigidbody</span><span class="p">)</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="nd">@inx</span><span class="o">.</span><span class="n">disallow_multiple</span>
+<span class="nd">@inx</span><span class="o">.</span><span class="n">require_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="n">speed</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
         <span class="nb">float</span><span class="p">,</span>
-        <span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
-        <span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
-        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
     <span class="p">]</span> <span class="o">=</span> <span class="mf">3.0</span>
 
     <span class="n">target</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
-        <span class="n">GameObject</span><span class="p">,</span>
-        <span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
-        <span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
-        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span><span class="p">,</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
     <span class="p">]</span>
 
-    <span class="n">body</span><span class="p">:</span> <span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">component_field</span><span class="p">(</span>
+    <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">component_field</span><span class="p">(</span>
         <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Rigidbody used by this reporter."</span><span class="p">,</span>
     <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"TargetReporter has an unassigned reference."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"TargetReporter has an unassigned reference."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">target</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">; speed=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">speed</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
             <span class="bp">self</span><span class="p">,</span>
         <span class="p">)</span>
@@ -156,49 +144,37 @@
 <p>在 <code>Assets</code> 下创建 <code>TargetReporter.py</code>，写入下面的完整脚本：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span><span class="p">,</span> <span class="n">GameObject</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">Header</span><span class="p">,</span>
-    <span class="n">InxComponent</span><span class="p">,</span>
-    <span class="n">MeshRenderer</span><span class="p">,</span>
-    <span class="n">Range</span><span class="p">,</span>
-    <span class="n">RequiredComponent</span><span class="p">,</span>
-    <span class="n">Rigidbody</span><span class="p">,</span>
-    <span class="n">Tooltip</span><span class="p">,</span>
-    <span class="n">component_field</span><span class="p">,</span>
-    <span class="n">disallow_multiple</span><span class="p">,</span>
-    <span class="n">require_component</span><span class="p">,</span>
-<span class="p">)</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="nd">@disallow_multiple</span>
-<span class="nd">@require_component</span><span class="p">(</span><span class="n">Rigidbody</span><span class="p">)</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="nd">@inx</span><span class="o">.</span><span class="n">disallow_multiple</span>
+<span class="nd">@inx</span><span class="o">.</span><span class="n">require_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="n">speed</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
         <span class="nb">float</span><span class="p">,</span>
-        <span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
-        <span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
-        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
     <span class="p">]</span> <span class="o">=</span> <span class="mf">3.0</span>
 
     <span class="n">target</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
-        <span class="n">GameObject</span><span class="p">,</span>
-        <span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
-        <span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
-        <span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span><span class="p">,</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
     <span class="p">]</span>
 
-    <span class="n">body</span><span class="p">:</span> <span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">component_field</span><span class="p">(</span>
+    <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">component_field</span><span class="p">(</span>
         <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Rigidbody used by this reporter."</span><span class="p">,</span>
     <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">body</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"TargetReporter has an unassigned reference."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"TargetReporter has an unassigned reference."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">target</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">; speed=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">speed</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
             <span class="bp">self</span><span class="p">,</span>
         <span class="p">)</span>

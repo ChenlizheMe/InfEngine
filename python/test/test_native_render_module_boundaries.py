@@ -52,11 +52,11 @@ def test_material_texture_sampler_honors_device_max_anisotropy_and_filter_mode()
     assert "sampler.maxAnisotropy" in source
     assert 'filterMode == "linear" || filterMode == "bilinear"' in source
     assert "sampler.mipFilter = rhi::FilterMode::Nearest" in source
-    assert 'meta.GetDataAs<int>("aniso_level") == 1' in importer
+    assert 'meta.GetDataAs<int>("aniso_level") == 1' not in importer
     assert 'meta.AddMetadata("aniso_level", -1)' in importer
 
 
-def test_native_texture_settings_migrate_the_legacy_anisotropy_default() -> None:
+def test_native_texture_settings_preserve_authored_anisotropy() -> None:
     source = (
         ROOT
         / "cpp"
@@ -67,7 +67,7 @@ def test_native_texture_settings_migrate_the_legacy_anisotropy_default() -> None
         / "InxTexture.cpp"
     ).read_text(encoding="utf-8")
 
-    assert "importedLevel == 1 ? -1 : importedLevel" in source
+    assert 'm_anisoLevel = meta.GetDataAs<int>("aniso_level")' in source
 
 
 def test_lit_geometry_uses_the_camera_local_lighting_domain() -> None:

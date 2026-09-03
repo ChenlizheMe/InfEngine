@@ -1549,18 +1549,16 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     selection = SelectionService.instance()
     ip.is_multi_selection = lambda: len(selection.scene_object_ids()) > 1
     ip.get_selected_ids = lambda: list(selection.scene_object_ids())
-    ip.get_value_generation = _inspector_support.get_inspector_value_generation
     ip.consume_component_body_profile = _inspector_support.consume_inspector_profile_metrics
 
-    # New native builds consume one immutable four-layer packet per visible
-    # Inspector frame. Keep the legacy generation callback above so source
-    # Python remains runnable against an older installed extension.
-    try:
-        from Infernux.lib import InspectorRevisionSnapshot as _NativeRevisionSnapshot
-    except ImportError:
-        _NativeRevisionSnapshot = None
+    from Infernux.lib import InspectorRevisionSnapshot as _NativeRevisionSnapshot
 
-    if _NativeRevisionSnapshot is not None and hasattr(ip, "get_revision_snapshot"):
+    if not hasattr(ip, "get_revision_snapshot"):
+        raise RuntimeError(
+            "Native InspectorPanel does not expose the current revision snapshot contract"
+        )
+
+    def _install_revision_snapshot_contract():
         snapshot_service = ctx.inspector_snapshot_service
         from Infernux.engine.runtime_change_journal import runtime_change_journal
 
@@ -1627,6 +1625,8 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
             return native
 
         ip.get_revision_snapshot = _get_revision_snapshot
+
+    _install_revision_snapshot_contract()
 
     ip.on_panel_focused = bs.window_manager.native_panel_focus_callback(
         "inspector",

@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.4.0--dev-orange.svg" alt="Version 0.4.0 development" />
+  <img src="https://img.shields.io/badge/version-0.4.0-orange.svg" alt="Version 0.4.0" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="持续开发" />
   <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="当前平台：Windows" />
   <img src="https://img.shields.io/badge/python-3.13-brightgreen.svg" alt="Python 3.13" />

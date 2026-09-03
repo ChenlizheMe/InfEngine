@@ -2,7 +2,7 @@
  * @file BindingVector4f.cpp
  * @brief Python bindings for glm::vec4 as "vec4f" and glm::quat as "quatf".
  *
- * Replaces the former custom Vector4f bindings.  Now operates directly on
+ * Operates directly on
  * glm::vec4 so that no manual conversion is needed anywhere in the binding
  * layer.  Also adds glm::quat bindings ("quatf") that were previously
  * missing — quaternions were only exposed as raw (x,y,z,w) tuples before.
@@ -291,8 +291,7 @@ void RegisterVec4fBindings(py::module_ &m)
                  })
             .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z, -v.w); })
             .def("__len__", [](const Vec &) { return 4; })
-            .def(
-                "__iter__", [](const Vec &v) { return py::make_iterator(&v.x, &v.x + 4); }, py::keep_alive<0, 1>())
+            .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z, v.w).attr("__iter__")(); })
             .def("__hash__",
                  [](const Vec &v) {
                      size_t h = std::hash<float>{}(v.x);
@@ -412,13 +411,7 @@ void RegisterVec4fBindings(py::module_ &m)
                      }
                  })
             .def("__len__", [](const Quat &) { return 4; })
-            .def(
-                "__iter__",
-                [](const Quat &q) {
-                    // x, y, z, w order
-                    return py::make_iterator(&q.x, &q.x + 4);
-                },
-                py::keep_alive<0, 1>())
+            .def("__iter__", [](const Quat &q) { return py::make_tuple(q.x, q.y, q.z, q.w).attr("__iter__")(); })
             .def("__copy__", [](const Quat &q) { return Quat(q); })
             .def("__deepcopy__", [](const Quat &q, py::dict) { return Quat(q); })
             .def("to_tuple",

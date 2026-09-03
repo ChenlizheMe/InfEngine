@@ -634,32 +634,16 @@ def _mesh_display_name(comp) -> str:
 
 
 def _get_asset_database():
-    try:
-        from Infernux.lib import AssetRegistry
-        registry = AssetRegistry.instance()
-        if registry:
-            return registry.get_asset_database()
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    try:
-        from Infernux.core.assets import AssetManager
-        return getattr(AssetManager, '_asset_database', None)
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return None
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
 def _path_from_guid(guid: str) -> str:
     if not guid:
         return ""
     adb = _get_asset_database()
-    if not adb:
-        return ""
-    try:
-        return adb.get_path_from_guid(guid) or ""
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-        return ""
+    return adb.get_path_from_guid(guid) or ""
 
 
 def _guid_and_path_from_model_payload(payload):

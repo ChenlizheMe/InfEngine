@@ -127,7 +127,6 @@ class PlayerRuntimeSession:
             "_scene_backup",
             "_scene_dirty_backup",
             "_resources_manager",
-            "_script_compiler",
             "_selection_manager",
             "_undo_manager",
             "_preview_service",

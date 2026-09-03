@@ -12,7 +12,7 @@ add_custom_target(stage_python_package
     DEPENDS
         prebuild_player_runtime
         infernux_official_plugins
-    COMMENT "Assembling the Python wheel source tree under out/stage"
+    COMMENT "Assembling the Python wheel source tree after native and official plugin builds"
     VERBATIM
 )
 

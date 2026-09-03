@@ -753,9 +753,23 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const DrawListMetadata *metadata = hasListMetadata ? &m_drawListMetadata[drawCallIndex] : nullptr;
         const InxMaterial *expectedMaterial = dc.material ? dc.material.get() : m_cachedDefaultLit.get();
         const uint64_t requiredIndexEnd = static_cast<uint64_t>(dc.indexStart) + dc.indexCount;
-        if (metadata && (metadata->objectId != dc.objectId || metadata->material != expectedMaterial ||
-                         requiredIndexEnd > metadata->indexCapacity))
+        if (metadata && (metadata->objectId != dc.objectId || metadata->material != expectedMaterial))
             metadata = nullptr;
+        // The lease can still hold the previous published geometry of an
+        // every-frame dynamic mesh whose fresh upload has not been published
+        // yet (async/fence transfer). A whole-buffer draw (inline meshes use
+        // indexStart==0, vertexStart==0) can safely present the complete
+        // previous geometry for that frame; dropping the object instead makes
+        // moving LineRenderer trails flicker on every growth frame.
+        uint32_t indexCountClamp = 0;
+        if (metadata && requiredIndexEnd > metadata->indexCapacity) {
+            if (dc.indexStart == 0 && dc.vertexStart == 0 && metadata->indexCapacity > 0 && metadata->vertexBuffer &&
+                metadata->indexBuffer) {
+                indexCountClamp = static_cast<uint32_t>(metadata->indexCapacity);
+            } else {
+                metadata = nullptr;
+            }
+        }
         if (!dc.frustumVisible)
             continue;
         if (skyboxPass && dc.identity.domain != RenderDomain::Skybox)
@@ -819,17 +833,24 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             metadata && metadata->vertexBuffer && metadata->indexBuffer ? metadata : nullptr;
         if (!bufferLease) {
             const auto bufferIt = m_perObjectBuffers.find(dc.objectId);
-            if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.vertexBuffer && bufferIt->second.indexBuffer &&
-                requiredIndexEnd <= bufferIt->second.indexCount) {
-                fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
-                                                bufferIt->second.indexBuffer, bufferIt->second.indexCount});
-                bufferLease = &fallbackBufferLeases.back();
+            if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.vertexBuffer && bufferIt->second.indexBuffer) {
+                if (requiredIndexEnd <= bufferIt->second.indexCount) {
+                    fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
+                                                    bufferIt->second.indexBuffer, bufferIt->second.indexCount});
+                    bufferLease = &fallbackBufferLeases.back();
+                } else if (dc.indexStart == 0 && dc.vertexStart == 0 && bufferIt->second.indexCount > 0) {
+                    // Same stale-lease fallback as the metadata path above.
+                    fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
+                                                    bufferIt->second.indexBuffer, bufferIt->second.indexCount});
+                    bufferLease = &fallbackBufferLeases.back();
+                    indexCountClamp = static_cast<uint32_t>(bufferIt->second.indexCount);
+                }
             }
         }
         const VkBuffer vb = bufferLease ? bufferLease->vertexBuffer->GetBuffer() : VK_NULL_HANDLE;
         const VkBuffer ib = bufferLease ? bufferLease->indexBuffer->GetBuffer() : VK_NULL_HANDLE;
 
-        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, ib, materialOwner, material});
+        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, ib, materialOwner, material, indexCountClamp});
     }
 
     // A stable static publication already owns a sorted, fully resolved list.
@@ -887,11 +908,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const VkBuffer firstIB = m_eligibleScratch[0].indexBuf;
         const DrawCall &firstDraw = *m_eligibleScratch[0].dc;
         uniformBatch = true;
+        const uint32_t firstIndexCount =
+            m_eligibleScratch[0].indexCountClamp ? m_eligibleScratch[0].indexCountClamp : firstDraw.indexCount;
         for (size_t i = 1; i < m_eligibleScratch.size(); ++i) {
             const DrawCall &draw = *m_eligibleScratch[i].dc;
+            const uint32_t drawIndexCount =
+                m_eligibleScratch[i].indexCountClamp ? m_eligibleScratch[i].indexCountClamp : draw.indexCount;
             if (m_eligibleScratch[i].materialHash != firstMatHash || m_eligibleScratch[i].material != firstMaterial ||
                 m_eligibleScratch[i].vertexBuf != firstVB || m_eligibleScratch[i].indexBuf != firstIB ||
-                draw.indexStart != firstDraw.indexStart || draw.indexCount != firstDraw.indexCount ||
+                draw.indexStart != firstDraw.indexStart || drawIndexCount != firstIndexCount ||
                 draw.vertexStart != firstDraw.vertexStart) {
                 uniformBatch = false;
                 break;
@@ -1390,6 +1415,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     for (size_t idx = 0; idx < totalEligible; ++idx) {
         const auto &entry = eligibleDraws[idx];
         const DrawCall &dc = *entry.dc;
+        // A stale-lease clamp draws the leased buffer's complete previous
+        // geometry instead of this frame's not-yet-published range.
+        const uint32_t effectiveIndexCount = entry.indexCountClamp ? entry.indexCountClamp : dc.indexCount;
 
         // Once a batch has established valid Vulkan state, subsequent
         // consecutive instances with the same material/mesh can extend it
@@ -1400,7 +1428,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
             if (batchingAllowed && entry.material == currentMaterialRaw && entry.vertexBuf == currentVertexBuffer &&
                 entry.indexBuf == currentIndexBuffer && dc.indexStart == batchIndexStart &&
-                dc.indexCount == batchIndexCount && dc.vertexStart == batchVertexStart) {
+                effectiveIndexCount == batchIndexCount && dc.vertexStart == batchVertexStart) {
                 ++batchInstanceCount;
                 continue;
             }
@@ -1512,7 +1540,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             canExtendBatch = batchingAllowed && pipeline == currentPipeline && descriptorSet == currentDescriptorSet &&
                              matRaw == currentMaterialRaw && vb == currentVertexBuffer &&
                              entry.indexBuf == currentIndexBuffer && dc.indexStart == batchIndexStart &&
-                             dc.indexCount == batchIndexCount && dc.vertexStart == batchVertexStart;
+                             effectiveIndexCount == batchIndexCount && dc.vertexStart == batchVertexStart;
         }
 
         if (canExtendBatch) {
@@ -1635,7 +1663,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         batchFirstInstance = idx;
         batchInstanceCount = 1;
         batchIndexStart = dc.indexStart;
-        batchIndexCount = dc.indexCount;
+        batchIndexCount = effectiveIndexCount;
         batchVertexStart = dc.vertexStart;
         batchPipelineLayout = pipelineLayout;
         if (uniformBatch && allowBatching) {
@@ -2875,9 +2903,8 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
         // A second camera can carry the same one-shot force flag in its copied
         // draw calls. The object was already updated from the same scene cache
         // on this frame, so skip it regardless of that stale copy.
-        if (objectIt->second.ensuredOnFrame == m_ensureFrameCounter) {
+        if (objectIt->second.ensuredOnFrame == m_ensureFrameCounter)
             return;
-        }
     }
     if (objectIt != m_perObjectBuffers.end() && !forceUpdate) {
         // Fast path: if data pointers AND sizes match, content hasn't changed
@@ -2948,11 +2975,16 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
         const bool vertexReady = m_resourceManager.TryPublishBufferUpload(pending->second.vertexUpload);
         const bool indexReady = m_resourceManager.TryPublishBufferUpload(pending->second.indexUpload);
         if (!vertexReady || !indexReady) {
-            // The draw call's CPU arrays may already describe different geometry
-            // than the object's old buffers. Hide the object until both uploads
-            // can be published together instead of issuing unsafe mixed-version draws.
-            if (m_perObjectBuffers.erase(objectId) != 0)
-                ++m_objectBufferRevision;
+            // Keep the previous published buffers while the new content is in
+            // flight. The draw path already validates dc.indexStart+indexCount
+            // against the leased buffer's indexCount, so a stale lease can
+            // never read out of bounds — it either draws last frame's geometry
+            // or skips the object when the new draw range no longer fits.
+            // Erasing the entry here made every-frame dynamic meshes
+            // (LineRenderer trails) invisible for the whole movement on
+            // devices where transfer publication falls back to fences.
+            if (objectIt != m_perObjectBuffers.end())
+                objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
             return;
         }
 

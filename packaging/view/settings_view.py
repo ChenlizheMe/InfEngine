@@ -91,7 +91,7 @@ class SettingsView(QWidget):
         update_label = QLabel(tr("Hub Update"))
         update_label.setObjectName("settingsLabel")
         update_text.addWidget(update_label)
-        update_description = QLabel(tr("Check GitHub Releases for a verified Hub update."))
+        update_description = QLabel(tr("Check the Infernux release catalog for a Hub update."))
         update_description.setObjectName("settingsDescription")
         update_text.addWidget(update_description)
         update_layout.addLayout(update_text, 1)

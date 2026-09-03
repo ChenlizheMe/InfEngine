@@ -2,7 +2,7 @@
  * @file BindingVector2f.cpp
  * @brief Python bindings for glm::vec2 as "Vector2".
  *
- * Replaces the former custom Vector2f bindings.  Now operates directly on
+ * Operates directly on
  * glm::vec2 so that no manual conversion is needed anywhere in the binding
  * layer.
  */
@@ -305,8 +305,7 @@ void RegisterVector2Bindings(py::module_ &m)
         .def("__str__", [](const Vec &v) { return "(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ")"; })
         .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y); })
         .def("__len__", [](const Vec &) { return 2; })
-        .def(
-            "__iter__", [](const Vec &v) { return py::make_iterator(&v.x, &v.x + 2); }, py::keep_alive<0, 1>())
+        .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y).attr("__iter__")(); })
         .def("__hash__",
              [](const Vec &v) {
                  size_t h = std::hash<float>{}(v.x);

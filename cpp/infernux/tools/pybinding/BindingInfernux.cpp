@@ -811,6 +811,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             "Measure text size using the active UI font. Returns (width, height).")
         .def("has_commands", &InxScreenUIRenderer::HasCommands, py::arg("list"),
              "Check if the specified draw list has any draw commands")
+        .def("last_submitted_draw_count", &InxScreenUIRenderer::GetLastSubmittedDrawCount, py::arg("list"),
+             "Return the most recent submitted draw count for the specified list")
+        .def("last_submitted_index_count", &InxScreenUIRenderer::GetLastSubmittedIndexCount, py::arg("list"),
+             "Return the most recent submitted index count for the specified list")
         .def("set_enabled", &InxScreenUIRenderer::SetEnabled, py::arg("enabled"),
              "Enable or disable rendering (commands still accumulate)")
         .def("is_enabled", &InxScreenUIRenderer::IsEnabled, "Check if rendering is enabled");
@@ -873,7 +877,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("init_headless", &Infernux::InitHeadless, py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string(),
              "Initialize scene, physics, assets, and workers without SDL/Vulkan/ImGui/audio")
-        .def("tick", &Infernux::Tick, py::arg("delta_time"), "Advance one deterministic headless frame")
+        .def("tick", &Infernux::Tick, py::arg("delta_time"),
+             "Advance one deterministic frame: simulation-only in headless mode, a fully simulated and "
+             "rendered frame in graphical mode (unavailable while run() drives the loop)")
         .def_property_readonly("exit_requested", &Infernux::IsExitRequested, "Whether shutdown has been requested")
         .def_property_readonly("runtime_mode", &Infernux::GetRuntimeMode)
         .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
@@ -1432,7 +1438,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             "get_display_scale",
             [](Infernux &self) -> float {
                 auto *r = self.GetRenderer();
-                return r ? r->GetDisplayScale() : 1.0f;
+                if (!r)
+                    throw std::logic_error("Cannot query display scale without an initialized renderer");
+                return r->GetDisplayScale();
             },
             "Get the OS display scale factor (e.g. 2.0 for 200%% scaling)")
         .def(
@@ -1563,7 +1571,22 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("window_id"), py::arg("allow_during_modal") = false)
         .def("reset_imgui_layout", &Infernux::ResetImGuiLayout, "Clear ImGui docking layout and delete saved ini")
         .def("exit", &Infernux::Exit, "Exit the Infernux application")
-        .def("cleanup", &Infernux::Cleanup, "Destroy renderer and release all GPU resources")
+        .def(
+            "cleanup",
+            [](Infernux &self) {
+                // Python frame callbacks must be released while this binding
+                // still owns the GIL. Native teardown may then release it while
+                // joining workers and waiting for the GPU without destroying a
+                // py::function from a GIL-free scope.
+                self.SetPreSceneUpdateCallback(nullptr);
+                if (auto *renderer = self.GetRenderer()) {
+                    renderer->SetPreGuiCallback(nullptr);
+                    renderer->SetPostDrawCallback(nullptr);
+                }
+                py::gil_scoped_release release;
+                self.Cleanup();
+            },
+            "Destroy renderer and release all GPU resources")
         .def(
             "is_close_requested",
             [](Infernux &self) -> bool {
