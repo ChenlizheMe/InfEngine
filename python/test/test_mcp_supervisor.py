@@ -612,43 +612,14 @@ def test_supervisor_public_status_excludes_private_lease_but_persists_recovery_s
 def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scenes=None):
     output = tmp_path / "PlayerBuild"
     data = output / "Pilot_Data"
-    runtime = data / "Runtime"
-    runtime.mkdir(parents=True)
-    executable = output / "Pilot.exe"
-    executable.write_bytes(b"launcher")
-    (runtime / "InfernuxPlayer.exe").write_bytes(b"runtime")
-    (data / "PlayerLayout.json").write_text(json.dumps({
-        "layout": "infernux-windows-player",
-        "launcher": "Pilot.exe",
-        "data_directory": "Pilot_Data",
-        "runtime_directory": "Runtime",
-        "runtime_modules_directory": "RuntimeModules",
-    }), encoding="utf-8")
-    (data / ".infernux-build-output").write_text(json.dumps({
-        "tool": "Infernux",
-        "kind": "build-output",
-        "project_name": "Pilot",
-        "project_identity": supervisor_module.path_fingerprint(str(project_root)),
-    }), encoding="utf-8")
-    (data / "BuildManifest.json").write_text(json.dumps({
-        "game_name": "Pilot",
-        "debug_build": debug_build,
-        "scenes": scenes or [],
-    }), encoding="utf-8")
-    return executable
-
-
-def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_build=True):
-    output = tmp_path / "SingleEntryPlayerBuild"
-    data = output / "Pilot_Data"
     data.mkdir(parents=True)
     executable = output / "Pilot.exe"
-    executable.write_bytes(b"single-entry-player")
+    executable.write_bytes(b"direct-native-player")
     control = "token_authenticated" if debug_build else "disabled"
     (data / "BuildManifest.json").write_text(json.dumps({
         "game_name": "Pilot",
         "debug_build": debug_build,
-        "scenes": [],
+        "scenes": scenes or [],
         "build_output": {
             "tool": "Infernux",
             "project_identity": supervisor_module.path_fingerprint(str(project_root)),
@@ -658,7 +629,7 @@ def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_bui
     (data / "Player.inxmanifest").write_text(json.dumps({
         "audit": {"passed": True},
         "product": {
-            "layout": "single_executable_native_packages",
+            "layout": "direct_native_runtime",
             "single_entry_point": True,
             "entry_points": ["Pilot.exe"],
         },
@@ -666,7 +637,7 @@ def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_bui
     return executable
 
 
-def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeypatch):
+def test_supervisor_launches_only_current_debug_player_output(tmp_path, monkeypatch):
     local_state = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(local_state))
     project = tmp_path / "Desktop" / "PlayerPilot"
@@ -696,13 +667,13 @@ def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeyp
     assert status["player_running"] is True
     assert status["player_ready"] is True
     assert status["player_pid"] == 8448
-    expected_runtime = executable.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
-    assert captured["argv"] == [str(expected_runtime)]
+    expected_data = executable.parent / "Pilot_Data"
+    assert captured["argv"] == [str(executable)]
     assert captured["env"]["_INFERNUX_PLAYER_CONTROL_TOKEN"] == supervisor._player_control_token
-    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(expected_runtime.parent)
-    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_runtime.parent.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(executable.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_data)
     assert captured["env"]["_INFERNUX_PLAYER_MODULE_ROOT"] == str(
-        expected_runtime.parent.parent / "RuntimeModules"
+        expected_data / "RuntimeModules"
     )
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
     assert supervisor.player_runtime_log_path == str(
@@ -715,7 +686,7 @@ def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, 
     project = tmp_path / "Desktop" / "SingleEntryPilot"
     supervisor = SupervisorSession(str(project), session_id="single-entry-player-launch")
     supervisor.prepare_project()
-    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    executable = _write_debug_player_output(tmp_path, project)
     captured = {}
 
     class _PlayerProcess:
@@ -752,7 +723,7 @@ def test_supervisor_reports_playerhost_failure_without_waiting_for_timeout(
     project = tmp_path / "Desktop" / "FailedPlayerHost"
     supervisor = SupervisorSession(str(project), session_id="failed-player-host")
     supervisor.prepare_project()
-    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    executable = _write_debug_player_output(tmp_path, project)
 
     class _PlayerProcess:
         pid = 8452
@@ -781,7 +752,7 @@ def test_supervisor_player_logs_only_report_current_launch(tmp_path, monkeypatch
     project = tmp_path / "Desktop" / "CurrentLogsPilot"
     supervisor = SupervisorSession(str(project), session_id="current-player-logs")
     supervisor.prepare_project()
-    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    executable = _write_debug_player_output(tmp_path, project)
     logs_root = local_state / "Infernux" / "Players" / "Pilot" / "Logs"
     logs_root.mkdir(parents=True)
     runtime_log = logs_root / "player.log"
@@ -884,9 +855,7 @@ def test_supervisor_stops_player_through_authenticated_control_without_force(tmp
     supervisor._attached_player_pid = 9559
     supervisor._player_control_token = "private-player-control-token"
     launcher = _write_debug_player_output(tmp_path, project)
-    supervisor._player_executable = str(
-        launcher.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
-    )
+    supervisor._player_executable = str(launcher)
     supervisor._player_ready = True
     alive = {"value": True}
     original_write_json = supervisor_module._write_json
