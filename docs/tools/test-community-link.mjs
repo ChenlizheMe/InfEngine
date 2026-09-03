@@ -38,7 +38,9 @@ for (const relative of [
 }
 
 const hub = await readFile(path.join(root, "packaging", "view", "discussion_view.py"), "utf8");
-assert.ok(hub.includes(`FORUM_URL = "${communityUrl}"`), "InfernuxHub must open the Discourse community directly");
+const communityFeed = await readFile(path.join(root, "packaging", "community_feed.py"), "utf8");
+assert.ok(communityFeed.includes(`COMMUNITY_ORIGIN = "${communityUrl.slice(0, -1)}"`), "Hub community data must use the public Discourse origin");
+assert.ok(hub.includes("FORUM_URL = COMMUNITY_ORIGIN + \"/\""), "InfernuxHub must open the shared Discourse origin directly");
 
 const issueConfig = await readFile(path.join(root, ".github", "ISSUE_TEMPLATE", "config.yml"), "utf8");
 assert.ok(issueConfig.includes(communityUrl), "GitHub issue guidance must point users to the Discourse community");
