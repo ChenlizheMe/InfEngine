@@ -4,7 +4,7 @@ Shared preferences storage for the Infernux editor.
 This module provides a minimal JSON-backed preference store used by
 different preference classes. It preserves the original persistence logic:
 
-- preferences file: Documents/Infernux/preferences.json
+- preferences file: <Infernux data root>/State/Editor/preferences.json
 - load the whole JSON object
 - update only owned fields
 - keep unrelated fields intact

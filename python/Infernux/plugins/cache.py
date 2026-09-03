@@ -14,13 +14,13 @@ from typing import Iterable, Mapping
 from urllib.parse import quote
 
 from Infernux.engine.path_utils import resolved_path, same_path
+from Infernux.engine.user_data import DATA_ROOT_ENV, get_infernux_data_root
 
 from .package import PACKAGE_EXTENSION
 
 
 _STAGING_NAME = re.compile(r"^[a-z0-9-]+-(\d+)-[a-z0-9_]+$")
 PACKAGE_CACHE_ROOT_ENV = "INFERNUX_PACKAGE_CACHE_ROOT"
-DATA_ROOT_ENV = "INFERNUX_DATA_ROOT"
 
 
 def package_cache_root() -> str:
@@ -29,28 +29,9 @@ def package_cache_root() -> str:
     configured = os.environ.get(PACKAGE_CACHE_ROOT_ENV, "").strip()
     if configured:
         return resolved_path(os.path.expandvars(os.path.expanduser(configured)))
-    data_root = os.environ.get(DATA_ROOT_ENV, "").strip()
-    if data_root:
-        return resolved_path(
-            os.path.join(
-                os.path.expandvars(os.path.expanduser(data_root)),
-                "Library",
-                "Plugins",
-            )
-        )
-    if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
-        if not local_app_data:
-            raise RuntimeError("The Hub plugin library requires LOCALAPPDATA")
-        data_root = Path(local_app_data)
-    else:
-        xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
-        data_root = (
-            Path(xdg_data_home).expanduser()
-            if xdg_data_home
-            else Path.home() / ".local" / "share"
-        )
-    return resolved_path(data_root / "InfernuxHub" / "Library" / "Plugins")
+    return resolved_path(
+        os.path.join(get_infernux_data_root(), "Library", "Plugins")
+    )
 
 
 def _process_is_alive(pid: int) -> bool:

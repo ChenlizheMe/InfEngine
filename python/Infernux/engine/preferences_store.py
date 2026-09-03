@@ -4,7 +4,7 @@ Shared preferences storage for the Infernux editor.
 This module provides a minimal JSON-backed preference store used by
 different preference classes:
 
-- preferences file: Documents/Infernux/preferences.json
+- preferences file: <Infernux data root>/State/Editor/preferences.json
 - load the whole JSON object
 - update only owned fields
 - keep unrelated fields intact
@@ -14,27 +14,17 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
+
+from Infernux.engine.user_data import get_infernux_data_root
 
 _PREFS_FILE = "preferences.json"
 
 
 def _prefs_path() -> str:
     """Return the path to the global preferences file."""
-    if os.name == "nt":
-        import ctypes.wintypes
-
-        buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-        result = ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
-        if result != 0 or not buf.value:
-            raise OSError(result, "Windows did not resolve the Documents directory")
-        docs = pathlib.Path(buf.value)
-    else:
-        docs = pathlib.Path.home() / "Documents"
-
-    prefs_dir = docs / "Infernux"
+    prefs_dir = os.path.join(get_infernux_data_root(), "State", "Editor")
     os.makedirs(prefs_dir, exist_ok=True)
-    return str(prefs_dir / _PREFS_FILE)
+    return os.path.join(prefs_dir, _PREFS_FILE)
 
 
 class PreferencesStore:

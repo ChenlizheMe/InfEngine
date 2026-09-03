@@ -1,6 +1,6 @@
 """
-Panel state persistence — saves / loads per-panel settings to a JSON file
-inside the project's layout directory (Documents/Infernux/{project}/).
+Panel state persistence — saves / loads per-panel settings inside the
+project-owned Editor cache directory.
 """
 import json
 import os

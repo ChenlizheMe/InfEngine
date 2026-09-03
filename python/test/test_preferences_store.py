@@ -1,16 +1,39 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
-from Infernux.engine.preferences_store import PreferencesStore
+from Infernux.engine.preferences_store import PreferencesStore, _prefs_path
+from Infernux.engine.user_data import (
+    get_infernux_data_root,
+    get_project_editor_layout_root,
+)
 
 
 def _store_at(path) -> PreferencesStore:
     store = object.__new__(PreferencesStore)
     store._path = str(path)
     return store
+
+
+def test_preferences_use_configured_infernux_data_root(tmp_path, monkeypatch):
+    root = tmp_path / "hub-data"
+    monkeypatch.setenv("INFERNUX_DATA_ROOT", str(root))
+
+    assert get_infernux_data_root() == str(root.resolve())
+    assert _prefs_path() == os.path.join(
+        str(root.resolve()), "State", "Editor", "preferences.json"
+    )
+
+
+def test_editor_layout_is_owned_by_the_project(tmp_path):
+    project = tmp_path / "same-name" / "project"
+
+    assert get_project_editor_layout_root(project) == os.path.join(
+        str(project.resolve()), "Cache", "Editor", "Layout"
+    )
 
 
 def test_missing_preferences_file_has_empty_current_state(tmp_path):

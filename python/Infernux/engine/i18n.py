@@ -16,7 +16,7 @@ Usage::
     label = t("menu.project")        # "Project" or "项目"
     label = t("menu.preferences")    # "Preferences" or "偏好设置"
 
-The active locale is persisted to ``Documents/Infernux/preferences.json``
+The active locale is persisted to the Hub-owned Editor preferences file
 so it survives across sessions.
 """
 
@@ -92,7 +92,7 @@ def set_locale(locale: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Persistence — Documents/Infernux/preferences.json
+# Persistence — Hub-owned Editor preferences
 # ---------------------------------------------------------------------------
 
 def _load_preference() -> None:

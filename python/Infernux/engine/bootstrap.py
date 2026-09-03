@@ -9,7 +9,6 @@ methods, and panel/manager references live on the bootstrap instance.
 from __future__ import annotations
 
 import os
-import pathlib
 import threading
 import time
 from typing import Optional
@@ -477,27 +476,13 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.scene_file_manager.set_on_scene_changed(on_scene_changed)
 
     def _setup_layout_persistence(self):
-        project_name = os.path.basename(self.project_path)
+        from Infernux.engine.user_data import get_project_editor_layout_root
 
-        docs_dir = None
-        if os.name == "nt":
-            try:
-                import ctypes
-                import ctypes.wintypes
-                buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-                ctypes.windll.shell32.SHGetFolderPathW(None, 0x0005, None, 0, buf)
-                if buf.value:
-                    docs_dir = pathlib.Path(buf.value)
-            except (OSError, ValueError) as _exc:
-                pass
-        if docs_dir is None:
-            docs_dir = pathlib.Path.home() / "Documents"
-
-        layout_dir = docs_dir / "Infernux" / project_name
+        layout_dir = get_project_editor_layout_root(self.project_path)
         os.makedirs(layout_dir, exist_ok=True)
         _panel_state.init(str(layout_dir))
 
-        imgui_ini_path = str(layout_dir / "imgui.ini")
+        imgui_ini_path = os.path.join(layout_dir, "imgui.ini")
         self.window_manager.set_imgui_ini_path(imgui_ini_path)
 
     def _persist_editor_state(self, *, include_scene_draft: bool = False):
