@@ -791,6 +791,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "InfernuxWebPageLifecycle" in main
     assert "InfernuxWebUserActivation" in main
     assert "InfernuxWebSetRenderDiagnostic" in main
+    assert "config.alphaMode = wgpu::CompositeAlphaMode::Opaque;" in main
+    assert "wgpu::CompositeAlphaMode::Auto" not in main
     assert "g_particleRenderingEnabledForDiagnostics" in main
     assert "SetBloomEnabledForDiagnostics" in main
     assert "INFERNUX_WEB_AUDIO_READY" in main

@@ -266,6 +266,7 @@ jobs:
       INFERNUX_SOURCE_ROOT: ${{ github.workspace }}
       INFERNUX_WEB_TOOLCHAIN_ROOT: ${{ github.workspace }}/out/toolchains/web
       INFERNUX_WEB_BUILD_CACHE: ${{ github.workspace }}/out/cache/web
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -289,7 +290,10 @@ jobs:
             web-player-${{ runner.os }}-
 
       - name: Install host dependencies
-        run: scripts/setup/install_linux_dependencies.sh
+        run: |
+          scripts/setup/install_linux_dependencies.sh
+          sudo apt-get install --yes --no-install-recommends mesa-vulkan-drivers
+          test -f "$VK_ICD_FILENAMES"
 
       - name: Install Python dependencies
         run: |
@@ -327,7 +331,7 @@ jobs:
           npm ci --prefix scripts/acceptance
           npm exec --prefix scripts/acceptance -- playwright install --with-deps chromium
 
-      - name: Validate Web Player in a mobile browser context
+      - name: Validate Web Player runtime in a Linux mobile browser context
         run: |
           conda activate infernux
           set -o pipefail
@@ -349,10 +353,19 @@ jobs:
           node scripts/acceptance/web_mobile_input_smoke.cjs \
             http://127.0.0.1:8765/infernux-player.html \
             --startup-timeout-ms 360000 \
+            --skip-frame-checks \
             --verify-native-multitouch \
             --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." \
             --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." \
             | tee out/test-results/web-player-smoke.json
+
+      - name: Upload Web Player for visual acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-player-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/acceptance/web
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload Web Player evidence
         if: always()
@@ -362,6 +375,74 @@ jobs:
           path: |
             out/test-results/web-*
             out/toolchains/web/infernux-web-toolchain.json
+          if-no-files-found: warn
+
+  web-browser:
+    needs: web-player
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download Linux-built Web Player
+        uses: actions/download-artifact@v4
+        with:
+          name: web-player-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/acceptance/web
+
+      - name: Install browser acceptance runtime
+        shell: pwsh
+        run: npm ci --prefix scripts/acceptance
+
+      - name: Validate Web Player pixels and input in Edge
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path out/test-results -Force | Out-Null
+          $server = Start-Process -FilePath python `
+            -ArgumentList @("-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "out/acceptance/web") `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput out/test-results/web-edge-http.stdout.log `
+            -RedirectStandardError out/test-results/web-edge-http.stderr.log `
+            -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 50; $attempt++) {
+              try {
+                Invoke-WebRequest http://127.0.0.1:8765/infernux-player.html -UseBasicParsing | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 100
+              }
+            }
+            if (-not $ready) {
+              throw "Web Player HTTP server did not become ready"
+            }
+            node scripts/acceptance/web_mobile_input_smoke.cjs `
+              http://127.0.0.1:8765/infernux-player.html `
+              --startup-timeout-ms 360000 `
+              --verify-native-multitouch `
+              --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." `
+              --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." `
+              --report out/test-results/web-edge-player-smoke.json
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload Web browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-browser-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/web-edge-*
           if-no-files-found: warn
 
   android-player:

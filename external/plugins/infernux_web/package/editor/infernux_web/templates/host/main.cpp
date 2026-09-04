@@ -430,7 +430,10 @@ void ResizeCanvas()
         config.usage = wgpu::TextureUsage::RenderAttachment;
         config.width = g_width;
         config.height = g_height;
-        config.alphaMode = wgpu::CompositeAlphaMode::Auto;
+        // A standalone Player owns the complete canvas, so transparency is
+        // not part of its presentation contract.  Keep that contract
+        // explicit and identical to the opaque desktop swapchains.
+        config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
         config.presentMode = wgpu::PresentMode::Fifo;
         g_surface.Configure(&config);
         g_sceneRenderer.Resize(g_width, g_height);

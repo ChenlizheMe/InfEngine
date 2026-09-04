@@ -328,16 +328,18 @@ async function main() {
       await contexts[0].newPage();
   } else {
     const executablePath = resolveBrowserExecutable();
-    const browserArgs = [
-      "--enable-unsafe-webgpu",
-      "--disable-gpu-sandbox",
-      // Headless Chromium selects SwiftShader on GPU-less runners. Pin that
-      // adapter explicitly and disable the hardware-oriented GPU watchdog so
-      // a slow software-rendered frame cannot destroy an otherwise valid
-      // WebGPU device in the middle of the acceptance sequence.
-      "--use-webgpu-adapter=swiftshader",
-      "--disable-gpu-watchdog",
-    ];
+    const browserArgs = ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"];
+    if (process.platform === "linux") {
+      // Exercise Dawn through the runner's pinned Vulkan ICD. Chromium's
+      // internal WebGPU SwiftShader adapter can destroy its device after the
+      // first real render submission, while ANGLE/Vulkan preserves the same
+      // swapchain contract used by the Linux Player acceptance job.
+      browserArgs.push(
+        "--enable-gpu",
+        "--use-angle=vulkan",
+        "--enable-features=Vulkan",
+      );
+    }
     const browserSelection = executablePath
       ? { executablePath }
       // Playwright's explicit Chromium channel selects the full browser and

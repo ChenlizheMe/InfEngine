@@ -69,6 +69,8 @@ gradle -p tests/android/input_instrumentation \
 # A long native build can outlive an emulator framework restart. Re-establish
 # the same concrete service barrier before sending any synthetic input.
 wait_for_android_input_service
+adb -s emulator-5554 shell locksettings set-disabled true
+adb -s emulator-5554 shell svc power stayon true
 adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
 adb -s emulator-5554 shell wm dismiss-keyguard
 adb -s emulator-5554 shell input keyevent KEYCODE_HOME
