@@ -106,6 +106,7 @@ def test_desktop_player_jobs_use_real_input_physics_and_line_renderer_smoke():
 
     assert "windows-player:" in text
     assert "linux-player:" in text
+    assert '"out/acceptance/桌面/linux/InfernuxPlatformFixture"' in text
     assert '--object "Render Probe"' in text
     assert text.count("minimum-axis-delta 0.5") == 2
     assert text.count("minimum-final-y 0.0") == 2

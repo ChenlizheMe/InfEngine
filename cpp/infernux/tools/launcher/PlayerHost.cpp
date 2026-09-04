@@ -34,6 +34,8 @@ namespace
 #endif
 
 using PyConfigInitIsolated = void(INFERNUX_PYTHON_CALL *)(PyConfig *);
+using PyPreConfigInitIsolated = void(INFERNUX_PYTHON_CALL *)(PyPreConfig *);
+using PyPreInitialize = PyStatus(INFERNUX_PYTHON_CALL *)(const PyPreConfig *);
 using PyConfigSetString = PyStatus(INFERNUX_PYTHON_CALL *)(PyConfig *, wchar_t **, const wchar_t *);
 using PyWideStringListAppend = PyStatus(INFERNUX_PYTHON_CALL *)(PyWideStringList *, const wchar_t *);
 using PyConfigSetArgv = PyStatus(INFERNUX_PYTHON_CALL *)(PyConfig *, Py_ssize_t, wchar_t *const *);
@@ -206,7 +208,7 @@ std::vector<std::wstring> BuildPythonArguments(const std::filesystem::path &host
 {
     std::vector<std::wstring> result;
     result.reserve(gameArguments.size() + 1);
-    result.push_back(hostExecutable.wstring());
+    result.push_back(WidePath(hostExecutable));
     result.insert(result.end(), gameArguments.begin(), gameArguments.end());
     return result;
 }
@@ -279,6 +281,8 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::vector<std::wstri
     const auto resolve = [python](const char *name) -> void * { return ::dlsym(python, name); };
 #endif
     const auto initIsolated = reinterpret_cast<PyConfigInitIsolated>(resolve("PyConfig_InitIsolatedConfig"));
+    const auto initPreIsolated = reinterpret_cast<PyPreConfigInitIsolated>(resolve("PyPreConfig_InitIsolatedConfig"));
+    const auto preInitialize = reinterpret_cast<PyPreInitialize>(resolve("Py_PreInitialize"));
     const auto setString = reinterpret_cast<PyConfigSetString>(resolve("PyConfig_SetString"));
     const auto appendPath = reinterpret_cast<PyWideStringListAppend>(resolve("PyWideStringList_Append"));
     const auto setConfigArgv = reinterpret_cast<PyConfigSetArgv>(resolve("PyConfig_SetArgv"));
@@ -286,9 +290,19 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::vector<std::wstri
     const auto clearConfig = reinterpret_cast<PyConfigClear>(resolve("PyConfig_Clear"));
     const auto runSimple = reinterpret_cast<PyRunSimpleStringFlags>(resolve("PyRun_SimpleStringFlags"));
     const auto statusException = reinterpret_cast<PyStatusException>(resolve("PyStatus_Exception"));
-    if (initIsolated == nullptr || setString == nullptr || appendPath == nullptr || setConfigArgv == nullptr ||
-        initialize == nullptr || clearConfig == nullptr || runSimple == nullptr || statusException == nullptr) {
+    if (initIsolated == nullptr || initPreIsolated == nullptr || preInitialize == nullptr || setString == nullptr ||
+        appendPath == nullptr || setConfigArgv == nullptr || initialize == nullptr || clearConfig == nullptr ||
+        runSimple == nullptr || statusException == nullptr) {
         Fail(L"The CPython shared library does not export the required isolated PyConfig API.");
+        return 3;
+    }
+
+    PyPreConfig preconfig;
+    initPreIsolated(&preconfig);
+    preconfig.utf8_mode = 1;
+    PyStatus status = preInitialize(&preconfig);
+    if (statusException(status)) {
+        Fail(L"Unable to preinitialize isolated CPython Player runtime in UTF-8 mode.");
         return 3;
     }
 
@@ -311,7 +325,7 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::vector<std::wstri
         return Fail(message);
     };
     const std::wstring programName = WidePath(layout.hostExecutable);
-    PyStatus status = setString(&config, &config.program_name, programName.c_str());
+    status = setString(&config, &config.program_name, programName.c_str());
     if (statusException(status)) {
         failStatus(status, L"Unable to configure isolated Player program name");
         return 3;

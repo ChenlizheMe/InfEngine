@@ -228,14 +228,14 @@ jobs:
           mkdir -p out/ci-projects/linux out/test-results
           cp -a tests/fixtures/multiplatform_player/. out/ci-projects/linux/
           python scripts/acceptance/build_player.py \
-            out/ci-projects/linux linux-x64 out/acceptance/linux \
+            out/ci-projects/linux linux-x64 "out/acceptance/桌面/linux" \
             --report out/test-results/linux-player-build.json
 
       - name: Validate Linux Player input, physics, and LineRenderer
         run: |
           conda activate infernux
           python scripts/acceptance/linux_player_smoke.py \
-            out/acceptance/linux/InfernuxPlatformFixture \
+            "out/acceptance/桌面/linux/InfernuxPlatformFixture" \
             --report out/test-results/linux-player-smoke.json \
             --artifact-root out/test-results/linux-player-artifacts \
             --xvfb always \
