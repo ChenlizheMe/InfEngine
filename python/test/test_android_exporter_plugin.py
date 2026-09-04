@@ -240,6 +240,28 @@ def test_android_doctor_accepts_the_pinned_local_toolchain(monkeypatch, tmp_path
     assert report.available
     assert report.diagnostics == ()
     assert report.details["avds"] == ["Infernux_API_36"]
+    assert report.details["adb_available"] is True
+    assert report.details["emulator_available"] is True
+
+
+def test_android_build_doctor_does_not_require_a_local_device_or_avd(
+    monkeypatch, tmp_path
+):
+    module = _android_module(monkeypatch)
+    toolchain = _toolchain(tmp_path)
+    sdk = Path(toolchain["ANDROID_SDK_ROOT"])
+    suffix = ".exe" if sys.platform == "win32" else ""
+    (sdk / "platform-tools" / f"adb{suffix}").unlink()
+    (sdk / "emulator" / f"emulator{suffix}").unlink()
+    Path(toolchain["ANDROID_AVD_HOME"], "Infernux_API_36.ini").unlink()
+
+    report = module.inspect_android_toolchain("android-x64-emulator", toolchain)
+
+    assert report.available
+    assert report.diagnostics == ()
+    assert report.details["avds"] == []
+    assert report.details["adb_available"] is False
+    assert report.details["emulator_available"] is False
 
 
 def test_android_doctor_reports_every_missing_root(monkeypatch):

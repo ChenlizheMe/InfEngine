@@ -84,34 +84,17 @@ def inspect_android_toolchain(
         )
         details["ndk_root"] = str(ndk_root)
         adb = sdk_root / "platform-tools" / _executable("adb")
-        _require_file(
-            adb,
-            "android.sdk.adb",
-            "Install Android SDK platform-tools.",
-            diagnostics,
-        )
         details["adb"] = str(adb)
+        details["adb_available"] = adb.is_file()
 
         if target_id == "android-x64-emulator":
             emulator = sdk_root / "emulator" / _executable("emulator")
-            _require_file(
-                emulator,
-                "android.sdk.emulator",
-                "Install the Android Emulator package.",
-                diagnostics,
-            )
             details["emulator"] = str(emulator)
+            details["emulator_available"] = emulator.is_file()
             avd_home = _avd_home(values)
             avds = _available_avds(avd_home)
             details["avd_home"] = str(avd_home) if avd_home else ""
             details["avds"] = avds
-            if not avds:
-                diagnostics.append(
-                    _error(
-                        "android.emulator.avd",
-                        "Create an x86_64 AOSP Android Virtual Device.",
-                    )
-                )
 
     if java_home is None:
         diagnostics.append(
