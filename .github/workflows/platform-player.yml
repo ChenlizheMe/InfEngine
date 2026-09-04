@@ -362,17 +362,21 @@ jobs:
 
       - name: Install browser acceptance runtime
         shell: pwsh
-        run: npm ci --prefix scripts/acceptance
+        run: |
+          npm ci --prefix scripts/acceptance
+          & .\scripts\acceptance\node_modules\.bin\playwright.cmd install chromium
 
-      - name: Validate Web Player pixels and input in Edge
+      - name: Validate Web Player pixels and input in Chromium
         shell: pwsh
+        env:
+          INFERNUX_WEB_BROWSER_CHANNEL: chromium
         run: |
           New-Item -ItemType Directory -Path out/test-results -Force | Out-Null
           $server = Start-Process -FilePath python `
             -ArgumentList @("-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "out/acceptance/web") `
             -WindowStyle Hidden `
-            -RedirectStandardOutput out/test-results/web-edge-http.stdout.log `
-            -RedirectStandardError out/test-results/web-edge-http.stderr.log `
+            -RedirectStandardOutput out/test-results/web-browser-http.stdout.log `
+            -RedirectStandardError out/test-results/web-browser-http.stderr.log `
             -PassThru
           try {
             $ready = $false
@@ -394,7 +398,7 @@ jobs:
               --verify-native-multitouch `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." `
-              --report out/test-results/web-edge-player-smoke.json
+              --report out/test-results/web-browser-player-smoke.json
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
@@ -404,7 +408,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: web-browser-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/test-results/web-edge-*
+          path: out/test-results/web-browser-*
           if-no-files-found: warn
 
   android-player:

@@ -328,6 +328,17 @@ async function main() {
       await contexts[0].newPage();
   } else {
     const executablePath = resolveBrowserExecutable();
+    const configuredBrowserChannel =
+      process.env.INFERNUX_WEB_BROWSER_CHANNEL?.trim();
+    if (
+      configuredBrowserChannel &&
+      configuredBrowserChannel !== "chromium" &&
+      configuredBrowserChannel !== "msedge"
+    ) {
+      throw new Error(
+        "INFERNUX_WEB_BROWSER_CHANNEL must be 'chromium' or 'msedge'",
+      );
+    }
     const browserArgs = [
       "--enable-unsafe-webgpu",
       "--disable-gpu-sandbox",
@@ -337,12 +348,14 @@ async function main() {
       "--enable-features=UseSkiaRenderer,Vulkan",
       "--use-webgpu-adapter=swiftshader",
     ];
-    const browserSelection = executablePath
-      ? { executablePath }
+    const browserSelection = configuredBrowserChannel
+      ? { channel: configuredBrowserChannel }
+      : executablePath
+        ? { executablePath }
       // Playwright's explicit Chromium channel selects the full browser and
       // its new headless implementation. The legacy headless shell can
       // destroy a SwiftShader WebGPU device after the first rendered frame.
-      : { channel: "chromium" };
+        : { channel: "chromium" };
     browser = await chromium.launch({
       ...browserSelection,
       headless: true,

@@ -98,7 +98,7 @@ def test_platform_workflow_is_bounded_and_collects_evidence():
     assert "android-player-smoke.json" in product_commands
     assert "android-multitouch-smoke.json" in product_commands
     assert "web-player-build.json" in text
-    assert "web-edge-player-smoke.json" in text
+    assert "web-browser-player-smoke.json" in text
 
 
 def test_desktop_player_jobs_use_real_input_physics_and_line_renderer_smoke():
@@ -240,7 +240,7 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert "--verify-native-multitouch" in workflow
 
 
-def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_edge():
+def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_chromium():
     smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
         encoding="utf-8"
     )
@@ -252,6 +252,7 @@ def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_edge():
     assert '{ channel: "chromium" }' in smoke
     assert '"--use-angle=vulkan"' not in smoke
     assert '"--disable-vulkan-surface"' not in smoke
+    assert "INFERNUX_WEB_BROWSER_CHANNEL" in smoke
 
     workflow = (ROOT / ".github" / "workflows" / "platform-player.yml").read_text(
         encoding="utf-8"
@@ -260,9 +261,11 @@ def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_edge():
     assert "needs: web-player" in workflow
     assert "Upload Web Player for visual acceptance" in workflow
     assert "Download Linux-built Web Player" in workflow
-    assert "Validate Web Player pixels and input in Edge" in workflow
+    assert "playwright.cmd install chromium" in workflow
+    assert "INFERNUX_WEB_BROWSER_CHANNEL: chromium" in workflow
+    assert "Validate Web Player pixels and input in Chromium" in workflow
     assert "infernuxWebGpuAdapter=fallback" in workflow
-    assert "--report out/test-results/web-edge-player-smoke.json" in workflow
+    assert "--report out/test-results/web-browser-player-smoke.json" in workflow
     assert "--skip-frame-checks" not in workflow
 
 
