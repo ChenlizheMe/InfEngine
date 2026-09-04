@@ -282,18 +282,22 @@ def inject_touch_gesture(
             time.sleep(step_delay)
 
 
-def unlock_device(adb: Adb, timeout: float = 10.0) -> None:
+def unlock_device(adb: Adb, timeout: float = 30.0) -> None:
     """Wake and dismiss a non-secure keyguard before launching the Player."""
-    adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
-    adb.run("shell", "wm", "dismiss-keyguard", check=False)
     deadline = time.monotonic() + timeout
-    gesture_sent = False
+    attempt = 0
     last_policy = ""
     while time.monotonic() < deadline:
         last_policy = adb.run("shell", "dumpsys", "window", "policy", check=False)
         if not keyguard_is_showing(last_policy):
             return
-        if not gesture_sent:
+        if attempt % 4 == 0:
+            # A newly booted API 36 emulator can ignore the first dismiss while
+            # SystemUI is still settling. Retry the complete non-secure unlock
+            # sequence once per second instead of waiting after one lost swipe.
+            adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
+            adb.run("shell", "input", "keyevent", "KEYCODE_MENU", check=False)
+            adb.run("shell", "wm", "dismiss-keyguard", check=False)
             size = physical_display_size(
                 adb.run("shell", "wm", "size", check=False)
             )
@@ -311,7 +315,7 @@ def unlock_device(adb: Adb, timeout: float = 10.0) -> None:
                     check=False,
                 )
             adb.run("shell", "wm", "dismiss-keyguard", check=False)
-            gesture_sent = True
+        attempt += 1
         time.sleep(0.25)
     raise RuntimeError(
         "Android device is still locked; unlock it before running Player acceptance"

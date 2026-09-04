@@ -86,6 +86,39 @@ def test_keyguard_visibility_is_fail_closed(policy: str, expected: bool):
     assert module.keyguard_is_showing(policy) is expected
 
 
+def test_unlock_retries_the_complete_sequence_when_systemui_drops_the_first_swipe(
+    monkeypatch,
+):
+    module = _module()
+    commands = []
+    policy_calls = 0
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            nonlocal policy_calls
+            assert options == {"check": False}
+            commands.append(arguments)
+            if arguments == ("shell", "dumpsys", "window", "policy"):
+                policy_calls += 1
+                return (
+                    "KeyguardServiceDelegate\n"
+                    f"showing={'true' if policy_calls <= 5 else 'false'}"
+                )
+            if arguments == ("shell", "wm", "size"):
+                return "Physical size: 1080x1920"
+            return ""
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module.unlock_device(FakeAdb())
+
+    assert commands.count(
+        ("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    ) == 2
+    assert commands.count(("shell", "input", "keyevent", "KEYCODE_MENU")) == 2
+    assert commands.count(("shell", "wm", "dismiss-keyguard")) == 4
+
+
 @pytest.mark.parametrize(
     ("output", "expected"),
     [

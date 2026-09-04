@@ -328,11 +328,25 @@ async function main() {
       await contexts[0].newPage();
   } else {
     const executablePath = resolveBrowserExecutable();
+    const browserArgs = ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"];
+    if (process.platform === "linux") {
+      // Headless Chromium otherwise forces its internal SwiftShader path. It
+      // can expose WebGPU while destroying the device as soon as a real render
+      // workload is submitted, leaving a fully transparent canvas. Exercise
+      // the runner's Vulkan implementation instead, using Chromium's
+      // documented headless WebGPU configuration.
+      browserArgs.push(
+        "--enable-gpu",
+        "--use-angle=vulkan",
+        "--enable-features=Vulkan",
+        "--disable-vulkan-surface",
+      );
+    }
     browser = await chromium.launch({
       executablePath,
       headless: true,
       timeout: 30000,
-      args: ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"],
+      args: browserArgs,
     });
     page = await browser.newPage({
       viewport: { width: viewportWidth, height: viewportHeight },

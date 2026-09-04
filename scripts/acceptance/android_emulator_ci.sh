@@ -18,6 +18,8 @@ for variable in INFERNUX_ANDROID_RUNTIME INFERNUX_ANDROID_BUILD_CACHE; do
     fi
 done
 
+adb -s emulator-5554 shell svc power stayon true
+
 rm -rf -- out/ci-projects/android out/acceptance/android
 mkdir -p out/ci-projects/android out/test-results
 cp -a tests/fixtures/multiplatform_player/. out/ci-projects/android/
