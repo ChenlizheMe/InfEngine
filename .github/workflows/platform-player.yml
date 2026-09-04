@@ -494,7 +494,13 @@ jobs:
               "$INFERNUX_ANDROID_RUNTIME_WORK"
           fi
 
-      - name: Build and validate Android Player on API 36
+      - name: Build Android Player and input instrumentation
+        run: |
+          conda activate infernux
+          bash scripts/acceptance/android_emulator_ci.sh \
+            "$CONDA/envs/infernux/bin/python" build
+
+      - name: Validate Android Player on API 36
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 36
@@ -505,7 +511,8 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu lavapipe -no-boot-anim -camera-back none
           script: |
-            bash scripts/acceptance/android_emulator_ci.sh "$CONDA/envs/infernux/bin/python"
+            bash scripts/acceptance/android_emulator_ci.sh \
+              "$CONDA/envs/infernux/bin/python" smoke
 
       - name: Upload Android Player evidence
         if: always()

@@ -133,6 +133,7 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     emulator_body = text[emulator_script : text.index("- name: Upload Android Player evidence", emulator_script)]
     assert emulator_body.count("bash scripts/acceptance/android_emulator_ci.sh") == 1
     assert '"$CONDA/envs/infernux/bin/python"' in emulator_body
+    assert '"$CONDA/envs/infernux/bin/python" smoke' in emulator_body
     assert "build_player.py" not in emulator_body
     assert '"--keep-running"' in smoke
     assert '"--require-log"' in smoke
@@ -140,20 +141,21 @@ def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
     assert "tests/android/input_instrumentation" in driver
 
 
-def test_android_emulator_driver_owns_the_full_single_shell_workflow():
+def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
+    workflow = _text()
     driver = _android_driver_text()
 
     assert "set -euo pipefail" in driver
+    assert 'mode="${2:-all}"' in driver
     assert '"$python_executable" scripts/acceptance/build_player.py' in driver
     assert "android-x64-emulator" in driver
     assert "gradle -p tests/android/input_instrumentation" in driver
     smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
-    assert driver.count("locksettings set-disabled true") == 2
-    assert driver.count("svc power stayon true") == 2
-    assert driver.count("wait_for_android_input_service") == 3
+    assert driver.count("locksettings set-disabled true") == 1
+    assert driver.count("svc power stayon true") == 1
+    assert driver.count("wait_for_android_input_service") == 2
     assert "getprop sys.boot_completed" in driver
     assert "service check input" in driver
-    assert driver.index("wait_for_android_input_service") < driver.index("KEYCODE_WAKEUP")
     assert driver.rindex("wait_for_android_input_service") < smoke
     assert driver.rindex("locksettings set-disabled true") < smoke
     assert driver.rindex("svc power stayon true") < smoke
@@ -165,6 +167,10 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
     assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
     assert "--wait-milliseconds 20000" in driver
+    build_step = workflow.index("- name: Build Android Player and input instrumentation")
+    launch_emulator = workflow.index("ReactiveCircus/android-emulator-runner@")
+    assert build_step < launch_emulator
+    assert '"$CONDA/envs/infernux/bin/python" build' in workflow[build_step:launch_emulator]
 
 
 def test_android_builds_host_modules_before_cross_platform_packaging():
