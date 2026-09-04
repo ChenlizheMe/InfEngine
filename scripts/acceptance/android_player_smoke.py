@@ -238,6 +238,12 @@ def keyguard_is_showing(policy: str) -> bool:
     return True
 
 
+def lock_screen_is_disabled(output: str) -> bool:
+    """Read the authoritative `locksettings get-disabled` boolean."""
+    lines = tuple(line.strip() for line in output.splitlines() if line.strip())
+    return bool(lines) and lines[-1].casefold() == "true"
+
+
 def physical_display_size(output: str) -> tuple[int, int] | None:
     for raw_line in output.splitlines():
         match = re.search(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", raw_line)
@@ -288,6 +294,11 @@ def unlock_device(adb: Adb, timeout: float = 30.0) -> None:
     attempt = 0
     last_policy = ""
     while True:
+        disabled = adb.run(
+            "shell", "locksettings", "get-disabled", check=False
+        )
+        if lock_screen_is_disabled(disabled):
+            return
         last_policy = adb.run("shell", "dumpsys", "window", "policy", check=False)
         if not keyguard_is_showing(last_policy):
             return
@@ -430,11 +441,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             f"APK ABIs {sorted(packaged_abis)} do not include device ABI {abi}"
         )
 
-    # A software-only hosted emulator can take multiple full SystemUI cycles to
-    # accept the same non-secure dismiss that a physical device handles at once.
-    # Keep the physical-device failure fast while allowing emulator retries to
-    # reach an authoritative unlocked policy state.
-    unlock_device(adb, timeout=180.0 if device.emulator else 30.0)
+    unlock_device(adb)
     reinstalled_after_signature_mismatch = False
     automated_install_approval = False
     if not arguments.no_install:

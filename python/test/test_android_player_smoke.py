@@ -86,6 +86,33 @@ def test_keyguard_visibility_is_fail_closed(policy: str, expected: bool):
     assert module.keyguard_is_showing(policy) is expected
 
 
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [("true\n", True), ("false\n", False), ("unsupported command\n", False)],
+)
+def test_lock_screen_disabled_parser_is_fail_closed(output: str, expected: bool):
+    module = _module()
+
+    assert module.lock_screen_is_disabled(output) is expected
+
+
+def test_disabled_lock_screen_wins_over_stale_keyguard_transition():
+    module = _module()
+    commands = []
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert options == {"check": False}
+            commands.append(arguments)
+            if arguments == ("shell", "locksettings", "get-disabled"):
+                return "true"
+            raise AssertionError("stale keyguard policy must not be consulted")
+
+    module.unlock_device(FakeAdb())
+
+    assert commands == [("shell", "locksettings", "get-disabled")]
+
+
 def test_unlock_retries_the_complete_sequence_when_systemui_drops_the_first_swipe(
     monkeypatch,
 ):
@@ -98,6 +125,8 @@ def test_unlock_retries_the_complete_sequence_when_systemui_drops_the_first_swip
             nonlocal policy_calls
             assert options == {"check": False}
             commands.append(arguments)
+            if arguments == ("shell", "locksettings", "get-disabled"):
+                return "false"
             if arguments == ("shell", "dumpsys", "window", "policy"):
                 policy_calls += 1
                 return (
@@ -131,6 +160,8 @@ def test_unlock_observes_the_result_when_adb_commands_outlive_deadline(monkeypat
             nonlocal policy_calls
             assert options == {"check": False}
             commands.append(arguments)
+            if arguments == ("shell", "locksettings", "get-disabled"):
+                return "false"
             if arguments == ("shell", "dumpsys", "window", "policy"):
                 policy_calls += 1
                 return (
@@ -309,8 +340,7 @@ def test_device_is_unlocked_before_usb_install_approval_is_requested():
         "def _parser()", 1
     )[0]
 
-    assert run_smoke.index("unlock_device(adb,") < run_smoke.index("install_apk(")
-    assert "timeout=180.0 if device.emulator else 30.0" in run_smoke
+    assert run_smoke.index("unlock_device(adb)") < run_smoke.index("install_apk(")
 
 
 def test_atomic_report_records_structured_payload(tmp_path: Path):
