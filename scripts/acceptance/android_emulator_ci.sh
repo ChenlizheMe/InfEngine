@@ -75,9 +75,6 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
     wait_for_android_input_service
     adb -s emulator-5554 shell locksettings set-disabled true
     adb -s emulator-5554 shell svc power stayon true
-    adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
-    adb -s emulator-5554 shell wm dismiss-keyguard
-    adb -s emulator-5554 shell input keyevent KEYCODE_HOME
 
     "$python_executable" scripts/acceptance/android_player_smoke.py \
         out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \

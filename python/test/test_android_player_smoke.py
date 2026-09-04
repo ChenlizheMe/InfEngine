@@ -112,6 +112,7 @@ def test_unlock_retries_the_complete_sequence_when_systemui_drops_the_first_swip
 
     module.unlock_device(FakeAdb())
 
+    assert commands.count(("shell", "input", "keyevent", "KEYCODE_SLEEP")) == 2
     assert commands.count(
         ("shell", "input", "keyevent", "KEYCODE_WAKEUP")
     ) == 2
@@ -146,6 +147,7 @@ def test_unlock_observes_the_result_when_adb_commands_outlive_deadline(monkeypat
     module.unlock_device(FakeAdb(), timeout=30.0)
 
     assert policy_calls == 2
+    assert commands.count(("shell", "input", "keyevent", "KEYCODE_SLEEP")) == 1
     assert commands.count(("shell", "wm", "dismiss-keyguard")) == 2
 
 

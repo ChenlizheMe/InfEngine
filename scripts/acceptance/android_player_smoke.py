@@ -299,8 +299,9 @@ def unlock_device(adb: Adb, timeout: float = 30.0) -> None:
             break
         if attempt % 4 == 0:
             # A newly booted API 36 emulator can ignore the first dismiss while
-            # SystemUI is still settling. Retry the complete non-secure unlock
-            # sequence once per second instead of waiting after one lost swipe.
+            # SystemUI is still settling. Start from a fresh display lifecycle
+            # before retrying the complete non-secure unlock sequence.
+            adb.run("shell", "input", "keyevent", "KEYCODE_SLEEP", check=False)
             adb.run("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
             adb.run("shell", "input", "keyevent", "KEYCODE_MENU", check=False)
             adb.run("shell", "wm", "dismiss-keyguard", check=False)
