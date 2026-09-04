@@ -44,6 +44,10 @@ EM_JS(double, InfernuxWebAcceptancePauseFrame, (), {
     return clock && clock.enabled ? Number(clock.pauseAfterFrame) : 0.0;
 });
 
+EM_JS(int, InfernuxWebForceFallbackAdapter, (), {
+    return new URLSearchParams(globalThis.location.search).get("infernuxWebGpuAdapter") === "fallback" ? 1 : 0;
+});
+
 #if defined(INFERNUX_WEB_ENGINE_RUNTIME)
 PyMODINIT_FUNC PyInit__Infernux();
 #endif
@@ -1109,8 +1113,12 @@ int main()
         std::fprintf(stderr, "INFERNUX_WEB_PYTHON_INITIALIZATION_FAILED\n");
         return 1;
     }
+    wgpu::RequestAdapterOptions adapterOptions;
+    adapterOptions.forceFallbackAdapter = InfernuxWebForceFallbackAdapter() != 0;
+    std::printf("INFERNUX_WEBGPU_ADAPTER_REQUEST mode=%s\n",
+                adapterOptions.forceFallbackAdapter ? "fallback" : "preferred");
     g_instance.RequestAdapter(
-        nullptr, wgpu::CallbackMode::AllowSpontaneous,
+        &adapterOptions, wgpu::CallbackMode::AllowSpontaneous,
         [](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message) {
             if (status != wgpu::RequestAdapterStatus::Success) {
                 std::fprintf(stderr, "INFERNUX_WEBGPU_ADAPTER_FAILED %.*s\n", static_cast<int>(message.length),

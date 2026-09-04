@@ -620,6 +620,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
 
     assert "libpython3.13.a" in cmake
     assert "--use-port=emdawnwebgpu" in cmake
+    assert "adapterOptions.forceFallbackAdapter" in main
+    assert "INFERNUX_WEBGPU_ADAPTER_REQUEST mode=%s" in main
     assert "TextureFormat::RGBA16Unorm" not in rhi_backend
     assert "TextureFormat::RGBA16Unorm" not in scene_renderer
     assert "TextureFormat::RGBA16Unorm" not in screen_ui_renderer

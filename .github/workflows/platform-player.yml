@@ -389,7 +389,7 @@ jobs:
               throw "Web Player HTTP server did not become ready"
             }
             node scripts/acceptance/web_mobile_input_smoke.cjs `
-              http://127.0.0.1:8765/infernux-player.html `
+              "http://127.0.0.1:8765/infernux-player.html?infernuxWebGpuAdapter=fallback" `
               --startup-timeout-ms 360000 `
               --verify-native-multitouch `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." `
@@ -499,7 +499,7 @@ jobs:
           profile: pixel_6
           emulator-boot-timeout: 600
           disable-animations: true
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu lavapipe -no-boot-anim -camera-back none
           script: |
             bash scripts/acceptance/android_emulator_ci.sh "$CONDA/envs/infernux/bin/python"
 

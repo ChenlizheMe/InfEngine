@@ -78,7 +78,7 @@ def test_platform_workflow_keeps_product_graphics_contracts_explicit():
     assert "arch: x86_64" in text
     assert '"ndk;27.3.13750724"' in text
     assert '"ndk;29.0.14206865"' in text
-    assert "-gpu swiftshader " in text
+    assert "-gpu lavapipe " in text
     assert "swiftshader_indirect" not in text
     assert "opengl" not in text
     assert "gles" not in text
@@ -261,6 +261,7 @@ def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_edge():
     assert "Upload Web Player for visual acceptance" in workflow
     assert "Download Linux-built Web Player" in workflow
     assert "Validate Web Player pixels and input in Edge" in workflow
+    assert "infernuxWebGpuAdapter=fallback" in workflow
     assert "--report out/test-results/web-edge-player-smoke.json" in workflow
     assert "--skip-frame-checks" not in workflow
 
