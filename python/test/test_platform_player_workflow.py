@@ -246,6 +246,7 @@ def test_web_smoke_does_not_force_an_unavailable_linux_vulkan_adapter():
     assert '"--enable-unsafe-webgpu"' in smoke
     assert '"--use-webgpu-adapter=swiftshader"' in smoke
     assert '"--disable-gpu-watchdog"' in smoke
+    assert '{ channel: "chromium" }' in smoke
     assert '"--use-angle=vulkan"' not in smoke
     assert '"--enable-features=Vulkan"' not in smoke
     assert '"--disable-vulkan-surface"' not in smoke

@@ -338,8 +338,14 @@ async function main() {
       "--use-webgpu-adapter=swiftshader",
       "--disable-gpu-watchdog",
     ];
+    const browserSelection = executablePath
+      ? { executablePath }
+      // Playwright's explicit Chromium channel selects the full browser and
+      // its new headless implementation. The legacy headless shell can
+      // destroy a SwiftShader WebGPU device after the first rendered frame.
+      : { channel: "chromium" };
     browser = await chromium.launch({
-      executablePath,
+      ...browserSelection,
       headless: true,
       timeout: 30000,
       args: browserArgs,
