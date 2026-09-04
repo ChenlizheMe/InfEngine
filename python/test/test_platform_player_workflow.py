@@ -78,6 +78,8 @@ def test_platform_workflow_keeps_product_graphics_contracts_explicit():
     assert "arch: x86_64" in text
     assert '"ndk;27.3.13750724"' in text
     assert '"ndk;29.0.14206865"' in text
+    assert "-gpu swiftshader " in text
+    assert "swiftshader_indirect" not in text
     assert "opengl" not in text
     assert "gles" not in text
 
@@ -96,10 +98,7 @@ def test_platform_workflow_is_bounded_and_collects_evidence():
     assert "android-player-smoke.json" in product_commands
     assert "android-multitouch-smoke.json" in product_commands
     assert "web-player-build.json" in text
-    assert "web-player-smoke.json" in text
     assert "web-edge-player-smoke.json" in text
-    assert "trap cleanup EXIT" in text
-    assert "set -o pipefail" in text
 
 
 def test_desktop_player_jobs_use_real_input_physics_and_line_renderer_smoke():
@@ -241,31 +240,29 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert "--verify-native-multitouch" in workflow
 
 
-def test_web_smoke_uses_the_pinned_linux_vulkan_adapter():
+def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_edge():
     smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
         encoding="utf-8"
     )
 
     assert '"--enable-unsafe-webgpu"' in smoke
-    assert 'process.platform === "linux"' in smoke
-    assert '"--enable-gpu"' in smoke
-    assert '"--use-angle=vulkan"' in smoke
-    assert '"--enable-features=Vulkan"' in smoke
     assert '"--use-webgpu-adapter=swiftshader"' not in smoke
     assert '"--disable-gpu-watchdog"' not in smoke
     assert '{ channel: "chromium" }' in smoke
+    assert '"--use-angle=vulkan"' not in smoke
+    assert '"--enable-features=Vulkan"' not in smoke
     assert '"--disable-vulkan-surface"' not in smoke
 
     workflow = (ROOT / ".github" / "workflows" / "platform-player.yml").read_text(
         encoding="utf-8"
     )
-    assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in workflow
-    assert "mesa-vulkan-drivers" in workflow
-    assert "--skip-frame-checks" in workflow
     assert "web-browser:" in workflow
     assert "needs: web-player" in workflow
+    assert "Upload Web Player for visual acceptance" in workflow
+    assert "Download Linux-built Web Player" in workflow
     assert "Validate Web Player pixels and input in Edge" in workflow
     assert "--report out/test-results/web-edge-player-smoke.json" in workflow
+    assert "--skip-frame-checks" not in workflow
 
 
 def test_windows_smoke_can_capture_the_engine_game_render_target():

@@ -266,7 +266,6 @@ jobs:
       INFERNUX_SOURCE_ROOT: ${{ github.workspace }}
       INFERNUX_WEB_TOOLCHAIN_ROOT: ${{ github.workspace }}/out/toolchains/web
       INFERNUX_WEB_BUILD_CACHE: ${{ github.workspace }}/out/cache/web
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -290,10 +289,7 @@ jobs:
             web-player-${{ runner.os }}-
 
       - name: Install host dependencies
-        run: |
-          scripts/setup/install_linux_dependencies.sh
-          sudo apt-get install --yes --no-install-recommends mesa-vulkan-drivers
-          test -f "$VK_ICD_FILENAMES"
+        run: scripts/setup/install_linux_dependencies.sh
 
       - name: Install Python dependencies
         run: |
@@ -324,40 +320,6 @@ jobs:
             out/ci-projects/web web-wasm32 out/acceptance/web \
             --report out/test-results/web-player-build.json \
             --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
-
-      - name: Install browser acceptance runtime
-        run: |
-          conda activate infernux
-          npm ci --prefix scripts/acceptance
-          npm exec --prefix scripts/acceptance -- playwright install --with-deps chromium
-
-      - name: Validate Web Player runtime in a Linux mobile browser context
-        run: |
-          conda activate infernux
-          set -o pipefail
-          python -m http.server 8765 --bind 127.0.0.1 --directory out/acceptance/web \
-            > out/test-results/web-http.log 2>&1 &
-          server_pid=$!
-          cleanup() {
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          for attempt in {1..50}; do
-            if curl -fsS -o /dev/null http://127.0.0.1:8765/infernux-player.html; then
-              break
-            fi
-            sleep 0.1
-          done
-          curl -fsS -o /dev/null http://127.0.0.1:8765/infernux-player.html
-          node scripts/acceptance/web_mobile_input_smoke.cjs \
-            http://127.0.0.1:8765/infernux-player.html \
-            --startup-timeout-ms 360000 \
-            --skip-frame-checks \
-            --verify-native-multitouch \
-            --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." \
-            --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." \
-            | tee out/test-results/web-player-smoke.json
 
       - name: Upload Web Player for visual acceptance
         uses: actions/upload-artifact@v4
@@ -537,7 +499,7 @@ jobs:
           profile: pixel_6
           emulator-boot-timeout: 600
           disable-animations: true
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader -no-boot-anim -camera-back none
           script: |
             bash scripts/acceptance/android_emulator_ci.sh "$CONDA/envs/infernux/bin/python"
 
