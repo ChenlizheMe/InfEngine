@@ -48,6 +48,7 @@ a = Analysis(
     hiddenimports=[
         "hub_resources",
         "hub_utils",
+        "android_support",
         "installer_safety",
         "python_runtime",
         "version_manager",

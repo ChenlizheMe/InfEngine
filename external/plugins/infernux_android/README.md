@@ -10,11 +10,14 @@ The initial targets are:
 - `android-x64-emulator` for fast local validation with an AOSP emulator.
 - `android-arm64` for release packages and physical devices.
 
-The plugin expects JDK 17, Gradle 8.12, and a pinned Android SDK/NDK toolchain.
-Configure `JAVA_HOME`, `ANDROID_SDK_ROOT`, and optionally
-`INFERNUX_GRADLE_HOME` and `ANDROID_AVD_HOME` before opening the Editor. Target
-discovery and toolchain diagnostics are available through the shared Infernux
-build service.
+Install **Android compatibility** from the Infernux Hub before importing this
+plugin. The Hub owns one versioned Platform Kit containing JDK 17, Gradle 8.12,
+the pinned Android SDK/NDK and both Android CPython target runtimes. Every
+project reuses that installation; builds never download a toolchain and the
+large files are not copied into this InxPackage. The plugin keeps the smaller,
+version-coupled exporter, doctor and host templates. Advanced source builds may
+still set `ANDROID_AVD_HOME`; target discovery and diagnostics use the shared
+Infernux build service.
 
 The exporter is being brought up in explicit stages. A target can be visible
 while its doctor or execution result reports a precise missing prerequisite;

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 
 from version_manager import VersionManager, EngineVersion, DownloadCancelled
+from android_support import AndroidSupportManager
 from i18n import tr
 from view.hover_widgets import AnimatedSurfaceFrame
 
@@ -119,6 +120,55 @@ class _RuntimeCard(AnimatedSurfaceFrame):
         layout.addWidget(button)
 
 
+class _AndroidSupportCard(AnimatedSurfaceFrame):
+    install_clicked = Signal()
+    locate_clicked = Signal()
+
+    def __init__(self, manager: AndroidSupportManager, parent=None):
+        super().__init__("versionCard", parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(86)
+        status = manager.status()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
+        info = QVBoxLayout()
+        info.setSpacing(3)
+        title = QLabel(tr("Android compatibility"))
+        title.setObjectName("cardName")
+        info.addWidget(title)
+        if status.installed:
+            detail_text = tr(
+                "SDK, NDK, JDK, Gradle and Android CPython are managed once for every project.\n{path}",
+                path=str(status.root),
+            )
+        elif status.error:
+            detail_text = tr("Installed files need repair: {message}", message=status.error)
+        else:
+            detail_text = tr(
+                "Required before the Android platform plugin can be imported. "
+                "Large toolchains are installed once and shared by every project."
+            )
+        detail = QLabel(detail_text)
+        detail.setObjectName("cardPath")
+        detail.setWordWrap(True)
+        info.addWidget(detail)
+        layout.addLayout(info, 1)
+
+        locate = QPushButton(tr("Locate Bundle"))
+        locate.setObjectName("normalBtn")
+        locate.setFixedHeight(34)
+        locate.clicked.connect(self.locate_clicked.emit)
+        layout.addWidget(locate)
+        install = QPushButton(tr("Repair") if status.installed or status.error else tr("Install"))
+        install.setObjectName("normalBtn" if status.installed else "primaryBtn")
+        install.setFixedHeight(34)
+        install.setMinimumWidth(96)
+        install.clicked.connect(self.install_clicked.emit)
+        layout.addWidget(install)
+
+
 # ─── Install Editor dialog (pick version from GitHub releases) ───────
 
 class _FetchWorker(QObject):
@@ -193,6 +243,26 @@ class _RuntimeInstallWorker(QObject):
         self.finished.emit(python_exe)
 
 
+class _AndroidSupportInstallWorker(QObject):
+    progress = Signal(int, int)
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, manager: AndroidSupportManager):
+        super().__init__()
+        self._manager = manager
+
+    def run(self):
+        try:
+            root = self._manager.install(
+                on_progress=lambda done, total: self.progress.emit(done, total)
+            )
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(root)
+
+
 class PythonRuntimeInstallDialog(QDialog):
     def __init__(
         self,
@@ -256,6 +326,69 @@ class PythonRuntimeInstallDialog(QDialog):
 
     def _on_finished(self, python_exe: str):
         self.result_path = python_exe
+        self.accept()
+
+    def _on_error(self, message: str):
+        self.error_text = message
+        self.reject()
+
+    def reject(self):
+        if self._thread.isRunning() and not self.error_text:
+            return
+        super().reject()
+
+
+class AndroidSupportInstallDialog(QDialog):
+    def __init__(self, manager: AndroidSupportManager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Installing Android compatibility"))
+        self.setModal(True)
+        self.setFixedSize(470, 165)
+        self.result_path = ""
+        self.error_text = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        title = QLabel(tr("Installing shared Android build support"))
+        title.setObjectName("cardName")
+        layout.addWidget(title)
+        detail = QLabel(
+            tr(
+                "Hub is downloading one immutable Platform Kit containing the "
+                "SDK, NDK, JDK, Gradle and Android CPython runtimes. It is not "
+                "copied into projects or plugin packages."
+            )
+        )
+        detail.setObjectName("cardPath")
+        detail.setWordWrap(True)
+        layout.addWidget(detail)
+        self._progress = QProgressBar(self)
+        self._progress.setRange(0, 0)
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(6)
+        layout.addWidget(self._progress)
+
+        self._thread = QThread(self)
+        self._worker = _AndroidSupportInstallWorker(manager)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.error.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.start()
+
+    def _on_progress(self, done: int, total: int):
+        if total > 0:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(min(100, int(done * 100 / total)))
+
+    def _on_finished(self, root: str):
+        self.result_path = root
         self.accept()
 
     def _on_error(self, message: str):
@@ -497,10 +630,17 @@ class InstallEditorDialog(QDialog):
 class InstallsView(QWidget):
     """Page showing installed engine versions with install/locate actions."""
 
-    def __init__(self, version_manager: VersionManager, runtime_manager=None, parent=None):
+    def __init__(
+        self,
+        version_manager: VersionManager,
+        runtime_manager=None,
+        android_support_manager: AndroidSupportManager | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._vm = version_manager
         self._runtime_manager = runtime_manager
+        self._android_support_manager = android_support_manager
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -608,6 +748,11 @@ class InstallsView(QWidget):
             )
             card.install_clicked.connect(self._on_install_python)
             self._runtime_layout.addWidget(card)
+        if self._android_support_manager is not None:
+            card = _AndroidSupportCard(self._android_support_manager)
+            card.install_clicked.connect(self._on_install_android)
+            card.locate_clicked.connect(self._on_locate_android)
+            self._runtime_layout.addWidget(card)
 
     # ── Actions ──────────────────────────────────────────────────────
 
@@ -638,6 +783,57 @@ class InstallsView(QWidget):
             )
         elif dlg.error_text:
             QMessageBox.critical(self, tr("Python Installation Failed"), dlg.error_text)
+        self.refresh()
+
+    def _on_install_android(self):
+        if self._android_support_manager is None:
+            return
+        dialog = AndroidSupportInstallDialog(self._android_support_manager, self)
+        if dialog.exec() == QDialog.Accepted:
+            QMessageBox.information(
+                self,
+                tr("Android compatibility installed"),
+                tr(
+                    "Android compatibility is ready for every Infernux project at:\n{path}",
+                    path=dialog.result_path,
+                ),
+            )
+        elif dialog.error_text:
+            QMessageBox.critical(
+                self,
+                tr("Android compatibility installation failed"),
+                dialog.error_text,
+            )
+        self.refresh()
+
+    def _on_locate_android(self):
+        if self._android_support_manager is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("Select Android compatibility bundle"),
+            "",
+            "Infernux Platform Kit (*.inxkit)",
+        )
+        if not path:
+            return
+        try:
+            installed = self._android_support_manager.install_archive(path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                tr("Invalid Android compatibility bundle"),
+                str(exc),
+            )
+        else:
+            QMessageBox.information(
+                self,
+                tr("Android compatibility installed"),
+                tr(
+                    "Android compatibility is ready for every Infernux project at:\n{path}",
+                    path=installed,
+                ),
+            )
         self.refresh()
 
     def _on_locate(self):

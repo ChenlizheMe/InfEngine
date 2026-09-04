@@ -1,8 +1,9 @@
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QWidget
 
+from android_support import AndroidSupportManager
 from style import StyleManager
-from view.installs_view import _configure_install_scroll_area
+from view.installs_view import _AndroidSupportCard, _configure_install_scroll_area
 
 
 def _app():
@@ -37,3 +38,18 @@ def test_common_message_boxes_use_shared_readable_metrics():
     assert "min-width: 360px" in stylesheet
     assert "QMessageBox QPushButton" in stylesheet
     assert "min-height: 34px" in stylesheet
+
+
+def test_android_support_card_exposes_install_before_any_project_plugin(
+    tmp_path,
+):
+    _app()
+    card = _AndroidSupportCard(AndroidSupportManager(tmp_path / "missing"))
+
+    labels = [label.text() for label in card.findChildren(QLabel)]
+    buttons = [button.text() for button in card.findChildren(QPushButton)]
+    assert "Android compatibility" in labels
+    assert any("Required before" in label for label in labels)
+    assert buttons == ["Locate Bundle", "Install"]
+
+    card.close()

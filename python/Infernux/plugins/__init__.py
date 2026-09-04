@@ -18,6 +18,7 @@ from .package import (
     player_file_exported,
 )
 from .registry import PluginRegistry
+from .platform_support import plugin_install_block_reason
 
 __all__ = [
     "InxPackage",
@@ -38,4 +39,5 @@ __all__ = [
     "split_markdown_images",
     "normalize_player_rules",
     "player_file_exported",
+    "plugin_install_block_reason",
 ]

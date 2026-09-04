@@ -9,10 +9,12 @@
 - `android-x64-emulator`：用于 AOSP 模拟器上的快速本地验证；
 - `android-arm64`：用于发布包和 arm64 真机。
 
-插件要求 JDK 17、Gradle 8.12 与固定版本的 Android SDK/NDK。启动编辑器前
-应配置 `JAVA_HOME`、`ANDROID_SDK_ROOT`，还可以配置
-`INFERNUX_GRADLE_HOME` 与 `ANDROID_AVD_HOME`。目标发现和工具链诊断统一
-通过 Infernux 构建服务完成。
+导入本插件前，必须先在 Infernux Hub 中安装 **Android 兼容**。Hub 统一管理
+一个版本化 Platform Kit，其中包含 JDK 17、Gradle 8.12、固定版本的 Android
+SDK/NDK，以及两种 ABI 的 Android CPython 目标运行时。所有项目复用同一份
+安装；构建阶段不会下载工具链，大文件也不会塞入本 InxPackage。插件只保留
+体积较小且与版本紧耦合的 exporter、doctor 与 Host 模板。源码高级用法仍可
+配置 `ANDROID_AVD_HOME`；目标发现和诊断统一通过 Infernux 构建服务完成。
 
 Exporter 会按明确阶段逐步完成。目标已经可见并不代表不完整的构建会被伪装
 成成功；doctor 或执行结果会直接指出当前缺少的前置条件。

@@ -1231,5 +1231,6 @@
   "inxpackage.import_progress.processing": "正在安装插件文件和依赖...",
   "inxpackage.import_progress.publishing": "正在刷新项目资产...",
   "inxpackage.import_progress.complete": "InxPackage 导入完成",
-  "inxpackage.entries_count": "已选择 {selected} / {total} 个文件"
+  "inxpackage.entries_count": "已选择 {selected} / {total} 个文件",
+  "Install Android compatibility from Infernux Hub before importing the Android platform plugin.": "请先在 Infernux Hub 中安装 Android 兼容，再导入 Android 平台插件。"
 }

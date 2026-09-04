@@ -1231,5 +1231,6 @@
   "inxpackage.import_progress.processing": "Installing package files and dependencies...",
   "inxpackage.import_progress.publishing": "Refreshing project assets...",
   "inxpackage.import_progress.complete": "InxPackage import complete",
-  "inxpackage.entries_count": "Selected {selected} of {total} files"
+  "inxpackage.entries_count": "Selected {selected} of {total} files",
+  "Install Android compatibility from Infernux Hub before importing the Android platform plugin.": "Install Android compatibility from Infernux Hub before importing the Android platform plugin."
 }

@@ -13,6 +13,7 @@ from Infernux.plugins import (
     localized_intro,
     markdown_to_plain_text,
     parse_markdown_blocks,
+    plugin_install_block_reason,
 )
 
 from .asset_resource_preview import render_resource_preview_rect
@@ -216,6 +217,11 @@ class PluginPanel(EditorPanel):
                 manager.cached_reference_path(str(row.get("reference", "")))
             )
             row["_installed"] = key in installed
+            row["_install_block_reason"] = (
+                ""
+                if row["_installed"]
+                else plugin_install_block_reason(str(row.get("reference", "")))
+            )
             if key in installed:
                 installed_version = str(installed[key].get("version", "")).strip()
                 merged = dict(row)
@@ -225,6 +231,7 @@ class PluginPanel(EditorPanel):
                 merged["_installed_version"] = installed_version
                 merged["_official"] = row["_official"]
                 merged["_cached"] = row["_cached"]
+                merged["_install_block_reason"] = ""
                 row = merged
             rows.append(row)
             known.add(key)
@@ -235,6 +242,7 @@ class PluginPanel(EditorPanel):
             value["_installed"] = True
             value["_official"] = False
             value["_cached"] = False
+            value["_install_block_reason"] = ""
             value["_installed_version"] = str(value.get("version", "")).strip()
             rows.append(value)
 
@@ -570,6 +578,12 @@ class PluginPanel(EditorPanel):
             ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.text_wrapped(state.error)
             ctx.pop_style_color()
+        install_block = str(row.get("_install_block_reason", "")).strip()
+        if install_block:
+            ctx.separator()
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
+            ctx.text_wrapped(t(install_block))
+            ctx.pop_style_color()
 
     def _render_detail_footer(self, ctx, manager, row, reference, key, installed, height) -> None:
         source = self._source_text(row)
@@ -612,9 +626,12 @@ class PluginPanel(EditorPanel):
                     self._begin_reload(manager, (reference,))
             else:
                 blocked = bool(str(row.get("diagnostic", "")).strip())
-                if blocked:
-                    ctx.begin_disabled(True)
+                install_blocked = bool(
+                    str(row.get("_install_block_reason", "")).strip()
+                )
                 if cached:
+                    if blocked:
+                        ctx.begin_disabled(True)
                     if ctx.button(
                         t("plugins.redownload") + f"##plugin_redownload_{key}",
                         width=button_w,
@@ -628,7 +645,11 @@ class PluginPanel(EditorPanel):
                             ),
                             action="download",
                         )
+                    if blocked:
+                        ctx.end_disabled()
                     ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
+                    if blocked or install_blocked:
+                        ctx.begin_disabled(True)
                     if self._primary_button(
                         ctx, t("plugins.import") + f"##plugin_import_{key}"
                     ):
@@ -640,19 +661,24 @@ class PluginPanel(EditorPanel):
                             ),
                             action="install",
                         )
-                elif self._primary_button(
-                    ctx, t("plugins.download") + f"##plugin_download_{key}"
-                ):
-                    self._begin_install(
-                        label=reference,
-                        work=lambda report, ref=reference: manager.download_reference(
-                            ref,
-                            progress=report,
-                        ),
-                        action="download",
-                    )
-                if blocked:
-                    ctx.end_disabled()
+                    if blocked or install_blocked:
+                        ctx.end_disabled()
+                else:
+                    if blocked:
+                        ctx.begin_disabled(True)
+                    if self._primary_button(
+                        ctx, t("plugins.download") + f"##plugin_download_{key}"
+                    ):
+                        self._begin_install(
+                            label=reference,
+                            work=lambda report, ref=reference: manager.download_reference(
+                                ref,
+                                progress=report,
+                            ),
+                            action="download",
+                        )
+                    if blocked:
+                        ctx.end_disabled()
         ctx.end_child()
         ctx.pop_style_color()
 
@@ -865,6 +891,7 @@ class InxPackageImportPanel(EditorPanel):
         self.package_path = ""
         self._preview = None
         self._selected: dict[str, bool] = {}
+        self._install_block_reason = ""
         self._message = ""
 
     def _initial_size(self) -> tuple[float, float]:
@@ -889,7 +916,12 @@ class InxPackageImportPanel(EditorPanel):
         self.package_path = resolved_path(package_path)
         self._preview = InxPackage.inspect(self.package_path)
         self._selected = {path: True for path in self._preview.project_entries}
-        self._message = ""
+        self._install_block_reason = plugin_install_block_reason(
+            str(self._preview.metadata.get("reference", ""))
+        )
+        self._message = (
+            t(self._install_block_reason) if self._install_block_reason else ""
+        )
 
     def _begin_import(self) -> bool:
         manager = PluginManager.instance()
@@ -1015,7 +1047,9 @@ class InxPackageImportPanel(EditorPanel):
             button_w = _metric(ctx, 104.0)
             action_x = ctx.get_cursor_pos_x() + max(0.0, ctx.get_content_region_avail_width() - button_w)
             ctx.same_line(action_x)
-            ctx.begin_disabled(not any(self._selected.values()))
+            ctx.begin_disabled(
+                not any(self._selected.values()) or bool(self._install_block_reason)
+            )
             if self._primary_button(ctx, t("inxpackage.import") + "##inxpackage_import"):
                 self._begin_import()
             ctx.end_disabled()

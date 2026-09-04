@@ -192,6 +192,10 @@ class PluginManager:
             raise ValueError("PluginManager requires a project root")
         self.engine = engine
         self.runtime = bool(runtime)
+        if not self.runtime:
+            from .platform_support import activate_android_support_environment
+
+            activate_android_support_environment()
         self.official_catalog_error = ""
         self.python_requirement_error = ""
         self.registry = PluginRegistry(self.project_root)
@@ -404,6 +408,9 @@ class PluginManager:
                 f"InxPackage requires Infernux {compatibility}, current engine is {ENGINE_VERSION}"
             )
         reference = validate_reference(str(preview.metadata["reference"]))
+        from .platform_support import require_plugin_support
+
+        require_plugin_support(reference)
         key = reference.casefold()
         if key in self._installing:
             raise RuntimeError(f"Circular plugin dependency: {reference}")

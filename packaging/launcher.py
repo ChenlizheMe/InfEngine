@@ -32,6 +32,7 @@ from style import StyleManager
 from hub_resources import ICON_PATH, FONT_PATH
 from hub_utils import HubLaunchContext, get_app_dir, is_frozen
 from python_runtime import PythonRuntimeManager
+from android_support import AndroidSupportManager
 from version_manager import VersionManager
 
 from model.project_model import ProjectModel
@@ -77,6 +78,8 @@ class GameEngineLauncher(QMainWindow):
 
         # Version and runtime managers
         self.runtime_manager = PythonRuntimeManager()
+        self.android_support_manager = AndroidSupportManager()
+        self.android_support_manager.activate_environment()
         self.version_manager = VersionManager(self.runtime_manager)
 
         # ── Root layout: sidebar | content ───────────────────────────
@@ -130,7 +133,12 @@ class GameEngineLauncher(QMainWindow):
         installs_layout.setContentsMargins(28, 24, 28, 24)
         installs_layout.setSpacing(0)
 
-        self.installs_view = InstallsView(self.version_manager, self.runtime_manager, parent=installs_page)
+        self.installs_view = InstallsView(
+            self.version_manager,
+            self.runtime_manager,
+            self.android_support_manager,
+            parent=installs_page,
+        )
         installs_layout.addWidget(self.installs_view)
 
         self.pages.addWidget(installs_page)
