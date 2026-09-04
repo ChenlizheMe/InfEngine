@@ -27,6 +27,12 @@ import java.nio.charset.StandardCharsets;
 /** Injects two simultaneous contacts through Android's system input test boundary. */
 public final class MultiTouchInstrumentation extends Instrumentation {
     private static final String EXPECTED_TEXT = "输入测试中文🙂";
+    private static final float FIXTURE_REFERENCE_WIDTH = 1280.0f;
+    private static final float FIXTURE_REFERENCE_HEIGHT = 720.0f;
+    private static final float TEXT_INPUT_BUTTON_CENTER_X = 512.0f + 256.0f * 0.5f;
+    private static final float TEXT_INPUT_BUTTON_CENTER_Y = 20.0f + 64.0f * 0.5f;
+    private static final long ROTATION_STABLE_MILLISECONDS = 250L;
+    private static final long BUTTON_PRESS_MILLISECONDS = 500L;
     private static final int SECOND_POINTER_ACTION =
             MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
     private static final int SECOND_POINTER_UP_ACTION =
@@ -48,6 +54,11 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         Activity targetActivity = null;
         String originalKeyboardSetting = null;
         boolean keyboardSettingChanged = false;
+        boolean multitouchPassed = false;
+        boolean imePassed = false;
+        boolean orientationPassed = false;
+        boolean backPassed = false;
+        String stage = "setup";
         try {
             setInTouchMode(true);
             final String targetPackage = getTargetContext().getPackageName();
@@ -73,9 +84,15 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             keyboardSettingChanged = true;
             launchFromShell(automation, component);
             final long waitMilliseconds = readPositiveLong("waitMilliseconds", 7000L);
-            SystemClock.sleep(waitMilliseconds);
+            stage = "gameplay-ready";
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_GAMEPLAY_READY",
+                    waitMilliseconds);
 
+            stage = "target-activity";
             targetActivity = waitForTargetActivity(10000L);
+            stage = "landscape-rotation";
             final RotationSnapshot landscape = rotateTo(
                     targetActivity,
                     ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
@@ -97,31 +114,41 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             SystemClock.sleep(350L);
             injectCanceledGesture(automation, width, height);
             SystemClock.sleep(350L);
+            multitouchPassed = true;
 
+            stage = "reverse-landscape-rotation";
             final RotationSnapshot reverseLandscape = rotateTo(
                     targetActivity,
                     ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,
                     Surface.ROTATION_270,
                     10000L);
+            orientationPassed = true;
+            stage = "text-input-button";
             injectTap(
                     automation,
                     reverseLandscape.width,
                     reverseLandscape.height,
-                    0.5f,
-                    0.07f);
+                    fixtureButtonCenterX(reverseLandscape.width, reverseLandscape.height),
+                    fixtureButtonCenterY(reverseLandscape.width, reverseLandscape.height));
+            stage = "ime-visible";
             final ImeSnapshot visibleIme = waitForIme(targetActivity, true, 10000L);
             if (!visibleIme.editorFocused) {
                 throw new IllegalStateException(
                         "Android IME is visible without an SDL text editor focus");
             }
+            stage = "text-commit";
             commitText(targetActivity, EXPECTED_TEXT);
+            stage = "ime-hidden";
             waitForIme(targetActivity, false, 10000L);
+            imePassed = true;
 
+            stage = "android-back";
             shell(automation, "input keyevent KEYCODE_BACK");
             SystemClock.sleep(500L);
             if (targetActivity.isFinishing() || targetActivity.isDestroyed()) {
                 throw new IllegalStateException("Android Back terminated the target Activity");
             }
+            backPassed = true;
 
             restoreKeyboardSetting(automation, originalKeyboardSetting);
             keyboardSettingChanged = false;
@@ -149,10 +176,13 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                     error.addSuppressed(cleanupError);
                 }
             }
-            result.putString("INFERNUX_MULTITOUCH_INJECTION", "failed");
-            result.putString("INFERNUX_IME_INJECTION", "failed");
-            result.putString("INFERNUX_ORIENTATION_INJECTION", "failed");
-            result.putString("INFERNUX_BACK_INJECTION", "failed");
+            result.putString(
+                    "INFERNUX_MULTITOUCH_INJECTION", multitouchPassed ? "passed" : "failed");
+            result.putString("INFERNUX_IME_INJECTION", imePassed ? "passed" : "failed");
+            result.putString(
+                    "INFERNUX_ORIENTATION_INJECTION", orientationPassed ? "passed" : "failed");
+            result.putString("INFERNUX_BACK_INJECTION", backPassed ? "passed" : "failed");
+            result.putString("stage", stage);
             result.putString("error", error.toString());
             finish(Activity.RESULT_CANCELED, result);
         } finally {
@@ -179,6 +209,21 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                 FileInputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
+    }
+
+    private static void waitForLogMarker(
+            UiAutomation automation, String marker, long timeoutMilliseconds) throws IOException {
+        final long deadline = SystemClock.uptimeMillis() + timeoutMilliseconds;
+        String output = "";
+        while (SystemClock.uptimeMillis() < deadline) {
+            output = shell(automation, "logcat -d -v brief -s python.stdout:I");
+            if (output.contains(marker)) {
+                return;
+            }
+            SystemClock.sleep(250L);
+        }
+        throw new IllegalStateException(
+                "Android Player did not publish " + marker + "; lastLog=" + output);
     }
 
     private static String formatInsets(Insets insets) {
@@ -218,11 +263,21 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         runOnMainSync(() -> activity.setRequestedOrientation(requestedOrientation));
         final long deadline = SystemClock.uptimeMillis() + timeoutMilliseconds;
         RotationSnapshot snapshot = null;
+        long readySince = 0L;
         while (SystemClock.uptimeMillis() < deadline) {
             snapshot = readRotationSnapshot(activity);
             if (snapshot.rotation == expectedRotation
-                    && snapshot.width > snapshot.height) {
-                return snapshot;
+                    && snapshot.width > snapshot.height
+                    && snapshot.windowFocused
+                    && snapshot.attachedToWindow) {
+                if (readySince == 0L) {
+                    readySince = SystemClock.uptimeMillis();
+                } else if (SystemClock.uptimeMillis() - readySince
+                        >= ROTATION_STABLE_MILLISECONDS) {
+                    return snapshot;
+                }
+            } else {
+                readySince = 0L;
             }
             SystemClock.sleep(50L);
         }
@@ -256,7 +311,9 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                     activity.getDisplay().getRotation(),
                     bounds.width(),
                     bounds.height(),
-                    safeInsets);
+                    safeInsets,
+                    activity.hasWindowFocus(),
+                    decorView.isAttachedToWindow());
         });
         return result[0];
     }
@@ -342,20 +399,46 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         final int width;
         final int height;
         final Insets safeInsets;
+        final boolean windowFocused;
+        final boolean attachedToWindow;
 
-        RotationSnapshot(int rotation, int width, int height, Insets safeInsets) {
+        RotationSnapshot(
+                int rotation,
+                int width,
+                int height,
+                Insets safeInsets,
+                boolean windowFocused,
+                boolean attachedToWindow) {
             this.rotation = rotation;
             this.width = width;
             this.height = height;
             this.safeInsets = safeInsets;
+            this.windowFocused = windowFocused;
+            this.attachedToWindow = attachedToWindow;
         }
 
         @Override
         public String toString() {
             return "RotationSnapshot{rotation=" + rotation
                     + ", size=" + width + "x" + height
-                    + ", safeInsets=" + safeInsets + "}";
+                    + ", safeInsets=" + safeInsets
+                    + ", windowFocused=" + windowFocused
+                    + ", attachedToWindow=" + attachedToWindow + "}";
         }
+    }
+
+    private static float fixtureScale(int width, int height) {
+        final float widthScale = width / FIXTURE_REFERENCE_WIDTH;
+        final float heightScale = height / FIXTURE_REFERENCE_HEIGHT;
+        return (float) Math.sqrt(widthScale * heightScale);
+    }
+
+    private static float fixtureButtonCenterX(int width, int height) {
+        return TEXT_INPUT_BUTTON_CENTER_X * fixtureScale(width, height) / width;
+    }
+
+    private static float fixtureButtonCenterY(int width, int height) {
+        return TEXT_INPUT_BUTTON_CENTER_Y * fixtureScale(width, height) / height;
     }
 
     private long readPositiveLong(String key, long defaultValue) {
@@ -393,7 +476,7 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             UiAutomation automation, int width, int height, float x, float y) {
         final long downTime = SystemClock.uptimeMillis();
         inject(automation, downTime, MotionEvent.ACTION_DOWN, width, height, 1, x, y, 0.0f, 0.0f);
-        SystemClock.sleep(120L);
+        SystemClock.sleep(BUTTON_PRESS_MILLISECONDS);
         inject(automation, downTime, MotionEvent.ACTION_UP, width, height, 1, x, y, 0.0f, 0.0f);
     }
 

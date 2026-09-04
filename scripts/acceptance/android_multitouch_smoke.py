@@ -215,6 +215,16 @@ def _write_report(destination: Path | None, payload: dict[str, object]) -> None:
     os.replace(temporary, destination)
 
 
+def _write_text_report(destination: Path | None, value: str) -> None:
+    if destination is None:
+        return
+    destination = destination.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, destination)
+
+
 def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
     started = time.perf_counter()
     controller = Adb(arguments.adb)
@@ -252,6 +262,13 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             arguments.runner,
             timeout=arguments.wait_milliseconds / 1000.0 + 90.0,
         )
+        # Instrumentation failures are often failures of the target Activity,
+        # not of the Java probe. Capture the target process evidence before
+        # validating the compact instrumentation result so failed CI runs are
+        # diagnosable without rerunning the emulator.
+        time.sleep(0.5)
+        log = adb.run("logcat", "-d", "-v", "brief", check=False)
+        _write_text_report(arguments.logcat_report, log)
         (
             width,
             height,
@@ -262,8 +279,6 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             landscape_safe_insets,
             reverse_landscape_safe_insets,
         ) = validate_instrumentation_output(output)
-        time.sleep(0.5)
-        log = adb.run("logcat", "-d", "-v", "brief", check=False)
         screen_states = screen_state_samples(log)
         if not screen_states:
             raise RuntimeError("Android Player did not publish Python Screen state")
@@ -337,6 +352,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--adb", type=Path, default=Path("adb"))
     parser.add_argument("--serial")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--logcat-report", type=Path)
     parser.add_argument("--target-package", default="com.infernux.bootstrap")
     parser.add_argument(
         "--instrumentation-package", default="com.infernux.acceptance.input"

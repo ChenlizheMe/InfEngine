@@ -150,6 +150,15 @@ def test_probe_launches_the_target_through_uiautomation_shell():
     assert 'shell(automation, "input keyevent KEYCODE_BACK")' in source
     assert "reverseLandscape.width" in source
     assert "reverseLandscape.height" in source
+    assert "fixtureButtonCenterX(reverseLandscape.width" in source
+    assert "fixtureButtonCenterY(reverseLandscape.width" in source
+    assert "Math.sqrt(widthScale * heightScale)" in source
+    assert "BUTTON_PRESS_MILLISECONDS = 500L" in source
+    assert "0.07f" not in source
+    assert "snapshot.windowFocused" in source
+    assert "snapshot.attachedToWindow" in source
+    assert "INFERNUX_PLATFORM_FIXTURE_GAMEPLAY_READY" in source
+    assert 'result.putString("stage", stage)' in source
     assert "focused.onCreateInputConnection(new EditorInfo())" in source
     assert 'connection.commitText(text, 1)' in source
     assert 'WindowInsets.Type.ime()' in source

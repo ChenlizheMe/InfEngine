@@ -469,8 +469,9 @@ jobs:
             "ndk;27.3.13750724" \
             "ndk;29.0.14206865"
 
-      - name: Cache Android Python runtime and build intermediates
-        uses: actions/cache@v4
+      - name: Restore Android Python runtime and build intermediates
+        id: android-build-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             out/toolchains/android-python-x86_64
@@ -517,6 +518,19 @@ jobs:
           conda activate infernux
           bash scripts/acceptance/android_emulator_ci.sh \
             "$CONDA/envs/infernux/bin/python" build
+
+      - name: Save Android Python runtime and build intermediates
+        if: steps.android-build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/toolchains/android-python-x86_64
+            out/cache/android-python
+            out/cache/android-player
+            out/build/linux-clang-headless
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ steps.android-build-cache.outputs.cache-primary-key }}
 
       - name: Validate Android Player on API 36
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
