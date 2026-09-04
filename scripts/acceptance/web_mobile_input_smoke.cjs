@@ -328,7 +328,15 @@ async function main() {
       await contexts[0].newPage();
   } else {
     const executablePath = resolveBrowserExecutable();
-    const browserArgs = ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"];
+    const browserArgs = [
+      "--enable-unsafe-webgpu",
+      "--disable-gpu-sandbox",
+      // Hosted Windows runners do not expose a hardware WebGPU adapter.
+      // Select Chromium's bundled SwiftShader adapter explicitly so the
+      // acceptance browser has the software device requested by the fixture.
+      "--enable-features=UseSkiaRenderer,Vulkan",
+      "--use-webgpu-adapter=swiftshader",
+    ];
     const browserSelection = executablePath
       ? { executablePath }
       // Playwright's explicit Chromium channel selects the full browser and

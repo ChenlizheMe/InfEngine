@@ -246,11 +246,11 @@ def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_edge():
     )
 
     assert '"--enable-unsafe-webgpu"' in smoke
-    assert '"--use-webgpu-adapter=swiftshader"' not in smoke
+    assert '"--use-webgpu-adapter=swiftshader"' in smoke
+    assert '"--enable-features=UseSkiaRenderer,Vulkan"' in smoke
     assert '"--disable-gpu-watchdog"' not in smoke
     assert '{ channel: "chromium" }' in smoke
     assert '"--use-angle=vulkan"' not in smoke
-    assert '"--enable-features=Vulkan"' not in smoke
     assert '"--disable-vulkan-surface"' not in smoke
 
     workflow = (ROOT / ".github" / "workflows" / "platform-player.yml").read_text(
