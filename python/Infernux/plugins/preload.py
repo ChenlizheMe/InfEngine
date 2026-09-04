@@ -620,7 +620,11 @@ class PreloadManager:
 
     def _package_for_path(self, path: str) -> str:
         owner = self._path_ownership().get(path_key(path))
-        return str(owner.get("reference", "")) if owner is not None else ""
+        if owner is not None:
+            return str(owner.get("reference", ""))
+        from Infernux.engine.project_context import package_script_reference
+
+        return package_script_reference(path, self.project_root)
 
     def _ordered_candidate_paths(
         self, candidates: Iterable[_ClassDeclaration]
@@ -918,9 +922,10 @@ def _is_editor_source(
     path: str, project_root: str, owner: Mapping[str, object] | None
 ) -> bool:
     relative = portable_path(relative_path(path, project_root))
-    if relative.startswith("Packages/"):
+    folded_relative = relative.casefold()
+    if folded_relative.startswith("packages/"):
         if owner is None:
-            return "/editor/" in f"/{relative}/"
+            return "/editor/" in f"/{folded_relative}/"
         for item in owner.get("files", []):
             if not isinstance(item, Mapping):
                 continue
@@ -939,7 +944,7 @@ def _is_editor_source(
                 == path_key(path)
                 for hint in hints
             ):
-                return str(item.get("role", "")) == "editor"
+                return str(item.get("role", "")).casefold() == "editor"
     return False
 
 

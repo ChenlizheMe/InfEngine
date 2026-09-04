@@ -33,7 +33,7 @@ from Infernux.engine.ui import (
 )
 from Infernux.engine.ui import panel_state as _panel_state
 
-_TOTAL_STEPS = 13
+_TOTAL_STEPS = 14
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -106,6 +106,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self._report_progress("Initializing renderer\u2026")
         self._init_engine()
+
+        self._report_progress("Publishing asset catalog\u2026")
+        self._complete_initial_asset_catalog()
 
         self._report_progress("Creating managers\u2026")
         self._create_managers()
@@ -219,6 +222,17 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         # Match Unity's default UI text density more closely. Player bootstrap
         # uses the same base size; explicit project UIText sizes stay unchanged.
         self.engine.set_gui_font(_resources.engine_font_path, 18)
+
+    def _complete_initial_asset_catalog(self) -> None:
+        """Publish the native catalog before any scene or icon consumes it."""
+
+        if self.engine is None:
+            raise RuntimeError("Asset catalog publication requires an Engine")
+        database = self.engine.get_asset_database()
+        if database is None:
+            raise RuntimeError("Asset catalog publication requires an AssetDatabase")
+        if bool(database.refresh_pending):
+            database.complete_pending_refresh()
 
     def _prewarm_builtin_pipelines(self):
         """Compile builtin material shader programs during startup.

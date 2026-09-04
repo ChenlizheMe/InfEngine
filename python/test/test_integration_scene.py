@@ -815,6 +815,14 @@ class TestPrimitives:
         }[ptype]
         assert expected_collider in comps
 
+    def test_cylinder_primitive_collider_keeps_vertical_default_axis(self, scene):
+        cylinder = scene.create_primitive(PrimitiveType.Cylinder, "VerticalCylinder")
+
+        collider = cylinder.get_component("CylinderCollider")
+        assert collider.direction == 1
+        assert collider.height == pytest.approx(1.0)
+        assert collider.radius == pytest.approx(0.5)
+
     def test_primitive_has_mesh_data(self, scene):
         cube = scene.create_primitive(PrimitiveType.Cube, "Cube")
         mr = cube.get_component("MeshRenderer")

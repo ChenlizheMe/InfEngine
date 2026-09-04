@@ -235,6 +235,37 @@ def test_installed_package_runtime_relative_import_uses_isolated_namespace(
     broker.rollback()
 
 
+def test_legacy_package_editor_relative_import_keeps_canonical_identity(
+    candidate_project,
+):
+    project = candidate_project.parent
+    package = project / "Packages" / "infernux" / "platform-web"
+    editor = package / "Editor" / "infernux_web"
+    editor.mkdir(parents=True)
+    (package / "InxPackage.json").write_text("{}", encoding="utf-8")
+    helper = editor / "exporter.py"
+    lifecycle = editor / "lifecycle.py"
+    helper.write_text("VALUE = 'legacy-editor-ok'\n", encoding="utf-8")
+    lifecycle.write_text("from .exporter import VALUE\n", encoding="utf-8")
+
+    helper_name = get_script_module_name(str(helper))
+    lifecycle_name = get_script_module_name(str(lifecycle))
+    assert helper_name == "_infernux_packages.infernux.platform_2dweb.editor.infernux_web.exporter"
+    assert lifecycle_name == "_infernux_packages.infernux.platform_2dweb.editor.infernux_web.lifecycle"
+    assert get_script_import_paths(str(lifecycle))[:2] == [
+        str((package / "Editor").resolve()),
+        str(package.resolve()),
+    ]
+
+    broker = CandidateImportTransaction()
+    broker.register(helper_name, str(helper))
+    broker.register(lifecycle_name, str(lifecycle))
+    module = broker.load(lifecycle_name)
+
+    assert module.VALUE == "legacy-editor-ok"
+    broker.rollback()
+
+
 def test_preloaded_package_namespace_with_encoded_underscore_is_reused(
     candidate_project,
 ):

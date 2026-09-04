@@ -101,6 +101,16 @@ def package_script_role(path: str, project_root: Optional[str] = None) -> str:
     return role
 
 
+def package_script_reference(path: str, project_root: Optional[str] = None) -> str:
+    """Return the project-relative package identity that owns one script."""
+
+    package_root, role, _ = _package_script_layout(path, project_root)
+    roots = get_project_script_roots(project_root)
+    if not package_root or not role or len(roots) != 2:
+        return ""
+    return portable_path(relative_path(package_root, roots[1])).strip("/")
+
+
 def _package_script_layout(
     path: str,
     project_root: Optional[str] = None,
@@ -117,11 +127,20 @@ def _package_script_layout(
 
     current = os.path.dirname(candidate)
     while is_path_within(current, packages_root, allow_root=False):
-        if os.path.isfile(os.path.join(current, "inx_package.json")):
+        try:
+            has_manifest = any(
+                entry.is_file()
+                and entry.name.casefold() in {"inx_package.json", "inxpackage.json"}
+                for entry in os.scandir(current)
+            )
+        except OSError:
+            has_manifest = False
+        if has_manifest:
             logical = portable_path(relative_path(candidate, current))
             first, separator, remainder = logical.partition("/")
-            if separator and first in {"runtime", "editor"}:
-                return current, first, remainder
+            role = first.casefold()
+            if separator and role in {"runtime", "editor"}:
+                return current, role, remainder
             return "", "", ""
         parent = os.path.dirname(current)
         if parent == current:
@@ -154,18 +173,32 @@ def _package_script_layout(
     for _depth, package_root in sorted(registered_roots, reverse=True):
         logical = portable_path(relative_path(candidate, package_root))
         first, separator, remainder = logical.partition("/")
-        if separator and first in {"runtime", "editor"}:
-            return package_root, first, remainder
+        role = first.casefold()
+        if separator and role in {"runtime", "editor"}:
+            return package_root, role, remainder
     # A local author may develop a simple package directly as
     # Packages/<name>/{runtime,editor}/... without writing a manifest.  The
     # first directory is then the package identity boundary; namespaced
     # references use an explicit manifest to remove that ambiguity.
     relative = portable_path(relative_path(candidate, packages_root))
     parts = relative.split("/")
-    if len(parts) >= 3 and parts[1] in {"runtime", "editor"}:
+    role = parts[1].casefold() if len(parts) >= 2 else ""
+    if len(parts) >= 3 and role in {"runtime", "editor"}:
         package_root = resolved_path(os.path.join(packages_root, parts[0]))
-        return package_root, parts[1], "/".join(parts[2:])
+        return package_root, role, "/".join(parts[2:])
     return "", "", ""
+
+
+def _package_role_root(package_root: str, role: str) -> str:
+    """Return the on-disk role directory while normalizing its identity."""
+
+    try:
+        for entry in os.scandir(package_root):
+            if entry.is_dir() and entry.name.casefold() == role:
+                return resolved_path(entry.path)
+    except OSError:
+        pass
+    return resolved_path(os.path.join(package_root, role))
 
 
 def is_project_component_script(
@@ -336,7 +369,7 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
 
     package_root, role, _ = _package_script_layout(resolved_abs, project_root)
     if package_root and role:
-        roots.append(os.path.join(package_root, role))
+        roots.append(_package_role_root(package_root, role))
         roots.append(package_root)
 
     if assets_root:

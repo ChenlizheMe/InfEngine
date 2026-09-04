@@ -2306,6 +2306,42 @@ def test_package_preload_supports_relative_imports(tmp_path):
     )
 
 
+def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
+    project = _project(tmp_path / "project")
+    package_module = project / "Packages" / "abc" / "Editor" / "local_tool"
+    package_module.mkdir(parents=True)
+    (package_module / "service.py").write_text(
+        "VALUE = 'local-package-ready'\n", encoding="utf-8"
+    )
+    (package_module / "lifecycle.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "from .service import VALUE\n"
+        "class LocalPreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'local-package.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+
+    manager = PluginManager.startup(str(project))
+
+    state = next(iter(manager.preloads.states.values()))
+    assert state.loaded is True
+    assert state.package_reference == "abc"
+    assert state.module_name == (
+        "_infernux_packages.abc.editor.local_tool.lifecycle"
+    )
+    assert (project / "local-package.txt").read_text(encoding="utf-8") == (
+        "local-package-ready"
+    )
+
+    manager.shutdown()
+    (project / "local-package.txt").unlink()
+    runtime_preloads = preload_module.PreloadManager(str(project), runtime=True)
+    assert runtime_preloads.reload_all() == ()
+    assert not (project / "local-package.txt").exists()
+
+
 def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))

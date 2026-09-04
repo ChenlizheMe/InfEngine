@@ -81,3 +81,12 @@ def test_surface_passes_fall_back_to_geometric_normal():
         surface_call = source.index("${SURFACE_CALL}")
         normal_resolve = source.index("ResolveSurfaceNormal", surface_call)
         assert normal_resolve > surface_call
+
+
+def test_gizmo_icon_shader_applies_component_vertex_tint():
+    from pathlib import Path
+
+    source = Path("python/Infernux/resources/shaders/gizmo_icon.frag").read_text(
+        encoding="utf-8"
+    )
+    assert "texColor.rgb * v_Color * material.baseColor.rgb" in source

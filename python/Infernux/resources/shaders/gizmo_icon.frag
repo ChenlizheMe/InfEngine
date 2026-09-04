@@ -19,6 +19,6 @@ void surface(out SurfaceData s) {
     s = InitSurfaceData();
 
     vec4 texColor = texture(texSampler, v_TexCoord);
-    s.albedo = texColor.rgb * material.baseColor.rgb;
+    s.albedo = texColor.rgb * v_Color * material.baseColor.rgb;
     s.alpha = texColor.a * material.baseColor.a;
 }

@@ -1056,6 +1056,29 @@ class TestIncrementalTransformSync:
 
 
 class TestPrimitiveColliderAlignment:
+    def test_cylinder_uses_y_as_its_height_axis(self, scene):
+        cylinder = scene.create_primitive(PrimitiveType.Cylinder, "VerticalCylinder")
+        cylinder.transform.position = Vector3(8, 1, 0)
+        collider = cylinder.get_component("CylinderCollider")
+        collider.height = 3.0
+        collider.radius = 0.5
+
+        sm = SceneManager.instance()
+        sm.play()
+        sm.pause()
+        Physics.sync_transforms()
+        sm.step()
+
+        top_hit = Physics.raycast(Vector3(8, 4, 0), Vector3(0, -1, 0), 4.0)
+        assert top_hit is not None
+        assert top_hit.game_object.name == "VerticalCylinder"
+        assert top_hit.distance == pytest.approx(1.5, abs=0.02)
+
+        side_hit = Physics.raycast(Vector3(6, 1, 0), Vector3(1, 0, 0), 4.0)
+        assert side_hit is not None
+        assert side_hit.game_object.name == "VerticalCylinder"
+        assert side_hit.distance == pytest.approx(1.5, abs=0.02)
+
     def test_sphere_and_capsule_native_shapes_match_builtin_mesh_dimensions(self, scene):
         sphere = scene.create_primitive(PrimitiveType.Sphere, "AlignedSphere")
         assert sphere.get_component("SphereCollider") is not None
