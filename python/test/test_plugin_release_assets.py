@@ -314,6 +314,19 @@ def test_platform_package_registers_and_removes_its_build_targets(
         "INFERNUX_PACKAGE_CACHE_ROOT",
         str(tmp_path / "hub-package-cache"),
     )
+    if reference == "infernux/platform-android":
+        # This test exercises package lifecycle registration, while the Hub
+        # support gate and its filesystem contract have dedicated coverage.
+        # Declare that prerequisite explicitly instead of bypassing the
+        # production transaction guard.
+        monkeypatch.setattr(
+            "Infernux.plugins.platform_support.android_support_available",
+            lambda _environ=None: True,
+        )
+        monkeypatch.setattr(
+            "Infernux.plugins.platform_support.android_support_environment",
+            lambda _environ=None: {},
+        )
 
     InxPackage.export_source(str(source), str(package), profile="release")
     exporter_registry.clear()

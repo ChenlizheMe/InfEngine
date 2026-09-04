@@ -8,6 +8,8 @@ import platform
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
+from Infernux.engine.path_utils import resolved_path
+
 
 ANDROID_PLUGIN_REFERENCE = "infernux/platform-android"
 ANDROID_SUPPORT_SCHEMA = "infernux.android_support"
@@ -37,19 +39,19 @@ def android_support_root(
     values = os.environ if environ is None else environ
     explicit = str(values.get("INFERNUX_ANDROID_SUPPORT_ROOT", "") or "").strip()
     if explicit:
-        return Path(os.path.expandvars(os.path.expanduser(explicit))).resolve()
+        return Path(resolved_path(os.path.expandvars(os.path.expanduser(explicit))))
     data_root = str(values.get("INFERNUX_DATA_ROOT", "") or "").strip()
     if data_root:
-        base = Path(os.path.expandvars(os.path.expanduser(data_root))).resolve()
+        base = Path(resolved_path(os.path.expandvars(os.path.expanduser(data_root))))
     elif os.name == "nt":
         local_app_data = str(values.get("LOCALAPPDATA", "") or "").strip()
         if not local_app_data:
             return None
-        base = Path(local_app_data).resolve() / "InfernuxHub"
+        base = Path(resolved_path(local_app_data)) / "InfernuxHub"
     else:
         xdg_data = str(values.get("XDG_DATA_HOME", "") or "").strip()
         base = (
-            Path(xdg_data).expanduser().resolve() / "InfernuxHub"
+            Path(resolved_path(Path(xdg_data).expanduser())) / "InfernuxHub"
             if xdg_data
             else Path.home() / ".local/share/InfernuxHub"
         )
