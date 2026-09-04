@@ -365,7 +365,7 @@ def _wait_for_player(
     deadline = time.monotonic() + timeout
     last_log = ""
     while time.monotonic() < deadline:
-        pid = adb.run("shell", "pidof", package, check=False).strip()
+        pid = player_pid(adb.run("shell", "pidof", package, check=False))
         last_log = adb.run("logcat", "-d", "-v", "brief", check=False)
         if pid and expected_log in last_log:
             return pid, last_log
@@ -373,6 +373,47 @@ def _wait_for_player(
     raise RuntimeError(
         f"Android Player did not publish {expected_log!r} within {timeout:.1f}s\n"
         + "\n".join(last_log.splitlines()[-120:])
+    )
+
+
+def player_pid(output: str) -> str:
+    """Return only a valid numeric ``pidof`` result.
+
+    ``Adb.run(check=False)`` intentionally preserves transport diagnostics for
+    callers, so a newly booted emulator may return text such as ``device not
+    found`` while ADB reconnects. That diagnostic must never become process
+    identity merely because logcat already contains the ready marker.
+    """
+
+    values = output.split()
+    if not values or any(not value.isdecimal() for value in values):
+        return ""
+    return " ".join(values)
+
+
+def _wait_for_player_pid(
+    adb: Adb,
+    package: str,
+    *,
+    expected: str | None = None,
+    timeout: float = 10.0,
+) -> str:
+    deadline = time.monotonic() + timeout
+    last_output = ""
+    while time.monotonic() < deadline:
+        last_output = adb.run("shell", "pidof", package, check=False)
+        pid = player_pid(last_output)
+        if not pid:
+            time.sleep(0.25)
+            continue
+        if expected is not None and pid != expected:
+            raise RuntimeError(
+                f"Player PID changed: expected {expected}, got {pid}"
+            )
+        return pid
+    raise RuntimeError(
+        "Android Player did not publish a valid PID within "
+        f"{timeout:.1f}s; last={last_output.strip() or '<empty>'}"
     )
 
 
@@ -389,7 +430,12 @@ def _wait_for_required_logs(
     last_log = ""
     missing = required_logs
     while time.monotonic() < deadline:
-        current_pid = adb.run("shell", "pidof", package, check=False).strip()
+        current_pid = player_pid(
+            adb.run("shell", "pidof", package, check=False)
+        )
+        if not current_pid:
+            time.sleep(0.25)
+            continue
         if current_pid != expected_pid:
             raise RuntimeError(
                 "Android Player PID changed while waiting for runtime diagnostics: "
@@ -558,9 +604,9 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         time.sleep(0.5)
         adb.run("shell", "input", "keyevent", "4")
         time.sleep(1.5)
-        after_back_pid = adb.run(
-            "shell", "pidof", arguments.package, check=False
-        ).strip()
+        after_back_pid = _wait_for_player_pid(
+            adb, arguments.package, expected=pid
+        )
         log = adb.run("logcat", "-d", "-v", "brief", check=False)
         if after_back_pid != pid:
             raise RuntimeError("Android Back terminated or restarted the Player")
@@ -575,14 +621,8 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         adb.run("shell", "input", "keyevent", "3")
         time.sleep(0.75)
         adb.run("shell", "am", "start", "-n", arguments.activity)
-        time.sleep(1.5)
-        current_pid = adb.run(
-            "shell", "pidof", arguments.package, check=False
-        ).strip()
-        if current_pid != pid:
-            raise RuntimeError(
-                f"Player PID changed across resume: expected {pid}, got {current_pid}"
-            )
+        _wait_for_foreground(adb, arguments.package)
+        _wait_for_player_pid(adb, arguments.package, expected=pid)
 
     required_logs = tuple(dict.fromkeys(arguments.require_log))
     if required_logs:

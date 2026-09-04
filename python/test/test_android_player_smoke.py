@@ -252,6 +252,47 @@ def test_required_runtime_logs_wait_for_every_marker(monkeypatch):
     assert "ANIMATION_READY" in log
 
 
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("2107\n", "2107"),
+        ("2107 2120\n", "2107 2120"),
+        ("", ""),
+        ("adb: device 'emulator-5554' not found", ""),
+        ("2107\nadb: transport error", ""),
+    ],
+)
+def test_player_pid_accepts_only_numeric_process_identity(output: str, expected: str):
+    module = _module()
+
+    assert module.player_pid(output) == expected
+
+
+def test_wait_for_player_ignores_transient_adb_transport_output(monkeypatch):
+    module = _module()
+    pids = iter(("adb: device 'emulator-5554' not found", "2107"))
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert options == {"check": False}
+            if arguments == ("shell", "pidof", "com.infernux.bootstrap"):
+                return next(pids)
+            assert arguments == ("logcat", "-d", "-v", "brief")
+            return "INFERNUX_ANDROID_HOST_READY"
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    pid, log = module._wait_for_player(
+        FakeAdb(),
+        "com.infernux.bootstrap",
+        "INFERNUX_ANDROID_HOST_READY",
+        5.0,
+    )
+
+    assert pid == "2107"
+    assert "HOST_READY" in log
+
+
 def test_vulkan_surface_extents_follow_creation_order():
     module = _module()
     log = """
