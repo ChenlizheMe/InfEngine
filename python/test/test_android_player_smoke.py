@@ -307,7 +307,8 @@ def test_device_is_unlocked_before_usb_install_approval_is_requested():
         "def _parser()", 1
     )[0]
 
-    assert run_smoke.index("unlock_device(adb)") < run_smoke.index("install_apk(")
+    assert run_smoke.index("unlock_device(adb,") < run_smoke.index("install_apk(")
+    assert "timeout=180.0 if device.emulator else 30.0" in run_smoke
 
 
 def test_atomic_report_records_structured_payload(tmp_path: Path):

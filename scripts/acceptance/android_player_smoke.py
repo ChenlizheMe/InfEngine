@@ -429,7 +429,11 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             f"APK ABIs {sorted(packaged_abis)} do not include device ABI {abi}"
         )
 
-    unlock_device(adb)
+    # A software-only hosted emulator can take multiple full SystemUI cycles to
+    # accept the same non-secure dismiss that a physical device handles at once.
+    # Keep the physical-device failure fast while allowing emulator retries to
+    # reach an authoritative unlocked policy state.
+    unlock_device(adb, timeout=180.0 if device.emulator else 30.0)
     reinstalled_after_signature_mismatch = False
     automated_install_approval = False
     if not arguments.no_install:
