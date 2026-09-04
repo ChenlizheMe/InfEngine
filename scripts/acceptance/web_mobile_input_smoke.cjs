@@ -342,11 +342,14 @@ async function main() {
     const browserArgs = [
       "--enable-unsafe-webgpu",
       "--disable-gpu-sandbox",
-      // Hosted Windows runners do not expose a hardware WebGPU adapter.
-      // Select Chromium's bundled SwiftShader adapter explicitly so the
-      // acceptance browser has the software device requested by the fixture.
-      "--enable-features=UseSkiaRenderer,Vulkan",
+      // Match Chromium's maintained WebGPU SwiftShader test profile. In
+      // particular, --use-gpu-in-tests initializes ANGLE so Dawn can resolve
+      // the explicitly selected software adapter on GPU-less hosted runners.
       "--use-webgpu-adapter=swiftshader",
+      "--disable-dawn-features=disallow_unsafe_apis",
+      "--enable-webgpu-developer-features",
+      "--use-gpu-in-tests",
+      "--enable-accelerated-2d-canvas",
     ];
     const browserSelection = configuredBrowserChannel
       ? { channel: configuredBrowserChannel }

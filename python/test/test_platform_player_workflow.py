@@ -247,7 +247,10 @@ def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_chromium():
 
     assert '"--enable-unsafe-webgpu"' in smoke
     assert '"--use-webgpu-adapter=swiftshader"' in smoke
-    assert '"--enable-features=UseSkiaRenderer,Vulkan"' in smoke
+    assert '"--disable-dawn-features=disallow_unsafe_apis"' in smoke
+    assert '"--enable-webgpu-developer-features"' in smoke
+    assert '"--use-gpu-in-tests"' in smoke
+    assert '"--enable-accelerated-2d-canvas"' in smoke
     assert '"--disable-gpu-watchdog"' not in smoke
     assert '{ channel: "chromium" }' in smoke
     assert '"--use-angle=vulkan"' not in smoke
