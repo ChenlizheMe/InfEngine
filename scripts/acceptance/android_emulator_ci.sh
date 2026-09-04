@@ -18,6 +18,28 @@ for variable in INFERNUX_ANDROID_RUNTIME INFERNUX_ANDROID_BUILD_CACHE; do
     fi
 done
 
+wait_for_android_input_service() {
+    local attempt
+    local boot_completed
+    local input_service
+    adb -s emulator-5554 wait-for-device
+    for attempt in $(seq 1 120); do
+        boot_completed="$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+        input_service="$(adb -s emulator-5554 shell service check input 2>/dev/null | tr -d '\r')"
+        if [[ "$boot_completed" == "1" && "$input_service" == *"found"* ]]; then
+            echo "Android framework input service is ready (attempt=$attempt)."
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Android framework did not publish the input service after boot." >&2
+    adb -s emulator-5554 shell getprop sys.boot_completed >&2 || true
+    adb -s emulator-5554 shell service check input >&2 || true
+    return 1
+}
+
+wait_for_android_input_service
+
 adb -s emulator-5554 shell svc power stayon true
 # This driver owns a disposable CI emulator. Remove its non-secure keyguard
 # before the long native build so API 36 cannot return to a locked SystemUI
@@ -44,6 +66,9 @@ gradle -p tests/android/input_instrumentation \
     -PinfernuxTargetPackage=com.infernux.bootstrap \
     :app:assembleDebug
 
+# A long native build can outlive an emulator framework restart. Re-establish
+# the same concrete service barrier before sending any synthetic input.
+wait_for_android_input_service
 adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
 adb -s emulator-5554 shell wm dismiss-keyguard
 adb -s emulator-5554 shell input keyevent KEYCODE_HOME

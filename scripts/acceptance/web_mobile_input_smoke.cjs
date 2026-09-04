@@ -328,7 +328,16 @@ async function main() {
       await contexts[0].newPage();
   } else {
     const executablePath = resolveBrowserExecutable();
-    const browserArgs = ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"];
+    const browserArgs = [
+      "--enable-unsafe-webgpu",
+      "--disable-gpu-sandbox",
+      // Headless Chromium selects SwiftShader on GPU-less runners. Pin that
+      // adapter explicitly and disable the hardware-oriented GPU watchdog so
+      // a slow software-rendered frame cannot destroy an otherwise valid
+      // WebGPU device in the middle of the acceptance sequence.
+      "--use-webgpu-adapter=swiftshader",
+      "--disable-gpu-watchdog",
+    ];
     browser = await chromium.launch({
       executablePath,
       headless: true,

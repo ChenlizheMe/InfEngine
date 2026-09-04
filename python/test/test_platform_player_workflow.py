@@ -149,6 +149,11 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
     assert "locksettings set-disabled true" in driver
     assert "svc power stayon true" in driver
+    assert driver.count("wait_for_android_input_service") == 3
+    assert "getprop sys.boot_completed" in driver
+    assert "service check input" in driver
+    assert driver.index("wait_for_android_input_service") < driver.index("KEYCODE_WAKEUP")
+    assert driver.rindex("wait_for_android_input_service") < smoke
     assert driver.index("KEYCODE_WAKEUP") < smoke
     assert driver.index("wm dismiss-keyguard") < smoke
     assert driver.index("KEYCODE_HOME") < smoke
@@ -238,6 +243,8 @@ def test_web_smoke_does_not_force_an_unavailable_linux_vulkan_adapter():
     )
 
     assert '"--enable-unsafe-webgpu"' in smoke
+    assert '"--use-webgpu-adapter=swiftshader"' in smoke
+    assert '"--disable-gpu-watchdog"' in smoke
     assert '"--use-angle=vulkan"' not in smoke
     assert '"--enable-features=Vulkan"' not in smoke
     assert '"--disable-vulkan-surface"' not in smoke
