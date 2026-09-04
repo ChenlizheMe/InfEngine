@@ -241,9 +241,36 @@ class CandidateImportTransaction:
         if module is None:
             return None
         module_path = resolved_path(getattr(module, "__file__", "") or "")
-        if not module_path:
-            return None
         project_roots = tuple(root for root in self._roots if root)
+        if not module_path or not os.path.isfile(module_path):
+            # InxPreload creates path-bound namespace parents for isolated
+            # package names. Their synthetic ``__file__`` names an absent
+            # __init__.py, so validating that path as a gameplay module would
+            # incorrectly reject reversible reference encodings such as
+            # ``multiplatform_probe`` -> ``multiplatform_5fprobe``. Prove the
+            # namespace against a registered descendant and its real path.
+            search_paths = tuple(
+                resolved_path(path)
+                for path in (getattr(module, "__path__", ()) or ())
+                if path
+            )
+            for candidate_name, spec in self._specs.items():
+                if not candidate_name.startswith(name + "."):
+                    continue
+                if not any(
+                    is_path_within(spec.file_path, search_path, allow_root=False)
+                    and any(is_path_within(search_path, root) for root in project_roots)
+                    for search_path in search_paths
+                ):
+                    continue
+                expected = get_script_module_name(spec.file_path)
+                if candidate_name != expected:
+                    raise CandidateImportError(
+                        f"registered project module '{candidate_name}' has a path/name mismatch"
+                    )
+                self._reused_lkg[name] = module
+                return module
+            return None
         if not any(is_path_within(module_path, root) for root in project_roots):
             # Trusted interpreter/engine modules are not project LKG entries.
             return None

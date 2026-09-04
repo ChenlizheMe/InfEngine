@@ -1250,7 +1250,7 @@ int main()
                contactTelemetry.hashBytes == 2u * 512u * sizeof(particle::GpuParticleContactHashSlot) &&
                contactTelemetry.workItemBytes == 512u * sizeof(particle::GpuParticleContactWorkItem) &&
                contactTelemetry.continuationJoinBytes == 2u * sizeof(particle::GpuParticleContactJoinState));
-        assert(collisionRuntimeDevice.layoutEntryCounts == std::vector<uint32_t>({13, 0, 5, 7, 9}));
+        assert(collisionRuntimeDevice.layoutEntryCounts == std::vector<uint32_t>({13, 0, 6, 7, 9}));
         assert(collisionRuntimeDevice.groupBufferCounts == std::vector<uint32_t>({13, 0, 7, 9}));
         assert(collisionRuntimeDevice.computePipelineDescs.size() == RequiredGpuKernelStageCount);
         for (const auto &pipeline : collisionRuntimeDevice.computePipelineDescs)
@@ -1482,9 +1482,9 @@ int main()
     assert(trace.pipelines.size() == 5 && trace.groups.size() == 40 && trace.constants.size() == 5);
     assert(trace.groupSets == std::vector<uint32_t>({0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3,
                                                      4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7}));
-    assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1}));
-    assert(trace.indirectBuffers == std::vector<rhi::BufferHandle>({runtime.AliveDispatchBuffer()}));
-    assert(trace.indirectOffsets == std::vector<uint64_t>({16u}));
+    assert(trace.dispatches == std::vector<uint32_t>({4, 4, 1}));
+    assert(trace.indirectBuffers == std::vector<rhi::BufferHandle>({spawnMetadata, runtime.AliveDispatchBuffer()}));
+    assert(trace.indirectOffsets == std::vector<uint64_t>({16u, 16u}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[1].reserved == 0u);
     assert(trace.constants[2].simulationStep == 9);

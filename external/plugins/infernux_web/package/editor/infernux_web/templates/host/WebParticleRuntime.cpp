@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -383,7 +384,11 @@ struct WebParticleRuntime::State
     wgpu::BindGroup cameraGroup;
     std::unordered_map<uint64_t, Graph> graphs;
     std::unordered_map<uint64_t, std::unique_ptr<Emitter>> emitters;
+    std::unordered_set<uint64_t> capacityLimitedGraphs;
+    std::unordered_map<uint64_t, uint64_t> capacityLimitedEmitterGraphs;
+    std::unordered_map<uint64_t, uint64_t> capacityLimitedEmitterRevisions;
     std::string error;
+    bool emissionSupported = true;
     bool reportedReady = false;
     bool reportedDraw = false;
 
@@ -417,6 +422,9 @@ struct WebParticleRuntime::State
         for (auto &[_, graph] : graphs)
             ReleaseGraph(graph);
         graphs.clear();
+        capacityLimitedGraphs.clear();
+        capacityLimitedEmitterGraphs.clear();
+        capacityLimitedEmitterRevisions.clear();
         renderPipeline = {};
         cameraGroup = {};
         cameraBuffer = {};
@@ -425,6 +433,7 @@ struct WebParticleRuntime::State
         queue = {};
         device = {};
         rhi = nullptr;
+        emissionSupported = true;
     }
 };
 
@@ -448,6 +457,19 @@ bool WebParticleRuntime::Initialize(WebGpuRhiDevice &device, rhi::PixelFormat co
     if (!m_state->device || !m_state->queue || colorFormat == rhi::PixelFormat::Undefined) {
         m_state->error = "Web particle runtime requires a ready WebGPU device";
         return false;
+    }
+    constexpr uint32_t kRequiredParticleStorageBuffersPerStage = 12;
+    const uint32_t availableStorageBuffers = device.GetCapabilities().limits.maxStorageBuffersPerStage;
+    if (availableStorageBuffers < kRequiredParticleStorageBuffersPerStage) {
+        // Device limits are immutable for a WebGPU device. Keep the public
+        // particle control plane resident, but apply capacity backpressure at
+        // zero so scene startup and non-particle rendering remain available.
+        // A supported device takes the only full GPU implementation below.
+        m_state->emissionSupported = false;
+        m_state->reportedReady = true;
+        std::printf("INFERNUX_WEBGPU_PARTICLE_CAPACITY_LIMIT available=%u required=%u emission=paused\n",
+                    availableStorageBuffers, kRequiredParticleStorageBuffersPerStage);
+        return true;
     }
 
     wgpu::BufferDescriptor cameraBufferDesc;
@@ -570,6 +592,8 @@ std::string WebParticleRuntime::ReplaceGraph(uint64_t graphInstanceId, PyObject 
             m_state->ReleaseEmitter(*found->second);
             m_state->emitters.erase(found);
         }
+        m_state->capacityLimitedEmitterGraphs.erase(id);
+        m_state->capacityLimitedEmitterRevisions.erase(id);
     }
     Py_DECREF(removeSequence);
 
@@ -580,6 +604,16 @@ std::string WebParticleRuntime::ReplaceGraph(uint64_t graphInstanceId, PyObject 
         if (graph != m_state->graphs.end()) {
             m_state->ReleaseGraph(graph->second);
             m_state->graphs.erase(graph);
+        }
+        m_state->capacityLimitedGraphs.erase(graphInstanceId);
+        for (auto iterator = m_state->capacityLimitedEmitterGraphs.begin();
+             iterator != m_state->capacityLimitedEmitterGraphs.end();) {
+            if (iterator->second != graphInstanceId) {
+                ++iterator;
+                continue;
+            }
+            m_state->capacityLimitedEmitterRevisions.erase(iterator->first);
+            iterator = m_state->capacityLimitedEmitterGraphs.erase(iterator);
         }
         return {};
     }
@@ -615,6 +649,33 @@ std::string WebParticleRuntime::ReplaceGraph(uint64_t graphInstanceId, PyObject 
     }
     if (parameters.empty())
         parameters.assign(4, 0);
+
+    if (!m_state->emissionSupported) {
+        for (auto iterator = m_state->capacityLimitedEmitterGraphs.begin();
+             iterator != m_state->capacityLimitedEmitterGraphs.end();) {
+            if (iterator->second != graphInstanceId) {
+                ++iterator;
+                continue;
+            }
+            m_state->capacityLimitedEmitterRevisions.erase(iterator->first);
+            iterator = m_state->capacityLimitedEmitterGraphs.erase(iterator);
+        }
+        for (Py_ssize_t index = 0; index < programCount; ++index) {
+            PyObject *program = PySequence_Fast_GET_ITEM(programSequence, index);
+            uint64_t emitterId = 0;
+            uint64_t artifactRevision = 0;
+            if (!ReadUnsigned(Field(program, "id"), emitterId) || emitterId == 0 ||
+                !ReadUnsigned(Field(program, "artifact_revision"), artifactRevision) || artifactRevision == 0) {
+                Py_DECREF(programSequence);
+                return "WebGPU capacity-limited particle program identity is invalid";
+            }
+            m_state->capacityLimitedEmitterGraphs[emitterId] = graphInstanceId;
+            m_state->capacityLimitedEmitterRevisions[emitterId] = artifactRevision;
+        }
+        m_state->capacityLimitedGraphs.insert(graphInstanceId);
+        Py_DECREF(programSequence);
+        return {};
+    }
 
     for (auto iterator = m_state->emitters.begin(); iterator != m_state->emitters.end();) {
         if (iterator->second->graphId != graphInstanceId) {
@@ -763,6 +824,10 @@ std::string WebParticleRuntime::ReplaceGraph(uint64_t graphInstanceId, PyObject 
 
 std::string WebParticleRuntime::UpdateParameters(uint64_t graphInstanceId, PyObject *words)
 {
+    if (!m_state->emissionSupported)
+        return m_state->capacityLimitedGraphs.find(graphInstanceId) != m_state->capacityLimitedGraphs.end()
+                   ? std::string{}
+                   : "WebGPU particle graph is not resident";
     auto found = m_state->graphs.find(graphInstanceId);
     std::vector<uint32_t> decoded;
     if (found == m_state->graphs.end() || !ReadWordVector(words, decoded) ||
@@ -776,6 +841,8 @@ std::string WebParticleRuntime::UpdateParameters(uint64_t graphInstanceId, PyObj
 
 bool WebParticleRuntime::BeginBatch(uint64_t graphInstanceId, PyObject *items)
 {
+    if (!m_state->emissionSupported)
+        return m_state->capacityLimitedGraphs.find(graphInstanceId) != m_state->capacityLimitedGraphs.end();
     if (!m_state->rhi || m_state->graphs.find(graphInstanceId) == m_state->graphs.end())
         return false;
     PyObject *sequence = PySequence_Fast(items, "particle frame items must be a sequence");
@@ -819,6 +886,8 @@ bool WebParticleRuntime::BeginBatch(uint64_t graphInstanceId, PyObject *items)
 
 bool WebParticleRuntime::SetPlaying(uint64_t emitterId, bool playing)
 {
+    if (!m_state->emissionSupported)
+        return m_state->capacityLimitedEmitterGraphs.find(emitterId) != m_state->capacityLimitedEmitterGraphs.end();
     auto found = m_state->emitters.find(emitterId);
     if (found == m_state->emitters.end())
         return false;
@@ -836,6 +905,8 @@ bool WebParticleRuntime::SetPlaying(uint64_t emitterId, bool playing)
 
 bool WebParticleRuntime::Reset(uint64_t emitterId)
 {
+    if (!m_state->emissionSupported)
+        return m_state->capacityLimitedEmitterGraphs.find(emitterId) != m_state->capacityLimitedEmitterGraphs.end();
     auto found = m_state->emitters.find(emitterId);
     if (found == m_state->emitters.end())
         return false;
@@ -845,6 +916,10 @@ bool WebParticleRuntime::Reset(uint64_t emitterId)
 
 uint64_t WebParticleRuntime::ArtifactRevision(uint64_t emitterId) const noexcept
 {
+    if (!m_state->emissionSupported) {
+        const auto found = m_state->capacityLimitedEmitterRevisions.find(emitterId);
+        return found == m_state->capacityLimitedEmitterRevisions.end() ? 0 : found->second;
+    }
     const auto found = m_state->emitters.find(emitterId);
     return found == m_state->emitters.end() ? 0 : found->second->artifactRevision;
 }
@@ -857,7 +932,7 @@ bool WebParticleRuntime::StateWasPreserved(uint64_t emitterId) const noexcept
 
 void WebParticleRuntime::RecordCompute(wgpu::CommandEncoder commandEncoder)
 {
-    if (!m_state->rhi || !commandEncoder)
+    if (!m_state->emissionSupported || !m_state->rhi || !commandEncoder)
         return;
     bool hasWork = false;
     for (const auto &[_, emitter] : m_state->emitters)
@@ -951,7 +1026,7 @@ void WebParticleRuntime::RecordCompute(wgpu::CommandEncoder commandEncoder)
 
 bool WebParticleRuntime::Render(wgpu::RenderPassEncoder pass, uint32_t width, uint32_t height)
 {
-    if (!m_state->renderPipeline || !pass)
+    if (!m_state->emissionSupported || !m_state->renderPipeline || !pass)
         return false;
     Scene *scene = SceneManager::Instance().GetActiveScene();
     Camera *camera = scene ? scene->FindGameCamera(nullptr) : nullptr;

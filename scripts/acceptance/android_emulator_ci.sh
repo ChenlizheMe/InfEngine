@@ -19,6 +19,13 @@ for variable in INFERNUX_ANDROID_RUNTIME INFERNUX_ANDROID_BUILD_CACHE; do
 done
 
 adb -s emulator-5554 shell svc power stayon true
+# This driver owns a disposable CI emulator. Remove its non-secure keyguard
+# before the long native build so API 36 cannot return to a locked SystemUI
+# state while no window is attached.
+adb -s emulator-5554 shell locksettings set-disabled true
+adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
+adb -s emulator-5554 shell wm dismiss-keyguard
+adb -s emulator-5554 shell input keyevent KEYCODE_HOME
 
 rm -rf -- out/ci-projects/android out/acceptance/android
 mkdir -p out/ci-projects/android out/test-results
@@ -39,6 +46,7 @@ gradle -p tests/android/input_instrumentation \
 
 adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
 adb -s emulator-5554 shell wm dismiss-keyguard
+adb -s emulator-5554 shell input keyevent KEYCODE_HOME
 
 "$python_executable" scripts/acceptance/android_player_smoke.py \
     out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \

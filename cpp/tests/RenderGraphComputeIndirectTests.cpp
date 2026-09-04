@@ -826,6 +826,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleSpawnShaderSources::Prepare(),
     };
     if (!Require(spawnSources[1].find("uint requested = playing ? pc.cpuSpawnCount : 0u;") != std::string_view::npos &&
+                     spawnSources[1].find("capacityCounters.freeCount") != std::string_view::npos &&
+                     spawnSources[1].find("min(pc.capacity, capacityCounters.freeCount)") != std::string_view::npos &&
                      spawnSources[1].find("metadata[base + 0u] = accepted;") != std::string_view::npos &&
                      spawnSources[1].find("metadata[base + 7u] = accepted;") != std::string_view::npos,
                  "Particle spawn reset discarded the restart frame's fresh CPU burst"))

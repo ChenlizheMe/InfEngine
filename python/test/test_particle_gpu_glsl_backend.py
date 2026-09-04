@@ -2922,6 +2922,10 @@ def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
     assert "atomicAdd(counters.reserved_count, inx_particle_init_accepted_count)" in main
     assert "atomicAdd(counters.dropped_count, dropped_count)" in main
     assert "if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);" in main
+    assert "bool inx_append_alive(uint slot, uint particle_index)" in init
+    assert "atomicAdd(alive_control.alive_counts[min(slot, 1u)], 0xffffffffu)" in init
+    assert "particle_alive && !inx_append_alive" in main
+    assert "inx_push_free(particle_index);" in main
 
     compiled = native._compile_compute_glsl_batch(
         {"init": init}, "particle-init-free-block-test"

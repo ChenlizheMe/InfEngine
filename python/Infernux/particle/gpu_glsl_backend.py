@@ -5879,11 +5879,15 @@ uint inx_alive_index(uint slot, uint index) {{
     return slot == 0u ? alive_indices_a[index] : alive_indices_b[index];
 }}
 
-void inx_append_alive(uint slot, uint particle_index) {{
+bool inx_append_alive(uint slot, uint particle_index) {{
     uint destination = atomicAdd(alive_control.alive_counts[min(slot, 1u)], 1u);
-    if (destination >= pc.capacity) return;
+    if (destination >= pc.capacity) {{
+        atomicAdd(alive_control.alive_counts[min(slot, 1u)], 0xffffffffu);
+        return false;
+    }}
     if (slot == 0u) alive_indices_a[destination] = particle_index;
     else alive_indices_b[destination] = particle_index;
+    return true;
 }}
 
 void inx_store_alive(uint slot, uint index, uint particle_index) {{
@@ -6866,8 +6870,12 @@ void main() {{
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
     state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
     states[particle_index] = state;
-    if (particle_alive) inx_append_alive(pc.alive_read_slot, particle_index);
-    else inx_push_free(particle_index);
+    if (particle_alive && !inx_append_alive(pc.alive_read_slot, particle_index)) {{
+        state.lifecycle_flags = 0u;
+        states[particle_index] = state;
+        inx_push_free(particle_index);
+        atomicAdd(counters.dropped_count, 1u);
+    }} else if (!particle_alive) inx_push_free(particle_index);
 }}
 """
 

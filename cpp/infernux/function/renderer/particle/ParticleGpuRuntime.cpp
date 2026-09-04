@@ -369,7 +369,12 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     graphSpawnLayoutDesc.entries[2] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     graphSpawnLayoutDesc.entries[3] = {3, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     graphSpawnLayoutDesc.entries[4] = {4, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+#if !defined(INFERNUX_WEBGPU_RUNTIME)
+    graphSpawnLayoutDesc.entries[5] = {5, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entryCount = 6;
+#else
     graphSpawnLayoutDesc.entryCount = 5;
+#endif
     m_graphSpawnLayout = device.CreateBindingLayout(graphSpawnLayoutDesc);
     if (!m_graphSpawnLayout.IsValid()) {
         Destroy();
@@ -1121,10 +1126,10 @@ void ParticleGpuRuntime::RecordInitIndirect(const rhi::ComputeCommandEncoder &en
     constants.aliveReadSlot = AliveReadSlot();
     constants.aliveWriteSlot = AliveWriteSlot();
     constants.useAliveList = IsAliveListReady() ? 1u : 0u;
-    if (cpuSpawnCount > 0)
-        Record(encoder, GpuKernelStage::Init, constants, cpuSpawnCount, graphSpawnGroup);
-    else
+    if (spawnMetadata.IsValid())
         Record(encoder, GpuKernelStage::Init, constants, 1, graphSpawnGroup, spawnMetadata, indirectOffset);
+    else if (cpuSpawnCount > 0)
+        Record(encoder, GpuKernelStage::Init, constants, cpuSpawnCount, graphSpawnGroup);
 }
 
 bool ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,

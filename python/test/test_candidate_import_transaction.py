@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -232,6 +233,59 @@ def test_installed_package_runtime_relative_import_uses_isolated_namespace(
     ]
     assert helper_name not in sys.modules
     broker.rollback()
+
+
+def test_preloaded_package_namespace_with_encoded_underscore_is_reused(
+    candidate_project,
+):
+    project = candidate_project.parent
+    package = project / "Packages" / "infernux" / "multiplatform_probe"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "inx_package.json").write_text("{}", encoding="utf-8")
+    lifecycle = runtime / "lifecycle.py"
+    component = runtime / "component.py"
+    lifecycle.write_text("VALUE = 'preloaded'\n", encoding="utf-8")
+    component.write_text("VALUE = 'candidate'\n", encoding="utf-8")
+    lifecycle_name = get_script_module_name(str(lifecycle))
+    component_name = get_script_module_name(str(component))
+    assert lifecycle_name is not None and component_name is not None
+
+    created = []
+    directory = lifecycle.parent
+    parent_names = [
+        ".".join(lifecycle_name.split(".")[:index])
+        for index in range(1, len(lifecycle_name.split(".")))
+    ]
+    directories = {}
+    for parent_name in reversed(parent_names):
+        directories[parent_name] = directory
+        directory = directory.parent
+    previous = {name: sys.modules.get(name) for name in parent_names}
+    try:
+        for parent_name in parent_names:
+            namespace = type(sys)(parent_name)
+            namespace.__path__ = [str(directories[parent_name])]
+            namespace.__file__ = str(directories[parent_name] / "__init__.py")
+            namespace.__spec__ = importlib.util.spec_from_loader(
+                parent_name, loader=None, is_package=True
+            )
+            sys.modules[parent_name] = namespace
+            created.append(parent_name)
+
+        broker = CandidateImportTransaction()
+        broker.register(component_name, str(component))
+        loaded = broker.load(component_name)
+
+        assert loaded.VALUE == "candidate"
+        assert broker.module_for(component_name) is loaded
+        broker.rollback()
+    finally:
+        for parent_name in reversed(created):
+            if previous[parent_name] is None:
+                sys.modules.pop(parent_name, None)
+            else:
+                sys.modules[parent_name] = previous[parent_name]
 
 
 def test_namespace_package_can_load_a_private_child(candidate_project):

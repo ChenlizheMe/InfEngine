@@ -147,10 +147,11 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     assert "android-x64-emulator" in driver
     assert "gradle -p tests/android/input_instrumentation" in driver
     smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
-    assert "locksettings" not in driver
+    assert "locksettings set-disabled true" in driver
     assert "svc power stayon true" in driver
     assert driver.index("KEYCODE_WAKEUP") < smoke
     assert driver.index("wm dismiss-keyguard") < smoke
+    assert driver.index("KEYCODE_HOME") < smoke
     assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
     assert "--startup-timeout 240" in driver
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
@@ -231,16 +232,15 @@ def test_web_smoke_can_attach_to_a_physical_mobile_browser():
     assert "--verify-native-multitouch" in workflow
 
 
-def test_web_smoke_uses_the_supported_linux_headless_vulkan_path():
+def test_web_smoke_does_not_force_an_unavailable_linux_vulkan_adapter():
     smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
         encoding="utf-8"
     )
 
-    assert 'process.platform === "linux"' in smoke
-    assert '"--enable-gpu"' in smoke
-    assert '"--use-angle=vulkan"' in smoke
-    assert '"--enable-features=Vulkan"' in smoke
-    assert '"--disable-vulkan-surface"' in smoke
+    assert '"--enable-unsafe-webgpu"' in smoke
+    assert '"--use-angle=vulkan"' not in smoke
+    assert '"--enable-features=Vulkan"' not in smoke
+    assert '"--disable-vulkan-surface"' not in smoke
 
 
 def test_windows_smoke_can_capture_the_engine_game_render_target():
