@@ -159,9 +159,12 @@ def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
     assert driver.rindex("wait_for_android_input_service") < smoke
     assert driver.rindex("locksettings set-disabled true") < smoke
     assert driver.rindex("svc power stayon true") < smoke
-    assert driver.index("KEYCODE_WAKEUP") < smoke
-    assert driver.index("wm dismiss-keyguard") < smoke
-    assert driver.index("KEYCODE_HOME") < smoke
+    # The shared Python smoke driver owns the complete display/keyguard lifecycle.
+    # Keeping a second partial sequence here made hosted and physical devices follow
+    # different unlock paths and left the API 36 software AVD in a stale state.
+    assert "KEYCODE_WAKEUP" not in driver
+    assert "wm dismiss-keyguard" not in driver
+    assert "KEYCODE_HOME" not in driver
     assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
     assert "--startup-timeout 240" in driver
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
