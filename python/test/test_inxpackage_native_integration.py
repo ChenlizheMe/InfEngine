@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from Infernux.engine import player_package_native
+from Infernux.engine.player_package_native import read_entry
 from Infernux.plugins import InxPackage, PluginManager
 from Infernux.plugins.content import parse_markdown_blocks
 from Infernux.plugins.official import install_default_libraries
@@ -179,6 +180,18 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     artifact = resources / "infernux.mcp.inxpkg"
     preview = InxPackage.inspect(str(artifact))
     assert preview.metadata["reference"] == "infernux/mcp"
+    requirements = next(
+        item
+        for item in preview.file_records
+        if item["logical_path"] == "requirements.txt"
+    )
+    assert read_entry(
+        preview.package_path,
+        str(requirements["archive_path"]),
+    ).decode("utf-8").splitlines() == [
+        "mcp>=1.24,<2",
+        "fastmcp>=3,<4",
+    ]
     assert "format_version" not in preview.metadata
     assert "preload" not in preview.metadata
     assert "plugin_root" not in preview.metadata
