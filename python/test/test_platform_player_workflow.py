@@ -176,6 +176,7 @@ def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
     launch_emulator = workflow.index("ReactiveCircus/android-emulator-runner@")
     assert checkout_step < require_kvm < build_step < launch_emulator
     assert "[[ ! -c /dev/kvm ]]" in workflow[require_kvm:build_step]
+    assert "sudo chmod a+rw /dev/kvm" in workflow[require_kvm:build_step]
     assert "[[ ! -r /dev/kvm || ! -w /dev/kvm ]]" in workflow[require_kvm:build_step]
     assert "refusing the unusably slow Android software-emulator fallback" in workflow[require_kvm:build_step]
     assert "disable-linux-hw-accel: false" in workflow[launch_emulator:]
