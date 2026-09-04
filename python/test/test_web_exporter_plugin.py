@@ -689,6 +689,18 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "RunPendingJobs(64)" in main
     assert "wgpuCreateInstance" in main
     assert "WebGpuRhiDevice" in main
+    assert "g_webGpuStorageBufferLimit" in main
+    assert "std::min(kCompleteParticleStorageBufferLimit" in main
+    assert (
+        "requiredLimits.maxStorageBuffersPerShaderStage = g_webGpuStorageBufferLimit"
+        in main
+    )
+    assert "INFERNUX_WEBGPU_STORAGE_LIMIT negotiated=%u complete_particle=%u" in main
+    assert "INFERNUX_WEBGPU_PARTICLE_LIMIT_UNAVAILABLE" not in main
+    assert (
+        "m_capabilities.limits.maxStorageBuffersPerStage = maxStorageBuffersPerStage"
+        in rhi_backend
+    )
     assert "g_fullscreenRenderer.EnsurePipeline" in main
     assert "g_fullscreenRenderer.Draw" in main
     assert "CreateGraphicsPipeline" not in main

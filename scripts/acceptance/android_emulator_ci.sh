@@ -42,6 +42,7 @@ adb -s emulator-5554 shell wm dismiss-keyguard
     out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \
     --serial emulator-5554 \
     --no-back \
+    --startup-timeout 240 \
     --expect-landscape \
     --resume-cycles 2 \
     --report out/test-results/android-player-smoke.json

@@ -260,7 +260,13 @@ public final class InfernuxActivity extends SDLActivity {
             // happened to be copied before the missing payload.
             File stagingBase = new File(getFilesDir(), assetRoot + ".installing");
             deleteRecursively(stagingBase);
-            extractAsset(assetRoot, stagingBase);
+            Log.i(LOG_TAG, "INFERNUX_ANDROID_ASSET_INSTALL_BEGIN root=" + assetRoot);
+            // Reuse one buffer for the complete tree. A private Python runtime
+            // contains thousands of small files; allocating a 64 KiB Android
+            // large object for every file stalls first launch in GC on emulators
+            // and memory-constrained devices.
+            byte[] copyBuffer = new byte[64 * 1024];
+            extractAsset(assetRoot, stagingBase, copyBuffer);
             File stagedRoot = new File(stagingBase, assetRoot);
             File stagedIdentity = new File(stagedRoot, identityName);
             if (!stagedIdentity.isFile()
@@ -275,6 +281,7 @@ public final class InfernuxActivity extends SDLActivity {
             }
             writeUtf8(completionMarker, packagedIdentity);
             deleteRecursively(stagingBase);
+            Log.i(LOG_TAG, "INFERNUX_ANDROID_ASSET_INSTALL_COMPLETE root=" + assetRoot);
         }
         return installedRoot;
     }
@@ -298,7 +305,8 @@ public final class InfernuxActivity extends SDLActivity {
         }
     }
 
-    private void extractAsset(String path, File destinationRoot) throws IOException {
+    private void extractAsset(String path, File destinationRoot, byte[] copyBuffer)
+            throws IOException {
         try (InputStream input = getAssets().open(path)) {
             File output = new File(destinationRoot, path);
             File parent = output.getParentFile();
@@ -306,10 +314,9 @@ public final class InfernuxActivity extends SDLActivity {
                 throw new IOException("Failed to create " + parent);
             }
             try (FileOutputStream stream = new FileOutputStream(output)) {
-                byte[] buffer = new byte[64 * 1024];
                 int count;
-                while ((count = input.read(buffer)) >= 0) {
-                    stream.write(buffer, 0, count);
+                while ((count = input.read(copyBuffer)) >= 0) {
+                    stream.write(copyBuffer, 0, count);
                 }
             }
             return;
@@ -326,7 +333,7 @@ public final class InfernuxActivity extends SDLActivity {
             throw new IOException("Failed to list asset directory " + path);
         }
         for (String child : children) {
-            extractAsset(path + "/" + child, destinationRoot);
+            extractAsset(path + "/" + child, destinationRoot, copyBuffer);
         }
     }
 

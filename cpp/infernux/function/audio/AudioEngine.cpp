@@ -63,7 +63,11 @@ bool AudioEngine::Initialize()
 
     m_deviceId = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &requestedSpec);
     if (m_deviceId == 0) {
-        INXLOG_ERROR("Failed to open audio device: ", SDL_GetError());
+        // A Player can legitimately run on a machine without an output device
+        // (CI, a server, Remote Desktop, or a temporarily disconnected headset).
+        // Keep the runtime silent and retryable instead of classifying this
+        // device-compatibility boundary as a fatal engine error.
+        INXLOG_WARN("No audio output device is available; continuing silently: ", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return false;
     }

@@ -66,6 +66,7 @@ infernux::web::WebScreenUIRenderer g_screenUIRenderer;
 bool g_particleRuntimeReady = false;
 bool g_particleRenderingEnabledForDiagnostics = true;
 bool g_webGpuValidationFailed = false;
+uint32_t g_webGpuStorageBufferLimit = 8;
 wgpu::TextureFormat g_surfaceFormat = wgpu::TextureFormat::Undefined;
 PyObject *g_tick = nullptr;
 PyObject *g_input = nullptr;
@@ -779,7 +780,7 @@ bool CreateRhiPipeline()
     if (ToRhiFormat(g_surfaceFormat) == infernux::rhi::PixelFormat::Undefined)
         return false;
 
-    g_rhi = std::make_unique<infernux::web::WebGpuRhiDevice>(g_device, g_queue);
+    g_rhi = std::make_unique<infernux::web::WebGpuRhiDevice>(g_device, g_queue, g_webGpuStorageBufferLimit);
     g_fullscreenRenderer.Initialize(std::make_shared<WebFullscreenRendererHost>(*g_rhi));
     g_fullscreenPipelineKey.shaderName = "Web Host";
     g_fullscreenPipelineKey.colorFormat = infernux::rhi::PixelFormat::RGBA16SFloat;
@@ -1117,18 +1118,23 @@ int main()
             wgpu::DeviceDescriptor descriptor;
             wgpu::Limits adapterLimits;
             wgpu::Limits requiredLimits;
-            constexpr uint32_t kParticleStorageBufferLimit = 12;
+            // Ask for the strongest storage-buffer contract the adapter can
+            // provide up to the complete particle ABI. WebGPU otherwise gives
+            // the device only its baseline default (commonly eight), even when
+            // the adapter exposes more. Individual pipelines still validate
+            // against the negotiated limit; content that needs twelve does not
+            // silently acquire a different implementation on a smaller device.
+            constexpr uint32_t kCompleteParticleStorageBufferLimit = 12;
             if (g_adapter.GetLimits(&adapterLimits)) {
                 std::printf("INFERNUX_WEBGPU_ADAPTER_LIMITS bind_groups=%u storage_buffers=%u bindings=%u\n",
                             adapterLimits.maxBindGroups, adapterLimits.maxStorageBuffersPerShaderStage,
                             adapterLimits.maxBindingsPerBindGroup);
-                if (adapterLimits.maxStorageBuffersPerShaderStage >= kParticleStorageBufferLimit) {
-                    requiredLimits.maxStorageBuffersPerShaderStage = kParticleStorageBufferLimit;
-                    descriptor.requiredLimits = &requiredLimits;
-                } else {
-                    std::fprintf(stderr, "INFERNUX_WEBGPU_PARTICLE_LIMIT_UNAVAILABLE required=%u available=%u\n",
-                                 kParticleStorageBufferLimit, adapterLimits.maxStorageBuffersPerShaderStage);
-                }
+                g_webGpuStorageBufferLimit =
+                    std::min(kCompleteParticleStorageBufferLimit, adapterLimits.maxStorageBuffersPerShaderStage);
+                requiredLimits.maxStorageBuffersPerShaderStage = g_webGpuStorageBufferLimit;
+                descriptor.requiredLimits = &requiredLimits;
+                std::printf("INFERNUX_WEBGPU_STORAGE_LIMIT negotiated=%u complete_particle=%u\n",
+                            g_webGpuStorageBufferLimit, kCompleteParticleStorageBufferLimit);
             }
             descriptor.SetUncapturedErrorCallback(
                 [](const wgpu::Device &, wgpu::ErrorType type, wgpu::StringView errorMessage) {

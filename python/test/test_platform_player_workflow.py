@@ -151,6 +151,7 @@ def test_android_emulator_driver_owns_the_full_single_shell_workflow():
     assert driver.index("KEYCODE_WAKEUP") < smoke
     assert driver.index("wm dismiss-keyguard") < smoke
     assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
+    assert "--startup-timeout 240" in driver
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
     assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
     assert "--wait-milliseconds 20000" in driver
@@ -168,6 +169,20 @@ def test_android_builds_host_modules_before_cross_platform_packaging():
     assert "cmake --preset linux-clang-headless" in android_job
     assert "cmake --build --preset linux-clang-headless" in android_job
     assert "out/build/linux-clang-headless" in android_job
+
+
+def test_headless_audio_device_absence_is_a_nonfatal_compatibility_boundary():
+    audio_engine = (
+        ROOT / "cpp" / "infernux" / "function" / "audio" / "AudioEngine.cpp"
+    ).read_text(encoding="utf-8")
+    open_failure = audio_engine[
+        audio_engine.index("if (m_deviceId == 0)") : audio_engine.index(
+            "SDL_AudioSpec actualSpec"
+        )
+    ]
+    assert "INXLOG_WARN" in open_failure
+    assert "continuing silently" in open_failure
+    assert "INXLOG_ERROR" not in open_failure
 
 
 def test_web_smoke_can_attach_to_a_physical_mobile_browser():

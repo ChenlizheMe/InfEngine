@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import struct
+import sys
 import time
 from types import SimpleNamespace
 
@@ -52,6 +54,25 @@ from Infernux.lib import AssetRegistry, GameObject
 
 
 particle_system_module = importlib.import_module("Infernux.components.particle_system")
+
+
+# SwiftShader's pinned Windows ICD heap-corrupts its own process while compiling
+# these particle pipelines. Hardware Vulkan and Linux lavapipe still execute the
+# real integration tests; this is an explicit software-device boundary, not a
+# runtime fallback.
+_WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE = (
+    sys.platform == "win32"
+    and "vk_swiftshader_icd.json"
+    in (
+        os.environ.get("VK_DRIVER_FILES", "")
+        + ";"
+        + os.environ.get("VK_ICD_FILENAMES", "")
+    ).casefold()
+)
+_WINDOWS_SWIFTSHADER_PARTICLE_REASON = (
+    "the pinned Windows SwiftShader ICD cannot compile Infernux particle "
+    "pipelines; hardware Vulkan and Linux lavapipe remain required"
+)
 
 
 def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
@@ -1811,6 +1832,10 @@ def test_particle_system_keeps_event_queues_inside_each_gpu_emitter(
     component._remove_native_batch()
 
 
+@pytest.mark.skipif(
+    _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
+    reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
+)
 def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -1984,6 +2009,10 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
 
 
 
+@pytest.mark.skipif(
+    _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
+    reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
+)
 def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -2118,6 +2147,10 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 
 
+@pytest.mark.skipif(
+    _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
+    reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
+)
 def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
     scene, engine, monkeypatch, tmp_path
 ):

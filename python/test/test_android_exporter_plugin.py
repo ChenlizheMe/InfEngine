@@ -448,6 +448,11 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'getBooleanExtra("infernux.profile_frames", false)' in activity
     assert 'Os.setenv("_INFERNUX_PLAYER_PROFILE_FRAMES", "1"' in activity
     assert "applyImmersiveGameMode" in activity
+    assert activity.count("new byte[64 * 1024]") == 1
+    assert "extractAsset(assetRoot, stagingBase, copyBuffer)" in activity
+    assert 'extractAsset(path + "/" + child, destinationRoot, copyBuffer)' in activity
+    assert "INFERNUX_ANDROID_ASSET_INSTALL_BEGIN" in activity
+    assert "INFERNUX_ANDROID_ASSET_INSTALL_COMPLETE" in activity
     assert "WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE" in activity
     assert "View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY" in activity
     assert 'abiFilters "x86_64"' in gradle

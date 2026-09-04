@@ -53,7 +53,7 @@ struct WebGpuTransferCommandContext final
 class WebGpuRhiDevice final : public rhi::Device
 {
   public:
-    WebGpuRhiDevice(wgpu::Device device, wgpu::Queue queue);
+    WebGpuRhiDevice(wgpu::Device device, wgpu::Queue queue, uint32_t maxStorageBuffersPerStage);
     ~WebGpuRhiDevice() override;
 
     WebGpuRhiDevice(const WebGpuRhiDevice &) = delete;

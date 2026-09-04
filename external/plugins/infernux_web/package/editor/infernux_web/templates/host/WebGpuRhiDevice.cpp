@@ -347,7 +347,7 @@ const rhi::TransferCommandEncoder::DispatchTable WebGpuRhiDevice::s_transferDisp
     &WebGpuRhiDevice::ResolveTexture,
 };
 
-WebGpuRhiDevice::WebGpuRhiDevice(wgpu::Device device, wgpu::Queue queue)
+WebGpuRhiDevice::WebGpuRhiDevice(wgpu::Device device, wgpu::Queue queue, uint32_t maxStorageBuffersPerStage)
     : m_deviceId(rhi::AllocateDeviceId()), m_device(std::move(device)), m_queue(std::move(queue))
 {
     m_capabilities.backend = rhi::BackendType::WebGPU;
@@ -356,7 +356,7 @@ WebGpuRhiDevice::WebGpuRhiDevice(wgpu::Device device, wgpu::Queue queue)
     m_capabilities.limits.maxColorAttachments = 8;
     m_capabilities.limits.maxPushConstantBytes = 256;
     m_capabilities.limits.maxSampledTexturesPerStage = 16;
-    m_capabilities.limits.maxStorageBuffersPerStage = 8;
+    m_capabilities.limits.maxStorageBuffersPerStage = maxStorageBuffersPerStage;
     m_capabilities.limits.maxSamplerAnisotropy = 16.0f;
     m_capabilityState.dynamicRendering = {true, true};
 
