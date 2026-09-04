@@ -232,7 +232,10 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
     installed = False
     try:
         automated_install_approval = install_apk(
-            adb, arguments.instrumentation_apk, replace=False
+            adb,
+            arguments.instrumentation_apk,
+            replace=False,
+            approve_oem_prompt=not device.emulator,
         )
         installed = True
         adb.run("logcat", "-c")

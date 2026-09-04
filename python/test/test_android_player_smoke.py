@@ -352,6 +352,40 @@ def test_apk_install_stages_the_complete_package_before_package_manager():
     assert 'arguments = ["install", "--no-streaming"]' in install_apk
 
 
+def test_emulator_install_skips_physical_oem_ui_automation(monkeypatch, tmp_path: Path):
+    module = _module()
+    commands = []
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            commands.append((arguments, options))
+            return "Success"
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "emulator install must not launch the OEM approval monitor"
+        ),
+    )
+    apk = tmp_path / "player.apk"
+
+    approved = module.install_apk(
+        FakeAdb(),
+        apk,
+        replace=True,
+        approve_oem_prompt=False,
+    )
+
+    assert approved is False
+    assert commands == [
+        (
+            ("install", "--no-streaming", "-r", "-t", str(apk)),
+            {"timeout": 300.0},
+        )
+    ]
+
+
 def test_atomic_report_records_structured_payload(tmp_path: Path):
     module = _module()
     report = tmp_path / "evidence" / "android.json"

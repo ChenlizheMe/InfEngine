@@ -126,7 +126,13 @@ def oem_install_approval_target(hierarchy: str) -> tuple[int, int] | None:
     return None
 
 
-def install_apk(adb: Adb, apk: Path, *, replace: bool) -> bool:
+def install_apk(
+    adb: Adb,
+    apk: Path,
+    *,
+    replace: bool,
+    approve_oem_prompt: bool,
+) -> bool:
     """Install an APK and approve the known HyperOS USB prompt when present."""
     # Stage the complete package before Package Manager opens it. Streamed ADB
     # installs can lose their service pipe while a software-only emulator is
@@ -135,6 +141,13 @@ def install_apk(adb: Adb, apk: Path, *, replace: bool) -> bool:
     if replace:
         arguments.append("-r")
     arguments.extend(("-t", str(apk)))
+    if not approve_oem_prompt:
+        # AOSP emulators never present the HyperOS USB-install dialog. Running
+        # uiautomator beside Package Manager on a two-core hosted runner can
+        # starve both the install and Player startup for several minutes.
+        adb.run(*arguments, timeout=300.0)
+        return False
+
     process = subprocess.Popen(
         adb.command(*arguments),
         stdout=subprocess.PIPE,
@@ -450,7 +463,10 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
     if not arguments.no_install:
         try:
             automated_install_approval = install_apk(
-                adb, arguments.apk, replace=True
+                adb,
+                arguments.apk,
+                replace=True,
+                approve_oem_prompt=not device.emulator,
             )
         except RuntimeError as error:
             if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" not in str(error):
@@ -461,7 +477,10 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             # clean reinstall is both deterministic and safe.
             adb.run("uninstall", arguments.package, check=False)
             automated_install_approval = install_apk(
-                adb, arguments.apk, replace=False
+                adb,
+                arguments.apk,
+                replace=False,
+                approve_oem_prompt=not device.emulator,
             )
             reinstalled_after_signature_mismatch = True
     adb.run("logcat", "-c")

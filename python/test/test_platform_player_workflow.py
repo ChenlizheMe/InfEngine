@@ -171,8 +171,12 @@ def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
     assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
     assert "--wait-milliseconds 20000" in driver
     build_step = workflow.index("- name: Build Android Player and input instrumentation")
+    enable_kvm = workflow.index("- name: Enable KVM acceleration")
     launch_emulator = workflow.index("ReactiveCircus/android-emulator-runner@")
-    assert build_step < launch_emulator
+    assert build_step < enable_kvm < launch_emulator
+    assert "test -c /dev/kvm" in workflow[enable_kvm:launch_emulator]
+    assert "test -w /dev/kvm" in workflow[enable_kvm:launch_emulator]
+    assert "disable-linux-hw-accel: false" in workflow[launch_emulator:]
     assert '"$CONDA/envs/infernux/bin/python" build' in workflow[build_step:launch_emulator]
 
 
