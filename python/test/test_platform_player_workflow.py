@@ -170,12 +170,14 @@ def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
     assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
     assert "--wait-milliseconds 20000" in driver
+    checkout_step = workflow.index("- uses: actions/checkout@v4", workflow.index("  android-player:"))
+    require_kvm = workflow.index("- name: Require KVM acceleration")
     build_step = workflow.index("- name: Build Android Player and input instrumentation")
-    enable_kvm = workflow.index("- name: Enable KVM acceleration")
     launch_emulator = workflow.index("ReactiveCircus/android-emulator-runner@")
-    assert build_step < enable_kvm < launch_emulator
-    assert "test -c /dev/kvm" in workflow[enable_kvm:launch_emulator]
-    assert "test -w /dev/kvm" in workflow[enable_kvm:launch_emulator]
+    assert checkout_step < require_kvm < build_step < launch_emulator
+    assert "[[ ! -c /dev/kvm ]]" in workflow[require_kvm:build_step]
+    assert "[[ ! -r /dev/kvm || ! -w /dev/kvm ]]" in workflow[require_kvm:build_step]
+    assert "refusing the unusably slow Android software-emulator fallback" in workflow[require_kvm:build_step]
     assert "disable-linux-hw-accel: false" in workflow[launch_emulator:]
     assert '"$CONDA/envs/infernux/bin/python" build' in workflow[build_step:launch_emulator]
 

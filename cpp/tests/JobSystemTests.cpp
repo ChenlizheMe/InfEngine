@@ -301,11 +301,40 @@ void TestTaskGroupCancellationAndException()
     infernux::JobSystem::Initialize(2);
     auto &jobs = infernux::JobSystem::Get();
 
+    // Keep the task pending until cancellation has been published. Without
+    // this gate the worker may legitimately begin the callback before
+    // Cancel(), which tests scheduling luck rather than queued cancellation.
+    jobs.SetDomainConcurrency(infernux::JobDomain::Runtime, 1);
+    std::mutex cancellationMutex;
+    std::condition_variable cancellationCondition;
+    bool blockerStarted = false;
+    bool releaseBlocker = false;
+    auto cancellationBlocker = jobs.Schedule(
+        [&] {
+            std::unique_lock lock(cancellationMutex);
+            blockerStarted = true;
+            cancellationCondition.notify_all();
+            cancellationCondition.wait(lock, [&] { return releaseBlocker; });
+        },
+        infernux::JobDomain::Runtime);
+    {
+        std::unique_lock lock(cancellationMutex);
+        Require(cancellationCondition.wait_for(lock, std::chrono::seconds(2), [&] { return blockerStarted; }),
+                "TaskGroup cancellation blocker did not start");
+    }
+
     auto cancelledGroup = jobs.CreateTaskGroup(infernux::JobDomain::Runtime);
     std::atomic<bool> cancelledTaskRan{false};
     jobs.Schedule(cancelledGroup, [&cancelledTaskRan] { cancelledTaskRan.store(true, std::memory_order_release); });
+    Require(jobs.GetQueuedTaskCount() == 1, "TaskGroup cancellation target did not remain queued");
     Require(cancelledGroup.Cancel(), "TaskGroup rejected cancellation");
     cancelledGroup.Close();
+    {
+        std::lock_guard lock(cancellationMutex);
+        releaseBlocker = true;
+    }
+    cancellationCondition.notify_all();
+    jobs.Wait(cancellationBlocker);
     bool cancellationPropagated = false;
     try {
         jobs.Wait(cancelledGroup.Fence());
@@ -314,6 +343,7 @@ void TestTaskGroupCancellationAndException()
     }
     Require(cancellationPropagated, "TaskGroup cancellation was not propagated");
     Require(!cancelledTaskRan.load(std::memory_order_acquire), "cancelled TaskGroup task executed");
+    jobs.SetDomainConcurrency(infernux::JobDomain::Runtime, 0);
 
     auto failingGroup = jobs.CreateTaskGroup(infernux::JobDomain::Runtime);
     jobs.Schedule(failingGroup, [] { throw std::runtime_error("group failure"); });

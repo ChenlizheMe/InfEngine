@@ -91,6 +91,9 @@ class JobHandle
 
     [[nodiscard]] bool IsComplete() const noexcept;
 
+    /** Request cooperative cancellation. Queued callbacks are skipped; a
+     * callback that has already begun is not
+     * preempted. */
     bool Cancel() noexcept;
 
     [[nodiscard]] bool IsCancellationRequested() const noexcept
@@ -145,6 +148,9 @@ class TaskGroup
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] bool IsComplete() const noexcept;
     [[nodiscard]] bool IsCancellationRequested() const noexcept;
+    /** Request cooperative cancellation for the group. Queued callbacks are
+     * skipped; callbacks that have already
+     * begun are not preempted. */
     bool Cancel() noexcept;
 
     /** Returns a fence that completes only after Close() and all jobs. */
