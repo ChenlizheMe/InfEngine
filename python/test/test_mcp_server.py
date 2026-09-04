@@ -389,14 +389,22 @@ def test_schema_gateway_can_edit_real_material_document(engine):
             0.6,
             1.0,
         ]
+        document = None
         for _ in range(100):
             AssetManager.poll_pending_asset_writes()
-            document = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError:
+                # Windows may briefly deny readers while the asynchronous
+                # atomic publication replaces the destination file.
+                time.sleep(0.01)
+                continue
             if document["properties"]["baseColor"]["value"] == pytest.approx(
                 [0.2, 0.4, 0.6, 1.0]
             ):
                 break
             time.sleep(0.01)
+        assert document is not None
         assert document["properties"]["baseColor"]["value"] == pytest.approx(
             [0.2, 0.4, 0.6, 1.0]
         )
