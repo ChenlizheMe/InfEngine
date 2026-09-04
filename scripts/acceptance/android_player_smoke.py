@@ -128,7 +128,10 @@ def oem_install_approval_target(hierarchy: str) -> tuple[int, int] | None:
 
 def install_apk(adb: Adb, apk: Path, *, replace: bool) -> bool:
     """Install an APK and approve the known HyperOS USB prompt when present."""
-    arguments = ["install"]
+    # Stage the complete package before Package Manager opens it. Streamed ADB
+    # installs can lose their service pipe while a software-only emulator is
+    # CPU-starved even though both ADB and the package remain valid.
+    arguments = ["install", "--no-streaming"]
     if replace:
         arguments.append("-r")
     arguments.extend(("-t", str(apk)))

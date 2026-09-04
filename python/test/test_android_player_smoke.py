@@ -343,6 +343,15 @@ def test_device_is_unlocked_before_usb_install_approval_is_requested():
     assert run_smoke.index("unlock_device(adb)") < run_smoke.index("install_apk(")
 
 
+def test_apk_install_stages_the_complete_package_before_package_manager():
+    source = SCRIPT.read_text(encoding="utf-8")
+    install_apk = source.split("def install_apk(", 1)[1].split(
+        "def parse_devices(", 1
+    )[0]
+
+    assert 'arguments = ["install", "--no-streaming"]' in install_apk
+
+
 def test_atomic_report_records_structured_payload(tmp_path: Path):
     module = _module()
     report = tmp_path / "evidence" / "android.json"
