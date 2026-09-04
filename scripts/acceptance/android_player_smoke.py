@@ -287,10 +287,16 @@ def unlock_device(adb: Adb, timeout: float = 30.0) -> None:
     deadline = time.monotonic() + timeout
     attempt = 0
     last_policy = ""
-    while time.monotonic() < deadline:
+    while True:
         last_policy = adb.run("shell", "dumpsys", "window", "policy", check=False)
         if not keyguard_is_showing(last_policy):
             return
+        # A complete unlock sequence may itself outlive the nominal deadline on
+        # a software-only CI emulator. Always observe its resulting policy state
+        # once before applying the deadline; otherwise a successful dismiss is
+        # misreported as a locked device without ever being verified.
+        if attempt > 0 and time.monotonic() >= deadline:
+            break
         if attempt % 4 == 0:
             # A newly booted API 36 emulator can ignore the first dismiss while
             # SystemUI is still settling. Retry the complete non-secure unlock

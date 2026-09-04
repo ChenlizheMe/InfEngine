@@ -119,6 +119,36 @@ def test_unlock_retries_the_complete_sequence_when_systemui_drops_the_first_swip
     assert commands.count(("shell", "wm", "dismiss-keyguard")) == 4
 
 
+def test_unlock_observes_the_result_when_adb_commands_outlive_deadline(monkeypatch):
+    module = _module()
+    commands = []
+    policy_calls = 0
+    clock = iter((0.0, 31.0))
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            nonlocal policy_calls
+            assert options == {"check": False}
+            commands.append(arguments)
+            if arguments == ("shell", "dumpsys", "window", "policy"):
+                policy_calls += 1
+                return (
+                    "KeyguardServiceDelegate\n"
+                    f"showing={'true' if policy_calls == 1 else 'false'}"
+                )
+            if arguments == ("shell", "wm", "size"):
+                return "Physical size: 1080x1920"
+            return ""
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module.unlock_device(FakeAdb(), timeout=30.0)
+
+    assert policy_calls == 2
+    assert commands.count(("shell", "wm", "dismiss-keyguard")) == 2
+
+
 @pytest.mark.parametrize(
     ("output", "expected"),
     [
