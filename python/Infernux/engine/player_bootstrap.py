@@ -185,10 +185,7 @@ class PlayerBootstrap:
     def _load_runtime_asset_catalog(self) -> None:
         """Load the immutable asset catalog before revealing the game window."""
         from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
-        from Infernux.engine.runtime_artifact_catalog import (
-            CATALOG_SCHEMA,
-            runtime_artifact_id,
-        )
+        from Infernux.engine.runtime_artifact_catalog import CATALOG_SCHEMA
 
         runtime_manifest = self._runtime_manifest
         if runtime_manifest is None:
@@ -206,9 +203,8 @@ class PlayerBootstrap:
             raise RuntimeError("Unsupported runtime asset catalog schema")
 
         packages = catalog.get("packages")
-        artifacts = catalog.get("artifacts")
-        if not isinstance(packages, list) or not isinstance(artifacts, list):
-            raise RuntimeError("Runtime asset catalog is missing packages or artifacts")
+        if not isinstance(packages, list):
+            raise RuntimeError("Runtime asset catalog is missing packages")
         for package in packages:
             if not isinstance(package, dict):
                 raise RuntimeError("Runtime asset catalog contains an invalid package entry")
@@ -231,39 +227,6 @@ class PlayerBootstrap:
                 raise RuntimeError("Runtime asset catalog package size disagrees with native manifest")
             if validated_bytes != os.path.getsize(package_path):
                 raise RuntimeError("Runtime asset catalog package size mismatch")
-
-        artifact_ids = set()
-        for artifact in artifacts:
-            if not isinstance(artifact, dict):
-                raise RuntimeError("Runtime asset catalog contains an invalid artifact entry")
-            allowed_artifact_fields = {
-                "runtime_artifact_id", "logical_type", "payload_kind", "package",
-                "runtime_path", "content_bytes", "dependencies",
-                "unresolved_dependencies",
-            }
-            if frozenset(artifact) not in {
-                frozenset(allowed_artifact_fields),
-                frozenset(allowed_artifact_fields | {"source_asset", "asset_guid"}),
-            }:
-                raise RuntimeError("Runtime asset catalog artifact uses an unsupported schema")
-            artifact_id = artifact.get("runtime_artifact_id")
-            package = artifact.get("package")
-            runtime_path = artifact.get("runtime_path")
-            if not all(isinstance(value, str) and value for value in (artifact_id, package, runtime_path)):
-                raise RuntimeError("Runtime asset catalog artifact identity is incomplete")
-            if artifact_id != runtime_artifact_id(package, runtime_path):
-                raise RuntimeError("Runtime asset catalog contains an unstable artifact ID")
-            if artifact_id in artifact_ids:
-                raise RuntimeError("Runtime asset catalog contains duplicate artifact IDs")
-            artifact_ids.add(artifact_id)
-            asset_guid = artifact.get("asset_guid")
-            if asset_guid is not None:
-                if not isinstance(asset_guid, str) or not asset_guid:
-                    raise RuntimeError("Runtime asset catalog contains an invalid asset GUID")
-        for artifact in artifacts:
-            for dependency in artifact.get("dependencies", []):
-                if dependency not in artifact_ids:
-                    raise RuntimeError("Runtime asset catalog contains an unknown dependency")
 
         records_path = os.path.join(
             self.project_path, "Library", "RuntimeAssetRecords.json"

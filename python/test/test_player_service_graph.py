@@ -48,6 +48,21 @@ def _asset_documents(scene_path="Assets/Scenes/Main.scene"):
     return catalog, records
 
 
+@pytest.mark.parametrize("invalid", ["duplicate", "dependency", "path"])
+def test_runtime_catalog_owner_rejects_invalid_asset_relationships(tmp_path, invalid):
+    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+
+    catalog, records = _asset_documents()
+    if invalid == "duplicate":
+        catalog["artifacts"].append(dict(catalog["artifacts"][0]))
+    elif invalid == "dependency":
+        catalog["artifacts"][0]["dependencies"] = ["unknown-artifact"]
+    else:
+        catalog["artifacts"][0]["runtime_path"] = "../outside.scene"
+    with pytest.raises(RuntimeError):
+        PlayerRuntimeAssetCatalog.from_documents(str(tmp_path), catalog, records)
+
+
 def test_runtime_service_graph_is_authoritative_for_all_products():
     from Infernux.engine.player_service_graph import (
         RuntimeFeatureSet,
