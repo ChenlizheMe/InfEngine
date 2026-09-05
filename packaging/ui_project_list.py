@@ -173,6 +173,7 @@ class ProjectListPane(QWidget):
             item = self.card_layout.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
                 w.deleteLater()
 
         self._all_projects = self.db.all_projects()

@@ -49,3 +49,21 @@ def test_long_project_identity_does_not_push_actions_outside_the_viewport(tmp_pa
         assert scroll.viewport().rect().contains(right)
     finally:
         pane.close()
+
+
+def test_refresh_hides_retired_widgets_before_opening_a_modal(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    records = []
+    pane = ProjectListPane(SimpleNamespace(all_projects=lambda: records))
+    pane.show()
+    app.processEvents()
+    empty_state = pane.card_layout.itemAt(0).widget()
+    try:
+        assert empty_state.isVisible()
+        records.append(SimpleNamespace(project_id="new", name="New project",
+                                       created_at="", path=str(tmp_path)))
+        pane.refresh()
+        # The caller may enter a modal loop before deferred deletion runs.
+        assert not empty_state.isVisible()
+    finally:
+        pane.close()
