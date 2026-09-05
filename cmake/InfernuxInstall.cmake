@@ -134,18 +134,16 @@ endif()
 # The script exits immediately for non-Release configurations (for example
 # RelWithDebInfo), so debug installs still package without building a Player
 # Runtime Pack.
-set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_BINARY_DIR}/runtime-packs")
-set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_BINARY_DIR}/runtime-modules")
+set(INFERNUX_PREBUILT_RUNTIME_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/_runtime_packs")
+set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/_runtime_modules")
 add_custom_target(prebuild_player_runtime
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
-        "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+        "-DINFERNUX_SOURCE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source"
         "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
-        # python-sync is the atomic staged native payload on every host.  On
-        # Linux the extension target directory does not contain the shared
-        # runtime siblings, so handing that directory to the Player builder
-        # incorrectly identifies a Release build as an Editor-only payload.
-        "-DNATIVE_MODULE_DIR=${PYTHON_TARGET_DIR}"
+        # Fingerprint and compile the exact installed wheel payload, not a
+        # source tree whose native layout differs from the installed package.
+        "-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/lib"
         "-DPLAYER_HOST_PATH=${INFERNUX_PLAYER_HOST_BUILD_PATH}"
         "-DOUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_DIR}"
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
@@ -251,18 +249,6 @@ install(
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 
-install(
-    DIRECTORY "${INFERNUX_PREBUILT_RUNTIME_DIR}/"
-    DESTINATION "python/Infernux/_runtime_packs"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    OPTIONAL
-)
-install(
-    DIRECTORY "${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}/"
-    DESTINATION "python/Infernux/_runtime_modules"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    OPTIONAL
-)
 install(
     FILES
         "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"

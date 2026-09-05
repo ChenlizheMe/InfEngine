@@ -10,11 +10,17 @@ add_custom_target(stage_python_package
         --prefix "${INFERNUX_PYTHON_STAGE_DIR}"
         --component ${INFERNUX_PYTHON_INSTALL_COMPONENT}
     DEPENDS
-        prebuild_player_runtime
+        _Infernux
+        _InfernuxBootstrap
+        refresh_player_native_contract
         infernux_official_plugins
     COMMENT "Assembling the Python wheel source tree after native and official plugin builds"
     VERBATIM
 )
+if(TARGET InfernuxPlayerHost)
+    add_dependencies(stage_python_package InfernuxPlayerHost)
+endif()
+add_dependencies(prebuild_player_runtime stage_python_package)
 
 add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E echo "Ensuring Python packaging tools are available..."
@@ -42,7 +48,7 @@ add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${INFERNUX_PYTHON_WHEEL_DIR}" "${INFERNUX_RELEASE_DIR}"
 
-    DEPENDS stage_python_package
+    DEPENDS prebuild_player_runtime
     COMMENT "Building and verifying the Infernux Python wheel"
     VERBATIM
 )

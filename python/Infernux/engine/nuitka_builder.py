@@ -1222,9 +1222,6 @@ class NuitkaBuilder:
                 f"nuitka total {now - _build_t0:.1f}s)"
             )
 
-        _p(t("build.step.checking_nuitka"), 0.0)
-        self._check_nuitka()
-
         _p(t("build.step.preparing_staging"), 0.03)
         self._prepare_staging()
 
@@ -1243,6 +1240,7 @@ class NuitkaBuilder:
                 compatibility_key=compatibility_key if self.packaged_runtime_lookup else "",
             )
         if dist_dir is None:
+            self._check_nuitka()
             _p(t("build.step.running_nuitka"), 0.10)
             dist_dir = self._run_nuitka(cmd, on_progress, cancel_event)
 
@@ -1352,7 +1350,7 @@ class NuitkaBuilder:
             "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
             "platform": sys.platform,
             "machine": platform.machine().lower(),
-            "console_mode": self.console_mode,
+            "console_mode": "module" if self.player_module else self.console_mode,
             "lto": bool(self.lto),
             "player_module": bool(getattr(self, "player_module", False)),
             "archive_format": "infernux-native-inxpack",
@@ -2085,22 +2083,10 @@ print(json.dumps({{
         if sys.platform == "win32":
             if not player_module:
                 cmd.append(f"--windows-console-mode={self.console_mode}")
-            if not _has_msvc_toolchain():
-                raise RuntimeError(
-                    "Windows game builds require Microsoft Visual C++ Build Tools (MSVC).\n"
-                    "MinGW fallback has been disabled.\n"
-                    "Install Visual Studio 2022 Build Tools or Visual Studio with the Desktop development with C++ workload, then try again."
-                )
             # Do not pass --msvc=latest here.  _run_nuitka initializes a full
             # cl/link/rc/mt + Windows SDK environment before spawning Nuitka;
             # forcing "latest" makes SCons run its own VS/SDK discovery again,
             # which is exactly what fails on some machines with a valid SDK.
-        elif sys.platform.startswith("linux"):
-            if shutil.which("gcc") is None and shutil.which("clang") is None:
-                raise RuntimeError(
-                    "Linux game builds require a C compiler for Nuitka.\n"
-                    "Install one with: sudo apt-get install build-essential"
-                )
 
         # Link-time optimization for smaller and faster binaries
         if self.lto:
@@ -2288,6 +2274,11 @@ print(json.dumps({{
         """Run Nuitka as a subprocess and stream output.  Returns dist dir."""
         if cancel_event is not None and cancel_event.is_set():
             raise BuildCancelled()
+
+        if sys.platform == "win32" and not _has_msvc_toolchain():
+            raise RuntimeError("Compiling a Player runtime requires Microsoft Visual C++ Build Tools (MSVC).")
+        if sys.platform.startswith("linux") and shutil.which("gcc") is None and shutil.which("clang") is None:
+            raise RuntimeError("Compiling a Player runtime requires a C compiler (gcc or clang).")
 
         alias = _windows_ascii_build_alias(self._build_cache_root)
         process_build_root = alias or self._build_cache_root

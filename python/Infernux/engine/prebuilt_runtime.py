@@ -91,7 +91,7 @@ def build_prebuilt_runtime(
             ),
             product_name="Infernux Player",
             icon_path=default_icon if os.path.isfile(default_icon) else None,
-            raw_copy_packages=["numpy"],
+            raw_copy_packages=["numpy", "packaging"],
             runtime_support_packages=["numba", "llvmlite"],
             console_mode="force" if profile == "debug" else "disable",
             lto=lto,

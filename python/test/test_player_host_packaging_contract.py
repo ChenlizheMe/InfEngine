@@ -73,7 +73,21 @@ def test_wheel_refreshes_player_native_contract_after_cache_restore():
     assert '"-DTARGET_DIR=${PYTHON_TARGET_DIR}"' in refresh
     assert "DEPENDS _Infernux" in refresh
     assert "add_dependencies(prebuild_player_runtime refresh_player_native_contract)" in install
-    assert '"-DNATIVE_MODULE_DIR=${PYTHON_TARGET_DIR}"' in install
+    assert '"-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/lib"' in install
+
+
+def test_runtime_pack_is_compiled_from_the_assembled_wheel_payload():
+    packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(encoding="utf-8")
+    install = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+    stage = packaging.split("add_custom_target(stage_python_package", 1)[1].split(")\n", 1)[0]
+    wheel = packaging.split("add_custom_target(package_python", 1)[1].split(")\n", 1)[0]
+
+    assert "prebuild_player_runtime" not in stage
+    assert "refresh_player_native_contract" in stage
+    assert "add_dependencies(prebuild_player_runtime stage_python_package)" in packaging
+    assert "DEPENDS prebuild_player_runtime" in wheel
+    assert '"-DINFERNUX_SOURCE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source"' in install
+    assert 'DIRECTORY "${INFERNUX_PREBUILT_RUNTIME_DIR}/"' not in install
 
 
 def test_player_package_contract_has_bootstrap_archive_and_no_root_bootstrap_files():

@@ -1101,9 +1101,6 @@ for _bootstrap_api in ("_inxplayer_show_error",):
     if not hasattr(_NATIVE_PACK, _bootstrap_api):
         raise RuntimeError("The Player bootstrap is missing API: " + _bootstrap_api)
 
-_DEBUG_MODE = __INFERNUX_DEBUG_MODE__
-os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = "1" if _DEBUG_MODE else "0"
-
 _CORE_RUNTIME_DIR = _RUNTIME_ROOT
 if not os.path.isdir(_CORE_RUNTIME_DIR):
     raise RuntimeError("The direct Player Runtime directory is missing: " + _CORE_RUNTIME_DIR)
@@ -1141,6 +1138,7 @@ _DATA_DIR = prepare_platform_player(
     os.path.join(_PLAYER_STATE_ROOT, "Cache"),
 )
 _mark_boot_phase("content_ready")
+_DEBUG_MODE = os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"
 _BUILD_MANIFEST_PATH = os.path.join(_DATA_DIR, "BuildManifest.json")
 if not os.path.isfile(_BUILD_MANIFEST_PATH):
     raise RuntimeError(
@@ -1246,11 +1244,6 @@ finally:
         except Exception:
             pass
 '''
-        boot_src = boot_src.replace(
-            "__INFERNUX_DEBUG_MODE__",
-            "True" if self.debug_mode else "False",
-            1,
-        )
         boot_dir = os.path.join(self.output_dir, self._BUILD_TEMP_DIR_NAME)
         os.makedirs(boot_dir, exist_ok=True)
         boot_path = os.path.join(boot_dir, "boot.py")

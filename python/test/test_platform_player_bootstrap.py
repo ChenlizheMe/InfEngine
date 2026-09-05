@@ -89,8 +89,13 @@ def _platform_package(tmp_path: Path) -> Path:
     return data_root
 
 
-def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path):
+@pytest.mark.parametrize("flavor,debug_flag", [("PlayerDebug", "1"), ("PlayerRelease", "0")])
+def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path, flavor, debug_flag):
     data_root = _platform_package(tmp_path)
+    (data_root / "Player.inxmanifest").write_text(
+        json.dumps({"product": {"flavor": flavor}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("_INFERNUX_PLAYER_DEBUG_BUILD", "0" if debug_flag == "1" else "1")
     cache_root = tmp_path / "cache"
 
     project_root = Path(
@@ -109,7 +114,7 @@ def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path)
     assert Path(os.environ["_INFERNUX_PLAYER_LOG"]) == cache_root / "Logs/player.log"
     assert Path(os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"]) == tmp_path / "Data"
     assert (tmp_path / "Data").is_dir()
-    assert os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"
+    assert os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == debug_flag
 
 
 def test_platform_player_keeps_only_the_active_content_generation(tmp_path):

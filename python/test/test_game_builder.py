@@ -2203,6 +2203,44 @@ def test_packaged_runtime_pack_restores_without_local_cache(tmp_path, monkeypatc
     assert (Path(restored) / "InfernuxPlayer.exe").read_bytes() == b"prebuilt-runtime"
 
 
+def test_runtime_pack_hit_does_not_prepare_compiler_or_install_requirements(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(str(entry), str(tmp_path / "output"),
+                            build_cache_root=str(tmp_path / "cache"),
+                            runtime_pack_cache=True, player_module=True)
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: "cached")
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: "restored")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("A precompiled Player does not need compilation tools")
+
+    monkeypatch.setattr(builder, "_check_nuitka", unexpected)
+    monkeypatch.setattr(builder, "_run_nuitka", unexpected)
+    monkeypatch.setattr(nuitka_builder_module, "_has_msvc_toolchain", unexpected)
+    monkeypatch.setattr(nuitka_builder_module.shutil, "which", unexpected)
+
+    assert builder.build() == "restored"
+
+
+def test_debug_and_release_share_the_compiled_player_entry(tmp_path, monkeypatch):
+    project = _make_project(tmp_path)
+    entries = []
+    keys = []
+    for debug in (False, True):
+        game = GameBuilder(str(project), str(tmp_path / str(debug)), debug_mode=debug)
+        entry = game._generate_boot_script()
+        entries.append(Path(entry).read_bytes())
+        builder = NuitkaBuilder(entry, str(tmp_path / str(debug)),
+                                build_cache_root=str(tmp_path / "cache"),
+                                console_mode="force" if debug else "disable", player_module=True)
+        monkeypatch.setattr(builder, "_player_compile_input_fingerprint", lambda: "same-engine")
+        keys.append(builder._runtime_pack_compatibility_key())
+    assert entries[0] == entries[1]
+    assert keys[0] == keys[1]
+
+
 def test_runtime_pack_rejects_unsafe_archive_paths(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
     builder = object.__new__(NuitkaBuilder)
@@ -5884,8 +5922,8 @@ class TestGameBuilderOutputSafety:
         assert "import pathlib" not in boot_source
         assert "from pathlib" not in boot_source
         assert "import traceback" not in boot_source
-        assert "_DEBUG_MODE = True" in boot_source
-        assert 'os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = "1" if _DEBUG_MODE else "0"' in boot_source
+        assert '_DEBUG_MODE = os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"' in boot_source
+        assert boot_source.index("_DATA_DIR = prepare_platform_player(") < boot_source.index("_DEBUG_MODE =")
         assert 'os.environ["PYTHONDONTWRITEBYTECODE"] = "1"' in boot_source
         assert 'os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = _DATA_ROOT' in boot_source
         assert (
