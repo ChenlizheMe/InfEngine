@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import io
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +39,22 @@ class _RunningProcess:
 
 def _app():
     return QApplication.instance() or QApplication([])
+
+
+def test_stderr_reader_reaps_editor_after_successful_startup():
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stderr.buffer.write(b'editor stopped')"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    owner = SimpleNamespace(_process=process, _stderr_chunks=[])
+    try:
+        EngineSplashScreen._drain_stderr(owner)
+        assert process.returncode == 0
+        assert owner._stderr_chunks == [b"editor stopped"]
+        assert process.stderr.closed
+    finally:
+        process.wait(timeout=10)
 
 
 def test_loading_marker_does_not_hide_process_failure(tmp_path: Path):
@@ -99,6 +116,10 @@ def test_launch_lock_tracks_engine_pid_not_hub_pid(tmp_path: Path, monkeypatch):
     class Process:
         pid = 424242
         stderr = io.BytesIO()
+
+        @staticmethod
+        def wait():
+            return 0
 
         @staticmethod
         def poll():

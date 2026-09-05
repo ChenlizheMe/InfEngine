@@ -350,26 +350,20 @@ class EngineSplashScreen(QWidget):
         self._poll_timer.start(150)
 
     def _drain_stderr(self):
-        """Read stderr until EOF so the pipe buffer never stalls the engine."""
+        """Drain the engine pipe, then reap it even after the splash has closed."""
         proc = self._process
         chunks = self._stderr_chunks
         if proc is None or proc.stderr is None:
             return
         try:
-            while True:
-                chunk = proc.stderr.read(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-        except (ValueError, OSError) as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            pass
+            with proc.stderr:
+                while True:
+                    chunk = proc.stderr.read(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
         finally:
-            try:
-                proc.stderr.close()
-            except Exception as _exc:
-                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-                pass
+            proc.wait()
 
     def _poll_launch_state(self):
         if self._terminal_handled:
