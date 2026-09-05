@@ -498,6 +498,10 @@ def _build_hub(
             f"--include-data-file={linux_updater}="
             "InfernuxHubData/updater/hub_update_apply.py"
         ),
+        (
+            f"--include-data-file={packaging_dir / 'hub_uninstall.ps1'}="
+            "InfernuxHubData/uninstaller/hub_uninstall.ps1"
+        ),
         "--nofollow-import-to=Infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
     ]
     if sys.platform == "darwin":

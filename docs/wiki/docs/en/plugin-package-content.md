@@ -78,6 +78,8 @@ Small user state, including project records and Editor preferences, still uses `
 
 Existing user-data directories are not moved or deleted automatically. Until migration is complete, existing deployments can explicitly point `INFERNUX_SHARED_DATA_ROOT` at the previous root containing `Library`, `PlatformKits`, `Runtimes`, and `Engines`. This is configuration, not a failure fallback. A standalone Editor launched without Hub's environment can still use its existing user-data root.
 
+Uninstall removes Hub application files while preserving Shared and project records. On Windows, a separate system PowerShell process waits for Hub to exit before removal. Errors are reported rather than presented as successful deletion. The retained installation marker lets a reinstall reuse the existing shared resources.
+
 ## Code and Player builds
 
 Subclass `InxPreload` for lifecycle work. Use explicit relative imports for package-local Python code. Every installed package receives an isolated deterministic module namespace. `runtime/` participates in gameplay component loading and hot refresh; `editor/` is loaded only by the Editor lifecycle.

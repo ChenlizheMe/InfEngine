@@ -285,6 +285,7 @@
 <p>Hub 管理的插件库、Android Kit、Python 运行时、引擎版本和下载内容默认位于安装目录的 <code>InfernuxHubData/Shared/</code>。源码运行 <code>packaging/launcher.py</code> 时，位置为仓库内的 <code>packaging/InfernuxHubData/Shared/</code>，不取决于当前工作目录。<code>INFERNUX_SHARED_DATA_ROOT</code> 可显式指定共享位置，Hub 会将其传给启动的 Editor；<code>INFERNUX_PACKAGE_CACHE_ROOT</code> 仍可单独指定插件缓存。</p>
 <p>项目记录和编辑器偏好仍属于小体积用户状态，使用 <code>INFERNUX_DATA_ROOT</code>；项目缓存留在项目内。安装器升级和失败回滚保留 Shared，更新包不会拥有其中的内容。Windows 安装器只为安装账户授予 Shared 的可继承修改权限，不放宽程序目录权限。</p>
 <p>旧用户数据目录不会自动搬移或删除。已有部署在完成迁移前，可显式将 <code>INFERNUX_SHARED_DATA_ROOT</code> 指向原先存放 <code>Library</code>、<code>PlatformKits</code>、<code>Runtimes</code>、<code>Engines</code> 的根目录；这不是运行失败后的自动回退。直接启动、没有 Hub 环境的独立 Editor 仍可使用原有用户数据根。</p>
+<p>卸载只移除 Hub 程序文件，保留 Shared 与项目记录。Windows 由独立系统 PowerShell 进程等待 Hub 退出后执行；清理出错会明确报告，不会提前宣称删除成功。保留安装标记使重装可以继续使用原有共享资源。</p>
 <h2 id="player">代码与 Player<a class="headerlink" href="#player" title="Permanent link">&para;</a></h2>
 <p>生命周期代码继承 <code>InxPreload</code>。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。<code>runtime/</code> 参与玩法组件加载和热刷新；<code>editor/</code> 只由 Editor 生命周期加载。</p>
 <p>直接在 <code>Packages/&lt;name&gt;/runtime/</code> 编写本地包，不需要先安装自己才能构建 Player。构建会包含当前已索引的 runtime 文件及编译后的预载脚本，不会改写项目的安装所有权记录。简单包可以不写 manifest；<code>Packages/studio/tool/</code> 这样的命名空间目录需用 <code>inx_package.json</code> 明确包边界。即使 manifest 为未来分发 <code>.inxpkg</code> 指定了不同 reference，Player 仍保持当前项目目录对应的模块身份。</p>

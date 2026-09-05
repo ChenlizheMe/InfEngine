@@ -41,6 +41,7 @@ from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
 from view.installs_view import InstallsView
 from installer_safety import can_remove_install_dir
+from hub_uninstall import remove_application
 from i18n import configure_language, tr
 from view.hover_widgets import ensure_hover_animation_filter
 import logging
@@ -267,6 +268,35 @@ class GameEngineLauncher(QMainWindow):
         self.db.close()
 
 
+def _schedule_windows_application_removal(install_dir: str) -> None:
+    """Run outside the Hub so its executable is no longer locked during removal."""
+    import ctypes
+    from ctypes import wintypes
+    import subprocess
+
+    powershell = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+    helper = (
+        Path(get_app_dir()) / "InfernuxHubData/uninstaller/hub_uninstall.ps1"
+        if is_frozen() else Path(__file__).with_name("hub_uninstall.ps1")
+    )
+    if not helper.is_file():
+        raise FileNotFoundError(f"Hub uninstall helper is missing: {helper}")
+    shell_execute = ctypes.windll.shell32.ShellExecuteW
+    shell_execute.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                              wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
+    shell_execute.restype = wintypes.HINSTANCE
+    result = shell_execute(
+        None, "runas", powershell,
+        subprocess.list2cmdline([
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper),
+            "-InstallDir", install_dir, "-ParentPid", str(os.getpid()),
+        ]),
+        install_dir, 0,
+    )
+    if int(result or 0) <= 32:
+        raise OSError(int(result or 0), "Could not start the Hub uninstaller")
+
+
 def _handle_uninstall() -> int:
     """Remove registry entries, Start Menu shortcut, and optionally the install directory."""
     if sys.platform == "darwin":
@@ -311,12 +341,16 @@ def _handle_uninstall() -> int:
     answer = QMessageBox.question(
         None,
         tr("Uninstall Infernux Hub"),
-        tr("Registry entries and shortcuts have been removed.\n\nDo you also want to delete the installation folder?\n{path}", path=install_dir),
+        tr("Remove Hub application files after this window closes?\n{path}\n\nProjects and Shared resources (plugins, SDKs, runtimes and engines) are preserved.", path=install_dir),
     )
     if answer == QMessageBox.Yes and install_dir and os.path.isdir(install_dir):
-        import shutil as _shutil
         if can_remove_install_dir(install_dir):
-            _shutil.rmtree(install_dir, ignore_errors=True)
+            try:
+                _schedule_windows_application_removal(install_dir)
+            except OSError as exc:
+                QMessageBox.warning(None, tr("Uninstall Failed"), str(exc))
+                return 1
+            return 0
         else:
             QMessageBox.warning(
                 None,
@@ -358,8 +392,6 @@ def _handle_uninstall_macos() -> int:
 
 def _handle_uninstall_linux() -> int:
     """Remove the Linux application while preserving Hub user data."""
-    import shutil as _shutil
-
     app = QApplication.instance() or QApplication(sys.argv)
 
     desktop_entry = os.path.expanduser("~/.local/share/applications/infernux-hub.desktop")
@@ -383,7 +415,7 @@ def _handle_uninstall_linux() -> int:
                             "The Hub application directory is not a recognized install: "
                             f"{p}"
                         )
-                    _shutil.rmtree(p)
+                    remove_application(p)
                 else:
                     os.remove(p)
 

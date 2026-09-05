@@ -78,6 +78,8 @@ Hub 管理的插件库、Android Kit、Python 运行时、引擎版本和下载�
 
 旧用户数据目录不会自动搬移或删除。已有部署在完成迁移前，可显式将 `INFERNUX_SHARED_DATA_ROOT` 指向原先存放 `Library`、`PlatformKits`、`Runtimes`、`Engines` 的根目录；这不是运行失败后的自动回退。直接启动、没有 Hub 环境的独立 Editor 仍可使用原有用户数据根。
 
+卸载只移除 Hub 程序文件，保留 Shared 与项目记录。Windows 由独立系统 PowerShell 进程等待 Hub 退出后执行；清理出错会明确报告，不会提前宣称删除成功。保留安装标记使重装可以继续使用原有共享资源。
+
 ## 代码与 Player
 
 生命周期代码继承 `InxPreload`。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。`runtime/` 参与玩法组件加载和热刷新；`editor/` 只由 Editor 生命周期加载。

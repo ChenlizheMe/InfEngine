@@ -105,6 +105,10 @@ def test_hub_build_embeds_the_private_runtime_bundle(
 
     assert captured
     assert any(
+        argument.endswith("=InfernuxHubData/uninstaller/hub_uninstall.ps1")
+        for argument in captured[0]
+    )
+    assert any(
         argument.endswith(
             "=InfernuxHubData/runtime/runtime_bundle.zip"
         )

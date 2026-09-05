@@ -131,6 +131,8 @@ _ZH = {
     "Ready to install.": "已准备安装。",
     "Launch Hub": "启动 Hub",
     "Select installation directory": "选择安装目录",
+    "Uninstall Failed": "卸载失败",
+    "Remove Hub application files after this window closes?\n{path}\n\nProjects and Shared resources (plugins, SDKs, runtimes and engines) are preserved.": "关闭此窗口后移除 Hub 程序文件？\n{path}\n\n项目及 Shared 中的插件、SDK、Python 运行时和引擎版本都会保留。",
     "Missing Directory": "未选择目录",
     "Please select an installation directory.": "请选择安装目录。",
     "Unsafe Install Location": "不安全的安装位置",
