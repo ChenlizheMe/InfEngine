@@ -12,6 +12,7 @@ import zipfile
 
 from private_python_runtime import (
     extract_runtime_archive,
+    has_runtime_build_support,
     is_current_private_runtime_root,
     prune_runtime_staging_cache,
     runtime_archive_for_machine,
@@ -41,16 +42,6 @@ def _bootstrap_root() -> str:
     return os.path.join(get_hub_shared_data_dir(), "Downloads", "RuntimeBootstrap")
 
 
-def _runtime_lib_names() -> list[str]:
-    if sys.platform == "win32":
-        return [f"{_TARGET_RUNTIME.windows_library_stem}.lib", "python3.lib"]
-    if sys.platform == "darwin":
-        return [f"lib{_TARGET_RUNTIME.unix_library_stem}.dylib", "libpython3.dylib"]
-    return [
-        f"lib{_TARGET_RUNTIME.unix_library_stem}.so",
-        f"lib{_TARGET_RUNTIME.unix_library_stem}.so.1.0",
-        "libpython3.so",
-    ]
 
 
 def _run(args: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
@@ -132,17 +123,7 @@ def _is_embedded_root(root: str) -> bool:
 
 
 def _has_dev_support(root: str) -> bool:
-    if sys.platform == "win32":
-        header_paths = [os.path.join(root, "include", "Python.h")]
-        libs_dir = os.path.join(root, "libs")
-    else:
-        header_paths = [
-            os.path.join(root, "include", f"python{_TARGET_VERSION}", "Python.h"),
-        ]
-        libs_dir = os.path.join(root, "lib")
-    if not any(os.path.isfile(path) for path in header_paths):
-        return False
-    return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
+    return has_runtime_build_support(root, _TARGET_RUNTIME)
 
 
 def _fast_copy_threads() -> int:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import sys
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -113,6 +115,77 @@ def test_staged_runtime_dev_support_uses_the_target_platform_layout(
     (tmp_path / library_directory / library_name).write_bytes(b"")
 
     assert stage_bundled_python_runtime._has_dev_support(str(tmp_path))
+    assert embed_runtime_manager._has_build_support(str(tmp_path), "3.13")
+
+
+@pytest.mark.parametrize("platform_name", ["win32", "linux", "darwin"])
+def test_managed_runtime_preparation_uses_install_prefix(tmp_path, monkeypatch, platform_name):
+    monkeypatch.setattr(embed_runtime_manager.sys, "platform", platform_name)
+    manager = embed_runtime_manager.PythonRuntimeManager(runtime_dir=str(tmp_path))
+    python = manager.private_runtime_python("3.13")
+    observed = []
+    monkeypatch.setattr(manager, "_ensure_runtime_build_support", lambda root, *a, **kw: observed.append(root))
+    monkeypatch.setattr(manager, "_ensure_pip", lambda *a, **kw: None)
+    monkeypatch.setattr(manager, "_ensure_runtime_packages", lambda *a, **kw: None)
+    manager._prepare_managed_runtime(python, "3.13")
+    assert observed == [manager.private_runtime_root("3.13")]
+    packages = Path(embed_runtime_manager._site_packages_root(observed[0], "3.13"))
+    relative = "Lib/site-packages" if platform_name == "win32" else "lib/python3.13/site-packages"
+    assert packages == Path(observed[0]) / relative
+    monkeypatch.setattr(manager, "get_runtime_path", lambda runtime: python)
+    monkeypatch.setattr(embed_runtime_manager, "is_frozen", lambda: True)
+    monkeypatch.setattr(embed_runtime_manager, "_has_build_support", lambda root, runtime: root == observed[0])
+    monkeypatch.setattr(manager, "_has_modules", lambda *a: True)
+    assert manager.ensure_runtime(version="3.13") == python
+
+
+def test_broken_matching_bundle_does_not_fall_back_to_network(tmp_path, monkeypatch):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    with zipfile.ZipFile(bundle_dir / "runtime_bundle.zip", "w") as bundle:
+        bundle.writestr("python313/broken.txt", "broken runtime")
+    manager = embed_runtime_manager.PythonRuntimeManager(runtime_dir=str(tmp_path / "managed"))
+    monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [str(bundle_dir)])
+    downloads = []
+    monkeypatch.setattr(manager, "_extract_runtime_to_root", lambda *a, **kw: downloads.append(True))
+    with pytest.raises(embed_runtime_manager.PythonRuntimeError, match="bundled Python 3.13"):
+        manager._provision_managed_runtime("3.13")
+    assert downloads == []
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_missing_pip_uses_bundled_ensurepip_without_network(tmp_path, monkeypatch, success):
+    manager = embed_runtime_manager.PythonRuntimeManager(runtime_dir=str(tmp_path))
+    commands = []
+    def run(args, **kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0 if success and args[2] == "ensurepip" else 1,
+                                           stdout="", stderr="bootstrap failed")
+    monkeypatch.setattr(embed_runtime_manager, "_run_command", run)
+    monkeypatch.setattr(embed_runtime_manager, "_download_file", lambda *a, **kw: pytest.fail("pip bootstrap must be offline"))
+    if success:
+        manager._ensure_pip("python")
+    else:
+        with pytest.raises(embed_runtime_manager.PythonRuntimeError, match="bootstrap failed"):
+            manager._ensure_pip("python")
+    assert commands == [["python", "-m", "pip", "--version"], ["python", "-m", "ensurepip", "--upgrade"]]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable permissions")
+def test_runtime_zip_preserves_executable_permissions(tmp_path, monkeypatch):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    with zipfile.ZipFile(bundle_dir / "runtime_bundle.zip", "w") as bundle:
+        info = zipfile.ZipInfo("python313/bin/python")
+        info.create_system = 3
+        info.external_attr = 0o100755 << 16
+        bundle.writestr(info, "#!/bin/sh\nprintf '3.13\\n'\n")
+    manager = embed_runtime_manager.PythonRuntimeManager(runtime_dir=str(tmp_path / "managed"))
+    monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [str(bundle_dir)])
+    monkeypatch.setattr(embed_runtime_manager, "is_current_private_runtime_root", lambda root, **kw: Path(root).exists())
+    python = manager._seed_runtime_from_bundle(version="3.13")
+    assert python == manager.private_runtime_python("3.13")
+    assert os.stat(python).st_mode & 0o111 == 0o111
 
 
 def test_runtime_archive_is_extracted_into_an_owned_private_root(tmp_path: Path) -> None:

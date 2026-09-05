@@ -41,6 +41,27 @@ class RuntimeArchive:
     sha256: str
 
 
+def runtime_prefix(python_exe: str) -> str:
+    directory = os.path.dirname(python_exe)
+    return directory if sys.platform == "win32" else os.path.dirname(directory)
+
+
+def has_runtime_build_support(root: str, runtime: str | PythonRuntimeId) -> bool:
+    runtime_id = PythonRuntimeId.parse(runtime)
+    if sys.platform == "win32":
+        header = Path(root) / "include" / "Python.h"
+        libraries = Path(root) / "libs"
+        names = [f"{runtime_id.windows_library_stem}.lib", "python3.lib"]
+    else:
+        header = Path(root) / "include" / runtime_id.unix_library_stem / "Python.h"
+        libraries = Path(root) / "lib"
+        stem = f"lib{runtime_id.unix_library_stem}"
+        names = [f"{stem}.dylib", "libpython3.dylib"] if sys.platform == "darwin" else [
+            f"{stem}.so", f"{stem}.so.1.0", "libpython3.so",
+        ]
+    return header.is_file() and any((libraries / name).is_file() for name in names)
+
+
 def runtime_archive_for_machine(
     *,
     system: str | None = None,

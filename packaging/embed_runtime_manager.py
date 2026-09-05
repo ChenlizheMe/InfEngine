@@ -21,9 +21,11 @@ from hub_utils import (
 )
 from private_python_runtime import (
     extract_runtime_archive,
+    has_runtime_build_support as _has_build_support,
     is_current_private_runtime_root,
     runtime_archive_for_machine,
     verify_runtime_archive,
+    runtime_prefix,
 )
 from python_runtime_catalog import (
     DEFAULT_PYTHON_RUNTIME,
@@ -42,11 +44,6 @@ _RUNTIME_COPY_EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", "test", "tests"}
 _RUNTIME_COPY_EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo")
 
 
-def _runtime_lib_names(runtime: str | PythonRuntimeId) -> list[str]:
-    runtime_id = PythonRuntimeId.parse(runtime)
-    if sys.platform == "darwin":
-        return [f"lib{runtime_id.unix_library_stem}.dylib", "libpython3.dylib"]
-    return [f"{runtime_id.windows_library_stem}.lib", "python3.lib"]
 
 
 def _runtime_bundle_name() -> str:
@@ -158,7 +155,7 @@ def _site_packages_root(
     runtime_root: str, runtime: str | PythonRuntimeId
 ) -> str:
     runtime_id = PythonRuntimeId.parse(runtime)
-    if sys.platform == "darwin":
+    if sys.platform != "win32":
         path = os.path.join(
             runtime_root, "lib", runtime_id.unix_library_stem, "site-packages"
         )
@@ -168,18 +165,6 @@ def _site_packages_root(
     return path
 
 
-def _has_build_support(root: str, runtime: str | PythonRuntimeId) -> bool:
-    include_dir = os.path.join(root, "include")
-    if sys.platform == "darwin":
-        libs_dir = os.path.join(root, "lib")
-    else:
-        libs_dir = os.path.join(root, "libs")
-    if not os.path.isfile(os.path.join(include_dir, "Python.h")):
-        return False
-    return any(
-        os.path.isfile(os.path.join(libs_dir, name))
-        for name in _runtime_lib_names(runtime)
-    )
 
 
 def _fast_copy_threads() -> int:
@@ -284,28 +269,6 @@ def _copy_runtime_payload(src_root: str, dest_root: str, *, overwrite: bool) -> 
             shutil.copy2(source_path, target_path)
 
 
-def _copy_build_support(
-    src_root: str, dest_root: str, runtime: str | PythonRuntimeId
-) -> bool:
-    include_src = os.path.join(src_root, "include")
-    libs_src = os.path.join(src_root, "libs")
-    if not os.path.isfile(os.path.join(include_src, "Python.h")):
-        return False
-
-    copied_lib = False
-    os.makedirs(os.path.join(dest_root, "libs"), exist_ok=True)
-    for name in _runtime_lib_names(runtime):
-        source_path = os.path.join(libs_src, name)
-        if not os.path.isfile(source_path):
-            continue
-        shutil.copy2(source_path, os.path.join(dest_root, "libs", name))
-        copied_lib = True
-
-    if not copied_lib:
-        return False
-
-    _copy_tree(include_src, os.path.join(dest_root, "include"))
-    return True
 
 
 def _download_file(url: str, dest: str, *, user_agent: str, timeout: int = 120) -> None:
@@ -440,7 +403,7 @@ class PythonRuntimeManager:
                 runtime_id, on_status=on_status
             )
         else:
-            runtime_root = os.path.dirname(python_exe)
+            runtime_root = runtime_prefix(python_exe)
             has_build_support = _has_build_support(runtime_root, runtime_id)
             has_required_modules = self._has_modules(python_exe, *_REQUIRED_RUNTIME_MODULES)
             if is_frozen() and not allow_frozen_repair:
@@ -529,7 +492,7 @@ class PythonRuntimeManager:
 
         if not os.path.isfile(project_python):
             raise PythonRuntimeError(
-                f"Runtime copy finished, but python.exe was not found at {project_python}."
+                f"Runtime copy finished, but Python was not found at {project_python}."
             )
         return project_python
 
@@ -621,7 +584,10 @@ class PythonRuntimeManager:
                     )
                     _remove_tree(self.private_runtime_root(runtime_id))
                     os.makedirs(target_root, exist_ok=True)
-                    zf.extractall(target_root, members=runtime_members)
+                    for member in runtime_members:
+                        extracted = zf.extract(member, target_root)
+                        if sys.platform != "win32" and member.create_system == 3:
+                            os.chmod(extracted, (member.external_attr >> 16) & 0o777)
             except (OSError, zipfile.BadZipFile) as exc:
                 raise PythonRuntimeError(
                     f"The bundled Python {runtime_id.series} runtime is invalid.\n"
@@ -636,7 +602,10 @@ class PythonRuntimeManager:
                 )
             ):
                 return target_python
-            _remove_tree(self.private_runtime_root(runtime_id))
+            raise PythonRuntimeError(
+                f"The bundled Python {runtime_id.series} runtime could not be started. "
+                "Reinstall Infernux Hub with a valid runtime bundle."
+            )
         return None
 
     def _prepare_managed_runtime(
@@ -647,7 +616,7 @@ class PythonRuntimeManager:
         on_status: Optional[Callable[[str], None]] = None,
     ) -> None:
         runtime_id = self._runtime_id(version)
-        runtime_root = os.path.dirname(python_exe)
+        runtime_root = runtime_prefix(python_exe)
         if _is_embedded_root(runtime_root):
             raise PythonRuntimeError(
                 f"Infernux Hub requires a full Python {runtime_id.series} runtime for Nuitka builds, but an embeddable runtime was detected."
@@ -785,71 +754,7 @@ class PythonRuntimeManager:
         self._prepare_managed_runtime(python_exe, runtime_id, on_status=on_status)
         return python_exe
 
-    def _get_pip_script_path(self, *, on_status: Optional[Callable[[str], None]] = None) -> str:
-        target_path = os.path.join(self.installed_runtime_dir(), "get-pip.py")
-        if os.path.isfile(target_path):
-            return target_path
 
-        for root in self.bundled_runtime_dirs():
-            candidate = os.path.join(root, "get-pip.py")
-            if os.path.isfile(candidate):
-                shutil.copy2(candidate, target_path)
-                return target_path
-
-        _emit_status(on_status, "Downloading pip bootstrap...")
-        try:
-            _download_file(
-                "https://bootstrap.pypa.io/get-pip.py",
-                target_path,
-                user_agent="Infernux-Hub/1.0",
-            )
-        except urllib.error.URLError as exc:
-            raise PythonRuntimeError(f"Failed to download get-pip.py.\n{exc}") from exc
-        except OSError as exc:
-            raise PythonRuntimeError(f"Failed to download get-pip.py.\n{exc}") from exc
-        return target_path
-
-    def _bundled_python_roots(
-        self, version: str | PythonRuntimeId | None = None
-    ) -> list[str]:
-        runtime_id = self._runtime_id(version)
-        result: list[str] = []
-        seen: set[str] = set()
-        for root in self.bundled_runtime_dirs():
-            candidate = os.path.join(root, runtime_id.directory_name)
-            if not os.path.isdir(candidate):
-                continue
-            norm = os.path.normcase(os.path.abspath(candidate))
-            if norm in seen:
-                continue
-            seen.add(norm)
-            result.append(candidate)
-        return result
-
-    def _build_support_source_roots(
-        self, version: str | PythonRuntimeId | None = None
-    ) -> list[str]:
-        runtime_id = self._runtime_id(version)
-        result: list[str] = []
-        seen: set[str] = set()
-
-        for root in self._bundled_python_roots(runtime_id):
-            norm = os.path.normcase(os.path.abspath(root))
-            if norm in seen:
-                continue
-            seen.add(norm)
-            result.append(root)
-
-        current_runtime = PythonRuntimeId(sys.version_info.major, sys.version_info.minor)
-        if not is_frozen() and current_runtime == runtime_id:
-            dev_root = sys.base_prefix or os.path.dirname(sys.executable)
-            if dev_root and os.path.isdir(dev_root):
-                norm = os.path.normcase(os.path.abspath(dev_root))
-                if norm not in seen:
-                    seen.add(norm)
-                    result.append(dev_root)
-
-        return result
 
     def _ensure_runtime_build_support(
         self,
@@ -862,18 +767,9 @@ class PythonRuntimeManager:
         if _has_build_support(runtime_root, runtime_id):
             return
 
-        _emit_status(on_status, "Preparing CPython build support files...")
-        for source_root in self._build_support_source_roots(runtime_id):
-            if os.path.normcase(os.path.abspath(source_root)) == os.path.normcase(os.path.abspath(runtime_root)):
-                continue
-            if _copy_build_support(
-                source_root, runtime_root, runtime_id
-            ) and _has_build_support(runtime_root, runtime_id):
-                return
-
         raise PythonRuntimeError(
             f"Managed Python {runtime_id.series} is missing CPython build support files "
-            f"(Python.h / {runtime_id.windows_library_stem}.lib).\n"
+            "(Python.h / Python link library).\n"
             "Reinstall Infernux Hub or rebuild the bundled runtime so these files are available."
         )
 
@@ -882,11 +778,10 @@ class PythonRuntimeManager:
         if completed.returncode == 0:
             return
 
-        get_pip_path = self._get_pip_script_path(on_status=on_status)
         _emit_status(on_status, "Installing pip into the managed Python runtime...")
         completed = _run_command(
-            [python_exe, get_pip_path, "--no-warn-script-location"],
-            timeout=1800,
+            [python_exe, "-m", "ensurepip", "--upgrade"],
+            timeout=600,
             raise_on_error=False,
         )
         if completed.returncode != 0:
@@ -918,7 +813,7 @@ class PythonRuntimeManager:
             "--no-compile",
             "--upgrade",
             "--target",
-            _site_packages_root(os.path.dirname(python_exe), runtime_id),
+            _site_packages_root(runtime_prefix(python_exe), runtime_id),
         ]
         args.extend(_RUNTIME_PACKAGES)
         completed = _run_command(args, timeout=1800, raise_on_error=False)
