@@ -159,7 +159,7 @@ class StyleManager:
             QMainWindow, QWidget#central, QDialog {{
                 background-color: {bg_base};
             }}
-            QAbstractItemView {{
+            QAbstractItemView, QTextEdit {{
                 background-color: {bg_input};
                 alternate-background-color: {bg_surface};
                 color: {text_primary};
