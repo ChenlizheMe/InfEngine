@@ -1241,6 +1241,10 @@ class NuitkaBuilder:
             )
         if dist_dir is None:
             self._check_nuitka()
+            if runtime_pack_key:
+                # Requirements can change the environment used for compilation.
+                runtime_pack_key = self._runtime_pack_fingerprint(cmd)
+                self.last_runtime_pack_key = runtime_pack_key
             _p(t("build.step.running_nuitka"), 0.10)
             dist_dir = self._run_nuitka(cmd, on_progress, cancel_event)
 
@@ -1360,6 +1364,7 @@ class NuitkaBuilder:
             "custom_raw_packages": custom_packages(self.raw_copy_packages),
             "custom_requirements": sorted(requirements),
             "engine_fingerprint": self._player_compile_input_fingerprint(),
+            "entry_fingerprint": self._hash_file(Path(self.entry_script)),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()

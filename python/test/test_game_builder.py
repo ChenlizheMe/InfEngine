@@ -2241,6 +2241,39 @@ def test_debug_and_release_share_the_compiled_player_entry(tmp_path, monkeypatch
     assert keys[0] == keys[1]
 
 
+def test_runtime_pack_key_tracks_the_compiled_entry(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("value = 1\n", encoding="utf-8")
+    builder = NuitkaBuilder(str(entry), str(tmp_path / "output"),
+                            build_cache_root=str(tmp_path / "cache"), player_module=True)
+    monkeypatch.setattr(builder, "_player_compile_input_fingerprint", lambda: "same-engine")
+    original = builder._runtime_pack_compatibility_key()
+    entry.write_text("value = 2\n", encoding="utf-8")
+    assert builder._runtime_pack_compatibility_key() != original
+
+
+def test_runtime_pack_stores_the_environment_used_for_compilation(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(str(entry), str(tmp_path / "output"),
+                            build_cache_root=str(tmp_path / "cache"), runtime_pack_cache=True)
+    environment = ["before-install"]
+    stored = []
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: environment[0])
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
+    monkeypatch.setattr(builder, "_check_nuitka", lambda: environment.__setitem__(0, "compiled-environment"))
+    monkeypatch.setattr(builder, "_run_nuitka", lambda *args: str(tmp_path / "compiled.dist"))
+    for method in ("_inject_native_libs", "_embed_utf8_manifest", "_sign_executable"):
+        monkeypatch.setattr(builder, method, lambda *args: None)
+    monkeypatch.setattr(builder, "_store_runtime_pack", lambda key, *args, **kwargs: stored.append(key))
+
+    builder.build()
+
+    assert stored == ["compiled-environment"]
+    assert builder.last_runtime_pack_key == "compiled-environment"
+
+
 def test_runtime_pack_rejects_unsafe_archive_paths(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
     builder = object.__new__(NuitkaBuilder)
@@ -2685,11 +2718,14 @@ def test_player_native_payload_selects_static_source_build_sibling(
 def test_runtime_compatibility_key_ignores_branding_and_managed_dependencies(
     tmp_path,
 ):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("numba==1\nfastmcp==2\n", encoding="utf-8")
 
     def make_builder(*, icon: str, custom: list[str] | None = None):
         builder = object.__new__(NuitkaBuilder)
+        builder.entry_script = str(entry)
         builder.extra_requirements_files = [str(requirements)]
         builder.extra_include_packages = list(custom or [])
         builder.extra_include_data = [str(tmp_path / "project-specific-data")]
@@ -6069,6 +6105,34 @@ class TestGameBuilderOutputSafety:
         builder._clean_output()
 
         assert list(output_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("same_project,same_name", [(True, True), (False, True), (True, False)])
+    def test_sealed_output_manifest_controls_rebuild_ownership(self, tmp_path, same_project, same_name):
+        output_dir = tmp_path / "build_output"
+        builder = _make_builder(tmp_path, output_dir)
+        data_root = output_dir / "TestGame_Data"
+        data_root.mkdir(parents=True)
+        source = tmp_path / "BuildManifest.json"
+        source.write_text(json.dumps({"build_output": {
+            "tool": "Infernux",
+            "project_name": builder.project_name if same_name else "OtherGame",
+            "project_identity": game_builder_module.path_fingerprint(builder.project_path) if same_project else "0" * 64,
+        }}), encoding="utf-8")
+        metadata = write_pack((("BuildManifest.json", source),), data_root / "AssetCatalog.inxcat")
+        (data_root / "PackageIndex.inxmanifest").write_text(
+            f"INFERNUX_PLAYER_PACKAGE_INDEX\ncatalog\t{metadata['archive_sha256']}\t{metadata['archive_bytes']}\n",
+            encoding="ascii",
+        )
+        sentinel = output_dir / "preserve.bin"
+        sentinel.write_bytes(b"previous product")
+
+        if same_project and same_name:
+            builder._validate_output_directory()
+        else:
+            with pytest.raises(BuildOutputDirectoryError, match="must be empty"):
+                builder._validate_output_directory()
+        assert sentinel.read_bytes() == b"previous product"
+        assert not (data_root / "BuildManifest.json").exists()
 
     def test_foreign_output_marker_does_not_authorize_cleanup(self, tmp_path):
         output_dir = tmp_path / "build_output"

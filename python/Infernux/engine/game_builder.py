@@ -168,8 +168,8 @@ class BuildOutputDirectoryError(ValueError):
             if len(self.entries) > 5:
                 preview += ", ..."
             message = (
-                "Output directory must be empty before building, unless it already contains "
-                f"{marker_filename} from a previous Infernux build.\n"
+                "Output directory must be empty before building, or belong to "
+                "a previous Infernux build of this project.\n"
                 f"Directory: {path}"
             )
             if preview:
@@ -1014,17 +1014,17 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         )
 
     def _is_owned_build_manifest(self, directory: str) -> bool:
-        manifest_path = os.path.join(
+        from Infernux.engine.platform_player_bootstrap import read_player_build_manifest
+
+        data_root = os.path.join(
             resolved_path(directory),
             f"{self.project_name}_Data",
-            "BuildManifest.json",
         )
         try:
-            with open(manifest_path, "r", encoding="utf-8") as manifest_file:
-                payload = json.load(manifest_file)
-        except (OSError, json.JSONDecodeError):
+            payload = read_player_build_manifest(data_root)
+        except (OSError, RuntimeError):
             return False
-        ownership = payload.get("build_output", {}) if isinstance(payload, dict) else {}
+        ownership = payload.get("build_output", {})
         return (
             isinstance(ownership, dict)
             and ownership.get("tool") == "Infernux"

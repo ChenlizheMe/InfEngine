@@ -693,7 +693,7 @@ class BuildSettingsPanel(EditorPanel):
             "button", browse_output_label, True, "build_settings.output_dir.browse"
         )
         ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
-        ctx.label(t("build.output_directory_hint").format(marker=GameBuilder.OUTPUT_MARKER_FILENAME))
+        ctx.label(t("build.output_directory_hint"))
         ctx.pop_style_color(1)
 
         ctx.label(t("build.icon"))
@@ -1419,10 +1419,7 @@ class BuildSettingsPanel(EditorPanel):
                 entries=", ".join(exc.entries[:5]) + (", ..." if len(exc.entries) > 5 else "")
             )
 
-        return t("build.output_directory_error_not_empty").format(
-            path=exc.path,
-            marker=exc.marker_filename,
-        ) + found_line
+        return t("build.output_directory_error_not_empty").format(path=exc.path) + found_line
 
     def _show_output_directory_error(self, exc: BuildOutputDirectoryError) -> None:
         message = self._format_output_directory_error(exc)
