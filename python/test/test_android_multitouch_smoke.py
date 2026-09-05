@@ -166,6 +166,16 @@ def test_probe_launches_the_target_through_uiautomation_shell():
     # Six call sites plus the helper declaration: gameplay, both completed
     # touch contracts, canceled touch, IME teardown, and Android Back.
     assert source.count("waitForLogMarker(") == 7
+    gesture = source.split("private static void injectCompletedGesture(", 1)[1].split(
+        "private static void injectCanceledGesture(", 1
+    )[0]
+    assert (
+        gesture.index("SECOND_POINTER_ACTION")
+        < gesture.index("INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY")
+        < gesture.index("MotionEvent.ACTION_MOVE")
+        < gesture.index("INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY")
+        < gesture.index("SECOND_POINTER_UP_ACTION")
+    )
     assert 'result.putString("stage", stage)' in source
     assert "focused.onCreateInputConnection(new EditorInfo())" in source
     assert 'connection.commitText(text, 1)' in source

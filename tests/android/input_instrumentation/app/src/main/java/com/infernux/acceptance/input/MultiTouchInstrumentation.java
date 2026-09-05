@@ -112,15 +112,7 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             }
 
             stage = "completed-multitouch";
-            injectCompletedGesture(automation, width, height);
-            waitForLogMarker(
-                    automation,
-                    "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
-                    waitMilliseconds);
-            waitForLogMarker(
-                    automation,
-                    "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
-                    waitMilliseconds);
+            injectCompletedGesture(automation, width, height, waitMilliseconds);
             stage = "canceled-multitouch";
             injectCanceledGesture(automation, width, height);
             waitForLogMarker(
@@ -474,14 +466,25 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         return parsed;
     }
 
-    private static void injectCompletedGesture(UiAutomation automation, int width, int height) {
+    private static void injectCompletedGesture(
+            UiAutomation automation, int width, int height, long waitMilliseconds)
+            throws IOException {
         final long downTime = SystemClock.uptimeMillis();
         inject(automation, downTime, MotionEvent.ACTION_DOWN, width, height, 1, 0.11f, 0.82f, 0.0f, 0.0f);
         SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
         inject(automation, downTime, SECOND_POINTER_ACTION, width, height, 2, 0.11f, 0.82f, 0.84f, 0.80f);
-        SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
+        // Android accepting an event does not mean the game has consumed it.
+        // Keep each asserted phase alive until a Player frame publishes it;
+        // otherwise a slow frame can observe only the subsequent pointer-up.
+        waitForLogMarker(
+                automation,
+                "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
+                waitMilliseconds);
         inject(automation, downTime, MotionEvent.ACTION_MOVE, width, height, 2, 0.18f, 0.70f, 0.80f, 0.72f);
-        SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
+        waitForLogMarker(
+                automation,
+                "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
+                waitMilliseconds);
         inject(automation, downTime, SECOND_POINTER_UP_ACTION, width, height, 2, 0.18f, 0.70f, 0.80f, 0.72f);
         SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
         inject(automation, downTime, MotionEvent.ACTION_UP, width, height, 1, 0.18f, 0.70f, 0.0f, 0.0f);
