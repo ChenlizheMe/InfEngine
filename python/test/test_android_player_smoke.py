@@ -440,6 +440,36 @@ def test_atomic_report_records_structured_payload(tmp_path: Path):
     )
 
 
+def test_signature_mismatch_never_uninstalls_the_existing_game(tmp_path, monkeypatch):
+    module = _module()
+    installs = []
+
+    class FakeAdb:
+        def __init__(self, *args):
+            pass
+
+        def run(self, *args, **kwargs):
+            if args == ("devices", "-l"):
+                return "phone device model:Test\n"
+            if args == ("shell", "getprop", "ro.product.cpu.abi"):
+                return "arm64-v8a"
+            pytest.fail(f"Unexpected device mutation after failed update: {args}")
+
+    def reject_update(*args, **kwargs):
+        installs.append(kwargs["replace"])
+        raise RuntimeError("INSTALL_FAILED_UPDATE_INCOMPATIBLE")
+
+    monkeypatch.setattr(module, "Adb", FakeAdb)
+    monkeypatch.setattr(module, "unlock_device", lambda adb: None)
+    monkeypatch.setattr(module, "apk_abis", lambda apk: {"arm64-v8a"})
+    monkeypatch.setattr(module, "install_apk", reject_update)
+    arguments = module._parser().parse_args([str(tmp_path / "player.apk")])
+
+    with pytest.raises(RuntimeError, match="INSTALL_FAILED_UPDATE_INCOMPATIBLE"):
+        module.run_smoke(arguments)
+    assert installs == [True]
+
+
 def test_hyperos_usb_install_approval_is_narrowly_detected():
     module = _module()
     hierarchy = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>

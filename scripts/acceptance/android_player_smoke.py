@@ -44,7 +44,6 @@ class SmokeResult:
     apk: str
     pid: str
     automated_install_approval: bool
-    reinstalled_after_signature_mismatch: bool
     resume_cycles: int
     back_action: bool
     touch_action: bool
@@ -504,31 +503,14 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         )
 
     unlock_device(adb)
-    reinstalled_after_signature_mismatch = False
     automated_install_approval = False
     if not arguments.no_install:
-        try:
-            automated_install_approval = install_apk(
-                adb,
-                arguments.apk,
-                replace=True,
-                approve_oem_prompt=not device.emulator,
-            )
-        except RuntimeError as error:
-            if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" not in str(error):
-                raise
-            # Acceptance builds may come from different workstations or
-            # regenerated debug keystores. The package is test data, so a
-            # signature mismatch is the one installation failure for which a
-            # clean reinstall is both deterministic and safe.
-            adb.run("uninstall", arguments.package, check=False)
-            automated_install_approval = install_apk(
-                adb,
-                arguments.apk,
-                replace=False,
-                approve_oem_prompt=not device.emulator,
-            )
-            reinstalled_after_signature_mismatch = True
+        automated_install_approval = install_apk(
+            adb,
+            arguments.apk,
+            replace=True,
+            approve_oem_prompt=not device.emulator,
+        )
     adb.run("logcat", "-c")
     adb.run("shell", "am", "force-stop", arguments.package)
     adb.run("shell", "am", "start", "-n", arguments.activity)
@@ -678,7 +660,6 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         apk=str(arguments.apk),
         pid=pid,
         automated_install_approval=automated_install_approval,
-        reinstalled_after_signature_mismatch=reinstalled_after_signature_mismatch,
         resume_cycles=arguments.resume_cycles,
         back_action=back_action,
         touch_action=touch_action,
