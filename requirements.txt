@@ -6,6 +6,7 @@ cmake>=3.25
 build>=1.0.0
 wheel>=0.41.0
 setuptools>=61.0
+nuitka[onefile]
 
 # Runtime dependencies
 numpy>=1.21.0
