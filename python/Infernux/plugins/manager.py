@@ -916,6 +916,7 @@ class PluginManager:
                 changes=changes,
                 owner="@project",
             )
+            self._activate_installed_python_paths(before, after, executable=executable)
         except BaseException as install_error:
             try:
                 self._restore_python_environment(before, executable=executable)
@@ -1006,6 +1007,7 @@ class PluginManager:
                     for reference, requirements in requirements_by_plugin.items()
                 },
             )
+            self._activate_installed_python_paths(before, after, executable=executable)
         except Exception as exc:
             self.python_requirement_error = str(exc)
             raise RuntimeError(
@@ -1035,6 +1037,7 @@ class PluginManager:
             result = self._run_process(list(command), cwd=self.project_root)
             after = self._python_environment_snapshot(executable)
             requirements = _pip_requirement_targets(values)
+            self._activate_installed_python_paths(before, after, executable=executable)
             return _PipInstallEffect(
                 before,
                 after,
@@ -1056,6 +1059,54 @@ class PluginManager:
                 os.remove(filtered)
             except FileNotFoundError:
                 pass
+
+    def _activate_installed_python_paths(
+        self,
+        before: Mapping[str, str],
+        after: Mapping[str, str],
+        *,
+        executable: str,
+    ) -> None:
+        """Publish newly installed site hooks before importing plugin lifecycles.
+
+        pip runs in a child interpreter. Its successful exit does not process
+        new .pth files in this Editor (notably pywin32's import paths and DLL
+        bootstrap). Use CPython's site processing for the changed distributions,
+        not hard-coded dependency paths or a second pass over unrelated hooks.
+        An installation into a different interpreter must not affect this one.
+        """
+        if not same_path(executable, sys.executable):
+            return
+        changed = sorted(name for name, version in after.items() if before.get(name) != version)
+        if not changed:
+            return
+
+        def publish() -> None:
+            import importlib
+            import importlib.metadata
+            import site
+
+            importlib.invalidate_caches()
+            hooks: set[str] = set()
+            for name in changed:
+                distribution = importlib.metadata.distribution(name)
+                root = resolved_path(distribution.locate_file(""))
+                for entry in distribution.files or ():
+                    path = resolved_path(distribution.locate_file(entry))
+                    if path.endswith(".pth") and same_path(os.path.dirname(path), root):
+                        hooks.add(path)
+            for path in sorted(hooks, key=path_key):
+                # addpackage is the CPython 3.13 site primitive used by
+                # addsitedir; unlike addsitedir it processes only this hook.
+                site.addpackage(os.path.dirname(path), os.path.basename(path), None)
+            importlib.invalidate_caches()
+
+        if self.engine is not None and threading.current_thread() is not threading.main_thread():
+            from Infernux.host.commands import MainThreadCommandQueue
+
+            MainThreadCommandQueue.instance().run_sync("plugin.python-site-publish", publish)
+        else:
+            publish()
 
     def _python_environment_snapshot(
         self, executable: str | None = None
