@@ -21,8 +21,33 @@ def _parser() -> argparse.ArgumentParser:
 
 def _load(path: str) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, dict) or not isinstance(value.get("trajectory"), list):
-        raise ValueError(f"Not an Infernux headless trajectory result: {path}")
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "infernux.headless_project_smoke"
+        or value.get("status") != "passed"
+        or not value.get("scene")
+        or not isinstance(value.get("trajectory"), list)
+        or not value["trajectory"]
+    ):
+        raise ValueError(f"Not a successful recorded headless run: {path}")
+    samples = value["trajectory"]
+    frames = [sample.get("frame") for sample in samples]
+    if (
+        not all(isinstance(frame, int) and not isinstance(frame, bool) for frame in frames)
+        or frames[0] != 0
+        or frames[-1] != value.get("play_frames")
+        or any(after <= before for before, after in zip(frames, frames[1:]))
+        or len(frames) < 2
+    ):
+        raise ValueError(f"Headless trajectory does not cover the complete play interval: {path}")
+    for sample in samples:
+        objects = sample.get("objects", {})
+        if not objects or any(
+            state.get("status") in {"missing", "ambiguous"}
+            or "position" not in state
+            for state in objects.values()
+        ):
+            raise ValueError(f"Headless trajectory has no usable tracked object state: {path}")
     return value
 
 
@@ -94,6 +119,8 @@ def compare_trajectories(
         nonlocal maximum_error
         maximum_error = max(maximum_error, error)
 
+    compare(baseline.get("scene"), candidate.get("scene"), "scene")
+    compare(baseline.get("play_frames"), candidate.get("play_frames"), "play_frames")
     compare(baseline.get("fixed_delta"), candidate.get("fixed_delta"), "fixed_delta")
     compare(baseline["trajectory"], candidate["trajectory"], "trajectory")
     return {

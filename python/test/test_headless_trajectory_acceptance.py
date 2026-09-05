@@ -1,6 +1,9 @@
 from types import SimpleNamespace
+import json
 
-from scripts.acceptance.compare_headless_trajectories import compare_trajectories
+import pytest
+
+from scripts.acceptance.compare_headless_trajectories import _load, compare_trajectories
 from scripts.acceptance.headless_project_smoke import _capture_trajectory_sample
 
 
@@ -59,3 +62,39 @@ def test_compare_trajectories_reports_precise_field_path():
     assert result["status"] == "failed"
     assert result["difference_count"] == 1
     assert result["differences"][0]["path"] == "trajectory[0].objects.Ball.velocity[0]"
+
+
+@pytest.mark.parametrize("invalid", [None, "failed", "empty", "incomplete", "missing_object"])
+def test_cli_does_not_accept_failed_or_unrecorded_headless_runs(tmp_path, invalid):
+    report = {
+        "schema": "infernux.headless_project_smoke", "status": "passed",
+        "scene": "Assets/Main.scene", "play_frames": 30, "fixed_delta": 1 / 60,
+        "trajectory": [
+            {"frame": frame, "objects": {"Ball": {"position": [0, 1, 0]}}}
+            for frame in (0, 30)
+        ],
+    }
+    if invalid == "failed":
+        report["status"] = "failed"
+    elif invalid == "empty":
+        report["trajectory"] = []
+    elif invalid == "incomplete":
+        report["trajectory"].pop()
+    elif invalid == "missing_object":
+        report["trajectory"][1]["objects"]["Ball"] = {"status": "missing"}
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    if invalid is None:
+        assert _load(str(path)) == report
+    else:
+        with pytest.raises(ValueError):
+            _load(str(path))
+
+
+def test_comparison_rejects_different_scenes_with_matching_motion():
+    baseline = {"scene": "Assets/A.scene", "play_frames": 30, "fixed_delta": 1 / 60,
+                "trajectory": [{"frame": 30, "objects": {"Ball": {"position": [0, 1, 0]}}}]}
+    candidate = {**baseline, "scene": "Assets/B.scene"}
+    result = compare_trajectories(baseline, candidate, tolerance=1e-4)
+    assert result["status"] == "failed"
+    assert result["differences"][0]["path"] == "scene"
