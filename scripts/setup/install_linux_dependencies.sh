@@ -29,11 +29,19 @@ sudo apt-get install --yes --no-install-recommends \
     libwayland-dev \
     libx11-dev \
     libx11-xcb1 \
+    libxcb1 \
     libxcb-cursor0 \
     libxcb-icccm4 \
     libxcb-image0 \
     libxcb-keysyms1 \
+    libxcb-randr0 \
+    libxcb-render0 \
     libxcb-render-util0 \
+    libxcb-shape0 \
+    libxcb-shm0 \
+    libxcb-sync1 \
+    libxcb-util1 \
+    libxcb-xfixes0 \
     libxcb-xkb1 \
     libxcursor-dev \
     libxext-dev \
