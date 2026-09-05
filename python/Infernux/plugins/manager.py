@@ -57,7 +57,7 @@ from .package import (
     validate_reference,
 )
 from .preload import PreloadManager
-from .project_index import project_guid_paths
+from .project_index import _asset_database, project_guid_paths
 from .registry import PluginRegistry
 
 
@@ -1811,12 +1811,9 @@ class PluginManager:
         )
 
     def _attach_resource_events(self) -> None:
-        try:
-            from Infernux.engine.resources_manager import ResourcesManager
+        from Infernux.engine.resources_manager import ResourcesManager
 
-            manager = ResourcesManager.instance()
-        except Exception:
-            manager = None
+        manager = ResourcesManager.instance()
         if manager is not None:
             manager.register_script_catalog_callback(self._on_script_catalog_changed)
             self._resource_manager = manager
@@ -1836,12 +1833,9 @@ class PluginManager:
         record = self.registry.installed_record(reference)
         if record is None:
             raise KeyError(f"Plugin is not installed: {reference}")
-        try:
-            from Infernux.engine.resources_manager import ResourcesManager
+        from Infernux.engine.resources_manager import ResourcesManager
 
-            manager = ResourcesManager.instance()
-        except ImportError:
-            manager = None
+        manager = ResourcesManager.instance()
         if manager is None:
             return
         if not same_path(getattr(manager, "_project_path", ""), self.project_root):
@@ -1871,12 +1865,9 @@ class PluginManager:
     def _retire_package_runtime_scripts(self, record: Mapping[str, object]) -> None:
         """Remove package gameplay types and modules from the active runtime."""
 
-        try:
-            from Infernux.engine.resources_manager import ResourcesManager
+        from Infernux.engine.resources_manager import ResourcesManager
 
-            manager = ResourcesManager.instance()
-        except ImportError:
-            manager = None
+        manager = ResourcesManager.instance()
         if manager is None:
             return
         if not same_path(getattr(manager, "_project_path", ""), self.project_root):
@@ -1927,19 +1918,9 @@ class PluginManager:
     def _refresh_editor_assets(self) -> None:
         if threading.current_thread() is not threading.main_thread():
             return
-        database = getattr(self.engine, "get_asset_database", lambda: None)()
-        if database is None:
-            try:
-                from Infernux.lib import AssetRegistry
-
-                database = AssetRegistry.instance().get_asset_database()
-            except Exception:
-                database = None
-        if database is not None:
-            try:
-                database.refresh()
-            except Exception as exc:
-                Debug.log_suppressed("PluginManager.refresh_assets", exc)
+        database = _asset_database(self.engine)
+        if database is not None and same_path(database.project_root, self.project_root):
+            database.refresh()
 
     def _prune_package_directories(self, removed_paths: Iterable[str]) -> None:
         boundaries = (

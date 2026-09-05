@@ -2855,6 +2855,36 @@ def test_native_guid_index_avoids_meta_walk_and_drives_preload_catalog(
     ]
 
 
+def test_plugin_refresh_does_not_hide_the_project_database_error(tmp_path):
+    project = _project(tmp_path / "project")
+
+    def refresh():
+        raise RuntimeError("asset publication failed")
+
+    database = SimpleNamespace(project_root=str(project), refresh=refresh)
+    engine = SimpleNamespace(get_asset_database=lambda: database)
+    manager = PluginManager(str(project), engine=engine)
+    with pytest.raises(RuntimeError, match="asset publication failed"):
+        manager._refresh_editor_assets()
+
+
+def test_detached_plugin_refresh_does_not_touch_another_project(tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    project = _project(tmp_path / "project")
+    refreshed = []
+    database = SimpleNamespace(
+        project_root=str(tmp_path / "other"), refresh=lambda: refreshed.append(True)
+    )
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    monkeypatch.setattr(
+        "Infernux.lib.AssetRegistry",
+        SimpleNamespace(instance=lambda: SimpleNamespace(get_asset_database=lambda: database)),
+    )
+    PluginManager(str(project))._refresh_editor_assets()
+    assert refreshed == []
+
+
 def test_native_guid_index_failure_does_not_probe_another_database(
     tmp_path, monkeypatch
 ):
