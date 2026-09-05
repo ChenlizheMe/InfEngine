@@ -248,15 +248,19 @@ class _AndroidSupportInstallWorker(QObject):
     finished = Signal(str)
     error = Signal(str)
 
-    def __init__(self, manager: AndroidSupportManager):
+    def __init__(self, manager: AndroidSupportManager, *, archive_path: str = ""):
         super().__init__()
         self._manager = manager
+        self._archive_path = archive_path
 
     def run(self):
         try:
-            root = self._manager.install(
-                on_progress=lambda done, total: self.progress.emit(done, total)
-            )
+            if self._archive_path:
+                root = self._manager.install_archive(self._archive_path)
+            else:
+                root = self._manager.install(
+                    on_progress=lambda done, total: self.progress.emit(done, total)
+                )
         except Exception as exc:
             self.error.emit(str(exc))
             return
@@ -339,7 +343,7 @@ class PythonRuntimeInstallDialog(QDialog):
 
 
 class AndroidSupportInstallDialog(QDialog):
-    def __init__(self, manager: AndroidSupportManager, parent=None):
+    def __init__(self, manager: AndroidSupportManager, parent=None, *, archive_path: str = ""):
         super().__init__(parent)
         self.setWindowTitle(tr("Installing Android compatibility"))
         self.setModal(True)
@@ -355,6 +359,9 @@ class AndroidSupportInstallDialog(QDialog):
         layout.addWidget(title)
         detail = QLabel(
             tr(
+                "Hub is extracting the selected offline Platform Kit into shared "
+                "Android build support. This window will close when installation finishes."
+            ) if archive_path else tr(
                 "Hub is downloading one immutable Platform Kit containing the "
                 "SDK, NDK, JDK, Gradle and Android CPython runtimes. It is not "
                 "copied into projects or plugin packages."
@@ -370,7 +377,7 @@ class AndroidSupportInstallDialog(QDialog):
         layout.addWidget(self._progress)
 
         self._thread = QThread(self)
-        self._worker = _AndroidSupportInstallWorker(manager)
+        self._worker = _AndroidSupportInstallWorker(manager, archive_path=archive_path)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
@@ -379,6 +386,7 @@ class AndroidSupportInstallDialog(QDialog):
         self._worker.finished.connect(self._thread.quit)
         self._worker.error.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._on_thread_finished)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.start()
 
@@ -389,14 +397,19 @@ class AndroidSupportInstallDialog(QDialog):
 
     def _on_finished(self, root: str):
         self.result_path = root
-        self.accept()
 
     def _on_error(self, message: str):
         self.error_text = message
-        self.reject()
+
+    def _on_thread_finished(self):
+        self._thread = None
+        if self.result_path:
+            self.accept()
+        else:
+            self.reject()
 
     def reject(self):
-        if self._thread.isRunning() and not self.error_text:
+        if self._thread is not None and self._thread.isRunning():
             return
         super().reject()
 
@@ -786,9 +799,14 @@ class InstallsView(QWidget):
         self.refresh()
 
     def _on_install_android(self):
+        self._install_android_support()
+
+    def _install_android_support(self, *, archive_path: str = ""):
         if self._android_support_manager is None:
             return
-        dialog = AndroidSupportInstallDialog(self._android_support_manager, self)
+        dialog = AndroidSupportInstallDialog(
+            self._android_support_manager, self, archive_path=archive_path
+        )
         if dialog.exec() == QDialog.Accepted:
             QMessageBox.information(
                 self,
@@ -817,24 +835,7 @@ class InstallsView(QWidget):
         )
         if not path:
             return
-        try:
-            installed = self._android_support_manager.install_archive(path)
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                tr("Invalid Android compatibility bundle"),
-                str(exc),
-            )
-        else:
-            QMessageBox.information(
-                self,
-                tr("Android compatibility installed"),
-                tr(
-                    "Android compatibility is ready for every Infernux project at:\n{path}",
-                    path=installed,
-                ),
-            )
-        self.refresh()
+        self._install_android_support(archive_path=path)
 
     def _on_locate(self):
         path, _ = QFileDialog.getOpenFileName(

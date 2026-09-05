@@ -97,6 +97,7 @@ _ZH = {
     "Repair": "修复",
     "Installing Android compatibility": "正在安装 Android 兼容",
     "Installing shared Android build support": "正在安装共享 Android 构建支持",
+    "Hub is extracting the selected offline Platform Kit into shared Android build support. This window will close when installation finishes.": "Hub 正在将所选离线 Platform Kit 解压到共享 Android 构建支持目录。安装完成后此窗口将自动关闭。",
     "Hub is downloading one immutable Platform Kit containing the SDK, NDK, JDK, Gradle and Android CPython runtimes. It is not copied into projects or plugin packages.": "Hub 正在下载一个不可变的 Platform Kit，其中包含 SDK、NDK、JDK、Gradle 与 Android CPython 运行时；它不会被复制到项目或插件包中。",
     "Android compatibility installed": "Android 兼容已安装",
     "Android compatibility is ready for every Infernux project at:\n{path}": "Android 兼容已可供所有 Infernux 项目使用：\n{path}",
