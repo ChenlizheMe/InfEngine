@@ -386,6 +386,10 @@ class AndroidSupportManager:
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with bundle.open(member) as reader, open(destination, "wb") as writer:
                         shutil.copyfileobj(reader, writer)
+                    if os.name == "posix" and member.create_system == 3:
+                        # Release archives carry the host tool executable bits.
+                        # Keep ordinary permissions, never setuid/setgid/sticky.
+                        destination.chmod((member.external_attr >> 16) & 0o777)
             validate_android_support(staging)
             if self.root.exists():
                 os.replace(self.root, backup)

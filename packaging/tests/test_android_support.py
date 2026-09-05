@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import zipfile
@@ -144,6 +145,32 @@ def test_invalid_reinstall_preserves_the_current_platform_kit(tmp_path: Path) ->
 
     assert (current / android_support.MANIFEST_NAME).read_bytes() == before
     assert manager.status().installed
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX executable permissions")
+def test_installed_kit_preserves_executables_without_privileged_mode_bits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    _create_support(source)
+    java = source / "jdk/bin/java"
+    java.write_text("#!/bin/sh\nprintf 'kit-java-ready\\n'\n", encoding="utf-8")
+    java.chmod(0o4755)
+    plain = source / "jdk/release"
+    plain.chmod(0o644)
+    archive = tmp_path / "android.inxkit"
+    _archive_tree(source, archive)
+    manager = android_support.AndroidSupportManager(tmp_path / "managed")
+    # Environment publication is covered separately; do not leak this test's kit.
+    monkeypatch.setattr(manager, "activate_environment", lambda: True)
+
+    manager.install_archive(archive)
+
+    executable = manager.root / "jdk/bin/java"
+    assert stat.S_IMODE(executable.stat().st_mode) == 0o755
+    assert stat.S_IMODE((manager.root / "jdk/release").stat().st_mode) == 0o644
+    result = subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+    assert result.stdout == "kit-java-ready\n"
 
 
 def test_release_asset_requires_a_github_sha256_digest(monkeypatch: pytest.MonkeyPatch) -> None:
