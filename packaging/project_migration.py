@@ -29,7 +29,7 @@ class MigrationResult:
 class ProjectMigrationService:
     """Upgrade a project's pinned engine and runtime with rollback support."""
 
-    _SKIP_DIRS = {".git", ".infernux-backups", ".runtime", ".venv", "Library", "Logs"}
+    _SKIP_DIRS = {".git", ".infernux-backups", ".runtime", ".venv", "Cache", "Library", "Logs"}
 
     def __init__(self, project_model, version_manager) -> None:
         self.project_model = project_model
@@ -115,10 +115,15 @@ class ProjectMigrationService:
         os.makedirs(backup_dir, exist_ok=True)
         stamp = _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         safe_source = source or "unversioned"
-        archive_path = os.path.join(backup_dir, f"{stamp}-{safe_source}-to-{target}.zip")
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive_path = os.path.join(
+            backup_dir, f"{stamp}-{safe_source}-to-{target}-{uuid.uuid4().hex}.zip"
+        )
+        with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
             for root, dirs, files in os.walk(project_path, followlinks=False):
-                dirs[:] = [name for name in dirs if name not in cls._SKIP_DIRS]
+                # Only the project root owns these generated directories.
+                # Identically named folders inside Assets/Packages are author data.
+                if os.path.normpath(root) == os.path.normpath(project_path):
+                    dirs[:] = [name for name in dirs if name not in cls._SKIP_DIRS]
                 for filename in files:
                     full_path = os.path.join(root, filename)
                     if os.path.islink(full_path):
