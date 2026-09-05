@@ -2469,6 +2469,64 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     assert not script.exists()
 
 
+@pytest.mark.parametrize("keep_author", [False, True])
+@pytest.mark.parametrize("fail_uninstall", [False, True])
+def test_uninstall_removes_only_owned_script_caches_transactionally(
+    tmp_path, monkeypatch, keep_author, fail_uninstall
+):
+    import py_compile
+    from Infernux.core.assets import AssetManager
+
+    source = _source(tmp_path / "source", "vendor/cached")
+    (source / "editor").mkdir()
+    (source / "editor" / "owned.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "cached.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), install_dependencies=False)
+    role = project / "Packages/vendor/cached/editor"
+    # Reproduce a legacy authored spelling on both case-sensitive and
+    # case-insensitive hosts. GUID-based uninstall must follow the moved file.
+    intermediate = role.with_name("role-moving")
+    role.rename(intermediate)
+    role = role.with_name("Editor")
+    intermediate.rename(role)
+    owned = role / "owned.py"
+    caches = [Path(py_compile.compile(str(owned), optimize=level, doraise=True)) for level in (0, 1, 2)]
+    author = role / "author.py"
+    if keep_author:
+        author.write_text("VALUE = 2\n", encoding="utf-8")
+        author_cache = Path(py_compile.compile(str(author), doraise=True))
+        author_bytes = author_cache.read_bytes()
+    if fail_uninstall:
+        echo_before = AssetManager.is_watcher_echo_suppressed("deleted", str(owned))
+        original_remove = plugin_manager_module._InstallTransaction.remove
+
+        def fail_after_cache(self, path):
+            if path == str(owned):
+                raise OSError("injected source removal failure")
+            return original_remove(self, path)
+
+        monkeypatch.setattr(plugin_manager_module._InstallTransaction, "remove", fail_after_cache)
+        with pytest.raises(OSError, match="injected source removal failure"):
+            manager.uninstall("vendor/cached")
+        assert owned.is_file()
+        assert all(cache.is_file() for cache in caches)
+        assert manager.registry.installed_record("vendor/cached") is not None
+        assert AssetManager.is_watcher_echo_suppressed("deleted", str(owned)) == echo_before
+    else:
+        manager.uninstall("vendor/cached")
+        assert not owned.exists()
+        assert not any(cache.exists() for cache in caches)
+        assert AssetManager.is_watcher_echo_suppressed("deleted", str(owned))
+        assert role.exists() == keep_author
+        manager.install_package(str(package), install_dependencies=False)
+        assert (project / "Packages/vendor/cached/editor/owned.py").is_file()
+    if keep_author:
+        assert author.read_text(encoding="utf-8") == "VALUE = 2\n"
+        assert author_cache.read_bytes() == author_bytes
+
+
 def test_package_preload_supports_relative_imports(tmp_path):
     source = _source(tmp_path / "source", "vendor/relative-preload")
     package_module = source / "editor" / "infernux_relative_preload"
@@ -2916,7 +2974,7 @@ def test_install_script_events_are_owned_but_later_author_edits_refresh(
     else:
         manager.install_package(str(package))
     script = project / "Packages/vendor/echo" / role / "helper.py"
-    for event in ("created", "modified"):
+    for event in ("created", "modified", "deleted"):
         assert AssetManager.is_watcher_echo_suppressed(event, str(script))
         assert AssetManager.is_watcher_echo_suppressed(event, str(script))
         assert not AssetManager.is_watcher_echo_suppressed(
@@ -2928,6 +2986,13 @@ def test_install_script_events_are_owned_but_later_author_edits_refresh(
     script.write_text("VALUE = 2\n", encoding="utf-8")
     assert not AssetManager.is_watcher_echo_suppressed("modified", str(script))
     assert not AssetManager.is_watcher_echo_suppressed("created", str(script))
+    assert not AssetManager.is_watcher_echo_suppressed("deleted", str(script))
+    # Reinstallation acknowledges stale deletes, not a subsequent real delete.
+    manager.uninstall("vendor/echo")
+    manager.install_package(str(package))
+    assert AssetManager.is_watcher_echo_suppressed("deleted", str(script))
+    script.unlink()
+    assert not AssetManager.is_watcher_echo_suppressed("deleted", str(script))
 
 
 def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch):

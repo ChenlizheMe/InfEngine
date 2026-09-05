@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import posixpath
@@ -649,7 +650,7 @@ class PluginManager:
                 and item.role in {"editor", "runtime"}
                 and item.destination.casefold().endswith(".py")
             ):
-                for event in ("created", "modified"):
+                for event in ("created", "modified", "deleted"):
                     AssetManager._suppress_watcher_echo(event, item.destination)
 
     def _rollback_new_plugin_dependencies(
@@ -1306,6 +1307,7 @@ class PluginManager:
         transaction = _InstallTransaction(self.project_root)
         registry_before = self.registry.load()
         registry_changed = False
+        removed_caches: list[str] = []
         try:
             for item in [*record.get("files", []), record.get("control")]:
                 if not isinstance(item, Mapping) or not bool(item.get("owned", True)):
@@ -1317,6 +1319,9 @@ class PluginManager:
                 path = guid_index.get(guid)
                 if not path:
                     continue
+                for cache in _script_bytecode_paths(path):
+                    transaction.remove(cache)
+                    removed_caches.append(cache)
                 transaction.remove(path)
                 transaction.remove(path + ".meta")
                 removed.append(path)
@@ -1345,7 +1350,17 @@ class PluginManager:
                     f"was incomplete: {python_rollback_error}"
                 ) from uninstall_error
             raise
-        self._prune_package_directories(removed)
+        self._prune_package_directories([*removed, *removed_caches])
+        from Infernux.core.assets import AssetManager
+
+        for path in removed:
+            if path.endswith(".py") and is_path_within(
+                path, os.path.join(self.project_root, "Packages"), allow_root=False
+            ):
+                # Lifecycle/runtime retirement was committed above. A delayed
+                # delete echo must not restart a replacement package at this
+                # reference (including a legacy Editor -> editor migration).
+                AssetManager._suppress_watcher_echo("deleted", path)
         self.preloads.forget_package(reference)
         self._rebuild_states()
         self._refresh_editor_assets()
@@ -2035,6 +2050,27 @@ class PluginManager:
         if return_code:
             raise RuntimeError(f"Command failed ({return_code}): {combined[-4000:]}")
         return subprocess.CompletedProcess(command, return_code, combined, "")
+
+
+def _script_bytecode_paths(source: str) -> tuple[str, ...]:
+    """Derived caches of this owned source, never other author files."""
+
+    if not source.endswith(".py"):
+        return ()
+    directory = os.path.join(os.path.dirname(source), "__pycache__")
+    if not os.path.isdir(directory) or os.path.islink(directory):
+        return ()
+    result = []
+    for entry in os.scandir(directory):
+        if entry.is_symlink() or not entry.is_file() or not entry.name.endswith(".pyc"):
+            continue
+        try:
+            cached_source = importlib.util.source_from_cache(entry.path)
+        except ValueError:
+            continue
+        if same_path(cached_source, source):
+            result.append(entry.path)
+    return tuple(sorted(result))
 
 
 class _InstallTransaction:
