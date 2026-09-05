@@ -196,7 +196,7 @@ jobs:
         id: android-kit
         shell: bash
         run: |
-          gradle_home="$(gradle --version | sed -n 's/^Gradle home: //p' | head -n 1)"
+          gradle_home="$(python -c 'import shutil; from pathlib import Path; print(Path(shutil.which("gradle")).resolve().parent.parent)')"
           test -n "$gradle_home"
           sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           test -n "$sdk_root"

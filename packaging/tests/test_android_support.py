@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -16,6 +17,25 @@ if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
 import android_support
+
+
+def test_release_kit_resolves_gradle_from_the_installed_launcher(tmp_path):
+    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"gradle_home=\"\$\(python -c '([^']+)'\)\"", workflow)
+    assert match is not None, "Resolve the setup-gradle PATH entry, not human-readable --version output"
+    gradle_home = tmp_path / "shared tools" / "gradle-8.12"
+    launcher = gradle_home / "bin" / ("gradle.bat" if os.name == "nt" else "gradle")
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("exit 97\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    environment = dict(os.environ, PATH=str(launcher.parent), PYTHONIOENCODING="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", match.group(1)],
+        env=environment, cwd=tmp_path, capture_output=True, encoding="utf-8", check=True,
+    )
+    assert Path(result.stdout.strip()) == gradle_home.resolve()
 
 
 def _create_support(root: Path) -> None:
