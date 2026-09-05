@@ -4114,6 +4114,22 @@ bool Infernux::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
     return m_renderer->RefreshMaterialPipeline(material);
 }
 
+bool Infernux::IsShaderLoaded(const std::string &shaderId, const std::string &shaderType) const
+{
+    if (shaderType != "vertex" && shaderType != "fragment")
+        throw std::invalid_argument("Shader type must be vertex or fragment");
+    if (!m_renderer)
+        return false;
+    if (m_renderer->HasShader(shaderId, shaderType))
+        return true;
+    for (const auto &[stages, entry] : m_linkedShaderProgramCache) {
+        const std::string &stageId = shaderType == "vertex" ? stages.vertexShaderId : stages.fragmentShaderId;
+        if (stageId == shaderId && entry.programKey.IsValid() && m_renderer->HasShaderProgramArtifact(entry.programKey))
+            return true;
+    }
+    return false;
+}
+
 std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId)
 {
     // INXLOG_INFO("Infernux::ReloadShaderRuntime called: ", shaderPath);
@@ -4182,7 +4198,7 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                 const std::string compileError = InxShaderLoader::GetLastCompileError();
                 return compileError.empty() ? "Standalone ShaderInfo stage compilation failed" : compileError;
             }
-            m_renderer->InvalidateShaderCache(changedShaderId);
+            m_renderer->InvalidateShaderCache(changedShaderId, shaderAsset->shaderType);
             RegisterShaderToRenderer(*shaderAsset);
             m_renderer->RefreshMaterialsUsingShader(changedShaderId);
             INXLOG_INFO("Infernux::ReloadShaderRuntime: reloaded standalone ShaderInfo stage '", changedShaderId, "'");

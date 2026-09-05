@@ -347,6 +347,7 @@ if Shader.is_loaded("pbr_lit", "vertex"):
 </code></pre></div>
 <!-- USER CONTENT START -->
 <p>description</p>
+<p>The generated signatures below preserve the published <strong>0.3.7 snapshot</strong>, not the 0.4.0 development API. See the 0.4.0 migration note below; the old raw shader wrappers were never connected to native publication.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="static-methods">Static Methods<a class="headerlink" href="#static-methods" title="Permanent link">&para;</a></h2>
@@ -382,6 +383,10 @@ if Shader.is_loaded("pbr_lit", "vertex"):
 </table>
 <!-- USER CONTENT START -->
 <p>static_methods</p>
+<h3 id="040-development-migration">0.4.0 development migration<a class="headerlink" href="#040-development-migration" title="Permanent link">&para;</a></h3>
+<p>The supported operations are <code>Shader.is_loaded(name, shader_type="vertex")</code> and <code>Shader.reload(shader_id, shader_type=None)</code>. Querying includes both published standalone modules and linked material programs, performs no loading, and returns false without a live resource host or renderer. Reload accepts a registered ShaderInfo Name or an absolute/project-relative asset path and uses the canonical AssetManager reimport pipeline.</p>
+<p><code>reload</code> is an Editor/headless authoring operation; frozen Player content is read-only. Only <code>vertex</code> and <code>fragment</code> stages are supported. A Name shared across stages reloads both in vertex/fragment order unless a stage is specified. Duplicate Names within one stage require an explicit path. Reimports are sequential, not a multi-file atomic transaction. A successful metadata-only/headless reimport does not imply GPU publication; query <code>is_loaded</code> separately. A published last-known-good program can remain loaded after a failed edit, so <code>is_loaded</code> is not a last-compilation-success flag.</p>
+<p>The obsolete, never-connected <code>invalidate</code>, <code>refresh_materials</code>, and <code>load_spirv</code> wrappers have been removed in 0.4.0. Edit/import a <code>.vert</code> or <code>.frag</code> with a <code>ShaderInfo</code> declaration and use <code>reload</code> (the Editor watcher already does this for external edits). Raw SPIR-V bytes are not an alternate public asset/publication route.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>

@@ -21,7 +21,7 @@ def test_camera_helpers_use_shader_linker_per_view_camera_contract():
 def test_shader_control_api_rejects_compute():
     for operation in (
         lambda: Shader.is_loaded("parallel", "compute"),
-        lambda: Shader.load_spirv("parallel", b"", "compute"),
+        lambda: Shader.reload("parallel", "compute"),
     ):
         try:
             operation()

@@ -50,24 +50,28 @@ void VkShaderCache::LoadShader(const char *name, const std::vector<char> &spirvC
     }
 }
 
-void VkShaderCache::UnloadShader(const char *name, vk::VkPipelineManager &pm)
+void VkShaderCache::UnloadShader(const char *name, vk::VkPipelineManager &pm, const std::string &shaderType)
 {
     std::string nameStr(name);
-    m_renderMetas.erase(nameStr);
-
-    auto vertIt = m_vertModules.find(nameStr);
-    if (vertIt != m_vertModules.end()) {
-        pm.DestroyShaderModule(vertIt->second);
-        m_vertModules.erase(vertIt);
+    // A stage reload must not erase a same-name partner stage. Render metadata
+    // belongs to the fragment stage; whole-shader removal still clears both.
+    if (shaderType.empty() || shaderType == "vertex") {
+        auto vertIt = m_vertModules.find(nameStr);
+        if (vertIt != m_vertModules.end()) {
+            pm.DestroyShaderModule(vertIt->second);
+            m_vertModules.erase(vertIt);
+        }
+        m_vertCodes.erase(nameStr);
     }
-    m_vertCodes.erase(nameStr);
-
-    auto fragIt = m_fragModules.find(nameStr);
-    if (fragIt != m_fragModules.end()) {
-        pm.DestroyShaderModule(fragIt->second);
-        m_fragModules.erase(fragIt);
+    if (shaderType.empty() || shaderType == "fragment") {
+        m_renderMetas.erase(nameStr);
+        auto fragIt = m_fragModules.find(nameStr);
+        if (fragIt != m_fragModules.end()) {
+            pm.DestroyShaderModule(fragIt->second);
+            m_fragModules.erase(fragIt);
+        }
+        m_fragCodes.erase(nameStr);
     }
-    m_fragCodes.erase(nameStr);
 }
 
 bool VkShaderCache::HasShader(const std::string &name, const std::string &type) const

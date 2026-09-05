@@ -325,7 +325,7 @@ def test_fullscreen_effect_shader_reload_retires_cached_pipeline_revision() -> N
     assert "VulkanFullscreenRendererHost" in vulkan_adapter
     assert renderer_invalidate.count("InvalidateFullscreenShader(shaderId)") == 2
     assert renderer_invalidate.index("InvalidateFullscreenShader(shaderId)") < (
-        renderer_invalidate.index("m_vkCore->InvalidateShaderCache(shaderId)")
+        renderer_invalidate.index("m_vkCore->InvalidateShaderCache(shaderId, shaderType)")
     )
 
 

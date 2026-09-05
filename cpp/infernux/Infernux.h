@@ -223,6 +223,9 @@ class Infernux
     /// @return true if successful, false otherwise
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
 
+    /// Query published standalone stages and linked material programs without loading anything.
+    [[nodiscard]] bool IsShaderLoaded(const std::string &shaderId, const std::string &shaderType) const;
+
     /// @brief Reload a shader from file (hot-reload support)
     /// @param shaderPath The path to the shader file (.vert or .frag)
     /// @return true if successful, false otherwise

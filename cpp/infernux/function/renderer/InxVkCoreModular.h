@@ -236,7 +236,7 @@ class InxVkCoreModular
      * Must be called before loading updated shader code to force pipeline recreation.
      * @param shaderId The shader identifier to invalidate
      */
-    void InvalidateShaderCache(const std::string &shaderId);
+    void InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType = "");
 
     /**
      * @brief Invalidate cached GPU textures matching a GUID or file path

@@ -3882,7 +3882,7 @@ uint64_t InxRenderer::GetMeshPreviewDisplayTextureId() const
     return m_vkCore ? m_vkCore->GetMeshPreviewDisplayTextureId() : 0;
 }
 
-void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
+void InxRenderer::InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType)
 {
     INXLOG_DEBUG("InvalidateShaderCache called: ", shaderId);
 
@@ -3901,7 +3901,7 @@ void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
         graph->InvalidateFullscreenShader(shaderId);
     }
 
-    m_vkCore->InvalidateShaderCache(shaderId);
+    m_vkCore->InvalidateShaderCache(shaderId, shaderType);
 }
 
 void InxRenderer::InvalidateTextureCache(const std::string &texturePath)

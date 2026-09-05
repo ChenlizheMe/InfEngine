@@ -451,7 +451,7 @@ class InxRenderer
     bool RefreshMaterialsUsingShader(const std::string &shaderId);
 
     // Invalidate shader cache for hot-reload (must call before loading new shader code)
-    void InvalidateShaderCache(const std::string &shaderId);
+    void InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType = "");
 
     // Invalidate cached GPU texture and force materials to re-resolve it
     void InvalidateTextureCache(const std::string &texturePath);

@@ -1673,6 +1673,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     r->SetWindowResizable(resizable);
             },
             py::arg("resizable"), "Set whether the window is resizable")
+        .def("is_shader_loaded", &Infernux::IsShaderLoaded, py::arg("shader_id"), py::arg("shader_type"),
+             "Query published standalone stages and linked material programs without loading resources.")
         .def("reload_shader_runtime", &Infernux::ReloadShaderRuntime, py::arg("shader_path"),
              py::arg("previous_shader_id"),
              "Compile an already-imported shader and refresh renderer state. Returns empty string on success.")

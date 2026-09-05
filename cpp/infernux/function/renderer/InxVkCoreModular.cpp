@@ -586,7 +586,7 @@ bool InxVkCoreModular::HasShader(const std::string &name, const std::string &typ
     return m_shaderCache.HasShader(name, type);
 }
 
-void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
+void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType)
 {
     if (shaderId.empty())
         throw std::invalid_argument("Shader cache invalidation requires a non-empty shader identifier");
@@ -627,7 +627,7 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
 
     // Shader modules are only consumed during pipeline creation, so their
     // standalone cache entry can be destroyed immediately on the owner thread.
-    m_shaderCache.UnloadShader(shaderId.c_str(), m_pipelineManager);
+    m_shaderCache.UnloadShader(shaderId.c_str(), m_pipelineManager, shaderType);
 }
 
 void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)

@@ -70,7 +70,7 @@ class VkShaderCache
     void LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type, vk::VkPipelineManager &pm);
 
     /// Unload (destroy) a shader module and erase its cached code/meta.
-    void UnloadShader(const char *name, vk::VkPipelineManager &pm);
+    void UnloadShader(const char *name, vk::VkPipelineManager &pm, const std::string &shaderType = "");
 
     /// Check if a module exists for the given name and type ("vert"/"frag").
     [[nodiscard]] bool HasShader(const std::string &name, const std::string &type) const;
