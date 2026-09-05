@@ -33,6 +33,7 @@ public final class MultiTouchInstrumentation extends Instrumentation {
     private static final float TEXT_INPUT_BUTTON_CENTER_Y = 20.0f + 64.0f * 0.5f;
     private static final long ROTATION_STABLE_MILLISECONDS = 250L;
     private static final long BUTTON_PRESS_MILLISECONDS = 500L;
+    private static final long TOUCH_PHASE_MILLISECONDS = 500L;
     private static final int SECOND_POINTER_ACTION =
             MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
     private static final int SECOND_POINTER_UP_ACTION =
@@ -110,10 +111,22 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                 throw new IllegalStateException("Target activity has no drawable extent");
             }
 
+            stage = "completed-multitouch";
             injectCompletedGesture(automation, width, height);
-            SystemClock.sleep(350L);
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
+                    waitMilliseconds);
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
+                    waitMilliseconds);
+            stage = "canceled-multitouch";
             injectCanceledGesture(automation, width, height);
-            SystemClock.sleep(350L);
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",
+                    waitMilliseconds);
             multitouchPassed = true;
 
             stage = "reverse-landscape-rotation";
@@ -140,11 +153,19 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             commitText(targetActivity, EXPECTED_TEXT);
             stage = "ime-hidden";
             waitForIme(targetActivity, false, 10000L);
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_IME_HIDDEN",
+                    waitMilliseconds);
+            SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
             imePassed = true;
 
             stage = "android-back";
             shell(automation, "input keyevent KEYCODE_BACK");
-            SystemClock.sleep(500L);
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_BACK_READY",
+                    waitMilliseconds);
             if (targetActivity.isFinishing() || targetActivity.isDestroyed()) {
                 throw new IllegalStateException("Android Back terminated the target Activity");
             }
@@ -456,11 +477,13 @@ public final class MultiTouchInstrumentation extends Instrumentation {
     private static void injectCompletedGesture(UiAutomation automation, int width, int height) {
         final long downTime = SystemClock.uptimeMillis();
         inject(automation, downTime, MotionEvent.ACTION_DOWN, width, height, 1, 0.11f, 0.82f, 0.0f, 0.0f);
+        SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
         inject(automation, downTime, SECOND_POINTER_ACTION, width, height, 2, 0.11f, 0.82f, 0.84f, 0.80f);
-        SystemClock.sleep(120L);
+        SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
         inject(automation, downTime, MotionEvent.ACTION_MOVE, width, height, 2, 0.18f, 0.70f, 0.80f, 0.72f);
-        SystemClock.sleep(120L);
+        SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
         inject(automation, downTime, SECOND_POINTER_UP_ACTION, width, height, 2, 0.18f, 0.70f, 0.80f, 0.72f);
+        SystemClock.sleep(TOUCH_PHASE_MILLISECONDS);
         inject(automation, downTime, MotionEvent.ACTION_UP, width, height, 1, 0.18f, 0.70f, 0.0f, 0.0f);
     }
 
