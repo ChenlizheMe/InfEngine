@@ -393,13 +393,16 @@ class AndroidPlatformExporter(PlatformExporter):
             request,
             [str(gradle), "-p", str(staging), "--console=plain", task],
             staging,
-            {
-                **os.environ,
-                "ANDROID_SDK_ROOT": str(sdk_root),
-                "ANDROID_HOME": str(sdk_root),
-                "JAVA_HOME": str(details["java_home"]),
-                **signing_environment,
-            },
+            _android_gradle_environment(
+                request,
+                {
+                    **os.environ,
+                    "ANDROID_SDK_ROOT": str(sdk_root),
+                    "ANDROID_HOME": str(sdk_root),
+                    "JAVA_HOME": str(details["java_home"]),
+                    **signing_environment,
+                },
+            ),
             source="gradle",
         )
         logs = engine_logs + gradle_logs
@@ -1591,6 +1594,25 @@ def _finalize_python_runtime_identity(staging: Path) -> str:
     identity = digest.hexdigest()
     identity_path.write_text(identity + "\n", encoding="ascii", newline="\n")
     return identity
+
+
+def _android_gradle_environment(
+    request: BuildRequest, environment: dict[str, str]
+) -> dict[str, str]:
+    """Keep reusable tool data with Hub, or with a standalone source project."""
+    result = dict(environment)
+    shared = result.get("INFERNUX_SHARED_DATA_ROOT", "").strip()
+    owner = (
+        Path(os.path.expandvars(os.path.expanduser(shared))).resolve()
+        if shared else Path(request.project_root).resolve()
+    )
+    if not result.get("GRADLE_USER_HOME", "").strip():
+        result["GRADLE_USER_HOME"] = str(owner / "Cache/Gradle")
+    if not result.get("ANDROID_USER_HOME", "").strip():
+        # Includes debug.keystore: deleting reusable caches must not change
+        # the signing identity and break updates of an installed debug APK.
+        result["ANDROID_USER_HOME"] = str(owner / "State/Android")
+    return result
 
 
 def _run_command(

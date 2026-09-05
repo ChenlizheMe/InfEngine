@@ -177,6 +177,50 @@ def test_android_build_cache_accepts_an_explicit_shared_root(monkeypatch, tmp_pa
     )
 
 
+@pytest.mark.parametrize("hub_owned", (False, True))
+@pytest.mark.parametrize("explicit", (False, True))
+def test_android_gradle_process_owns_cache_and_persistent_user_state(
+    monkeypatch, tmp_path, hub_owned, explicit
+):
+    _android_module(monkeypatch)
+    exporter = importlib.import_module("infernux_android.exporter")
+    project = tmp_path / "project"
+    project.mkdir()
+    owner = tmp_path / "Hub Shared" if hub_owned else project
+    environment = dict(exporter.os.environ)
+    for name in ("INFERNUX_SHARED_DATA_ROOT", "GRADLE_USER_HOME", "ANDROID_USER_HOME"):
+        environment.pop(name, None)
+    if hub_owned:
+        environment["INFERNUX_SHARED_DATA_ROOT"] = str(owner)
+    if explicit:
+        environment["GRADLE_USER_HOME"] = str(tmp_path / "author-gradle")
+        environment["ANDROID_USER_HOME"] = str(tmp_path / "author-android")
+    before = environment.copy()
+    request = BuildRequest(
+        str(project), "android-arm64", str(tmp_path / "output"), BuildProfile()
+    )
+    configured = exporter._android_gradle_environment(request, environment)
+    expected_gradle = before.get("GRADLE_USER_HOME", str(owner / "Cache/Gradle"))
+    expected_android = before.get("ANDROID_USER_HOME", str(owner / "State/Android"))
+    assert environment == before
+    assert configured["GRADLE_USER_HOME"] == expected_gradle
+    # Android user state includes the debug signing key: it must not be a cache.
+    assert configured["ANDROID_USER_HOME"] == expected_android
+    code, output = exporter._run_command(
+        request,
+        [
+            sys.executable, "-c",
+            "import os,json;print(json.dumps([os.environ['GRADLE_USER_HOME'],"
+            "os.environ['ANDROID_USER_HOME']]))",
+        ],
+        project,
+        configured,
+        source="gradle",
+    )
+    assert code == 0
+    assert json.loads(output[-1]) == [expected_gradle, expected_android]
+
+
 def test_android_native_source_path_keeps_ascii_source(monkeypatch, tmp_path):
     _android_module(monkeypatch)
     exporter = importlib.import_module("infernux_android.exporter")

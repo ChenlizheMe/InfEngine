@@ -24,6 +24,13 @@ headers/CMake package when the plugin is imported. Its download cache is
 shared through Hub; Android builds do not install it on demand or assume it
 was already present in the engine's source-development environment.
 
+Gradle's reusable data defaults to `Shared/Cache/Gradle` when launched through
+Hub, or `<project>/Cache/Gradle` for standalone source launches. Android user
+state (including the debug signing key) lives separately in `Shared/State/Android`
+or `<project>/State/Android`; clearing caches must not replace signing keys.
+Explicit `GRADLE_USER_HOME` and `ANDROID_USER_HOME` settings remain authoritative.
+Existing system-wide tool data is not moved or deleted automatically.
+
 The exporter is being brought up in explicit stages. A target can be visible
 while its doctor or execution result reports a precise missing prerequisite;
 the plugin never reports an incomplete Android package as a successful build.

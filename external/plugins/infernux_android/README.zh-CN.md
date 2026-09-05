@@ -20,6 +20,12 @@ SDK/NDK，以及两种 ABI 的 Android CPython 目标运行时。所有项目复
 头文件与 CMake 包，下载缓存由 Hub 共享。Android 构建时不再临时安装它，
 也不假设用户拥有源码开发环境里预装的依赖。
 
+通过 Hub 启动时，Gradle 可复用数据默认位于 `Shared/Cache/Gradle`；独立源码
+启动时位于 `<项目>/Cache/Gradle`。Android 用户状态（含 debug 签名密钥）
+单独位于 `Shared/State/Android` 或 `<项目>/State/Android`，清理缓存不应更换
+签名密钥。用户显式设置的 `GRADLE_USER_HOME`、`ANDROID_USER_HOME` 优先，
+不会自动迁移或删除用户原有的系统级工具数据。
+
 Exporter 会按明确阶段逐步完成。目标已经可见并不代表不完整的构建会被伪装
 成成功；doctor 或执行结果会直接指出当前缺少的前置条件。
 
