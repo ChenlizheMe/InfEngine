@@ -4,10 +4,13 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -31,7 +34,19 @@ class SettingsView(QWidget):
         super().__init__(parent)
         self._db = db
 
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setObjectName("settingsScrollArea")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.viewport().setObjectName("settingsViewport")
+        content = QWidget()
+        content.setObjectName("settingsContent")
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
@@ -41,6 +56,7 @@ class SettingsView(QWidget):
 
         subtitle = QLabel(tr("Hub preferences, updates and project-independent information."))
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
         card = AnimatedSurfaceFrame("settingsCard")
@@ -88,6 +104,7 @@ class SettingsView(QWidget):
         appearance_text.addWidget(appearance_label)
         appearance_hint = QLabel(tr("Switch between the neutral dark and light Hub themes."))
         appearance_hint.setObjectName("settingsDescription")
+        appearance_hint.setWordWrap(True)
         appearance_text.addWidget(appearance_hint)
         appearance_layout.addLayout(appearance_text, 1)
         self.theme_toggle = ToggleSwitch()
@@ -107,6 +124,9 @@ class SettingsView(QWidget):
         self.storage_description = QLabel()
         self.storage_description.setObjectName("settingsDescription")
         self.storage_description.setWordWrap(True)
+        self.storage_description.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.storage_description.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -125,6 +145,9 @@ class SettingsView(QWidget):
         migration_layout.setContentsMargins(20, 18, 20, 18)
         shared_path = QLabel(tr("Shared resources: {path}", path=get_hub_shared_data_dir()))
         shared_path.setWordWrap(True)
+        shared_path.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         shared_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         migration_layout.addWidget(shared_path)
         self.migrate_storage_button = QPushButton(tr("Migrate Legacy Resources"))
@@ -144,6 +167,7 @@ class SettingsView(QWidget):
         update_text.addWidget(update_label)
         update_description = QLabel(tr("Check the Infernux release catalog for a Hub update."))
         update_description.setObjectName("settingsDescription")
+        update_description.setWordWrap(True)
         update_text.addWidget(update_description)
         update_layout.addLayout(update_text, 1)
         update_button = QPushButton(tr("Check for Updates"))

@@ -289,7 +289,10 @@ class StyleManager:
             QWidget#projectListContainer,
             QScrollArea#installScrollArea,
             QWidget#installViewport,
-            QWidget#installListContainer {{
+            QWidget#installListContainer,
+            QScrollArea#settingsScrollArea,
+            QWidget#settingsViewport,
+            QWidget#settingsContent {{
                 background-color: {bg_base};
             }}
 
