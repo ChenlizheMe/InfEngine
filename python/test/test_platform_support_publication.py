@@ -48,6 +48,12 @@ def test_released_platform_claims_match_the_public_hub_catalog():
         assert matrix["evidence"][field] in support
 
 
+def test_download_page_exposes_the_same_matrix_in_both_languages():
+    page = (ROOT / "docs/download.html").read_text(encoding="utf-8")
+    assert page.count('href="platform-support.json"') == 2
+    assert page.count('SUPPORT.md#platform-support"') == 2
+
+
 def test_readme_plugin_examples_use_repository_and_local_author_contracts():
     for filename in ("README.md", "README-zh.md"):
         text = (ROOT / filename).read_text(encoding="utf-8")
