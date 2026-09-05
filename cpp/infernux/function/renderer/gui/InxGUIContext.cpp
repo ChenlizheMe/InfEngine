@@ -1,4 +1,5 @@
 #include "InxGUIContext.h"
+#include "EditorWindowBounds.h"
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
 #include <SDL3/SDL.h>
@@ -192,49 +193,6 @@ std::string WindowSemanticId(const std::string &name)
     if (separator == std::string::npos || separator + 3 >= name.size())
         return name;
     return name.substr(separator + 3);
-}
-
-void ConstrainNextFloatingWindowToMainViewport(const std::string &name, int flags)
-{
-    ImGuiViewport *viewport = ImGui::GetMainViewport();
-    if (!viewport || (flags & ImGuiWindowFlags_ChildWindow) != 0)
-        return;
-
-    ImGuiWindow *window = ImGui::FindWindowByName(name.c_str());
-    if (!window)
-        return;
-
-#ifdef IMGUI_HAS_DOCK
-    if (window->DockNode != nullptr)
-        return;
-#endif
-
-    const ImVec2 workMin = viewport->WorkPos;
-    const ImVec2 workSize = viewport->WorkSize;
-    if (workSize.x <= 0.0f || workSize.y <= 0.0f)
-        return;
-
-    ImVec2 size = window->SizeFull;
-    const ImVec2 constrainedSize(std::min(size.x, workSize.x), std::min(size.y, workSize.y));
-    const bool sizeChanged = std::abs(constrainedSize.x - size.x) > 0.5f || std::abs(constrainedSize.y - size.y) > 0.5f;
-    if (sizeChanged)
-        size = constrainedSize;
-
-    const ImVec2 maxPos(workMin.x + workSize.x - size.x, workMin.y + workSize.y - size.y);
-    const ImVec2 constrainedPos(std::clamp(window->Pos.x, workMin.x, maxPos.x),
-                                std::clamp(window->Pos.y, workMin.y, maxPos.y));
-    const bool positionChanged =
-        std::abs(constrainedPos.x - window->Pos.x) > 0.5f || std::abs(constrainedPos.y - window->Pos.y) > 0.5f;
-    if (sizeChanged)
-        ImGui::SetNextWindowSize(constrainedSize, ImGuiCond_Always);
-    if (positionChanged || sizeChanged) {
-        ImGui::SetNextWindowPos(constrainedPos, ImGuiCond_Always);
-        // A recovered floating window may still sit behind the dock host that
-        // previously covered its off-screen position. Bring it forward at the
-        // same one-shot recovery boundary so its title bar and close control
-        // are immediately reachable again.
-        ImGui::SetNextWindowFocus();
-    }
 }
 
 bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *data, const void *minimum,
@@ -1321,7 +1279,7 @@ void InxGUIContext::SetWindowFocus()
 
 bool InxGUIContext::BeginWindow(const std::string &name, bool *open, int flags)
 {
-    ConstrainNextFloatingWindowToMainViewport(name, flags);
+    ConstrainNextFloatingWindowToMainViewport(name.c_str(), flags);
     const bool visible = ImGui::Begin(name.c_str(), open, flags);
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     if (captureSemantics)

@@ -102,6 +102,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.editor_theme_registry COMMAND infernux_editor_theme_registry_tests)
 
+    add_executable(infernux_editor_window_bounds_tests cpp/tests/EditorWindowBoundsTests.cpp)
+    target_include_directories(infernux_editor_window_bounds_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external/imgui
+    )
+    target_link_libraries(infernux_editor_window_bounds_tests PRIVATE imgui)
+    if(MSVC)
+        target_compile_options(infernux_editor_window_bounds_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_editor_window_bounds_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.editor_window_bounds COMMAND infernux_editor_window_bounds_tests)
+
     add_executable(infernux_job_system_tests
         cpp/tests/JobSystemTests.cpp
         cpp/infernux/core/log/InxLog.cpp
