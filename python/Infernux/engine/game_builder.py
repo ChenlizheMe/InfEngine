@@ -1592,17 +1592,37 @@ finally:
             # Installation ownership is not the current package inventory.
             # AssetIndex includes files authored since installation; export
             # them without adopting them into the durable uninstall ledger.
-            files = list(record.get("files", []))
+            reference_key = str(record.get("reference", "")).casefold()
+            current_files = current_runtime_files.get(reference_key, [])
+            current_by_guid = {str(item["guid"]): item for item in current_files}
+            files = []
+            for item in record.get("files", []):
+                if not isinstance(item, dict):
+                    continue
+                entry = indexed.get(str(item.get("guid", "")).casefold())
+                # The fresh index is current membership. Deleted package
+                # files remain in the uninstall ledger, not the Player.
+                if entry is None:
+                    continue
+                source = self._library_source_entry_path(entry)
+                if is_path_within(source, packages_root, allow_root=False):
+                    current = current_by_guid.get(str(item["guid"]).casefold())
+                    if current is None:
+                        continue
+                    # A GUID may have moved across Editor/Runtime or package
+                    # boundaries since installation. Honor its current owner
+                    # and role without rewriting installation history.
+                    item = {**item, **current, "owned": bool(item.get("owned", True))}
+                files.append(item)
             recorded_guids = {
                 str(item.get("guid", "")).casefold()
                 for item in files
                 if isinstance(item, dict)
             }
-            reference_key = str(record.get("reference", "")).casefold()
             files.extend(
                 item
                 for item in sorted(
-                    current_runtime_files.get(reference_key, []),
+                    current_files,
                     key=lambda item: str(item["logical_path"]),
                 )
                 if str(item["guid"]) not in recorded_guids

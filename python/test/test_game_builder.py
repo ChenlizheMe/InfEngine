@@ -957,6 +957,57 @@ def test_player_exports_local_author_package_without_installing(
         manager.unload_all()
 
 
+@pytest.mark.parametrize("original_role,current_role", [
+    ("runtime", "editor"), ("editor", "runtime"), ("runtime", None),
+])
+def test_player_uses_current_package_role_not_installation_history(
+    tmp_path, original_role, current_role
+):
+    project = _make_project(tmp_path)
+    root = project / "Packages/vendor/mutable"
+    root.mkdir(parents=True)
+    (root / "inx_package.json").write_text("{}", encoding="utf-8")
+    guid = "mutable-script-guid"
+    original = root / original_role / "script.py"
+    registry = PluginRegistry(str(project))
+    registry.record_install(
+        {"reference": "vendor/mutable"},
+        files=[{
+            "logical_path": f"{original_role}/script.py",
+            "path_hint": original.relative_to(project).as_posix(),
+            "guid": guid, "role": original_role, "owned": True,
+        }],
+        control={"logical_path": "inx_package.json", "guid": "control-guid"},
+    )
+    before = registry.load()
+    entries = []
+    if current_role:
+        current = root / current_role / "script.py"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("VALUE = 1\n", encoding="utf-8")
+        current.with_suffix(".py.meta").write_text(
+            json.dumps({"metadata": {"guid": {"value": guid}}}), encoding="utf-8",
+        )
+        entries.append(_asset_index_entry(project, current, guid, "", "Script"))
+    _write_asset_index(project, entries)
+    output = tmp_path / "build"
+    data = output / "Data"
+    builder = GameBuilder(str(project), str(output), game_name="MutableGame")
+
+    builder._stage_player_plugins(str(data))
+
+    exported = current_role == "runtime"
+    assert (data / "Packages/vendor/mutable/runtime/script.py").is_file() is exported
+    assert not (data / "Packages/vendor/mutable/editor").exists()
+    assert registry.load() == before
+    shipped = PluginRegistry(str(data)).load()["installed"]
+    assert len(shipped) == int(exported)
+    if exported:
+        assert shipped[0]["files"][0]["role"] == "runtime"
+        assert shipped[0]["files"][0]["logical_path"] == "runtime/script.py"
+    assert builder._staged_player_plugin_guids == ({guid} if exported else set())
+
+
 def test_preload_context_package_path_fails_closed(tmp_path):
     project = tmp_path / "Project"
     resource = project / "Packages/vendor/gameplay/runtime/server.jar"
