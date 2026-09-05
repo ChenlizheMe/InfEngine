@@ -75,6 +75,19 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
     wait_for_android_input_service
     adb -s emulator-5554 shell locksettings set-disabled true
     adb -s emulator-5554 shell svc power stayon true
+    # A fresh AVD otherwise presents Android's first-use immersive-mode
+    # confirmation above the fullscreen SDL activity. The overlay owns window
+    # focus, so injected input would target SystemUI instead of the Player.
+    # Android's own CTS/WindowManager suites normalize this secure setting too.
+    adb -s emulator-5554 shell settings put secure immersive_mode_confirmations confirmed
+    immersive_confirmation="$(
+        adb -s emulator-5554 shell settings get secure immersive_mode_confirmations \
+            2>/dev/null | tr -d '\r'
+    )"
+    if [[ "$immersive_confirmation" != "confirmed" ]]; then
+        echo "Failed to suppress the Android immersive-mode confirmation overlay: $immersive_confirmation" >&2
+        exit 1
+    fi
 
     "$python_executable" scripts/acceptance/android_player_smoke.py \
         out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \

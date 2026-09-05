@@ -153,12 +153,16 @@ def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
     smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
     assert driver.count("locksettings set-disabled true") == 1
     assert driver.count("svc power stayon true") == 1
+    assert driver.count("settings put secure immersive_mode_confirmations confirmed") == 1
+    assert driver.count("settings get secure immersive_mode_confirmations") == 1
     assert driver.count("wait_for_android_input_service") == 2
     assert "getprop sys.boot_completed" in driver
     assert "service check input" in driver
     assert driver.rindex("wait_for_android_input_service") < smoke
     assert driver.rindex("locksettings set-disabled true") < smoke
     assert driver.rindex("svc power stayon true") < smoke
+    assert driver.rindex("settings put secure immersive_mode_confirmations confirmed") < smoke
+    assert driver.rindex("settings get secure immersive_mode_confirmations") < smoke
     # The shared Python smoke driver owns the complete display/keyguard lifecycle.
     # Keeping a second partial sequence here made hosted and physical devices follow
     # different unlock paths and left the API 36 software AVD in a stale state.
