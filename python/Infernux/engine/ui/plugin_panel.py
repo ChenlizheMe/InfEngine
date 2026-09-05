@@ -637,6 +637,7 @@ class PluginPanel(EditorPanel):
                         width=button_w,
                     ):
                         self._begin_install(
+                            manager,
                             label=reference,
                             work=lambda report, ref=reference: manager.download_reference(
                                 ref,
@@ -654,6 +655,7 @@ class PluginPanel(EditorPanel):
                         ctx, t("plugins.import") + f"##plugin_import_{key}"
                     ):
                         self._begin_install(
+                            manager,
                             label=reference,
                             work=lambda report, ref=reference: manager.install_reference(
                                 ref,
@@ -670,6 +672,7 @@ class PluginPanel(EditorPanel):
                         ctx, t("plugins.download") + f"##plugin_download_{key}"
                     ):
                         self._begin_install(
+                            manager,
                             label=reference,
                             work=lambda report, ref=reference: manager.download_reference(
                                 ref,
@@ -824,6 +827,7 @@ class PluginPanel(EditorPanel):
             kind,
             syntax,
             lambda: self._begin_install(
+                manager,
                 label=syntax,
                 work=(
                     (lambda report: manager.install_source(syntax, progress=report))
@@ -836,7 +840,7 @@ class PluginPanel(EditorPanel):
         if not requested:
             self._message = t("plugins.install_progress.busy")
 
-    def _begin_install(self, *, label: str, work, action: str) -> None:
+    def _begin_install(self, manager: PluginManager, *, label: str, work, action: str) -> None:
         from .plugin_install_progress import PluginInstallProgressService
 
         def complete(ok: bool, result: object | None, message: str) -> None:

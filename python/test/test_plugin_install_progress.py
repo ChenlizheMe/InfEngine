@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
+
+import pytest
 
 from Infernux.engine.interaction import EditorInteractionCore
 from Infernux.engine.interaction.modals import ModalService
@@ -8,6 +11,39 @@ from Infernux.engine.ui.plugin_install_confirmation import (
     PluginInstallConfirmationCoordinator,
 )
 from Infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+from Infernux.engine.ui.plugin_panel import PluginPanel
+
+
+@pytest.mark.parametrize("kind", ["source", "pip"])
+def test_plugin_panel_completion_uses_the_installing_manager(monkeypatch, kind):
+    calls = []
+    pending = []
+    modals = ModalService()
+    monkeypatch.setattr(EditorInteractionCore, "_instance", SimpleNamespace(modals=modals))
+
+    def begin(**kwargs):
+        pending.append(kwargs)
+        return True
+
+    monkeypatch.setattr(PluginInstallProgressService, "_instance", SimpleNamespace(begin=begin))
+    monkeypatch.setattr(PluginInstallConfirmationCoordinator, "_instance", SimpleNamespace(
+        _modals=modals,
+        request=lambda _kind, _syntax, callback: (callback(), True)[-1],
+    ))
+    manager = SimpleNamespace(
+        install_source=lambda syntax, progress: SimpleNamespace(reference="vendor/live"),
+        install_pip=lambda syntax, progress: {"ok": True},
+        finalize_background_install=lambda reference: (calls.append(reference), SimpleNamespace(reference=reference))[-1],
+    )
+    panel = PluginPanel()
+    panel._request_install(manager, kind, "fixture")
+    assert len(pending) == 1
+    operation = pending[0]
+    operation["complete"](True, operation["work"](lambda *_args: None), "")
+    assert calls == (["vendor/live"] if kind == "source" else [])
+    assert "NameError" not in panel._message
+    if kind == "source":
+        assert panel._selected_reference == "vendor/live"
 
 
 def test_plugin_install_progress_presents_before_running_full_task():
