@@ -534,6 +534,7 @@ class PluginManager:
                     self.registry.save(registry_before)
                 self._rollback_pip_effect(pip_effect)
                 raise
+            self._acknowledge_installed_scripts(planned)
             if threading.current_thread() is threading.main_thread():
                 _report_progress(progress, "refresh_assets", 0.90)
                 self._refresh_editor_assets()
@@ -622,6 +623,7 @@ class PluginManager:
                 if registry_changed:
                     self.registry.save(registry_before)
                 raise
+            self._acknowledge_installed_scripts(planned)
             if threading.current_thread() is threading.main_thread():
                 self._refresh_editor_assets()
                 self._publish_package_runtime_scripts(reference)
@@ -632,6 +634,23 @@ class PluginManager:
             return state
         finally:
             self._installing.discard(reference.casefold())
+
+    @staticmethod
+    def _acknowledge_installed_scripts(planned: Iterable[_PlannedFile]) -> None:
+        """The install publication owns these writes, not their delayed echoes."""
+        from Infernux.core.assets import AssetManager
+
+        for item in planned:
+            # Bare content scripts in Assets/Plugins still use the normal asset
+            # watcher. Only package Editor/Runtime scripts are published here
+            # (or by finalize_background_install on the editor thread).
+            if (
+                item.owned
+                and item.role in {"editor", "runtime"}
+                and item.destination.casefold().endswith(".py")
+            ):
+                for event in ("created", "modified"):
+                    AssetManager._suppress_watcher_echo(event, item.destination)
 
     def _rollback_new_plugin_dependencies(
         self,

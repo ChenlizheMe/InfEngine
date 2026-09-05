@@ -2855,6 +2855,47 @@ def test_ordinary_script_change_does_not_reload_preloads_or_rescan_catalog(
     assert not (project / "Assets" / "unloaded.txt").exists()
 
 
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("role", ["editor", "runtime"])
+@pytest.mark.parametrize("background", [False, True])
+def test_install_script_events_are_owned_but_later_author_edits_refresh(
+    tmp_path, partial, role, background
+):
+    from Infernux.core.assets import AssetManager
+    from concurrent.futures import ThreadPoolExecutor
+
+    source = _source(tmp_path / "source", "vendor/echo")
+    (source / role).mkdir()
+    (source / role / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "bare.py").write_text("BARE = 1\n", encoding="utf-8")
+    (source / "message.txt").write_text("payload", encoding="utf-8")
+    package = tmp_path / "echo.inxpkg"
+    InxPackage.export_source(str(source), str(package))
+    project = _project(tmp_path / "project")
+    manager = PluginManager.startup(str(project))
+    if partial:
+        manager.install_package(str(package), selected=("message.txt",))
+    if background:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(manager.install_package, str(package)).result()
+        manager.finalize_background_install("vendor/echo")
+    else:
+        manager.install_package(str(package))
+    script = project / "Packages/vendor/echo" / role / "helper.py"
+    for event in ("created", "modified"):
+        assert AssetManager.is_watcher_echo_suppressed(event, str(script))
+        assert AssetManager.is_watcher_echo_suppressed(event, str(script))
+        assert not AssetManager.is_watcher_echo_suppressed(
+            event, str(project / "Assets/Plugins/bare.py")
+        )
+        assert not AssetManager.is_watcher_echo_suppressed(
+            event, str(project / "Assets/Plugins/message.txt")
+        )
+    script.write_text("VALUE = 2\n", encoding="utf-8")
+    assert not AssetManager.is_watcher_echo_suppressed("modified", str(script))
+    assert not AssetManager.is_watcher_echo_suppressed("created", str(script))
+
+
 def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch):
     project = _project(tmp_path / "project")
 
