@@ -28,11 +28,18 @@ sudo apt-get install --yes --no-install-recommends \
     libvulkan-dev \
     libwayland-dev \
     libx11-dev \
+    libxcb-cursor0 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-xkb1 \
     libxcursor-dev \
     libxext-dev \
     libxfixes-dev \
     libxi-dev \
     libxkbcommon-dev \
+    libxkbcommon-x11-0 \
     libxrandr-dev \
     libxrender-dev \
     libxss-dev \

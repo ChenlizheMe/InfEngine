@@ -207,7 +207,7 @@ jobs:
       - name: Run Hub tests
         run: |
           conda activate infernux
-          PYTHONPATH=packaging python -m pytest packaging/tests -q --junitxml out/test-results/pytest-hub-linux.xml
+          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb PYTHONPATH=packaging python -m pytest packaging/tests -q --junitxml out/test-results/pytest-hub-linux.xml
 
       - name: Build Linux editor wheel and Hub distribution
         run: |
