@@ -1499,7 +1499,10 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     sources = {}
-    for filename in ("python313.dll", "_ctypes.pyd", "libffi-8.dll", "zlib.dll"):
+    for filename in (
+        "python313.dll", "_ctypes.pyd", "libffi-8.dll", "zlib.dll",
+        "vcruntime140.dll", "vcruntime140_1.dll",
+    ):
         source = runtime / filename
         source.write_bytes(filename.encode("ascii"))
         sources[filename] = source
@@ -1512,11 +1515,18 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
     builder._python_bootstrap_runtime_sources = lambda: (sources, encodings)
     dist = tmp_path / "dist"
     dist.mkdir()
+    engine_lib = dist / "Infernux" / "lib"
+    engine_lib.mkdir(parents=True)
+    for filename in sources:
+        (engine_lib / filename).write_bytes(b"duplicate bootstrap dependency")
+    (engine_lib / "InfernuxFoundation.dll").write_bytes(b"engine-owned")
 
     builder._inject_python_bootstrap_runtime(str(dist))
 
     for filename in sources:
         assert (dist / filename).read_bytes() == sources[filename].read_bytes()
+        assert not (engine_lib / filename).exists()
+    assert (engine_lib / "InfernuxFoundation.dll").read_bytes() == b"engine-owned"
     bootstrap_manifest = json.loads(
         (dist / game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME).read_text(
             encoding="utf-8"

@@ -2914,6 +2914,8 @@ print(json.dumps({{
         dist_root = Path(dist_dir)
         for name, source in sources.items():
             shutil.copy2(source, dist_root / name)
+            # This closure has one owner: Bootstrap.inxrt, not Infernux/lib.
+            (dist_root / "Infernux" / "lib" / name).unlink(missing_ok=True)
         manifest_path = dist_root / BOOTSTRAP_NATIVE_MANIFEST_FILENAME
         temporary_manifest = manifest_path.with_name(
             f".{manifest_path.name}.{os.getpid()}.tmp"
