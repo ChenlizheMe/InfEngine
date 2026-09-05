@@ -419,6 +419,17 @@ class PluginManager:
         if current is not None:
             if _same_install(current, preview):
                 return self.reload(reference)
+            control = current.get("control", {})
+            control_path = self._guid_index().get(str(control.get("guid", "")).casefold())
+            if control_path:
+                with open(control_path, "r", encoding="utf-8") as stream:
+                    original = json.load(stream)
+                if (
+                    str(current.get("version", "")) == str(preview.metadata.get("version", ""))
+                    and _package_file_identities(original.get("files", ()))
+                    == _package_file_identities(preview.file_records)
+                ):
+                    return self._extend_package_install(current, preview, selected, progress)
             raise RuntimeError(
                 f"Plugin is already installed with different content: {reference}; "
                 "uninstall it before reinstalling"
@@ -550,6 +561,77 @@ class PluginManager:
             raise
         finally:
             self._installing.discard(key)
+
+    def _extend_package_install(
+        self,
+        current: Mapping[str, object],
+        preview: InxPackagePreview,
+        selected: Iterable[str] | None,
+        progress: _InstallProgress | None,
+    ) -> PluginState:
+        """Add previously unchecked members of the same package, not an upgrade."""
+        reference = str(current["reference"])
+        installed = {str(item["logical_path"]) for item in current["files"]}
+        selected_paths = None if selected is None else {
+            portable_path(str(path)).strip("/") for path in selected
+        }
+        additions = tuple(
+            str(item["logical_path"])
+            for item in preview.file_records
+            if str(item["logical_path"]) not in installed
+            and (
+                selected_paths is None
+                or str(item["logical_path"]) in selected_paths
+                or package_destination(reference, str(item["logical_path"])) in selected_paths
+            )
+        )
+        if not additions:
+            return self.reload(reference)
+
+        self._installing.add(reference.casefold())
+        try:
+            planned, _control = self._plan_install(preview, additions)
+            transaction = _InstallTransaction(self.project_root)
+            registry_before = self.registry.load()
+            registry_changed = False
+            try:
+                _report_progress(progress, "write_assets", 0.76)
+                for item in planned:
+                    if item.owned:
+                        transaction.write(item.destination, item.payload)
+                        transaction.write(item.destination + ".meta", item.meta_payload)
+                document = self.registry.load()
+                record = next(
+                    item for item in document["installed"]
+                    if str(item["reference"]).casefold() == reference.casefold()
+                )
+                record["files"].extend({
+                    "logical_path": item.logical_path,
+                    "path_hint": item.destination_relative,
+                    "guid": item.guid,
+                    "role": item.role,
+                    "owned": item.owned,
+                } for item in planned)
+                record["transaction_id"] = transaction.id
+                _report_progress(progress, "update_registry", 0.84)
+                registry_changed = True
+                self.registry.save(document)
+                transaction.commit()
+            except BaseException:
+                transaction.rollback()
+                if registry_changed:
+                    self.registry.save(registry_before)
+                raise
+            if threading.current_thread() is threading.main_thread():
+                self._refresh_editor_assets()
+                self._publish_package_runtime_scripts(reference)
+                state = self.reload(reference)
+            else:
+                state = PluginState(reference=reference, root=package_control_root(self.project_root, reference))
+            _report_progress(progress, "complete", 1.0)
+            return state
+        finally:
+            self._installing.discard(reference.casefold())
 
     def _rollback_new_plugin_dependencies(
         self,
@@ -2118,16 +2200,17 @@ def _requirements_satisfied(
     return True
 
 
-def _same_install(record: Mapping[str, object], preview: InxPackagePreview) -> bool:
-    current = {
+def _package_file_identities(files: Iterable[Mapping[str, object]]) -> set[tuple[str, str]]:
+    return {
         (str(item.get("logical_path", "")), str(item.get("guid", "")))
-        for item in record.get("files", [])
+        for item in files
         if isinstance(item, Mapping)
     }
-    incoming = {
-        (str(item.get("logical_path", "")), str(item.get("guid", "")))
-        for item in preview.file_records
-    }
+
+
+def _same_install(record: Mapping[str, object], preview: InxPackagePreview) -> bool:
+    current = _package_file_identities(record.get("files", []))
+    incoming = _package_file_identities(preview.file_records)
     return current == incoming and str(record.get("version", "")) == str(
         preview.metadata.get("version", "")
     )

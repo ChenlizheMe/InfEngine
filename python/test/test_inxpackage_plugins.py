@@ -224,16 +224,113 @@ def test_manifestless_multi_selection_expands_directly_under_plugins(tmp_path):
     )
 
 
+def test_selective_reimport_adds_missing_files_without_replacing_existing_ownership(tmp_path, monkeypatch):
+    source = _source(tmp_path / "source", "vendor/partial")
+    (source / "first.txt").write_text("first", encoding="utf-8")
+    (source / "second.txt").write_text("second", encoding="utf-8")
+    package = _export(source, tmp_path / "partial.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.installed_record("vendor/partial")
+    assert before is not None
+    first = project / "Assets/Plugins/first.txt"
+    first.write_text("user edit", encoding="utf-8")
+    manager.set_enabled("vendor/partial", False)
+    monkeypatch.setattr(manager, "_install_requirements", lambda *_args, **_kwargs: pytest.fail("Reimport must not reinstall dependencies"))
+
+    manager.install_package(str(package), selected=("second.txt",))
+
+    after = manager.registry.installed_record("vendor/partial")
+    assert after["enabled"] is False
+    assert first.read_text() == "user edit"
+    assert (project / "Assets/Plugins/second.txt").read_text() == "second"
+    assert after["files"][0] == before["files"][0]
+    assert after["control"] == before["control"]
+    assert {item["logical_path"] for item in after["files"]} == {"first.txt", "second.txt"}
+
+
+@pytest.mark.parametrize("change", ["version", "members"])
+def test_selective_reimport_does_not_treat_another_release_as_missing_members(tmp_path, change):
+    source = _source(tmp_path / "source", "vendor/partial-release")
+    (source / "first.txt").write_text("first", encoding="utf-8")
+    (source / "second.txt").write_text("second", encoding="utf-8")
+    package = _export(source, tmp_path / "original.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.load()
+    if change == "version":
+        manifest = source / "inx_package.json"
+        document = json.loads(manifest.read_text())
+        document["version"] = "99.0.0"
+        manifest.write_text(json.dumps(document), encoding="utf-8")
+    else:
+        (source / "third.txt").write_text("new release", encoding="utf-8")
+    incoming = _export(source, tmp_path / "different.inxpkg")
+    with pytest.raises(RuntimeError, match="different content"):
+        manager.install_package(str(incoming))
+    assert manager.registry.load() == before
+    assert not (project / "Assets/Plugins/second.txt").exists()
+
+
+def test_selective_reimport_conflict_keeps_the_existing_install(tmp_path):
+    source = _source(tmp_path / "source", "vendor/partial-conflict")
+    (source / "first.txt").write_text("first", encoding="utf-8")
+    (source / "second.txt").write_text("second", encoding="utf-8")
+    package = _export(source, tmp_path / "partial-conflict.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.load()
+    blocked = project / "Assets/Plugins/second.txt"
+    blocked.write_text("another asset", encoding="utf-8")
+    with pytest.raises(PackageConflictError, match="another GUID"):
+        manager.install_package(str(package), selected=("second.txt",))
+    assert manager.registry.load() == before
+    assert blocked.read_text() == "another asset"
+    assert (project / "Assets/Plugins/first.txt").read_text() == "first"
+
+
+def test_selective_reimport_rollback_retains_previous_files_and_registry(tmp_path, monkeypatch):
+    source = _source(tmp_path / "source", "vendor/partial-rollback")
+    for name in ("first.txt", "second.txt", "third.txt"):
+        (source / name).write_text(name, encoding="utf-8")
+    package = _export(source, tmp_path / "partial-rollback.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.load()
+    write = plugin_manager_module._InstallTransaction.write
+
+    def fail_third(transaction, destination, payload):
+        if destination.endswith("third.txt"):
+            raise OSError("simulated write failure")
+        return write(transaction, destination, payload)
+
+    monkeypatch.setattr(plugin_manager_module._InstallTransaction, "write", fail_third)
+    with pytest.raises(OSError, match="simulated write failure"):
+        manager.install_package(str(package))
+    assert manager.registry.load() == before
+    assert (project / "Assets/Plugins/first.txt").read_text() == "first.txt"
+    assert not (project / "Assets/Plugins/second.txt").exists()
+    assert not (project / "Assets/Plugins/second.txt.meta").exists()
+    assert not (project / "Assets/Plugins/third.txt").exists()
+
+
 @pytest.mark.parametrize("new_scripts", [False, True])
+@pytest.mark.parametrize("partial_install", [False, True])
 def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
     tmp_path,
     monkeypatch,
     new_scripts,
+    partial_install,
 ):
     source = _source(tmp_path / "source", "vendor/runtime-component")
     runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "component.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "seed.txt").write_text("non-script initial selection", encoding="utf-8")
     package = _export(source, tmp_path / "RuntimeComponent.inxpkg")
     project = _project(tmp_path / "project")
     published = []
@@ -262,6 +359,9 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
     )
 
     manager = PluginManager(str(project))
+    if partial_install:
+        manager.install_package(str(package), selected=("seed.txt",), install_dependencies=False)
+        assert published == []
     manager.install_package(
         str(package),
         install_dependencies=False,

@@ -66,6 +66,8 @@ Run `python package.py [destination.inxpkg]` from any working directory. The scr
 
 The lowercase names `runtime`, `editor`, and `plugin_pages` are exact. Uninstall follows GUID ownership: moving or editing a file does not prevent removal while the package still owns it. Shared files whose ownership has transferred to another package are preserved.
 
+The import panel supports per-file selection. Reopening a package with the same version and full GUID member list lets you add previously unchecked files without uninstalling it. Existing user edits, ownership, and enabled state are preserved; Python dependencies are not reinstalled. A different version or member list remains a package replacement and is not silently applied. Conflicting destination GUIDs are reported, and failed writes roll back only the new additions, preserving the existing installation.
+
 ## Plugin pages
 
 Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root README and license files are repository documentation and are not read as plugin pages. Chinese content inserts `.zh-CN` before the extension, such as `guide.zh-CN.md`. Images use relative paths and stay under the package root.
