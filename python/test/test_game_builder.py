@@ -689,7 +689,10 @@ def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
         source_fingerprint(project, entry)
 
 
-def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_path):
+@pytest.mark.parametrize("new_runtime_files", [False, True])
+def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(
+    tmp_path, new_runtime_files
+):
     project = _make_project(tmp_path)
     runtime = project / "Packages/vendor/gameplay/runtime/lifecycle.py"
     resource = project / "Packages/vendor/gameplay/runtime/message.txt"
@@ -755,6 +758,31 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
             "location": "C:/Users/Author/source/plugin.inxpkg",
         },
     )
+    original_registry = registry.load()
+    if new_runtime_files:
+        # Files authored after installation are project assets, not new
+        # uninstall ownership. They must nevertheless reach the Player.
+        additions = (
+            (
+                runtime.parent / "new_component.py", "new-script-guid",
+                "runtime/new_component.py", "runtime", b"VALUE = 42\n",
+            ),
+            (
+                resource.parent / "new_data.json", "new-data-guid",
+                "runtime/new_data.json", "runtime", b'{"value": 42}\n',
+            ),
+            (
+                editor.parent / "new_panel.py", "new-editor-guid",
+                "editor/new_panel.py", "editor", b"EDITOR = True\n",
+            ),
+        )
+        for path, guid, _logical, _role, payload in additions:
+            path.write_bytes(payload)
+            Path(str(path) + ".meta").write_text(
+                json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}}),
+                encoding="utf-8",
+            )
+        files += additions
     scene = project / "Assets/Main.scene"
     _write_asset_index(
         project,
@@ -778,6 +806,11 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
     staged_resource = data / "Packages/vendor/gameplay/runtime/message.txt"
     assert staged_resource.read_text(encoding="utf-8") == "Player package resource ready\n"
     assert not (data / "Packages/vendor/gameplay/editor/panel.py").exists()
+    if new_runtime_files:
+        assert (data / "Packages/vendor/gameplay/runtime/new_component.py").read_bytes() == b"VALUE = 42\n"
+        assert (data / "Packages/vendor/gameplay/runtime/new_data.json").is_file()
+        assert not (data / "Packages/vendor/gameplay/editor/new_panel.py").exists()
+    assert registry.load() == original_registry
     shipped = json.loads(
         (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
     )
@@ -785,7 +818,9 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
         "runtime/lifecycle.py",
         "runtime/message.txt",
         "Scenes/Demo.scene",
-    ]
+    ] + (["runtime/new_component.py", "runtime/new_data.json"] if new_runtime_files else [])
+    if new_runtime_files:
+        assert all(not item["owned"] for item in shipped["installed"][0]["files"][-2:])
     assert "package_path" not in shipped["installed"][0]
     assert "source" not in shipped["installed"][0]
     assert "installed_at" not in shipped["installed"][0]
@@ -811,6 +846,12 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
     assert not staged_runtime.exists()
     assert staged_runtime.with_suffix(".pyc").is_file()
     assert staged_resource.is_file()
+    if new_runtime_files:
+        new_script = data / "Packages/vendor/gameplay/runtime/new_component.py"
+        assert not new_script.exists()
+        assert new_script.with_suffix(".pyc").is_file()
+        assert {"new-script-guid", "new-data-guid"} <= builder._staged_player_plugin_guids
+        assert {"new-script-guid", "new-data-guid"} <= builder._cooked_asset_entries.keys()
     runtime_registry = json.loads(
         (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
     )
@@ -831,6 +872,15 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
     assert states[0].instance is not None
     assert states[0].instance.message == str(staged_resource.resolve())
     assert manager.unload_all() == ()
+
+    registry.set_enabled("vendor/gameplay", False)
+    disabled_data = tmp_path / "disabled-build" / "Data"
+    builder._stage_player_plugins(str(disabled_data))
+    assert not (disabled_data / "Packages").exists()
+    assert builder._staged_player_plugin_guids == set()
+    assert json.loads(
+        (disabled_data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
+    )["installed"] == []
 
 
 def test_preload_context_package_path_fails_closed(tmp_path):

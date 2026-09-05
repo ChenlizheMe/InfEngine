@@ -1521,6 +1521,7 @@ finally:
 
         from Infernux.plugins.package import player_file_exported
         from Infernux.plugins.registry import PluginRegistry
+        from Infernux.engine.project_context import package_script_reference
 
         registry = PluginRegistry(self.project_path)
         document = registry.load()
@@ -1533,12 +1534,51 @@ finally:
             for entry in self._asset_index_entries()
             if str(entry.get("guid", "")).strip()
         }
+        current_runtime_files: dict[str, list[dict[str, object]]] = {}
+        for guid, entry in indexed.items():
+            source = self._library_source_entry_path(entry)
+            if not is_path_within(source, packages_root, allow_root=False):
+                continue
+            reference = package_script_reference(source, self.project_path)
+            if not reference:
+                continue
+            package_root = os.path.join(packages_root, *reference.split("/"))
+            logical = portable_path(relative_path(source, package_root))
+            if logical.partition("/")[0].casefold() != "runtime":
+                continue
+            current_runtime_files.setdefault(reference.casefold(), []).append(
+                {
+                    "logical_path": logical,
+                    "path_hint": portable_path(relative_path(source, self.project_path)),
+                    "guid": guid,
+                    "role": "runtime",
+                    "owned": False,
+                }
+            )
         for raw in document.get("installed", []):
             if not isinstance(raw, dict) or not bool(raw.get("enabled", True)):
                 continue
             record = dict(raw)
+            # Installation ownership is not the current package inventory.
+            # AssetIndex includes files authored since installation; export
+            # them without adopting them into the durable uninstall ledger.
+            files = list(record.get("files", []))
+            recorded_guids = {
+                str(item.get("guid", "")).casefold()
+                for item in files
+                if isinstance(item, dict)
+            }
+            reference_key = str(record.get("reference", "")).casefold()
+            files.extend(
+                item
+                for item in sorted(
+                    current_runtime_files.get(reference_key, []),
+                    key=lambda item: str(item["logical_path"]),
+                )
+                if str(item["guid"]) not in recorded_guids
+            )
             runtime_files: list[dict[str, object]] = []
-            for raw_file in record.get("files", []):
+            for raw_file in files:
                 if not isinstance(raw_file, dict):
                     continue
                 logical = portable_path(str(raw_file.get("logical_path", ""))).strip("/")
@@ -1564,7 +1604,7 @@ finally:
                 file_record["path_hint"] = current_relative
                 runtime_files.append(file_record)
                 staged_plugin_guids.add(guid)
-                # Package payloads are selected by the enabled plugin ledger,
+                # Package payloads are selected by enabled package membership,
                 # not by scene dependency traversal.  Bind them into the same
                 # cooked GUID closure so RuntimeAssetCatalog can prove their
                 # identity and dependencies after Content.inxpkg is sealed.

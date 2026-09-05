@@ -13,6 +13,10 @@ The package preload also reads ``Assets/Data/preload_message.txt`` through
 both reads to succeed, exercising the frozen path-to-GUID binding during
 plugin startup on every Player target.
 Its package JSON references the TXT by relative filename. The preload resolves
+this JSON even though it is intentionally absent from the installation ownership
+ledger: it represents a file authored in `runtime/` after package installation.
+This verifies that fresh AssetIndex membership reaches every Player without
+changing the author's uninstall ownership. The preload resolves
 both the JSON file and its cataloged package directory, then reads that sibling
 to verify that raw resource layout survives the same packaging path.
 

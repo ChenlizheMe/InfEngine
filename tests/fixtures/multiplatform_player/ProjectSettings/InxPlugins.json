@@ -32,13 +32,6 @@
           "guid": "04000000000000000000000000000012",
           "role": "runtime",
           "owned": true
-        },
-        {
-          "logical_path": "runtime/resource.json",
-          "path_hint": "Packages/infernux/multiplatform_probe/runtime/resource.json",
-          "guid": "04000000000000000000000000000013",
-          "role": "runtime",
-          "owned": true
         }
       ],
       "control": {
