@@ -325,19 +325,26 @@ class PythonRuntimeInstallDialog(QDialog):
         self._worker.finished.connect(self._thread.quit)
         self._worker.error.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._on_thread_finished)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.start()
 
     def _on_finished(self, python_exe: str):
         self.result_path = python_exe
-        self.accept()
 
     def _on_error(self, message: str):
         self.error_text = message
-        self.reject()
+
+    def _on_thread_finished(self):
+        self._thread.wait()
+        self._thread = None
+        if self.result_path:
+            self.accept()
+        else:
+            self.reject()
 
     def reject(self):
-        if self._thread.isRunning() and not self.error_text:
+        if self._thread is not None and self._thread.isRunning():
             return
         super().reject()
 
@@ -461,6 +468,8 @@ class _VersionRow(AnimatedSurfaceFrame):
 class InstallEditorDialog(QDialog):
     """Dialog that lists available versions from GitHub for installation."""
 
+    runtime_install_requested = Signal(str)
+
     def __init__(self, version_manager: VersionManager, parent=None):
         super().__init__(parent)
         self.setWindowTitle(tr("Install Engine Version"))
@@ -477,7 +486,15 @@ class InstallEditorDialog(QDialog):
 
         self._status = QLabel(tr("Fetching available versions..."))
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setWordWrap(True)
         layout.addWidget(self._status)
+
+        self._btn_runtime = QPushButton()
+        self._btn_runtime.setObjectName("primaryBtn")
+        self._btn_runtime.setMinimumHeight(34)
+        self._btn_runtime.hide()
+        self._btn_runtime.clicked.connect(self._on_install_runtime)
+        layout.addWidget(self._btn_runtime)
 
         # Scroll area for version rows
         self._scroll = QScrollArea()
@@ -549,22 +566,27 @@ class InstallEditorDialog(QDialog):
 
     def _select(self, ev: EngineVersion):
         self._selected = ev
+        self._btn_runtime.hide()
         block_reason = self._vm.installation_block_reason(ev)
         if block_reason:
             self._btn_install.setEnabled(False)
             if (
-                ev.python_version
+                ev.python_version and ev.wheel_url
                 and not ev.compatibility_error
                 and not self._vm.is_python_runtime_installed(ev.python_version)
             ):
                 self._status.setText(
                     tr(
-                        "Infernux {engine} requires Python {version}. Please "
-                        "install Python {version} first.",
+                        "Infernux {engine} needs its managed runtime (Python {version}). "
+                        "Install it here; no Python or Conda setup is required.",
                         engine=ev.version,
                         version=ev.python_version,
                     )
                 )
+                self._btn_runtime.setText(
+                    tr("Install required runtime (Python {version})", version=ev.python_version)
+                )
+                self._btn_runtime.show()
             else:
                 self._status.setText(block_reason)
             self._status.show()
@@ -577,6 +599,11 @@ class InstallEditorDialog(QDialog):
         self._status.hide()
         for v, row in self._rows:
             row.set_selected(v is ev)
+
+    def _on_install_runtime(self):
+        engine = self._selected
+        self.runtime_install_requested.emit(engine.python_version)
+        self._select(engine)
 
     def _on_install(self):
         if not self._selected or self._selected.installed:
@@ -774,6 +801,7 @@ class InstallsView(QWidget):
 
     def _on_install_editor(self):
         dlg = InstallEditorDialog(self._vm, parent=self)
+        dlg.runtime_install_requested.connect(self._on_install_python)
         if dlg.exec() == QDialog.Accepted:
             self.refresh()
 
