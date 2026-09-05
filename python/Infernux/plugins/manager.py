@@ -1645,8 +1645,11 @@ class PluginManager:
                 logical in selected_set or destination_relative in selected_set
             ):
                 continue
+            physical_relative = package_destination(
+                reference, logical, project_root=self.project_root
+            )
             destination = resolved_path(
-                os.path.join(self.project_root, *destination_relative.split("/"))
+                os.path.join(self.project_root, *physical_relative.split("/"))
             )
             payload = read_entry(preview.package_path, str(record["archive_path"]))
             meta_payload = read_entry(

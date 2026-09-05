@@ -64,7 +64,9 @@ Run `python package.py [destination.inxpkg]` from any working directory. The scr
 | `requirements.txt` | `Packages/<reference>/requirements.txt` | excluded |
 | everything else | `Assets/Plugins/...` | included |
 
-The lowercase names `runtime`, `editor`, and `plugin_pages` are exact. Uninstall follows GUID ownership: moving or editing a file does not prevent removal while the package still owns it. Shared files whose ownership has transferred to another package are preserved.
+Archive names `runtime`, `editor`, and `plugin_pages` must be lowercase. If the project already has an authored `Runtime` or `Editor` directory, import reuses that role's physical spelling without creating a case variant or moving author files. Multiple existing case variants of one role are ambiguous and must be resolved by the author first.
+
+Uninstall follows GUID ownership: moving or editing a file does not prevent removal while the package still owns it. Derived bytecode caches of removed scripts are cleaned in the same transaction. Shared files whose ownership has transferred to another package, newly authored files, and their caches are preserved.
 
 The import panel supports per-file selection. Reopening a package with the same version and full GUID member list lets you add previously unchecked files without uninstalling it. Existing user edits, ownership, and enabled state are preserved; Python dependencies are not reinstalled. A different version or member list remains a package replacement and is not silently applied. Conflicting destination GUIDs are reported, and failed writes roll back only the new additions, preserving the existing installation.
 

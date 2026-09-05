@@ -275,6 +275,9 @@ class InxPackage:
                 logical in selected_set or destination_relative in selected_set
             ):
                 continue
+            destination_relative = package_destination(
+                str(preview.metadata["reference"]), logical, project_root=project
+            )
             destination = _safe_project_destination(project, destination_relative)
             if os.path.exists(destination) and not overwrite:
                 raise FileExistsError(destination)
@@ -528,10 +531,22 @@ def package_role(logical_path: str) -> str:
     return "content"
 
 
-def package_destination(reference: str, logical_path: str) -> str:
+def package_destination(reference: str, logical_path: str, *, project_root: str = "") -> str:
     reference = validate_reference(reference)
     logical = _safe_relative(logical_path)
     role = package_role(logical)
+    if project_root and role in {"runtime", "editor"}:
+        from Infernux.engine.project_context import _package_role_root
+
+        # Archive roles are lowercase; retain the project's authored spelling.
+        root = package_control_root(project_root, reference)
+        role_root = _package_role_root(root, role)
+        physical_role = portable_path(relative_path(role_root, root, allow_root=False))
+        if physical_role.casefold() != role:
+            raise ValueError(f"Package role directory is redirected: {role_root}")
+        logical = posixpath.join(
+            physical_role, logical.split("/", 1)[1]
+        )
     if role in {"runtime", "editor", "control"}:
         return posixpath.join("Packages", reference, logical)
     return posixpath.join("Assets/Plugins", logical)

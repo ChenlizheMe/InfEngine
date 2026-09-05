@@ -2521,7 +2521,8 @@ def test_uninstall_removes_only_owned_script_caches_transactionally(
         assert AssetManager.is_watcher_echo_suppressed("deleted", str(owned))
         assert role.exists() == keep_author
         manager.install_package(str(package), install_dependencies=False)
-        assert (project / "Packages/vendor/cached/editor/owned.py").is_file()
+        installed_role = role if keep_author else role.with_name("editor")
+        assert (installed_role / "owned.py").is_file()
     if keep_author:
         assert author.read_text(encoding="utf-8") == "VALUE = 2\n"
         assert author_cache.read_bytes() == author_bytes
@@ -2555,6 +2556,88 @@ def test_package_preload_supports_relative_imports(tmp_path):
     assert (project / "relative-preload.txt").read_text(encoding="utf-8") == (
         "relative-import-ready"
     )
+
+
+@pytest.mark.parametrize("role", ["editor", "runtime"])
+@pytest.mark.parametrize("extract_only", [False, True])
+def test_import_reuses_authored_role_root_without_moving_user_files(tmp_path, role, extract_only):
+    source = _source(tmp_path / "source", "vendor/authored-role")
+    module = source / role / "authored_role_probe"
+    module.mkdir(parents=True)
+    (module / "__init__.py").write_text("", encoding="utf-8")
+    (module / "service.py").write_text("VALUE = 'current'\n", encoding="utf-8")
+    (module / "lifecycle.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class AuthoredRolePreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        from authored_role_probe.service import VALUE\n"
+        "        Path(context.project_root, 'authored-role.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "authored-role.inxpkg")
+    project = _project(tmp_path / "project")
+    authored_root = project / "Packages/vendor/authored-role" / role.title()
+    authored_root.mkdir(parents=True)
+    author = authored_root / "UserKeep.py"
+    author.write_text("VALUE = 'author'\n", encoding="utf-8")
+    if extract_only:
+        InxPackage.extract(str(package), str(project))
+        manager = PluginManager.startup(str(project))
+    else:
+        manager = PluginManager.startup(str(project))
+        manager.install_package(str(package), install_dependencies=False)
+    try:
+        assert [p.name for p in authored_root.parent.iterdir() if p.is_dir() and p.name.casefold() == role] == [role.title()]
+        assert author.read_text(encoding="utf-8") == "VALUE = 'author'\n"
+        assert (authored_root / "authored_role_probe/service.py").is_file()
+        state = next(state for state in manager.preloads.states.values() if state.type_name == "AuthoredRolePreload")
+        assert state.loaded, state.error
+        assert (project / "authored-role.txt").read_text(encoding="utf-8") == "current"
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.skipif(os.path.normcase("Editor") == os.path.normcase("editor"), reason="case-sensitive filesystem boundary")
+@pytest.mark.parametrize("extract_only", [False, True])
+def test_import_rejects_ambiguous_authored_role_before_writing(tmp_path, extract_only):
+    source = _source(tmp_path / "source", "vendor/ambiguous")
+    (source / "editor").mkdir()
+    (source / "editor/new.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "ambiguous.inxpkg")
+    project = _project(tmp_path / "project")
+    root = project / "Packages/vendor/ambiguous"
+    for role in ("Editor", "editor"):
+        (root / role).mkdir(parents=True)
+        (root / role / "keep.txt").write_text(role, encoding="utf-8")
+    manager = PluginManager(str(project))
+    with pytest.raises(ValueError, match="Ambiguous package role 'editor'"):
+        if extract_only:
+            InxPackage.extract(str(package), str(project))
+        else:
+            manager.install_package(str(package), install_dependencies=False)
+    assert manager.registry.installed_record("vendor/ambiguous") is None
+    for role in ("Editor", "editor"):
+        assert (root / role / "keep.txt").read_text(encoding="utf-8") == role
+        assert not (root / role / "new.py").exists()
+
+
+@pytest.mark.parametrize("outside_package", [False, True])
+def test_project_package_destination_rejects_redirected_role(tmp_path, outside_package):
+    from Infernux.plugins.package import package_destination
+
+    project = _project(tmp_path / "project")
+    root = project / "Packages/vendor/redirected"
+    root.mkdir(parents=True)
+    target = tmp_path / "outside" if outside_package else root / "another_directory"
+    target.mkdir()
+    try:
+        (root / "Editor").symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symlink unavailable: {exc}")
+    with pytest.raises(ValueError):
+        package_destination("vendor/redirected", "editor/new.py", project_root=str(project))
+    assert not list(target.iterdir())
 
 
 @pytest.mark.parametrize("role", ["editor", "Editor", "runtime", "Runtime"])

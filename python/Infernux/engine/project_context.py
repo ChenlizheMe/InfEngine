@@ -207,11 +207,19 @@ def _package_role_root(package_root: str, role: str) -> str:
     """Return the on-disk role directory while normalizing its identity."""
 
     try:
-        for entry in os.scandir(package_root):
-            if entry.is_dir() and entry.name.casefold() == role:
-                return resolved_path(entry.path)
+        with os.scandir(package_root) as entries:
+            matches = sorted(
+                entry.path for entry in entries
+                if entry.is_dir() and entry.name.casefold() == role
+            )
     except OSError:
-        pass
+        matches = []
+    if len(matches) > 1:
+        raise ValueError(
+            f"Ambiguous package role '{role}': " + ", ".join(matches)
+        )
+    if matches:
+        return resolved_path(matches[0])
     return resolved_path(os.path.join(package_root, role))
 
 
