@@ -224,9 +224,11 @@ def test_manifestless_multi_selection_expands_directly_under_plugins(tmp_path):
     )
 
 
+@pytest.mark.parametrize("new_scripts", [False, True])
 def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
     tmp_path,
     monkeypatch,
+    new_scripts,
 ):
     source = _source(tmp_path / "source", "vendor/runtime-component")
     runtime = source / "runtime"
@@ -251,12 +253,16 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
             published.append(("drain", force))
             return 0
 
+        def retire_script_paths(self, paths):
+            published.append(("retire", tuple(Path(path) for path in paths)))
+
     monkeypatch.setattr(
         "Infernux.engine.resources_manager.ResourcesManager.instance",
         classmethod(lambda _cls: _Resources()),
     )
 
-    PluginManager(str(project)).install_package(
+    manager = PluginManager(str(project))
+    manager.install_package(
         str(package),
         install_dependencies=False,
     )
@@ -268,6 +274,32 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
     assert published[1][1]["transaction_id"] == "package-runtime"
     assert published[2] == ("drain", True)
     assert not (project / "Library" / "InxPackageStaging").exists()
+    expected_paths = {runtime_path}
+    if new_scripts:
+        added = runtime_path.with_name("added.py")
+        added.write_text("ADDED = True\n", encoding="utf-8")
+        added.with_suffix(".py.meta").write_text(_meta("c" * 32), encoding="utf-8")
+        editor = runtime_path.parent.parent / "editor" / "panel.py"
+        editor.parent.mkdir()
+        editor.write_text("EDITOR = True\n", encoding="utf-8")
+        editor.with_suffix(".py.meta").write_text(_meta("d" * 32), encoding="utf-8")
+        expected_paths.add(added)
+    installed_files = manager.registry.installed_record("vendor/runtime-component")["files"]
+    published.clear()
+    manager.set_enabled("vendor/runtime-component", False)
+    assert published[0][0] == "retire"
+    assert set(published[0][1]) == expected_paths
+    published.clear()
+    manager.set_enabled("vendor/runtime-component", True)
+    assert published[0][0] == "begin"
+    assert set(published[0][1]) == expected_paths
+    assert manager.registry.installed_record("vendor/runtime-component")["files"] == installed_files
+    published.clear()
+    manager.uninstall("vendor/runtime-component")
+    assert published[0][0] == "retire"
+    assert set(published[0][1]) == expected_paths
+    if new_scripts:
+        assert added.is_file() and editor.is_file()
 
 
 def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
@@ -2749,6 +2781,92 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     assert disabled.lifecycle == ()
     manager.set_enabled("vendor/lifecycle", True)
     assert (project / "package-loaded.txt").is_file()
+
+
+@pytest.mark.parametrize("refresh", ["reload_all", "catch_up", "reload_path", "reload_package"])
+@pytest.mark.parametrize("native_index", [False, True])
+def test_new_package_preload_obeys_disable_and_enable_without_taking_ownership(
+    tmp_path, monkeypatch, request, refresh, native_index
+):
+    source = _source(tmp_path / "source", "vendor/mutable")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "mutable.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    request.addfinalizer(manager.preloads.unload_all)
+    manager.install_package(str(package), install_dependencies=False)
+    manager.set_enabled("vendor/mutable", False)
+    before = manager.registry.installed_record("vendor/mutable")
+    new_script = project / "Packages/vendor/mutable/runtime/added.py"
+    new_script.write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Added(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'added-ran.txt').write_text('yes')\n",
+        encoding="utf-8",
+    )
+    new_script.with_suffix(".py.meta").write_text(_meta("a" * 32), encoding="utf-8")
+    if native_index:
+        def native_paths(project_root, *, engine=None):
+            paths, _native = project_guid_paths(project_root)
+            return paths, True
+        monkeypatch.setattr(preload_module, "project_guid_paths", native_paths)
+
+    if refresh == "reload_path":
+        manager.preloads.reload_path(str(new_script))
+    elif refresh == "reload_package":
+        manager.preloads.reload_package("vendor/mutable")
+    else:
+        getattr(manager.preloads, refresh)()
+    assert not (project / "added-ran.txt").exists()
+    assert not manager.preloads.states
+    assert not manager.preloads.failures
+    assert manager.registry.installed_record("vendor/mutable") == before
+
+    enabled = manager.set_enabled("vendor/mutable", True)
+    assert enabled.enabled and enabled.loaded
+    assert (project / "added-ran.txt").read_text(encoding="utf-8") == "yes"
+    assert len(enabled.lifecycle) == 1
+    assert enabled.lifecycle[0]["package_reference"] == "vendor/mutable"
+    assert manager.registry.installed_record("vendor/mutable")["files"] == before["files"]
+    manager.set_enabled("vendor/mutable", False)
+    assert not manager.preloads.states
+
+
+@pytest.mark.parametrize("role", ["runtime", "editor"])
+@pytest.mark.parametrize("refresh", ["reload_all", "reload_path", "reload_package"])
+def test_player_preload_refresh_respects_current_role_and_package_boundary(
+    tmp_path, request, role, refresh
+):
+    # A reference containing "editor" is not an Editor role directory.
+    reference = "vendor/editor/tool"
+    source = _source(tmp_path / "source", reference)
+    (source / "runtime").mkdir()
+    (source / "runtime" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "role.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=True)
+    request.addfinalizer(manager.preloads.unload_all)
+    manager.install_package(str(package), install_dependencies=False)
+    script = project / "Packages" / reference / role / "added.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Added(InxPreload):\n"
+        "    def preload(self, context): pass\n",
+        encoding="utf-8",
+    )
+    script.with_suffix(".py.meta").write_text(_meta("b" * 32), encoding="utf-8")
+    if refresh == "reload_path":
+        manager.preloads.reload_path(str(script))
+    elif refresh == "reload_package":
+        manager.preloads.reload_package(reference)
+    else:
+        manager.preloads.reload_all()
+    assert not manager.preloads.failures
+    assert len(manager.preloads.states) == (1 if role == "runtime" else 0)
 
 
 def test_package_dependency_preload_and_reverse_unload_order(tmp_path):

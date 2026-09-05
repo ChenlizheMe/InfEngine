@@ -26,6 +26,7 @@ from packaging.version import Version
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import (
     is_path_within,
+    path_key,
     portable_path,
     relative_path,
     resolved_path,
@@ -1688,19 +1689,12 @@ class PluginManager:
                 "Active ResourcesManager belongs to a different project during plugin install"
             )
 
-        runtime_paths: list[str] = []
-        for item in record.get("files", []):
-            if not isinstance(item, Mapping) or item.get("role") != "runtime":
-                continue
-            hint = portable_path(str(item.get("path_hint", ""))).strip("/")
-            if not hint.casefold().endswith(".py"):
-                continue
-            path = resolved_path(os.path.join(self.project_root, *hint.split("/")))
+        runtime_paths = self._package_runtime_script_paths(record)
+        for path in runtime_paths:
             if not os.path.isfile(path):
                 raise FileNotFoundError(
                     f"Installed Runtime script is missing before publication: {path}"
                 )
-            runtime_paths.append(path)
         if not runtime_paths:
             return
 
@@ -1734,17 +1728,42 @@ class PluginManager:
             raise RuntimeError(
                 "Active ResourcesManager belongs to a different project during plugin retirement"
             )
-        paths = []
+        paths = self._package_runtime_script_paths(record)
+        if paths:
+            manager.retire_script_paths(paths)
+
+    def _package_runtime_script_paths(self, record: Mapping[str, object]) -> list[str]:
+        """Current runtime membership plus ledger paths needed for retirement."""
+
+        from Infernux.engine.project_context import package_script_reference
+
+        guid_paths = self._guid_index()
+        paths: dict[str, str] = {}
         for item in record.get("files", []):
             if not isinstance(item, Mapping) or item.get("role") != "runtime":
                 continue
             hint = portable_path(str(item.get("path_hint", ""))).strip("/")
             if hint.casefold().endswith(".py"):
-                paths.append(
-                    resolved_path(os.path.join(self.project_root, *hint.split("/")))
+                path = guid_paths.get(str(item.get("guid", "")).casefold()) or resolved_path(
+                    os.path.join(self.project_root, *hint.split("/"))
                 )
-        if paths:
-            manager.retire_script_paths(paths)
+                paths[path_key(path)] = path
+        reference = str(record["reference"])
+        root = package_control_root(self.project_root, reference)
+        for path in guid_paths.values():
+            if not path.casefold().endswith(".py") or not is_path_within(path, root, allow_root=False):
+                continue
+            logical = portable_path(relative_path(path, root))
+            if logical.partition("/")[0].casefold() != "runtime":
+                continue
+            current_reference = package_script_reference(path, self.project_root)
+            # A nested package is independent. During uninstall the removed
+            # control file may already be gone; the transaction's record still
+            # defines which surviving, user-authored scripts must be retired.
+            if current_reference and current_reference.casefold() != reference.casefold():
+                continue
+            paths[path_key(path)] = path
+        return [paths[key] for key in sorted(paths)]
 
     def _refresh_editor_assets(self) -> None:
         if threading.current_thread() is not threading.main_thread():

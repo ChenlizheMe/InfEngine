@@ -375,6 +375,12 @@ class PreloadManager:
         return None
 
     def _read_path_declarations(self, path: str) -> tuple[_ClassDeclaration, ...]:
+        reference = self._package_for_path(path)
+        owner = self.registry.installed_record(reference) if reference else None
+        if owner is not None and not bool(owner.get("enabled", True)):
+            return ()
+        if self.runtime and _is_editor_source(path, self.project_root, owner):
+            return ()
         if not path.casefold().endswith(".pyc"):
             return _read_declarations(path, self.project_root)
         record = self._package_file_record(path)
@@ -554,6 +560,14 @@ class PreloadManager:
             engine=self.engine,
         )
         result: dict[str, str] = {}
+        # Current catalog membership includes scripts authored after install;
+        # the durable file ledger only describes uninstall ownership.
+        for path in guid_paths.values():
+            if (
+                path.casefold().endswith((".py", ".pyc"))
+                and self._package_for_path(path).casefold() == reference.casefold()
+            ):
+                result[path_key(path)] = path
         for item in record.get("files", []):
             if not isinstance(item, Mapping):
                 continue
@@ -924,8 +938,13 @@ def _is_editor_source(
     relative = portable_path(relative_path(path, project_root))
     folded_relative = relative.casefold()
     if folded_relative.startswith("packages/"):
+        from Infernux.engine.project_context import package_script_role
+
+        role = package_script_role(path, project_root)
+        if role:
+            return role == "editor"
         if owner is None:
-            return "/editor/" in f"/{folded_relative}/"
+            return False
         for item in owner.get("files", []):
             if not isinstance(item, Mapping):
                 continue
