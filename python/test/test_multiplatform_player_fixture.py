@@ -107,6 +107,7 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
     assert [item["logical_path"] for item in package["files"]] == [
         "runtime/lifecycle.py",
         "runtime/message.txt",
+        "runtime/resource.json",
     ]
     lifecycle = package_message.with_name("lifecycle.py")
     lifecycle_source = lifecycle.read_text(encoding="utf-8")

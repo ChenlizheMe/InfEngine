@@ -91,3 +91,5 @@ vfx-kit/
 最终 Player 以 `Content.inxpkg` 等二进制包交付项目内容，不直接在发行目录中展开 `Assets`、`Library` 或 `Packages`。这是内容封装，并不承诺不可逆加密；需要文件系统的运行时会在产品私有位置准备内容。
 
 `package_path` 只解析当前已安装且已进入 Player 的包内容，并拒绝绝对路径、盘符和 `..` 越界；资源缺失会明确失败。该路径是只读发布内容，运行时生成或修改的数据应写入 `inx.Application.persistent_data_path()`。
+
+Player 中的 `package_path` 与 `asset_path` 共用冻结资产目录，不能通过往私有目录中放入同名松散文件来补齐缺失的 binding。`package_path("studio/server", "runtime/data")` 也可返回已发布原始资源的目录：目录成员关系来自构建时登记的资产，目录内的 JSON 可以继续用相对文件名读取旁边的 TXT 等文件。未发布的目录不能解析；普通 `asset_path` 仍只返回文件。

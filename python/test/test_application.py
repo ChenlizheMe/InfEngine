@@ -187,6 +187,112 @@ def test_package_path_resolves_verbatim_payload_and_rejects_escape(tmp_path):
         set_project_root(None)
 
 
+def test_package_paths_use_frozen_catalog_for_files_and_preserved_directories(tmp_path):
+    from pathlib import Path
+
+    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from Infernux.engine.project_context import (
+        set_project_root,
+        set_runtime_asset_resolver,
+    )
+    from Infernux.lifecycle import PreloadContext
+
+    payloads = {
+        "Packages/vendor/server/runtime/data/message.txt": "hello",
+        "Packages/vendor/server/runtime/data/config.json": '{"message": "message.txt"}',
+        "Library/Artifacts/Blob/renamed-guid.txt": "bound by GUID",
+    }
+    artifacts = []
+    records = []
+    for index, (relative, contents) in enumerate(payloads.items()):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+        artifact_id = f"content:resource-{index}"
+        guid = f"resource-{index}"
+        artifacts.append({
+            "runtime_artifact_id": artifact_id,
+            "runtime_path": relative,
+            "asset_guid": guid,
+            "dependencies": [],
+        })
+        records.append({
+            "guid": guid,
+            "runtime_path": (
+                "Packages/vendor/server/runtime/renamed.txt"
+                if relative.startswith("Library/") else relative
+            ),
+            "primary_runtime_artifact_id": artifact_id,
+            "runtime_artifact_ids": [artifact_id],
+        })
+    catalog = PlayerRuntimeAssetCatalog.from_documents(
+        str(tmp_path), {"artifacts": artifacts}, {"entries": records}
+    )
+    context = PreloadContext(
+        project_root=str(tmp_path),
+        source_path="",
+        script_guid="preload-guid",
+        type_id="fixture-preload",
+        package_reference="vendor/server",
+        runtime=True,
+    )
+    decoy = tmp_path / "Packages/vendor/server/runtime/not-exported/stray.txt"
+    decoy.parent.mkdir()
+    decoy.write_text("not in catalog", encoding="utf-8")
+    set_project_root(str(tmp_path))
+    set_runtime_asset_resolver(catalog.resolve_asset)
+    try:
+        for lookup in (
+            context.package_path,
+            lambda path: Application.package_path("vendor/server", path),
+        ):
+            assert Path(lookup("runtime/renamed.txt")).read_text(
+                encoding="utf-8"
+            ) == "bound by GUID"
+            directory = Path(lookup("runtime/data"))
+            assert directory == tmp_path / "Packages/vendor/server/runtime/data"
+            import json
+
+            config_path = Path(lookup("runtime/data/config.json"))
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            assert (config_path.parent / config["message"]).read_text(
+                encoding="utf-8"
+            ) == "hello"
+            for missing in ("runtime/not-exported/stray.txt", "runtime/not-exported"):
+                with pytest.raises(FileNotFoundError, match="not available"):
+                    lookup(missing)
+        # The general public API remains a file lookup, not a directory scan.
+        with pytest.raises(FileNotFoundError):
+            Application.asset_path("Packages/vendor/server/runtime/data")
+    finally:
+        set_project_root(None)
+
+
+def test_temporary_project_context_restores_player_asset_resolver(tmp_path):
+    from Infernux.engine.project_context import (
+        get_project_root,
+        resolve_asset_path,
+        set_project_root,
+        set_runtime_asset_resolver,
+        using_project_root,
+    )
+
+    project = tmp_path / "player"
+    authoring = tmp_path / "authoring"
+    set_project_root(str(project))
+    set_runtime_asset_resolver(lambda path, **_kwargs: "cooked:" + path)
+    try:
+        with pytest.raises(RuntimeError, match="compile failed"):
+            with using_project_root(str(authoring)):
+                assert get_project_root() == str(authoring.resolve())
+                assert resolve_asset_path("Assets/missing.txt") is None
+                raise RuntimeError("compile failed")
+        assert get_project_root() == str(project.resolve())
+        assert resolve_asset_path("Assets/message.txt") == "cooked:Assets/message.txt"
+    finally:
+        set_project_root(None)
+
+
 def test_open_url_observes_one_canonical_asset_url(tmp_path):
     asset = tmp_path / "Assets" / "Plugins" / "abc" / "web" / "index.html"
     asset.parent.mkdir(parents=True)

@@ -563,6 +563,7 @@ class PlayerRuntimeAssetCatalog:
     _artifacts_by_id: Mapping[str, Mapping[str, Any]]
     _artifact_ids_by_guid: Mapping[str, tuple[str, ...]]
     _asset_paths: Mapping[str, str]
+    _package_directories: Mapping[str, str]
     _scene_paths: Mapping[str, str]
 
     @classmethod
@@ -634,6 +635,17 @@ class PlayerRuntimeAssetCatalog:
         scene_paths: dict[str, str] = {
             path.casefold(): path for path in scene_artifact_paths
         }
+        # Raw package payloads retain sibling layout. Derive their directory
+        # membership once from cataloged assets, never from a filesystem walk.
+        package_directories: dict[str, str] = {}
+        for artifact in artifacts_by_id.values():
+            path = str(artifact["runtime_path"])
+            if not artifact.get("asset_guid") or not path.startswith("Packages/"):
+                continue
+            parent = path.rpartition("/")[0]
+            while parent.startswith("Packages/"):
+                package_directories[parent.casefold()] = parent
+                parent = parent.rpartition("/")[0]
         for record in asset_records["entries"]:
             if not isinstance(record, Mapping):
                 raise RuntimeError("Player runtime asset record is malformed")
@@ -698,6 +710,7 @@ class PlayerRuntimeAssetCatalog:
                 }
             ),
             _asset_paths=MappingProxyType(dict(asset_paths)),
+            _package_directories=MappingProxyType(package_directories),
             _scene_paths=MappingProxyType(dict(scene_paths)),
         )
 
@@ -717,7 +730,12 @@ class PlayerRuntimeAssetCatalog:
     def artifact_ids_for_guid(self, guid: str) -> tuple[str, ...]:
         return self._artifact_ids_by_guid.get(str(guid), ())
 
-    def resolve_asset(self, reference: os.PathLike[str] | str) -> Optional[str]:
+    def resolve_asset(
+        self,
+        reference: os.PathLike[str] | str,
+        *,
+        allow_directory: bool = False,
+    ) -> Optional[str]:
         """Resolve a cataloged source alias or cooked path to its payload."""
         raw = os.fspath(reference)
         requested = resolved_path(
@@ -726,7 +744,11 @@ class PlayerRuntimeAssetCatalog:
         if not is_path_within(requested, self.project_root, allow_root=False):
             return None
         runtime_path = relative_path(requested, self.project_root).replace("\\", "/")
-        cooked_runtime_path = self._asset_paths.get(runtime_path.casefold())
+        key = runtime_path.casefold()
+        directory = allow_directory and key in self._package_directories
+        cooked_runtime_path = (
+            self._package_directories[key] if directory else self._asset_paths.get(key)
+        )
         if cooked_runtime_path is None:
             return None
         candidate = resolved_path(
@@ -734,7 +756,7 @@ class PlayerRuntimeAssetCatalog:
         )
         if (
             not is_path_within(candidate, self.project_root, allow_root=False)
-            or not os.path.isfile(candidate)
+            or not (os.path.isdir(candidate) if directory else os.path.isfile(candidate))
         ):
             return None
         return candidate

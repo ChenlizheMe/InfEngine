@@ -3,12 +3,16 @@ import keyword
 import os
 import sys
 from contextlib import contextmanager
-from typing import Callable, Iterator, Optional
+from typing import Iterator, Optional, Protocol
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
 
+class _RuntimeAssetResolver(Protocol):
+    def __call__(self, path: str, /, *, allow_directory: bool = False) -> Optional[str]: ...
+
+
 _project_root: Optional[str] = None
-_runtime_asset_resolver: Optional[Callable[[str], Optional[str]]] = None
+_runtime_asset_resolver: Optional[_RuntimeAssetResolver] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
 _package_registry_cache: tuple[str, int, int, frozenset[str]] | None = None
@@ -21,7 +25,7 @@ def set_project_root(path: Optional[str]) -> None:
 
 
 def set_runtime_asset_resolver(
-    resolver: Optional[Callable[[str], Optional[str]]],
+    resolver: Optional[_RuntimeAssetResolver],
 ) -> None:
     """Install the immutable packaged-asset resolver for the active Player."""
     global _runtime_asset_resolver
@@ -30,25 +34,33 @@ def set_runtime_asset_resolver(
     _runtime_asset_resolver = resolver
 
 
-def resolve_asset_path(path: str) -> Optional[str]:
+def resolve_asset_path(
+    path: str,
+    *,
+    project_root: Optional[str] = None,
+    allow_directory: bool = False,
+) -> Optional[str]:
     """Resolve one project asset in Editor or from the cooked Player catalog."""
     raw = os.fspath(path)
     if not raw:
         return None
     if _runtime_asset_resolver is not None:
-        return _runtime_asset_resolver(raw)
-    if not _project_root:
+        return _runtime_asset_resolver(raw, allow_directory=allow_directory)
+    root = project_root or _project_root
+    if not root:
         return None
     candidate = resolved_path(
-        raw if os.path.isabs(raw) else os.path.join(_project_root, raw)
+        raw if os.path.isabs(raw) else os.path.join(root, raw)
     )
-    asset_roots = get_project_script_roots(_project_root)
+    asset_roots = get_project_script_roots(root)
     if not any(
         is_path_within(candidate, root, allow_root=False)
         for root in asset_roots
     ):
         return None
-    return candidate if os.path.isfile(candidate) else None
+    if os.path.isfile(candidate) or (allow_directory and os.path.isdir(candidate)):
+        return candidate
+    return None
 
 
 def get_project_root() -> Optional[str]:
@@ -60,11 +72,13 @@ def get_project_root() -> Optional[str]:
 def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
     """Bind ``get_project_root()`` for one compile or cook interval."""
     previous = get_project_root()
+    previous_resolver = _runtime_asset_resolver
     set_project_root(path)
     try:
         yield get_project_root()
     finally:
         set_project_root(previous)
+        set_runtime_asset_resolver(previous_resolver)
 
 
 def get_assets_root() -> Optional[str]:

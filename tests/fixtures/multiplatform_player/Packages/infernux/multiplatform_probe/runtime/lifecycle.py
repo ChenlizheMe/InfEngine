@@ -1,5 +1,6 @@
 """Package-relative resource probe executed before the fixture scene loads."""
 
+import json
 import os
 from pathlib import Path
 
@@ -15,6 +16,15 @@ class MultiplatformResourcePreload(inx.InxPreload):
         message = Path(message_path).read_text(encoding="utf-8").strip()
         if not message:
             raise RuntimeError("Multiplatform package resource is empty")
+        config_path = Path(context.package_path("runtime/resource.json"))
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        resource_directory = Path(context.package_path("runtime"))
+        if config_path.parent != resource_directory:
+            raise RuntimeError("Package resource directory did not retain its layout")
+        if (resource_directory / config["message"]).read_text(
+            encoding="utf-8"
+        ).strip() != message:
+            raise RuntimeError("Package resource relative reference was not preserved")
         cooked_message = Path(
             inx.Application.asset_path("Assets/Data/preload_message.txt")
         ).read_text(encoding="utf-8").strip()
