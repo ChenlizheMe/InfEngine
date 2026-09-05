@@ -302,6 +302,67 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
         assert added.is_file() and editor.is_file()
 
 
+@pytest.mark.parametrize("mutation", ["delete", "editor", "rename"])
+def test_package_enable_uses_live_scripts_and_retire_keeps_previous_paths(
+    tmp_path, monkeypatch, request, mutation
+):
+    source = _source(tmp_path / "source", "vendor/mutable-component")
+    (source / "runtime").mkdir()
+    (source / "runtime/component.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "MutableComponent.inxpkg")
+    project = _project(tmp_path / "project")
+    submitted, retired = [], []
+
+    class Resources:
+        _project_path = str(project.resolve())
+
+        def begin_script_transaction(self, paths):
+            return "mutable-component"
+
+        def submit_script_change(self, path, **kwargs):
+            submitted.append(Path(path))
+            return object()
+
+        def process_pending_reloads(self, *, force=False):
+            return 0
+
+        def retire_script_paths(self, paths):
+            retired.extend(Path(path) for path in paths)
+
+    monkeypatch.setattr(
+        "Infernux.engine.resources_manager.ResourcesManager.instance",
+        classmethod(lambda _cls: Resources()),
+    )
+    manager = PluginManager(str(project))
+    request.addfinalizer(manager.preloads.unload_all)
+    manager.install_package(str(package), install_dependencies=False)
+    reference = "vendor/mutable-component"
+    root = project / "Packages" / reference
+    previous = root / "runtime/component.py"
+    before = manager.registry.installed_record(reference)["files"]
+    submitted.clear()
+    if mutation == "delete":
+        previous.unlink()
+        previous.with_suffix(".py.meta").unlink()
+        current = None
+    else:
+        current = root / ("editor/component.py" if mutation == "editor" else "runtime/renamed.py")
+        current.parent.mkdir(parents=True, exist_ok=True)
+        previous.replace(current)
+        previous.with_suffix(".py.meta").replace(current.with_suffix(".py.meta"))
+
+    manager.set_enabled(reference, False)
+
+    assert previous in retired  # retire the old module, not an Editor replacement
+    if mutation == "editor":
+        assert current not in retired
+    if mutation == "rename":
+        assert current in retired
+    manager.set_enabled(reference, True)
+    assert submitted == ([current] if mutation == "rename" else [])
+    assert manager.registry.installed_record(reference)["files"] == before
+
+
 def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
     source = _source(tmp_path / "source", "vendor/current-meta")
     asset = source / "runtime" / "plugin.py"

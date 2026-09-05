@@ -1690,11 +1690,6 @@ class PluginManager:
             )
 
         runtime_paths = self._package_runtime_script_paths(record)
-        for path in runtime_paths:
-            if not os.path.isfile(path):
-                raise FileNotFoundError(
-                    f"Installed Runtime script is missing before publication: {path}"
-                )
         if not runtime_paths:
             return
 
@@ -1728,26 +1723,30 @@ class PluginManager:
             raise RuntimeError(
                 "Active ResourcesManager belongs to a different project during plugin retirement"
             )
-        paths = self._package_runtime_script_paths(record)
+        paths = self._package_runtime_script_paths(record, retiring=True)
         if paths:
             manager.retire_script_paths(paths)
 
-    def _package_runtime_script_paths(self, record: Mapping[str, object]) -> list[str]:
-        """Current runtime membership plus ledger paths needed for retirement."""
+    def _package_runtime_script_paths(
+        self, record: Mapping[str, object], *, retiring: bool = False
+    ) -> list[str]:
+        """Current Runtime scripts, plus historical module paths for retirement."""
 
         from Infernux.engine.project_context import package_script_reference
 
         guid_paths = self._guid_index()
         paths: dict[str, str] = {}
-        for item in record.get("files", []):
-            if not isinstance(item, Mapping) or item.get("role") != "runtime":
-                continue
-            hint = portable_path(str(item.get("path_hint", ""))).strip("/")
-            if hint.casefold().endswith(".py"):
-                path = guid_paths.get(str(item.get("guid", "")).casefold()) or resolved_path(
-                    os.path.join(self.project_root, *hint.split("/"))
-                )
-                paths[path_key(path)] = path
+        if retiring:
+            for item in record.get("files", []):
+                if not isinstance(item, Mapping) or item.get("role") != "runtime":
+                    continue
+                hint = portable_path(str(item.get("path_hint", ""))).strip("/")
+                if hint.casefold().endswith(".py"):
+                    # Removed or moved files can still have live modules at
+                    # their old paths. Never reinterpret the current Editor
+                    # destination of that GUID as a gameplay module to retire.
+                    path = resolved_path(os.path.join(self.project_root, *hint.split("/")))
+                    paths[path_key(path)] = path
         reference = str(record["reference"])
         root = package_control_root(self.project_root, reference)
         for path in guid_paths.values():
