@@ -44,20 +44,7 @@ def using_test_backend() -> bool:
 def _backend() -> Any:
     if _test_backend is not None:
         return _test_backend
-    module = importlib.import_module("Infernux.lib._Infernux")
-    required = (
-        "_inxpack_write",
-        "_inxpack_read_manifest",
-        "_inxpack_extract",
-        "_inxpack_read_entry",
-    )
-    missing = tuple(name for name in required if not hasattr(module, name))
-    if missing:
-        raise RuntimeError(
-            "The Infernux native module does not provide the current InxPack contract: "
-            + ", ".join(missing)
-        )
-    return module
+    return importlib.import_module("Infernux.lib._Infernux")
 
 
 def write_pack(

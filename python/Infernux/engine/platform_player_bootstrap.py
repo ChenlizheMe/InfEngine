@@ -75,16 +75,10 @@ def _validate_indexed_archive(
         raise RuntimeError(f"Player package index does not declare {filename}")
     expected_hash, expected_size = expected
     archive = data_root / filename
-    try:
-        archive_size = archive.stat().st_size
-    except OSError as exc:
-        raise RuntimeError(f"Player package is missing: {archive}") from exc
-    if archive_size != expected_size:
-        raise RuntimeError(f"Player {filename} size disagrees with its package index")
     manifest = read_manifest(archive)
     if (
-        str(manifest.get("archive_sha256", "")).casefold() != expected_hash
-        or int(manifest.get("archive_bytes", -1)) != expected_size
+        manifest["archive_sha256"] != expected_hash
+        or manifest["archive_bytes"] != expected_size
     ):
         raise RuntimeError(f"Player {filename} identity disagrees with its package index")
     return archive, manifest
@@ -158,16 +152,11 @@ def _content_cache(data_root: Path, cache_root: Path) -> Path:
         )
     )
     try:
-        extracted = extract_pack(
+        extract_pack(
             archive,
             temporary,
             allowed_roots=_CONTENT_ROOTS,
         )
-        if (
-            str(extracted.get("archive_sha256", "")).casefold() != expected_hash
-            or int(extracted.get("archive_bytes", -1)) != expected_size
-        ):
-            raise RuntimeError("Extracted Player content identity changed unexpectedly")
         ready_path = temporary / ".ready"
         ready_path.write_text(expected_hash + "\n", encoding="ascii", newline="\n")
         if destination.exists():
@@ -220,7 +209,6 @@ def prepare_platform_player(package_root: str, cache_root: str) -> str:
         raise RuntimeError("Platform Player runtime manifest is unreadable") from exc
     if flavor not in {"PlayerDebug", "PlayerRelease"}:
         raise RuntimeError("Platform Player runtime manifest has an invalid flavor")
-    read_player_asset_catalog(package)
     build_manifest_document = read_player_build_manifest(package)
     project_root = _content_cache(package, cache)
     target_manifest = project_root / "BuildManifest.json"
