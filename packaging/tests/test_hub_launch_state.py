@@ -72,6 +72,26 @@ def test_running_process_without_ready_signal_times_out(tmp_path: Path):
     splash._spin_timer.stop()
 
 
+def test_launch_failure_keeps_traceback_in_scrollable_details(monkeypatch):
+    _app()
+    splash = EngineSplashScreen("", "Test")
+    detail = "The engine process exited with an error:\n\n" + "A long traceback line\n" * 80
+    observed = []
+
+    def inspect_dialog(box):
+        observed.append((box.text(), box.detailedText()))
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", inspect_dialog)
+    monkeypatch.setattr(splash, "_fade_out_and_close", lambda: None)
+    try:
+        splash._show_failure("Engine Launch Failed", detail)
+        assert observed == [(detail.split("\n", 1)[0], detail)]
+    finally:
+        splash._spin_timer.stop()
+        splash.close()
+
+
 def test_launch_lock_tracks_engine_pid_not_hub_pid(tmp_path: Path, monkeypatch):
     _app()
     (tmp_path / "ProjectSettings").mkdir()
