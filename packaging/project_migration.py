@@ -66,15 +66,23 @@ class ProjectMigrationService:
         saved_runtime = os.path.join(info.path, f".infernux-runtime-rollback-{uuid.uuid4().hex}")
         had_runtime = os.path.exists(runtime_path)
         pin_path = os.path.join(info.path, ".infernux-version")
-        pin_bytes = Path(pin_path).read_bytes() if os.path.isfile(pin_path) else None
         requirements_path = os.path.join(info.path, "ProjectSettings", "requirements.txt")
-        requirements_bytes = Path(requirements_path).read_bytes() if os.path.isfile(requirements_path) else None
         python_settings_path = str(project_runtime_settings_path(info.path))
-        python_settings_bytes = (
-            Path(python_settings_path).read_bytes()
-            if os.path.isfile(python_settings_path)
-            else None
-        )
+        vscode_dir = os.path.join(info.path, ".vscode")
+        had_vscode_dir = os.path.isdir(vscode_dir)
+        # Workspace interpreter settings are part of the same ABI transaction
+        # as the engine pin and runtime, including a partially written last file.
+        original_files = {
+            path: Path(path).read_bytes() if os.path.isfile(path) else None
+            for path in (
+                pin_path,
+                requirements_path,
+                python_settings_path,
+                os.path.join(vscode_dir, "settings.json"),
+                os.path.join(vscode_dir, "extensions.json"),
+                os.path.join(info.path, "pyrightconfig.json"),
+            )
+        }
 
         if had_runtime:
             os.replace(runtime_path, saved_runtime)
@@ -102,9 +110,10 @@ class ProjectMigrationService:
             self._remove_tree(runtime_path)
             if had_runtime and os.path.exists(saved_runtime):
                 os.replace(saved_runtime, runtime_path)
-            self._restore_file(pin_path, pin_bytes)
-            self._restore_file(requirements_path, requirements_bytes)
-            self._restore_file(python_settings_path, python_settings_bytes)
+            for path, content in original_files.items():
+                self._restore_file(path, content)
+            if not had_vscode_dir and os.path.isdir(vscode_dir) and not os.listdir(vscode_dir):
+                os.rmdir(vscode_dir)
             raise
 
         return MigrationResult(info.path, source_version, target_version, backup_path)
