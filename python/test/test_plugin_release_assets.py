@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -359,6 +360,62 @@ def test_platform_package_registers_and_removes_its_build_targets(
             exporter, target = exporter_registry.resolve(target_id)
             assert exporter.exporter_id == reference
             assert target.id == target_id
+
+        # Exercise independent version replacement on this same engine, not
+        # just target enumeration after a first install. These are explicitly
+        # local acceptance packages, not fabricated published releases.
+        next_source = tmp_path / "next-plugin"
+        shutil.copytree(
+            source / "package", next_source / "package",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        manifest = next_source / "package/inx_package.json"
+        metadata = json.loads(manifest.read_text(encoding="utf-8"))
+        metadata["version"] = "0.1.1"
+        manifest.write_text(json.dumps(metadata), encoding="utf-8")
+        exporter_source = (
+            next_source / "package/editor" / source_directory / "exporter.py"
+        )
+        exporter_source.write_text(
+            exporter_source.read_text(encoding="utf-8")
+            + '\nRELEASE_REPLACEMENT_PROBE = "next-version"\n',
+            encoding="utf-8",
+        )
+        next_package = tmp_path / "next-version.inxpkg"
+        standalone = next_source / "package.py"
+        shutil.copy2(source / "package.py", standalone)
+        packaged = subprocess.run(
+            [sys.executable, "-I", "-S", "-X", "utf8", str(standalone), str(next_package)],
+            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"}, check=False,
+        )
+        assert packaged.returncode == 0, packaged.stdout + packaged.stderr
+        first_exporter = exporter_registry.resolve(target_ids[0])[0]
+        original_record = manager.registry.installed_record(reference)
+        with pytest.raises(RuntimeError, match="uninstall it before reinstalling"):
+            manager.install_package(str(next_package), install_dependencies=False)
+        assert exporter_registry.resolve(target_ids[0])[0] is first_exporter
+        assert manager.registry.installed_record(reference) == original_record
+
+        author_file = project / "Packages" / reference / "AuthorKeep.txt"
+        author_file.write_text("local author content", encoding="utf-8")
+        previous_exporter = first_exporter
+        for artifact, revision in ((next_package, "next-version"), (package, None)):
+            manager.uninstall(reference)
+            for target_id in target_ids:
+                with pytest.raises(KeyError, match="Unknown build target"):
+                    exporter_registry.resolve(target_id)
+            assert author_file.read_text(encoding="utf-8") == "local author content"
+            replaced = manager.install_package(str(artifact), install_dependencies=False)
+            assert replaced.loaded and not replaced.error
+            for target_id in target_ids:
+                current_exporter, target = exporter_registry.resolve(target_id)
+                assert target.id == target_id
+                assert current_exporter is not previous_exporter
+                module = sys.modules[type(current_exporter).__module__]
+                assert getattr(module, "RELEASE_REPLACEMENT_PROBE", None) == revision
+            previous_exporter = current_exporter
+            assert author_file.read_text(encoding="utf-8") == "local author content"
 
         manager.uninstall(reference)
         for target_id in target_ids:
