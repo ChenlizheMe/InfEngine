@@ -2846,14 +2846,14 @@ def test_release_output_copies_player_host_and_keeps_module(tmp_path, monkeypatc
     assert (final_dir / module_name).read_bytes() == b"player module"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows PlayerHost path")
 def test_player_host_resolves_from_player_runtime_resources(tmp_path, monkeypatch):
+    monkeypatch.delenv("INFERNUX_PLAYER_HOST_PATH", raising=False)
     package = tmp_path / "Infernux"
     engine = package / "engine"
     runtime = package / "resources" / "player_runtime"
     engine.mkdir(parents=True)
     runtime.mkdir(parents=True)
-    host = runtime / "InfernuxPlayerHost.exe"
+    host = runtime / ("InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost")
     host.write_bytes(b"host")
     monkeypatch.setattr(game_builder_module, "__file__", str(engine / "game_builder.py"))
 
