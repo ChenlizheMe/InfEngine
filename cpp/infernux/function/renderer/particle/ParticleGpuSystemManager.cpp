@@ -871,7 +871,8 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
                                         std::vector<std::shared_ptr<InxTexture>> &vectorFields,
-                                        std::vector<uint64_t> &vectorFieldGenerations, std::string *error) const
+                                        std::vector<uint64_t> &vectorFieldGenerations, std::string *error,
+                                        GpuParticleTextureRequest request) const
     {
         runtimeDesc.capacity = program.capacity;
         runtimeDesc.stateStride = program.stateStride;
@@ -979,7 +980,8 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle volume bindings require unique identities and matching Texture3D assets");
                 return false;
             }
-            auto lease = vectorFieldTextureResolver(field.texture->GetGuid(), field.linearFiltering, field.repeat);
+            auto lease =
+                vectorFieldTextureResolver(field.texture->GetGuid(), field.linearFiltering, field.repeat, request);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.gpuView || !lease.gpuView->IsValid()) {
                 SetError(error, lease.status == GpuBillboardTextureStatus::Pending
@@ -1009,7 +1011,7 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle Texture2D parameter bindings require unique identities");
                 return false;
             }
-            auto lease = textureResolver(parameter.textureGuid, parameter.stableId);
+            auto lease = textureResolver(parameter.textureGuid, parameter.stableId, request);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.gpuView || !lease.gpuView->IsValid()) {
                 SetError(error, lease.status == GpuBillboardTextureStatus::Pending
@@ -1371,7 +1373,8 @@ struct ParticleGpuSystemManager::Impl
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
-        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations, error))
+        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations, error,
+                              GpuParticleTextureRequest::Prepare))
             return {};
         emitter->observedVectorFieldGenerations = emitter->vectorFieldGenerations;
         CaptureMeshRevisions(program, emitter->meshes, emitter->observedMeshGenerations);
@@ -1523,8 +1526,8 @@ struct ParticleGpuSystemManager::Impl
         std::vector<std::shared_ptr<InxTexture>> vectorFields;
         std::vector<uint64_t> vectorFieldGenerations;
         auto replacement = std::make_unique<ParticleGpuRuntime>();
-        const bool descriptorValid =
-            BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields, vectorFieldGenerations, &error);
+        const bool descriptorValid = BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields,
+                                                      vectorFieldGenerations, &error, GpuParticleTextureRequest::Poll);
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
         const auto rememberHardFailure = [&]() {

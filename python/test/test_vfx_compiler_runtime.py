@@ -2151,15 +2151,16 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
     reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
 )
+@pytest.mark.parametrize("side", (2, 64))
 def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
-    scene, engine, monkeypatch, tmp_path
+    scene, engine, monkeypatch, tmp_path, side
 ):
     sdf_source = tmp_path / "Collision.inxsdf"
 
     def document(distances):
         return {
             "$schema": "infernux.sdf",
-            "dimensions": [2, 2, 2],
+            "dimensions": [side, side, side],
             "storage_order": "x_fastest",
             "distance_unit": "field",
             "bake_basis": [
@@ -2172,7 +2173,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
         }
 
     sdf_source.write_text(
-        json.dumps(document([-0.2, 0.2, -0.2, 0.2, -0.2, 0.2, -0.2, 0.2])),
+        json.dumps(document([-0.2, 0.2] * (side ** 3 // 2))),
         encoding="utf-8",
     )
     imported = AssetManager.import_asset(
@@ -2237,6 +2238,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
     component.start()
     component.update(0.0)
 
+    assert not component._last_compile_error
     emitter_id = component._gpu_emitter_ids[0]
     generation = engine._gpu_particle_vector_field_generation(emitter_id, 0)
     assert generation > 0

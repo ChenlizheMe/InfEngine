@@ -1951,7 +1951,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardDesc.instances = particleRuntime.InstanceBuffer();
     billboardDesc.renderIndices = particleRuntime.RenderIndexBuffer();
     billboardDesc.fallbackMaterial.blendEnabled = false;
-    billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName) {
+    billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName,
+                                        infernux::particle::GpuParticleTextureRequest request) {
+        assert(request == infernux::particle::GpuParticleTextureRequest::Poll);
         if (bindingName != "texSampler")
             return infernux::particle::GpuBillboardTextureLease{};
         const auto texture = rhi.RegisterTextureView(resources.graph.ResolveTextureView(particleTexture));

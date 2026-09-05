@@ -116,22 +116,26 @@ void InxVkCoreModular::PumpPendingTextureLoads()
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::string &textureRef,
-                                                                 const std::string &bindingName)
+                                                                 const std::string &bindingName,
+                                                                 bool waitForPreparation)
 {
-    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr);
+    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr,
+                               waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::string &textureGuid,
-                                                                    bool linearFiltering, bool repeat)
+                                                                    bool linearFiltering, bool repeat,
+                                                                    bool waitForPreparation)
 {
     return ResolveTextureAsset(textureGuid, "ParticleVectorField", TextureDimension::Texture3D,
-                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp");
+                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp", waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,
                                                            const std::string &bindingName,
                                                            TextureDimension expectedDimension,
-                                                           const char *filterOverride, const char *wrapOverride)
+                                                           const char *filterOverride, const char *wrapOverride,
+                                                           bool waitForPreparation)
 {
     // Material texture properties store asset GUIDs. Path normalization belongs
     // at the public material/asset boundary, never in the renderer.
@@ -182,6 +186,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             }
         }
         try {
+            if (waitForPreparation)
+                pending->second->Wait();
             if (!registry.TryCommitAssetLoad(pending->second))
                 return {TextureResolveStatus::Pending, {}};
             m_pendingTextureAssetLoads.erase(pending);
@@ -267,6 +273,10 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             }
         }
         try {
+            // A synchronous graph publication owns this CPU preparation dependency.
+            // Wait on its worker ticket, not on a frame, retry timer, or GPU idle.
+            if (waitForPreparation)
+                pendingStaging->second->Wait();
             auto staging = registry.TryConsumeTextureUploadStaging(pendingStaging->second);
             if (!staging)
                 return {TextureResolveStatus::Pending, {}};

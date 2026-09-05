@@ -1945,7 +1945,9 @@ int main()
     ribbonRendererDesc.shaderProgram = ribbonArtifact;
     ribbonRendererDesc.material = std::make_shared<InxMaterial>("ribbon-surface-parameters");
     ribbonRendererDesc.material->SetFloat("opacity", 0.625f);
-    ribbonRendererDesc.textureResolver = [](const std::string &, const std::string &) {
+    ribbonRendererDesc.textureResolver = [](const std::string &, const std::string &,
+                                            particle::GpuParticleTextureRequest request) {
+        assert(request == particle::GpuParticleTextureRequest::Poll);
         return particle::GpuBillboardTextureLease{};
     };
     ribbonRendererDesc.deletionQueue = &deletionQueue;
@@ -2067,7 +2069,9 @@ int main()
     bool normalTextureReady = false;
     TestTextureSlots textureSlots;
     billboardDesc.textureResolver = [&device, &textureResolveCount, &normalTextureReady,
-                                     &textureSlots](const std::string &textureGuid, const std::string &name) {
+                                     &textureSlots](const std::string &textureGuid, const std::string &name,
+                                                    particle::GpuParticleTextureRequest request) {
+        assert(request == particle::GpuParticleTextureRequest::Poll);
         assert(name == "texSampler");
         ++textureResolveCount;
         if (textureGuid == "normal" && !normalTextureReady)
@@ -2319,8 +2323,10 @@ int main()
     linkedDesc.material->SetTextureGuid("detail", "normal");
     uint32_t linkedTextureResolves = 0;
     TestTextureSlots linkedTextureSlots;
-    linkedDesc.textureResolver = [&linkedDevice, &linkedTextureResolves, &linkedTextureSlots](const std::string &guid,
-                                                                                              const std::string &name) {
+    linkedDesc.textureResolver = [&linkedDevice, &linkedTextureResolves,
+                                  &linkedTextureSlots](const std::string &guid, const std::string &name,
+                                                       particle::GpuParticleTextureRequest request) {
+        assert(request == particle::GpuParticleTextureRequest::Poll);
         ++linkedTextureResolves;
         const uint32_t identity = name == "albedo" ? 1u : 2u;
         assert((name == "albedo" && (guid == "white" || guid == "black")) || (name == "detail" && guid == "normal"));
@@ -2430,8 +2436,10 @@ int main()
         bindlessDesc.material->SetTextureGuid("detail", "normal");
         bindlessDesc.deletionQueue = nullptr;
         TestTextureSlots bindlessTextureSlots;
-        bindlessDesc.textureResolver = [&bindlessDevice, &bindlessTextureSlots](const std::string &guid,
-                                                                                const std::string &name) {
+        bindlessDesc.textureResolver = [&bindlessDevice,
+                                        &bindlessTextureSlots](const std::string &guid, const std::string &name,
+                                                               particle::GpuParticleTextureRequest request) {
+            assert(request == particle::GpuParticleTextureRequest::Poll);
             const uint32_t identity = name == "albedo" ? 1u : 2u;
             const uint64_t revision = guid == "black" ? 2u : 1u;
             return AcquireTestTexture(bindlessDevice, bindlessTextureSlots, guid, revision, {800u + identity, 1},
@@ -2551,7 +2559,9 @@ int main()
         meshDesc.material->SetColor("baseColor", glm::vec4(0.2f, 0.4f, 0.8f, 0.75f));
         meshDesc.material->SetTextureGuid("texSampler", "white");
         TestTextureSlots meshTextureSlots;
-        meshDesc.textureResolver = [&meshDevice, &meshTextureSlots](const std::string &guid, const std::string &name) {
+        meshDesc.textureResolver = [&meshDevice, &meshTextureSlots](const std::string &guid, const std::string &name,
+                                                                    particle::GpuParticleTextureRequest request) {
+            assert(request == particle::GpuParticleTextureRequest::Poll);
             assert(name == "texSampler");
             return AcquireTestTexture(meshDevice, meshTextureSlots, guid, 1, {980, 1}, {981, 1});
         };

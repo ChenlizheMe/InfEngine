@@ -1305,12 +1305,13 @@ class InxVkCoreModular
 
     /// @brief Shared texture resolution logic (used by TextureResolver lambda).
     /// Resolves an asset GUID to a GPU image using GUID-based cache keys.
-    TextureResolveResult ResolveTextureForMaterial(const std::string &textureRef, const std::string &bindingName);
-    TextureResolveResult ResolveTextureForVectorField(const std::string &textureGuid, bool linearFiltering,
-                                                      bool repeat);
+    TextureResolveResult ResolveTextureForMaterial(const std::string &textureRef, const std::string &bindingName,
+                                                   bool waitForPreparation = false);
+    TextureResolveResult ResolveTextureForVectorField(const std::string &textureGuid, bool linearFiltering, bool repeat,
+                                                      bool waitForPreparation = false);
     TextureResolveResult ResolveTextureAsset(const std::string &textureGuid, const std::string &bindingName,
                                              TextureDimension expectedDimension, const char *filterOverride,
-                                             const char *wrapOverride);
+                                             const char *wrapOverride, bool waitForPreparation = false);
 
     // ========================================================================
     // Per-object GPU buffers

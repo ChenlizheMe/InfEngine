@@ -3490,7 +3490,8 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
     m_particleGpuSystemManagerInitializationAttempted = true;
     auto manager = std::make_unique<particle::ParticleGpuSystemManager>();
     auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
-                                                           const std::string &bindingName) {
+                                                           const std::string &bindingName,
+                                                           particle::GpuParticleTextureRequest request) {
         particle::GpuBillboardTextureLease lease;
         TextureResolveResult resolved;
         if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
@@ -3506,7 +3507,8 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
             resolved.binding.gpuSlot = std::move(residentSlot);
             resolved.binding.gpuView = std::move(resident);
         } else {
-            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
+            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName,
+                                                       request == particle::GpuParticleTextureRequest::Prepare);
         }
 
         if (resolved.status == TextureResolveStatus::Pending) {
@@ -3526,9 +3528,11 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         return lease;
     };
     auto particleVectorFieldTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
-                                                                      bool linearFiltering, bool repeat) {
+                                                                      bool linearFiltering, bool repeat,
+                                                                      particle::GpuParticleTextureRequest request) {
         particle::GpuBillboardTextureLease lease;
-        auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat);
+        auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat,
+                                                           request == particle::GpuParticleTextureRequest::Prepare);
         if (resolved.status == TextureResolveStatus::Pending) {
             lease.status = particle::GpuBillboardTextureStatus::Pending;
             return lease;

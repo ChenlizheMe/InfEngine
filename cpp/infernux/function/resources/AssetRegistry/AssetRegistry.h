@@ -49,6 +49,10 @@ struct PublishedAssetVersion
 class AssetLoadTicket final
 {
   public:
+    void Wait() const
+    {
+        JobSystem::Get().WaitPassive(m_job);
+    }
     [[nodiscard]] const std::string &GetGuid() const noexcept
     {
         return m_guid;
@@ -92,6 +96,10 @@ class AssetLoadTicket final
 class TextureUploadStagingTicket final
 {
   public:
+    void Wait() const
+    {
+        JobSystem::Get().WaitPassive(m_job);
+    }
     [[nodiscard]] const std::string &GetGuid() const noexcept
     {
         return m_guid;
