@@ -20,6 +20,8 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
+from Infernux.engine.path_utils import lexical_path
+
 
 _test_backend: Any | None = None
 
@@ -102,7 +104,7 @@ def write_pack_isolated(
 
     destination_text = os.fspath(destination)
     source_pairs = [(str(path), os.fspath(source)) for path, source in files]
-    output_directory = os.path.dirname(os.path.abspath(destination_text))
+    output_directory = os.path.dirname(lexical_path(destination_text))
     os.makedirs(output_directory, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".infernux-inxpack-worker-", dir=output_directory
