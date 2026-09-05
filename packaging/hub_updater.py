@@ -97,7 +97,7 @@ def _request_bytes(url: str) -> bytes:
             "User-Agent": "InfernuxHub-Updater",
         },
     )
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, timeout=15) as response:
         return response.read()
 
 

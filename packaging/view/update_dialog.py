@@ -27,8 +27,8 @@ def _write_update_trace(payload: dict) -> None:
         pass
 
 
-class _CheckWorker(QObject):
-    finished = Signal(object)
+class _CheckWorker(QThread):
+    checked = Signal(object)
     failed = Signal(str)
 
     def run(self):
@@ -44,7 +44,7 @@ class _CheckWorker(QObject):
                     "detail": result.detail,
                 }
             )
-            self.finished.emit(result)
+            self.checked.emit(result)
         except Exception as exc:
             _write_update_trace({"status": "failed", "error": str(exc)})
             self.failed.emit(str(exc))
@@ -62,28 +62,28 @@ class UpdateController(QObject):
         self._update_job = None
         self.queue.idle.connect(self._apply_staged_update)
         self.thread = None
-        self.worker = None
         self._silent_check = True
         self._completion_pending = False
+        QApplication.instance().aboutToQuit.connect(self._wait_for_check)
+
+    def _wait_for_check(self):
+        if self.thread is not None:
+            self.thread.wait()
 
     def check(self, *, silent: bool = True):
         if self.thread and self.thread.isRunning():
             return
         self._silent_check = silent
         self._completion_pending = True
-        self.thread = QThread(self)
-        self.worker = _CheckWorker()
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
+        if self.thread is not None:
+            self.thread.deleteLater()
+        self.thread = _CheckWorker(self)
         # Connect to QObject-bound slots, not lambdas.  Lambdas have no Qt
         # receiver affinity and therefore run in the worker thread, which
         # caused QMessageBox to create children for the main window across
         # threads and left the Hub stuck after a manual check.
-        self.worker.finished.connect(self._checked)
-        self.worker.failed.connect(self._check_failed)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.failed.connect(self.thread.quit)
-        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.checked.connect(self._checked)
+        self.thread.failed.connect(self._check_failed)
         self.thread.start()
 
     def _checked(self, result):

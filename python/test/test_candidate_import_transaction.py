@@ -73,6 +73,38 @@ def test_trusted_import_bypasses_project_descendant_scan(candidate_project, monk
     broker.rollback()
 
 
+@pytest.mark.parametrize("runtime_library", [
+    ".runtime/python313/Lib",
+    ".runtime/python313/lib/python3.13",
+    ".venv/lib/python3.13",
+])
+def test_package_candidate_does_not_own_project_private_stdlib(
+    candidate_project, monkeypatch, runtime_library,
+):
+    import pathlib
+
+    project = candidate_project.parent
+    installed_stdlib = project / runtime_library / "pathlib" / "__init__.py"
+    installed_stdlib.parent.mkdir(parents=True)
+    installed_stdlib.touch()
+    monkeypatch.setattr(pathlib, "__file__", str(installed_stdlib))
+    package = project / "Packages" / "probe"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "inx_package.json").write_text("{}", encoding="utf-8")
+    component = runtime / "component.py"
+    component.write_text("from pathlib import Path\nVALUE = Path\n", encoding="utf-8")
+    name = get_script_module_name(str(component))
+    broker = CandidateImportTransaction()
+    broker.register(name, str(component))
+    try:
+        assert broker.load(name).VALUE is pathlib.Path
+        assert "pathlib" not in broker.loaded_module_names
+        assert "pathlib" not in broker._reused_lkg
+    finally:
+        broker.rollback()
+
+
 def test_lowercase_public_engine_namespace_is_lazily_admitted(candidate_project):
     previous = sys.modules.pop("infernux", None)
     try:

@@ -24,7 +24,7 @@ from typing import Iterable
 
 from .path_utils import is_path_within, resolved_path
 from .project_context import (
-    get_script_import_paths,
+    get_project_script_roots,
     get_script_module_name,
 )
 
@@ -89,7 +89,7 @@ class CandidateImportTransaction:
         self._specs: dict[str, CandidateModuleSpec] = {}
         self._modules: dict[str, types.ModuleType] = {}
         self._reused_lkg: dict[str, types.ModuleType] = {}
-        self._roots: list[str] = []
+        self._roots = get_project_script_roots()
         self._trusted_modules = frozenset(trusted_modules)
         self._trusted_proxies: dict[str, types.ModuleType] = {}
         self._overlay_names: set[str] = set()
@@ -133,10 +133,6 @@ class CandidateImportTransaction:
         if not path or not os.path.isfile(path):
             raise CandidateImportError(f"candidate module file not found: {file_path}")
         self._specs[name] = CandidateModuleSpec(name, path, source, code)
-        for root in get_script_import_paths(path):
-            root = resolved_path(root)
-            if root and root not in self._roots:
-                self._roots.append(root)
 
     def module_for(self, name: str) -> types.ModuleType | None:
         return self._modules.get(name)
@@ -241,7 +237,7 @@ class CandidateImportTransaction:
         if module is None:
             return None
         module_path = resolved_path(getattr(module, "__file__", "") or "")
-        project_roots = tuple(root for root in self._roots if root)
+        project_roots = self._roots
         if not module_path or not os.path.isfile(module_path):
             # InxPreload creates path-bound namespace parents for isolated
             # package names. Their synthetic ``__file__`` names an absent

@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QScrollArea, QFrame, QDialog, QFileDialog, QMessageBox,
+    QScrollArea, QFrame, QDialog, QFileDialog, QMessageBox, QApplication,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal
 
 from version_manager import VersionManager, EngineVersion
 from install_queue import InstallQueue
@@ -177,17 +177,17 @@ class _AndroidSupportCard(AnimatedSurfaceFrame):
 
 # ─── Install Editor dialog (pick version from GitHub releases) ───────
 
-class _FetchWorker(QObject):
+class _FetchWorker(QThread):
     """Fetch available versions on a background thread."""
-    finished = Signal(list)  # list[EngineVersion]
+    loaded = Signal(list)  # list[EngineVersion]
 
-    def __init__(self, vm: VersionManager):
-        super().__init__()
+    def __init__(self, vm: VersionManager, parent):
+        super().__init__(parent)
         self._vm = vm
 
     def run(self):
         versions = self._vm.list_versions(include_prerelease=True)
-        self.finished.emit(versions)
+        self.loaded.emit(versions)
 
 
 class _VersionRow(AnimatedSurfaceFrame):
@@ -296,12 +296,9 @@ class InstallEditorDialog(QDialog):
         layout.addLayout(btn_row)
 
         # Kick off fetch in background
-        self._fetch_thread = QThread()
-        self._fetch_worker = _FetchWorker(self._vm)
-        self._fetch_worker.moveToThread(self._fetch_thread)
-        self._fetch_thread.started.connect(self._fetch_worker.run)
-        self._fetch_worker.finished.connect(self._on_versions_loaded)
-        self._fetch_worker.finished.connect(self._fetch_thread.quit)
+        self._fetch_thread = _FetchWorker(self._vm, self)
+        self._fetch_thread.loaded.connect(self._on_versions_loaded)
+        QApplication.instance().aboutToQuit.connect(self._fetch_thread.wait)
         self._fetch_thread.start()
 
     # ── Slots ────────────────────────────────────────────────────────

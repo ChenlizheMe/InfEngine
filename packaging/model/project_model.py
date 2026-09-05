@@ -398,38 +398,6 @@ def _project_wheel_marker(project_dir: str) -> str:
     return os.path.join(project_dir, runtime_name, ".infernux-wheel")
 
 
-def _wheel_version_from_path(wheel_path: str) -> str:
-    name = os.path.basename(wheel_path or "")
-    if not name.lower().endswith(".whl"):
-        return ""
-    parts = name[:-4].split("-")
-    if len(parts) < 2:
-        return ""
-    distribution = parts[0].replace("_", "-").lower()
-    if distribution != "infernux":
-        return ""
-    return parts[1]
-
-
-def _installed_distribution_version(python_exe: str, distribution_name: str) -> str:
-    script = (
-        "import importlib.metadata as metadata, sys; "
-        "name = sys.argv[1]; "
-        "\ntry:\n"
-        "    print(metadata.version(name))\n"
-        "except metadata.PackageNotFoundError:\n"
-        "    raise SystemExit(1)\n"
-    )
-    completed = subprocess.run(
-        [python_exe, "-c", script, distribution_name],
-        timeout=30,
-        **_popen_kwargs(capture_output=True),
-    )
-    if completed.returncode != 0:
-        return ""
-    return (completed.stdout or "").strip()
-
-
 def _distribution_files_present(site_packages: str, distribution_name: str) -> bool:
     if not os.path.isdir(site_packages):
         return False
@@ -834,7 +802,6 @@ class ProjectModel:
                 "Open the Installs page and install that engine version first."
             )
 
-        target_version = _wheel_version_from_path(wheel)
         if on_status:
             on_status("Checking the project runtime...")
         site_packages = ProjectModel._get_site_packages(project_dir)
@@ -851,19 +818,6 @@ class ProjectModel:
             expected_fingerprint and installed_fingerprint == expected_fingerprint
         )
         if distribution_present and wheel_is_current:
-            if not validate_current:
-                return
-            try:
-                ProjectModel.validate_python_runtime(project_python)
-                return
-            except RuntimeError:
-                pass
-
-        installed_version = ""
-        if distribution_present:
-            installed_version = _installed_distribution_version(project_python, "Infernux")
-        version_is_current = bool(target_version and installed_version == target_version)
-        if version_is_current:
             if not validate_current:
                 return
             try:

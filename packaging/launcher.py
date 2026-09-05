@@ -123,6 +123,7 @@ class GameEngineLauncher(QMainWindow):
         )
         self.viewmodel = viewmodel
         self.project_list.remove_requested.connect(self._remove_project_from_card)
+        self.project_list.migrate_requested.connect(self._migrate_project_from_card)
         self.controls = ControlPane(viewmodel, parent=projects_page)
 
         self.controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -307,6 +308,10 @@ class GameEngineLauncher(QMainWindow):
     def _remove_project_from_card(self, project_id: str):
         self.project_list.select_project(project_id)
         self.viewmodel.remove_project(self)
+
+    def _migrate_project_from_card(self, project_id: str):
+        self.project_list.select_project(project_id)
+        self.viewmodel.migrate_project(self)
 
     def _on_language_changed(self, _mode: str):
         """Rebuild visible widgets in the new language without restarting the process."""
